@@ -1,0 +1,20 @@
+schema: 1
+context_budget: 8000
+claim_ttl_max: 2h
+verifiers:
+  cargo-test:
+    run: cargo test --workspace -q
+    timeout: 10m
+  fmt-check:
+    run: cargo fmt --check
+    timeout: 2m
+  check-repo:
+    run: cargo run -q --example check_repo
+    timeout: 5m
+roles:
+  agent:
+    can: [context, find, claim, log, done, new:task, new:adr:proposed]
+    cannot: [adr:accept, adr:edit-constraint, task:close, delete]
+  human:
+    can: ["*"]
+identities: {}

@@ -1,0 +1,3 @@
+[workspace]
+members = ["crates/ankor-core", "crates/ankor-cli"]
+resolver = "2"
