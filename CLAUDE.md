@@ -18,6 +18,8 @@ Ankor est un CLI (Rust, GPL-3.0) qui rend tâches et décisions d'architecture l
 4. Travailler. Le `done_criteria` est gelé : ne jamais l'éditer pour se débloquer. Une sous-tâche découverte = nouvelle tâche avec `blocked_by`, pas un critère affaibli.
 5. Finir : vérificateurs de `verify` verts (définis dans `.ankor/config.yml`), `status: done`, entrée `proof` (type `commit` avec le SHA, en attendant que `ankor done` existe), log, `version` incrémentée.
 
+**Un critère qui parle du binaire se teste par le binaire.** Quand un `done_criteria` dit « le binaire fait X », le test doit invoquer le binaire — pas seulement la fonction censée produire X. Deux défauts réels sont passés sous des tests unitaires verts : un verrou dont la libération échouait sous concurrence, et une résolution de `--repo` que le dispatch n'atteignait jamais parce qu'il rejetait le verbe avant. Dans les deux cas le code testé était juste, et le chemin réel ne l'était pas. La même règle vaut pour les plateformes : un comportement qui dépend de l'OS n'est pas vérifié tant qu'il n'a pas tourné sur les trois.
+
 ## Contraintes d'implémentation (résumé des ADR — les ADR font foi)
 
 - Le format est la spec : `ankor-core` est l'implémentation de référence, le round-trip doit rester identique à l'octet. Tout changement de format passe par la spec d'abord, puis les goldens, puis le code.
