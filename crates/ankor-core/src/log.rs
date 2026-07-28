@@ -19,7 +19,10 @@ pub struct LogEntry {
 
 impl LogEntry {
     pub fn format_line(&self) -> String {
-        format!("- {} {}{}{}", self.timestamp, self.who, SEPARATOR, self.message)
+        format!(
+            "- {} {}{}{}",
+            self.timestamp, self.who, SEPARATOR, self.message
+        )
     }
 
     pub fn parse_line(line: &str) -> Option<LogEntry> {
@@ -65,9 +68,7 @@ pub fn append_log(body: &str, entry: &LogEntry) -> String {
     if !out.is_empty() && !out.ends_with('\n') {
         out.push('\n');
     }
-    let has_header = out
-        .lines()
-        .any(|l| l.trim_end() == LOG_HEADER);
+    let has_header = out.lines().any(|l| l.trim_end() == LOG_HEADER);
     if !has_header {
         if !out.is_empty() {
             out.push('\n');

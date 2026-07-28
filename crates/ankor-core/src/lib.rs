@@ -30,5 +30,7 @@ pub use log::{append_log, parse_log, LogEntry};
 pub use model::{
     Adr, AdrStatus, CriteriaBy, Entity, Proof, ProofType, Task, TaskStatus, SCHEMA_VERSION,
 };
-pub use parse::{parse_adr, parse_entity, parse_task, serialize_adr, serialize_entity, serialize_task};
+pub use parse::{
+    parse_adr, parse_entity, parse_task, serialize_adr, serialize_entity, serialize_task,
+};
 pub use scope::ScopeSet;

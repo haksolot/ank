@@ -216,14 +216,20 @@ fn emit_scalar(s: &str) -> String {
         && !s.contains(": ")
         && !s.ends_with(':')
         && !s.contains(" #")
-        && !s.starts_with(['-', '?', ':', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', '[', ']', '{', '}', ',', ' '])
+        && !s.starts_with([
+            '-', '?', ':', '#', '&', '*', '!', '|', '>', '\'', '"', '%', '@', '`', '[', ']', '{',
+            '}', ',', ' ',
+        ])
         && !s.ends_with(' ')
         && !matches!(s, "null" | "~" | "true" | "false" | "yes" | "no")
         && s.parse::<f64>().is_err();
     if plain_ok {
         s.to_string()
     } else {
-        let escaped = s.replace('\\', "\\\\").replace('"', "\\\"").replace('\n', "\\n");
+        let escaped = s
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
+            .replace('\n', "\\n");
         format!("\"{escaped}\"")
     }
 }

@@ -35,7 +35,10 @@ fn main() {
                 Ok(entity) => {
                     let out = serialize_entity(&entity);
                     if out != input {
-                        eprintln!("error: {} : forme non canonique (round-trip different)", path.display());
+                        eprintln!(
+                            "error: {} : forme non canonique (round-trip different)",
+                            path.display()
+                        );
                         errors += 1;
                     }
                     // Le nom de fichier doit porter l'id canonique.
@@ -78,7 +81,10 @@ fn main() {
     let tasks = statuses.len();
     let adrs = entities.len() - tasks;
     if errors > 0 {
-        eprintln!("check_repo: {errors} erreur(s) sur {} entites", entities.len());
+        eprintln!(
+            "check_repo: {errors} erreur(s) sur {} entites",
+            entities.len()
+        );
         exit(8);
     }
     println!("check_repo: ok — {tasks} taches ({ready} pretes), {adrs} adr, round-trip identique");

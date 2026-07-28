@@ -109,15 +109,39 @@ fn prefix_resolution_never_guesses() {
     assert_eq!(r.to_string(), "TASK-8f3a91c2d4e7");
 
     // Introuvable et trop court sont des erreurs distinctes.
-    assert!(matches!(resolve_prefix("ffff", &ids), Err(Error::NotFound(_))));
-    assert!(matches!(resolve_prefix("8f", &ids), Err(Error::PrefixTooShort(_))));
+    assert!(matches!(
+        resolve_prefix("ffff", &ids),
+        Err(Error::NotFound(_))
+    ));
+    assert!(matches!(
+        resolve_prefix("8f", &ids),
+        Err(Error::PrefixTooShort(_))
+    ));
 }
 
 #[test]
 fn id_generation_is_deterministic_for_a_given_creation_act() {
-    let a = EntityId::generate(EntityKind::Task, "2026-07-27T10:00:00Z", "pi@host", "titre", b"seed");
-    let b = EntityId::generate(EntityKind::Task, "2026-07-27T10:00:00Z", "pi@host", "titre", b"seed");
-    let c = EntityId::generate(EntityKind::Task, "2026-07-27T10:00:00Z", "pi@host", "titre", b"autre");
+    let a = EntityId::generate(
+        EntityKind::Task,
+        "2026-07-27T10:00:00Z",
+        "pi@host",
+        "titre",
+        b"seed",
+    );
+    let b = EntityId::generate(
+        EntityKind::Task,
+        "2026-07-27T10:00:00Z",
+        "pi@host",
+        "titre",
+        b"seed",
+    );
+    let c = EntityId::generate(
+        EntityKind::Task,
+        "2026-07-27T10:00:00Z",
+        "pi@host",
+        "titre",
+        b"autre",
+    );
     assert_eq!(a, b);
     assert_ne!(a, c);
     assert_eq!(a.hex().len(), 12);
@@ -154,7 +178,11 @@ fn log_append_is_a_one_line_diff() {
     let before: Vec<&str> = t.body.lines().collect();
     let after: Vec<&str> = new_body.lines().collect();
     assert_eq!(after.len(), before.len() + 1, "un log = une ligne ajoutee");
-    assert_eq!(&after[..before.len()], &before[..], "rien d'existant ne bouge");
+    assert_eq!(
+        &after[..before.len()],
+        &before[..],
+        "rien d'existant ne bouge"
+    );
     assert_eq!(parse_log(&new_body).len(), 3);
 
     // Sur un corps vide, la section est creee.
@@ -214,7 +242,10 @@ fn blocked_is_derived_never_declared() {
 
 #[test]
 fn scope_matching_is_verifiable() {
-    let globs = vec!["src/auth/**".to_string(), "src/middleware/session.ts".to_string()];
+    let globs = vec![
+        "src/auth/**".to_string(),
+        "src/middleware/session.ts".to_string(),
+    ];
     let set = ScopeSet::new(&globs).unwrap();
     assert!(set.matches("src/auth/session.rs"));
     assert!(set.matches("src/auth/deep/nested.rs"));

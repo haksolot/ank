@@ -48,7 +48,7 @@ Ces exclusions sont la spec, pas des omissions.
 | Ancrer, ne pas faire confiance | Toute transition d'état exige une preuve externe vérifiable. |
 | Immuable par défaut | On ne modifie pas une décision, on la remplace. L'affaiblissement devient visible. |
 | Terse par défaut | Sortie type `git status`. Le JSON est opt-in strict. |
-| Dégradation, pas échec | Sans remote, sans git, sans daemon : Ankor fonctionne toujours, en mode réduit. |
+| Dégradation, pas échec | Sans remote, sans daemon : Ankor fonctionne toujours, en mode réduit. La dégradation porte sur les services et le réseau, pas sur le substrat — git est une dépendance dure (§7). |
 
 ---
 
@@ -169,7 +169,7 @@ Le gel empêche d'affaiblir un critère *après coup* ; il n'empêche pas de pos
 
 **TTL du claim.** Court, 30 minutes par défaut, **plafonné par `claim_ttl_max` dans `config.yml`** (2 heures par défaut) — un agent ne peut pas s'accorder 24 heures et accaparer. Il est **renouvelé implicitement par `log`** : travailler suffit à garder le verrou, il n'y a pas de verbe `heartbeat` à mémoriser.
 
-**Retour après expiration.** Un build de 40 minutes sans `log` fait expirer le claim ; c'est un cas normal, pas une faute. À l'expiration, la tâche reste `in_progress` et redevient réclamable. Quand le titulaire initial revient : si personne n'a repris la tâche, `log` et `done` **ré-acquièrent silencieusement** le claim et continuent ; si un autre agent l'a reprise entre-temps, ils échouent avec le code 4 et le nom du nouveau titulaire. Mécaniquement, « silencieusement » signifie : vérifier l'absence de claim actif pour la tâche — ref `refs/ankor/claims/<id>` dès qu'il y a git, verrou `.ankor/claims/<id>` en repli sans git — puis le recréer au nom de l'agent courant, les deux étapes reposant sur la primitive atomique du niveau (mise à jour de ref, création exclusive de fichier). Aucune donnée n'est perdue dans les deux cas — le log dit où chacun s'est arrêté.
+**Retour après expiration.** Un build de 40 minutes sans `log` fait expirer le claim ; c'est un cas normal, pas une faute. À l'expiration, la tâche reste `in_progress` et redevient réclamable. Quand le titulaire initial revient : si personne n'a repris la tâche, `log` et `done` **ré-acquièrent silencieusement** le claim et continuent ; si un autre agent l'a reprise entre-temps, ils échouent avec le code 4 et le nom du nouveau titulaire. Mécaniquement, « silencieusement » signifie : vérifier l'absence de claim actif pour la tâche — le ref `refs/ankor/claims/<id>` — puis le recréer au nom de l'agent courant, les deux étapes reposant sur la primitive atomique de la mise à jour de ref. Aucune donnée n'est perdue dans les deux cas — le log dit où chacun s'est arrêté.
 
 ### ADR
 
@@ -529,7 +529,7 @@ Les deux couvrent des portées disjointes. Le CAS de git protège **entre clones
 
 ### Niveau 0 — local
 
-Pas de remote. Les claims utilisent les **mêmes refs `refs/ankor/claims/<id>`, en local** : une mise à jour de ref git locale est déjà atomique, et le niveau 1 devient littéralement « le même ref, poussé » — aucune migration, aucun état à convertir. En l'absence totale de git (repli ultime), verrous par fichier dans `.ankor/claims/`, gitignoré. Fonctionnel sans configuration, comme un `git init` sans push. Mode par défaut.
+Pas de remote. Les claims utilisent les **mêmes refs `refs/ankor/claims/<id>`, en local** : une mise à jour de ref git locale est déjà atomique, et le niveau 1 devient littéralement « le même ref, poussé » — aucune migration, aucun état à convertir. Il n'existe **pas de repli sans git** : git est une dépendance dure, un repo non initialisé sort en code 9 avec la commande exacte. Fonctionnel sans configuration, comme un `git init` sans push. Mode par défaut.
 
 ### Niveau 1 — remote git seul
 
@@ -651,7 +651,9 @@ Cela retourne la pression dans le bon sens : un contexte qui grossit incite à �
 
 ## 12. Implémentation
 
-**Rust.** Justifié ici pour trois raisons alignées avec les objectifs : binaire statique sans runtime (l'agnosticité d'agent suppose de ne rien imposer à l'environnement hôte), écosystème adapté (`gix` pour la plomberie git sans dépendre du binaire système, `rusqlite`, `globset`, `clap`), et un typage qui rend les invariants de la machine à états — transitions illégales, champs gelés — vérifiables à la compilation plutôt qu'à l'exécution.
+**Rust.** Justifié ici pour trois raisons alignées avec les objectifs : binaire statique sans runtime (l'agnosticité d'agent suppose de ne rien imposer à l'environnement hôte), écosystème adapté (`rusqlite`, `globset`), et un typage qui rend les invariants de la machine à états — transitions illégales, champs gelés — vérifiables à la compilation plutôt qu'à l'exécution.
+
+**L'analyse d'arguments est faite à la main**, sans bibliothèque. La raison n'est pas l'économie d'une dépendance mais le contrôle au caractère près de deux surfaces lues par des agents : les erreurs auto-correctives (§4), qu'un analyseur générique remplacerait par ses propres messages, et `ankor help`, dont §9 dit qu'il porte le détail des flags — une aide générée est verbeuse, et son coût est payé à chaque appel qui la déclenche. La surface étant figée à douze commandes (§4), le coût de l'écrire à la main ne croît pas.
 
 Le coût réel est la vitesse d'itération sur un design encore mouvant. Mitigation : figer et implémenter le **parseur de format** en premier, indépendamment du CLI. C'est la partie stable et la seule dont dépend l'interopérabilité.
 
