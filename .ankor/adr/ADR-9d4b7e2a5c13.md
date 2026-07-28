@@ -4,7 +4,7 @@ type: adr
 slug: format-est-la-spec
 title: Le format est la spec, ankor-core en est l'implémentation de référence
 created: 2026-07-27T09:00:00Z
-status: accepted
+status: superseded
 scope:
   - crates/ankor-core/**
   - docs/**
@@ -14,7 +14,7 @@ constraint: |
   l'octet près. Aucun champ n'existe dans le code sans exister dans la spec.
 see: crates/ankor-core/tests/golden/
 schema: 1
-version: 1
+version: 2
 ---
 
 Ankor promet que tout outil tiers peut lire et écrire les fichiers `.ankor/`

@@ -4,7 +4,7 @@ type: adr
 slug: git-dependance-dure
 title: git est une dépendance dure, il n'existe pas de mode sans git
 created: 2026-07-28T00:09:51Z
-status: proposed
+status: accepted
 scope:
   - crates/ankor-cli/**
 constraint: |
@@ -16,7 +16,7 @@ constraint: |
   ancien, ou répertoire de travail hors d'un repo git sortent en code 9
   avec la commande exacte à exécuter.
 schema: 1
-version: 2
+version: 3
 ---
 
 Un repli par verrous de fichiers ne sauverait que le claim — la seule pièce
