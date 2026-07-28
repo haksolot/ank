@@ -6,7 +6,7 @@ title: Binaires Linux, macOS et Windows, et skill d'amorçage
 created: 2026-07-27T09:55:00Z
 status: open
 scope:
-  - .github/workflows/**
+  - .github/workflows/release.yml
   - skill/**
 blocked_by: [TASK-a7b8c9d0e1f2]
 done_criteria: |
@@ -16,8 +16,11 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test]
 schema: 1
-version: 1
+version: 2
 ---
 
 Sur Windows, sh est résolu depuis Git for Windows ; un sh introuvable sort en
 code 9, jamais en repli vers cmd.
+
+Scope restreint à `release.yml` : la matrice de test des trois OS est
+TASK-ca4714f5c719, et `.github/workflows/**` recouvrait son fichier.
