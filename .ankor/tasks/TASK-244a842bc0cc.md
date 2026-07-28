@@ -4,7 +4,7 @@ type: task
 slug: store-entites
 title: Store d'entités — lecture, écriture atomique, compare-and-swap sur version
 created: 2026-07-28T00:09:51Z
-status: open
+status: done
 scope:
   - crates/ankor-cli/src/store.rs
 blocked_by: [TASK-a1b2c3d4e5f6]
@@ -23,8 +23,11 @@ done_criteria: |
   en code 3, et un fichier final parseable, jamais tronqué ni mixte.
 criteria_by: claimer
 verify: [cargo-test]
+proof:
+  - type: commit
+    ref: 8b5f26ebaa7cee2884cb3590a71552bdc4d58c70
 schema: 1
-version: 2
+version: 4
 ---
 
 Couche fichiers sous l'index de TASK-b2c3d4e5f6a7 : celui-ci est un cache
@@ -39,3 +42,9 @@ dans un même processus et non par deux processus : déterministe et rapide,
 là où deux processus donneraient un test instable en CI pour la même
 garantie. Un unique gagnant et un fichier jamais mixte est exactement ce
 que le verrou et le renommage doivent produire ensemble.
+
+## Log
+- 2026-07-28T00:25Z claude-code@ankor — claim manuel (le CLI n'existe pas) ; critere pose par le claimer, signal assume
+- 2026-07-28T00:34Z claude-code@ankor — store.rs : verrou par create_new, write-then-rename, CAS sur version ; 9 tests
+- 2026-07-28T00:36Z claude-code@ankor — le test 16 threads a sorti un bug Windows : verrou en delete-pending rendant ERROR_ACCESS_DENIED et non ERROR_FILE_EXISTS, donc fatal au lieu d'etre reessaye
+- 2026-07-28T00:38Z claude-code@ankor — done : cargo-test vert, preuve commit 8b5f26e
