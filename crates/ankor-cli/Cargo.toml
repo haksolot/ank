@@ -11,3 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 ankor-core = { path = "../ankor-core" }
+# Deja dans l'arbre via ankor-core : aucune caisse nouvelle n'entre ici.
+# config.yml est le seul YAML que le CLI lit lui-meme.
+serde = { version = "=1.0.210", features = ["derive"] }
+serde_yaml = "0.9"
