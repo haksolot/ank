@@ -18,11 +18,13 @@ done_criteria: |
   d'exactement 1 ; relecture après écriture identique octet pour octet à
   serialize_entity ; fichier temporaire résiduel dans tasks/ ni lu comme
   entité ni masquant l'original ; nom de fichier ne portant pas l'id de
-  l'entité refusé à la lecture.
+  l'entité refusé à la lecture ; N threads écrivant la même entité depuis
+  la même version de base donnant exactement un gagnant, tous les autres
+  en code 3, et un fichier final parseable, jamais tronqué ni mixte.
 criteria_by: claimer
 verify: [cargo-test]
 schema: 1
-version: 1
+version: 2
 ---
 
 Couche fichiers sous l'index de TASK-b2c3d4e5f6a7 : celui-ci est un cache
@@ -32,5 +34,8 @@ store. Aucune tâche existante ne le portait, alors que `claim --criteria`,
 
 Le verrou de fichier du §6 couvre le cycle lecture-comparaison-écriture ;
 c'est lui qui rend le compare-and-swap sur `version` effectif, write-then-
-rename seul ne comparant rien. Le critère porte sur le résultat observable
-plutôt que sur la concurrence réelle, qui donnerait un test instable.
+rename seul ne comparant rien. La concurrence est testée par N threads
+dans un même processus et non par deux processus : déterministe et rapide,
+là où deux processus donneraient un test instable en CI pour la même
+garantie. Un unique gagnant et un fichier jamais mixte est exactement ce
+que le verrou et le renommage doivent produire ensemble.

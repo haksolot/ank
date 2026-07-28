@@ -9,11 +9,14 @@ scope:
   - crates/ankor-cli/**
 constraint: |
   Un seul mécanisme de claim : les refs git refs/ankor/claims/<id>. Aucun
-  repli par verrous de fichiers. git introuvable, ou répertoire de travail
-  hors d'un repo git, sort en code 9 avec la commande exacte à exécuter
-  (git init, ou le lien d'installation de git).
+  repli par verrous de fichiers. La plomberie passe par le binaire git et
+  jamais par une bibliothèque, et n'utilise que la plomberie (update-ref,
+  rev-parse, verify-commit, hash-object, cat-file), jamais la porcelaine.
+  Version minimale git 2.34, vérifiée au démarrage. git introuvable, trop
+  ancien, ou répertoire de travail hors d'un repo git sortent en code 9
+  avec la commande exacte à exécuter.
 schema: 1
-version: 1
+version: 2
 ---
 
 Un repli par verrous de fichiers ne sauverait que le claim — la seule pièce
@@ -31,3 +34,18 @@ la primitive atomique dont le claim a besoin.
 
 Le code 9 est le bon code et non le 1 : un environnement dépourvu de git
 n'est pas un échec de la tâche de l'agent, c'est un environnement à réparer.
+
+Le binaire plutôt qu'une bibliothèque (`gix`) ne découle pas de cette
+décision, il a sa propre raison, plus forte : `accept` et `check` reposent
+sur la signature. Produire un commit signé et le vérifier contre
+`allowed_signers` est trois lignes avec `git commit -S` et
+`git verify-commit`, et un chantier cryptographique avec une bibliothèque —
+pour un résultat au mieux équivalent, au pire subtilement différent de ce
+que l'utilisateur vérifiera à la main.
+
+La restriction à la plomberie est ce qui rend le choix soutenable : la
+porcelaine n'a aucun contrat de stabilité entre versions, et la parser
+recréerait exactement la dette que le recours au binaire évite. Le plancher
+2.34 est la version qui introduit la signature SSH et
+`gpg.ssh.allowedSignersFile` : en dessous, la ratification ne peut pas
+fonctionner, et le découvrir au premier `accept` serait tard.

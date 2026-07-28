@@ -9,6 +9,8 @@ Points tranchés par rapport à la v1 : orientation et contraintes réconciliée
 
 Tous les points ouverts de la v1 sont tranchés : licence GPL-3.0, Windows natif en v1, driver de merge et attestation CI spécifiés mais implémentés en v1.1 (§13).
 
+Ajouts de la révision d : **git est une dépendance dure**, le repli par verrous de fichiers est supprimé et « dégradation, pas échec » ne porte plus que sur les services et le réseau (§2, §3, §7) · plomberie par le binaire git, plomberie uniquement, version minimale 2.34 pour la signature SSH (§12, §13) · analyse d'arguments faite à la main, `gix` et `clap` retirés de la justification de Rust (§12) · **forme canonique et round-trip explicités** : identité octet pour octet garantie sur la forme canonique, entrée non canonique normalisée à la première réécriture, CRLF lu mais jamais écrit et remonté par `check` (§3).
+
 Ajouts de la révision c : code de sortie 9 (environnement de vérification défaillant, distinct d'un échec de tâche) · budget de contexte chiffré et seuil mécanique du sur-contraint (§5) · hash des contraintes applicables dans le claim, avertissement de `done` si le contexte a changé en cours de tâche (§7) · une entrée de preuve par vérificateur, `verify` vide équivaut à absent (§4) · `claim` refuse un bloqueur `closed`, `close` révoque le claim actif (§3) · `created` en UTC + signal de plausibilité (§3, §4) · mécanique de ré-acquisition explicitée (§3) · signal d'accaparement par logs vides (§4) · hash chaîné du log envisagé et écarté, avec la raison (§3).
 
 Ajouts de la révision b, issus de relecture externe : champ `created` au socle commun (ordre déterministe et signal de création en rafale) · statut `closed` et commande humaine `close --reason` pour l'abandon ratifié (§3, §4) · hash de la définition du vérificateur ancré dans la preuve (§4) · risque d'inondation de tâches explicitement accepté et motivé (§3) · `review` filtre par scopes vivants (§4).
@@ -85,6 +87,14 @@ Tout objet Ankor est un fichier markdown avec frontmatter YAML. Champs communs :
 | `scope` | Liste de globs. Source de vérité pour le routage du contexte. **Obligatoire** : sans scope une entité n'apparaît dans aucun `context` et devient invisible. `new` échoue plutôt que de créer un orphelin silencieux. |
 | `status` | Cycle de vie typé par entité |
 | `version` | Entier, incrémenté à chaque écriture. Compare-and-swap intra-arbre (§7). |
+
+### Forme canonique et round-trip
+
+Le format a une **forme canonique** : ordre des champs fixé, blocs littéraux pour les champs multi-lignes, listes flow pour les références, encodage UTF-8 sans BOM, fins de ligne LF.
+
+La garantie est exactement celle-ci : **`serialize(parse(x))` est identique à `x` octet pour octet lorsque `x` est en forme canonique**. Une entrée valide mais non canonique — autre forme YAML acceptable, guillemets superflus, fins de ligne CRLF — est lue correctement et **normalisée à la première réécriture**. C'est ce qui permet à un outil tiers ou à une main humaine d'écrire un fichier sans connaître la forme canonique, sans pour autant faire de cette forme une variante autoritaire, et c'est ce qui garantit qu'une commande qui relit puis réécrit ne produit jamais de diff parasite (§12).
+
+Les fins de ligne CRLF sont donc **lues, jamais écrites**. Le parseur les accepte ; `check` remonte l'entité comme forme non canonique — un finding, pas une erreur fatale — avec un diagnostic qui **nomme les fins de ligne** et donne la commande de correction. Jamais un message de syntaxe qui envoie chercher au mauvais endroit : un `---\r\n` diagnostiqué « frontmatter absent » coûte à l'utilisateur une heure sur la mauvaise piste. `ankor init` pose un `.gitattributes` (`.ankor/** text eol=lf`) : sur Windows `core.autocrlf=true` est le défaut, et sans cela git reconvertirait à la sortie ce que l'outil vient de normaliser, à chaque clone.
 
 ### Allocation des identifiants
 
@@ -651,11 +661,21 @@ Cela retourne la pression dans le bon sens : un contexte qui grossit incite à �
 
 ## 12. Implémentation
 
-**Rust.** Justifié ici pour trois raisons alignées avec les objectifs : binaire statique sans runtime (l'agnosticité d'agent suppose de ne rien imposer à l'environnement hôte), écosystème adapté (`rusqlite`, `globset`), et un typage qui rend les invariants de la machine à états — transitions illégales, champs gelés — vérifiables à la compilation plutôt qu'à l'exécution.
+**Rust.** Justifié ici pour deux raisons alignées avec les objectifs : binaire statique sans runtime (l'agnosticité d'agent suppose de ne rien imposer à l'environnement hôte), et un typage qui rend les invariants de la machine à états — transitions illégales, champs gelés — vérifiables à la compilation plutôt qu'à l'exécution.
+
+L'argument « écosystème adapté » figurait ici en troisième ; il est retiré plutôt que vidé. Il reposait sur `gix` et `clap`, écartés tous les deux — la plomberie git passe par le binaire (ci-dessous), l'analyse d'arguments est faite à la main (ci-dessous) — et il ne restait que `rusqlite` et `globset`, dont l'équivalent existe dans tous les langages candidats. Ce n'est pas ce qui départage.
 
 **L'analyse d'arguments est faite à la main**, sans bibliothèque. La raison n'est pas l'économie d'une dépendance mais le contrôle au caractère près de deux surfaces lues par des agents : les erreurs auto-correctives (§4), qu'un analyseur générique remplacerait par ses propres messages, et `ankor help`, dont §9 dit qu'il porte le détail des flags — une aide générée est verbeuse, et son coût est payé à chaque appel qui la déclenche. La surface étant figée à douze commandes (§4), le coût de l'écrire à la main ne croît pas.
 
 Le coût réel est la vitesse d'itération sur un design encore mouvant. Mitigation : figer et implémenter le **parseur de format** en premier, indépendamment du CLI. C'est la partie stable et la seule dont dépend l'interopérabilité.
+
+### Plomberie git
+
+Ankor appelle le **binaire git**, jamais une réimplémentation en bibliothèque. `gix`, envisagé pour éviter la dépendance au binaire système, ne sauverait rien : git est de toute façon une dépendance dure (§7). L'argument décisif est ailleurs — `accept` et `check` reposent sur la signature. Produire un commit signé et le vérifier contre `allowed_signers` (§8) est trois lignes de plomberie avec `git commit -S` et `git verify-commit` ; c'est un chantier cryptographique avec une bibliothèque, pour un résultat au mieux équivalent et au pire subtilement différent de ce que l'utilisateur vérifiera à la main.
+
+**Plomberie uniquement** : `update-ref`, `rev-parse`, `verify-commit`, `hash-object`, `cat-file`. Jamais de porcelaine — sa sortie n'offre aucun contrat de stabilité entre versions, et la parser serait exactement la dette que le recours au binaire est censé éviter.
+
+**Version minimale : git 2.34.** C'est la version qui introduit la signature SSH et `gpg.ssh.allowedSignersFile` ; en dessous, `accept` et `check` ne peuvent pas remplir leur contrat. La version est vérifiée au démarrage, et une version trop ancienne sort en **code 9** — environnement à réparer, pas échec de la tâche — avec le lien de mise à jour.
 
 ### Ankor et git : qui commite
 
@@ -675,7 +695,7 @@ La conséquence à respecter dans l'implémentation : chaque opération doit pro
 
 **Licence : GPL-3.0.** Le critère retenu : modification et commercialisation libres, mais un fork distribué doit publier ses sources — c'est la définition du copyleft fort. Deux précisions honnêtes sur ce que la GPL garantit réellement : l'obligation de publier ne se déclenche qu'à la *distribution* (un fork gardé interne n'y est pas tenu, aucune licence classique ne l'impose), et elle porte sur le code du CLI, pas sur le format — les fichiers `.ankor/` des utilisateurs et les outils tiers qui les lisent ou les écrivent ne sont pas des œuvres dérivées, ce qui préserve « le format est la spec ». Un service hébergé bâti sur Ankor n'est pas contraint (la clause réseau serait l'AGPL) ; pour un CLI local, ce cas est marginal et l'AGPL freinerait l'adoption pour rien.
 
-**Plateformes : Linux, macOS, Windows, natifs en v1.** Rust cross-compile les trois sans friction, `gix` évite la dépendance au binaire git système pour la plomberie, et les vérificateurs s'exécutent partout via le `sh` de Git for Windows (§4). Distribution : `curl | sh`, Homebrew, Scoop/winget, npm.
+**Plateformes : Linux, macOS, Windows, natifs en v1.** Rust cross-compile les trois sans friction, et la portabilité de la plomberie ne vient pas d'une bibliothèque mais de git lui-même, identique sur les trois OS — c'est aussi lui qui fournit le `sh` des vérificateurs sur Windows (§4). Une seule dépendance externe, présente partout, plutôt qu'une réimplémentation par plateforme. Distribution : `curl | sh`, Homebrew, Scoop/winget, npm.
 
 **Différés en v1.1, forme figée dès maintenant** : le driver de merge `.ankor/` (règles fixées en §7 — `version` = max + 1, log = union horodatée — automatisées aux premiers conflits réels) et `ankor attest` (forme de commande figée en §10, implémentée quand une CI l'appellera).
 
