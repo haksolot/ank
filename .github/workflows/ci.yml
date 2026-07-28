@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# Lecture seule : ce workflow ne publie rien. Les artefacts et les tags sont
+# le perimetre de release.yml (TASK-b8c9d0e1f2a3).
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Sans fail-fast, un echec sur une plateforme n'annule pas les deux
+      # autres. Savoir si un defaut est propre a un OS ou general est
+      # exactement l'information qu'on vient chercher ici : le developpement
+      # se fait sur une seule plateforme.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # La chaine Rust preinstallee sur les runners suffit, rustfmt inclus.
+      # Une action tierce de toolchain serait une dependance de plus dans la
+      # chaine d'approvisionnement, pour un besoin que l'image couvre deja.
+      - name: versions
+        run: |
+          rustc --version
+          cargo --version
+          git --version
+
+      # Le checkout applique .gitattributes : sur windows-latest, .ankor/ doit
+      # ressortir en LF. C'est cette etape qui aurait attrape le bug de CRLF,
+      # et check_repo plus bas qui le prouve.
+      - name: fins de ligne de .ankor/
+        shell: bash
+        run: |
+          if grep -rlU $'\r' .ankor/ crates/ankor-core/tests/golden/; then
+            echo "CRLF trouve : .gitattributes n'a pas ete applique"
+            exit 1
+          fi
+          echo "LF partout"
+
+      - run: cargo fmt --check
+
+      - run: cargo test --workspace
+
+      - run: cargo run --example check_repo
