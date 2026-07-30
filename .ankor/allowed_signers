@@ -1,4 +1,0 @@
-# Cles publiques autorisees a ratifier (format SSH allowed-signers de git).
-# Une ligne par cle : <principal> <type> <cle>
-# Vide pour l'instant : les ADR d'amorcage sont ratifies par l'historique
-# du repo (ADR-9d4b7e2a5c13 en documente l'exception).

@@ -1,0 +1,17 @@
+[package]
+name = "ank-cli"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "The Ank CLI: agent surface (7 verbs) and human surface."
+
+[[bin]]
+name = "ank"
+path = "src/main.rs"
+
+[dependencies]
+ank-core = { path = "../ank-core" }
+# Already in the tree through ank-core: no new crate enters here.
+# config.yml is the only YAML the CLI reads itself.
+serde = { version = "=1.0.210", features = ["derive"] }
+serde_yaml = "0.9"

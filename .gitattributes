@@ -1,2 +1,2 @@
-.ankor/** text eol=lf
-crates/ankor-core/tests/golden/** text eol=lf
+.ank/** text eol=lf
+crates/ank-core/tests/golden/** text eol=lf

@@ -4,8 +4,8 @@ on:
   push:
   pull_request:
 
-# Lecture seule : ce workflow ne publie rien. Les artefacts et les tags sont
-# le perimetre de release.yml (TASK-b8c9d0e1f2a3).
+# Read-only: this workflow publishes nothing. Artifacts and tags are the
+# perimeter of release.yml (TASK-b8c9d0e1f2a3).
 permissions:
   contents: read
 
@@ -14,10 +14,9 @@ jobs:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
-      # Sans fail-fast, un echec sur une plateforme n'annule pas les deux
-      # autres. Savoir si un defaut est propre a un OS ou general est
-      # exactement l'information qu'on vient chercher ici : le developpement
-      # se fait sur une seule plateforme.
+      # Without fail-fast, a failure on one platform does not cancel the other
+      # two. Knowing whether a defect is OS-specific or general is exactly the
+      # information we come here for: development happens on a single platform.
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
@@ -25,26 +24,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # La chaine Rust preinstallee sur les runners suffit, rustfmt inclus.
-      # Une action tierce de toolchain serait une dependance de plus dans la
-      # chaine d'approvisionnement, pour un besoin que l'image couvre deja.
+      # The Rust toolchain preinstalled on the runners is enough, rustfmt
+      # included. A third-party toolchain action would be one more dependency
+      # in the supply chain, for a need the image already covers.
       - name: versions
         run: |
           rustc --version
           cargo --version
           git --version
 
-      # Le checkout applique .gitattributes : sur windows-latest, .ankor/ doit
-      # ressortir en LF. C'est cette etape qui aurait attrape le bug de CRLF,
-      # et check_repo plus bas qui le prouve.
-      - name: fins de ligne de .ankor/
+      # The checkout applies .gitattributes: on windows-latest, .ank/ must come
+      # out in LF. This is the step that would have caught the CRLF bug, and
+      # check_repo below is what proves it.
+      - name: line endings in .ank/
         shell: bash
         run: |
-          if grep -rlU $'\r' .ankor/ crates/ankor-core/tests/golden/; then
-            echo "CRLF trouve : .gitattributes n'a pas ete applique"
+          if grep -rlU $'\r' .ank/ crates/ank-core/tests/golden/; then
+            echo "CRLF found: .gitattributes was not applied"
             exit 1
           fi
-          echo "LF partout"
+          echo "LF everywhere"
 
       - run: cargo fmt --check
 

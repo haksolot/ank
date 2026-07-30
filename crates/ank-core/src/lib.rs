@@ -1,0 +1,36 @@
+//! ank-core — parser and data model for the Ank format.
+//!
+//! "The format is the specification": this crate is the reference
+//! implementation of the format, independent of the CLI. It has four
+//! responsibilities:
+//!
+//! 1. Read and write `.ank/` files with an identical round-trip
+//!    ([`parse_entity`], [`serialize_entity`]);
+//! 2. The model invariants: identifiers ([`id`]), status transitions
+//!    ([`model`]), a mandatory and valid scope ([`scope`]), derived blocking;
+//! 3. The hash freeze of immutable fields ([`freeze`]);
+//! 4. The append-only `## Log` section ([`log`]).
+//!
+//! What this crate deliberately does not do: no disk I/O, no git, no index,
+//! no permissions — the caller (CLI, `check`, third-party tool) composes
+//! these building blocks.
+
+pub mod error;
+pub mod freeze;
+pub mod id;
+pub mod log;
+pub mod model;
+pub mod parse;
+pub mod scope;
+
+pub use error::{Error, Result};
+pub use freeze::{freeze_hash, freeze_hash_short, verify_frozen};
+pub use id::{resolve_prefix, EntityId, EntityKind};
+pub use log::{append_log, parse_log, LogEntry};
+pub use model::{
+    Adr, AdrStatus, CriteriaBy, Entity, Proof, ProofType, Task, TaskStatus, SCHEMA_VERSION,
+};
+pub use parse::{
+    parse_adr, parse_entity, parse_task, serialize_adr, serialize_entity, serialize_task,
+};
+pub use scope::ScopeSet;

@@ -12,16 +12,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "ankor-cli"
+name = "ank-cli"
 version = "0.1.0"
 dependencies = [
- "ankor-core",
+ "ank-core",
  "serde",
  "serde_yaml",
 ]
 
 [[package]]
-name = "ankor-core"
+name = "ank-core"
 version = "0.1.0"
 dependencies = [
  "globset",

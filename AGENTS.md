@@ -1,1 +1,1 @@
-Voir CLAUDE.md — memes conventions pour tous les agents.
+See CLAUDE.md — same conventions for every agent.

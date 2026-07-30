@@ -1,44 +1,147 @@
-# Ankor
+# ank
 
-**Ankor rend la couche organisationnelle d'un repo lisible et actionnable par les agents.**
+**The stupid coordination tool — tasks and architecture decisions as files in your repo, readable by any coding agent.**
 
-Tâches, décisions d'architecture, contraintes : tout ce qui vit d'habitude dans un tracker, un wiki ou un thread — et qui n'est donc jamais accessible à un agent qui démarre sur le code. Ankor met cette information dans le repo, rattachée au code qu'elle concerne par des scopes vérifiables, dans un format qu'un agent consomme en un appel et sous 2000 tokens.
+An agent that spawns on your codebase can read every line of it. It cannot read
+your tracker, your wiki, or the thread where you decided six months ago that
+sessions must never be self-contained JWTs. So it writes plausible code that
+violates a rule nobody wrote down where it could be found.
 
-Ce qu'Ankor n'est pas : un concurrent de Linear (pas de cycles, d'estimations, de vélocité), un wiki (seul ce qui contraint ou est actionnable y entre), ni une barrière de sécurité (les garde-fous protègent contre un agent qui dérive, pas contre un acteur malveillant).
+Ank puts that layer in the repository, attached to the code it constrains, in a
+format an agent consumes in one call and under 2000 tokens.
 
-## État : pre-v1
+## What it looks like
 
-Le CLI n'existe pas encore. Ce repo se construit en dogfoodant son propre format : le plan de développement vit dans [`.ankor/`](.ankor/), maintenu à la main en forme canonique, et validé par le parseur de référence à chaque test. Le jour où le CLI sait lire ses propres tâches, il reprend la main sans migration.
+Two kinds of file, flat, in `.ank/`. A decision that constrains code:
 
-- **La spec est la source de vérité** : [`docs/ankor-spec-v1.1.md`](docs/ankor-spec-v1.1.md)
-- **Le plan de développement** : `.ankor/tasks/` (DAG par `blocked_by`), les décisions dans `.ankor/adr/`
+```yaml
+---
+id: ADR-3c7e0b9142af
+type: adr
+title: Opaque sessions rather than stateless JWT
+status: accepted
+scope:
+  - src/auth/**
+constraint: |
+  Do not introduce self-contained JWTs for user auth.
+  Every session goes through the Redis store.
+---
+```
 
-## Pour les agents
+And a unit of work, with what would prove it finished:
 
-Le CLI n'étant pas disponible, lisez les fichiers directement — le format est la spec, c'est un usage de premier ordre :
+```yaml
+---
+id: TASK-8f3a91c2d4e7
+type: task
+title: Migrate auth to opaque sessions
+status: open
+scope:
+  - src/auth/**
+blocked_by: [TASK-51c2a7f0]
+done_criteria: |
+  Auth integration tests pass, and no reference to
+  jwt.verify remains in src/auth/
+verify: [auth-tests, no-jwt]
+---
+```
 
-1. `.ankor/adr/` — les contraintes actives sur ce que vous allez écrire. Le champ `constraint` est la règle ; le corps est le contexte.
-2. `.ankor/tasks/` — le travail. Une tâche est prenable si `status: open` (ou `in_progress` sans activité récente) et si tous ses `blocked_by` sont `done`.
-3. À la fin d'une tâche : faites passer les vérificateurs déclarés (`verify`, définis dans `.ankor/config.yml`), passez `status` à `done`, ajoutez une entrée de preuve et une ligne de log, incrémentez `version`.
-4. Toute écriture doit rester en forme canonique : `cargo run --example check_repo` doit rester vert (round-trip octet pour octet inclus).
+An agent asks what applies where it is about to work, and gets only that:
 
-Les conventions détaillées pour le développement sont dans [`CLAUDE.md`](CLAUDE.md).
+```
+$ ank context src/auth/
 
-## Structure
+CONSTRAINTS (2 active)
+  ADR-3c7e  Do not introduce self-contained JWTs for user auth.
+            Every session goes through the Redis store.
+  ADR-8b41  Rate limiting mandatory on every public endpoint.
 
-    crates/ankor-core   parseur et modele de donnees — implementation de reference du format
-    crates/ankor-cli    le binaire `ankor` (en construction, tache par tache)
-    docs/               la spec, source de verite
-    .ankor/             le plan de developpement d'Ankor, au format Ankor
-    skill/              le skill d'amorcage pour les agents (embryon)
+TASKS (2)
+  TASK-8f3a  [claimed:claude-code@host-3] Migrate auth to opaque sessions
+  TASK-51c2  [open] Add secret rotation
 
-## Développement
+> ank claim 51c2 to start
+```
 
-    cargo test                          # suite complete, dont la conformite du format
-    cargo run --example check_repo      # valide .ankor/ : parse, round-trip, references
+## The four ideas
 
-Le dossier `crates/ankor-core/tests/golden/` est la suite de conformité du format, réutilisable par tout outil tiers : `valid/` doit round-tripper à l'octet près, `invalid/` doit être refusé avec l'erreur attendue.
+**Scope, not hierarchy.** Constraints and work are two independent planes,
+joined only by a list of globs. An agent gets what binds it without traversing
+anything, and a constraint written last year applies to work created today.
+Grouping by scope also happens to be verifiable — a glob is confronted with the
+filesystem, a label is not.
+
+**Nobody declares themselves done.** A task names verifiers; `ank done` runs
+them itself and records what actually ran, hashed. The agent never reports its
+own result, because an agent that reports its own result can simply be wrong.
+
+**Freezing is verifiable, not defended.** The CLI cannot stop anyone from
+editing a file, and it does not pretend to. Every frozen field is anchored by a
+hash in something the editor does not control — the claim record, the signed
+ratification commit — and `check` compares. Editing a criterion to unblock
+yourself does not unblock anything; it makes the divergence visible.
+
+**Git does the hard parts.** Claims are git refs, so the compare-and-swap that
+arbitrates two agents is the one git already guarantees. Undo, history and
+recovery are git's. There is no daemon, no server, no central arbiter, and
+nothing to run. That is what "stupid" means here.
+
+## What it is not
+
+- **Not a tracker.** No cycles, estimates, velocity, roadmap or burndown. Ank
+  can export to a tracker for human visibility; it does not replace one.
+- **Not a wiki.** Only what is actionable or binding for an agent goes in. A
+  decision that constrains code, yes. Meeting notes, no.
+- **Not a security boundary.** The guardrails protect against an agent drifting,
+  not against a malicious actor.
+
+## Status: pre-v1
+
+The CLI does not exist yet. This repository is being built by dogfooding its own
+format: the development plan lives in [`.ank/`](.ank/), maintained by hand in
+canonical form and validated by the reference parser on every test run. The day
+the CLI can read its own tasks, it takes over with no migration.
+
+- **The specification is the source of truth**: [`docs/ank-spec-v1.1.md`](docs/ank-spec-v1.1.md)
+- **The development plan**: `.ank/tasks/` (a DAG through `blocked_by`), the
+  decisions in `.ank/adr/`
+
+## For agents working on this repository
+
+The CLI is not available, so read the files directly — the format is the
+specification, and that is a first-class use:
+
+1. `.ank/adr/` — the constraints active on what you are about to write. The
+   `constraint` field is the rule; the body is the reasoning.
+2. `.ank/tasks/` — the work. A task is claimable if `status: open` (or
+   `in_progress` with no recent activity) and all its `blocked_by` are `done`.
+3. Finishing a task: run the declared verifiers (`verify`, defined in
+   `.ank/config.yml`), set `status: done`, add a proof entry and a log line,
+   increment `version`.
+4. Every write stays in canonical form: `cargo run --example check_repo` must
+   stay green (byte-for-byte round-trip included).
+
+Detailed conventions are in [`CLAUDE.md`](CLAUDE.md).
+
+## Layout
+
+    crates/ank-core   parser and data model — the reference implementation of the format
+    crates/ank-cli    the `ank` binary (under construction, task by task)
+    docs/             the specification, source of truth
+    .ank/             Ank's own development plan, in the Ank format
+    skill/            the bootstrap skill for agents (embryo)
+
+## Development
+
+    cargo test                          # full suite, format conformance included
+    cargo run --example check_repo      # validates .ank/: parse, round-trip, references
+
+`crates/ank-core/tests/golden/` is the format conformance suite, reusable by any
+third-party tool: `valid/` must round-trip byte for byte, `invalid/` must be
+rejected with the expected error.
 
 ## Licence
 
-GPL-3.0 — voir [LICENSE](LICENSE). Le copyleft porte sur le code de l'outil, pas sur le format : vos fichiers `.ankor/` et les outils tiers qui les lisent ou les écrivent ne sont pas des œuvres dérivées.
+GPL-3.0 — see [LICENSE](LICENSE). The copyleft covers the tool's code, not the
+format: your `.ank/` files, and the third-party tools that read or write them,
+are not derivative works.

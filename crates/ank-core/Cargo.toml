@@ -1,0 +1,14 @@
+[package]
+name = "ank-core"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Parser and data model for the Ank format. The format is the specification; this crate is its reference implementation."
+
+[dependencies]
+serde = { version = "=1.0.210", features = ["derive"] }
+serde_yaml = "0.9"
+thiserror = "1"
+globset = "0.4"
+sha2 = "0.10"
+hex = "0.4"

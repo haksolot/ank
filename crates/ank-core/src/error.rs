@@ -1,0 +1,50 @@
+use thiserror::Error;
+
+/// Structured parser errors. The CLI turns them into self-correcting
+/// messages; this crate never formats advice, it names the cause.
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("missing frontmatter: the file must start with '---'")]
+    MissingFrontmatter,
+
+    #[error("invalid YAML: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+
+    #[error("invalid identifier: {0}")]
+    InvalidId(String),
+
+    #[error("the 'type' field ({field_type}) does not match the id prefix ({id})")]
+    TypeMismatch { id: String, field_type: String },
+
+    #[error("empty scope: an entity without a scope is invisible, refused at creation")]
+    EmptyScope,
+
+    #[error("invalid glob in scope: {0}")]
+    InvalidGlob(String),
+
+    #[error("unknown schema {found} (supported: {supported}); migrate or update the tool")]
+    UnknownSchema { found: u32, supported: u32 },
+
+    #[error("criteria_by present without done_criteria")]
+    CriteriaByWithoutCriteria,
+
+    #[error("ambiguous prefix '{prefix}': {candidates:?}")]
+    AmbiguousPrefix {
+        prefix: String,
+        candidates: Vec<String>,
+    },
+
+    #[error("entity not found: {0}")]
+    NotFound(String),
+
+    #[error("prefix too short '{0}' (minimum 4 characters)")]
+    PrefixTooShort(String),
+
+    #[error("unknown reference in blocked_by: {0}")]
+    UnknownReference(String),
+
+    #[error("illegal transition: {from} -> {to}")]
+    IllegalTransition { from: String, to: String },
+}
+
+pub type Result<T> = std::result::Result<T, Error>;

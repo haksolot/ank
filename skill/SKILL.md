@@ -1,14 +1,14 @@
-# ankor
+# ank
 
-Rend les taches et contraintes du repo lisibles en un appel. Sept verbes :
+Makes a repo's tasks and constraints readable in one call. Seven verbs:
 
-    Boucle :      ankor context -> ankor claim <id> -> ankor log "<msg>" -> ankor done
-    Hors-boucle : ankor new, ankor find, ankor release --reason "<r>"
+    Loop:      ank context -> ank claim <id> -> ank log "<msg>" -> ank done
+    Off-loop:  ank new, ank find, ank release --reason "<r>"
 
-- `context` avant tout : oriente (taches + contraintes du perimetre), puis
-  pilote l'execution une fois un claim pose (criteres, contraintes, log).
-- `done` execute les verificateurs lui-meme ; ne jamais s'auto-rapporter.
-- Bloque ? `release --reason` plutot que laisser expirer.
+- `context` first: it orients you (tasks + constraints for the perimeter), then
+  drives execution once a claim is held (criteria, constraints, log).
+- `done` runs the verifiers itself; never self-report.
+- Stuck? `release --reason` rather than letting the claim expire.
 
-(Embryon — le CLI est en construction ; ce fichier deviendra le SKILL.md
-installe via `npx skills add`.)
+(Embryo — the CLI is under construction; this file will become the SKILL.md
+installed through `npx skills add`.)

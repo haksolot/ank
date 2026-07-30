@@ -1,0 +1,4 @@
+# Public keys allowed to ratify (git SSH allowed-signers format).
+# One line per key: <principal> <type> <key>
+# Empty for now: the bootstrap ADRs are ratified by the repository history
+# (ADR-9d4b7e2a5c13 documents the exception).
