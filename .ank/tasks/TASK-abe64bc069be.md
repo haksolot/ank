@@ -4,7 +4,7 @@ type: task
 slug: rename-to-ank
 title: Rename the project to ank, code, documentation and repository
 created: 2026-07-29T10:40:00Z
-status: in_progress
+status: done
 scope:
   - crates/**
   - docs/**
@@ -35,8 +35,13 @@ done_criteria: |
   .gitattributes, whose only known failure is Windows-specific.
 criteria_by: claimer
 verify: [cargo-test, fmt-check, check-repo]
+proof:
+  - type: commit
+    ref: 4fb2040
+  - type: test
+    ref: ci://haksolot/ank/runs/30563030874
 schema: 1
-version: 3
+version: 4
 ---
 
 Ratified by ADR-85e6bbb195b8, which carries the decision and the list of what was
@@ -66,3 +71,5 @@ as for TASK-244a842bc0cc and TASK-c8637488773c.
 - 2026-07-29T10:52Z claude-code@ank — cargo test green (44 + 11), check_repo green, fmt fixed one line shortened by the rename
 - 2026-07-29T11:04Z claude-code@ank — repository renamed on the host, local remote followed
 - 2026-07-29T11:06Z claude-code@ank — blocked on the proof, not on the work: the criterion mentions a commit and nothing is committed yet; the done awaits authorisation to commit
+- 2026-07-29T15:12Z claude-code@ank — committed and pushed as 4fb2040; git detected only 27 renames out of the files moved, the rest falling below the similarity threshold because the same series both moved and rewrote them
+- 2026-07-29T15:20Z claude-code@ank — done: run 30563030874 green on ubuntu, macos and windows; proof is commit plus ci://, the CI being out of the agent's reach
