@@ -12,18 +12,24 @@
 
 use crate::cli::CliError;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 /// Floor imposed by SSH signing and `gpg.ssh.allowedSignersFile`.
 pub const MIN_VERSION: (u32, u32) = (2, 34);
 
 const INSTALL_URL: &str = "https://git-scm.com/downloads";
 
-/// Allowed plumbing subcommands. The list is closed so that adding a
-/// porcelain command is a visible act in review, not an oversight.
+/// Allowed plumbing subcommands. The rule is the criterion carried by
+/// ADR-b8884edcebe3 — a command is usable only if its output is stable by
+/// contract across git versions — and this list is its application, kept
+/// explicit so that reaching for porcelain is a visible act in review rather
+/// than an oversight. A closed list goes stale at every new need; the
+/// criterion is what decides.
 const PLUMBING: &[&str] = &[
     "update-ref",
     "rev-parse",
+    "symbolic-ref",
+    "merge-base",
     "verify-commit",
     "hash-object",
     "cat-file",
@@ -38,14 +44,17 @@ fn env_missing() -> CliError {
     CliError::new(9, "git not found in PATH").with_hint(INSTALL_URL)
 }
 
-/// Runs git in `cwd`. Returns standard output with trailing whitespace
-/// trimmed. A non-zero exit code yields the error along with stderr.
-pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
+/// Runs git in `cwd` and hands back the raw outcome, exit code included.
+///
+/// Several primitives below read a non-zero code as an answer rather than a
+/// failure — `merge-base --is-ancestor` says "no" with a 1, `symbolic-ref`
+/// says "absent" the same way — so the success check cannot live here.
+fn raw(cwd: &Path, args: &[&str]) -> Result<Output> {
     debug_assert!(
         args.first().map(|a| PLUMBING.contains(a)).unwrap_or(false),
         "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
     );
-    let out = Command::new("git")
+    Command::new("git")
         .current_dir(cwd)
         .args(args)
         .output()
@@ -55,13 +64,20 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
             } else {
                 CliError::new(9, format!("git {}: {e}", args.join(" ")))
             }
-        })?;
+        })
+}
+
+fn failed(args: &[&str], out: &Output) -> CliError {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    CliError::new(9, format!("git {} failed: {stderr}", args.join(" ")))
+}
+
+/// Runs git in `cwd`. Returns standard output with trailing whitespace
+/// trimmed. A non-zero exit code yields the error along with stderr.
+pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
+    let out = raw(cwd, args)?;
     if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        return Err(CliError::new(
-            9,
-            format!("git {} failed: {stderr}", args.join(" ")),
-        ));
+        return Err(failed(args, &out));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
 }
@@ -141,9 +157,375 @@ pub fn ensure_usable(cwd: &Path) -> Result<PathBuf> {
     toplevel(cwd)
 }
 
+// ---------------------------------------------------------------------------
+// Refs, branches, reachability (§7, §12)
+// ---------------------------------------------------------------------------
+
+const HEADS_PREFIX: &str = "refs/heads/";
+const ANK_NAMESPACE: &str = "refs/ank/";
+const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
+const ORIGIN_PREFIX: &str = "refs/remotes/origin/";
+
+/// A ref of the `refs/ank/*` namespace and the object it points at.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnkRef {
+    pub name: String,
+    pub object: String,
+}
+
+/// Enumerates `refs/ank/*`, which is what pruning rests on — pruning without
+/// enumeration is not implementable, and that gap predated the ADR that fixed
+/// the plumbing list.
+///
+/// A repository carrying no ank ref yields an **empty list, never an error**:
+/// that is the nominal state of a fresh repository, and maintenance has to be
+/// able to run there.
+pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
+    // A tab separates the two fields: it cannot appear in a ref name, where a
+    // space can be ambiguous to read back.
+    let out = run(
+        cwd,
+        &[
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)",
+            ANK_NAMESPACE,
+        ],
+    )?;
+    let mut refs = Vec::new();
+    for line in out.lines() {
+        let line = line.trim_end();
+        if line.is_empty() {
+            continue;
+        }
+        let (name, object) = line
+            .split_once('\t')
+            .ok_or_else(|| CliError::new(9, format!("unreadable for-each-ref output: {line}")))?;
+        refs.push(AnkRef {
+            name: name.to_string(),
+            object: object.to_string(),
+        });
+    }
+    Ok(refs)
+}
+
+/// Reads a symbolic ref in full form. `symbolic-ref --short` is avoided on
+/// purpose: its shortening depends on the other refs present, where the full
+/// name is a fixed prefix to strip. A ref that is absent or not symbolic is
+/// not an error — it is the answer `None`.
+fn symbolic_ref(cwd: &Path, name: &str) -> Result<Option<String>> {
+    let out = raw(cwd, &["symbolic-ref", "--quiet", name])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok(if text.is_empty() { None } else { Some(text) })
+}
+
+fn without_prefix(full: &str, prefix: &str) -> String {
+    full.strip_prefix(prefix).unwrap_or(full).to_string()
+}
+
+/// The branch HEAD points at, which the completion ref records (§7). A
+/// detached HEAD yields `None`: working detached is legitimate, and the record
+/// simply carries no branch.
+pub fn current_branch(cwd: &Path) -> Result<Option<String>> {
+    Ok(symbolic_ref(cwd, "HEAD")?.map(|r| without_prefix(&r, HEADS_PREFIX)))
+}
+
+/// The branch `refs/remotes/origin/HEAD` designates, the fallback source for
+/// the default branch. Absent — which is the case at level 0, and after some
+/// clones — yields `None`, and it is [`resolve_default_branch`] that decides
+/// what to make of it.
+pub fn origin_head(cwd: &Path) -> Result<Option<String>> {
+    Ok(symbolic_ref(cwd, ORIGIN_HEAD)?.map(|r| without_prefix(&r, ORIGIN_PREFIX)))
+}
+
+/// Whether `ancestor` is reachable from `descendant`.
+///
+/// Serves the diagnostic and never the pruning decision: a completion ref is
+/// pruned on what the task file says on the default branch, because `done`
+/// writes to the working tree and the commit it records is frequently already
+/// an ancestor (ADR-bcf222a31525).
+pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
+    let args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    let out = raw(cwd, &args)?;
+    match out.status.code() {
+        Some(0) => Ok(true),
+        Some(1) => Ok(false),
+        // 128 for an unknown revision, no code at all if a signal killed it.
+        // The realistic cause is a commit produced in another clone.
+        _ => Err(failed(&args, &out).with_hint("git fetch origin")),
+    }
+}
+
+/// A file as it appears on `rev`, not as the working tree holds it. That
+/// distinction is the whole point: the pruning predicate asks what the default
+/// branch carries, and `done` writes only to the tree (§7, §12).
+///
+/// `path` is repository-relative and uses `/`, which is git's own syntax on
+/// the three platforms. A path absent from that revision yields `None`; an
+/// unresolvable `rev` is an environment error, so that a mistyped
+/// `default_branch` cannot read as "no task ever finished".
+pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
+    // The revision is checked first because git answers both cases with the
+    // same exit code, and telling them apart from stderr would be exactly the
+    // fragility the plumbing rule exists to avoid.
+    let commit = format!("{rev}^{{commit}}");
+    let verify = ["rev-parse", "--verify", "--quiet", commit.as_str()];
+    if !raw(cwd, &verify)?.status.success() {
+        return Err(
+            CliError::new(9, format!("branch {rev} not found in this repository"))
+                .with_hint(format!("git fetch origin {rev}")),
+        );
+    }
+    let target = format!("{rev}:{path}");
+    let out = raw(cwd, &["cat-file", "-p", target.as_str()])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
+}
+
+/// Resolves the default branch (§7): the config value first, then
+/// `refs/remotes/origin/HEAD`. If neither answers there is nothing to invent —
+/// assuming `main` would be exactly the guess the tool refuses everywhere
+/// else — and the error names both missing sources with both fix commands.
+///
+/// Pure on purpose. The two sources are passed in rather than read here, so
+/// the four combinations are testable without a repository and without git. A
+/// branch that only exists under some environments is a branch only tested
+/// under some environments, which is the hole TASK-dc87e0ecfb6c fell into.
+pub fn resolve_default_branch(
+    configured: Option<&str>,
+    origin_head: Option<&str>,
+) -> Result<String> {
+    fn named(v: Option<&str>) -> Option<&str> {
+        v.map(str::trim).filter(|s| !s.is_empty())
+    }
+    if let Some(branch) = named(configured).or_else(|| named(origin_head)) {
+        return Ok(branch.to_string());
+    }
+    Err(CliError::new(
+        9,
+        "default branch indeterminable (default_branch absent from .ank/config.yml, \
+         refs/remotes/origin/HEAD absent)",
+    )
+    .with_hint(
+        "git remote set-head origin -a\n  \
+         -> or add \"default_branch: <name>\" to .ank/config.yml",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Temp(PathBuf);
+
+    impl Temp {
+        /// A real repository on a known branch. Git's default branch name
+        /// varies with the version and the user's config, so a test that
+        /// relies on it passes or fails depending on who runs it; `-b` has
+        /// existed since 2.28, well below our floor.
+        fn new_repo() -> Temp {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let p = std::env::temp_dir().join(format!(
+                "ank-git-{}-{}",
+                std::process::id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ));
+            std::fs::create_dir_all(&p).unwrap();
+            let t = Temp(p);
+            t.porcelain(&["init", "-q", "-b", "main"]);
+            // The CI runners carry no identity, and commit refuses without
+            // one. autocrlf is pinned so that the content read back on Windows
+            // is the content committed, whatever the machine's global config.
+            t.porcelain(&["config", "user.email", "test@ank.local"]);
+            t.porcelain(&["config", "user.name", "Test"]);
+            t.porcelain(&["config", "core.autocrlf", "false"]);
+            t
+        }
+
+        /// Porcelain is forbidden to the tool (ADR-b8884edcebe3), not to the
+        /// harness that builds the fixture: `init` and `commit` have no
+        /// plumbing equivalent worth rewriting here.
+        fn porcelain(&self, args: &[&str]) {
+            let st = Command::new("git")
+                .current_dir(&self.0)
+                .args(args)
+                .status()
+                .expect("git must be installed: it is a hard dependency");
+            assert!(st.success(), "git {args:?}");
+        }
+
+        /// Writes a file, commits it, and returns the commit.
+        fn commit(&self, path: &str, content: &str) -> String {
+            let full = self.0.join(path);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, content).unwrap();
+            self.porcelain(&["add", "-A"]);
+            self.porcelain(&["-c", "commit.gpgsign=false", "commit", "-qm", "step"]);
+            run(&self.0, &["rev-parse", "HEAD"]).unwrap()
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn ank_refs_are_enumerated_and_their_absence_is_an_empty_list() {
+        let t = Temp::new_repo();
+        assert_eq!(
+            ank_refs(&t.0).unwrap(),
+            vec![],
+            "a repository with no ank ref is the nominal case, not an error"
+        );
+
+        let sha = t.commit(".ank/tasks/TASK-000000000001.md", "task\n");
+        run(
+            &t.0,
+            &["update-ref", "refs/ank/claims/TASK-000000000001", &sha],
+        )
+        .unwrap();
+
+        let refs = ank_refs(&t.0).unwrap();
+        assert_eq!(refs.len(), 1, "{refs:?}");
+        assert_eq!(refs[0].name, "refs/ank/claims/TASK-000000000001");
+        assert_eq!(refs[0].object, sha);
+
+        // A ref outside the namespace is not swept up with them.
+        run(&t.0, &["update-ref", "refs/heads/other", &sha]).unwrap();
+        assert_eq!(ank_refs(&t.0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn the_current_branch_is_read_and_a_detached_head_answers_none() {
+        let t = Temp::new_repo();
+        assert_eq!(
+            current_branch(&t.0).unwrap().as_deref(),
+            Some("main"),
+            "readable before the first commit: HEAD is symbolic from the start"
+        );
+
+        let sha = t.commit("a.txt", "a\n");
+        run(&t.0, &["update-ref", "--no-deref", "HEAD", &sha]).unwrap();
+        assert_eq!(
+            current_branch(&t.0).unwrap(),
+            None,
+            "detached HEAD is an answer, not a failure"
+        );
+    }
+
+    #[test]
+    fn origin_head_is_read_and_its_absence_answers_none() {
+        let t = Temp::new_repo();
+        assert_eq!(
+            origin_head(&t.0).unwrap(),
+            None,
+            "level 0 has no remote at all"
+        );
+
+        let sha = t.commit("a.txt", "a\n");
+        run(&t.0, &["update-ref", "refs/remotes/origin/main", &sha]).unwrap();
+        run(
+            &t.0,
+            &["symbolic-ref", ORIGIN_HEAD, "refs/remotes/origin/main"],
+        )
+        .unwrap();
+        assert_eq!(origin_head(&t.0).unwrap().as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn reachability_reads_the_two_answers_of_merge_base() {
+        let t = Temp::new_repo();
+        let first = t.commit("a.txt", "a\n");
+        let second = t.commit("a.txt", "b\n");
+
+        assert!(is_ancestor(&t.0, &first, &second).unwrap());
+        assert!(
+            !is_ancestor(&t.0, &second, &first).unwrap(),
+            "exit 1 is the answer no, not a failure"
+        );
+
+        let err = is_ancestor(&t.0, "no-such-rev", &second).unwrap_err();
+        assert_eq!(err.code, 9, "an unknown revision is an environment error");
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn a_file_is_read_as_the_branch_carries_it_not_as_the_tree_holds_it() {
+        let t = Temp::new_repo();
+        let path = ".ank/tasks/TASK-000000000001.md";
+        t.commit(path, "status: done\n");
+
+        // The working tree moves on; the branch does not. This is the whole
+        // point of the primitive: the pruning predicate asks the branch.
+        std::fs::write(t.0.join(path), "status: open\n").unwrap();
+        assert_eq!(
+            file_at(&t.0, "main", path).unwrap().as_deref(),
+            Some("status: done\n")
+        );
+
+        assert_eq!(
+            file_at(&t.0, "main", ".ank/tasks/TASK-000000000002.md").unwrap(),
+            None,
+            "a path absent from the revision is an absence, not an error"
+        );
+
+        let err = file_at(&t.0, "no-such-branch", path).unwrap_err();
+        assert_eq!(
+            err.code, 9,
+            "an unresolvable branch must not read as an absent file"
+        );
+        assert!(err.hint.is_some());
+    }
+
+    #[test]
+    fn the_default_branch_resolves_from_two_sources_and_invents_nothing() {
+        assert_eq!(
+            resolve_default_branch(Some("trunk"), None).unwrap(),
+            "trunk"
+        );
+        assert_eq!(resolve_default_branch(None, Some("main")).unwrap(), "main");
+        assert_eq!(
+            resolve_default_branch(Some("trunk"), Some("main")).unwrap(),
+            "trunk",
+            "the config wins: it is the explicit statement"
+        );
+        assert_eq!(
+            resolve_default_branch(Some("  "), Some("main")).unwrap(),
+            "main",
+            "a blank value is an absence, not a branch"
+        );
+
+        let err = resolve_default_branch(None, None).unwrap_err();
+        assert_eq!(err.code, 9);
+        assert!(err.message.contains("default_branch"), "{}", err.message);
+        assert!(
+            err.message.contains("refs/remotes/origin/HEAD"),
+            "{}",
+            err.message
+        );
+
+        let hint = err.hint.clone().unwrap();
+        assert!(hint.contains("git remote set-head origin -a"), "{hint}");
+        assert!(hint.contains("\"default_branch: <name>\""), "{hint}");
+
+        // Rendered, the two fixes come out as two arrow lines, as in §7.
+        let rendered = err.render();
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|l| l.trim_start().starts_with("->"))
+                .count(),
+            2,
+            "{rendered}"
+        );
+    }
 
     #[test]
     fn version_is_parsed_with_its_distribution_suffixes() {

@@ -1,6 +1,7 @@
 schema: 1
 context_budget: 8000
 claim_ttl_max: 2h
+default_branch: main
 verifiers:
   cargo-test:
     run: cargo test --workspace -q

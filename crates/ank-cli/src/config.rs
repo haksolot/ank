@@ -27,6 +27,8 @@ struct ConfigFile {
     #[serde(default = "default_ttl_max")]
     claim_ttl_max: String,
     #[serde(default)]
+    default_branch: Option<String>,
+    #[serde(default)]
     verifiers: BTreeMap<String, VerifierFile>,
     #[serde(default)]
     roles: BTreeMap<String, Role>,
@@ -74,6 +76,11 @@ pub struct Config {
     pub schema: u32,
     pub context_budget: usize,
     pub claim_ttl_max: Duration,
+    /// Branch carrying the reference durable state (§7). Optional: absent, the
+    /// resolution falls back to `refs/remotes/origin/HEAD`, and fails rather
+    /// than guessing if that is absent too — see
+    /// [`crate::git::resolve_default_branch`].
+    pub default_branch: Option<String>,
     pub verifiers: BTreeMap<String, Verifier>,
     pub roles: BTreeMap<String, Role>,
     pub identities: BTreeMap<String, String>,
@@ -151,10 +158,18 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         );
     }
 
+    // A key present but blank names no branch: it is an absence written out,
+    // not a branch called "".
+    let default_branch = raw
+        .default_branch
+        .map(|b| b.trim().to_string())
+        .filter(|b| !b.is_empty());
+
     Ok(Config {
         schema: raw.schema,
         context_budget: raw.context_budget,
         claim_ttl_max,
+        default_branch,
         verifiers,
         roles: raw.roles,
         identities: raw.identities,
@@ -172,8 +187,12 @@ pub fn load(path: &Path) -> Result<Config> {
     parse(&text, path)
 }
 
-/// Content written by `ank init`. The canonical form of the file, aligned with
-/// the one this repository uses to dogfood itself.
+/// Content written by `ank init`. The canonical form of the file.
+///
+/// `default_branch` is deliberately absent: `init` runs where the reference
+/// branch is not known yet, and writing `main` here would be exactly the guess
+/// §7 refuses. Detection through `refs/remotes/origin/HEAD` covers the case,
+/// and the error names the key to add when it does not.
 pub fn default_yaml() -> String {
     "\
 schema: 1
@@ -273,6 +292,21 @@ identities:
     }
 
     #[test]
+    fn default_branch_is_optional_and_read_when_present() {
+        let cfg = parse("schema: 1\ndefault_branch: trunk\n", p()).unwrap();
+        assert_eq!(cfg.default_branch.as_deref(), Some("trunk"));
+
+        let cfg = parse("schema: 1\n", p()).unwrap();
+        assert_eq!(cfg.default_branch, None, "the key is optional");
+
+        // A blank value is an absence written out, not a branch named "": it
+        // must reach the resolution as absent, otherwise the error naming the
+        // two missing sources would never fire.
+        let cfg = parse("schema: 1\ndefault_branch: \"  \"\n", p()).unwrap();
+        assert_eq!(cfg.default_branch, None);
+    }
+
+    #[test]
     fn this_repositorys_own_config_loads() {
         // Dogfooding: the config that drives this repository must pass the
         // parser we just wrote, otherwise one of the two is lying.
@@ -282,6 +316,7 @@ identities:
             .unwrap();
         let cfg = load(&path).unwrap();
         assert_eq!(cfg.claim_ttl_max, Duration::from_secs(7200));
+        assert_eq!(cfg.default_branch.as_deref(), Some("main"));
         assert!(cfg.verifier("cargo-test").is_some());
         assert!(cfg.verifier("check-repo").is_some());
     }
