@@ -25,8 +25,12 @@ proof:
     tree: scope/6e7b861a1a15
     criteria: 325ceb1b089f
     verifier: cargo-test@f14aeab36e1b
+  - type: test
+    ref: ci://haksolot/ank/runs/30648919694
+  - type: commit
+    ref: 7903f61
 schema: 1
-version: 6
+version: 7
 ---
 
 A bug found in TASK-244a842bc0cc, which is `done`: a new task, never a re-edit.
@@ -65,3 +69,4 @@ existing concurrency test, which is what exercises delete-pending.
 - 2026-07-31T16:46:07Z claude-code@ank — done, proof test:local/0d693bd3f0c6@ca8490a
 - 2026-07-31T16:52Z claude-code@ank — that done was premature and the proof above overstated what it covered. Run 30648501580 failed to compile on macos-latest and ubuntu-latest: `Lock::acquire_as(..).unwrap_err()` needs `Lock: Debug`, and the two cfg(unix) tests that contain that call are never compiled on Windows, so `cargo test` was green here on code that does not build there. The criterion says cargo test is green; on two of three platforms it was not, and CLAUDE.md says in as many words that OS-dependent behaviour is not verified until it has run on all three. I read that rule, wrote code no local compiler could see, and closed the task on a one-platform proof anyway. Fixed by deriving Debug on Lock. A ci:// proof is appended below, and that one is the evidence the criterion actually asked for.
 - 2026-07-31T16:53Z claude-code@ank — the durable lesson, since the same trap is waiting for the next cfg(unix) block: this machine cannot compile the unix branch at all. `cargo check --target x86_64-unknown-linux-gnu` gets as far as libsqlite3-sys and stops, because the bundled SQLite needs a Linux C toolchain that is not here. So CI is the only compiler the unix code has. Two consequences taken now: cfg(unix) blocks stay as small as possible, and `acquire_as` gained a test that runs on every platform, so at least the seam's signature and trait bounds are compiled by the host before a push. That test is what would have caught this one.
+- 2026-07-31T16:56Z claude-code@ank — run 30648919694 green on the three OS, appended as ci:// because that is the only evidence covering the criterion. 157 tests on ubuntu against 155 on Windows: the two extra are the cfg(unix) pair, and their timing in the log is the behaviour itself rather than a claim about it. on_posix_a_denied_directory_fails_immediately returns at once; the_windows_rule_retries_the_same_directory_and_times_out_saying_so takes the full ten seconds on the same unwritable directory. Same input, opposite outcomes, decided only by the platform argument.
