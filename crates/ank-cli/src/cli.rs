@@ -1,4 +1,4 @@
-//! Argument parsing and dispatch (§4, §12).
+//! Argument parsing, `help` and dispatch (§4, §9, §12).
 //!
 //! Parsing is done by hand, with no library. The reason is not saving a
 //! dependency but character-level control over two surfaces read by agents:
@@ -7,12 +7,26 @@
 //! it. With the surface frozen at twelve verbs (ADR-2f8a61c04b7d), that cost
 //! does not grow.
 //!
+//! `help` lives here rather than in a verb module because it has no data of
+//! its own: it is a rendering of [`COMMANDS`], [`GLOBAL_FLAGS`] and [`usage`],
+//! which are all in this file. A second, hand-maintained list of the verbs is
+//! exactly the drift the `owner_task` field was added to prevent.
+//!
+//! **`help` is not a fourteenth thing an agent does.** ADR-2f8a61c04b7d freezes
+//! the agent surface at seven verbs and adds none, ever. `help` carries no work
+//! and changes no state; it is the mechanism that *keeps* the surface at seven,
+//! because §9 buys its token economy by moving flag detail out of SKILL.md and
+//! into a command loaded on demand. It is grouped with `init` under
+//! [`Audience::Setup`] for that reason, and [`Audience::agent_surface`] asserts
+//! the seven by name so the reading cannot quietly rot into a growth.
+//!
 //! The edge cases of parsing are where hand-written code goes wrong, and they
 //! look like business bugs once in production: every one of them is therefore
 //! tested, one test per case.
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::io::Write;
 
 // ---------------------------------------------------------------------------
 // Error carrying its exit code
@@ -112,6 +126,60 @@ const fn multi(name: &'static str) -> FlagSpec {
 /// than declaring them per command, which would leave room to forget one.
 pub const GLOBAL_FLAGS: &[FlagSpec] = &[switch("--json"), switch("--quiet"), flag("--repo")];
 
+/// Who a verb is for. The grouping was prose in a comment until `help` needed
+/// to print it; a reader that has to be told the audience out of band is a
+/// reader that will get it wrong.
+///
+/// The split is the specification's own and not a presentation choice:
+/// `Loop` and `OffLoop` together are the seven verbs ADR-2f8a61c04b7d freezes,
+/// `Human` is what §4 puts on the other side, and `Setup` holds the two that
+/// belong to neither — `init`, which precedes the repository, and `help`, which
+/// describes the surface instead of acting on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audience {
+    Loop,
+    OffLoop,
+    Human,
+    Setup,
+}
+
+impl Audience {
+    /// Printed as a heading by `help`, in this order.
+    pub const ALL: &'static [Audience] = &[
+        Audience::Loop,
+        Audience::OffLoop,
+        Audience::Human,
+        Audience::Setup,
+    ];
+
+    pub fn heading(self) -> &'static str {
+        match self {
+            Audience::Loop => "agent loop",
+            Audience::OffLoop => "agent off-loop",
+            Audience::Human => "human",
+            Audience::Setup => "setup",
+        }
+    }
+
+    /// The identifier used by `--json`, where a heading with a space in it
+    /// would be a poor key.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Audience::Loop => "loop",
+            Audience::OffLoop => "off-loop",
+            Audience::Human => "human",
+            Audience::Setup => "setup",
+        }
+    }
+
+    /// The surface an agent works with, which ADR-2f8a61c04b7d freezes at
+    /// seven. Anything outside these two audiences is not part of it, whoever
+    /// happens to type it.
+    pub fn agent_surface(self) -> bool {
+        matches!(self, Audience::Loop | Audience::OffLoop)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CommandSpec {
     pub name: &'static str,
@@ -120,6 +188,7 @@ pub struct CommandSpec {
     pub max_positionals: usize,
     pub positional_help: &'static str,
     pub flags: &'static [FlagSpec],
+    pub audience: Audience,
     /// The task that carries the implementation, **while it does not exist**.
     /// It is therefore also the marker of an unrouted verb: a command that
     /// [`dispatch`] reaches clears the field, so the two never drift apart the
@@ -127,8 +196,9 @@ pub struct CommandSpec {
     pub owner_task: Option<&'static str>,
 }
 
-/// The twelve verbs of §4, plus `init` (§9). The order is the specification's:
-/// agent loop, agent off-loop, human surface.
+/// The twelve verbs of §4, plus `init` and `help` (§9). The order is the
+/// specification's, and `audience` now carries it in the data rather than in
+/// this sentence: agent loop, agent off-loop, human surface, setup.
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "context",
@@ -136,6 +206,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit")],
+        audience: Audience::Loop,
         owner_task: None,
     },
     CommandSpec {
@@ -144,6 +215,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--criteria"), flag("--ttl")],
+        audience: Audience::Loop,
         owner_task: None,
     },
     CommandSpec {
@@ -152,6 +224,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 2,
         positional_help: "[<id>] <message>",
         flags: &[],
+        audience: Audience::Loop,
         owner_task: None,
     },
     CommandSpec {
@@ -160,6 +233,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--proof")],
+        audience: Audience::Loop,
         owner_task: None,
     },
     CommandSpec {
@@ -168,6 +242,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
+        audience: Audience::OffLoop,
         owner_task: None,
     },
     CommandSpec {
@@ -182,6 +257,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--blocked-by"),
             flag("--constraint"),
         ],
+        audience: Audience::OffLoop,
         owner_task: None,
     },
     CommandSpec {
@@ -190,6 +266,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[flag("--type"), flag("--status"), flag("--scope")],
+        audience: Audience::OffLoop,
         owner_task: None,
     },
     CommandSpec {
@@ -198,6 +275,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        audience: Audience::Human,
         owner_task: None,
     },
     CommandSpec {
@@ -206,6 +284,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
+        audience: Audience::Human,
         owner_task: None,
     },
     CommandSpec {
@@ -214,6 +293,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--reason")],
+        audience: Audience::Human,
         owner_task: None,
     },
     CommandSpec {
@@ -222,6 +302,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        audience: Audience::Human,
         owner_task: None,
     },
     CommandSpec {
@@ -230,6 +311,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
+        audience: Audience::Human,
         owner_task: None,
     },
     CommandSpec {
@@ -238,6 +320,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        audience: Audience::Setup,
+        owner_task: None,
+    },
+    CommandSpec {
+        name: "help",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "[<verb>]",
+        flags: &[],
+        audience: Audience::Setup,
         owner_task: None,
     },
 ];
@@ -438,6 +530,155 @@ pub fn usage(spec: &CommandSpec) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// help (§9)
+// ---------------------------------------------------------------------------
+
+/// A flag as `help` shows it: the name alone says nothing about whether a value
+/// follows, and an agent that guesses wrong pays a round trip to find out.
+fn flag_display(f: &FlagSpec) -> String {
+    match (f.takes_value, f.repeatable) {
+        (false, _) => f.name.to_string(),
+        (true, false) => format!("{} <v>", f.name),
+        (true, true) => format!("{} <v>...", f.name),
+    }
+}
+
+/// Bare names, for the general listing. §9 buys its token economy by keeping the
+/// overview short and sending the detail to `ank help <verb>`; spelling out every
+/// value placeholder in the listing would spend exactly what the split saves.
+fn flag_names(spec: &CommandSpec) -> String {
+    spec.flags
+        .iter()
+        .map(|f| f.name)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn globals_line() -> String {
+    GLOBAL_FLAGS
+        .iter()
+        .map(flag_display)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Minimal JSON string escaping. The strings rendered here are `&'static str`
+/// literals and none of them needs it today, which is precisely why it is
+/// written rather than assumed: the day a verb or a flag carries a quote, the
+/// output stays parseable instead of becoming a bug in whatever consumes it.
+fn json_str(s: &str) -> String {
+    let mut out = String::from("\"");
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+fn json_of(specs: &[&CommandSpec]) -> String {
+    let verbs: Vec<String> = specs
+        .iter()
+        .map(|spec| {
+            let flags: Vec<String> = spec
+                .flags
+                .iter()
+                .chain(GLOBAL_FLAGS.iter())
+                .map(|f| {
+                    format!(
+                        "{{\"name\":{},\"takes_value\":{},\"repeatable\":{}}}",
+                        json_str(f.name),
+                        f.takes_value,
+                        f.repeatable
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"name\":{},\"audience\":{},\"usage\":{},\"flags\":[{}]}}",
+                json_str(spec.name),
+                json_str(spec.audience.as_str()),
+                json_str(&usage(spec)),
+                flags.join(",")
+            )
+        })
+        .collect();
+    format!("{{\"verbs\":[{}]}}", verbs.join(","))
+}
+
+/// `ank help` and `ank help <verb>` (§9).
+///
+/// The listing is derived from [`COMMANDS`] on every call, so a verb cannot be
+/// added without appearing here. An unknown verb is a **code 2** — "entity not
+/// found" in the table of §4, the same code a missing task gets, because the
+/// thing being looked up did not exist. It is never a fallback to the general
+/// listing: an agent that asked about one verb and received all fourteen has to
+/// work out that its question went unanswered, and answering the wrong question
+/// silently is worse than refusing the wrong one loudly.
+pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
+    let asked = inv.positionals.first();
+
+    if let Some(name) = asked {
+        let spec = spec_of(name).ok_or_else(|| {
+            CliError::new(2, format!("no such verb '{name}'")).with_hint("ank help")
+        })?;
+        if inv.json() {
+            let _ = writeln!(out, "{}", json_of(&[spec]));
+            return Ok(0);
+        }
+        if inv.quiet() {
+            return Ok(0);
+        }
+        let _ = writeln!(out, "{}", usage(spec));
+        let _ = writeln!(out, "  audience: {}", spec.audience.heading());
+        if !spec.flags.is_empty() {
+            let flags: Vec<String> = spec.flags.iter().map(flag_display).collect();
+            let _ = writeln!(out, "  flags:    {}", flags.join(" "));
+        }
+        let _ = writeln!(out, "  global:   {}", globals_line());
+        return Ok(0);
+    }
+
+    let all: Vec<&CommandSpec> = COMMANDS.iter().collect();
+    if inv.json() {
+        let _ = writeln!(out, "{}", json_of(&all));
+        return Ok(0);
+    }
+    if inv.quiet() {
+        return Ok(0);
+    }
+
+    // One column for the usage, so the flags line up and the shape of the
+    // surface is readable at a glance rather than one verb at a time.
+    let width = COMMANDS.iter().map(|c| usage(c).len()).max().unwrap_or(0);
+    for audience in Audience::ALL {
+        let group: Vec<&CommandSpec> = COMMANDS
+            .iter()
+            .filter(|c| c.audience == *audience)
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{}", audience.heading());
+        for spec in group {
+            let names = flag_names(spec);
+            if names.is_empty() {
+                let _ = writeln!(out, "  {}", usage(spec));
+            } else {
+                let _ = writeln!(out, "  {:width$}  {names}", usage(spec));
+            }
+        }
+    }
+    let _ = writeln!(out, "\nglobal: {}", globals_line());
+    let _ = writeln!(out, "ank help <verb> for one verb");
+    Ok(0)
+}
+
+// ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
 
@@ -504,10 +745,16 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
     let inv = parse(argv)?;
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
 
-    // `init` precedes the existence of the repository, so it is the one verb
-    // that runs without the foundation.
+    // Two verbs run without the foundation. `init` precedes the existence of
+    // the repository. `help` describes the surface rather than acting on it,
+    // and the caller most in need of it is the one whose environment is wrong:
+    // making `ank help` demand a `.ank/`, a git of 2.34, and a readable
+    // `config.yml` would withhold the explanation exactly when it is needed.
     if inv.command == "init" {
         return crate::init::run(&inv, cwd, out);
+    }
+    if inv.command == "help" {
+        return help(&inv, out);
     }
 
     let s = startup(&inv, cwd)?;
@@ -592,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn json_is_accepted_on_all_twelve_commands_without_exception() {
+    fn json_is_accepted_on_every_command_without_exception() {
         // Invariant of the specification: full scriptability is not an option.
         // The test walks the table, so a verb added without --json would make
         // it fail.
@@ -608,8 +855,8 @@ mod tests {
         }
         assert_eq!(
             COMMANDS.len(),
-            13,
-            "twelve verbs from §4, plus init from §9"
+            14,
+            "twelve verbs from §4, plus init and help from §9"
         );
     }
 
@@ -680,7 +927,7 @@ mod tests {
         // opposite direction: `init`, `claim` and `context` are the verbs
         // routed today, and all must be clear of it.
         for routed in [
-            "init", "claim", "context", "done", "log", "release", "new", "find",
+            "init", "help", "claim", "context", "done", "log", "release", "new", "find",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
@@ -734,6 +981,129 @@ mod tests {
         let inv = ok(&["init"]);
         assert_eq!(inv.command, "init");
         assert!(spec_of("init").unwrap().owner_task.is_none());
+    }
+
+    fn help_out(args: &[&str]) -> String {
+        let inv = ok(args);
+        let mut out = Vec::new();
+        let code = help(&inv, &mut out).unwrap_or_else(|e| panic!("{args:?}: {}", e.render()));
+        assert_eq!(code, 0, "{args:?}");
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn help_lists_every_verb_of_the_table_under_its_audience() {
+        // Walks COMMANDS rather than a written-out list: a verb added later
+        // that the renderer forgets fails here, which is the whole reason the
+        // listing is derived from the table instead of maintained beside it.
+        let text = help_out(&["help"]);
+        for spec in COMMANDS {
+            assert!(
+                text.contains(&usage(spec)),
+                "{} missing from the listing:\n{text}",
+                spec.name
+            );
+            for f in spec.flags {
+                assert!(
+                    text.contains(f.name),
+                    "{} of {} missing:\n{text}",
+                    f.name,
+                    spec.name
+                );
+            }
+        }
+        for audience in Audience::ALL {
+            assert!(
+                text.contains(audience.heading()),
+                "audience '{}' has no heading:\n{text}",
+                audience.heading()
+            );
+        }
+    }
+
+    #[test]
+    fn every_audience_is_populated_and_the_agent_surface_is_the_seven() {
+        // ADR-2f8a61c04b7d freezes the agent surface at seven verbs. `help` is
+        // grouped with `init` under Setup on the argument that it carries no
+        // work; that argument is only worth as much as this assertion, which
+        // fails the day someone moves it into an agent group.
+        let mut agent: Vec<&str> = COMMANDS
+            .iter()
+            .filter(|c| c.audience.agent_surface())
+            .map(|c| c.name)
+            .collect();
+        agent.sort_unstable();
+        assert_eq!(
+            agent,
+            ["claim", "context", "done", "find", "log", "new", "release"],
+            "the agent surface is exactly the seven of ADR-2f8a61c04b7d"
+        );
+
+        for audience in Audience::ALL {
+            assert!(
+                COMMANDS.iter().any(|c| c.audience == *audience),
+                "audience '{}' has no verb: help would print an empty heading",
+                audience.heading()
+            );
+        }
+    }
+
+    #[test]
+    fn help_for_one_verb_answers_about_that_verb_alone() {
+        let text = help_out(&["help", "claim"]);
+        assert!(text.contains("ank claim <id>"), "{text}");
+        // The flags carry their value placeholder here, which is the detail §9
+        // moves out of SKILL.md and into this command.
+        assert!(text.contains("--ttl <v>"), "{text}");
+        assert!(text.contains("--criteria <v>"), "{text}");
+        assert!(text.contains("agent loop"), "{text}");
+        // One verb means one verb: no other usage line rides along.
+        assert!(!text.contains("ank accept"), "{text}");
+
+        // A repeatable flag is shown as repeatable.
+        let text = help_out(&["help", "new"]);
+        assert!(text.contains("--scope <v>..."), "{text}");
+    }
+
+    #[test]
+    fn an_unknown_verb_passed_to_help_is_a_two_and_never_the_listing() {
+        let inv = ok(&["help", "clam"]);
+        let mut out = Vec::new();
+        let err = help(&inv, &mut out).unwrap_err();
+        assert_eq!(err.code, 2, "entity not found, per the table of §4");
+        assert!(err.message.contains("clam"), "{}", err.message);
+        assert_eq!(err.hint.as_deref(), Some("ank help"));
+        assert!(
+            out.is_empty(),
+            "a silent fallback to the general listing: {}",
+            String::from_utf8_lossy(&out)
+        );
+    }
+
+    #[test]
+    fn help_speaks_json_in_both_of_its_forms() {
+        let all = help_out(&["help", "--json"]);
+        assert!(all.starts_with("{\"verbs\":["), "{all}");
+        for spec in COMMANDS {
+            assert!(
+                all.contains(&format!("\"name\":\"{}\"", spec.name)),
+                "{all}"
+            );
+        }
+        assert!(all.contains("\"audience\":\"loop\""), "{all}");
+        assert!(all.contains("\"takes_value\":false"), "{all}");
+
+        let one = help_out(&["help", "claim", "--json"]);
+        assert!(one.contains("\"name\":\"claim\""), "{one}");
+        assert!(!one.contains("\"name\":\"accept\""), "{one}");
+        // --json carries the globals too: they are part of what the verb takes.
+        assert!(one.contains("\"name\":\"--repo\""), "{one}");
+    }
+
+    #[test]
+    fn quiet_help_says_nothing_and_still_exits_zero() {
+        assert_eq!(help_out(&["help", "--quiet"]), "");
+        assert_eq!(help_out(&["help", "claim", "--quiet"]), "");
     }
 
     #[test]

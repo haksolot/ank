@@ -235,6 +235,7 @@ fn every_verb_of_the_surface_answers() {
         vec!["log", "working"],
         vec!["release", "--reason", "handing it over"],
         vec!["close", ID, "--reason", "not needed after all"],
+        vec!["help"],
     ] {
         let out = r.ank("claude-code@ank", &argv);
         let err = stderr(&out);
@@ -560,4 +561,112 @@ fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
     let out = r.ank("claude-code@ank", &["show", ID]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(String::from_utf8_lossy(&out.stdout).contains("Example task"));
+}
+
+// ---------------------------------------------------------------------------
+// help (§9)
+// ---------------------------------------------------------------------------
+
+/// `help` outside any repository, which is the case that matters: the CLI it is
+/// bundled with is installed as a skill, and SKILL.md sends the reader to
+/// `ank help` before anything establishes where the reader is standing. A help
+/// that demands a `.ank/` is a help withheld from the agent most likely to need
+/// it.
+///
+/// `current_dir` is the system temp directory, which is not a git repository
+/// and has no `.ank/`, and no `--repo` is passed. Anything that goes through
+/// `startup` answers 9 or 1 from there.
+fn help_from_nowhere(args: &[&str]) -> Output {
+    Command::new(ANK)
+        .args(args)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built")
+}
+
+#[test]
+fn help_answers_outside_a_repository_and_lists_every_verb() {
+    let out = help_from_nowhere(&["help"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        code(&out),
+        0,
+        "help must answer without a repository: {}",
+        stderr(&out)
+    );
+
+    // The verbs, by audience. Listed by hand here on purpose: cli.rs walks its
+    // own table, which would agree with itself even if the table were wrong,
+    // and the criterion is about what an agent reads.
+    for verb in [
+        "context", "claim", "log", "done", "release", "new", "find", "review", "accept", "close",
+        "check", "show", "init", "help",
+    ] {
+        assert!(
+            text.contains(&format!("ank {verb}")),
+            "{verb} missing:\n{text}"
+        );
+    }
+    for heading in ["agent loop", "agent off-loop", "human", "setup"] {
+        assert!(text.contains(heading), "no '{heading}' heading:\n{text}");
+    }
+    // And the flags each verb takes, which is the part §9 keeps out of
+    // SKILL.md.
+    for flag in [
+        "--limit",
+        "--criteria",
+        "--ttl",
+        "--proof",
+        "--reason",
+        "--scope",
+    ] {
+        assert!(text.contains(flag), "{flag} missing:\n{text}");
+    }
+    assert!(text.contains("--json"), "{text}");
+}
+
+#[test]
+fn help_for_one_verb_answers_and_an_unknown_one_is_a_two() {
+    let out = help_from_nowhere(&["help", "claim"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(text.contains("ank claim <id>"), "{text}");
+    assert!(text.contains("--ttl"), "{text}");
+    assert!(text.contains("--criteria"), "{text}");
+    assert!(
+        !text.contains("ank accept"),
+        "one verb means one verb:\n{text}"
+    );
+
+    // The exit code is the thing being asserted, and 2 is "entity not found"
+    // in the table of §4 -- the verb looked for did not exist.
+    let out = help_from_nowhere(&["help", "clam"]);
+    let err = stderr(&out);
+    assert_eq!(
+        code(&out),
+        2,
+        "stdout={} stderr={err}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        err.contains("clam"),
+        "the message must name what was looked for: {err}"
+    );
+    assert!(err.contains("ank help"), "{err}");
+    assert!(
+        out.stdout.is_empty(),
+        "a silent fallback to the general listing: {}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn help_json_reaches_the_process_intact() {
+    let out = help_from_nowhere(&["help", "--json"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(text.starts_with("{\"verbs\":["), "{text}");
+    assert!(text.trim_end().ends_with("]}"), "{text}");
+    assert!(text.contains("\"name\":\"claim\""), "{text}");
+    assert!(text.contains("\"audience\":\"setup\""), "{text}");
 }
