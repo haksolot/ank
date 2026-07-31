@@ -11,9 +11,18 @@ decision. This repo dogfoods its own format: the development plan lives in
 ## Commands
 
 - `cargo test` — full suite. Must be green before any commit.
-- `cargo run --example check_repo` — validates `.ank/` (parse, byte-for-byte
-  round-trip, blocked_by references). Must be green after any edit to `.ank/`.
+- `ank check` — validates `.ank/` (parse, byte-for-byte round-trip, blocked_by
+  references). Must be green after any edit to `.ank/`. Exit 8 means findings;
+  signals exit 0.
 - `cargo fmt --check` — formatting.
+
+**Dogfooding on Windows: run `ank` from a copy outside `target/`.** `ank done`
+runs `cargo test --workspace`, which has to relink `target/debug/ank.exe` — the
+very process running the verifier — and Windows locks a running executable.
+Cargo reports the locked link as exit 101, which `done` reports as code 5,
+indistinguishable from a failing test. Copy the binary elsewhere and invoke that
+copy. This is not an ank defect and is not fixable in ank; it bites only a
+project dogfooding ank on itself.
 
 ## Working loop
 

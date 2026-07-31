@@ -95,12 +95,21 @@ nothing to run. That is what "stupid" means here.
 - **Not a security boundary.** The guardrails protect against an agent drifting,
   not against a malicious actor.
 
-## Status: pre-v1
+## Status: pre-v1, and the CLI runs
 
-The CLI does not exist yet. This repository is being built by dogfooding its own
-format: the development plan lives in [`.ank/`](.ank/), maintained by hand in
-canonical form and validated by the reference parser on every test run. The day
-the CLI can read its own tasks, it takes over with no migration.
+Twelve verbs work end to end — the seven of the agent surface (`context`,
+`claim`, `log`, `done`, `new`, `find`, `release`), the five of the human one
+(`check`, `review`, `accept`, `close`, `show`), plus `init`. There are no
+published binaries yet: build from source with `cargo build --release`.
+
+This repository is built by dogfooding its own format. The development plan
+lives in [`.ank/`](.ank/), and the tool now reads, claims and closes its own
+tasks — the last several were closed by `ank done`, which ran the verifiers and
+wrote the proofs itself. The corpus is validated by `ank check` on every CI run.
+
+Still missing before v1: binaries for the three platforms and the installable
+skill. `ank find` scans the index rather than querying FTS5, which is a
+performance gap and not a behavioural one.
 
 - **The specification is the source of truth**: [`docs/ank-spec-v1.1.md`](docs/ank-spec-v1.1.md)
 - **The development plan**: `.ank/tasks/` (a DAG through `blocked_by`), the
@@ -108,33 +117,44 @@ the CLI can read its own tasks, it takes over with no migration.
 
 ## For agents working on this repository
 
-The CLI is not available, so read the files directly — the format is the
-specification, and that is a first-class use:
+Build it once, then let it drive:
 
-1. `.ank/adr/` — the constraints active on what you are about to write. The
-   `constraint` field is the rule; the body is the reasoning.
-2. `.ank/tasks/` — the work. A task is claimable if `status: open` (or
-   `in_progress` with no recent activity) and all its `blocked_by` are `done`.
-3. Finishing a task: run the declared verifiers (`verify`, defined in
-   `.ank/config.yml`), set `status: done`, add a proof entry and a log line,
-   increment `version`.
-4. Every write stays in canonical form: `cargo run --example check_repo` must
-   stay green (byte-for-byte round-trip included).
+    cargo build --release        # target/release/ank
+
+1. `ank context` — what constrains the perimeter and what is claimable, in one
+   call. Run it before anything else; run it again with a claim held and it
+   switches to execution mode, giving the criterion and the constraints in full.
+2. `ank claim <id>` — takes the task. It refuses, with the reason and the next
+   command, if the task is held, finished on another branch, blocked, or has no
+   criterion to be measured against.
+3. `ank log "<message>"` — record what you learned. It renews the claim.
+4. `ank done` — runs the declared verifiers itself and writes the proofs. Never
+   set `status: done` by hand: the point of the tool is that nobody declares
+   themselves finished.
+
+`ank check` validates the corpus (parse, byte-for-byte round-trip, `blocked_by`
+references) and must stay green after any edit to `.ank/`.
+
+Reading `.ank/` directly is still a first-class use — the format is the
+specification, and `cat` is an agent's `show`. What it is not is a way around
+`claim` and `done`: those write to git refs and run verifiers, and editing the
+files by hand skips both.
 
 Detailed conventions are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Layout
 
     crates/ank-core   parser and data model — the reference implementation of the format
-    crates/ank-cli    the `ank` binary (under construction, task by task)
+    crates/ank-cli    the `ank` binary — twelve verbs
     docs/             the specification, source of truth
     .ank/             Ank's own development plan, in the Ank format
-    skill/            the bootstrap skill for agents (embryo)
+    skill/            the bootstrap skill for agents
 
 ## Development
 
-    cargo test                          # full suite, format conformance included
-    cargo run --example check_repo      # validates .ank/: parse, round-trip, references
+    cargo test                  # full suite, format conformance included
+    cargo fmt --check
+    ank check                   # validates .ank/: parse, round-trip, references
 
 `crates/ank-core/tests/golden/` is the format conformance suite, reusable by any
 third-party tool: `valid/` must round-trip byte for byte, `invalid/` must be

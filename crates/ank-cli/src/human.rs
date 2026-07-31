@@ -125,7 +125,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     let mut report = Report::default();
     let mut entities: Vec<(PathBuf, Entity)> = Vec::new();
 
-    // Parsing and canonical form, which is what check_repo used to be.
+    // Parsing and canonical form: the corpus is unreadable before it is wrong.
     for kind in [EntityKind::Task, EntityKind::Adr] {
         let dir = repo.ank.join(match kind {
             EntityKind::Task => "tasks",

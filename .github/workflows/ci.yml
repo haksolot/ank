@@ -35,7 +35,7 @@ jobs:
 
       # The checkout applies .gitattributes: on windows-latest, .ank/ must come
       # out in LF. This is the step that would have caught the CRLF bug, and
-      # check_repo below is what proves it.
+      # `ank check` below is what proves it.
       - name: line endings in .ank/
         shell: bash
         run: |
@@ -49,4 +49,10 @@ jobs:
 
       - run: cargo test --workspace
 
-      - run: cargo run --example check_repo
+      # The tool validates its own corpus with its own command. This is the same
+      # line as the `check-repo` verifier in .ank/config.yml, and it has to stay
+      # the same line: a CI that checks .ank/ differently from `ank done` would
+      # let a corpus pass one and fail the other.
+      #
+      # Exit 8 means findings, and that is a failure here. Signals exit 0.
+      - run: cargo run -q --bin ank -- check

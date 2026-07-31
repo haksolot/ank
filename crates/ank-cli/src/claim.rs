@@ -1026,7 +1026,7 @@ mod tests {
     fn an_all_digit_hash_survives_the_round_trip_as_a_string() {
         // A twelve-character hash can come out all decimal digits. Unquoted,
         // YAML reads it back as a number and the record stops parsing --
-        // exactly the trap check_repo catches on proof entries.
+        // exactly the trap `ank check` catches on proof entries.
         let id = EntityId::parse("TASK-000000000001").unwrap();
         let record = Record::Claim(ClaimRecord {
             task: id.to_string(),
