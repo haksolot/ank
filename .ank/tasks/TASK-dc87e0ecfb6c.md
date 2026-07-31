@@ -26,7 +26,7 @@ proof:
     criteria: 325ceb1b089f
     verifier: cargo-test@f14aeab36e1b
 schema: 1
-version: 5
+version: 6
 ---
 
 A bug found in TASK-244a842bc0cc, which is `done`: a new task, never a re-edit.
@@ -63,3 +63,5 @@ existing concurrency test, which is what exercises delete-pending.
 ## Log
 - 2026-07-31T16:45:41Z claude-code@ank — is_contention(ErrorKind, LockPlatform) is the pure decision, with the single cfg! at the edge in LockPlatform::HOST. PermissionDenied now fails at once on posix as LockDenied, code 9, naming the directory and not the lock file: the lock is not the problem, the place we cannot create it in is. LockTimeout carries the last refusal so the post-deadline message tells a holder apart from a door that never opens, and only the holder case invites rm. The Windows branch is exercised from Linux by passing LockPlatform::Windows, which is the whole point of the parameter.
 - 2026-07-31T16:46:07Z claude-code@ank — done, proof test:local/0d693bd3f0c6@ca8490a
+- 2026-07-31T16:52Z claude-code@ank — that done was premature and the proof above overstated what it covered. Run 30648501580 failed to compile on macos-latest and ubuntu-latest: `Lock::acquire_as(..).unwrap_err()` needs `Lock: Debug`, and the two cfg(unix) tests that contain that call are never compiled on Windows, so `cargo test` was green here on code that does not build there. The criterion says cargo test is green; on two of three platforms it was not, and CLAUDE.md says in as many words that OS-dependent behaviour is not verified until it has run on all three. I read that rule, wrote code no local compiler could see, and closed the task on a one-platform proof anyway. Fixed by deriving Debug on Lock. A ci:// proof is appended below, and that one is the evidence the criterion actually asked for.
+- 2026-07-31T16:53Z claude-code@ank — the durable lesson, since the same trap is waiting for the next cfg(unix) block: this machine cannot compile the unix branch at all. `cargo check --target x86_64-unknown-linux-gnu` gets as far as libsqlite3-sys and stops, because the bundled SQLite needs a Linux C toolchain that is not here. So CI is the only compiler the unix code has. Two consequences taken now: cfg(unix) blocks stay as small as possible, and `acquire_as` gained a test that runs on every platform, so at least the seam's signature and trait bounds are compiled by the host before a push. That test is what would have caught this one.

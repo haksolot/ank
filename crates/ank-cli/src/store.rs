@@ -217,6 +217,10 @@ fn set_version(entity: &mut Entity, v: u64) {
 /// An exclusive lock carried by the atomic creation of a file: `create_new`
 /// fails if the target exists, which the kernel guarantees between threads as
 /// well as between processes. Released by `Drop`, including on panic.
+///
+/// `Debug` so that `acquire_as(..).unwrap_err()` compiles: `unwrap_err` has to
+/// be able to print the `Ok` side.
+#[derive(Debug)]
 struct Lock {
     path: PathBuf,
 }
@@ -840,6 +844,23 @@ mod tests {
         assert!(err.hint().unwrap().contains("/repo/.ank/tasks"));
         // An environment to repair, not work that failed.
         assert_eq!(err.code(), 9);
+    }
+
+    /// The happy path does not depend on the platform, and this is the one
+    /// test of `acquire_as` that compiles everywhere. It exists because the
+    /// two below do not: a trait bound broken inside `cfg(unix)` reached CI
+    /// green from Windows, and only a call site the host compiles can catch
+    /// that class of mistake before the push.
+    #[test]
+    fn acquire_as_takes_the_lock_on_either_platform_when_nothing_refuses() {
+        for platform in [LockPlatform::Posix, LockPlatform::Windows] {
+            let root = TempRoot::new();
+            let target = root.0.join("tasks").join("TASK-000000000001.md");
+            let lock = Lock::acquire_as(&target, platform).unwrap();
+            assert!(lock_path(&target).exists(), "{platform:?}");
+            drop(lock);
+            assert!(!lock_path(&target).exists(), "{platform:?}");
+        }
     }
 
     /// Does this directory actually refuse a new file? Chmod does not bind
