@@ -152,7 +152,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 2,
         positional_help: "[<id>] <message>",
         flags: &[],
-        owner_task: Some("TASK-f6a7b8c9d0e1"),
+        owner_task: None,
     },
     CommandSpec {
         name: "done",
@@ -168,7 +168,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
-        owner_task: Some("TASK-f6a7b8c9d0e1"),
+        owner_task: None,
     },
     CommandSpec {
         name: "new",
@@ -182,7 +182,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--blocked-by"),
             flag("--constraint"),
         ],
-        owner_task: Some("TASK-f6a7b8c9d0e1"),
+        owner_task: None,
     },
     CommandSpec {
         name: "find",
@@ -190,7 +190,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[flag("--type"), flag("--status"), flag("--scope")],
-        owner_task: Some("TASK-f6a7b8c9d0e1"),
+        owner_task: None,
     },
     CommandSpec {
         name: "review",
@@ -515,6 +515,10 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "context" => crate::context::run(&inv, &s.repo, &s.config, &s.identity, out),
         "done" => crate::done::run(&inv, &s.repo, &s.config, &s.identity, out),
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
+        "new" => crate::commands::new(&inv, &s.repo, &s.identity, out),
+        "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
+        "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
+        "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
         _ => Err(not_implemented(spec)),
     }
 }
@@ -670,7 +674,9 @@ mod tests {
         // while it runs. Exactly the drift this task existed to fix, in the
         // opposite direction: `init`, `claim` and `context` are the verbs
         // routed today, and all must be clear of it.
-        for routed in ["init", "claim", "context", "done"] {
+        for routed in [
+            "init", "claim", "context", "done", "log", "release", "new", "find",
+        ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
                 None,
@@ -679,7 +685,7 @@ mod tests {
         }
         // And the verbs still falling through keep naming their task, which is
         // the only help an agent gets on them.
-        for stub in ["log", "release", "new", "find"] {
+        for stub in ["check", "show", "review", "accept", "close"] {
             assert!(
                 spec_of(stub).unwrap().owner_task.is_some(),
                 "{stub} answers not_implemented and must say by whom"

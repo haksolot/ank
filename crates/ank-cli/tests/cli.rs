@@ -221,7 +221,7 @@ fn the_exit_code_of_a_refusal_reaches_the_process() {
 fn a_verb_whose_module_is_a_stub_still_names_its_task() {
     let r = Repo::new();
     r.seed_task(ID, Some("A verifiable criterion."));
-    for verb in ["check", "show", "find"] {
+    for verb in ["check", "show", "review", "accept", "close"] {
         let out = r.ank("claude-code@ank", &[verb, ID]);
         let err = stderr(&out);
         assert_eq!(code(&out), 1, "{verb}: {err}");
@@ -408,6 +408,82 @@ fn done_refuses_proof_when_the_task_declares_verifiers() {
         stderr(&out)
     );
     assert!(r.task_text(ID).contains("status: in_progress"));
+}
+
+#[test]
+fn the_whole_agent_loop_runs_through_the_binary() {
+    // context -> new -> claim -> log -> release -> claim -> done, as an agent
+    // actually types it. Each verb was tested in its module; what only exists
+    // once the process does is that they compose.
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["new", "task", "--title", "Rotate secrets"],
+    );
+    assert_eq!(code(&out), 7, "a scope is required: {}", stderr(&out));
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Rotate secrets",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The rotation runs.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let created = String::from_utf8_lossy(&out.stdout).to_string();
+    let id = created
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    assert!(
+        String::from_utf8_lossy(&r.ank("claude-code@ank", &["find", "rotate"]).stdout)
+            .contains("Rotate secrets")
+    );
+
+    // log without a claim is refused, with it goes through and renews.
+    assert_eq!(code(&r.ank("claude-code@ank", &["log", "early"])), 6);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &id])), 0);
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["log", "made progress"])),
+        0
+    );
+
+    // release refuses without a reason, and deletes the ref with one.
+    let out = r.ank("claude-code@ank", &["release"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--reason"), "{}", stderr(&out));
+    assert!(r.claim_ref(&id).is_some(), "a refusal deletes nothing");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["release", "--reason", "needs staging access"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.claim_ref(&id).is_none(),
+        "release deletes the ref, read back with git"
+    );
+    let file = r.task_text(&id);
+    assert!(file.contains("status: open"), "{file}");
+    assert!(
+        file.contains("needs staging access"),
+        "the reason is in the log: {file}"
+    );
+
+    // And the next agent picks it up where the previous one stopped.
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", &id])), 0);
+    let ctx = String::from_utf8_lossy(&r.ank("codex@host-9", &["context"]).stdout).to_string();
+    assert!(ctx.contains("made progress"), "the log travels: {ctx}");
+    assert!(ctx.contains("needs staging access"), "{ctx}");
 }
 
 #[test]
