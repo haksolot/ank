@@ -299,6 +299,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         owner_task: None,
     },
     CommandSpec {
+        name: "attest",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[flag("--proof")],
+        audience: Audience::Human,
+        owner_task: None,
+    },
+    CommandSpec {
         name: "check",
         subcommands: &[],
         max_positionals: 1,
@@ -772,6 +781,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "review" => crate::human::review(&inv, &s.repo, &s.config, out),
         "accept" => crate::human::accept(&inv, &s.repo, &s.config, &s.identity, out),
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
+        "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
         "show" => crate::human::show(&inv, &s.repo, out),
         _ => Err(not_implemented(spec)),
     }
@@ -857,8 +867,8 @@ mod tests {
         }
         assert_eq!(
             COMMANDS.len(),
-            14,
-            "twelve verbs from §4, plus init and help from §9"
+            15,
+            "twelve verbs from §4, init and help from §9, and attest on the human side"
         );
     }
 
@@ -929,7 +939,7 @@ mod tests {
         // opposite direction: `init`, `claim` and `context` are the verbs
         // routed today, and all must be clear of it.
         for routed in [
-            "init", "help", "claim", "context", "done", "log", "release", "new", "find",
+            "init", "help", "claim", "context", "done", "log", "release", "new", "find", "attest",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

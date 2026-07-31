@@ -234,6 +234,7 @@ fn every_verb_of_the_surface_answers() {
         vec!["claim", ID],
         vec!["log", "working"],
         vec!["release", "--reason", "handing it over"],
+        vec!["attest", ID, "--proof", "assertion:x"],
         vec!["close", ID, "--reason", "not needed after all"],
         vec!["help"],
     ] {
@@ -563,6 +564,83 @@ fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("Example task"));
 }
 
+/// The one write §3 permits after `done`, performed by a command.
+///
+/// Through the binary and reading the file back, because the append is the
+/// thing being asserted: what has to be true is what ends up on disk, not the
+/// module's agreement with itself. Before this verb the same operation was done
+/// by opening the file, where an append and a substitution are the same gesture.
+#[test]
+fn attest_appends_a_proof_to_a_finished_task_and_never_substitutes() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(ID, Some("A verifiable criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    assert_eq!(code(&r.ank("claude-code@ank", &["done"])), 0);
+
+    let before = r.task_text(ID);
+    assert!(before.contains("status: done"), "{before}");
+    let original = before
+        .lines()
+        .find(|l| l.contains("ref: local/"))
+        .expect("done wrote a proof")
+        .to_string();
+
+    let head = r.head();
+    let out = r.ank(
+        "claude-code@ank",
+        &["attest", ID, "--proof", &format!("commit:{head}")],
+    );
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+
+    let after = r.task_text(ID);
+    // Appended, never substituted: the entry `done` wrote is still there, and
+    // the new one sits beside it.
+    assert!(
+        after.contains(&original),
+        "the original proof was rewritten:\n{after}"
+    );
+    assert!(after.contains("type: commit"), "{after}");
+    assert!(after.contains(&head), "{after}");
+    // Version increments and the log records what was added.
+    assert!(!after.contains("version: 1"), "{after}");
+    assert!(after.contains("attested commit:"), "{after}");
+
+    // A commit that does not exist is refused, exactly as `done` refuses it.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "attest",
+            ID,
+            "--proof",
+            "commit:0000000000000000000000000000000000000000",
+        ],
+    );
+    assert_eq!(code(&out), 5, "{}", stderr(&out));
+    assert_eq!(r.task_text(ID), after, "nothing was written");
+}
+
+#[test]
+fn attest_refuses_a_task_that_is_not_finished_and_names_the_verb_that_applies() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // A prerequisite rather than a transition: `attest` changes no status, it
+    // adds to a record that only exists once the task is closed out.
+    let out = r.ank("claude-code@ank", &["attest", ID, "--proof", "assertion:x"]);
+    let err = stderr(&out);
+    assert_eq!(code(&out), 7, "{err}");
+    assert!(err.contains("open"), "the message names the state: {err}");
+    assert!(
+        err.contains(&format!("ank done {ID}")),
+        "the refusal names the verb that applies: {err}"
+    );
+    assert!(
+        !r.task_text(ID).contains("proof:"),
+        "a refusal writes nothing"
+    );
+}
+
 /// A task created through the binary needs no hand finishing.
 ///
 /// The assertion is about what lands on disk, so the file is read back rather
@@ -743,7 +821,7 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
     // and the criterion is about what an agent reads.
     for verb in [
         "context", "claim", "log", "done", "release", "new", "find", "review", "accept", "close",
-        "check", "show", "init", "help",
+        "check", "show", "init", "help", "attest",
     ] {
         assert!(
             text.contains(&format!("ank {verb}")),

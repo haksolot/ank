@@ -1099,6 +1099,158 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     Ok(0)
 }
 
+// ---------------------------------------------------------------------------
+// attest
+// ---------------------------------------------------------------------------
+
+/// Adds a proof to a task already `done` (§3).
+///
+/// §3 allows exactly one write to a task after completion, and it is an
+/// *addition* to the `proof` list. Until now nothing implemented it: `done`
+/// wants a live claim and a task that is not finished, `claim` refuses one that
+/// is, so the only permitted write on a finished entity had no command and was
+/// performed by opening the file — twice, in 98dbf3b and in TASK-c2fae25adc66.
+///
+/// That is the argument for the verb. An append done by hand is
+/// indistinguishable, in the resulting file, from a substitution done by hand:
+/// the append-only rule was a sentence in the specification with nothing to
+/// observe it. Here the entries already present are carried over untouched by
+/// construction, and the version bump goes through the store's compare-and-swap.
+///
+/// **Human side, and not as a consolation.** ADR-2f8a61c04b7d freezes the agent
+/// surface at seven verbs and sends new functionality here. Attesting to a task
+/// somebody else finished is not loop work, and an agent able to reopen its own
+/// completed tasks is an agent that can grade itself twice.
+///
+/// `tree` and `verifier` stay empty: this records an attestation made
+/// elsewhere, not a run Ank performed. Claiming either would be the overstated
+/// proof that TASK-c2fae25adc66 existed to remove.
+pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(1, "attest expects an id")
+            .with_hint("ank attest <id> --proof test:<ci-run-ref>")
+    })?;
+
+    let store = Store::new(&repo.ank);
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let Entity::Task(mut task) = loaded.entity else {
+        return Err(CliError::new(1, format!("{prefix} is not a task")));
+    };
+    let id = task.id.clone();
+
+    // A prerequisite, not a transition: nothing about the status changes here.
+    // The verb that applies to an unfinished task is `done`, and the refusal
+    // says so rather than leaving the reader to guess.
+    if task.status != TaskStatus::Done {
+        return Err(CliError::new(
+            7,
+            format!(
+                "{id} is {}, and attest applies to a finished task",
+                task.status.as_str()
+            ),
+        )
+        .with_hint(format!("ank done {id}")));
+    }
+
+    let proof = submitted(inv, &repo.root, &id, task.done_criteria.as_deref())?;
+    let kind = proof.proof_type.as_str().to_string();
+    let reference = proof.reference.clone();
+
+    // Appended. The entries already there are not read, rewritten or reordered
+    // — they are simply still in the vector.
+    task.proof.push(proof);
+    task.body = append_log(
+        &task.body,
+        &LogEntry {
+            timestamp: claim::now_utc(),
+            who: identity.to_string(),
+            message: format!("attested {kind}:{reference}"),
+        },
+    );
+    let entries = task.proof.len();
+    store.write(&Entity::Task(task), base_version)?;
+
+    if inv.json() {
+        let _ = writeln!(
+            out,
+            "{{\"task\":\"{id}\",\"appended\":{{\"type\":\"{kind}\",\"ref\":{}}},\"proofs\":{entries}}}",
+            json_str(&reference)
+        );
+    } else if !inv.quiet() {
+        let _ = writeln!(out, "attested {id} {kind}:{reference} ({entries} proofs)");
+    }
+    Ok(0)
+}
+
+/// The `--proof` argument, in the grammar `done` already uses.
+///
+/// Deliberately a second implementation rather than a call into `done.rs`: that
+/// module's version is private, and widening it is outside this task's scope.
+/// The duplication is real and worth removing — TASK-4c21f06caa3a carries it —
+/// but silently diverging error codes would be worse than either.
+fn submitted(
+    inv: &Invocation,
+    cwd: &Path,
+    id: &EntityId,
+    criteria: Option<&str>,
+) -> Result<ank_core::Proof> {
+    use ank_core::{Proof, ProofType};
+
+    let Some(raw) = inv.value("--proof") else {
+        return Err(CliError::new(5, format!("proof required to attest {id}"))
+            .with_hint(format!("ank attest {id} --proof test:<ci-run-ref>")));
+    };
+    let (kind, reference) = raw.split_once(':').ok_or_else(|| {
+        CliError::new(
+            5,
+            format!("unreadable proof '{raw}', expected <type>:<ref>"),
+        )
+        .with_hint(format!("ank attest {id} --proof commit:<sha>"))
+    })?;
+    let proof_type = match kind {
+        "commit" => ProofType::Commit,
+        "human-review" => ProofType::HumanReview,
+        "assertion" => ProofType::Assertion,
+        "test" => ProofType::Test,
+        _ => {
+            return Err(
+                CliError::new(5, format!("unknown proof type '{kind}'")).with_hint(format!(
+                    "ank attest {id} --proof commit|test|human-review|assertion:<ref>"
+                )),
+            )
+        }
+    };
+    if reference.trim().is_empty() {
+        return Err(
+            CliError::new(5, format!("proof '{raw}' carries no reference"))
+                .with_hint(format!("ank attest {id} --proof commit:<sha>")),
+        );
+    }
+
+    // Ank validates what it can, here as in `done`: a commit is checkable by
+    // anyone with git, so it is checked rather than trusted.
+    if proof_type == ProofType::Commit {
+        let spec = format!("{}^{{commit}}", reference.trim());
+        let args = ["rev-parse", "--verify", "--quiet", spec.as_str()];
+        if !git::output(cwd, &args)?.status.success() {
+            return Err(CliError::new(
+                5,
+                format!("commit {reference} not found in this repository"),
+            )
+            .with_hint(format!("git log --oneline -1 {reference}")));
+        }
+    }
+
+    Ok(Proof {
+        proof_type,
+        reference: reference.trim().to_string(),
+        tree: None,
+        criteria: criteria.map(freeze::freeze_hash_short),
+        verifier: None,
+    })
+}
+
 /// The whole entity, verbatim. Everything else in the tool summarises; this is
 /// the one command that does not.
 pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
