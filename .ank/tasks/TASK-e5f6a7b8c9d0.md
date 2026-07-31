@@ -8,7 +8,7 @@ status: open
 scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/verify.rs
-blocked_by: [TASK-c3d4e5f6a7b8]
+blocked_by: [TASK-c3d4e5f6a7b8, TASK-45d18f45de2c]
 done_criteria: |
   done runs every verifier in verify through sh -c and refuses --proof in
   that case, produces one proof entry per verifier with the hash of its
@@ -22,7 +22,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test]
 schema: 1
-version: 3
+version: 4
 ---
 
 The point where "faking must cost more than doing" becomes code.
@@ -37,3 +37,9 @@ the state of the repository, not the module's consistency with itself.
 The failure case is the easiest one to break without noticing: transforming the
 ref before the verifiers have returned their verdict would leave a task marked as
 finished when it is not, and nobody could pick it up again.
+
+`blocked_by` gains TASK-45d18f45de2c. This criterion is tested through the
+binary, and `cli.rs::dispatch` reaches no verb module: the comment in `done.rs`
+saying otherwise was false, and TASK-c3d4e5f6a7b8 found it out. Routing is
+outside this scope, which is why it is its own task rather than a widening of
+this one.

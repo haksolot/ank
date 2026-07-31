@@ -4,7 +4,7 @@ type: task
 slug: claims-on-git-refs
 title: Claims on git refs, TTL, re-acquisition and completion refs
 created: 2026-07-27T09:30:00Z
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/claim.rs
 blocked_by: [TASK-a1b2c3d4e5f6, TASK-244a842bc0cc, TASK-c8637488773c, TASK-038c83ba44c5]
@@ -27,7 +27,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test]
 schema: 1
-version: 4
+version: 5
 ---
 
 Also carries the hash of the frozen done_criteria and that of the constraints
@@ -51,3 +51,6 @@ maintenance in a single command is what makes its timing predictable.
 The criterion sits at the module's API level rather than the binary's, because
 `done.rs` is out of scope and comes later. It is TASK-e5f6a7b8c9d0 that checks
 through the binary that an `ank done` does leave a completion ref.
+
+## Log
+- 2026-07-31T02:47Z claude-code@ank — in_progress; manual claim, the CLI does not exist yet. Verified first that a ref can point at a blob and that both CAS forms behave: create against an empty old value, replace and delete against a witness sha. The record is a blob, so hash-object and cat-file suffice and the plumbing list needs nothing new.

@@ -49,7 +49,12 @@ fn env_missing() -> CliError {
 /// Several primitives below read a non-zero code as an answer rather than a
 /// failure — `merge-base --is-ancestor` says "no" with a 1, `symbolic-ref`
 /// says "absent" the same way — so the success check cannot live here.
-fn raw(cwd: &Path, args: &[&str]) -> Result<Output> {
+///
+/// Public for the same reason: `update-ref` signals a lost compare-and-swap by
+/// its exit code, and that signal is what `claim`'s code 4 rests on (§7).
+/// Reaching it through [`run`] would mean reading the distinction back out of
+/// stderr, which is exactly the fragility the plumbing rule exists to avoid.
+pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
     debug_assert!(
         args.first().map(|a| PLUMBING.contains(a)).unwrap_or(false),
         "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
@@ -67,7 +72,10 @@ fn raw(cwd: &Path, args: &[&str]) -> Result<Output> {
         })
 }
 
-fn failed(args: &[&str], out: &Output) -> CliError {
+/// The environment error for a git command that failed for a reason we did not
+/// expect. Public alongside [`output`]: a caller reading exit codes itself
+/// still needs one single way to say "git broke", stderr included.
+pub fn failed(args: &[&str], out: &Output) -> CliError {
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
     CliError::new(9, format!("git {} failed: {stderr}", args.join(" ")))
 }
@@ -75,7 +83,7 @@ fn failed(args: &[&str], out: &Output) -> CliError {
 /// Runs git in `cwd`. Returns standard output with trailing whitespace
 /// trimmed. A non-zero exit code yields the error along with stderr.
 pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
-    let out = raw(cwd, args)?;
+    let out = output(cwd, args)?;
     if !out.status.success() {
         return Err(failed(args, &out));
     }
@@ -213,7 +221,7 @@ pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
 /// name is a fixed prefix to strip. A ref that is absent or not symbolic is
 /// not an error — it is the answer `None`.
 fn symbolic_ref(cwd: &Path, name: &str) -> Result<Option<String>> {
-    let out = raw(cwd, &["symbolic-ref", "--quiet", name])?;
+    let out = output(cwd, &["symbolic-ref", "--quiet", name])?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -248,7 +256,7 @@ pub fn origin_head(cwd: &Path) -> Result<Option<String>> {
 /// an ancestor (ADR-bcf222a31525).
 pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
     let args = ["merge-base", "--is-ancestor", ancestor, descendant];
-    let out = raw(cwd, &args)?;
+    let out = output(cwd, &args)?;
     match out.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -272,14 +280,14 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     // fragility the plumbing rule exists to avoid.
     let commit = format!("{rev}^{{commit}}");
     let verify = ["rev-parse", "--verify", "--quiet", commit.as_str()];
-    if !raw(cwd, &verify)?.status.success() {
+    if !output(cwd, &verify)?.status.success() {
         return Err(
             CliError::new(9, format!("branch {rev} not found in this repository"))
                 .with_hint(format!("git fetch origin {rev}")),
         );
     }
     let target = format!("{rev}:{path}");
-    let out = raw(cwd, &["cat-file", "-p", target.as_str()])?;
+    let out = output(cwd, &["cat-file", "-p", target.as_str()])?;
     if !out.status.success() {
         return Ok(None);
     }
