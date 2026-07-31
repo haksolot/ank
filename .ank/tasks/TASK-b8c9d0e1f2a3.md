@@ -4,7 +4,7 @@ type: task
 slug: cross-platform-distribution
 title: Linux, macOS and Windows binaries, and the bootstrap skill
 created: 2026-07-27T09:55:00Z
-status: in_progress
+status: done
 scope:
   - .github/workflows/release.yml
   - skill/**
@@ -16,8 +16,14 @@ done_criteria: |
   verbs without exceeding one page.
 criteria_by: creator
 verify: [cargo-test]
+proof:
+  - type: test
+    ref: local/c82e178e2add@2ce2728
+    tree: scope/577f74a1867b
+    criteria: 53e74b9a67d2
+    verifier: cargo-test@f14aeab36e1b
 schema: 1
-version: 5
+version: 7
 ---
 
 On Windows, sh is resolved from Git for Windows; an sh that cannot be found exits
@@ -31,3 +37,7 @@ deleted by TASK-a7b8c9d0e1f2 and is red on the three runners. `release.yml` is
 written beside it and takes the same shape, and a matrix copied from a workflow
 nobody has seen pass is a guess. The criterion here is untouched — the task was
 unclaimed, and `blocked_by` is not a frozen field.
+
+## Log
+- 2026-07-31T17:33:04Z claude-code@ank — release.yml builds three targets on a tag and runs the suite per target before packaging. Linux is musl and the artefact is static-pie linked, verified by downloading it, not asserted. workflow_dispatch builds the same three and skips publish entirely, so the pipeline was proved twice before a tag existed; without it the first proof would have been a tag needing deletion. gh does the publishing rather than a third-party action, same supply-chain reasoning as ci.yml, and only the publish job holds contents: write. Checksums travel with each artefact because a hash the publisher computed elsewhere is not a check anyone can repeat.
+- 2026-07-31T17:33:33Z claude-code@ank — done, proof test:local/c82e178e2add@2ce2728
