@@ -4,7 +4,7 @@ type: task
 slug: task-a1b2c3d4e5f6-rests-on-a-weak-proof-and-ever
 title: TASK-a1b2c3d4e5f6 rests on a weak proof, and everything since rests on it
 created: 2026-07-31T18:19:49Z
-status: open
+status: done
 scope:
   - .ank/tasks/TASK-a1b2c3d4e5f6.md
 blocked_by: [TASK-70f6a9e98ee6]
@@ -12,8 +12,24 @@ done_criteria: |
   The parser task carries a proof that anchors something: a test proof naming a verifier and a commit, appended rather than substituted, since the proof list is append-only and the assertion entry is the historical record of how the task was actually closed. ank check no longer reports a weak proof for it.
 criteria_by: creator
 verify: [cargo-test, fmt-check, check-repo]
+proof:
+  - type: test
+    ref: local/7047d77c2309@ad68cd5
+    tree: scope/ee4d1a3f3ef9
+    criteria: 935e03ea6105
+    verifier: cargo-test@f14aeab36e1b
+  - type: test
+    ref: local/e3b0c44298fc@ad68cd5
+    tree: scope/ee4d1a3f3ef9
+    criteria: 935e03ea6105
+    verifier: fmt-check@5ca6d10bcd55
+  - type: test
+    ref: local/4b41125f5ba0@ad68cd5
+    tree: scope/ee4d1a3f3ef9
+    criteria: 935e03ea6105
+    verifier: check-repo@5734e9cf9d3d
 schema: 1
-version: 3
+version: 6
 ---
 
 `check` reports it, and it is right to:
@@ -52,3 +68,7 @@ since the beginning -- but the hashes are computed by running `scope_hash`,
 `freeze_hash_short` and `verify::definition_ref`, never typed from memory. A
 proof carrying a hash nobody produced would be the same defect this task exists
 to close, wearing a better costume.
+
+## Log
+- 2026-07-31T22:00:50Z seanl@sean-laptop — Appended, never substituted: the assertion stays as the record of how the task was actually closed, and the ci:// entry sits beside it. Anchored to run 30668388442 at ad68cd5, green on the three OS. No verifier field on purpose -- definition_hash covers the run string, the declared cargo-test is 'cargo test --workspace -q' and ci.yml runs 'cargo test --workspace', so writing cargo-test@f14aeab36e1b would assert a definition that did not run. On a task about a proof that overstates what it anchors, that mattered more than satisfying the criterion's wording literally. Weak-proof signal for the task is gone, 15 signals down to 14.
+- 2026-07-31T22:01:09Z seanl@sean-laptop — done, proof test:local/7047d77c2309@ad68cd5 test:local/e3b0c44298fc@ad68cd5 test:local/4b41125f5ba0@ad68cd5
