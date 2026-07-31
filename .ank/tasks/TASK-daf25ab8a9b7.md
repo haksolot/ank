@@ -4,7 +4,7 @@ type: task
 slug: the-msrv-claim-is-false-cargo-lock-v4-cannot-be
 title: "The MSRV claim is false: Cargo.lock v4 cannot be read by the toolchain CLAUDE.md names"
 created: 2026-07-31T17:33:47Z
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/Cargo.toml
   - crates/ank-core/Cargo.toml
@@ -15,7 +15,7 @@ done_criteria: |
   The minimum supported Rust version is established by running that toolchain against the tree, not by assertion. rust-version is declared in the manifests, CLAUDE.md states the same number, and CI builds on that exact toolchain so the claim cannot rot again without turning something red.
 criteria_by: creator
 schema: 1
-version: 2
+version: 3
 ---
 
 CLAUDE.md says "the MSRV is loose but Cargo.lock pins for rustc 1.75 (liftable
