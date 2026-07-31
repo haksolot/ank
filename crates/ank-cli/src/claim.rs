@@ -19,8 +19,9 @@
 //! The compare-and-swap is git's own: `update-ref <ref> <new> <old>` fails if
 //! `<old>` no longer matches. Nothing here builds a lock on top of it.
 //!
-//! Dispatch does **not** route here yet: `cli.rs` answers `not_implemented` for
-//! every verb but `init`. Wiring it is TASK-45d18f45de2c.
+//! `cli.rs::dispatch` routes `claim` here, and this was the first verb it
+//! reached: until TASK-45d18f45de2c every verb but `init` answered
+//! `not_implemented` while six module headers asserted the opposite.
 
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::{self, Config};
@@ -710,9 +711,10 @@ pub fn prune(cwd: &Path, tasks_prefix: &str, default_branch: &str) -> Result<Vec
 
 /// `ank claim <id> [--criteria <c>] [--ttl 30m]`.
 ///
-/// Not reachable from the command line yet: `cli.rs::dispatch` answers
-/// `not_implemented` for every verb but `init`, and wiring it is
-/// TASK-45d18f45de2c. The signature is the one that arm will call.
+/// Called by `cli.rs::dispatch`, which resolves the repository, the config and
+/// the identity once and hands them to every verb: establishing them is the
+/// foundation's job, and a verb doing it again would be free to do it
+/// differently.
 pub fn run(
     inv: &Invocation,
     repo: &Repo,

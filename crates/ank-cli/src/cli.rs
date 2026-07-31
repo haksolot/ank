@@ -120,7 +120,10 @@ pub struct CommandSpec {
     pub max_positionals: usize,
     pub positional_help: &'static str,
     pub flags: &'static [FlagSpec],
-    /// The task that carries the implementation, while it does not exist.
+    /// The task that carries the implementation, **while it does not exist**.
+    /// It is therefore also the marker of an unrouted verb: a command that
+    /// [`dispatch`] reaches clears the field, so the two never drift apart the
+    /// way the module headers did.
     pub owner_task: Option<&'static str>,
 }
 
@@ -141,7 +144,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--criteria"), flag("--ttl")],
-        owner_task: Some("TASK-c3d4e5f6a7b8"),
+        owner_task: None,
     },
     CommandSpec {
         name: "log",
@@ -466,11 +469,8 @@ pub fn run(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write)
 /// by no real path while no verb exists, and the foundation would be tested
 /// without ever being reached.
 struct Startup {
-    #[allow(dead_code)]
     repo: crate::repo::Repo,
-    #[allow(dead_code)]
     config: crate::config::Config,
-    #[allow(dead_code)]
     identity: String,
 }
 
@@ -488,16 +488,33 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     })
 }
 
+/// Routes a parsed invocation to the module that owns the verb.
+///
+/// Every arm receives the same three things — the repository, the config and
+/// the identity — resolved once by [`startup`]. A verb never resolves them
+/// itself: the order in which they are established is a property of the
+/// foundation, and a module doing it again would be free to get it wrong.
+///
+/// A verb whose module is still a stub falls through to [`not_implemented`],
+/// which names the task that owns it. The arms therefore arrive one per task,
+/// and the fall-through is the honest default rather than a placeholder: until
+/// TASK-45d18f45de2c the fall-through was total, while six module headers
+/// asserted the opposite.
 fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write) -> Result<i32> {
     let inv = parse(argv)?;
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
 
+    // `init` precedes the existence of the repository, so it is the one verb
+    // that runs without the foundation.
     if inv.command == "init" {
         return crate::init::run(&inv, cwd, out);
     }
 
-    let _startup = startup(&inv, cwd)?;
-    Err(not_implemented(spec))
+    let s = startup(&inv, cwd)?;
+    match inv.command {
+        "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
+        _ => Err(not_implemented(spec)),
+    }
 }
 
 #[cfg(test)]
@@ -641,6 +658,30 @@ mod tests {
             assert_eq!(err.code, 1);
             let hint = err.hint.unwrap();
             assert!(hint.contains("TASK-"), "{}: {hint}", spec.name);
+        }
+    }
+
+    #[test]
+    fn a_routed_verb_carries_no_owner_task() {
+        // `owner_task` is what `not_implemented` names, so leaving it set on a
+        // verb dispatch reaches would advertise an implementation as missing
+        // while it runs. Exactly the drift this task existed to fix, in the
+        // opposite direction: `init` and `claim` are the two verbs routed
+        // today, and both must be clear of it.
+        for routed in ["init", "claim"] {
+            assert_eq!(
+                spec_of(routed).unwrap().owner_task,
+                None,
+                "{routed} is routed by dispatch"
+            );
+        }
+        // And the verbs still falling through keep naming their task, which is
+        // the only help an agent gets on them.
+        for stub in ["context", "done", "log", "release", "new", "find"] {
+            assert!(
+                spec_of(stub).unwrap().owner_task.is_some(),
+                "{stub} answers not_implemented and must say by whom"
+            );
         }
     }
 

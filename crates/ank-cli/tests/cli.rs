@@ -1,0 +1,263 @@
+//! The binary, run as a process (§4).
+//!
+//! Everything else in this crate is tested inside the modules, where it is
+//! cheaper and sharper. What cannot be tested there is what only exists once
+//! the process exists: dispatch actually reaching a verb, and the exit code
+//! carrying the semantics of §4 all the way out to the shell.
+//!
+//! The distinction is not academic here. Two real defects had already slipped
+//! through green unit tests — a lock whose release failed under concurrency,
+//! and a `--repo` resolution that dispatch never reached because it rejected
+//! the verb first. `claim` is the third of the family: the module was complete
+//! and tested, and no invocation of the binary could reach a line of it,
+//! because the arm did not exist while six module headers said it did.
+//!
+//! An integration test is also the only place `CARGO_BIN_EXE_ank` is defined,
+//! and `ank-cli` has no library target — so there is no unit test that could
+//! spawn the binary even if we wanted one.
+
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const ANK: &str = env!("CARGO_BIN_EXE_ank");
+
+/// A real repository with a real `.ank/`: `startup` resolves the repository,
+/// checks git and loads the config before any verb runs, so a fixture missing
+/// any of the three would test the failure path instead.
+struct Repo(PathBuf);
+
+impl Repo {
+    fn new() -> Repo {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "ank-cli-it-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
+        std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+        let r = Repo(p);
+        r.git(&["init", "-q", "-b", "main"]);
+        r.git(&["config", "user.email", "test@ank.local"]);
+        r.git(&["config", "user.name", "Test"]);
+        r.git(&["config", "core.autocrlf", "false"]);
+        std::fs::write(
+            r.0.join(".ank/config.yml"),
+            "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+        )
+        .unwrap();
+        r
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .current_dir(&self.0)
+            .args(args)
+            .output()
+            .expect("git must be installed: it is a hard dependency");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Reads the ref with git and not through `claim::read`: what has to be
+    /// true is the state of the repository, not the module's agreement with
+    /// itself.
+    fn claim_ref(&self, id: &str) -> Option<String> {
+        let out = Command::new("git")
+            .current_dir(&self.0)
+            .args(["cat-file", "-p", &format!("refs/ank/claims/{id}")])
+            .output()
+            .unwrap();
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
+    fn seed_task(&self, id: &str, criteria: Option<&str>) {
+        let criteria = match criteria {
+            Some(c) => format!("done_criteria: |\n  {c}\ncriteria_by: creator\n"),
+            None => String::new(),
+        };
+        std::fs::write(
+            self.0.join(".ank/tasks").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
+                 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+                 blocked_by: []\n{criteria}schema: 1\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn task_text(&self, id: &str) -> String {
+        std::fs::read_to_string(self.0.join(".ank/tasks").join(format!("{id}.md"))).unwrap()
+    }
+
+    /// `--repo` rather than a working directory, so that the flag stays on a
+    /// path a real invocation takes.
+    fn ank(&self, agent: &str, args: &[&str]) -> Output {
+        Command::new(ANK)
+            .args(args)
+            .arg("--repo")
+            .arg(&self.0)
+            .env("ANK_AGENT", agent)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    }
+}
+
+impl Drop for Repo {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn code(out: &Output) -> i32 {
+    out.status
+        .code()
+        .expect("the process must exit, not signal")
+}
+
+fn stderr(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stderr).to_string()
+}
+
+const ID: &str = "TASK-000000000001";
+
+#[test]
+fn claiming_through_the_binary_takes_the_ref_and_moves_the_task() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let record = r
+        .claim_ref(ID)
+        .expect("the ref must exist, read with git and not through the module");
+    assert!(record.contains("state: claim"), "{record}");
+    assert!(record.contains("claude-code@ank"), "{record}");
+    assert!(record.contains("expires:"), "{record}");
+
+    let text = r.task_text(ID);
+    assert!(text.contains("status: in_progress"), "{text}");
+    assert!(
+        !text.contains("claude-code@ank") && !text.contains("expires"),
+        "the claim must not reach the file (ADR-4e7c25b1f639):\n{text}"
+    );
+
+    // A prefix resolves, the way an agent actually types it.
+    let out = r.ank("claude-code@ank", &["claim", "0000"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+#[test]
+fn the_exit_code_of_a_refusal_reaches_the_process() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+
+    // Held by somebody else: code 4, and the message names the holder.
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 4, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.starts_with("error[4]:"), "{err}");
+    assert!(err.contains("codex@host-9"), "{err}");
+    assert!(
+        err.contains("->"),
+        "a refusal always says what to run next: {err}"
+    );
+
+    // No criterion: code 7, and the message carries the command that sets one.
+    let other = "TASK-00000000ffff";
+    r.seed_task(other, None);
+    let out = r.ank("claude-code@ank", &["claim", other]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--criteria"), "{}", stderr(&out));
+    assert!(
+        r.claim_ref(other).is_none(),
+        "a refusal must leave no ref behind"
+    );
+
+    // An unknown id is code 2, which comes from the store and must survive the
+    // trip out just the same.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", "abcd"])), 2);
+}
+
+#[test]
+fn a_verb_whose_module_is_a_stub_still_names_its_task() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    for verb in ["context", "done", "check", "show", "find"] {
+        let out = r.ank("claude-code@ank", &[verb, ID]);
+        let err = stderr(&out);
+        assert_eq!(code(&out), 1, "{verb}: {err}");
+        assert!(err.contains("not implemented yet"), "{verb}: {err}");
+        assert!(err.contains("TASK-"), "{verb}: {err}");
+    }
+}
+
+#[test]
+fn the_foundation_is_crossed_before_the_verb_and_names_its_own_failures() {
+    // A --repo pointing nowhere is named as such, never disguised as a broken
+    // environment -- that ordering is why `startup` resolves the repository
+    // before checking git.
+    let out = Command::new(ANK)
+        .args(["claim", ID, "--repo"])
+        .arg(std::env::temp_dir().join("ank-does-not-exist"))
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1);
+    assert!(stderr(&out).contains(".ank"), "{}", stderr(&out));
+
+    // And a parse error never reaches the foundation at all.
+    let out = Command::new(ANK)
+        .args(["claim", "--tll", "30m"])
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 1);
+    assert!(stderr(&out).contains("--tll"), "{}", stderr(&out));
+}
+
+#[test]
+fn json_is_available_on_the_verb_that_exists() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let out = r.ank("claude-code@ank", &["claim", ID, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.trim().starts_with('{'), "{text}");
+    assert!(text.contains(ID), "{text}");
+    assert!(text.contains("expires"), "{text}");
+}
+
+#[test]
+fn init_runs_where_there_is_no_ank_directory_yet() {
+    // The one verb that precedes the foundation. Kept here because the reason
+    // it bypasses `startup` is only observable from outside the process.
+    let dir = std::env::temp_dir().join(format!("ank-cli-init-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(Command::new("git")
+        .current_dir(&dir)
+        .args(["init", "-q"])
+        .status()
+        .unwrap()
+        .success());
+
+    let out = Command::new(ANK)
+        .arg("init")
+        .arg(&dir)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(Path::new(&dir).join(".ank/config.yml").exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}

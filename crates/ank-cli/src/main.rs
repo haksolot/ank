@@ -1,8 +1,11 @@
 //! The `ank` binary.
 //!
 //! Deliberately thin: it resolves the current directory, delegates to
-//! [`cli::run`] and propagates the exit code. Everything worth testing lives
-//! in the modules, where it is testable without spawning a process.
+//! [`cli::run`] and propagates the exit code. Nearly everything worth testing
+//! lives in the modules, where it is testable without spawning a process — the
+//! exception being what only exists once the process does, and the exit code
+//! carrying the semantics of §4 is exactly that. `tests/cli.rs` spawns the real
+//! binary for it.
 
 // The foundation deliberately exposes more than dispatch consumes today:
 // identity, config and store are written and tested here, but their callers
@@ -19,9 +22,12 @@ mod init;
 mod repo;
 mod store;
 
-// Verb modules, which dispatch routes to. Each is filled in by its own task —
-// see .ank/tasks/. They exist already so that the command table in cli.rs is
-// complete and tested, and so that no verb task has to touch dispatch.
+// Verb modules. Each is filled in by its own task — see .ank/tasks/ — and each
+// adds its own arm to cli.rs::dispatch at that point; a verb whose module is
+// still a stub answers not_implemented and names the task that owns it. They
+// exist already so that the command table in cli.rs is complete and tested.
+// `index` and `verify` are not verbs: nothing dispatches to them, the other
+// modules call them.
 mod claim;
 mod commands;
 mod context;
