@@ -64,6 +64,24 @@ impl Repo {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
 
+    /// Declares verifiers and makes a commit, which `done` needs on both
+    /// counts: something to run, and a HEAD for the completion record to name.
+    fn with_verifiers(self, verifiers: &str) -> Repo {
+        std::fs::write(
+            self.0.join(".ank/config.yml"),
+            format!("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n{verifiers}"),
+        )
+        .unwrap();
+        std::fs::write(self.0.join("seed.txt"), "x").unwrap();
+        self.git(&["add", "-A"]);
+        self.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+        self
+    }
+
+    fn head(&self) -> String {
+        self.git(&["rev-parse", "HEAD"])
+    }
+
     /// Reads the ref with git and not through `claim::read`: what has to be
     /// true is the state of the repository, not the module's agreement with
     /// itself.
@@ -79,16 +97,25 @@ impl Repo {
     }
 
     fn seed_task(&self, id: &str, criteria: Option<&str>) {
+        self.seed_task_with(id, criteria, &[]);
+    }
+
+    fn seed_task_with(&self, id: &str, criteria: Option<&str>, verify: &[&str]) {
         let criteria = match criteria {
             Some(c) => format!("done_criteria: |\n  {c}\ncriteria_by: creator\n"),
             None => String::new(),
+        };
+        let verify = if verify.is_empty() {
+            String::new()
+        } else {
+            format!("verify: [{}]\n", verify.join(", "))
         };
         std::fs::write(
             self.0.join(".ank/tasks").join(format!("{id}.md")),
             format!(
                 "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
                  created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
-                 blocked_by: []\n{criteria}schema: 1\nversion: 1\n---\n\nFree body.\n"
+                 blocked_by: []\n{criteria}{verify}schema: 1\nversion: 1\n---\n\nFree body.\n"
             ),
         )
         .unwrap();
@@ -194,7 +221,7 @@ fn the_exit_code_of_a_refusal_reaches_the_process() {
 fn a_verb_whose_module_is_a_stub_still_names_its_task() {
     let r = Repo::new();
     r.seed_task(ID, Some("A verifiable criterion."));
-    for verb in ["done", "check", "show", "find"] {
+    for verb in ["check", "show", "find"] {
         let out = r.ank("claude-code@ank", &[verb, ID]);
         let err = stderr(&out);
         assert_eq!(code(&out), 1, "{verb}: {err}");
@@ -302,6 +329,85 @@ fn context_json_reaches_the_process_intact() {
     assert!(text.trim_start().starts_with('{'), "{text}");
     assert!(text.contains("\"mode\":\"orientation\""), "{text}");
     assert!(text.contains("\"ready\":1"), "{text}");
+}
+
+#[test]
+fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() {
+    // Read back with git rather than through the module: what has to be true
+    // is the state of the repository, not the module's agreement with itself.
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(ID, Some("A criterion."), &["ok"]);
+    let head = r.head();
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("running: ok ... ok"), "{text}");
+    assert!(text.contains("proof recorded:"), "{text}");
+
+    let record = r
+        .claim_ref(ID)
+        .expect("the ref survives the done, it is not deleted");
+    assert!(record.contains("state: completed"), "{record}");
+    assert!(record.contains(&head), "the HEAD commit is named: {record}");
+    assert!(
+        record.contains("branch: main"),
+        "the branch is named: {record}"
+    );
+    assert!(
+        !record.contains("expires"),
+        "a completion carries no TTL: {record}"
+    );
+
+    let file = r.task_text(ID);
+    assert!(file.contains("status: done"), "{file}");
+    assert!(
+        file.contains("type: test"),
+        "one proof entry per verifier: {file}"
+    );
+}
+
+#[test]
+fn a_failing_done_through_the_binary_leaves_the_claim_intact() {
+    let r = Repo::new().with_verifiers("verifiers:\n  nope:\n    run: exit 2\n");
+    r.seed_task_with(ID, Some("A criterion."), &["nope"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(
+        code(&out),
+        5,
+        "a verifier that ran and refused: {}",
+        stderr(&out)
+    );
+
+    let record = r.claim_ref(ID).expect("the ref is still there");
+    assert!(record.contains("state: claim"), "still a claim: {record}");
+    assert!(record.contains("claude-code@ank"), "{record}");
+    assert!(
+        r.task_text(ID).contains("status: in_progress"),
+        "the task did not move"
+    );
+}
+
+#[test]
+fn done_refuses_proof_when_the_task_declares_verifiers() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(ID, Some("A criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", "--proof", "assertion:trust me"],
+    );
+    assert_eq!(code(&out), 5, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--proof is refused"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(r.task_text(ID).contains("status: in_progress"));
 }
 
 #[test]
