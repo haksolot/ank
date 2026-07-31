@@ -216,7 +216,6 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         .map(|q| q.to_ascii_lowercase())
         .unwrap_or_default();
     let index = Index::open(&repo.ank)?;
-    let store = Store::new(&repo.ank);
 
     let kind_filter = match inv.value("--type") {
         None => None,
@@ -230,32 +229,38 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     let status_filter = inv.value("--status").map(|s| s.to_ascii_lowercase());
     let path_filter = inv.value("--scope");
 
-    let rows = index.all()?;
-    let ids: Vec<EntityId> = rows.iter().map(|r| r.id.clone()).collect();
+    // Short identifiers are computed over the whole corpus, never over the
+    // hits: a prefix that is unique among four results and ambiguous in the
+    // repository would be a prefix that stops working when the query changes.
+    let all = index.all()?;
+    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
     let shorts = context::short_ids(&ids);
 
-    let mut hits: Vec<&Row> = Vec::new();
-    for r in &rows {
-        if kind_filter.map(|k| k != r.kind).unwrap_or(false) {
-            continue;
-        }
-        if let Some(want) = &status_filter {
-            if &r.status != want {
-                continue;
-            }
-        }
-        if let Some(path) = path_filter {
-            if !scope_touches(&r.scope, path) {
-                continue;
-            }
-        }
-        if !query.is_empty() && !matches_query(&store, r, &query) {
-            continue;
-        }
-        hits.push(r);
-    }
-    // Deterministic: two identical searches never differ in order.
-    hits.sort_by_key(|r| r.id.to_string());
+    // The search is the index's, and it arrives ranked. With no query there is
+    // nothing to rank, so the corpus comes back in identifier order.
+    let ranked = if query.is_empty() {
+        all
+    } else {
+        index.search(&query)?
+    };
+
+    // The filters narrow what the search returned; they never re-order it.
+    // Ranking is the search's answer, and a filter has no opinion about it.
+    let hits: Vec<&Row> = ranked
+        .iter()
+        .filter(|r| kind_filter.map(|k| k == r.kind).unwrap_or(true))
+        .filter(|r| {
+            status_filter
+                .as_ref()
+                .map(|w| &r.status == w)
+                .unwrap_or(true)
+        })
+        .filter(|r| {
+            path_filter
+                .map(|p| scope_touches(&r.scope, p))
+                .unwrap_or(true)
+        })
+        .collect();
 
     let total = hits.len();
     let cap = cap_from(cfg);
@@ -325,28 +330,6 @@ fn scope_touches(scope: &[String], path: &str) -> bool {
 /// Title, identifier and slug first, then the text that carries the meaning: a
 /// task's criterion, an ADR's constraint. Not the whole body — a query matching
 /// a paragraph of reasoning is a match an agent cannot act on.
-fn matches_query(store: &Store, row: &Row, query: &str) -> bool {
-    if row.title.to_ascii_lowercase().contains(query)
-        || row.id.to_string().to_ascii_lowercase().contains(query)
-    {
-        return true;
-    }
-    match store.load(&row.id).map(|l| l.entity) {
-        Ok(Entity::Task(t)) => {
-            t.slug.unwrap_or_default().contains(query)
-                || t.done_criteria
-                    .unwrap_or_default()
-                    .to_ascii_lowercase()
-                    .contains(query)
-        }
-        Ok(Entity::Adr(a)) => {
-            a.slug.unwrap_or_default().contains(query)
-                || a.constraint.to_ascii_lowercase().contains(query)
-        }
-        Err(_) => false,
-    }
-}
-
 fn json_string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {

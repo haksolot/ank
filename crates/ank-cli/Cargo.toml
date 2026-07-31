@@ -36,4 +36,10 @@ hex = "0.4"
 # `ffi-sqlite-wasm-rs`, which drags wasm-bindgen, js-sys and a wasm VFS into the
 # lockfile of a native CLI. They are target-gated and never compile here, but
 # they are supply-chain surface all the same, and this crate has no wasm target.
+#
+# FTS5, which `find` searches (§6), needs no feature here and there is no
+# `fts5` feature to ask for: libsqlite3-sys compiles the amalgamation with
+# -DSQLITE_ENABLE_FTS5 whenever `bundled` is on. The extension is therefore in
+# the binary already, and adding a flag for it fails to resolve rather than
+# being merely redundant.
 rusqlite = { version = "0.40", default-features = false, features = ["bundled"] }

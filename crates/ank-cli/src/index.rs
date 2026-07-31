@@ -16,13 +16,12 @@
 //! rebuilt silently rather than reported: a cache that can refuse to work is a
 //! source of truth wearing a disguise.
 //!
-//! No FTS5 table yet. §6 gives `find` lexical search over this index, and
-//! TASK-f6a7b8c9d0e1 owns it; the schema version below is what lets that task
-//! add the virtual table without a migration — an unknown schema is a rebuild,
-//! and a rebuild is free.
-//!
-//! Dispatch routes to no index: `context` and `find` are its first callers, and
-//! each arrives with its own task.
+//! **`find` searches an FTS5 table here, not the files** (§6). It carries the
+//! text a scan used to open every entity for — the criterion of a task, the
+//! constraint of an ADR — so a query costs one statement rather than one file
+//! read per candidate. It is maintained by the same incremental refresh as the
+//! entity rows, in the same transaction, because a search index that can
+//! disagree with the table beside it is worse than no search index.
 
 use crate::cli::{CliError, Result};
 use ank_core::{parse_entity, Entity, EntityId, EntityKind};
@@ -33,7 +32,9 @@ use std::path::{Path, PathBuf};
 
 /// Bumped whenever the schema changes. An index carrying anything else is
 /// wiped and rebuilt, which is why a schema change costs nothing.
-pub const SCHEMA_VERSION: u32 = 1;
+///
+/// Moved to 2 by the FTS5 table: nothing migrated, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 2;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -59,7 +60,25 @@ CREATE TABLE entities (
 );
 CREATE INDEX entities_by_path ON entities (path);
 CREATE INDEX entities_by_kind ON entities (kind, status);
+CREATE VIRTUAL TABLE entities_fts USING fts5(
+    id,
+    title,
+    slug,
+    criteria,
+    tokenize = 'unicode61'
+);
 ";
+
+/// The searchable columns, in the order the FTS table declares them, because
+/// `bm25()` takes its weights positionally and a silent mismatch there would be
+/// invisible in every test that only checks which rows come back.
+///
+/// The weights are the explanation of the ranking. A hit in the identifier is
+/// worth most because someone typing an id is naming one entity and not
+/// searching; the title next, being the one line a human wrote to be read; the
+/// slug after it, a compressed title; and the criterion last, which is the
+/// longest text and the most likely to match by accident.
+const FTS_WEIGHTS: [f64; 4] = [8.0, 4.0, 2.0, 1.0];
 
 fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
     // The index is disposable, so the next step is always the same one and it
@@ -393,6 +412,33 @@ impl Index {
         )
     }
 
+    /// Lexical search, best match first. Never opens an entity file: everything
+    /// the query reads was written into the index by the refresh that put the
+    /// entity rows there, which is what makes a thousand-entity corpus answer
+    /// in one statement instead of a thousand file reads.
+    ///
+    /// An empty or entirely punctuation query matches nothing here; the caller
+    /// decides what "no query" means, and for `find` it means every entity.
+    ///
+    /// **Ordering is total and deterministic.** `bm25()` ranks, and the
+    /// identifier breaks ties, so two identical searches never differ and two
+    /// entities scoring alike come back in the same order every time.
+    pub fn search(&self, query: &str) -> Result<Vec<Row>> {
+        let Some(expr) = fts_query(query) else {
+            return Ok(Vec::new());
+        };
+        let [w_id, w_title, w_slug, w_criteria] = FTS_WEIGHTS;
+        // bm25 returns a negative score, better matches being more negative, so
+        // ascending is best-first. Sorting on the expression rather than on an
+        // alias keeps this one statement portable across SQLite versions.
+        let sql = format!(
+            "{SELECT_ROW} WHERE id IN (SELECT id FROM entities_fts WHERE entities_fts MATCH ?1) \
+             ORDER BY (SELECT bm25(entities_fts, ?2, ?3, ?4, ?5) FROM entities_fts \
+                       WHERE entities_fts MATCH ?1 AND entities_fts.id = entities.id), id"
+        );
+        self.query(&sql, params![expr, w_id, w_title, w_slug, w_criteria])
+    }
+
     fn query(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<Row>> {
         let mut stmt = self.conn.prepare(sql).map_err(|e| self.err(e))?;
         let rows = stmt.query_map(args, read_row).map_err(|e| self.err(e))?;
@@ -402,6 +448,36 @@ impl Index {
         }
         Ok(out)
     }
+}
+
+/// Turns what someone typed into an FTS5 MATCH expression, or `None` when there
+/// is nothing left to search for.
+///
+/// Every term is wrapped in double quotes, which is FTS5's own way of saying
+/// "this is a string, not syntax". Without it a query containing `OR`, `NOT`,
+/// `*` or a stray quote would either be read as an operator or fail to parse --
+/// a search box that can be made to throw a syntax error at the person using it
+/// is a bug, not a feature.
+///
+/// Terms are ANDed, so more words narrow. Each carries a trailing `*`, making
+/// every term a prefix: `auth` finds `authentication`, which is what someone
+/// typing three letters into a search means.
+///
+/// This is prefix matching and not substring matching -- `auth` does not find
+/// `reauth`. That is the FTS5 semantics §6 asks for, and it is the one
+/// behavioural difference from the scan it replaces.
+fn fts_query(raw: &str) -> Option<String> {
+    let terms: Vec<String> = raw
+        .split_whitespace()
+        // A term made only of punctuation tokenises to nothing, and an empty
+        // `""*` is a syntax error rather than a search that finds nothing.
+        .filter(|t| t.chars().any(|c| c.is_alphanumeric()))
+        .map(|t| format!("\"{}\"*", t.replace('"', "\"\"")))
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    Some(terms.join(" AND "))
 }
 
 struct ScannedFile {
@@ -477,6 +553,14 @@ fn remember(tx: &rusqlite::Transaction, rel: &str, hash: &str) -> rusqlite::Resu
 }
 
 fn forget(tx: &rusqlite::Transaction, rel: &str) -> rusqlite::Result<()> {
+    // The FTS row goes first, while the entity row is still there to name it:
+    // the virtual table has no idea what a path is, so `entities` is the only
+    // way from one to the other. Reversing these two would leak a searchable
+    // row for an entity that no longer exists.
+    tx.execute(
+        "DELETE FROM entities_fts WHERE id IN (SELECT id FROM entities WHERE path = ?1)",
+        params![rel],
+    )?;
     tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
     tx.execute("DELETE FROM files WHERE path = ?1", params![rel])?;
     Ok(())
@@ -488,7 +572,11 @@ fn upsert(
     hash: &str,
     entity: &Entity,
 ) -> rusqlite::Result<()> {
-    let (kind, title, status, created, blocked_by, version) = match entity {
+    // `slug` and `criteria` exist only to be searched: they are what a scan
+    // used to open the file for, and carrying them here is the whole point.
+    // `criteria` is the criterion for a task and the constraint for an ADR --
+    // in both cases the sentence that says what the entity is actually for.
+    let (kind, title, status, created, blocked_by, version, slug, criteria) = match entity {
         Entity::Task(t) => (
             "task",
             t.title.clone(),
@@ -496,6 +584,8 @@ fn upsert(
             t.created.clone(),
             join_list(t.blocked_by.iter().map(|b| b.to_string())),
             t.version,
+            t.slug.clone().unwrap_or_default(),
+            t.done_criteria.clone().unwrap_or_default(),
         ),
         Entity::Adr(a) => (
             "adr",
@@ -504,10 +594,18 @@ fn upsert(
             a.created.clone(),
             String::new(),
             a.version,
+            a.slug.clone().unwrap_or_default(),
+            a.constraint.clone(),
         ),
     };
     // The path is not the key: an entity that moved file must not survive
-    // twice, so the old row goes first.
+    // twice, so the old row goes first. Same for its searchable twin, and by
+    // the same reasoning as in `forget`: resolve the id through `entities`
+    // before that row is gone.
+    tx.execute(
+        "DELETE FROM entities_fts WHERE id IN (SELECT id FROM entities WHERE path = ?1)",
+        params![rel],
+    )?;
     tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
     tx.execute(
         "INSERT INTO entities \
@@ -529,6 +627,16 @@ fn upsert(
             blocked_by,
             version as i64,
         ],
+    )?;
+    // An id can already be present under another path (the upsert above
+    // resolves that); its FTS row must not survive twice either.
+    tx.execute(
+        "DELETE FROM entities_fts WHERE id = ?1",
+        params![entity.id().to_string()],
+    )?;
+    tx.execute(
+        "INSERT INTO entities_fts (id, title, slug, criteria) VALUES (?1, ?2, ?3, ?4)",
+        params![entity.id().to_string(), title, slug, criteria],
     )?;
     remember(tx, rel, hash)
 }
@@ -675,6 +783,27 @@ mod tests {
         // And the same again from an index that never touched the disk: the
         // outputs depend on the files, never on the cache's history.
         assert_eq!(Index::in_memory(&t.0).unwrap().all().unwrap(), before);
+    }
+
+    /// The same property, now that a search index exists to get it wrong. An
+    /// FTS table rebuilt out of step with the entity rows would answer the
+    /// second search differently from the first, and nothing else would notice.
+    #[test]
+    fn deleting_the_index_does_not_change_what_a_search_answers() {
+        let t = seeded();
+        let before = Index::open(&t.0).unwrap().search("example").unwrap();
+        assert!(!before.is_empty(), "the fixture must match the query");
+
+        std::fs::remove_file(t.db()).unwrap();
+        assert_eq!(
+            Index::open(&t.0).unwrap().search("example").unwrap(),
+            before,
+            "the search answers from the files, not from its own history"
+        );
+        assert_eq!(
+            Index::in_memory(&t.0).unwrap().search("example").unwrap(),
+            before
+        );
     }
 
     #[test]
@@ -905,5 +1034,227 @@ mod tests {
             mine.status
         );
         assert!(mine.version >= 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // FTS5
+    // -----------------------------------------------------------------------
+
+    /// The line this task moves: the criterion is the sentence that says what a
+    /// task is actually for, and searching it used to mean opening the file.
+    #[test]
+    fn search_reaches_text_the_entity_row_does_not_carry() {
+        let t = Temp::new();
+        let mut e = task("000000000001", "Unrelated title", TaskStatus::Open);
+        if let Entity::Task(ref mut x) = e {
+            x.done_criteria = Some("The sessions go through the Redis store.\n".into());
+        }
+        t.write(&e);
+        let index = Index::open(&t.0).unwrap();
+
+        // Matches on the criterion alone, the title agreeing to nothing.
+        let hits = index.search("redis").unwrap();
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].title, "Unrelated title");
+
+        // And on a prefix, which is what three letters typed into a search mean.
+        assert_eq!(index.search("sess").unwrap().len(), 1);
+        assert!(index.search("postgres").unwrap().is_empty());
+    }
+
+    /// The criterion's own number and its own claim: a thousand entities, and
+    /// the query reads no file. Proved by deleting every file first, because
+    /// nothing can be read that is not there.
+    #[test]
+    fn a_thousand_entities_answer_with_no_entity_file_on_disk() {
+        let t = Temp::new();
+        for i in 0..1000u32 {
+            let mut e = task(
+                &format!("{i:012x}"),
+                &format!("Task number {i}"),
+                TaskStatus::Open,
+            );
+            if let Entity::Task(ref mut x) = e {
+                // One needle, 999 haystacks.
+                x.done_criteria = Some(if i == 500 {
+                    "The quicksilver invariant holds.\n".to_string()
+                } else {
+                    format!("Ordinary criterion {i}.\n")
+                });
+            }
+            t.write(&e);
+        }
+
+        // Warm the index, then close it: the refresh is what reads files, and
+        // it has now happened.
+        let index = Index::open(&t.0).unwrap();
+        drop(index);
+
+        // Take the corpus away entirely.
+        std::fs::remove_dir_all(t.0.join("tasks")).unwrap();
+        assert!(!t.0.join("tasks").exists());
+
+        // `open_raw` deliberately, not `open`: `open` refreshes, and a refresh
+        // against a directory that is gone would correctly forget all thousand.
+        // What is under test is the query, and it has no files left to read.
+        let index = Index::open_raw(&t.0).unwrap();
+        let hits = index.search("quicksilver").unwrap();
+        assert_eq!(hits.len(), 1, "{} hits", hits.len());
+        assert_eq!(hits[0].id.to_string(), format!("TASK-{:012x}", 500));
+        assert_eq!(index.all().unwrap().len(), 1000);
+    }
+
+    /// Deterministic and explainable: the same search twice is the same list,
+    /// and a hit in the title outranks one buried in a criterion.
+    #[test]
+    fn ranking_is_stable_and_puts_the_stronger_field_first() {
+        let t = Temp::new();
+        let mut buried = task("000000000001", "Nothing to see", TaskStatus::Open);
+        if let Entity::Task(ref mut x) = buried {
+            x.done_criteria =
+                Some("A long criterion that happens to mention sessions once.\n".into());
+        }
+        let titled = task("000000000002", "Sessions everywhere", TaskStatus::Open);
+        t.write(&buried);
+        t.write(&titled);
+        let index = Index::open(&t.0).unwrap();
+
+        let first = index.search("sessions").unwrap();
+        assert_eq!(first.len(), 2);
+        assert_eq!(
+            first[0].id.to_string(),
+            "TASK-000000000002",
+            "a title hit must outrank a criterion hit"
+        );
+
+        // Same question, same answer, in the same order.
+        let second = index.search("sessions").unwrap();
+        assert_eq!(first, second);
+    }
+
+    /// Ties break on the identifier, so "deterministic" holds even where bm25
+    /// has no opinion. Three entities identical but for their id.
+    #[test]
+    fn equal_scores_still_come_back_in_one_fixed_order() {
+        let t = Temp::new();
+        for hex in ["000000000003", "000000000001", "000000000002"] {
+            t.write(&task(hex, "Identical title", TaskStatus::Open));
+        }
+        let index = Index::open(&t.0).unwrap();
+        let ids: Vec<String> = index
+            .search("identical")
+            .unwrap()
+            .iter()
+            .map(|r| r.id.to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            vec![
+                "TASK-000000000001".to_string(),
+                "TASK-000000000002".to_string(),
+                "TASK-000000000003".to_string()
+            ]
+        );
+    }
+
+    /// The searchable rows ride the same incremental refresh as the entity
+    /// rows, so an edit removes the old text and a deletion removes all of it.
+    #[test]
+    fn the_search_index_follows_edits_and_deletions() {
+        let t = Temp::new();
+        let mut e = task("000000000001", "Before", TaskStatus::Open);
+        if let Entity::Task(ref mut x) = e {
+            x.done_criteria = Some("mentions elderberry\n".into());
+        }
+        t.write(&e);
+        let mut index = Index::open(&t.0).unwrap();
+        assert_eq!(index.search("elderberry").unwrap().len(), 1);
+
+        // Edit: the old text must stop matching, not merely be outranked.
+        if let Entity::Task(ref mut x) = e {
+            x.done_criteria = Some("mentions gooseberry\n".into());
+            x.version = 2;
+        }
+        t.write(&e);
+        index.refresh().unwrap();
+        assert!(
+            index.search("elderberry").unwrap().is_empty(),
+            "the previous criterion is still searchable"
+        );
+        assert_eq!(index.search("gooseberry").unwrap().len(), 1);
+
+        // Deletion: gone from the search, not only from `entities`.
+        t.remove(&EntityId::parse("TASK-000000000001").unwrap());
+        index.refresh().unwrap();
+        assert!(index.search("gooseberry").unwrap().is_empty());
+    }
+
+    /// A schema move rebuilds rather than migrates, and the rebuilt index is
+    /// searchable. An index whose FTS table was silently absent would answer
+    /// every query with nothing and look healthy doing it.
+    #[test]
+    fn an_index_from_an_older_schema_is_rebuilt_and_searchable() {
+        let t = seeded();
+        Index::open(&t.0).unwrap();
+
+        {
+            let conn = Connection::open(t.db()).unwrap();
+            conn.execute(
+                "UPDATE meta SET value = '1' WHERE key = 'schema_version'",
+                [],
+            )
+            .unwrap();
+        }
+
+        let index = Index::open(&t.0).unwrap();
+        assert_eq!(index.schema_version().unwrap(), Some(SCHEMA_VERSION));
+        assert_eq!(index.search("decision").unwrap().len(), 1);
+    }
+
+    /// What someone types is a string, never syntax. FTS5 operators and stray
+    /// quotes come back as "no match" rather than as an error thrown at the
+    /// person doing the searching.
+    #[test]
+    fn a_query_is_never_read_as_fts_syntax() {
+        let t = seeded();
+        let index = Index::open(&t.0).unwrap();
+
+        let hostile = [
+            "OR",
+            "NOT",
+            "*",
+            "\"",
+            "a\" OR b",
+            "^",
+            "-",
+            "()",
+            "NEAR(a b)",
+        ];
+        for h in hostile {
+            let r = index.search(h);
+            assert!(r.is_ok(), "search({h:?}) errored: {:?}", r.err());
+        }
+
+        // Punctuation alone leaves nothing to search for.
+        assert!(fts_query("***").is_none());
+        assert!(fts_query("   ").is_none());
+        // A real term survives quoting intact, and a quote inside it is doubled
+        // rather than closing the string early.
+        assert_eq!(fts_query("redis").unwrap(), "\"redis\"*");
+        assert_eq!(fts_query("a b").unwrap(), "\"a\"* AND \"b\"*");
+        assert_eq!(fts_query("a\"b").unwrap(), "\"a\"\"b\"*");
+    }
+
+    /// Several words narrow rather than widen: someone adding a word is asking
+    /// for fewer results, not more.
+    #[test]
+    fn more_words_mean_fewer_results() {
+        let t = Temp::new();
+        t.write(&task("000000000001", "Opaque sessions", TaskStatus::Open));
+        t.write(&task("000000000002", "Opaque tokens", TaskStatus::Open));
+        let index = Index::open(&t.0).unwrap();
+
+        assert_eq!(index.search("opaque").unwrap().len(), 2);
+        assert_eq!(index.search("opaque sessions").unwrap().len(), 1);
     }
 }
