@@ -4,7 +4,7 @@ type: task
 slug: claims-on-git-refs
 title: Claims on git refs, TTL, re-acquisition and completion refs
 created: 2026-07-27T09:30:00Z
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/claim.rs
 blocked_by: [TASK-a1b2c3d4e5f6, TASK-244a842bc0cc, TASK-c8637488773c, TASK-038c83ba44c5]
@@ -26,8 +26,11 @@ done_criteria: |
   fallback to the other state.
 criteria_by: creator
 verify: [cargo-test]
+proof:
+  - type: commit
+    ref: 92b1a5a
 schema: 1
-version: 5
+version: 6
 ---
 
 Also carries the hash of the frozen done_criteria and that of the constraints
@@ -54,3 +57,4 @@ through the binary that an `ank done` does leave a completion ref.
 
 ## Log
 - 2026-07-31T02:47Z claude-code@ank — in_progress; manual claim, the CLI does not exist yet. Verified first that a ref can point at a blob and that both CAS forms behave: create against an empty old value, replace and delete against a witness sha. The record is a blob, so hash-object and cat-file suffice and the plumbing list needs nothing new.
+- 2026-07-31T03:01Z claude-code@ank — done: 92b1a5a, 71 + 11 tests, fmt and check_repo green. Two states on one ref, git's CAS as the only primitive, concurrency tested with twelve real threads on a real repository. git.rs exposes the runner returning the exit code, without which a lost CAS and a broken git are the same code 9. Dispatch does not route here yet, the stub comments claiming it did were false: TASK-45d18f45de2c carries the wiring and the correction.
