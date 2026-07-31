@@ -654,15 +654,22 @@ mod tests {
         }
     }
 
+    /// The task this call created, identified by difference rather than by
+    /// `created`: that field has second resolution, so two tasks made in the
+    /// same second sort ambiguously and the helper would sometimes hand back
+    /// the wrong one. A flaky fixture is worse than no fixture — it fails on
+    /// somebody else's change.
     fn a_task(t: &Temp, title: &str) -> EntityId {
+        let before = t.tasks();
         t.call(
             &["new", "task", "--title", title, "--scope", "src/**"],
             "claude-code@ank",
         )
         .unwrap();
-        let mut ids = t.tasks();
-        ids.sort_by_key(|i| t.task(i).created.clone());
-        ids.into_iter().next_back().unwrap()
+        t.tasks()
+            .into_iter()
+            .find(|i| !before.contains(i))
+            .expect("new created a task")
     }
 
     // -----------------------------------------------------------------------
