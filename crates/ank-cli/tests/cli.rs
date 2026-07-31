@@ -563,6 +563,101 @@ fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("Example task"));
 }
 
+/// A task created through the binary needs no hand finishing.
+///
+/// The assertion is about what lands on disk, so the file is read back rather
+/// than the return value inspected: every task this repository created through
+/// `ank new` had to be reopened afterwards to gain a `verify:` and a body, and
+/// that reopening is the practice the task exists to end.
+#[test]
+fn a_task_created_by_new_declares_its_verifiers_and_carries_its_reasoning() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "A created task",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "A verifiable criterion.",
+            "--verify",
+            "ok",
+            "--body",
+            "Why this exists.\n\nAnd the trap worth naming.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    let text = r.task_text(&id);
+    assert!(text.contains("verify: [ok]"), "{text}");
+    assert!(text.contains("Why this exists."), "{text}");
+    assert!(text.contains("And the trap worth naming."), "{text}");
+    // Canonical shape: a blank line after the frontmatter, and a final newline.
+    // A creation that emitted anything else would be reformatted by the first
+    // rewrite, and the round-trip is byte-identical on canonical form.
+    assert!(text.contains("---\n\nWhy this exists."), "{text:?}");
+    assert!(text.ends_with("worth naming.\n"), "{text:?}");
+
+    // Complete means claimable and then finishable without touching the file:
+    // `done` runs the declared verifier instead of demanding a proof the agent
+    // supplies itself.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &id])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(text.contains("running: ok"), "{text}");
+    assert!(
+        r.task_text(&id).contains("verifier: ok@"),
+        "{}",
+        r.task_text(&id)
+    );
+}
+
+#[test]
+fn new_refuses_a_verifier_that_config_does_not_declare() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new", "task", "--title", "T", "--scope", "src/**", "--verify", "nope",
+        ],
+    );
+    let err = stderr(&out);
+    // Resolved at creation for the same reason --blocked-by is: a name that
+    // matches nothing would otherwise surface at `done`, far from its cause.
+    assert_eq!(code(&out), 7, "{err}");
+    assert!(err.contains("nope"), "{err}");
+    assert!(err.contains("ok"), "the hint names what is declared: {err}");
+
+    // And an ADR has no verify field, so the flag is refused, never dropped.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "T",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A binding rule.",
+            "--verify",
+            "ok",
+        ],
+    );
+    assert_ne!(code(&out), 0, "a dropped flag teaches the caller it worked");
+    assert!(stderr(&out).contains("--verify"), "{}", stderr(&out));
+}
+
 /// A claim that lapsed and left the file behind.
 ///
 /// Through the binary because the thing being read is the ref namespace, and a

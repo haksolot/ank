@@ -4,7 +4,7 @@ type: task
 slug: ank-new-writes-a-task-that-needs-no-hand-finishi
 title: ank new writes a task that needs no hand finishing
 created: 2026-07-31T22:33:17Z
-status: open
+status: done
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/cli.rs
@@ -14,8 +14,24 @@ done_criteria: |
   A task created by ank new is complete: it declares its verifiers and carries the reasoning that justifies it, without a subsequent edit to the file. ank new task accepts the verifiers and the body, writes both into the entity, and the round-trip stays byte-identical on canonical form. The seven verbs are unchanged -- these are flags on an existing verb, not a new one. A test invokes the binary, creates a task, and asserts the file it produced is claimable and carries both, because what is being tested is what lands on disk.
 criteria_by: creator
 verify: [cargo-test, fmt-check, check-repo]
+proof:
+  - type: test
+    ref: local/824f1d89cdbb@28b028d
+    tree: scope/75d327263249
+    criteria: 24210622f396
+    verifier: cargo-test@f14aeab36e1b
+  - type: test
+    ref: local/e3b0c44298fc@28b028d
+    tree: scope/75d327263249
+    criteria: 24210622f396
+    verifier: fmt-check@5ca6d10bcd55
+  - type: test
+    ref: local/3c579d49cf08@28b028d
+    tree: scope/75d327263249
+    criteria: 24210622f396
+    verifier: check-repo@5734e9cf9d3d
 schema: 1
-version: 2
+version: 5
 ---
 
 This file is the evidence. `ank new` created it with an empty body and no
@@ -43,3 +59,7 @@ belongs to the human surface, not to this task.
 
 No new verb. `new` is one of the seven and stays one of the seven; these are
 flags on it, which ADR-2f8a61c04b7d does not restrict.
+
+## Log
+- 2026-07-31T22:41:35Z seanl@sean-laptop — Two flags on an existing verb, so ADR-2f8a is untouched: --verify (repeatable) and --body. Verifier names are resolved against config.yml at creation, same doctrine as --blocked-by in the same function -- a name matching nothing would otherwise surface at done, far from its cause; the refusal is a 7 naming what is declared. --verify on an ADR is refused rather than dropped, because an ADR has no verify field and a flag silently ignored teaches the caller it worked. body_of emits the canonical shape directly, blank line after the frontmatter and a trailing newline, so creation cannot write a file the first rewrite would reformat. new now takes cfg, which meant threading it through dispatch.
+- 2026-07-31T22:42:01Z seanl@sean-laptop — done, proof test:local/824f1d89cdbb@28b028d test:local/e3b0c44298fc@28b028d test:local/3c579d49cf08@28b028d

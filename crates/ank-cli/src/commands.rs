@@ -56,7 +56,13 @@ fn entropy() -> Vec<u8> {
     v
 }
 
-pub fn new(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn new(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let kind = match inv.subcommand.as_deref() {
         Some("task") => EntityKind::Task,
         Some("adr") => EntityKind::Adr,
@@ -94,14 +100,25 @@ pub fn new(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -
                 blocked_by,
                 criteria_by: criteria.as_ref().map(|_| CriteriaBy::Creator),
                 done_criteria: criteria,
-                verify: Vec::new(),
+                verify: verifiers_of(inv, cfg)?,
                 proof: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: String::new(),
+                body: body_of(inv),
             })
         }
         EntityKind::Adr => {
+            // An ADR has no `verify` field, so the flag is refused rather than
+            // dropped. A flag silently ignored teaches the caller it worked.
+            if !inv.values("--verify").is_empty() {
+                return Err(CliError::new(
+                    1,
+                    "--verify applies to a task: an ADR declares no verifier",
+                )
+                .with_hint(
+                    "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
+                ));
+            }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {
                 id: id.clone(),
@@ -119,7 +136,7 @@ pub fn new(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -
                 ratified: None,
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: String::new(),
+                body: body_of(inv),
             })
         }
     };
@@ -180,6 +197,56 @@ fn required(inv: &Invocation, flag: &str, what: &str) -> Result<String> {
 fn ensure_newline(text: &str) -> String {
     let t = text.trim_end();
     format!("{t}\n")
+}
+
+/// The verifiers the task declares, checked against `config.yml` at creation.
+///
+/// Resolved here for the same reason `--blocked-by` is: a name that matches
+/// nothing would otherwise surface at `done`, long after the task was written,
+/// as a failure nobody can attribute to the moment it was introduced.
+///
+/// A task declaring none is not an error — `done` then takes the `--proof`
+/// path — but it is the shape that lets an agent submit its own proof, so a
+/// caller who meant to declare one had better find out now.
+fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
+    let mut out = Vec::new();
+    for raw in inv.values("--verify") {
+        let name = raw.trim();
+        if cfg.verifier(name).is_none() {
+            let mut known: Vec<&str> = cfg.verifiers.keys().map(|s| s.as_str()).collect();
+            known.sort_unstable();
+            let hint = if known.is_empty() {
+                "declare it under verifiers: in .ank/config.yml".to_string()
+            } else {
+                format!("declared in .ank/config.yml: {}", known.join(" "))
+            };
+            return Err(
+                CliError::new(7, format!("no verifier '{name}' in .ank/config.yml"))
+                    .with_hint(hint),
+            );
+        }
+        if !out.iter().any(|v| v == name) {
+            out.push(name.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// The prose that justifies the entity, in canonical shape.
+///
+/// The body is verbatim after the closing `---`, and every file in a canonical
+/// corpus separates the two with a blank line and ends with a newline. Producing
+/// that here is what keeps `ank new` from writing a file the first rewrite would
+/// reformat — the round-trip is byte-identical on canonical form, so canonical
+/// is what creation has to emit (ADR-63b59c5c26f7).
+///
+/// Absent or blank leaves the body empty, which is a task with no reasoning
+/// attached: allowed, and visible for what it is.
+fn body_of(inv: &Invocation) -> String {
+    match inv.value("--body") {
+        Some(text) if !text.trim().is_empty() => format!("\n{}\n", text.trim()),
+        _ => String::new(),
+    }
 }
 
 /// A short, readable handle. Never an identifier: the id is what references
@@ -581,7 +648,7 @@ mod tests {
             let repo = self.repo();
             let cfg = self.cfg();
             match inv.command {
-                "new" => new(&inv, &repo, who, &mut out)?,
+                "new" => new(&inv, &repo, &cfg, who, &mut out)?,
                 "find" => find(&inv, &repo, &cfg, &mut out)?,
                 "log" => log(&inv, &repo, &cfg, who, &mut out)?,
                 "release" => release(&inv, &repo, who, &mut out)?,
