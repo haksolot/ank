@@ -1,0 +1,144 @@
+name: release
+
+# Publishing happens on a tag and only on a tag: a release that could be
+# produced from a branch would make "the binary for v0.1.0" a question rather
+# than an answer.
+#
+# `workflow_dispatch` builds the same three binaries and publishes nothing. The
+# alternative is discovering that the release pipeline is broken at the moment
+# you use it, on a tag you then have to delete -- and a tag is the one thing
+# here that is awkward to take back.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+# Read everywhere except the one job that publishes. `build` never needs write:
+# if it is ever compromised, it cannot reach the release.
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A missing platform is the information we came for. Without fail-fast,
+      # a tag that breaks macOS still tells us Linux and Windows are fine.
+      fail-fast: false
+      matrix:
+        include:
+          # musl, not gnu: `bundled` compiles SQLite from source precisely so
+          # the binary carries it, and glibc is then the only thing left
+          # tethering it to the machine that built it. A gnu build on
+          # ubuntu-latest refuses to start on any older distro.
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: versions
+        shell: bash
+        run: |
+          rustc --version
+          cargo --version
+          git --version
+
+      # musl needs its own std and its own C compiler, and `bundled` means
+      # there is C to compile. Both are absent from the image by default.
+      - name: musl toolchain
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          rustup target add x86_64-unknown-linux-musl
+
+      # The criterion asks for the suite on all three, not only for a build
+      # that links. A binary nobody tested is not a release, it is a file.
+      - name: test
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --bin ank --target ${{ matrix.target }}
+
+      # Named for what it runs on, because that is the question someone
+      # downloading it is asking.
+      - name: package
+        shell: bash
+        run: |
+          # On a dispatch there is no tag, so the name says so rather than
+          # inventing a version the artefact does not carry.
+          case "$GITHUB_REF_NAME" in
+            v*) version="${GITHUB_REF_NAME#v}" ;;
+            *)  version="0.0.0-dispatch+$(git rev-parse --short HEAD 2>/dev/null || echo dev)" ;;
+          esac
+          name="ank-${version}-${{ matrix.target }}"
+          mkdir -p "dist/${name}"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cp "target/${{ matrix.target }}/release/ank.exe" "dist/${name}/"
+          else
+            cp "target/${{ matrix.target }}/release/ank" "dist/${name}/"
+          fi
+          cp README.md LICENSE "dist/${name}/"
+          cp skill/SKILL.md "dist/${name}/"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            7z a "${name}.zip" "${name}" > /dev/null
+          else
+            tar czf "${name}.tar.gz" "${name}"
+          fi
+          # Checksums travel with the artefact: the release page is not a
+          # trusted channel, and a hash the publisher computed elsewhere is
+          # not a check anyone can repeat.
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            sha256sum "${name}.zip" > "${name}.zip.sha256"
+          else
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    # Only after all three. A release carrying two platforms out of three would
+    # be worse than no release: it looks complete.
+    needs: build
+    # And only for a tag. A dispatch run builds and stops there.
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # `gh` is on the runner already. A third-party release action would be
+      # one more supply-chain dependency for a call this short -- the same
+      # reasoning that keeps a toolchain action out of ci.yml.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*

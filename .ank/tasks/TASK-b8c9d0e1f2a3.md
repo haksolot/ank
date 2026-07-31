@@ -4,10 +4,11 @@ type: task
 slug: cross-platform-distribution
 title: Linux, macOS and Windows binaries, and the bootstrap skill
 created: 2026-07-27T09:55:00Z
-status: open
+status: in_progress
 scope:
   - .github/workflows/release.yml
   - skill/**
+  - crates/ank-cli/tests/skill.rs
 blocked_by: [TASK-a7b8c9d0e1f2, TASK-0da5af5afd5f]
 done_criteria: |
   CI produces binaries for all three operating systems on every tag, the
@@ -16,7 +17,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test]
 schema: 1
-version: 4
+version: 5
 ---
 
 On Windows, sh is resolved from Git for Windows; an sh that cannot be found exits
