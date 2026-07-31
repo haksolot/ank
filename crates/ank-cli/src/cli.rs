@@ -198,7 +198,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        owner_task: Some("TASK-a7b8c9d0e1f2"),
+        owner_task: None,
     },
     CommandSpec {
         name: "accept",
@@ -206,7 +206,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
-        owner_task: Some("TASK-a7b8c9d0e1f2"),
+        owner_task: None,
     },
     CommandSpec {
         name: "close",
@@ -214,7 +214,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--reason")],
-        owner_task: Some("TASK-a7b8c9d0e1f2"),
+        owner_task: None,
     },
     CommandSpec {
         name: "check",
@@ -222,7 +222,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        owner_task: Some("TASK-a7b8c9d0e1f2"),
+        owner_task: None,
     },
     CommandSpec {
         name: "show",
@@ -230,7 +230,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
-        owner_task: Some("TASK-a7b8c9d0e1f2"),
+        owner_task: None,
     },
     CommandSpec {
         name: "init",
@@ -519,6 +519,11 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
+        "check" => crate::human::check(&inv, &s.repo, &s.config, out),
+        "review" => crate::human::review(&inv, &s.repo, &s.config, out),
+        "accept" => crate::human::accept(&inv, &s.repo, &s.config, &s.identity, out),
+        "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
+        "show" => crate::human::show(&inv, &s.repo, out),
         _ => Err(not_implemented(spec)),
     }
 }
@@ -683,21 +688,20 @@ mod tests {
                 "{routed} is routed by dispatch"
             );
         }
-        // And the verbs still falling through keep naming their task, which is
-        // the only help an agent gets on them.
-        for stub in ["check", "show", "review", "accept", "close"] {
-            assert!(
-                spec_of(stub).unwrap().owner_task.is_some(),
-                "{stub} answers not_implemented and must say by whom"
-            );
-        }
+        // Every verb of the surface is routed now, so none may carry the
+        // field any more. The day one is added, it arrives unrouted and this
+        // fails until its arm exists.
+        assert!(
+            COMMANDS.iter().all(|c| c.owner_task.is_none()),
+            "an unrouted verb must name its task, a routed one must not"
+        );
     }
 
     #[test]
-    fn the_foundation_is_resolved_before_rejecting_an_unimplemented_verb() {
-        // Without that order, --repo would be exercised by no real path while
-        // no verb exists: the foundation would be unit-tested without ever
-        // being reached by the binary.
+    fn the_foundation_is_resolved_before_the_verb_runs() {
+        // A wrong --repo is named as such and never disguised as a broken
+        // environment, which is why `startup` resolves the repository before
+        // checking git.
         let mut out = Vec::new();
         let code = run(
             &argv(&["check", "--repo", "/path/that/does/not/exist"]),
@@ -706,18 +710,21 @@ mod tests {
         );
         assert_eq!(code, 1);
 
-        // A valid --repo crosses the foundation and reaches the verb rejection.
+        // A valid --repo crosses the foundation and reaches the verb. This
+        // used to assert that `check` was unimplemented; every verb of the
+        // surface is routed now, so what it asserts instead is that the verb
+        // answered — 0 or 8 from `check`, never the 1 of a rejection.
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .canonicalize()
             .unwrap();
         let mut out = Vec::new();
         let code = run(
-            &argv(&["check", "--repo", root.to_str().unwrap()]),
+            &argv(&["check", "--repo", root.to_str().unwrap(), "--quiet"]),
             std::path::Path::new("."),
             &mut out,
         );
-        assert_eq!(code, 1, "the check verb is not implemented yet");
+        assert!(code == 0 || code == 8, "check answered with {code}");
     }
 
     #[test]

@@ -10,7 +10,7 @@ verifiers:
     run: cargo fmt --check
     timeout: 2m
   check-repo:
-    run: cargo run -q --example check_repo
+    run: cargo run -q --bin ank -- check
     timeout: 5m
 roles:
   agent:

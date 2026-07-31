@@ -218,15 +218,30 @@ fn the_exit_code_of_a_refusal_reaches_the_process() {
 }
 
 #[test]
-fn a_verb_whose_module_is_a_stub_still_names_its_task() {
-    let r = Repo::new();
-    r.seed_task(ID, Some("A verifiable criterion."));
-    for verb in ["check", "show", "review", "accept", "close"] {
-        let out = r.ank("claude-code@ank", &[verb, ID]);
+fn every_verb_of_the_surface_answers() {
+    // This test used to assert the opposite, verb by verb, as each module was
+    // still a stub. The last of them landed with the human surface, so what it
+    // guards now is that none regresses to `not_implemented` — a rejection is a
+    // code 1 carrying that exact phrase, and no verb may produce it.
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(ID, Some("A criterion."));
+    for argv in [
+        vec!["context"],
+        vec!["find", "criterion"],
+        vec!["show", ID],
+        vec!["check"],
+        vec!["review"],
+        vec!["claim", ID],
+        vec!["log", "working"],
+        vec!["release", "--reason", "handing it over"],
+        vec!["close", ID, "--reason", "not needed after all"],
+    ] {
+        let out = r.ank("claude-code@ank", &argv);
         let err = stderr(&out);
-        assert_eq!(code(&out), 1, "{verb}: {err}");
-        assert!(err.contains("not implemented yet"), "{verb}: {err}");
-        assert!(err.contains("TASK-"), "{verb}: {err}");
+        assert!(
+            !err.contains("not implemented yet"),
+            "{argv:?} still answers not_implemented: {err}"
+        );
     }
 }
 

@@ -9,7 +9,7 @@ scope:
   - crates/ank-core/src/parse.rs
   - crates/ank-core/src/error.rs
   - crates/ank-core/tests/golden/**
-  - crates/ank-core/examples/check_repo.rs
+  - crates/ank-cli/src/human.rs
 blocked_by: []
 done_criteria: |
   parse_entity accepts a file in CRLF and its serialisation yields LF; a valid
@@ -18,13 +18,14 @@ done_criteria: |
   Error::CrlfLineEndings exists and its message names the line endings and the
   command git config core.autocrlf input; a test asserts that this diagnostic,
   and not "missing frontmatter", is the one reported for a CRLF file.
-  check_repo reports the CRLF form as a non-fatal finding, distinct from the
-  non-canonical form error, and exits 0 when that is the only deviation.
+  ank check reports the CRLF form as a signal, distinct from the fault it
+  raises for a non-canonical form, and exits 0 when that is the only
+  deviation.
   cargo test is green.
 criteria_by: claimer
 verify: [cargo-test]
 schema: 1
-version: 2
+version: 3
 ---
 
 Found while checking a fresh clone: `core.autocrlf=true` without a
@@ -40,3 +41,10 @@ the parser.
 Not blocking for the CLI foundation: `.gitattributes` is enough to make the
 current tree healthy, which is why this task blocks neither TASK-244a842bc0cc nor
 TASK-c8637488773c.
+
+Amended by TASK-a7b8c9d0e1f2, which retired `examples/check_repo.rs` in favour
+of the real `ank check`. The scope named that file and the criterion named that
+command; both now name `crates/ank-cli/src/human.rs` and `ank check`. The task
+was unclaimed, so the criterion is amended with no freeze to lift (§3), and the
+amendment is a rename of the referent rather than a change of the rule — the
+behaviour asked for is the same one, from the command that now carries it.
