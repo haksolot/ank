@@ -4,12 +4,18 @@ type: task
 slug: crlf-tolerance
 title: CRLF tolerated on read, LF on write, with a dedicated diagnostic
 created: 2026-07-28T00:22:06Z
-status: open
+status: done
 scope:
   - crates/ank-core/src/parse.rs
   - crates/ank-core/src/error.rs
+  - crates/ank-core/src/lib.rs
   - crates/ank-core/tests/golden/**
+  - crates/ank-core/tests/golden.rs
   - crates/ank-cli/src/human.rs
+  - crates/ank-cli/tests/cli.rs
+  - .gitattributes
+  - .github/workflows/ci.yml
+  - README.md
 blocked_by: []
 done_criteria: |
   parse_entity accepts a file in CRLF and its serialisation yields LF; a valid
@@ -24,8 +30,14 @@ done_criteria: |
   cargo test is green.
 criteria_by: claimer
 verify: [cargo-test]
+proof:
+  - type: test
+    ref: local/c0af7fb4d906@f8d64ff
+    tree: scope/4f9181310af1
+    criteria: f127e6564a14
+    verifier: cargo-test@f14aeab36e1b
 schema: 1
-version: 3
+version: 7
 ---
 
 Found while checking a fresh clone: `core.autocrlf=true` without a
@@ -48,3 +60,37 @@ command; both now name `crates/ank-cli/src/human.rs` and `ank check`. The task
 was unclaimed, so the criterion is amended with no freeze to lift (§3), and the
 amendment is a rename of the referent rather than a change of the rule — the
 behaviour asked for is the same one, from the command that now carries it.
+
+Scope widened before claiming, criterion untouched, four additions and each one
+forced by the criterion rather than convenient:
+
+- `lib.rs` — the criterion needs `check` to tell a file that is merely CRLF from
+  one that is genuinely non-canonical, so the normalisation `parse` performs has
+  to be reachable from `ank-cli`. A re-export, no logic.
+- `tests/golden.rs` — the declared scope covered `tests/golden/**`, the fixture
+  directory, and not the harness that reads it. "The golden suite no longer
+  requires byte-for-byte identity except on already canonical files" is a change
+  to the harness by definition.
+- `.gitattributes` — this is the sharp one. The suite is pinned `text eol=lf`,
+  so a CRLF fixture committed today comes back LF on the next checkout and the
+  test silently stops testing anything. The fixture needs `-text` to survive as
+  the bytes it is. A golden that git normalises is not a golden.
+- `.github/workflows/ci.yml` — its line-endings step greps the golden tree for
+  `\r` and fails the build. That guard is right and stays; it gains an exception
+  for the one file whose whole purpose is to carry a `\r`.
+
+Two more added while working, same rule, criterion untouched:
+
+- `crates/ank-cli/tests/cli.rs` — the criterion says "ank check ... exits 0",
+  which names the binary and an exit code. The unit-level harness in `human.rs`
+  calls `check()` directly and never becomes a process, so on its own it cannot
+  answer the thing asked. CLAUDE.md is explicit, and the two defects it cites
+  are exactly this shape.
+- `README.md` — it stated that `valid/` must round-trip byte for byte, which
+  stopped being true the moment a CRLF golden joined the suite. Leaving it would
+  recreate, in the same file, the class of defect TASK-0da5af5afd5f just cleared
+  out of it.
+
+## Log
+- 2026-07-31T17:08:14Z claude-code@ank — parse_entity normalises CRLF once, at the entry, so nothing downstream carries a line-ending case; the body is verbatim with respect to the normalised text, which is what normalised on first rewrite means. Error::CrlfLineEndings is the one diagnostic in ank-core carrying a command, because the cause is a git setting and a reader told only CRLF would edit a file git converts back on the next checkout. check tells the two deviations apart by asking whether dropping the carriage returns leaves the canonical form: if it does, signal and exit 0; if not, still a fault. Scope widened six times, each recorded in the body.
+- 2026-07-31T17:08:38Z claude-code@ank — done, proof test:local/c0af7fb4d906@f8d64ff

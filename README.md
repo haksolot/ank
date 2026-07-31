@@ -157,8 +157,10 @@ Detailed conventions are in [`CLAUDE.md`](CLAUDE.md).
     ank check                   # validates .ank/: parse, round-trip, references
 
 `crates/ank-core/tests/golden/` is the format conformance suite, reusable by any
-third-party tool: `valid/` must round-trip byte for byte, `invalid/` must be
-rejected with the expected error.
+third-party tool: `valid/` must round-trip byte for byte once normalised,
+`invalid/` must be rejected with the expected error. One valid file is in CRLF
+on purpose and must come back in LF — the format is read in either and written
+in one.
 
 ## Licence
 

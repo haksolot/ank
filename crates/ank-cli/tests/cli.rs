@@ -525,3 +525,39 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
     assert!(Path::new(&dir).join(".ank/config.yml").exists());
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The bug this exists for, end to end and through the binary: a corpus that a
+/// Windows clone handed back in CRLF was entirely unreadable, and every entity
+/// was reported as "missing frontmatter" -- a diagnostic that sends the reader
+/// looking for a delimiter sitting right there on line one.
+///
+/// The criterion names `ank check` and an exit code, so it is the process that
+/// answers here, not the function.
+#[test]
+fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let p = r.0.join(".ank/tasks").join(format!("{ID}.md"));
+    let lf = std::fs::read_to_string(&p).unwrap();
+    std::fs::write(&p, lf.replace('\n', "\r\n")).unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+
+    assert_eq!(code(&out), 0, "CRLF alone must not fail the build: {text}");
+    assert!(text.contains("CRLF"), "{text}");
+    assert!(text.contains("git config core.autocrlf input"), "{text}");
+    assert!(text.contains("signal"), "{text}");
+    assert!(
+        !text.contains("missing frontmatter"),
+        "the wrong diagnostic came back: {text}"
+    );
+    assert!(!text.contains("non-canonical"), "{text}");
+
+    // And the entity was genuinely read, not merely tolerated: `show` prints
+    // the task it could not previously parse at all.
+    let out = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("Example task"));
+}

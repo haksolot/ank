@@ -7,6 +7,18 @@ pub enum Error {
     #[error("missing frontmatter: the file must start with '---'")]
     MissingFrontmatter,
 
+    /// The one diagnostic in this crate that carries a command, and it does so
+    /// because the cause *is* a git configuration: nothing about the file's
+    /// content can be corrected, and a reader told only "CRLF line endings"
+    /// would go and edit the file that git is about to convert back on the
+    /// next checkout. Naming the cause here means naming git.
+    ///
+    /// Never returned by [`crate::parse_entity`], which reads CRLF and
+    /// normalises it (§3). This is what `check` reports for a file that parses
+    /// but is not in canonical form.
+    #[error("CRLF line endings: the format is LF only; git is converting on checkout, fix with 'git config core.autocrlf input'")]
+    CrlfLineEndings,
+
     #[error("invalid YAML: {0}")]
     Yaml(#[from] serde_yaml::Error),
 

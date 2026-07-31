@@ -39,11 +39,24 @@ jobs:
       - name: line endings in .ank/
         shell: bash
         run: |
-          if grep -rlU $'\r' .ank/ crates/ank-core/tests/golden/; then
+          # One file is exempt, and it is exempt in .gitattributes too: the CRLF
+          # golden's content is its line endings. It is checked in the opposite
+          # direction just below.
+          crlf_fixture=TASK-c71f0e5a9b23.md
+          if grep -rlU $'\r' --exclude="$crlf_fixture" .ank/ crates/ank-core/tests/golden/; then
             echo "CRLF found: .gitattributes was not applied"
             exit 1
           fi
           echo "LF everywhere"
+
+          # And the exemption has to still work. If git normalises the fixture
+          # on checkout, the CRLF test passes while testing nothing, so the
+          # absence of a carriage return here is the failure.
+          if ! grep -qU $'\r' "crates/ank-core/tests/golden/valid/$crlf_fixture"; then
+            echo "the CRLF fixture lost its carriage returns: check .gitattributes"
+            exit 1
+          fi
+          echo "CRLF fixture intact"
 
       - run: cargo fmt --check
 

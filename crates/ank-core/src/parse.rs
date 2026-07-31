@@ -14,6 +14,7 @@ use crate::id::{EntityId, EntityKind};
 use crate::model::*;
 use crate::scope::validate_globs;
 use serde::Deserialize;
+use std::borrow::Cow;
 
 // ---------------------------------------------------------------------------
 // Raw frontmatter (serde shapes)
@@ -71,6 +72,30 @@ struct TypeProbe {
 // Splitting
 // ---------------------------------------------------------------------------
 
+/// LF-normalised view of the input, borrowed when there is nothing to do.
+///
+/// CRLF is **read, never written** (§3). Normalising here rather than at each
+/// call site is what keeps the rest of the parser free of line-ending cases:
+/// everything downstream of this function sees LF, including the body, which
+/// is verbatim with respect to the normalised text and not to the bytes on
+/// disk. That is the whole of "normalised on first rewrite".
+///
+/// A lone `\r` is left alone: old Mac line endings are not a case the format
+/// claims to support, and silently rewriting them would be a guess.
+pub fn normalise_line_endings(input: &str) -> Cow<'_, str> {
+    if input.contains("\r\n") {
+        Cow::Owned(input.replace("\r\n", "\n"))
+    } else {
+        Cow::Borrowed(input)
+    }
+}
+
+/// Does this text carry CRLF line endings? The question `check` asks to tell a
+/// file that is merely not canonical from one that is wrong.
+pub fn has_crlf(input: &str) -> bool {
+    input.contains("\r\n")
+}
+
 /// Separates frontmatter from body. The body is kept verbatim, byte for byte,
 /// including the newline that follows the closing `---`.
 fn split_frontmatter(input: &str) -> Result<(&str, &str)> {
@@ -88,6 +113,13 @@ fn split_frontmatter(input: &str) -> Result<(&str, &str)> {
 // ---------------------------------------------------------------------------
 
 pub fn parse_entity(input: &str) -> Result<Entity> {
+    // The single place line endings are dealt with. A `---\r\n` reported as
+    // "missing frontmatter" costs the reader an hour down the wrong path (§3),
+    // so it never gets as far as the split.
+    parse_entity_lf(&normalise_line_endings(input))
+}
+
+fn parse_entity_lf(input: &str) -> Result<Entity> {
     let (fm, body) = split_frontmatter(input)?;
     let probe: TypeProbe = serde_yaml::from_str(fm)?;
     match probe.entity_type.as_str() {

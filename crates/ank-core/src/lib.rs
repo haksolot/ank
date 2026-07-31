@@ -31,6 +31,7 @@ pub use model::{
     Adr, AdrStatus, CriteriaBy, Entity, Proof, ProofType, Task, TaskStatus, SCHEMA_VERSION,
 };
 pub use parse::{
-    parse_adr, parse_entity, parse_task, serialize_adr, serialize_entity, serialize_task,
+    has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_task, serialize_adr,
+    serialize_entity, serialize_task,
 };
 pub use scope::ScopeSet;

@@ -1,8 +1,12 @@
 //! Conformance suite for the Ank format.
 //!
 //! Any third-party tool that claims to read or write the format can reuse the
-//! `tests/golden/` directory: the `valid/` files must round-trip byte for byte,
-//! and the `invalid/` files must be rejected.
+//! `tests/golden/` directory: the `valid/` files must round-trip byte for byte
+//! once normalised, and the `invalid/` files must be rejected.
+//!
+//! "Once normalised" carries one file: `TASK-c71f0e5a9b23.md` is in CRLF on
+//! purpose and must come back in LF, because the format is read in either and
+//! written in one (§3).
 
 use ank_core::*;
 use std::fs;
@@ -14,20 +18,76 @@ fn golden_dir(sub: &str) -> PathBuf {
         .join(sub)
 }
 
+/// The round-trip is the identity **on canonical form** (§3). Valid but
+/// non-canonical input is read correctly and normalised on first rewrite, so
+/// the assertion is byte identity against the *normalised* input: for a file
+/// already canonical that is the file itself, and the old guarantee is
+/// unweakened. For one that is not, demanding it come back unchanged would be
+/// demanding that ank write CRLF, which §3 forbids in as many words.
 #[test]
-fn valid_files_round_trip_byte_identical() {
+fn valid_files_round_trip_byte_identical_once_canonical() {
     let dir = golden_dir("valid");
     let mut checked = 0;
+    let mut crlf_seen = 0;
     for entry in fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
         let input = fs::read_to_string(&path).unwrap();
         let entity = parse_entity(&input)
             .unwrap_or_else(|e| panic!("{} should be valid: {e}", path.display()));
         let output = serialize_entity(&entity);
-        assert_eq!(input, output, "round-trip differs for {}", path.display());
+
+        if has_crlf(&input) {
+            crlf_seen += 1;
+            assert!(
+                !has_crlf(&output),
+                "{} came back with CRLF: read, never written",
+                path.display()
+            );
+        }
+        assert_eq!(
+            normalise_line_endings(&input),
+            output,
+            "round-trip differs for {}",
+            path.display()
+        );
         checked += 1;
     }
     assert!(checked >= 5, "valid golden files are missing");
+    // Guards the fixture against .gitattributes: if git ever normalises it on
+    // checkout, this test stops covering CRLF and says so instead of passing.
+    assert_eq!(
+        crlf_seen, 1,
+        "the CRLF fixture is missing or was converted to LF on checkout"
+    );
+}
+
+/// The diagnostic a CRLF file earns is the one that names line endings, never
+/// "missing frontmatter". That substitution is the whole reason this exists:
+/// `---\r\n` reported as missing frontmatter sends the reader to look for a
+/// delimiter that is right there.
+#[test]
+fn crlf_is_read_and_never_diagnosed_as_missing_frontmatter() {
+    let path = golden_dir("valid").join("TASK-c71f0e5a9b23.md");
+    let input = fs::read_to_string(&path).unwrap();
+    assert!(
+        has_crlf(&input),
+        "the fixture must carry CRLF to mean anything"
+    );
+
+    // It parses. Before this task it did not, and the error was the wrong one.
+    let entity = parse_entity(&input).expect("CRLF must be read, not rejected");
+
+    // The body crossed intact apart from its line endings.
+    let out = serialize_entity(&entity);
+    assert!(!has_crlf(&out));
+    assert!(out.contains("## Log\n- 2026-07-28T00:22:06Z"));
+
+    // And the diagnostic that describes it names the cause, with the command:
+    // the file cannot be fixed by editing it while git converts on checkout.
+    let d = Error::CrlfLineEndings.to_string();
+    assert!(d.contains("CRLF"), "{d}");
+    assert!(d.contains("git config core.autocrlf input"), "{d}");
+    assert!(!d.contains("missing frontmatter"), "{d}");
 }
 
 #[test]

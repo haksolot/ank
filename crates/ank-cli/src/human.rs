@@ -31,8 +31,8 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::verify;
 use ank_core::{
-    append_log, freeze, parse_entity, serialize_entity, verify_frozen, Adr, AdrStatus, Entity,
-    EntityId, EntityKind, LogEntry, Task, TaskStatus,
+    append_log, freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity,
+    verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus,
 };
 use ank_core::{CriteriaBy, ScopeSet};
 use std::collections::{HashMap, HashSet};
@@ -164,11 +164,25 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             match parse_entity(&text) {
                 Err(e) => report.findings.push(Finding::fault(&name, format!("{e}"))),
                 Ok(entity) => {
-                    if serialize_entity(&entity) != text {
-                        report.findings.push(Finding::fault(
-                            &name,
-                            "non-canonical form (round-trip differs)",
-                        ));
+                    let canonical = serialize_entity(&entity);
+                    if canonical != text {
+                        // Two deviations wearing one symptom. If dropping the
+                        // carriage returns leaves the canonical form, the
+                        // content is right and only git is wrong: nobody wrote
+                        // a malformed file, and failing CI over a checkout
+                        // setting would be reporting the wrong culprit. A
+                        // signal, exit 0. Anything else is a corpus defect.
+                        if has_crlf(&text) && canonical == normalise_line_endings(&text) {
+                            report.findings.push(Finding::signal(
+                                &name,
+                                ank_core::Error::CrlfLineEndings.to_string(),
+                            ));
+                        } else {
+                            report.findings.push(Finding::fault(
+                                &name,
+                                "non-canonical form (round-trip differs)",
+                            ));
+                        }
                     }
                     if name != format!("{}.md", entity.id()) {
                         report.findings.push(Finding::fault(
@@ -1304,6 +1318,66 @@ mod tests {
             r.findings
         );
         assert_eq!(t.call(&["check"], "m").unwrap().0, 8, "faults exit 8");
+    }
+
+    /// The same symptom as the test above -- the round-trip differs -- and the
+    /// opposite verdict, because the content is canonical and only the line
+    /// endings are not. Failing CI over a git checkout setting would report the
+    /// wrong culprit to the wrong person.
+    #[test]
+    fn crlf_alone_is_a_signal_and_check_still_exits_zero() {
+        let t = Temp::new();
+        t.write(&task("000000000001", TaskStatus::Open, &[]));
+        let p = t
+            .store()
+            .path_of(&EntityId::parse("TASK-000000000001").unwrap());
+
+        let text = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, text.replace('\n', "\r\n")).unwrap();
+
+        let r = t.report();
+        // Named by its cause, and carrying the command: the file cannot be
+        // repaired by editing it while git converts back on every checkout.
+        assert!(has(&r, Level::Signal, "CRLF"), "{:?}", r.findings);
+        assert!(
+            has(&r, Level::Signal, "git config core.autocrlf input"),
+            "{:?}",
+            r.findings
+        );
+        // And explicitly not the other diagnosis.
+        assert!(!has(&r, Level::Fault, "non-canonical"), "{:?}", r.findings);
+        assert!(
+            !has(&r, Level::Fault, "missing frontmatter"),
+            "{:?}",
+            r.findings
+        );
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        assert_eq!(
+            t.call(&["check"], "m").unwrap().0,
+            0,
+            "CRLF alone must not fail the build"
+        );
+    }
+
+    /// CRLF is the excuse, not the amnesty: a file that is also malformed is
+    /// still a fault.
+    #[test]
+    fn crlf_does_not_excuse_a_genuinely_non_canonical_file() {
+        let t = Temp::new();
+        t.write(&task("000000000001", TaskStatus::Open, &[]));
+        let p = t
+            .store()
+            .path_of(&EntityId::parse("TASK-000000000001").unwrap());
+
+        let text = std::fs::read_to_string(&p).unwrap();
+        let both = text
+            .replace("status: open", "status:  open")
+            .replace('\n', "\r\n");
+        std::fs::write(&p, both).unwrap();
+
+        let r = t.report();
+        assert!(has(&r, Level::Fault, "non-canonical"), "{:?}", r.findings);
+        assert_eq!(t.call(&["check"], "m").unwrap().0, 8);
     }
 
     #[test]
