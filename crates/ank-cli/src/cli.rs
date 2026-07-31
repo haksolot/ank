@@ -136,7 +136,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit")],
-        owner_task: Some("TASK-d4e5f6a7b8c9"),
+        owner_task: None,
     },
     CommandSpec {
         name: "claim",
@@ -512,6 +512,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
 
     let s = startup(&inv, cwd)?;
     match inv.command {
+        "context" => crate::context::run(&inv, &s.repo, &s.config, &s.identity, out),
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         _ => Err(not_implemented(spec)),
     }
@@ -666,9 +667,9 @@ mod tests {
         // `owner_task` is what `not_implemented` names, so leaving it set on a
         // verb dispatch reaches would advertise an implementation as missing
         // while it runs. Exactly the drift this task existed to fix, in the
-        // opposite direction: `init` and `claim` are the two verbs routed
-        // today, and both must be clear of it.
-        for routed in ["init", "claim"] {
+        // opposite direction: `init`, `claim` and `context` are the verbs
+        // routed today, and all must be clear of it.
+        for routed in ["init", "claim", "context"] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
                 None,
@@ -677,7 +678,7 @@ mod tests {
         }
         // And the verbs still falling through keep naming their task, which is
         // the only help an agent gets on them.
-        for stub in ["context", "done", "log", "release", "new", "find"] {
+        for stub in ["done", "log", "release", "new", "find"] {
             assert!(
                 spec_of(stub).unwrap().owner_task.is_some(),
                 "{stub} answers not_implemented and must say by whom"

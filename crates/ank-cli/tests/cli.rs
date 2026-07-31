@@ -194,7 +194,7 @@ fn the_exit_code_of_a_refusal_reaches_the_process() {
 fn a_verb_whose_module_is_a_stub_still_names_its_task() {
     let r = Repo::new();
     r.seed_task(ID, Some("A verifiable criterion."));
-    for verb in ["context", "done", "check", "show", "find"] {
+    for verb in ["done", "check", "show", "find"] {
         let out = r.ank("claude-code@ank", &[verb, ID]);
         let err = stderr(&out);
         assert_eq!(code(&out), 1, "{verb}: {err}");
@@ -235,6 +235,73 @@ fn json_is_available_on_the_verb_that_exists() {
     assert!(text.trim().starts_with('{'), "{text}");
     assert!(text.contains(ID), "{text}");
     assert!(text.contains("expires"), "{text}");
+}
+
+#[test]
+fn context_exits_zero_in_both_modes_and_switches_on_the_claim() {
+    // "exits 0 with an explicit message" is a statement about the process, so
+    // it is the process that answers it.
+    let r = Repo::new();
+    r.seed_task(ID, Some("Auth integration tests pass."));
+
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("TASKS (1)"), "{text}");
+    assert!(text.contains("> ank claim"), "{text}");
+    assert!(
+        !text.contains("DONE_CRITERIA"),
+        "orientation stays broad: {text}"
+    );
+
+    // Claiming flips the same command to execution, with no extra argument.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("DONE_CRITERIA"), "{text}");
+    assert!(text.contains("Auth integration tests pass."), "{text}");
+    assert!(
+        !text.contains("> ank claim"),
+        "no other task to offer: {text}"
+    );
+
+    // A path argument is ignored while a claim is held, and said so.
+    let out = r.ank("claude-code@ank", &["context", "src/"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(code(&out), 0);
+    assert!(text.contains("execution context"), "{text}");
+
+    // Another agent, no claim of its own: orientation again, and the task is
+    // shown as held rather than offered.
+    let out = r.ank("codex@host-9", &["context"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("[claimed:claude-code@ank]"), "{text}");
+    assert!(text.contains("no ready tasks in scope"), "{text}");
+}
+
+#[test]
+fn an_empty_corpus_is_a_clean_stop_and_not_a_breakdown() {
+    // An agent in a loop needs a signal it can act on; an empty output reads
+    // as a failure and triggers pointless retries.
+    let r = Repo::new();
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.contains("no ready tasks in scope"), "{text}");
+    assert!(!text.trim().is_empty());
+}
+
+#[test]
+fn context_json_reaches_the_process_intact() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    let out = r.ank("claude-code@ank", &["context", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    assert!(text.trim_start().starts_with('{'), "{text}");
+    assert!(text.contains("\"mode\":\"orientation\""), "{text}");
+    assert!(text.contains("\"ready\":1"), "{text}");
 }
 
 #[test]
