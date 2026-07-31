@@ -4,7 +4,7 @@ type: task
 slug: dispatch-to-verb-modules
 title: Dispatch routes to the verb modules, and the stubs stop claiming it already does
 created: 2026-07-31T03:12:00Z
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/**
   - crates/ank-cli/tests/**
@@ -23,8 +23,11 @@ done_criteria: |
   states that dispatch routes to a module it does not reach.
 criteria_by: creator
 verify: [cargo-test]
+proof:
+  - type: commit
+    ref: 90909dc
 schema: 1
-version: 2
+version: 3
 ---
 
 The comment at the head of `done.rs`, `context.rs`, `index.rs`, `commands.rs`,
@@ -62,3 +65,4 @@ the shortcut the rule was written against.
 
 ## Log
 - 2026-07-31T03:20Z claude-code@ank — in_progress; manual claim, dispatch reaches no verb yet. Scope widened before claiming, criterion untouched: the false comment turned out to be in six modules, and claim.rs's own header becomes false in the other direction the moment routing exists.
+- 2026-07-31T03:19Z claude-code@ank — done: 90909dc, 72 + 6 + 11 tests, fmt and check_repo green. dispatch matches after startup, claim routed and the rest still falling through by name. owner_task cleared on claim and the correspondence pinned by a test, so the field cannot drift the way the comments did. index.rs and verify.rs corrected differently: nothing dispatches to either, and it never will. tests/cli.rs spawns the real binary, which is the only place the exit code exists.
