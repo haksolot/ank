@@ -888,10 +888,22 @@ mod tests {
             .unwrap()
             .iter()
             .all(|r| r.path.starts_with("adr/")));
+        // This task indexes itself. Asserted on what cannot drift: the path is
+        // derived from the id, so it holds for the life of the corpus. An
+        // earlier version of this test pinned the status to `in_progress` and
+        // would have failed the moment the task it belongs to was marked done
+        // -- a test coupled to the corpus's mutable state rather than to the
+        // index's behaviour.
         let mine = index
             .get(&EntityId::parse("TASK-b2c3d4e5f6a7").unwrap())
             .unwrap()
             .expect("this task indexes itself");
-        assert_eq!(mine.status, "in_progress");
+        assert_eq!(mine.path, "tasks/TASK-b2c3d4e5f6a7.md");
+        assert!(
+            ["open", "in_progress", "done", "closed"].contains(&mine.status.as_str()),
+            "status read back as '{}'",
+            mine.status
+        );
+        assert!(mine.version >= 1);
     }
 }
