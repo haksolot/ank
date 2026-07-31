@@ -469,13 +469,27 @@ fn check_task(
         }
     }
 
+    // The statement this signal makes is about the task, not about the entry:
+    // *its completion rests on nothing verifiable*. That is false the moment a
+    // strong proof sits beside the weak one, so the condition belongs here and
+    // not inside the loop.
+    //
+    // Read on the entry, it was a finding nobody could act on. §3 makes the
+    // proof list append-only and ADR-85e6bbb195b8 forbids rewriting an entry to
+    // make history look better, so a task closed before `ank done` existed could
+    // never clear it: the assertion has to stay, and the assertion was what
+    // fired. A line every reader learns to skip is worse than no line.
+    if !t.proof.is_empty() && t.proof.iter().all(|p| p.proof_type.is_weak()) {
+        // The first weak entry names the kind, which is what a reader acts on;
+        // one finding per task, because the task is what is being judged.
+        let kind = t.proof[0].proof_type.as_str();
+        report.findings.push(Finding::signal(
+            &t.id,
+            format!("weak proof '{kind}': it anchors nothing"),
+        ));
+    }
+
     for p in &t.proof {
-        if p.proof_type.is_weak() {
-            report.findings.push(Finding::signal(
-                &t.id,
-                format!("weak proof '{}': it anchors nothing", p.proof_type.as_str()),
-            ));
-        }
         // What ran is anchored in the proof, not in the current state of
         // config.yml. A verifier weakened in any commit shows up here.
         if let Some((name, hash)) = p.verifier.as_ref().and_then(|v| v.split_once('@')) {
@@ -1532,6 +1546,94 @@ mod tests {
         assert!(has(&r, Level::Signal, "no ratification commit"));
         assert!(has(&r, Level::Signal, "no ratification key"));
         assert_eq!(t.call(&["check"], "m").unwrap().0, 0, "signals exit 0");
+    }
+
+    /// The three shapes a proof list can take, because the interesting one is
+    /// the mixture and it is the one that did not exist before: §3 makes the
+    /// list append-only, so "weak and strong together" is the *only* shape a
+    /// task closed before `ank done` can ever reach.
+    #[test]
+    fn a_weak_proof_signals_only_while_nothing_strong_sits_beside_it() {
+        fn proof(proof_type: ProofType, reference: &str) -> Proof {
+            Proof {
+                proof_type,
+                reference: reference.into(),
+                tree: None,
+                criteria: None,
+                verifier: None,
+            }
+        }
+        fn with_proofs(id: &str, proofs: Vec<Proof>) -> Entity {
+            let mut e = task(id, TaskStatus::Done, &[]);
+            if let Entity::Task(x) = &mut e {
+                x.proof = proofs;
+            }
+            e
+        }
+
+        let t = Temp::new();
+        // Weak alone: signalled, and the wording is the one readers know.
+        t.write(&with_proofs(
+            "000000000001",
+            vec![proof(ProofType::Assertion, "it works")],
+        ));
+        // Strong alone: nothing to say.
+        t.write(&with_proofs(
+            "000000000002",
+            vec![proof(ProofType::Test, "local/abcdef123456@0000000")],
+        ));
+        // Both, which is what an append produces. The assertion stays as the
+        // record of how the task was actually closed; the task no longer rests
+        // on it, so the task is clean.
+        t.write(&with_proofs(
+            "000000000003",
+            vec![
+                proof(ProofType::Assertion, "it works"),
+                proof(ProofType::Test, "local/abcdef123456@0000000"),
+            ],
+        ));
+
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "none of these is a fault: {:?}", r.findings);
+
+        let weak: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("weak proof"))
+            .collect();
+        assert_eq!(
+            weak.len(),
+            1,
+            "one task rests on nothing, and only one: {:?}",
+            r.findings
+        );
+        assert!(weak[0].subject.contains("000000000001"), "{:?}", weak[0]);
+        assert_eq!(
+            weak[0].message,
+            "weak proof 'assertion': it anchors nothing"
+        );
+        assert_eq!(weak[0].level, Level::Signal);
+
+        // human-review is weak too, and a task carrying only weak entries of
+        // more than one kind is still one finding, not two.
+        let t = Temp::new();
+        t.write(&with_proofs(
+            "000000000004",
+            vec![
+                proof(ProofType::HumanReview, "reviewed by a human"),
+                proof(ProofType::Assertion, "it works"),
+            ],
+        ));
+        let r = t.report();
+        assert_eq!(
+            r.findings
+                .iter()
+                .filter(|f| f.message.contains("weak proof"))
+                .count(),
+            1,
+            "the task is what is being judged, not the entry: {:?}",
+            r.findings
+        );
     }
 
     #[test]
