@@ -61,7 +61,28 @@ pub enum StoreError {
     },
     LockTimeout {
         lock: PathBuf,
+        /// What the last refusal actually was, so the message can tell a lock
+        /// somebody holds apart from a directory that never lets us in.
+        last: Refusal,
     },
+    /// The lock cannot be created and waiting will not help: the directory
+    /// refuses us. Distinct from [`StoreError::LockTimeout`], which is the same
+    /// outcome after ten seconds of a cause that could have resolved itself.
+    LockDenied {
+        dir: PathBuf,
+        source: std::io::Error,
+    },
+}
+
+/// The kind of refusal observed when creating the lock file, reduced to the
+/// two cases the messages distinguish.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// The lock file exists: somebody holds it.
+    Held,
+    /// The open was denied. On Windows this is a lock in the middle of being
+    /// released; sustained for the whole deadline it stops being credible.
+    Denied,
 }
 
 impl StoreError {
@@ -76,6 +97,10 @@ impl StoreError {
             | StoreError::Parse { .. }
             | StoreError::Io { .. }
             | StoreError::LockTimeout { .. } => 1,
+            // An environment to repair, not work that failed (§4). Same family
+            // as a missing git or a directory outside a repository: the agent
+            // can do nothing about it, and the person running the tool can.
+            StoreError::LockDenied { .. } => 9,
         }
     }
 
@@ -92,7 +117,17 @@ impl StoreError {
             StoreError::FilenameMismatch { path, expected } => {
                 Some(format!("git mv {} {}", path.display(), expected.display()))
             }
-            StoreError::LockTimeout { lock } => Some(format!("rm {}", lock.display())),
+            // A held lock is removed; a denied one is not, because removing it
+            // is exactly what we were not allowed to do.
+            StoreError::LockTimeout {
+                lock,
+                last: Refusal::Held,
+            } => Some(format!("rm {}", lock.display())),
+            StoreError::LockTimeout {
+                lock,
+                last: Refusal::Denied,
+            } => lock.parent().map(|dir| format!("icacls {}", dir.display())),
+            StoreError::LockDenied { dir, .. } => Some(format!("ls -ld {}", dir.display())),
             StoreError::Parse { .. } | StoreError::Io { .. } => None,
         }
     }
@@ -124,11 +159,30 @@ impl fmt::Display for StoreError {
             ),
             StoreError::Parse { path, source } => write!(f, "{}: {source}", path.display()),
             StoreError::Io { path, source } => write!(f, "{}: {source}", path.display()),
-            StoreError::LockTimeout { lock } => write!(
+            StoreError::LockTimeout {
+                lock,
+                last: Refusal::Held,
+            } => write!(
                 f,
                 "lock {} still held after {}s, process probably dead",
                 lock.display(),
                 LOCK_TIMEOUT.as_secs()
+            ),
+            // Reached only where a denied open is treated as contention, which
+            // is Windows. Ten seconds of it is no longer a lock being released.
+            StoreError::LockTimeout {
+                lock,
+                last: Refusal::Denied,
+            } => write!(
+                f,
+                "lock {} refused access for {}s: not contention, the directory does not let us write",
+                lock.display(),
+                LOCK_TIMEOUT.as_secs()
+            ),
+            StoreError::LockDenied { dir, source } => write!(
+                f,
+                "cannot create a lock in {}: {source}",
+                dir.display()
             ),
         }
     }
@@ -167,40 +221,85 @@ struct Lock {
     path: PathBuf,
 }
 
+/// The platform whose rules apply to a lock refusal.
+///
+/// Taken as a parameter rather than read from `cfg!` at the point of decision,
+/// so that both branches are exercised from either host. A `cfg!(windows)`
+/// buried in the retry loop would only ever be testable on half the machines,
+/// and that is precisely the coverage hole this task exists to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockPlatform {
+    Windows,
+    Posix,
+}
+
+impl LockPlatform {
+    /// The platform this binary was built for. The single `cfg!`, at the edge.
+    pub const HOST: LockPlatform = if cfg!(windows) {
+        LockPlatform::Windows
+    } else {
+        LockPlatform::Posix
+    };
+}
+
+/// Is this refusal to create the lock file something that waiting can resolve?
+///
+/// Pure: same answer for the same inputs, no clock, no filesystem. That is what
+/// makes the Windows branch verifiable on Linux and the POSIX branch verifiable
+/// on Windows.
+///
+/// `AlreadyExists` is nominal contention everywhere — somebody holds the lock.
+///
+/// `PermissionDenied` is contention **on Windows only**, and it is
+/// counter-intuitive: between the `remove_file` in `Drop` and the file actually
+/// disappearing, it sits in a delete-pending state where opening it returns
+/// ERROR_ACCESS_DENIED rather than ERROR_FILE_EXISTS. Treating that as fatal
+/// would fail on a lock in the middle of being released, which under
+/// concurrency is the nominal case.
+///
+/// On POSIX the same kind means what it says: the directory is not writable.
+/// Retrying it for ten seconds waits for nothing before a certain failure, and
+/// buries the real cause under a lock message.
+pub fn is_contention(kind: ErrorKind, platform: LockPlatform) -> bool {
+    match kind {
+        ErrorKind::AlreadyExists => true,
+        ErrorKind::PermissionDenied => platform == LockPlatform::Windows,
+        _ => false,
+    }
+}
+
 impl Lock {
     fn acquire(target: &Path) -> Result<Lock> {
+        Lock::acquire_as(target, LockPlatform::HOST)
+    }
+
+    /// `acquire` with the platform injected, which is the seam the tests use.
+    fn acquire_as(target: &Path, platform: LockPlatform) -> Result<Lock> {
         let path = lock_path(target);
         let deadline = Instant::now() + LOCK_TIMEOUT;
-        // The last refusal observed, so that in the end we can tell contention
-        // apart from a genuine permissions problem.
-        let mut last: Option<std::io::Error> = None;
+        // Which refusal we kept seeing, so the timeout message can say whether
+        // it was a holder or a door that never opened.
+        let mut last = Refusal::Held;
         loop {
             match OpenOptions::new().write(true).create_new(true).open(&path) {
                 Ok(_) => return Ok(Lock { path }),
-                // `AlreadyExists` is nominal contention. So is
-                // `PermissionDenied` on Windows, and that is counter-intuitive:
-                // between the `remove_file` in `Drop` and the actual
-                // disappearance, the file is in a delete-pending state and
-                // opening it returns ERROR_ACCESS_DENIED, not
-                // ERROR_FILE_EXISTS. Treating that as a fatal error would fail
-                // on a lock in the middle of being released — that is, exactly
-                // the nominal case under concurrency.
-                Err(e)
-                    if e.kind() == ErrorKind::AlreadyExists
-                        || e.kind() == ErrorKind::PermissionDenied =>
-                {
+                Err(e) if is_contention(e.kind(), platform) => {
                     if Instant::now() >= deadline {
-                        return match last {
-                            // Ten seconds of permission refusals are not
-                            // contention: we return the system error as it is.
-                            Some(source) if source.kind() == ErrorKind::PermissionDenied => {
-                                Err(StoreError::Io { path, source })
-                            }
-                            _ => Err(StoreError::LockTimeout { lock: path }),
-                        };
+                        return Err(StoreError::LockTimeout { lock: path, last });
                     }
-                    last = Some(e);
+                    last = match e.kind() {
+                        ErrorKind::PermissionDenied => Refusal::Denied,
+                        _ => Refusal::Held,
+                    };
                     std::thread::sleep(Duration::from_millis(1));
+                }
+                // Not contention on this platform. Fail now, without spending
+                // the deadline on an outcome that cannot change, and name the
+                // directory rather than the lock file: the lock is not the
+                // problem, the place we cannot create it in is.
+                Err(source) if source.kind() == ErrorKind::PermissionDenied => {
+                    let dir = path.parent().unwrap_or(&path).to_path_buf();
+                    return Err(StoreError::LockDenied { dir, source });
                 }
                 Err(source) => return Err(StoreError::Io { path, source }),
             }
@@ -666,5 +765,164 @@ mod tests {
             !lock_path(&path).exists(),
             "a surviving lock would block every later write"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Lock refusals: the decision, both platforms, from whichever host runs
+    // -----------------------------------------------------------------------
+
+    /// The whole truth table, so neither branch depends on the host. This is
+    /// the test the original bug did not have: the Windows rule was written on
+    /// Windows and could not be contradicted anywhere else.
+    #[test]
+    fn contention_is_decided_by_kind_and_platform_together() {
+        use ErrorKind::*;
+        use LockPlatform::*;
+
+        // A held lock is contention everywhere.
+        assert!(is_contention(AlreadyExists, Windows));
+        assert!(is_contention(AlreadyExists, Posix));
+
+        // A denied open is a lock being released on Windows, and a directory
+        // we may not write to anywhere else. Same kind, opposite answers --
+        // which is why the platform cannot be implicit.
+        assert!(is_contention(PermissionDenied, Windows));
+        assert!(!is_contention(PermissionDenied, Posix));
+
+        // Everything else is a real failure on both.
+        for kind in [NotFound, InvalidInput, Unsupported] {
+            assert!(!is_contention(kind, Windows), "{kind:?} on Windows");
+            assert!(!is_contention(kind, Posix), "{kind:?} on Posix");
+        }
+    }
+
+    #[test]
+    fn the_host_platform_matches_the_target_it_was_built_for() {
+        if cfg!(windows) {
+            assert_eq!(LockPlatform::HOST, LockPlatform::Windows);
+        } else {
+            assert_eq!(LockPlatform::HOST, LockPlatform::Posix);
+        }
+    }
+
+    /// The two timeout messages are different texts, and only one of them
+    /// invites deleting the lock: removing a file we were denied access to is
+    /// not a next step, it is the thing that already failed.
+    #[test]
+    fn the_timeout_message_says_which_refusal_it_kept_seeing() {
+        let lock = PathBuf::from("/repo/.ank/tasks/.TASK-000000000001.lock");
+        let held = StoreError::LockTimeout {
+            lock: lock.clone(),
+            last: Refusal::Held,
+        };
+        let denied = StoreError::LockTimeout {
+            lock: lock.clone(),
+            last: Refusal::Denied,
+        };
+
+        assert!(held.to_string().contains("still held"));
+        assert!(denied.to_string().contains("not contention"));
+        assert_ne!(held.to_string(), denied.to_string());
+
+        assert!(held.hint().unwrap().starts_with("rm "));
+        assert!(!denied.hint().unwrap().starts_with("rm "));
+    }
+
+    /// The message names the directory, not the lock file: the lock is not the
+    /// problem, the place we cannot create it in is.
+    #[test]
+    fn a_denied_lock_names_its_directory_and_exits_nine() {
+        let err = StoreError::LockDenied {
+            dir: PathBuf::from("/repo/.ank/tasks"),
+            source: std::io::Error::new(ErrorKind::PermissionDenied, "permission denied"),
+        };
+        assert!(err.to_string().contains("/repo/.ank/tasks"));
+        assert!(err.hint().unwrap().contains("/repo/.ank/tasks"));
+        // An environment to repair, not work that failed.
+        assert_eq!(err.code(), 9);
+    }
+
+    /// Does this directory actually refuse a new file? Chmod does not bind
+    /// root, and the two tests below assert on a refusal that would simply not
+    /// happen in a root container. Verifying the precondition beats asserting
+    /// on an outcome the environment never produced.
+    #[cfg(unix)]
+    fn refuses_writes(dir: &Path) -> bool {
+        let probe = dir.join(".ank-write-probe");
+        match fs::File::create(&probe) {
+            Ok(_) => {
+                let _ = fs::remove_file(&probe);
+                false
+            }
+            Err(e) => e.kind() == ErrorKind::PermissionDenied,
+        }
+    }
+
+    /// The real thing, against a real unwritable directory: POSIX fails at
+    /// once instead of sleeping through the ten-second deadline first.
+    ///
+    /// Unix-only because making a directory refuse writes portably is not a
+    /// thing -- on Windows it takes an ACL, and the Windows side of the rule is
+    /// covered by the truth table above plus the concurrency test, which is
+    /// what exercises delete-pending for real.
+    #[cfg(unix)]
+    #[test]
+    fn on_posix_a_denied_directory_fails_immediately() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempRoot::new();
+        let dir = root.0.join("tasks");
+        let target = dir.join("TASK-000000000001.md");
+
+        // r-x: we may look, we may not create.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        if !refuses_writes(&dir) {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+
+        let started = Instant::now();
+        let err = Lock::acquire_as(&target, LockPlatform::Posix).unwrap_err();
+        let elapsed = started.elapsed();
+
+        // Restore before any assertion can panic, or the TempRoot cannot clean
+        // up after itself.
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        match err {
+            StoreError::LockDenied { dir: d, .. } => assert_eq!(d, dir),
+            other => panic!("expected LockDenied, got {other:?}"),
+        }
+        assert!(
+            elapsed < LOCK_TIMEOUT / 2,
+            "the deadline was consumed: {elapsed:?} of {LOCK_TIMEOUT:?}"
+        );
+    }
+
+    /// The same directory, judged by the Windows rule, is retried instead --
+    /// and ends in a timeout that says so. This is the Windows branch running
+    /// on Linux, which is the point of taking the platform as an argument.
+    #[cfg(unix)]
+    #[test]
+    fn the_windows_rule_retries_the_same_directory_and_times_out_saying_so() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = TempRoot::new();
+        let dir = root.0.join("tasks");
+        let target = dir.join("TASK-000000000001.md");
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        if !refuses_writes(&dir) {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+            return;
+        }
+
+        let err = Lock::acquire_as(&target, LockPlatform::Windows).unwrap_err();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+
+        match err {
+            StoreError::LockTimeout { last, .. } => assert_eq!(last, Refusal::Denied),
+            other => panic!("expected LockTimeout, got {other:?}"),
+        }
     }
 }

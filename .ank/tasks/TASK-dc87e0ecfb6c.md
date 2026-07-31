@@ -4,7 +4,7 @@ type: task
 slug: os-conditioned-lock-retry
 title: Lock retry conditioned by OS, with PermissionDenied fatal outside Windows
 created: 2026-07-28T00:38:32Z
-status: open
+status: done
 scope:
   - crates/ank-cli/src/store.rs
 blocked_by: []
@@ -19,8 +19,14 @@ done_criteria: |
   refusal. cargo test is green.
 criteria_by: creator
 verify: [cargo-test]
+proof:
+  - type: test
+    ref: local/0d693bd3f0c6@ca8490a
+    tree: scope/6e7b861a1a15
+    criteria: 325ceb1b089f
+    verifier: cargo-test@f14aeab36e1b
 schema: 1
-version: 2
+version: 5
 ---
 
 A bug found in TASK-244a842bc0cc, which is `done`: a new task, never a re-edit.
@@ -35,3 +41,25 @@ and that is exactly the coverage hole that produced the original bug.
 
 Scope corrected relative to the request: `store.rs` lives in `ank-cli`, not in
 `ank-core` — the latter deliberately performs no disk I/O.
+
+Taken out of order, and deliberately. The selection rule (§5, no `priority`
+field in use) puts TASK-b8c9d0e1f2a3 first on `created`; the human owning this
+repository chose correctness before distribution, on the grounds that shipping
+binaries carrying a known wrong branch is worse than shipping later. Recorded
+here so the file does not imply the rule chose this task.
+
+`LockDenied` exits **9** rather than 1. A directory that will not accept a file
+is an environment to repair, not work that failed — the same family as a missing
+git or a working directory outside a repository, and the person running the tool
+can act on it where the agent cannot.
+
+Two of the four new tests are `cfg(unix)`: making a directory refuse writes
+portably is not a thing, and on Windows it takes an ACL. They check the
+precondition before asserting on it, because chmod does not bind root and a root
+container would otherwise fail on an outcome it never produced. The Windows
+branch is covered from every host by the truth table, and for real by the
+existing concurrency test, which is what exercises delete-pending.
+
+## Log
+- 2026-07-31T16:45:41Z claude-code@ank — is_contention(ErrorKind, LockPlatform) is the pure decision, with the single cfg! at the edge in LockPlatform::HOST. PermissionDenied now fails at once on posix as LockDenied, code 9, naming the directory and not the lock file: the lock is not the problem, the place we cannot create it in is. LockTimeout carries the last refusal so the post-deadline message tells a holder apart from a door that never opens, and only the holder case invites rm. The Windows branch is exercised from Linux by passing LockPlatform::Windows, which is the whole point of the parameter.
+- 2026-07-31T16:46:07Z claude-code@ank — done, proof test:local/0d693bd3f0c6@ca8490a
