@@ -563,6 +563,54 @@ fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
     assert!(String::from_utf8_lossy(&out.stdout).contains("Example task"));
 }
 
+/// A claim that lapsed and left the file behind.
+///
+/// Through the binary because the thing being read is the ref namespace, and a
+/// unit test would assert the module's agreement with itself. The state is built
+/// the way it actually arises — a real claim, then the ref goes away — rather
+/// than by writing `status: in_progress` into a file by hand, which would test a
+/// corpus nobody produces.
+///
+/// TASK-daf25ab8a9b7 sat in exactly this state through fifteen signals on this
+/// repository's own corpus, and not one of them was about it.
+#[test]
+fn a_task_in_progress_with_no_claim_ref_is_signalled_and_never_fails_ci() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    assert!(r.claim_ref(ID).is_some(), "the claim must have been taken");
+    r.git(&["update-ref", "-d", &format!("refs/ank/claims/{ID}")]);
+    assert!(r.claim_ref(ID).is_none(), "the ref must be gone");
+    assert!(
+        r.task_text(ID).contains("status: in_progress"),
+        "the file must still claim to be held"
+    );
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "a stale record is not a corrupt corpus and must never fail CI: {text}"
+    );
+    assert!(text.contains("signal:"), "{text}");
+    assert!(text.contains(ID), "the finding must name the task: {text}");
+    assert!(text.contains("no claim ref"), "{text}");
+    assert!(
+        text.contains(&format!("ank claim {ID}")),
+        "the finding must carry the command that picks it up: {text}"
+    );
+
+    // And it stops the moment something holds the task again, so the signal
+    // tracks the state rather than the history.
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), stderr(&out));
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(!text.contains("no claim ref"), "{text}");
+}
+
 // ---------------------------------------------------------------------------
 // help (§9)
 // ---------------------------------------------------------------------------

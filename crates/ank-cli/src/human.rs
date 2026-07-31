@@ -436,6 +436,26 @@ fn check_task(
             .push(Finding::fault(&t.id, "done with no proof"));
     }
 
+    // A status that says held, with no record to hold it. The arm below already
+    // notices the neighbouring case — a claim present but expired — and the two
+    // are the same invariant read from opposite sides: only one of them was
+    // implemented, so a claim that lapsed and had its ref removed left the file
+    // asserting live work that nobody was doing. `context` lists such a task and
+    // offers it to no one, which is the worst of both.
+    //
+    // A signal and never a fault. The corpus is intact; the record is stale.
+    // Exiting 8 over it would teach a reader that 8 fires for things that do not
+    // matter, and an exit code people learn to ignore is worse than none.
+    if t.status == TaskStatus::InProgress && !coord.contains_key(&t.id) {
+        report.findings.push(Finding::signal(
+            &t.id,
+            format!(
+                "in_progress with no claim ref: nothing holds it (ank claim {})",
+                t.id
+            ),
+        ));
+    }
+
     // The freeze, checked at the point of use. The anchor is the claim record,
     // which the file's editor does not control (ADR-6b3f19e08a24).
     if let Some(Record::Claim(c)) = coord.get(&t.id) {
