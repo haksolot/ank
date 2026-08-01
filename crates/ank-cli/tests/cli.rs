@@ -125,6 +125,10 @@ impl Repo {
         std::fs::read_to_string(self.0.join(".ank/tasks").join(format!("{id}.md"))).unwrap()
     }
 
+    fn adr_text(&self, id: &str) -> String {
+        std::fs::read_to_string(self.0.join(".ank/adr").join(format!("{id}.md"))).unwrap()
+    }
+
     /// `--repo` rather than a working directory, so that the flag stays on a
     /// path a real invocation takes.
     fn ank(&self, agent: &str, args: &[&str]) -> Output {
@@ -698,6 +702,84 @@ fn a_task_created_by_new_declares_its_verifiers_and_carries_its_reasoning() {
         "{}",
         r.task_text(&id)
     );
+}
+
+/// `supersedes` existed in the model, `check` enforced the chain both ways and
+/// `accept` completed it, while `commands.rs` wrote `supersedes: None`
+/// unconditionally — everything built around a value nothing could write.
+///
+/// Through the binary and reading the file, because what is asserted is what
+/// lands on disk: a resolution that never reached the serializer would pass a
+/// unit test on the parsed entity and leave the field absent.
+#[test]
+fn new_adr_writes_the_succession_it_declares() {
+    let r = Repo::new();
+    let an_adr = |title: &str, extra: &[&str]| {
+        let mut argv = vec![
+            "new",
+            "adr",
+            "--title",
+            title,
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A binding rule.",
+        ];
+        argv.extend_from_slice(extra);
+        let out = r.ank("claude-code@ank", &argv);
+        (
+            code(&out),
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            stderr(&out),
+        )
+    };
+    let id_of = |stdout: &str| {
+        stdout
+            .split_whitespace()
+            .nth(1)
+            .expect("created <id> <title>")
+            .to_string()
+    };
+
+    let (c, stdout, err) = an_adr("The replaced", &[]);
+    assert_eq!(c, 0, "{err}");
+    let replaced = id_of(&stdout);
+
+    // A short prefix resolves, exactly as `--blocked-by` does.
+    let (c, stdout, err) = an_adr("The replacement", &["--supersedes", &replaced[..9]]);
+    assert_eq!(c, 0, "{err}");
+    let replacement = id_of(&stdout);
+
+    let text = r.adr_text(&replacement);
+    assert!(
+        text.contains(&format!("supersedes: {replaced}")),
+        "the prefix is resolved to the full id on disk:\n{text}"
+    );
+    // Proposed, and never born accepted: the succession happens at `accept`.
+    assert!(text.contains("status: proposed"), "{text}");
+
+    // A reference matching nothing is refused here rather than surfacing in
+    // `check` as a corpus fault nobody can attribute to the act.
+    let (c, _, err) = an_adr("Dangling", &["--supersedes", "ADR-ffffffffffff"]);
+    assert_ne!(c, 0, "an unknown reference must not reach the file");
+    assert!(err.contains("ffffffffffff"), "{err}");
+
+    // And the flag is refused on a task, never dropped.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "T",
+            "--scope",
+            "src/**",
+            "--supersedes",
+            &replaced,
+        ],
+    );
+    assert_ne!(code(&out), 0, "a dropped flag teaches the caller it worked");
+    assert!(stderr(&out).contains("--supersedes"), "{}", stderr(&out));
 }
 
 #[test]

@@ -82,6 +82,18 @@ pub fn new(
 
     let entity = match kind {
         EntityKind::Task => {
+            // A task has no `supersedes` field, and a flag silently ignored
+            // teaches the caller it worked. Same reasoning as `--verify` on an
+            // ADR, a few lines below.
+            if inv.value("--supersedes").is_some() {
+                return Err(CliError::new(
+                    1,
+                    "--supersedes applies to an ADR: a task supersedes nothing",
+                )
+                .with_hint(
+                    "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
+                ));
+            }
             let criteria = inv.value("--criteria").map(ensure_newline);
             let mut blocked_by = Vec::new();
             for raw in inv.values("--blocked-by") {
@@ -121,6 +133,7 @@ pub fn new(
             }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {
+                supersedes: supersedes_of(inv, &store)?,
                 id: id.clone(),
                 slug: Some(slugify(&title)),
                 title: title.clone(),
@@ -132,7 +145,6 @@ pub fn new(
                 scope,
                 constraint: ensure_newline(&constraint),
                 see: None,
-                supersedes: None,
                 ratified: None,
                 schema: SCHEMA_VERSION,
                 version: 1,
@@ -230,6 +242,34 @@ fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
         }
     }
     Ok(out)
+}
+
+/// The ADR this one replaces, resolved at creation.
+///
+/// `supersedes` existed in the model, `check` enforced the chain in both
+/// directions and `accept` completed it — everything was built around a value
+/// nothing could write, because this function's absence left `supersedes: None`
+/// hard-coded. Declaring the succession then meant opening the file, which is
+/// the practice this line of work exists to end.
+///
+/// Resolved here for the same reason `--blocked-by` is, a few lines above in
+/// the same function: a reference matching nothing would otherwise surface in
+/// `check`, as a corpus fault nobody can attribute to the act that caused it.
+/// A resolved id of the wrong kind is refused too — an ADR superseding a task
+/// is not a chain `accept` or `check` can make sense of.
+fn supersedes_of(inv: &Invocation, store: &Store) -> Result<Option<EntityId>> {
+    let Some(raw) = inv.value("--supersedes") else {
+        return Ok(None);
+    };
+    let id = store.resolve(raw.trim())?;
+    if id.kind() != EntityKind::Adr {
+        return Err(CliError::new(
+            1,
+            format!("{id} is not an ADR: only an ADR supersedes an ADR"),
+        )
+        .with_hint("ank find --type adr"));
+    }
+    Ok(Some(id))
 }
 
 /// The prose that justifies the entity, in canonical shape.
@@ -870,6 +910,87 @@ mod tests {
             .unwrap_err();
         assert_eq!(err.code, 7, "{}", err.message);
         assert!(err.message.contains("--constraint"), "{}", err.message);
+    }
+
+    #[test]
+    fn new_adr_resolves_supersedes_and_refuses_what_cannot_be_superseded() {
+        let t = Temp::new();
+        let an_adr = |title: &str, extra: &[&str]| {
+            let mut argv = vec![
+                "new",
+                "adr",
+                "--title",
+                title,
+                "--scope",
+                "src/**",
+                "--constraint",
+                "A binding rule.",
+            ];
+            argv.extend_from_slice(extra);
+            t.call(&argv, "claude-code@ank")
+        };
+        let adrs = || -> Vec<EntityId> {
+            t.store()
+                .list_ids()
+                .unwrap()
+                .into_iter()
+                .filter(|i| i.kind() == EntityKind::Adr)
+                .collect()
+        };
+
+        an_adr("The replaced", &[]).unwrap();
+        let replaced = adrs().pop().unwrap();
+
+        // A prefix resolves, exactly as it does for --blocked-by.
+        an_adr(
+            "The replacement",
+            &["--supersedes", &replaced.to_string()[..9]],
+        )
+        .unwrap();
+        let replacement = adrs().into_iter().find(|i| i != &replaced).unwrap();
+        let Entity::Adr(a) = t.store().load(&replacement).unwrap().entity else {
+            panic!()
+        };
+        assert_eq!(a.supersedes, Some(replaced.clone()));
+
+        // Unknown now rather than in `check`, where nobody can attribute it to
+        // the act that caused it.
+        let err = an_adr("Bad", &["--supersedes", "ADR-ffffffffffff"]).unwrap_err();
+        assert_eq!(err.code, 2, "{}", err.message);
+
+        // An ADR superseding a task is not a chain `accept` can make sense of.
+        let a_task_id = a_task(&t, "A task");
+        let err = an_adr("Wrong kind", &["--supersedes", &a_task_id.to_string()]).unwrap_err();
+        assert_eq!(err.code, 1, "{}", err.message);
+        assert!(err.message.contains("not an ADR"), "{}", err.message);
+    }
+
+    #[test]
+    fn supersedes_is_refused_on_a_task_rather_than_dropped() {
+        let t = Temp::new();
+        let existing = a_task(&t, "The other one");
+
+        // A task has no such field, and a flag silently ignored teaches the
+        // caller it worked.
+        let err = t
+            .call(
+                &[
+                    "new",
+                    "task",
+                    "--title",
+                    "A task",
+                    "--scope",
+                    "src/**",
+                    "--supersedes",
+                    &existing.to_string(),
+                ],
+                "claude-code@ank",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, 1, "{}", err.message);
+        assert!(err.message.contains("--supersedes"), "{}", err.message);
+        assert!(err.hint.unwrap().contains("--blocked-by"), "the way in");
+        assert_eq!(t.tasks().len(), 1, "nothing was written");
     }
 
     #[test]

@@ -6,9 +6,9 @@ description: Read a repository's tasks and binding constraints, claim work, and 
 # ank
 
 Tasks and architecture decisions live as files in `.ank/`, attached to the code
-they constrain. Seven verbs, and `context` is the one you start with.
+they constrain. Eight verbs, and `context` is the one you start with.
 
-    Loop:      ank context -> ank claim <id> -> ank log "<msg>" -> ank done
+    Loop:      ank context -> ank claim <id> -> ank show <id> -> ank log "<msg>" -> ank done
     Off-loop:  ank new, ank find, ank release --reason "<r>"
 
 ## The loop
@@ -21,6 +21,10 @@ are never truncated; if something is cut, it says so.
 **`ank claim <id>`** — takes the task and freezes its `done_criteria` by hash.
 It refuses, with the reason and the next command, when the task is held, blocked,
 finished on another branch, or has no criterion to be measured against.
+
+**`ank show <id>`** — the entity whole, frontmatter and body, byte for byte.
+`context` gives you the criterion and the constraints; the body is where the
+reasoning lives, and it is the one thing nothing else serves.
 
 **`ank log "<message>"`** — what you learned, what you tried, what you rejected.
 Renews the claim. Log when you discover something, not when you finish.

@@ -4,7 +4,7 @@
 //! dependency but character-level control over two surfaces read by agents:
 //! the self-correcting errors, which a generic parser would replace with its
 //! own messages, and the help, whose cost is paid on every call that triggers
-//! it. With the surface frozen at twelve verbs (ADR-2f8a61c04b7d), that cost
+//! it. With the surface frozen at twelve verbs (ADR-3859eb46bdc3), that cost
 //! does not grow.
 //!
 //! `help` lives here rather than in a verb module because it has no data of
@@ -12,13 +12,14 @@
 //! which are all in this file. A second, hand-maintained list of the verbs is
 //! exactly the drift the `owner_task` field was added to prevent.
 //!
-//! **`help` is not a fourteenth thing an agent does.** ADR-2f8a61c04b7d freezes
-//! the agent surface at seven verbs and adds none, ever. `help` carries no work
-//! and changes no state; it is the mechanism that *keeps* the surface at seven,
-//! because §9 buys its token economy by moving flag detail out of SKILL.md and
-//! into a command loaded on demand. It is grouped with `init` under
-//! [`Audience::Setup`] for that reason, and [`Audience::agent_surface`] asserts
-//! the seven by name so the reading cannot quietly rot into a growth.
+//! **`help` is not a ninth thing an agent does.** ADR-3859eb46bdc3 freezes the
+//! agent surface at eight verbs and adds none without superseding itself in
+//! turn. `help` carries no work and changes no state; it is the mechanism that
+//! *keeps* the surface at eight, because §9 buys its token economy by moving
+//! flag detail out of SKILL.md and into a command loaded on demand. It is
+//! grouped with `init` under [`Audience::Setup`] for that reason, and
+//! [`Audience::agent_surface`] asserts the eight by name so the reading cannot
+//! quietly rot into a growth.
 //!
 //! The edge cases of parsing are where hand-written code goes wrong, and they
 //! look like business bugs once in production: every one of them is therefore
@@ -131,7 +132,7 @@ pub const GLOBAL_FLAGS: &[FlagSpec] = &[switch("--json"), switch("--quiet"), fla
 /// reader that will get it wrong.
 ///
 /// The split is the specification's own and not a presentation choice:
-/// `Loop` and `OffLoop` together are the seven verbs ADR-2f8a61c04b7d freezes,
+/// `Loop` and `OffLoop` together are the eight verbs ADR-3859eb46bdc3 freezes,
 /// `Human` is what §4 puts on the other side, and `Setup` holds the two that
 /// belong to neither — `init`, which precedes the repository, and `help`, which
 /// describes the surface instead of acting on it.
@@ -172,8 +173,8 @@ impl Audience {
         }
     }
 
-    /// The surface an agent works with, which ADR-2f8a61c04b7d freezes at
-    /// seven. Anything outside these two audiences is not part of it, whoever
+    /// The surface an agent works with, which ADR-3859eb46bdc3 freezes at
+    /// eight. Anything outside these two audiences is not part of it, whoever
     /// happens to type it.
     pub fn agent_surface(self) -> bool {
         matches!(self, Audience::Loop | Audience::OffLoop)
@@ -219,6 +220,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         owner_task: None,
     },
     CommandSpec {
+        name: "show",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[],
+        audience: Audience::Loop,
+        owner_task: None,
+    },
+    CommandSpec {
         name: "log",
         subcommands: &[],
         max_positionals: 2,
@@ -256,6 +266,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--criteria"),
             multi("--blocked-by"),
             flag("--constraint"),
+            flag("--supersedes"),
             multi("--verify"),
             flag("--body"),
         ],
@@ -312,15 +323,6 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
-        flags: &[],
-        audience: Audience::Human,
-        owner_task: None,
-    },
-    CommandSpec {
-        name: "show",
-        subcommands: &[],
-        max_positionals: 1,
-        positional_help: "<id>",
         flags: &[],
         audience: Audience::Human,
         owner_task: None,
@@ -1034,11 +1036,12 @@ mod tests {
     }
 
     #[test]
-    fn every_audience_is_populated_and_the_agent_surface_is_the_seven() {
-        // ADR-2f8a61c04b7d freezes the agent surface at seven verbs. `help` is
-        // grouped with `init` under Setup on the argument that it carries no
-        // work; that argument is only worth as much as this assertion, which
-        // fails the day someone moves it into an agent group.
+    fn every_audience_is_populated_and_the_agent_surface_is_the_eight() {
+        // ADR-3859eb46bdc3 freezes the agent surface at eight verbs, and
+        // requires a succession for any ninth. `help` is grouped with `init`
+        // under Setup on the argument that it carries no work; that argument is
+        // only worth as much as this assertion, which fails the day someone
+        // moves it into an agent group.
         let mut agent: Vec<&str> = COMMANDS
             .iter()
             .filter(|c| c.audience.agent_surface())
@@ -1047,8 +1050,9 @@ mod tests {
         agent.sort_unstable();
         assert_eq!(
             agent,
-            ["claim", "context", "done", "find", "log", "new", "release"],
-            "the agent surface is exactly the seven of ADR-2f8a61c04b7d"
+            ["claim", "context", "done", "find", "log", "new", "release", "show"],
+            "the agent surface is exactly the eight of ADR-3859eb46bdc3, and a \
+             ninth costs a superseding ADR and a human signature"
         );
 
         for audience in Audience::ALL {

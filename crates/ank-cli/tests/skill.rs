@@ -19,8 +19,10 @@ fn skill() -> String {
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
 }
 
-/// The seven of ADR-2f8a, and the surface is frozen at exactly these.
-const AGENT_VERBS: [&str; 7] = ["context", "claim", "log", "done", "new", "find", "release"];
+/// The eight of ADR-3859eb46bdc3, and the surface is frozen at exactly these.
+const AGENT_VERBS: [&str; 8] = [
+    "context", "claim", "show", "log", "done", "new", "find", "release",
+];
 
 #[test]
 fn the_skill_carries_the_whole_agent_surface() {
@@ -51,12 +53,17 @@ fn the_skill_stays_within_one_page() {
 }
 
 /// The human verbs are not the agent's, and this file is the agent's. Naming
-/// them as things to run would grow the surface ADR-2f8a freezes -- by habit
-/// rather than by decision, which is how surfaces actually grow.
+/// them as things to run would grow the surface ADR-3859eb46bdc3 freezes -- by
+/// habit rather than by decision, which is how surfaces actually grow.
+///
+/// `show` is absent from this list because it is no longer on that side:
+/// ADR-3859eb46bdc3 supersedes ADR-2f8a61c04b7d and moves it, by decision and
+/// with the reason recorded. That is what the list is for -- everything else
+/// still costs a succession.
 #[test]
 fn the_skill_does_not_hand_the_agent_a_human_verb() {
     let text = skill();
-    for verb in ["accept", "review", "show", "close"] {
+    for verb in ["accept", "review", "close", "attest", "check"] {
         assert!(
             !text.contains(&format!("ank {verb}")),
             "SKILL.md shows `ank {verb}`, which is on the human surface"
