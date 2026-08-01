@@ -129,6 +129,42 @@ impl Repo {
         std::fs::read_to_string(self.0.join(".ank/adr").join(format!("{id}.md"))).unwrap()
     }
 
+    fn seed_adr(&self, id: &str, constraint: &str, scope: &str) {
+        std::fs::write(
+            self.0.join(".ank/adr").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: adr\nslug: example\ntitle: A decision\n\
+                 created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - {scope}\n\
+                 constraint: |\n  {constraint}\nschema: 1\nversion: 1\n---\n\nWhy.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// `accept` signs for real, and a signature configured from the developer's
+    /// own global git config would make this test pass here and nowhere else.
+    /// SSH because `ssh-keygen` ships beside git on all three platforms and
+    /// needs no agent, no keyring and no passphrase prompt.
+    fn enable_signing(&self) {
+        let key = self.0.join("signing-key");
+        let out = Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-N", "", "-C", "ank test", "-q", "-f"])
+            .arg(&key)
+            .output()
+            .expect("ssh-keygen ships with git on all three platforms");
+        assert!(
+            out.status.success(),
+            "ssh-keygen: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        self.git(&["config", "gpg.format", "ssh"]);
+        self.git(&[
+            "config",
+            "user.signingkey",
+            key.with_extension("pub").to_str().unwrap(),
+        ]);
+    }
+
     /// `--repo` rather than a working directory, so that the flag stays on a
     /// path a real invocation takes.
     fn ank(&self, agent: &str, args: &[&str]) -> Output {
@@ -160,6 +196,71 @@ fn stderr(out: &Output) -> String {
 }
 
 const ID: &str = "TASK-000000000001";
+
+fn stdout(out: &Output) -> String {
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// The freeze stops being declared and becomes verifiable. Through the binary
+/// on purpose: "check reports a divergence" is a statement about the process,
+/// and the anchor it compares against lives in git rather than in the corpus.
+#[test]
+fn an_edited_constraint_is_reported_altered_and_stops_being_injected() {
+    const ADR: &str = "ADR-0000000000ab";
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    // A scope matching nothing is a fault on an ADR, and it would exit 8 before
+    // the comparison under test ever ran.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // Ratified and untouched: the comparison must be silent, or the finding
+    // below would prove nothing.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stdout(&out).contains("altered"),
+        "an intact freeze reports nothing: {}",
+        stdout(&out)
+    );
+
+    // The constraint moves in the file. The anchor recorded in the signed
+    // commit cannot follow it without another signature.
+    let edited = r.adr_text(ADR).replace("Do not do X.", "Do not do Y.");
+    std::fs::write(r.0.join(".ank/adr").join(format!("{ADR}.md")), edited).unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "a divergence is a fault: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("altered since ratification"),
+        "{}",
+        stdout(&out)
+    );
+
+    // And it stops binding. Reporting it while still injecting it would leave
+    // whoever edited the file rewriting the rule every agent works under.
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("altered since ratification"),
+        "the warning section 3 requires: {}",
+        stdout(&out)
+    );
+    assert!(
+        !stdout(&out).contains("Do not do Y."),
+        "the altered constraint is withheld: {}",
+        stdout(&out)
+    );
+}
 
 #[test]
 fn claiming_through_the_binary_takes_the_ref_and_moves_the_task() {

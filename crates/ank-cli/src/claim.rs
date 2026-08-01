@@ -26,10 +26,12 @@
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::{self, Config};
 use crate::git;
+use crate::human::Freeze;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_core::{
-    freeze, freeze_hash_short, AdrStatus, CriteriaBy, Entity, EntityId, ScopeSet, Task, TaskStatus,
+    freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, ScopeSet, Task,
+    TaskStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -438,7 +440,53 @@ fn remaining_text(claim: &ClaimRecord, now: i64) -> String {
 /// is approximate by nature, and it is deliberately in one named place:
 /// `context` needs the same one (TASK-d4e5f6a7b8c9), and two implementations
 /// drifting apart would show up as a constraint hash that moves for no reason.
-pub fn applicable_constraints(store: &Store, task: &Task) -> Result<Vec<(String, String)>> {
+pub fn applicable_constraints(
+    store: &Store,
+    repo: &Repo,
+    task: &Task,
+) -> Result<Vec<(String, String)>> {
+    let mut found = Vec::new();
+    for adr in bearing_on(store, repo, task)? {
+        // Suspended, not merely reported. Injecting a constraint that no longer
+        // matches what was ratified would let whoever edited the file rewrite
+        // the rule every agent afterwards works under, which is the one thing
+        // the freeze exists to prevent (§3).
+        if matches!(
+            crate::human::freeze_state(repo, &adr),
+            Freeze::Altered { .. }
+        ) {
+            continue;
+        }
+        found.push((adr.id.to_string(), adr.constraint.clone()));
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(found)
+}
+
+/// The ids `applicable_constraints` withheld for having diverged from their
+/// ratification.
+///
+/// `context` names them, and that is not decoration: a constraint that vanishes
+/// in silence is worse than one that binds wrongly, because an absence is the
+/// one thing a reader cannot notice.
+pub fn suspended_constraints(store: &Store, repo: &Repo, task: &Task) -> Result<Vec<String>> {
+    let mut found: Vec<String> = bearing_on(store, repo, task)?
+        .into_iter()
+        .filter(|adr| {
+            matches!(
+                crate::human::freeze_state(repo, adr),
+                Freeze::Altered { .. }
+            )
+        })
+        .map(|adr| adr.id.to_string())
+        .collect();
+    found.sort();
+    Ok(found)
+}
+
+/// Every accepted ADR whose scope meets the task's, before any question of
+/// whether it still says what was ratified.
+fn bearing_on(store: &Store, _repo: &Repo, task: &Task) -> Result<Vec<Adr>> {
     let mut found = Vec::new();
     for id in store.list_ids()? {
         if id.kind() != ank_core::EntityKind::Adr {
@@ -452,10 +500,9 @@ pub fn applicable_constraints(store: &Store, task: &Task) -> Result<Vec<(String,
             continue;
         }
         if scopes_intersect(&task.scope, &adr.scope)? {
-            found.push((adr.id.to_string(), adr.constraint.clone()));
+            found.push(adr);
         }
     }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(found)
 }
 
@@ -761,7 +808,7 @@ pub fn run(
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", task.id)))?;
 
-    let constraints = constraints_hash(&applicable_constraints(&store, &task)?);
+    let constraints = constraints_hash(&applicable_constraints(&store, repo, &task)?);
     let acquired = acquire(
         &repo.root,
         &task,
@@ -928,6 +975,13 @@ mod tests {
 
         fn store(&self) -> Store {
             Store::new(self.0.join(".ank"))
+        }
+
+        fn repo(&self) -> Repo {
+            Repo {
+                root: self.0.clone(),
+                ank: self.0.join(".ank"),
+            }
         }
 
         fn seed(&self, task: &Task) {
@@ -1538,7 +1592,7 @@ mod tests {
             AdrStatus::Proposed,
         ));
 
-        let applicable = applicable_constraints(&store, &task).unwrap();
+        let applicable = applicable_constraints(&store, &t.repo(), &task).unwrap();
         let ids: Vec<&str> = applicable.iter().map(|(i, _)| i.as_str()).collect();
         assert_eq!(
             ids,
@@ -1555,7 +1609,7 @@ mod tests {
             "Newly binding.",
             AdrStatus::Accepted,
         ));
-        let after = constraints_hash(&applicable_constraints(&store, &task).unwrap());
+        let after = constraints_hash(&applicable_constraints(&store, &t.repo(), &task).unwrap());
         assert_ne!(before, after);
 
         // Editing noise does not move it; a change of meaning does.

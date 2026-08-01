@@ -254,8 +254,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
         check_scope_alive(entity, &files, &mut report);
         match entity {
-            Entity::Task(t) => check_task(t, &statuses, &coord, cfg, &store, &mut report),
-            Entity::Adr(a) => check_adr(a, &adr_ids, &entities, &mut report),
+            Entity::Task(t) => check_task(t, repo, &statuses, &coord, cfg, &store, &mut report),
+            Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
         }
     }
 
@@ -402,6 +402,7 @@ fn check_scope_alive(entity: &Entity, files: &[String], report: &mut Report) {
 
 fn check_task(
     t: &Task,
+    repo: &Repo,
     statuses: &HashMap<EntityId, TaskStatus>,
     coord: &HashMap<EntityId, Record>,
     cfg: &Config,
@@ -487,7 +488,7 @@ fn check_task(
         }
         // A constraint accepted while the work is in progress changes what
         // applies to it. `done` warns; so does this.
-        if let Ok(applicable) = claim::applicable_constraints(store, t) {
+        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
             if claim::constraints_hash(&applicable) != c.constraints {
                 report.findings.push(Finding::signal(
                     &t.id,
@@ -554,7 +555,7 @@ fn check_task(
     // Over-constrained (§5): constraints alone eating more than half the budget
     // in execution mode. A corpus problem, not a display problem.
     if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) {
-        if let Ok(applicable) = claim::applicable_constraints(store, t) {
+        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
             let weight: usize = applicable.iter().map(|(_, c)| c.chars().count()).sum();
             if weight * 2 > cfg.context_budget {
                 report.findings.push(Finding::signal(
@@ -572,6 +573,7 @@ fn check_task(
 
 fn check_adr(
     a: &Adr,
+    repo: &Repo,
     adr_ids: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
     report: &mut Report,
@@ -627,6 +629,26 @@ fn check_adr(
             &a.id,
             "accepted with no ratification commit (bootstrap, or accepted by hand)",
         ));
+    }
+    match freeze_state(repo, a) {
+        Freeze::Altered { ratified, now } => report.findings.push(Finding::fault(
+            &a.id,
+            format!(
+                "altered since ratification (ratified {ratified}, now {now}): \
+                 its constraint is no longer injected"
+            ),
+        )),
+
+        // Not a fault, and the distinction is the point. An unreachable
+        // ratification commit is a shallow clone or a rewritten history, not a
+        // broken freeze — and a check that cries divergence over a shallow clone
+        // is a check people learn to ignore.
+        Freeze::Unverifiable => report.findings.push(Finding::signal(
+            &a.id,
+            "ratified, but no ratification commit is reachable: the freeze cannot be verified",
+        )),
+
+        Freeze::Unanchored | Freeze::Intact => {}
     }
     if a.constraint.trim().is_empty() {
         report
@@ -1133,15 +1155,41 @@ pub fn accept(
         return Err(CliError::new(1, format!("{prefix} is not an ADR"))
             .with_hint(format!("ank show {prefix}")));
     };
-    adr.status
-        .check_transition(AdrStatus::Accepted)
-        .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", adr.id)))?;
+    // Ratifying is not re-accepting. An `accepted` ADR carrying no anchor at
+    // all was promoted by editing the file, or predates the tool — `check`
+    // reports exactly that, as a signal — and this is the only door through
+    // which a bootstrap corpus ever acquires the signed commits the authority
+    // model rests on. `accept` was written for a corpus it could not reach.
+    //
+    // The refusal below is the half doing the work. `accept` over an existing
+    // anchor is how a constraint edited in place would be re-anchored, which is
+    // the one property ADR-6b3f19e08a24 exists to hold; changing a ratified
+    // decision stays a succession, and the hint names it rather than showing the
+    // file. Supplying a *first* anchor launders nothing: there is nothing for it
+    // to diverge from.
+    let ratifying_in_place = match (adr.status, adr.ratified.as_deref()) {
+        (AdrStatus::Accepted, Some(anchor)) => {
+            return Err(
+                CliError::new(6, format!("{} is already ratified at {anchor}", adr.id))
+                    .with_hint(format!("ank new adr --supersedes {}", adr.id)),
+            );
+        }
+        (AdrStatus::Accepted, None) => true,
+        _ => false,
+    };
+    if !ratifying_in_place {
+        adr.status
+            .check_transition(AdrStatus::Accepted)
+            .map_err(|e| {
+                CliError::new(6, e.to_string()).with_hint(format!("ank show {}", adr.id))
+            })?;
+    }
     let id = adr.id.clone();
 
     // Everything that can refuse, refused before anything is written. A
     // half-performed succession is a corpus the ratification commit would then
     // make authoritative, and `accept` has no second pass to repair it.
-    let replaced = superseded_target(&store, &adr)?;
+    let replaced = succession(&store, &adr)?;
 
     // The hash of what is being made binding, recorded before the commit that
     // makes it so: `constraint` and `scope` together are what is ratified (§8).
@@ -1162,7 +1210,12 @@ pub fn accept(
     // `proposed` — which `check_adr` calls clean in both directions, because the
     // proposal does name it. The reverse order leaves an accepted superseder
     // over an unmarked target, which is precisely the fault.
-    if let Some(mut target) = replaced.clone() {
+    //
+    // A `Recorded` succession skips this write and keeps the commit line: the
+    // file already says what the commit is about to say, and rewriting it would
+    // bump a version to record nothing.
+    if let Succession::Pending(target) = &replaced {
+        let mut target = target.clone();
         let target_base = target.version;
         target.status = AdrStatus::Superseded;
         paths.push(format!("{}/adr/{}.md", ank_relative(repo), target.id));
@@ -1174,16 +1227,15 @@ pub fn accept(
     // One commit for both writes. The succession is a single act, and two
     // commits would leave a window in which history says the constraint binds
     // while the one it replaced still binds too.
-    let succession = match &replaced {
+    let replaces = match replaced.target() {
         Some(t) => format!("supersedes: {}\n", t.id),
         None => String::new(),
     };
-    let message =
-        format!("ratify {id}\n\nconstraint+scope: {anchor}\n{succession}by: {identity}\n");
+    let message = format!("ratify {id}\n\nconstraint+scope: {anchor}\n{replaces}by: {identity}\n");
     let commit = commit_signed(&repo.root, &paths, &message)?;
 
     if inv.json() {
-        let superseded = match &replaced {
+        let superseded = match replaced.target() {
             Some(t) => format!("\"{}\"", t.id),
             None => "null".to_string(),
         };
@@ -1192,52 +1244,67 @@ pub fn accept(
             "{{\"adr\":\"{id}\",\"status\":\"accepted\",\"superseded\":{superseded},\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "accepted {id} -> {}", &commit[..commit.len().min(7)]);
-        if let Some(t) = &replaced {
+        // Two words for two acts. Reporting "accepted" over an ADR that was
+        // already accepted would describe the wrong half of what just happened:
+        // what the caller obtained is the anchor.
+        let verb = if ratifying_in_place {
+            "ratified"
+        } else {
+            "accepted"
+        };
+        let _ = writeln!(out, "{verb} {id} -> {}", &commit[..commit.len().min(7)]);
+        if let Succession::Pending(t) = &replaced {
             let _ = writeln!(out, "superseded {}", t.id);
         }
     }
     Ok(0)
 }
 
-/// The ADR this one replaces, loaded and checked, or `None` when it replaces
-/// nothing.
+/// What `accept` has left to do about the ADR this one replaces.
+enum Succession {
+    /// It replaces nothing.
+    None,
+    /// The target is accepted, and this `accept` marks it superseded.
+    Pending(Adr),
+    /// The target already reads `superseded` and no other accepted ADR claims
+    /// it, so the succession is on record and there is nothing left to write.
+    Recorded(Adr),
+}
+
+impl Succession {
+    /// The target, whether or not this `accept` is the one writing it — the
+    /// commit message and the output name it either way, because the succession
+    /// is what the ratification is about.
+    fn target(&self) -> Option<&Adr> {
+        match self {
+            Succession::None => None,
+            Succession::Pending(a) | Succession::Recorded(a) => Some(a),
+        }
+    }
+}
+
+/// The ADR this one replaces, loaded and checked.
 ///
 /// `model.rs` states `Accepted -> Superseded` as the only legal write on an
 /// accepted ADR, "performed by the `accept` of the ADR that replaces it". This
 /// is that write's precondition, and it runs before `accept` touches anything:
 /// a refusal must leave the corpus exactly as it found it.
-fn superseded_target(store: &Store, adr: &Adr) -> Result<Option<Adr>> {
+fn succession(store: &Store, adr: &Adr) -> Result<Succession> {
     let Some(target_id) = adr.supersedes.clone() else {
-        return Ok(None);
+        return Ok(Succession::None);
     };
     let Entity::Adr(target) = store.load(&target_id)?.entity else {
         return Err(CliError::new(1, format!("{target_id} is not an ADR"))
             .with_hint(format!("ank show {target_id}")));
     };
 
-    // Superseding a proposal is meaningless — nothing was ever binding — and a
-    // caller who wrote one almost certainly meant a different identifier. A
-    // prerequisite unmet, so 7 and not the 6 of an illegal transition.
-    if target.status != AdrStatus::Accepted {
-        let hint = if target.status == AdrStatus::Proposed {
-            format!("ank accept {target_id}")
-        } else {
-            format!("ank show {target_id}")
-        };
-        return Err(CliError::new(
-            7,
-            format!(
-                "{target_id} is {}, and only an accepted ADR can be superseded",
-                target.status.as_str()
-            ),
-        )
-        .with_hint(hint));
-    }
-
     // Already replaced by somebody else. Re-pointing the chain silently would
     // rewrite whose succession this was, and the corpus keeps no record of the
     // one it dropped.
+    //
+    // Scanned before the status is read, because it is what the status alone
+    // cannot say: a target marked `superseded` is either this ADR's doing or
+    // another's, and only the absence of another claimant makes it this one's.
     for other in store.list_ids()? {
         if other.kind() != EntityKind::Adr || other == adr.id {
             continue;
@@ -1253,7 +1320,69 @@ fn superseded_target(store: &Store, adr: &Adr) -> Result<Option<Adr>> {
         }
     }
 
-    Ok(Some(target))
+    match target.status {
+        AdrStatus::Accepted => Ok(Succession::Pending(target)),
+
+        // Marked, unclaimed by anyone else, and named here: the succession
+        // exists. Either it was performed by hand during bootstrap, or an
+        // earlier `accept` wrote the target and did not reach its second write —
+        // the same state, and the same thing to do about it, which is nothing.
+        AdrStatus::Superseded => Ok(Succession::Recorded(target)),
+
+        // Superseding a proposal is meaningless — nothing was ever binding — and
+        // a caller who wrote one almost certainly meant a different identifier.
+        // A prerequisite unmet, so 7 and not the 6 of an illegal transition.
+        AdrStatus::Proposed => Err(CliError::new(
+            7,
+            format!("{target_id} is proposed, and only an accepted ADR can be superseded"),
+        )
+        .with_hint(format!("ank accept {target_id}"))),
+    }
+}
+
+/// Whether an accepted ADR still says what was ratified (§3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Freeze {
+    /// Nothing to compare: proposed, superseded, or accepted with no anchor at
+    /// all — the bootstrap state, which `check` reports on its own.
+    Unanchored,
+    /// The commit and the file agree.
+    Intact,
+    /// The constraint or the scope moved after ratification.
+    Altered { ratified: String, now: String },
+    /// No ratification commit is reachable, so there is nothing to compare
+    /// against. Distinct from `Altered` on purpose.
+    Unverifiable,
+}
+
+/// Compares an accepted ADR against the anchor its ratification commit records.
+///
+/// The comparison deliberately ignores the `ratified` field's own value and
+/// uses only the commit's. The field is written by whoever writes the file, so
+/// an editor changing a constraint can change it in the same stroke; the
+/// commit's copy is the one that costs a signature to replace. What `ratified`
+/// still does is say the ADR claims to be ratified, which is what sends us
+/// looking for the commit at all.
+pub fn freeze_state(repo: &Repo, adr: &Adr) -> Freeze {
+    if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
+        return Freeze::Unanchored;
+    }
+    let path = format!("{}/adr/{}.md", ank_relative(repo), adr.id);
+    let recorded = match git::ratification_anchor_at(&repo.root, &adr.id.to_string(), &path) {
+        Ok(Some(hash)) => hash,
+        // A git that cannot answer is not a divergence either. Reporting one
+        // over a broken environment is how a finding becomes noise.
+        Ok(None) | Err(_) => return Freeze::Unverifiable,
+    };
+    let now = ratification_anchor(&adr.constraint, &adr.scope);
+    if now == recorded {
+        Freeze::Intact
+    } else {
+        Freeze::Altered {
+            ratified: recorded,
+            now,
+        }
+    }
 }
 
 /// Hash of `constraint` + `scope`, normalised. What the ratification commit
@@ -1898,7 +2027,7 @@ mod tests {
                 std::time::Duration::from_secs(1800),
                 &freeze::freeze_hash_short(criteria),
                 &claim::constraints_hash(
-                    &claim::applicable_constraints(&self.store(), &task).unwrap(),
+                    &claim::applicable_constraints(&self.store(), &self.repo(), &task).unwrap(),
                 ),
                 None,
             )
@@ -2875,6 +3004,222 @@ mod tests {
 
         assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Proposed);
         assert_eq!(t.adr_at("00000000bbbb").status, AdrStatus::Accepted);
+    }
+
+    /// The corpus `accept` was written for and could not reach: promoted by
+    /// editing the file, so it never passed through `proposed` and the only
+    /// legal promotion had no door to it.
+    #[test]
+    fn accept_ratifies_an_adr_accepted_by_hand_and_never_anchored() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
+        t.commit("seed");
+        assert!(t.adr_at("00000000aaaa").ratified.is_none());
+
+        let (code, out) = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("ratified ADR-00000000aaaa"),
+            "the act is the anchor, not a promotion that already happened: {out}"
+        );
+
+        let a = t.adr_at("00000000aaaa");
+        assert_eq!(a.status, AdrStatus::Accepted);
+        assert_eq!(
+            a.ratified,
+            Some(ratification_anchor(&a.constraint, &a.scope))
+        );
+
+        // And the signal that named this state is gone, which is the whole
+        // point: it is what `check` reports over a bootstrap corpus.
+        let r = t.report();
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.message.contains("no ratification commit")),
+            "{:?}",
+            r.findings
+        );
+    }
+
+    /// The half doing the work. `accept` over an existing anchor is how a
+    /// constraint edited in place would be re-anchored, and that is the one
+    /// property ADR-6b3f19e08a24 exists to hold.
+    #[test]
+    fn accept_refuses_an_adr_that_already_carries_an_anchor() {
+        let t = Temp::new();
+        t.enable_signing();
+        let mut a = adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.ratified = Some("deadbeefcafe".into());
+        }
+        t.write(&a);
+        t.commit("seed");
+        let before = head(&t);
+
+        let err = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap_err();
+        assert_eq!(err.code, 6, "{}", err.message);
+        assert!(err.message.contains("deadbeefcafe"), "{}", err.message);
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("ank new adr --supersedes ADR-00000000aaaa"),
+            "changing a ratified decision is a succession, and the hint says so \
+             instead of offering the file"
+        );
+
+        // The anchor is untouched and no commit was made: a refusal that had
+        // rewritten either would be the laundering it exists to prevent.
+        assert_eq!(
+            t.adr_at("00000000aaaa").ratified.as_deref(),
+            Some("deadbeefcafe")
+        );
+        assert_eq!(t.adr_at("00000000aaaa").version, 1);
+        assert_eq!(head(&t), before);
+    }
+
+    /// Bootstrap again, one level down: the succession was performed by hand
+    /// too. Also the state an `accept` interrupted between its two writes leaves
+    /// behind — the same corpus, and the same nothing to do about it.
+    #[test]
+    fn ratifying_a_succession_already_recorded_writes_only_the_superseder() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000bbbb", AdrStatus::Superseded, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+        t.commit("seed");
+
+        let (code, out) = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(t.adr_at("00000000aaaa").ratified.is_some());
+        assert_eq!(
+            t.adr_at("00000000bbbb").version,
+            1,
+            "the target already said it: rewriting it would bump a version to \
+             record nothing"
+        );
+
+        // The commit still names the succession — it is what the ratification
+        // is about — while carrying only the file that changed.
+        let shown = String::from_utf8_lossy(
+            &Command::new("git")
+                .current_dir(&t.0)
+                .args(["show", "--name-only", "--format=%B", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .to_string();
+        assert!(shown.contains("supersedes: ADR-00000000bbbb"), "{shown}");
+        assert!(!shown.contains("ADR-00000000bbbb.md"), "{shown}");
+
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+    }
+
+    /// The exception is the anchor, not the chain: a target that was never
+    /// binding is still not something to supersede, whichever door `accept`
+    /// came through.
+    #[test]
+    fn ratifying_in_place_still_refuses_a_target_that_was_never_accepted() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000bbbb", AdrStatus::Proposed, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+        t.commit("seed");
+
+        let err = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap_err();
+        assert_eq!(err.code, 7, "{}", err.message);
+        assert!(t.adr_at("00000000aaaa").ratified.is_none());
+    }
+
+    /// The heart of it. Whoever edits the constraint also controls the copy of
+    /// the anchor sitting beside it, so a comparison against the field would be
+    /// the file agreeing with itself. The hash that decides is in the commit,
+    /// and replacing that one costs a signature.
+    #[test]
+    fn the_freeze_compares_against_the_commit_and_not_against_the_field() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        let repo = t.repo();
+        assert_eq!(
+            freeze_state(&repo, &t.adr_at("00000000aaaa")),
+            Freeze::Intact
+        );
+
+        let mut altered = t.adr_at("00000000aaaa");
+        let base = altered.version;
+        altered.constraint = "A different rule.\n".into();
+        altered.ratified = Some(ratification_anchor(&altered.constraint, &altered.scope));
+        t.store().write(&Entity::Adr(altered), base).unwrap();
+
+        assert!(
+            matches!(
+                freeze_state(&repo, &t.adr_at("00000000aaaa")),
+                Freeze::Altered { .. }
+            ),
+            "the field was moved to match, and it changes nothing"
+        );
+    }
+
+    /// A shallow clone, a rewritten history, a corpus moved between
+    /// repositories. Saying "altered" here would be a lie, and a finding that
+    /// lies is one people learn to skip.
+    #[test]
+    fn an_unreachable_ratification_commit_is_a_signal_and_never_a_divergence() {
+        let t = Temp::new();
+        let mut a = adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.ratified = Some("deadbeefcafe".into());
+        }
+        t.write(&a);
+        t.commit("seed");
+
+        assert_eq!(
+            freeze_state(&t.repo(), &t.adr_at("00000000aaaa")),
+            Freeze::Unverifiable
+        );
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        assert!(
+            has(&r, Level::Signal, "cannot be verified"),
+            "{:?}",
+            r.findings
+        );
+    }
+
+    fn head(t: &Temp) -> String {
+        String::from_utf8_lossy(
+            &Command::new("git")
+                .current_dir(&t.0)
+                .args(["rev-parse", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .trim()
+        .to_string()
     }
 
     #[test]

@@ -9,7 +9,9 @@ Settled relative to v1: orientation and constraints reconciled (§5) · immutabi
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
 
-Additions of revision g: **`author` on the common base** (§3) — the identity that ran `new`, optional and immutable, without which two of §4's signals could not be computed at all · **`schema` names a range of versions a tool reads, not a single one** (§3): the frontmatter rejects unknown fields, so a reader limited to its own version would report a newer file as *unknown field* while the file plainly declares the schema that explains it · the agent surface becomes **eight verbs with `show`** (§4, ADR-3859eb46bdc3), and the invitation to read `.ank/` directly is withdrawn (ADR-01b6dd05f0db).
+Additions of revision h: **the ratification freeze becomes verifiable rather than declared** (§3) — `check` reaches the ratification commit by walking the ADR's own file history, since a commit cannot contain its own identifier and no field could ever name it; `ratified` is documented as what the code always wrote, the hash of `constraint`+`scope`, and an unreachable commit is reported as *cannot verify* and never as a divergence · **`accept` ratifies an ADR accepted by hand** (§3) — an `accepted` ADR carrying no anchor at all can be anchored in place, which is the only way a bootstrap corpus ever acquires the signed commits the whole authority model rests on; one that already carries an anchor stays refused, and that refusal is the half doing the work.
+
+Additions of revision g: **`author` on the common base** (§3) — the identity that ran `new`, optional and immutable, without which two of §4's signals could not be computed at all · **`schema` names a range of versions a tool reads, not a single one** (§3): the frontmatter rejects unknown fields, so a reader limited to its own version would report a newer file as *unknown field* while the file plainly declares the schema that explains it · the agent surface becomes **eight verbs with `show`** (§4, ADR-3859eb46bdc3), and the invitation to read `.ank/` directly is withdrawn (ADR-01b6dd05f0db) · the human `amend` changes `blocked_by` and `scope` on an entity that already exists (§4), the two fields a plan revises without revising a decision.
 
 Additions of revision f: **English is the only language of the project** (ADR-d3a8dcf38817) — specification, CLI output, identifiers and entity bodies alike · the `criteria` field of a proof entry is documented in §3, where it was previously present in the code and in the golden fixtures without appearing in the specification, which the ordering rule of ADR-63b59c5c26f7 forbids.
 
@@ -216,7 +218,7 @@ constraint: |                # the only field injected into context
   Every session goes through the Redis store.
 see: src/auth/session_store.ts    # optional, for positive constraints
 supersedes: ADR-9a12ff03b8e1
-ratified: 4c1e9a20            # signed ratification commit (set by accept)
+ratified: 4c1e9a20            # hash of constraint+scope at acceptance (set by accept)
 version: 2
 ---
 
@@ -229,7 +231,15 @@ Decision, alternatives rejected, consequences.
 
 **Immutability, anchored like that of tasks.** An `accepted` ADR has `constraint`, `scope` and `status` locked; the body stays editable. The lock is verifiable: the signed ratification commit (§8) records the hash of `constraint` and `scope` at acceptance time, and `check` compares the current state against that hash. An ADR whose constraint has diverged from the ratified hash is reported as **altered** — and its injection into `context` is suspended with an explicit warning, because injecting an altered constraint would amount to letting the editor rewrite the rule.
 
+**How `check` reaches the commit.** `ratified` holds the hash, not the commit — a commit cannot contain its own identifier, so a field naming it could never be written by the single commit `accept` makes (§12). The pointer is the file's own history instead: walking back from `HEAD` over the ADR's path, through `rev-list`, the first commit whose message is the `ratify <id>` of §12 is the ratification, and `cat-file` reads the `constraint+scope` hash out of that message. Comparing against *that* hash is what makes the freeze verifiable at all: the copy in the file is written by whoever writes the file, whereas replacing the one in the commit means producing another signed commit, which is what a ratification key is for.
+
+Three outcomes, and the third must not be confused with the second. The hashes agree, and the constraint is the ratified one. They disagree, and the ADR is **altered**. Or no ratification commit is reachable — a shallow clone, a rewritten history, a corpus moved between repositories — and the honest report is that the freeze **cannot be verified**, never that it was broken. A check that cries divergence over a shallow clone is a check people learn to ignore.
+
 Modifying a decision means creating a new ADR that `supersedes` it. **The `accepted` → `superseded` transition is the only legal write on an accepted ADR**, and it is performed by `accept` of the new ADR, inside the same ratification commit — the replacement and its authorisation are inseparable.
+
+**Ratifying what was accepted by hand.** A corpus holds ADRs that are `accepted` and carry no `ratified` anchor: written before the tool existed, or promoted by editing the file. `check` reports them as a signal and not a violation (§4), because condemning a bootstrap corpus wholesale would block every `done` behind it. `accept` therefore admits one exception to "`proposed` → `accepted` is the only promotion": an `accepted` ADR **carrying no anchor at all** is ratified in place, which writes the anchor and produces the signed commit without changing the status. An ADR that already carries one is refused, and that refusal is the half doing the work — re-anchoring is precisely how an edited constraint would be laundered, and changing a ratified decision stays a succession. Supplying a *first* anchor launders nothing: there was no anchor to diverge from.
+
+The succession such an ADR declares follows the same reasoning. A `supersedes` whose target is already marked `superseded`, with no other accepted ADR claiming that target, is a succession already on record — bootstrap again, or an `accept` interrupted between its two writes — and ratification records it in the commit without rewriting the file. A target still `proposed` was never binding, and remains a refusal.
 
 **Ratification.** An agent creates in `proposed`. Only a human identity promotes to `accepted`. A `proposed` ADR is visible in orientation mode, **never injected in execution mode**: non-binding means it must not consume the attention budget of an agent that is writing code.
 
@@ -753,7 +763,7 @@ The real cost is iteration speed on a design that is still moving. Mitigation: f
 
 Ank calls the **git binary**, never a library reimplementation. `gix`, considered in order to avoid depending on the system binary, would save nothing: git is a hard dependency anyway (§7). The decisive argument is elsewhere — `accept` and `check` rest on signing. Producing a signed commit and verifying it against `allowed_signers` (§8) is three lines of plumbing with `git commit -S` and `git verify-commit`; it is a cryptographic project with a library, for a result at best equivalent and at worst subtly different from what the user will check by hand.
 
-**Plumbing only**: `update-ref`, `for-each-ref`, `symbolic-ref`, `rev-parse`, `merge-base`, `verify-commit`, `hash-object`, `cat-file`. Never porcelain — its output offers no stability contract across versions, and parsing it would be exactly the debt that resorting to the binary is meant to avoid.
+**Plumbing only**: `update-ref`, `for-each-ref`, `symbolic-ref`, `rev-parse`, `rev-list`, `merge-base`, `verify-commit`, `hash-object`, `cat-file`. Never porcelain — its output offers no stability contract across versions, and parsing it would be exactly the debt that resorting to the binary is meant to avoid.
 
 Three entries are new and serve the ref lifecycle and the default branch (§7). `for-each-ref` enumerates `refs/ank/*` — pruning without enumeration is not implementable, and that gap predated revision e: `check` was already supposed to prune orphan refs. `symbolic-ref` reads `refs/remotes/origin/HEAD` and the current branch. `merge-base --is-ancestor` serves reachability, which feeds the diagnostic and never the pruning decision (§7). `cat-file`, already present, gains a use: reading a task file as it appears on the default branch.
 

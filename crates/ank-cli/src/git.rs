@@ -11,8 +11,10 @@
 //! with the exact command to run.
 
 use crate::cli::CliError;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, OnceLock};
 
 /// Floor imposed by SSH signing and `gpg.ssh.allowedSignersFile`.
 pub const MIN_VERSION: (u32, u32) = (2, 34);
@@ -28,6 +30,10 @@ const INSTALL_URL: &str = "https://git-scm.com/downloads";
 const PLUMBING: &[&str] = &[
     "update-ref",
     "rev-parse",
+    // `rev-list` and not `log`: the porcelain is `log`, and its output carries
+    // no stability contract. `rev-list` prints one object name per line and has
+    // since it was git's original commit walker.
+    "rev-list",
     "symbolic-ref",
     "merge-base",
     "verify-commit",
@@ -292,6 +298,81 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
+}
+
+/// The `constraint`+`scope` hash a ratification commit recorded for `id`, or
+/// `None` when no such commit is reachable.
+///
+/// `ratified` cannot name the commit: a commit cannot contain its own
+/// identifier, so no field written by the single commit `accept` makes could
+/// ever hold it (§3). The pointer is the history of the ADR's own path instead.
+/// Walking back from `HEAD`, the first commit whose subject is `ratify <id>` is
+/// the ratification, and the `constraint+scope:` line of its message is the
+/// anchor — the copy that matters, because the one in the file is written by
+/// whoever writes the file.
+///
+/// `--full-history` and not the default: path simplification exists to explain
+/// a tree's final state and is free to drop a commit that a merge made
+/// redundant. Dropping the ratification commit would report a perfectly frozen
+/// ADR as unverifiable.
+///
+/// `None` covers a shallow clone, a rewritten history, a corpus moved between
+/// repositories — and a repository with no `HEAD` at all. The caller reports
+/// that as unverifiable, never as a divergence.
+/// Memo over the lookup below, and it is not premature. Git history does not
+/// change under a running process, so the answer is fixed for the life of the
+/// invocation — while `check` asks the same question once per ADR and again for
+/// every task that ADR bears on. Measured on this repository before it existed:
+/// hundreds of `git` spawns and 4.3s for what takes 0.9s without them.
+type Memo = OnceLock<Mutex<HashMap<(PathBuf, String), Option<String>>>>;
+static RATIFICATIONS: Memo = OnceLock::new();
+
+pub fn ratification_anchor_at(cwd: &Path, id: &str, path: &str) -> Result<Option<String>> {
+    let key = (cwd.to_path_buf(), id.to_string());
+    let memo = RATIFICATIONS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(&key) {
+            return Ok(hit.clone());
+        }
+    }
+    let found = ratification_anchor_uncached(cwd, id, path)?;
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(key, found.clone());
+    }
+    Ok(found)
+}
+
+fn ratification_anchor_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<String>> {
+    let subject = format!("ratify {id}");
+    let args = ["rev-list", "--full-history", "HEAD", "--", path];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    for sha in String::from_utf8_lossy(&out.stdout).lines() {
+        let object = output(cwd, &["cat-file", "commit", sha.trim()])?;
+        if !object.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&object.stdout);
+
+        // Headers, one empty line, then the message. The blank line inside an
+        // armoured signature is not that separator: every continuation line of
+        // a header carries a leading space, so it never reads as empty here.
+        let mut lines = text.lines().skip_while(|l| !l.is_empty());
+        if lines.next().is_none() {
+            continue;
+        }
+        let message: Vec<&str> = lines.collect();
+        if message.first().map(|l| l.trim()) != Some(subject.as_str()) {
+            continue;
+        }
+        return Ok(message
+            .iter()
+            .find_map(|l| l.trim().strip_prefix("constraint+scope: "))
+            .map(|h| h.trim().to_string()));
+    }
+    Ok(None)
 }
 
 /// Resolves the default branch (§7): the config value first, then

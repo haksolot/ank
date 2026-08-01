@@ -297,7 +297,7 @@ pub fn build(
     });
 
     match head {
-        Some(id) => build_execution(&store, &index, &shorts, &coord, id, warnings),
+        Some(id) => build_execution(&store, repo, &index, &shorts, &coord, id, warnings),
         None => build_orientation(&store, &rows, &shorts, &coord, path, limit, warnings),
     }
 }
@@ -470,19 +470,30 @@ fn adr_lines(
 
 fn build_execution(
     store: &Store,
+    repo: &Repo,
     index: &Index,
     shorts: &HashMap<EntityId, String>,
     coord: &HashMap<EntityId, Coordination>,
     id: EntityId,
-    warnings: Vec<String>,
+    mut warnings: Vec<String>,
 ) -> Result<View> {
     let Entity::Task(task) = store.load(&id)?.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
+
+    // A constraint withheld in silence is worse than one that binds wrongly:
+    // an absence is the one thing a reader cannot notice. Named here, with the
+    // command that explains it, because §3 suspends the injection and does not
+    // hide the decision.
+    for adr in claim::suspended_constraints(store, repo, &task)? {
+        warnings.push(format!(
+            "{adr} altered since ratification: its constraint is not injected (ank show {adr})"
+        ));
+    }
     // The constraints matching the scope of the task, computed by the same
     // function the claim record hashes. One rule, one implementation: if the
     // two drifted, `done` would warn about a change no reader ever showed.
-    let applicable = claim::applicable_constraints(store, &task)?;
+    let applicable = claim::applicable_constraints(store, repo, &task)?;
     let rows = index.all()?;
     let by_id: HashMap<String, &Row> = rows.iter().map(|r| (r.id.to_string(), r)).collect();
 
