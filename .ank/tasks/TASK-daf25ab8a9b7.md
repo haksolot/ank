@@ -4,7 +4,7 @@ type: task
 slug: the-msrv-claim-is-false-cargo-lock-v4-cannot-be
 title: "The MSRV claim is false: Cargo.lock v4 cannot be read by the toolchain CLAUDE.md names"
 created: 2026-07-31T17:33:47Z
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/Cargo.toml
   - crates/ank-core/Cargo.toml
@@ -14,8 +14,15 @@ blocked_by: []
 done_criteria: |
   The minimum supported Rust version is established by running that toolchain against the tree, not by assertion. rust-version is declared in the manifests, CLAUDE.md states the same number, and CI builds on that exact toolchain so the claim cannot rot again without turning something red.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 9b35894
+    criteria: 442b01fb69b2
+  - type: test
+    ref: ci://github/30716366063
+    criteria: 442b01fb69b2
 schema: 1
-version: 5
+version: 9
 ---
 
 CLAUDE.md says "the MSRV is loose but Cargo.lock pins for rustc 1.75 (liftable
@@ -43,3 +50,6 @@ rots silently; an MSRV that CI builds on turns red the day it stops being true.
 
 ## Log
 - 2026-08-01T19:37:10Z seanl@sean-laptop — Toolchain walk complete. Measured, not asserted: 1.78 fails (libsqlite3-sys 0.38.1 build.rs uses cfg_select!, macro not found), 1.91/1.92/1.93/1.94 all fail the same call as E0658 use of unstable library feature cfg_select. 1.95 is the first toolchain that compiles: cargo +1.95 test --workspace --locked green, 239 tests. MSRV is 1.95, the current stable, and the sole cause is one build script in libsqlite3-sys 0.38.1. The lockfile v4 floor of 1.78 is real but not binding: the dependency floor is 17 minor versions above it.
+- 2026-08-01T20:12:41Z seanl@sean-laptop — CI evidence for the last clause of the criterion: run 30716366063 on msrv/measured-not-asserted, conclusion success. All three msrv jobs green, and the ubuntu log confirms it is not a vacuous pass: rustup installed 1.95.0 (59807616e), cargo +1.95 --version reports 1.95.0, and cargo +1.95 build --workspace --locked compiled ank-core. Note for whoever meets this next: the claim TTL lapsed while waiting on CI and ank log refused with code 6. Working is what renews the lock, and waiting is not working.
+- 2026-08-01T20:13:00Z seanl@sean-laptop — done, proof commit:9b35894
+- 2026-08-01T20:13:11Z seanl@sean-laptop — attested test:ci://github/30716366063
