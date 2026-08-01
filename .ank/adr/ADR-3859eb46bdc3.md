@@ -4,7 +4,7 @@ type: adr
 slug: the-agent-surface-is-eight-verbs-show-included
 title: The agent surface is eight verbs, show included
 created: 2026-08-01T01:54:59Z
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
   - skill/**
@@ -13,7 +13,7 @@ constraint: |
 supersedes: ADR-2f8a61c04b7d
 ratified: 42e9d5147281
 schema: 1
-version: 2
+version: 3
 ---
 
 ADR-2f8a61c04b7d said no verb is ever added. This adds one, so it is superseded rather than amended: an accepted constraint is not edited in place, and the agent role could not do it anyway.
