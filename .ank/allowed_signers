@@ -1,4 +1,14 @@
-# Public keys allowed to ratify (git SSH allowed-signers format).
-# One line per key: <principal> <type> <key>
-# Empty for now: the bootstrap ADRs are ratified by the repository history
-# (ADR-9d4b7e2a5c13 documents the exception).
+# Keys allowed to ratify (section 8).
+#
+# This repository signs with GPG, so `git verify-commit` resolves the signature
+# through the keyring and never reads this file: git consults an allowed-signers
+# file only under `gpg.format = ssh`. The entry below is therefore a declaration
+# and not a mechanism. It records which identity may ratify, in a versioned file
+# where adding one is a diff in review, and enforcement stays advisory in the
+# sense section 8 already accepts and displays. Switching `gpg.format` to ssh
+# and pointing `gpg.ssh.allowedSignersFile` here is what would make it
+# load-bearing, and that trade was weighed and declined: it would change the
+# signature of every commit in the repository, not only the ratifications.
+#
+# Layout follows git's allowed-signers file: principal, then the key.
+sean.lamet@dekrow.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A
