@@ -17,8 +17,9 @@ constraint: |
   old, a working directory outside a git repository, or an indeterminable
   default branch all exit with code 9 and the exact command to run.
 supersedes: ADR-92b9cda9f6a9
+ratified: a62aacef2111
 schema: 1
-version: 2
+version: 3
 ---
 
 Replaces ADR-92b9cda9f6a9 without changing its substance: git stays a hard
