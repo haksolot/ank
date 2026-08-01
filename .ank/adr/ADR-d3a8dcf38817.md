@@ -20,8 +20,9 @@ constraint: |
   a matter of taste. The single exception is a string whose meaning is its
   literal value: an external proof reference, a quoted third-party message, or
   a fixture asserting a byte sequence.
+ratified: b5582c152270
 schema: 1
-version: 1
+version: 2
 ---
 
 The tool's whole claim is agnosticism — any agent, any harness, any host. A
