@@ -577,15 +577,26 @@ fn check_adr(
         } else {
             // A broken chain: the replacement claims the succession and the
             // replaced one never learned of it.
+            //
+            // Only once the replacement is real, though. `proposed` states an
+            // intention, and the succession happens at `accept` — which is what
+            // marks the target. Faulting before then would exit 8 over an
+            // intention, and exit 8 fails the `check-repo` verifier nearly every
+            // task in this corpus declares: writing `new adr --supersedes`, an
+            // act the role table hands to the agent, would block every `done` in
+            // the repository until a human ratified it. The consequence is out
+            // of all proportion to the state it describes.
             let replaced = entities.iter().find_map(|(_, e)| match e {
                 Entity::Adr(other) if &other.id == target => Some(other.status),
                 _ => None,
             });
             if replaced != Some(AdrStatus::Superseded) {
-                report.findings.push(Finding::fault(
-                    &a.id,
-                    format!("supersedes {target}, which is not marked superseded"),
-                ));
+                let message = format!("supersedes {target}, which is not marked superseded");
+                report.findings.push(if a.status == AdrStatus::Proposed {
+                    Finding::signal(&a.id, format!("{message} (proposed: not yet a succession)"))
+                } else {
+                    Finding::fault(&a.id, message)
+                });
             }
         }
     }
@@ -973,27 +984,124 @@ pub fn accept(
     adr.status
         .check_transition(AdrStatus::Accepted)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", adr.id)))?;
+    let id = adr.id.clone();
+
+    // Everything that can refuse, refused before anything is written. A
+    // half-performed succession is a corpus the ratification commit would then
+    // make authoritative, and `accept` has no second pass to repair it.
+    let replaced = superseded_target(&store, &adr)?;
 
     // The hash of what is being made binding, recorded before the commit that
     // makes it so: `constraint` and `scope` together are what is ratified (§8).
+    //
+    // The promotion itself is written here, and it was missing: the transition
+    // was checked above and never performed, so `accept` wrote `ratified` onto
+    // an ADR that stayed `proposed`. Neither test reached this line — both
+    // assert refusals — which is the shape CLAUDE.md warns about, found by a
+    // test that finally ran the commit.
     let anchor = ratification_anchor(&adr.constraint, &adr.scope);
+    adr.status = AdrStatus::Accepted;
     adr.ratified = Some(anchor.clone());
-    let id = adr.id.clone();
+
+    let mut paths = Vec::new();
+
+    // The target first, and the order is the argument. Between the two writes
+    // the corpus holds a target marked `superseded` whose superseder is still
+    // `proposed` — which `check_adr` calls clean in both directions, because the
+    // proposal does name it. The reverse order leaves an accepted superseder
+    // over an unmarked target, which is precisely the fault.
+    if let Some(mut target) = replaced.clone() {
+        let target_base = target.version;
+        target.status = AdrStatus::Superseded;
+        paths.push(format!("{}/adr/{}.md", ank_relative(repo), target.id));
+        store.write(&Entity::Adr(target), target_base)?;
+    }
+    paths.push(format!("{}/adr/{id}.md", ank_relative(repo)));
     store.write(&Entity::Adr(adr), base_version)?;
 
-    let path = format!("{}/adr/{id}.md", ank_relative(repo));
-    let message = format!("ratify {id}\n\nconstraint+scope: {anchor}\nby: {identity}\n");
-    let commit = commit_signed(&repo.root, &path, &message)?;
+    // One commit for both writes. The succession is a single act, and two
+    // commits would leave a window in which history says the constraint binds
+    // while the one it replaced still binds too.
+    let succession = match &replaced {
+        Some(t) => format!("supersedes: {}\n", t.id),
+        None => String::new(),
+    };
+    let message =
+        format!("ratify {id}\n\nconstraint+scope: {anchor}\n{succession}by: {identity}\n");
+    let commit = commit_signed(&repo.root, &paths, &message)?;
 
     if inv.json() {
+        let superseded = match &replaced {
+            Some(t) => format!("\"{}\"", t.id),
+            None => "null".to_string(),
+        };
         let _ = writeln!(
             out,
-            "{{\"adr\":\"{id}\",\"status\":\"accepted\",\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
+            "{{\"adr\":\"{id}\",\"status\":\"accepted\",\"superseded\":{superseded},\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
         );
     } else if !inv.quiet() {
         let _ = writeln!(out, "accepted {id} -> {}", &commit[..commit.len().min(7)]);
+        if let Some(t) = &replaced {
+            let _ = writeln!(out, "superseded {}", t.id);
+        }
     }
     Ok(0)
+}
+
+/// The ADR this one replaces, loaded and checked, or `None` when it replaces
+/// nothing.
+///
+/// `model.rs` states `Accepted -> Superseded` as the only legal write on an
+/// accepted ADR, "performed by the `accept` of the ADR that replaces it". This
+/// is that write's precondition, and it runs before `accept` touches anything:
+/// a refusal must leave the corpus exactly as it found it.
+fn superseded_target(store: &Store, adr: &Adr) -> Result<Option<Adr>> {
+    let Some(target_id) = adr.supersedes.clone() else {
+        return Ok(None);
+    };
+    let Entity::Adr(target) = store.load(&target_id)?.entity else {
+        return Err(CliError::new(1, format!("{target_id} is not an ADR"))
+            .with_hint(format!("ank show {target_id}")));
+    };
+
+    // Superseding a proposal is meaningless — nothing was ever binding — and a
+    // caller who wrote one almost certainly meant a different identifier. A
+    // prerequisite unmet, so 7 and not the 6 of an illegal transition.
+    if target.status != AdrStatus::Accepted {
+        let hint = if target.status == AdrStatus::Proposed {
+            format!("ank accept {target_id}")
+        } else {
+            format!("ank show {target_id}")
+        };
+        return Err(CliError::new(
+            7,
+            format!(
+                "{target_id} is {}, and only an accepted ADR can be superseded",
+                target.status.as_str()
+            ),
+        )
+        .with_hint(hint));
+    }
+
+    // Already replaced by somebody else. Re-pointing the chain silently would
+    // rewrite whose succession this was, and the corpus keeps no record of the
+    // one it dropped.
+    for other in store.list_ids()? {
+        if other.kind() != EntityKind::Adr || other == adr.id {
+            continue;
+        }
+        if let Entity::Adr(o) = store.load(&other)?.entity {
+            if o.supersedes.as_ref() == Some(&target_id) && o.status == AdrStatus::Accepted {
+                return Err(CliError::new(
+                    7,
+                    format!("{target_id} is already superseded by {other}"),
+                )
+                .with_hint(format!("ank show {other}")));
+            }
+        }
+    }
+
+    Ok(Some(target))
 }
 
 /// Hash of `constraint` + `scope`, normalised. What the ratification commit
@@ -1011,11 +1119,15 @@ pub fn ratification_anchor(constraint: &str, scope: &[String]) -> String {
 /// The one commit Ank produces. Signed, because the authority model rests on
 /// the signature and on nothing else (§8).
 ///
+/// Several paths, because a succession is two writes and one act: the ADR being
+/// ratified and the one it replaces go into the same commit, or history holds a
+/// moment where both constraints bind.
+///
 /// `add` and `commit` are porcelain, and this is the documented exception:
 /// neither has a plumbing equivalent worth rewriting, and ADR-b8884edcebe3's
 /// rule is about parsing output — nothing here is parsed but the resulting sha,
 /// which `rev-parse` supplies.
-fn commit_signed(cwd: &Path, path: &str, message: &str) -> Result<String> {
+fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> {
     use std::process::Command;
     let run = |args: &[&str]| -> Result<()> {
         let out = Command::new("git")
@@ -1033,8 +1145,16 @@ fn commit_signed(cwd: &Path, path: &str, message: &str) -> Result<String> {
         }
         Ok(())
     };
-    run(&["add", "--", path])?;
-    run(&["commit", "-S", "-q", "-m", message, "--", path])?;
+    let refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
+
+    let mut add = vec!["add", "--"];
+    add.extend_from_slice(&refs);
+    run(&add)?;
+
+    let mut commit = vec!["commit", "-S", "-q", "-m", message, "--"];
+    commit.extend_from_slice(&refs);
+    run(&commit)?;
+
     git::run(cwd, &["rev-parse", "HEAD"])
 }
 
@@ -1360,6 +1480,50 @@ mod tests {
                     .unwrap();
             }
         }
+
+        /// A real signing key, because `accept` signs for real and the two
+        /// tests that existed before this one both asserted refusals — they
+        /// never reached the commit, so the commit was never exercised.
+        ///
+        /// SSH rather than GPG: `ssh-keygen` ships beside git on all three
+        /// platforms and needs no agent, no keyring and no passphrase prompt,
+        /// where a gpg fixture needs a home directory and a daemon.
+        fn enable_signing(&self) {
+            let key = self.0.join("signing-key");
+            let out = Command::new("ssh-keygen")
+                .args(["-t", "ed25519", "-N", "", "-C", "ank test", "-q", "-f"])
+                .arg(&key)
+                .output()
+                .expect("ssh-keygen ships with git on all three platforms");
+            assert!(
+                out.status.success(),
+                "ssh-keygen: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            for args in [
+                vec!["config", "gpg.format", "ssh"],
+                vec![
+                    "config",
+                    "user.signingkey",
+                    key.with_extension("pub").to_str().unwrap(),
+                ],
+            ] {
+                assert!(Command::new("git")
+                    .current_dir(&self.0)
+                    .args(&args)
+                    .status()
+                    .unwrap()
+                    .success());
+            }
+        }
+
+        fn adr_at(&self, hex: &str) -> Adr {
+            let id = EntityId::parse(&format!("ADR-{hex}")).unwrap();
+            match self.store().load(&id).unwrap().entity {
+                Entity::Adr(a) => a,
+                _ => panic!("not an ADR"),
+            }
+        }
         fn report(&self) -> Report {
             inspect(&self.repo(), &self.cfg(), None, false).unwrap()
         }
@@ -1666,6 +1830,73 @@ mod tests {
             "{:?}",
             r.findings
         );
+    }
+
+    /// A dangling reference is wrong whoever wrote it, and `proposed` buys no
+    /// amnesty for it: the target named here has never existed, so no future
+    /// `accept` can repair the chain.
+    #[test]
+    fn a_proposed_adr_naming_a_target_that_does_not_exist_is_still_a_fault() {
+        let t = Temp::new();
+        let mut a = adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000eeee").unwrap());
+        }
+        t.write(&a);
+        let r = t.report();
+        assert!(has(&r, Level::Fault, "does not exist"), "{:?}", r.findings);
+    }
+
+    /// The proposed case, on its own: an announced succession is not a broken
+    /// one. `proposed` states an intention, the succession happens at `accept`,
+    /// and until then the target is not expected to be marked.
+    #[test]
+    fn a_proposed_superseder_over_an_unmarked_target_is_a_signal() {
+        let t = Temp::new();
+        t.write(&adr("00000000bbbb", AdrStatus::Accepted, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+
+        let r = t.report();
+        assert!(
+            has(&r, Level::Signal, "is not marked superseded"),
+            "{:?}",
+            r.findings
+        );
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        // The consequence is the whole point: exit 8 fails `check-repo`, which
+        // nearly every task in this corpus declares, so faulting here would
+        // block every `done` in the repository behind one proposal.
+        assert_eq!(
+            t.call(&["check"], "marie@laptop").unwrap().0,
+            0,
+            "an intention must not block every done in the repository"
+        );
+    }
+
+    /// The accepted case, on its own, and the fault is exactly the one that
+    /// existed before: the succession is real now, and the target never learned
+    /// of it.
+    #[test]
+    fn an_accepted_superseder_over_an_unmarked_target_is_still_a_fault() {
+        let t = Temp::new();
+        t.write(&adr("00000000bbbb", AdrStatus::Accepted, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+
+        let r = t.report();
+        assert!(
+            has(&r, Level::Fault, "is not marked superseded"),
+            "{:?}",
+            r.findings
+        );
+        assert_eq!(t.call(&["check"], "marie@laptop").unwrap().0, 8);
     }
 
     #[test]
@@ -1991,6 +2222,151 @@ mod tests {
             "accept takes no flag at all: {:?}",
             spec.flags
         );
+    }
+
+    /// A superseder naming nothing: the path that existed before, unchanged,
+    /// and now actually reaching the commit it always claimed to make.
+    #[test]
+    fn accept_ratifies_an_adr_that_replaces_nothing() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+
+        let (code, out) = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("accepted ADR-00000000aaaa"), "{out}");
+        assert!(!out.contains("superseded"), "nothing was replaced: {out}");
+
+        let a = t.adr_at("00000000aaaa");
+        assert_eq!(a.status, AdrStatus::Accepted);
+        assert_eq!(
+            a.ratified,
+            Some(ratification_anchor(&a.constraint, &a.scope))
+        );
+    }
+
+    /// The write `model.rs` declares legal and nothing performed: accepting the
+    /// replacement is what marks the replaced.
+    #[test]
+    fn accept_marks_the_target_superseded_in_the_same_operation() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000bbbb", AdrStatus::Accepted, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+        t.commit("seed");
+
+        let (code, out) = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("superseded ADR-00000000bbbb"), "{out}");
+
+        assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Accepted);
+        assert!(t.adr_at("00000000aaaa").ratified.is_some());
+        assert_eq!(
+            t.adr_at("00000000bbbb").status,
+            AdrStatus::Superseded,
+            "the transition model.rs calls legal, performed by the accept of \
+             the ADR that replaces it"
+        );
+
+        // The commit is authoritative as soon as it exists, so it must not
+        // exist over a corpus `check` would call broken. Both directions of the
+        // chain, and neither is a finding.
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.message.contains("superseded") || f.message.contains("supersedes")),
+            "{:?}",
+            r.findings
+        );
+
+        // And both files are in the one commit: two would leave a window in
+        // which history says both constraints bind.
+        let files = String::from_utf8_lossy(
+            &Command::new("git")
+                .current_dir(&t.0)
+                .args(["show", "--name-only", "--format=%B", "HEAD"])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .to_string();
+        assert!(files.contains("ADR-00000000aaaa.md"), "{files}");
+        assert!(files.contains("ADR-00000000bbbb.md"), "{files}");
+        assert!(
+            files.contains("supersedes: ADR-00000000bbbb"),
+            "the message records the succession: {files}"
+        );
+    }
+
+    /// Superseding a proposal is meaningless: nothing was ever binding, and the
+    /// caller almost certainly meant a different identifier.
+    #[test]
+    fn accept_refuses_a_target_that_is_not_accepted_and_writes_nothing() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000bbbb", AdrStatus::Proposed, &["src/**"]));
+        let mut a = adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]);
+        if let Entity::Adr(x) = &mut a {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&a);
+        t.commit("seed");
+
+        let err = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap_err();
+        assert_eq!(err.code, 7, "{}", err.message);
+        assert!(err.message.contains("proposed"), "{}", err.message);
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("ank accept ADR-00000000bbbb"),
+            "the refusal names the command that would make it acceptable"
+        );
+
+        // A refusal is not a half transition, in either file.
+        assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Proposed);
+        assert!(t.adr_at("00000000aaaa").ratified.is_none());
+        assert_eq!(t.adr_at("00000000bbbb").status, AdrStatus::Proposed);
+    }
+
+    /// Re-pointing the chain silently would rewrite whose succession it was,
+    /// and the corpus would keep no record of the one it dropped.
+    #[test]
+    fn accept_refuses_a_target_another_adr_already_superseded() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000bbbb", AdrStatus::Accepted, &["src/**"]));
+        let mut first = adr("00000000cccc", AdrStatus::Accepted, &["src/**"]);
+        if let Entity::Adr(x) = &mut first {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&first);
+        let mut late = adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]);
+        if let Entity::Adr(x) = &mut late {
+            x.supersedes = Some(EntityId::parse("ADR-00000000bbbb").unwrap());
+        }
+        t.write(&late);
+        t.commit("seed");
+
+        let err = t
+            .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap_err();
+        assert_eq!(err.code, 7, "{}", err.message);
+        assert!(err.message.contains("ADR-00000000cccc"), "{}", err.message);
+
+        assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Proposed);
+        assert_eq!(t.adr_at("00000000bbbb").status, AdrStatus::Accepted);
     }
 
     #[test]
