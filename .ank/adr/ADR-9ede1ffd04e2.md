@@ -5,7 +5,7 @@ slug: one-surface-and-policy-lives-above-the-tool
 title: One surface, and policy lives above the tool
 created: 2026-08-01T18:29:38Z
 author: seanl@sean-laptop
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
   - skill/**
@@ -15,7 +15,7 @@ constraint: |
 supersedes: ADR-3859eb46bdc3
 ratified: 5355952b8cd1
 schema: 2
-version: 2
+version: 3
 ---
 
 ADR-3859eb46bdc3 froze the agent surface at eight verbs and sent everything else to the human side. This supersedes it because the split it protected was never a boundary: the CLI told callers apart by ANK_AGENT, a variable the caller sets itself, and section 8 of the specification already names the consequence, permissions are advisory. A wall whose bricks are self-declared identity is a sign, not a wall.
