@@ -1,9 +1,16 @@
-//! Human surface: check, review, accept, close and show (§4, §8, §11).
+//! Human surface: check, review, accept, close and attest (§4, §8, §11).
 //!
-//! The half of the CLI that does not run in the agent loop. It can grow freely
-//! — that is what makes the seven-verb freeze sustainable (ADR-2f8a61c04b7d) —
-//! and it carries the two acts an agent must never perform alone: ratifying a
-//! constraint, and closing a task nobody finished.
+//! The side of the CLI that can grow freely — that is what makes the eight-verb
+//! freeze sustainable (ADR-3859eb46bdc3) — and it carries the two acts an agent
+//! must never perform alone: ratifying a constraint, and closing a task nobody
+//! finished.
+//!
+//! **`show` lives here and is not one of them.** ADR-3859eb46bdc3 moved it onto
+//! the agent surface; the ADR governs who may call a verb, not which file holds
+//! it, and moving the function would buy nothing but a diff. So this module is
+//! no longer "the half that does not run in the agent loop", and that sentence
+//! is gone rather than quietly kept: a header describing an audience is exactly
+//! the kind of prose that rots into a lie one decision at a time.
 //!
 //! **`check` is the only command that prunes.** `claim` and `context` are
 //! readers, and a reader does not sanitise the coordination plane underneath

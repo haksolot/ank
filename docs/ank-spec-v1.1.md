@@ -234,14 +234,16 @@ The symmetric risk — an agent going off the rails and flooding the repository 
 
 The memorisation budget is **per audience**, not global. Git has more than a hundred commands and stays learnable because nobody ever needs all hundred. Ank applies the same split: an agent surface, frozen and minimal, and a human surface that can grow without ever touching it.
 
-### Agent surface — seven verbs, frozen
+### Agent surface — eight verbs, frozen
 
 ```
-Loop:        context → claim → log → done
+Loop:        context → claim → show → log → done
 Off-loop:    new, find, release
 ```
 
-This is the entire content of SKILL.md. It must never grow again: any new functionality lands on the human side or in the format. An agent that wants an entity's full body reads the file — the format is the specification, and `cat` is already the agents' `show`.
+This is the entire content of SKILL.md. It grows only by succession: ADR-3859eb46bdc3 names these eight and requires an ADR superseding it in turn for any ninth, so a verb costs a ratified decision and a human signature rather than a commit. Anything short of that lands on the human side or in the format.
+
+`show` is on this side by that route, and the reasoning is worth keeping because it is the argument any ninth verb has to beat. It sat on the human surface at first, as the only unbounded reader in the system. That argument was about output size, and §5 answers size with a budget and a truncation notice that says what it cut. What it did not answer is the body: `context` serves the criterion and the constraints, never the prose that justifies them, and the prose is where the reasoning an agent is supposed to inherit actually lives. With `.ank/` closed to direct reads (ADR-01b6dd05f0db), withholding it entirely was the worse trade.
 
 ### Human surface
 
@@ -250,7 +252,6 @@ review    ratification queue, pending proposals, corpus health
 accept    promotes a proposed ADR to accepted (produces the signed commit, §8, §12;
           requires the default branch)
 check     mechanical invariants, exit code usable in CI
-show      full display of an entity, body included
 close     closes a task that will never be done (--reason mandatory)
 ```
 
@@ -266,7 +267,7 @@ error[7]: accept requires the default branch (current: feat/opaque-sessions, def
   -> git switch main && ank accept 19d0
 ```
 
-Everything else (editing fields, reordering, deleting) goes through editing the file directly, since the format is the specification.
+Everything else (editing fields, reordering, deleting) goes through **a human** editing the file directly, since the format is the specification. The actor matters here and is not decoration: ADR-01b6dd05f0db closes `.ank/` to direct reads and writes *by an agent*, and leaves a human with an editor every power they had. Written without the subject, this sentence reads as a general permission and hands back what that ADR withdrew.
 
 ### HEAD
 
@@ -304,6 +305,7 @@ released TASK-8f3a -> open
 ```
 ank context [<path>]        [--json] [--limit N]
 ank claim <id>              [--criteria <c>] [--ttl 30m]
+ank show <id>
 ank log [<id>] <message>
 ank done [<id>]             [--proof <type>:<ref>]
 ank release [<id>] --reason <r>
@@ -314,7 +316,6 @@ ank review [<path>]
 ank accept <id>
 ank close <id> --reason <r>
 ank check [<path>]
-ank show <id>
 ```
 
 **`ank context` with no argument** covers the whole repository. It is the first call an agent should make, before it even knows which path it works on — an agent launched on "fix the login bug" does not yet know its perimeter.
@@ -664,7 +665,7 @@ Skills install from repositories rather than npm packages: the identifier is `ow
 
 The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, OpenCode, and many others) and creates links from each agent to a canonical copy — exactly the desired design, already maintained by a third party.
 
-**Token economy.** These files are loaded permanently. SKILL.md therefore carries the seven commands and the mental model; flag details stay in `ank help`, loaded on demand.
+**Token economy.** These files are loaded permanently. SKILL.md therefore carries the eight commands and the mental model; flag details stay in `ank help`, loaded on demand.
 
 `ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`.
 
@@ -676,7 +677,7 @@ The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, Open
 
 ### In
 
-File format · agent surface (7 verbs) and human surface (`review`, `accept`, `check`, `show`) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · declarative permissions anchored on a signed commit, versioned `allowed_signers` · bootstrap skill · `check` (full scope in §4).
+File format · agent surface (8 verbs, `show` included) and human surface (`review`, `accept`, `check`, `close`) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · declarative permissions anchored on a signed commit, versioned `allowed_signers` · bootstrap skill · `check` (full scope in §4).
 
 ### Out of v1, in order of expected value
 
