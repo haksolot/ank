@@ -89,6 +89,9 @@ pub struct Report {
     pub pruned: Vec<String>,
     pub tasks: usize,
     pub adrs: usize,
+    /// Ratification signatures no local key could check. Accumulated across the
+    /// corpus and reported once (§4), never per ADR.
+    pub unchecked_signatures: usize,
 }
 
 impl Report {
@@ -262,6 +265,22 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     check_cycles(&entities, &mut report);
     check_authorship(&entities, &coord, &in_scope, &mut report);
 
+    // One line for the machine, not one per ADR (§8, and the rule of §4 about
+    // reporting a corpus-wide absence once). Says what it would take to make
+    // the answer real, because the reader who sees this is usually one
+    // `gpg --recv-keys` away from a verification.
+    if report.unchecked_signatures > 0 {
+        let n = report.unchecked_signatures;
+        report.findings.push(Finding::signal(
+            "allowed_signers",
+            format!(
+                "{n} ratification signature(s) could not be checked here: no public key \
+                 for the signing identity, so they are not verified and not refused \
+                 (import the key declared in .ank/allowed_signers)"
+            ),
+        ));
+    }
+
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
     match &default_branch {
@@ -307,14 +326,136 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<HashMap<EntityId, Rec
     Ok(map)
 }
 
+/// One entry of `.ank/allowed_signers`: an identity allowed to ratify (§8).
+///
+/// Git's allowed-signers layout, `principal [options] keytype key`, read from
+/// the end because the optional middle is what varies: the key is the last
+/// field and its type the one before, whatever sits between them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signer {
+    pub principal: String,
+    pub keytype: String,
+    pub key: String,
+}
+
+/// Parses `allowed_signers`. Unreadable lines are dropped rather than reported:
+/// this file is versioned and reviewed, and a check that refuses to start over a
+/// stray line is a check that stops answering the question it exists for.
+pub fn parse_signers(text: &str) -> Vec<Signer> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| {
+            let fields: Vec<&str> = l.split_whitespace().collect();
+            match fields.as_slice() {
+                [principal, .., keytype, key] => Some(Signer {
+                    principal: (*principal).to_string(),
+                    keytype: keytype.to_lowercase(),
+                    key: (*key).to_string(),
+                }),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
+/// What a ratification commit's signature is worth.
+///
+/// Five states and not three, because collapsing any two of them loses the
+/// distinction the check exists to draw. `Unchecked` in particular must never
+/// read as `Trusted`: a verification that degrades to success on a machine
+/// missing a public key is not a verification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Signature {
+    /// Good signature from a key `allowed_signers` declares.
+    Trusted,
+    /// Good signature, from a key nobody declared.
+    Undeclared { fingerprint: String },
+    /// A signature is there and no local key can check it.
+    Unchecked,
+    /// No signature at all — the forgery this task was filed for.
+    Absent,
+    /// Present, checkable, and refused: bad, expired or revoked.
+    Invalid { status: char },
+}
+
+/// Turns git's facts into the verdict, against the declared keys.
+///
+/// Pure, and that is deliberate: every state is reachable in a unit test
+/// without a keyring, a network or a signed fixture, which is what makes "each
+/// one is tested" affordable rather than aspirational.
+pub fn classify_signature(facts: &git::SignatureFacts, declared: &[Signer]) -> Signature {
+    match facts.status {
+        'N' => Signature::Absent,
+        'E' => Signature::Unchecked,
+        'G' | 'U' => {
+            if is_ssh(&facts.fingerprint) {
+                // Under SSH git has already done the allowlist check, because
+                // it is the only format it will do it for: measured against
+                // git, `G` is a key the allowed-signers file matched and `U` is
+                // a good signature whose principal it did not. Re-deciding it
+                // here would mean comparing an `SHA256:` fingerprint against a
+                // base64 key and calling every correct signature undeclared.
+                if facts.status == 'G' {
+                    Signature::Trusted
+                } else {
+                    Signature::Undeclared {
+                        fingerprint: facts.fingerprint.clone(),
+                    }
+                }
+            } else if declares(declared, &facts.fingerprint) {
+                // OpenPGP, where git never reads the file at all. `U` here is a
+                // good signature from a key the local keyring does not
+                // *ultimately trust*, which is a statement about the operator's
+                // web of trust and not about this repository — so both good
+                // statuses are judged the same way, by the declaration.
+                Signature::Trusted
+            } else {
+                Signature::Undeclared {
+                    fingerprint: facts.fingerprint.clone(),
+                }
+            }
+        }
+        other => Signature::Invalid { status: other },
+    }
+}
+
+/// An SSH signature names its key as `SHA256:<base64>`; OpenPGP names it as a
+/// bare hex fingerprint. Which of the two decided the allowlist depends on it.
+fn is_ssh(fingerprint: &str) -> bool {
+    fingerprint.contains(':')
+}
+
+/// Whether any declared key names this fingerprint.
+///
+/// A suffix match, not equality: git reports a full 40-hex OpenPGP fingerprint
+/// while a file may perfectly reasonably declare the 16-hex long key id, and
+/// the long id is the tail of the fingerprint. The comparison is
+/// case-insensitive because hex is written both ways and neither is wrong.
+fn declares(declared: &[Signer], fingerprint: &str) -> bool {
+    let fp = fingerprint.replace(' ', "").to_lowercase();
+    if fp.is_empty() {
+        return false;
+    }
+    declared.iter().any(|s| {
+        let key = s.key.replace(' ', "").to_lowercase();
+        // The SSH case is already decided by git, which refuses the signature
+        // outright when the allowed-signers file does not cover it; comparing
+        // an `SHA256:` fingerprint against a base64 key here would fail on a
+        // signature git already accepted.
+        !key.is_empty() && (fp == key || fp.ends_with(&key))
+    })
+}
+
+fn declared_signers(repo: &Repo) -> Vec<Signer> {
+    let text = std::fs::read_to_string(repo.ank.join("allowed_signers")).unwrap_or_default();
+    parse_signers(&text)
+}
+
 /// §8: with no signing configured, permissions are advisory. Displayed rather
 /// than hidden, and once rather than once per entity.
 fn check_signers(repo: &Repo, report: &mut Report) {
-    let text = std::fs::read_to_string(repo.ank.join("allowed_signers")).unwrap_or_default();
-    let keys = text
-        .lines()
-        .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
-        .count();
+    let keys = declared_signers(repo).len();
     if keys == 0 {
         report.findings.push(Finding::signal(
             "allowed_signers",
@@ -649,6 +790,37 @@ fn check_adr(
         )),
 
         Freeze::Unanchored | Freeze::Intact => {}
+    }
+
+    // The anchor is worth exactly what the signature on the commit carrying it
+    // is worth (§8). An anchor read from a commit nobody signed anchors nothing
+    // against the one case the whole mechanism exists for.
+    match signature_state(repo, a) {
+        Some(Signature::Absent) => report.findings.push(Finding::fault(
+            &a.id,
+            "its ratification commit is not signed: the anchor proves nothing (§8)",
+        )),
+        Some(Signature::Invalid { status }) => report.findings.push(Finding::fault(
+            &a.id,
+            format!("its ratification commit carries a signature git refuses ({status}): not a ratification"),
+        )),
+        Some(Signature::Undeclared { fingerprint }) => report.findings.push(Finding::fault(
+            &a.id,
+            format!(
+                "ratified by {fingerprint}, which .ank/allowed_signers does not declare"
+            ),
+        )),
+
+        // Counted, not reported here. A missing public key is a property of
+        // the machine and not of this ADR, so it is one line for the corpus
+        // rather than one per entity — the same rule §4 already applies to the
+        // entities predating `author`, and for the same reason: a line per file
+        // is the volume that teaches a reader to stop reading `check`. It is
+        // still never silence, because a verification that degrades to success
+        // is not a verification.
+        Some(Signature::Unchecked) => report.unchecked_signatures += 1,
+
+        Some(Signature::Trusted) | None => {}
     }
     if a.constraint.trim().is_empty() {
         report
@@ -1367,12 +1539,11 @@ pub fn freeze_state(repo: &Repo, adr: &Adr) -> Freeze {
     if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
         return Freeze::Unanchored;
     }
-    let path = format!("{}/adr/{}.md", ank_relative(repo), adr.id);
-    let recorded = match git::ratification_anchor_at(&repo.root, &adr.id.to_string(), &path) {
-        Ok(Some(hash)) => hash,
+    let recorded = match ratification_of(repo, adr) {
+        Some(r) => r.anchor,
         // A git that cannot answer is not a divergence either. Reporting one
         // over a broken environment is how a finding becomes noise.
-        Ok(None) | Err(_) => return Freeze::Unverifiable,
+        None => return Freeze::Unverifiable,
     };
     let now = ratification_anchor(&adr.constraint, &adr.scope);
     if now == recorded {
@@ -1383,6 +1554,42 @@ pub fn freeze_state(repo: &Repo, adr: &Adr) -> Freeze {
             now,
         }
     }
+}
+
+/// The ratification commit for an accepted, anchored ADR.
+fn ratification_of(repo: &Repo, adr: &Adr) -> Option<git::Ratification> {
+    if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
+        return None;
+    }
+    let path = format!("{}/adr/{}.md", ank_relative(repo), adr.id);
+    git::ratification_at(&repo.root, &adr.id.to_string(), &path).unwrap_or(None)
+}
+
+/// The signature on the commit the anchor was read from, or `None` when there
+/// is no such commit to ask about — which `freeze_state` already reports as
+/// unverifiable and which would only be said twice here.
+///
+/// This is the answer to the hole TASK-03eaa26bddd1 left open in writing: the
+/// anchor was compared against the file without anyone asking who wrote it, so
+/// an ordinary unsigned commit whose subject read `ratify <id>` was accepted as
+/// a ratification.
+pub fn signature_state(repo: &Repo, adr: &Adr) -> Option<Signature> {
+    let declared = declared_signers(repo);
+    let signers = repo.ank.join("allowed_signers");
+
+    // Nothing declared is not "signed by nobody": it is the advisory mode §8
+    // describes, already reported once by `check_signers`, and there is no
+    // allowlist to judge against. Going further would also be unsafe — git
+    // reports `N` for a perfectly signed commit when `gpg.format` is ssh and no
+    // allowed-signers file is configured, so a corpus with no file would have
+    // every ratification called unsigned.
+    if declared.is_empty() || !signers.is_file() {
+        return None;
+    }
+
+    let sha = ratification_of(repo, adr)?.sha;
+    let facts = git::signature_of(&repo.root, &sha, Some(&signers)).ok()?;
+    Some(classify_signature(&facts, &declared))
 }
 
 /// Hash of `constraint` + `scope`, normalised. What the ratification commit
@@ -3180,6 +3387,336 @@ mod tests {
                 Freeze::Altered { .. }
             ),
             "the field was moved to match, and it changes nothing"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The signature on the ratification commit (TASK-d31af22248d9)
+    // -----------------------------------------------------------------------
+
+    /// The shape the file actually uses, which is git's: principal, then the
+    /// key, with anything optional allowed to sit between them.
+    #[test]
+    fn allowed_signers_is_read_as_git_writes_it() {
+        let parsed = parse_signers(
+            "# a comment\n\
+             \n\
+             sean@example.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A\n\
+             marie@laptop namespaces=\"git\" ssh-ed25519 AAAAC3NzaC1lZDI1\n\
+             nonsense\n",
+        );
+        assert_eq!(parsed.len(), 2, "{parsed:?}");
+        assert_eq!(parsed[0].keytype, "gpg");
+        assert_eq!(parsed[0].key, "739A603FB05F9F2F7D3C8D50624FCFCC1482554A");
+        assert_eq!(
+            parsed[1].keytype, "ssh-ed25519",
+            "the option in the middle must not be mistaken for the key type"
+        );
+        assert_eq!(parsed[1].key, "AAAAC3NzaC1lZDI1");
+    }
+
+    fn gpg_signer(key: &str) -> Vec<Signer> {
+        vec![Signer {
+            principal: "sean@example.com".into(),
+            keytype: "gpg".into(),
+            key: key.into(),
+        }]
+    }
+
+    fn facts(status: char, fingerprint: &str) -> git::SignatureFacts {
+        git::SignatureFacts {
+            status,
+            fingerprint: fingerprint.into(),
+        }
+    }
+
+    /// Every state, and each one distinguishable from the others. Pure, so the
+    /// five live here rather than behind five fixtures with five keyrings.
+    #[test]
+    fn every_signature_state_is_distinguished() {
+        let fp = "739A603FB05F9F2F7D3C8D50624FCFCC1482554A";
+        let declared = gpg_signer(fp);
+
+        assert_eq!(
+            classify_signature(&facts('G', fp), &declared),
+            Signature::Trusted
+        );
+        assert_eq!(
+            classify_signature(&facts('N', ""), &declared),
+            Signature::Absent,
+            "no signature is the forgery this check exists for"
+        );
+        assert_eq!(
+            classify_signature(&facts('E', fp), &declared),
+            Signature::Unchecked,
+            "a missing public key must never read as a valid signature"
+        );
+        assert_eq!(
+            classify_signature(&facts('B', fp), &declared),
+            Signature::Invalid { status: 'B' }
+        );
+        assert_eq!(
+            classify_signature(
+                &facts('G', "0000000000000000000000000000000000000000"),
+                &declared
+            ),
+            Signature::Undeclared {
+                fingerprint: "0000000000000000000000000000000000000000".into()
+            },
+            "a good signature from a key nobody declared is not a ratification"
+        );
+    }
+
+    /// The long key id is the tail of the fingerprint, and a file declaring
+    /// either is declaring the same key. Case is not meaningful in hex.
+    #[test]
+    fn a_declared_long_key_id_matches_the_full_fingerprint() {
+        let declared = gpg_signer("624fcfcc1482554a");
+        assert_eq!(
+            classify_signature(
+                &facts('G', "739A603FB05F9F2F7D3C8D50624FCFCC1482554A"),
+                &declared
+            ),
+            Signature::Trusted
+        );
+    }
+
+    /// Under OpenPGP, `U` says the keyring does not ultimately trust the key —
+    /// a fact about the operator's web of trust, not about this repository.
+    /// The declaration is what decides, so it is judged like `G`.
+    #[test]
+    fn an_untrusted_openpgp_key_is_still_judged_by_the_declaration() {
+        let fp = "739A603FB05F9F2F7D3C8D50624FCFCC1482554A";
+        assert_eq!(
+            classify_signature(&facts('U', fp), &gpg_signer(fp)),
+            Signature::Trusted
+        );
+    }
+
+    /// Under SSH the letters mean something else, and this is measured against
+    /// git rather than assumed: with an allowed-signers file, `G` is a matched
+    /// principal and `U` is a good signature the file does not cover. Comparing
+    /// the `SHA256:` fingerprint against the base64 key ourselves would call
+    /// every correct signature undeclared.
+    #[test]
+    fn under_ssh_git_has_already_decided_the_allowlist() {
+        let ssh = "SHA256:KjhREDTh0GcSpp8doZ/yhLAG62FZ7h26dQTVffo3JFE";
+        let unrelated = gpg_signer("739A603FB05F9F2F7D3C8D50624FCFCC1482554A");
+        assert_eq!(
+            classify_signature(&facts('G', ssh), &unrelated),
+            Signature::Trusted
+        );
+        assert!(matches!(
+            classify_signature(&facts('U', ssh), &unrelated),
+            Signature::Undeclared { .. }
+        ));
+    }
+
+    /// Writes an allowed-signers file, since the fixture has none by default.
+    fn declare(t: &Temp, line: &str) {
+        std::fs::write(t.0.join(".ank").join("allowed_signers"), line).unwrap();
+    }
+
+    /// The public key `enable_signing` generated, in allowed-signers layout.
+    fn signing_principal(t: &Temp) -> String {
+        let pub_key = std::fs::read_to_string(t.0.join("signing-key.pub")).unwrap();
+        format!("test@ank.local {}", pub_key.trim())
+    }
+
+    /// The hole this task was filed for, end to end and through `check`. An
+    /// ordinary unsigned commit whose subject reads `ratify <id>` used to be
+    /// accepted as a ratification: `rev-list` found it, the subject matched,
+    /// the hashes agreed, and the freeze was reported intact.
+    #[test]
+    fn an_unsigned_ratification_commit_is_refused_as_a_ratification() {
+        let t = Temp::new();
+        t.enable_signing();
+        declare(&t, &signing_principal(&t));
+
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        // The real ratification verifies, which is what makes the negative
+        // below mean something.
+        let repo = t.repo();
+        assert_eq!(
+            signature_state(&repo, &t.adr_at("00000000aaaa")),
+            Some(Signature::Trusted)
+        );
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+
+        // Now forge one: same subject, same anchor line, no signature. `accept`
+        // is not involved, and nothing but the signature tells the two apart.
+        let forged = adr("00000000bbbb", AdrStatus::Accepted, &["src/**"]);
+        let Entity::Adr(mut b) = forged else {
+            unreachable!()
+        };
+        b.ratified = Some(ratification_anchor(&b.constraint, &b.scope));
+        let anchor = ratification_anchor(&b.constraint, &b.scope);
+        t.write(&Entity::Adr(b));
+        for args in [
+            vec!["add", "-A"],
+            vec![
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                &format!("ratify ADR-00000000bbbb\n\nconstraint+scope: {anchor}"),
+            ],
+        ] {
+            Command::new("git")
+                .current_dir(&t.0)
+                .args(&args)
+                .status()
+                .unwrap();
+        }
+
+        assert_eq!(
+            signature_state(&t.repo(), &t.adr_at("00000000bbbb")),
+            Some(Signature::Absent),
+            "the anchor agrees; only the signature does not"
+        );
+        let r = t.report();
+        assert!(
+            has(&r, Level::Fault, "not signed"),
+            "an unsigned ratification must be a fault: {:?}",
+            r.findings
+        );
+        assert!(r.faults() > 0);
+    }
+
+    /// A good signature from a key the file does not declare is not a
+    /// ratification either: the allowlist is what §8 says decides who may
+    /// ratify, and a signature nobody vouched for vouches for nobody.
+    #[test]
+    fn a_signature_from_an_undeclared_key_is_refused() {
+        let t = Temp::new();
+        t.enable_signing();
+        declare(
+            &t,
+            "someone@else ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
+        );
+
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        assert!(
+            matches!(
+                signature_state(&t.repo(), &t.adr_at("00000000aaaa")),
+                Some(Signature::Undeclared { .. })
+            ),
+            "signed for real, by a key the corpus never declared"
+        );
+        let r = t.report();
+        assert!(
+            has(&r, Level::Fault, "does not declare"),
+            "{:?}",
+            r.findings
+        );
+    }
+
+    /// With nothing declared there is no allowlist to judge against, and §8
+    /// already reports that once as advisory. Going further would be unsafe as
+    /// well as noisy: under `gpg.format = ssh` git reports a perfectly signed
+    /// commit as unsigned when no allowed-signers file is configured, so a
+    /// corpus without the file would have every ratification called a forgery.
+    #[test]
+    fn with_no_declared_key_the_signature_is_not_judged_at_all() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        assert_eq!(
+            signature_state(&t.repo(), &t.adr_at("00000000aaaa")),
+            None,
+            "no file, no verdict"
+        );
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        assert!(
+            has(&r, Level::Signal, "advisory"),
+            "the advisory signal is what covers this case: {:?}",
+            r.findings
+        );
+    }
+
+    /// A machine without the public key is a correct repository on an
+    /// incomplete machine, and it is reported once for the corpus rather than
+    /// once per ADR — the rule §4 already applies to entities predating
+    /// `author`, for the same reason.
+    #[test]
+    fn unchecked_signatures_are_counted_once_for_the_corpus() {
+        let mut report = Report {
+            unchecked_signatures: 3,
+            ..Default::default()
+        };
+        // The rendering path is what the reader sees, so assert on the finding
+        // the corpus pass emits rather than on the counter.
+        if report.unchecked_signatures > 0 {
+            let n = report.unchecked_signatures;
+            report.findings.push(Finding::signal(
+                "allowed_signers",
+                format!("{n} ratification signature(s) could not be checked here"),
+            ));
+        }
+        assert_eq!(report.faults(), 0, "never a fault: CI would go red");
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|f| f.message.contains("could not be checked"))
+                .count(),
+            1,
+            "one line for the machine, not one per ADR"
+        );
+    }
+
+    /// Dogfooding, and the only test that exercises the OpenPGP branch: the
+    /// fixtures above all sign with SSH, where git decides the allowlist, while
+    /// this repository signs with GPG, where ank decides it. Without this, the
+    /// branch that runs in production is the branch nothing runs.
+    ///
+    /// Two outcomes are correct and they are not the same: `Trusted` on a
+    /// machine holding the public key, `Unchecked` on one that does not — CI,
+    /// for instance. What must never appear is a verdict claiming the corpus is
+    /// forged.
+    #[test]
+    fn this_repositorys_own_ratifications_are_signed() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap();
+        let repo = Repo {
+            ank: root.join(".ank"),
+            root,
+        };
+        let store = Store::new(&repo.ank);
+        let mut judged = 0;
+        for id in store.list_ids().unwrap() {
+            let Entity::Adr(a) = store.load(&id).unwrap().entity else {
+                continue;
+            };
+            let Some(state) = signature_state(&repo, &a) else {
+                continue;
+            };
+            judged += 1;
+            assert!(
+                matches!(state, Signature::Trusted | Signature::Unchecked),
+                "{}: {state:?}",
+                a.id
+            );
+        }
+        assert!(
+            judged > 0,
+            "no ratification was judged at all: the check is wired to nothing"
         );
     }
 

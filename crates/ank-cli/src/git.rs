@@ -44,6 +44,23 @@ const PLUMBING: &[&str] = &[
     "--version",
 ];
 
+/// The verb an invocation actually runs, skipping the leading `-c <key>=<value>`
+/// pairs.
+///
+/// Those pairs exist for one caller — [`signature_of`], which has to hand git a
+/// configuration the repository must not be made to carry permanently — and the
+/// plumbing rule is about the command whose output we parse, not about the
+/// configuration it runs under. Reading `args[0]` blindly would have made `-c`
+/// look like porcelain and fired the assertion on a correct call.
+fn verb_of<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    let mut rest = args;
+    while let Some(("-c", tail)) = rest.split_first().map(|(h, t)| (*h, t)) {
+        // `-c` takes one argument; dropping both is what leaves the verb first.
+        rest = tail.get(1..).unwrap_or(&[]);
+    }
+    rest.first().copied()
+}
+
 pub type Result<T> = std::result::Result<T, CliError>;
 
 fn env_missing() -> CliError {
@@ -62,7 +79,9 @@ fn env_missing() -> CliError {
 /// stderr, which is exactly the fragility the plumbing rule exists to avoid.
 pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
     debug_assert!(
-        args.first().map(|a| PLUMBING.contains(a)).unwrap_or(false),
+        verb_of(args)
+            .map(|a| PLUMBING.contains(&a))
+            .unwrap_or(false),
         "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
     );
     Command::new("git")
@@ -324,10 +343,22 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
 /// invocation — while `check` asks the same question once per ADR and again for
 /// every task that ADR bears on. Measured on this repository before it existed:
 /// hundreds of `git` spawns and 4.3s for what takes 0.9s without them.
-type Memo = OnceLock<Mutex<HashMap<(PathBuf, String), Option<String>>>>;
+type Memo = OnceLock<Mutex<HashMap<(PathBuf, String), Option<Ratification>>>>;
 static RATIFICATIONS: Memo = OnceLock::new();
 
-pub fn ratification_anchor_at(cwd: &Path, id: &str, path: &str) -> Result<Option<String>> {
+/// A ratification commit, and the anchor it recorded.
+///
+/// The commit travels with the hash because the hash alone cannot be trusted:
+/// it is only worth as much as the signature on the object carrying it, and
+/// checking that signature means knowing which object to ask about
+/// (TASK-d31af22248d9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ratification {
+    pub sha: String,
+    pub anchor: String,
+}
+
+pub fn ratification_at(cwd: &Path, id: &str, path: &str) -> Result<Option<Ratification>> {
     let key = (cwd.to_path_buf(), id.to_string());
     let memo = RATIFICATIONS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(seen) = memo.lock() {
@@ -335,14 +366,14 @@ pub fn ratification_anchor_at(cwd: &Path, id: &str, path: &str) -> Result<Option
             return Ok(hit.clone());
         }
     }
-    let found = ratification_anchor_uncached(cwd, id, path)?;
+    let found = ratification_uncached(cwd, id, path)?;
     if let Ok(mut seen) = memo.lock() {
         seen.insert(key, found.clone());
     }
     Ok(found)
 }
 
-fn ratification_anchor_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<String>> {
+fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Ratification>> {
     let subject = format!("ratify {id}");
     let args = ["rev-list", "--full-history", "HEAD", "--", path];
     let out = output(cwd, &args)?;
@@ -370,9 +401,78 @@ fn ratification_anchor_uncached(cwd: &Path, id: &str, path: &str) -> Result<Opti
         return Ok(message
             .iter()
             .find_map(|l| l.trim().strip_prefix("constraint+scope: "))
-            .map(|h| h.trim().to_string()));
+            .map(|h| Ratification {
+                sha: sha.trim().to_string(),
+                anchor: h.trim().to_string(),
+            }));
     }
     Ok(None)
+}
+
+/// What git says about the signature on a commit, before anyone decides what it
+/// means.
+///
+/// Deliberately facts and not a verdict: which keys are allowed to ratify is a
+/// question about `.ank/allowed_signers` (§8), and answering it here would put
+/// a policy decision inside the plumbing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignatureFacts {
+    /// `%G?`: `G` good, `U` good but untrusted, `E` cannot be checked, `N` no
+    /// signature, `B` bad, `X`/`Y` expired signature or key, `R` revoked key.
+    pub status: char,
+    /// `%GF`: the signing key's fingerprint, empty when there is none to name.
+    /// A 40-hex fingerprint under OpenPGP, `SHA256:<base64>` under SSH.
+    pub fingerprint: String,
+}
+
+/// Reads the signature of `sha`.
+///
+/// `allowed_signers` is passed to git rather than applied here, and it only
+/// bites under `gpg.format = ssh`, which is the only format git checks such a
+/// file for. Under OpenPGP git resolves the signature through the keyring and
+/// ignores the file entirely — so the caller does that matching itself, which
+/// is the whole reason the fingerprint comes back with the status.
+///
+/// `-c` rather than repository configuration: pointing a repository's
+/// `gpg.ssh.allowedSignersFile` at `.ank/` would change how every commit in it
+/// verifies, for every tool, to serve one check of ours.
+pub fn signature_of(
+    cwd: &Path,
+    sha: &str,
+    allowed_signers: Option<&Path>,
+) -> Result<SignatureFacts> {
+    // `rev-list` and not `verify-commit`: the exit code of `verify-commit`
+    // collapses "no signature" and "cannot check it" into the same failure,
+    // and those two are precisely the states this must keep apart. The
+    // placeholders are git's documented pretty-format interface.
+    let signers = allowed_signers.map(|p| format!("gpg.ssh.allowedSignersFile={}", p.display()));
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(cfg) = signers.as_deref() {
+        args.push("-c");
+        args.push(cfg);
+    }
+    args.extend_from_slice(&["rev-list", "--max-count=1", "--format=%G?%n%GF", sha]);
+
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Err(failed(&args, &out));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+
+    // `--format` implies `--pretty`, whose first line is `commit <sha>`. The
+    // two placeholders follow, in order, one per line.
+    let mut lines = text.lines().skip(1);
+    let status = lines
+        .next()
+        .and_then(|l| l.trim().chars().next())
+        // An empty first placeholder is git declining to say anything about a
+        // signature, which is the same thing as there being none.
+        .unwrap_or('N');
+    let fingerprint = lines.next().unwrap_or_default().trim().to_string();
+    Ok(SignatureFacts {
+        status,
+        fingerprint,
+    })
 }
 
 /// Resolves the default branch (§7): the config value first, then

@@ -9,6 +9,8 @@ Settled relative to v1: orientation and constraints reconciled (§5) · immutabi
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
 
+Additions of revision j: **the ratification signature is verified and not merely read** (§8, §4) — `check` was comparing the anchor in the ratification commit against the file without asking who signed the commit, so an ordinary unsigned commit whose subject read `ratify <id>` was accepted as a ratification; the four outcomes are specified, an unchecked signature is a signal and never a success, and the layout of `allowed_signers` is documented along with the fact that git enforces it only under `gpg.format = ssh`, OpenPGP leaving the match to `check` itself.
+
 Additions of revision i: **one command surface instead of two** (§4, §8, ADR-9ede1ffd04e2, superseding ADR-3859eb46bdc3) — every verb is available to every caller, the CLI refuses on state and never on identity, and the eight-verb freeze is restated as a freeze on the content of SKILL.md, which is where the token budget it actually protected is spent · the refusals are tabulated against their exit codes, and the signed ratification commit is named as the single hard line of authority, a proof requirement rather than a role check (§4) · `status`, `edit`, `graph` and `scope` enter the surface, along with the interactive form of `new` and the read form of `log` (§4) · roles in `config.yml` are named what they always were, advisory, and policy is placed where it holds: SKILL.md, harness hooks, then roles (§8).
 
 Additions of revision h: **the ratification freeze becomes verifiable rather than declared** (§3) — `check` reaches the ratification commit by walking the ADR's own file history, since a commit cannot contain its own identifier and no field could ever name it; `ratified` is documented as what the code always wrote, the hash of `constraint`+`scope`, and an unreachable commit is reported as *cannot verify* and never as a divergence · **`accept` ratifies an ADR accepted by hand** (§3) — an `accepted` ADR carrying no anchor at all can be anchored in place, which is the only way a bootstrap corpus ever acquires the signed commits the whole authority model rests on; one that already carries an anchor stays refused, and that refusal is the half doing the work.
@@ -513,7 +515,7 @@ The `assertion` type exists because "refactor for readability" has no hash to at
 Summary of the invariants and signals, all mechanical:
 
 - expired claims, `blocked_by` cycles, broken supersede chains, dead scopes (no file matched), over-constrained scopes (§5);
-- frozen fields diverging from their anchoring hash — `done_criteria` against the claim, `constraint`/`scope` against the ratification commit;
+- frozen fields diverging from their anchoring hash — `done_criteria` against the claim, `constraint`/`scope` against the ratification commit, and the signature on that commit against `allowed_signers` (§8): an anchor read from a commit nobody signed anchors nothing;
 - weak proofs (`assertion`, unverified), `done` tasks modified beyond appending a proof;
 - behavioural signals, reported without being faults: blockers created by the holder after claiming (`author` of the blocker is the current holder and its `created` is later than the claim), criterion set by the claimer, verifier modified inside the task's activity window or proof hash diverging from its definition, scope test files modified by the task that invokes them, burst creation by a single identity (**more than 10 entities by one `author` within an hour**, through `created`), implausible `created` (in the future, or well before the commit that introduces the file — the field is declarative, git is the anchor), repeated claim renewals with no modification to the scope files (possible hoarding; a best-effort signal, since another agent's tree is not observable), constraint accepted after the claim of a task in progress, tasks blocked by a `closed` task;
 - entities predating `author`, **reported once for the corpus and never per file**: they are skipped by the two signals above, and saying so once is what keeps that fact visible. One line per file would add a line for every entity written before the field existed — the volume that teaches a reader to stop reading `check`;
@@ -738,7 +740,29 @@ The main guardrail is not the permission but **the status**: an agent writes fre
 
 `$ANK_AGENT` is set by the agent itself: an agent going off the rails can declare itself `human`. No file-level check can prevent that, since it has filesystem access.
 
-The only anchor that holds is therefore external: **ratification requires a signed commit**. `accept` produces the ratification commit itself (§12), recording the SHA and the hash of the accepted ADR's `constraint` + `scope`, and `check` verifies the signature through `git verify-commit` against the keys in `.ank/allowed_signers` (git's SSH allowed-signers format; GPG supported through the standard git config). The key file is versioned: adding a key to it is a diff in review.
+The only anchor that holds is therefore external: **ratification requires a signed commit**. `accept` produces the ratification commit itself (§12), recording the SHA and the hash of the accepted ADR's `constraint` + `scope`, and `check` verifies that signature against the keys in `.ank/allowed_signers`. The key file is versioned: adding a key to it is a diff in review.
+
+**The file uses git's allowed-signers layout**, `principal [options] keytype key`, with the key type naming the format:
+
+```
+sean.lamet@dekrow.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A
+marie@laptop          ssh-ed25519 AAAAC3NzaC1lZDI1NTE5...
+```
+
+**Who enforces the allowlist depends on the signature format, and the difference is not cosmetic.** Under `gpg.format = ssh`, git reads the file itself and answers with the match: a signature whose principal the file covers verifies, one it does not comes back as good-but-unmatched. Under OpenPGP, **git never reads the file at all** — it resolves the signature through the keyring — so `check` parses the file and compares the signing key's fingerprint itself. A `gpg` entry may name the full fingerprint or the long key id, since the second is the tail of the first. Without this, the file would go on declaring something nothing enforced.
+
+**Four outcomes, and collapsing any two of them loses the check.**
+
+| Outcome | Reported as |
+|---|---|
+| signed by a declared key | nothing |
+| no signature, or one git refuses | fault: the anchor proves nothing |
+| good signature, key not declared | fault: not a ratification |
+| signature present, no local public key | signal: **not verified, and not refused** |
+
+The last row is the one that needs saying out loud. A clone without the public key is a correct repository on an incomplete machine: calling it a fault turns CI red on a sound corpus, and calling it verified is worse, because **a verification that degrades to success is not a verification**. It is reported once for the corpus rather than once per ADR, for the reason §4 gives about entities predating `author` — a line per file is the volume that teaches a reader to stop reading `check`.
+
+With **no key declared at all**, `check` does not judge signatures. There is no allowlist to judge against, the advisory notice below already covers it, and the abstention is also what keeps the tool honest: under `gpg.format = ssh` with no allowed-signers file configured, git reports a perfectly signed commit as unsigned, so a corpus without the file would otherwise have every ratification called a forgery.
 
 **What the signature proves — and does not.** It proves access to an authorised key, not human intent. An agent running on a developer's machine whose git signing is configured and unlocked can produce a valid signed commit. The defence against that case is operational, not cryptographic: a ratification key protected by passphrase or hardware (touch-to-sign), distinct from the everyday commit key if needed. This is consistent with the threat model (§1): we protect against drift, not against an adversary.
 
