@@ -3714,10 +3714,27 @@ mod tests {
                 a.id
             );
         }
-        assert!(
-            judged > 0,
-            "no ratification was judged at all: the check is wired to nothing"
-        );
+        // Nothing judged is a correct answer in exactly one situation, and it
+        // is the situation CI runs in: `actions/checkout` clones shallow, so
+        // `rev-list --full-history` reaches no ratification commit and every
+        // ADR is the unverifiable case the freeze already reports. Asserting
+        // `judged > 0` unconditionally asserted a property of the machine.
+        //
+        // Demanding the reason rather than skipping is what keeps this a test:
+        // on any full clone, nothing judged means the wiring is broken.
+        if judged == 0 {
+            let shallow = Command::new("git")
+                .current_dir(&repo.root)
+                .args(["rev-parse", "--is-shallow-repository"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                String::from_utf8_lossy(&shallow.stdout).trim(),
+                "true",
+                "no ratification was judged and the clone is complete: \
+                 the check is wired to nothing"
+            );
+        }
     }
 
     /// A shallow clone, a rewritten history, a corpus moved between
