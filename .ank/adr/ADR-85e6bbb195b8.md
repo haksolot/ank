@@ -17,8 +17,9 @@ constraint: |
   remains, with the single exception of historical anchors that rewriting
   would falsify: log entries already written, and proof references pointing
   at an external artifact.
+ratified: c0c1dc33a814
 schema: 1
-version: 2
+version: 3
 ---
 
 Three letters, typed on every call of the agent loop and present in every path
