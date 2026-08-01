@@ -1,13 +1,15 @@
 # Ank — Specification v1.1
 
 Status: working draft, arbitration revision
-Last revised: 29 July 2026
+Last revised: 1 August 2026
 
 ## Decisions settled in this revision
 
 Settled relative to v1: orientation and constraints reconciled (§5) · immutability anchored by hash, verifiable without making the CLI a gatekeeper (§3, §8) · nominal execution model, one worktree per agent (§7) · claims on git refs from level 0 onward, one ref per task (§7) · Ank never commits, except `accept` (§12) · return after TTL expiry, and a TTL ceiling (§3) · `verify` becomes a list (§3) · `proof` becomes an append-only list, CI attestation deferred to v1.1 (§3, §10) · log format fixed as an append-only section of the task file (§3) · index lifecycle fixed (§6) · verifier timeout fixed (§4) · `--reason` mandatory on `release` (§4) · `check` signals extended (§4) · identity, default roles and signature verification specified (§8).
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
+
+Additions of revision i: **one command surface instead of two** (§4, §8, ADR-9ede1ffd04e2, superseding ADR-3859eb46bdc3) — every verb is available to every caller, the CLI refuses on state and never on identity, and the eight-verb freeze is restated as a freeze on the content of SKILL.md, which is where the token budget it actually protected is spent · the refusals are tabulated against their exit codes, and the signed ratification commit is named as the single hard line of authority, a proof requirement rather than a role check (§4) · `status`, `edit`, `graph` and `scope` enter the surface, along with the interactive form of `new` and the read form of `log` (§4) · roles in `config.yml` are named what they always were, advisory, and policy is placed where it holds: SKILL.md, harness hooks, then roles (§8).
 
 Additions of revision h: **the ratification freeze becomes verifiable rather than declared** (§3) — `check` reaches the ratification commit by walking the ADR's own file history, since a commit cannot contain its own identifier and no field could ever name it; `ratified` is documented as what the code always wrote, the hash of `constraint`+`scope`, and an unreachable commit is reported as *cannot verify* and never as a divergence · **`accept` ratifies an ADR accepted by hand** (§3) — an `accepted` ADR carrying no anchor at all can be anchored in place, which is the only way a bootstrap corpus ever acquires the signed commits the whole authority model rests on; one that already carries an anchor stays refused, and that refusal is the half doing the work.
 
@@ -172,7 +174,7 @@ The rule is asymmetric on purpose. Reading **older** versions is a promise the f
 
 **A bug discovered in a `done` task yields a new task.** Never a reopening, never a re-edit of the code under cover of the finished task. This case is permanent, not exceptional: a task is finished when its criterion is proven, not when its code is perfect, and proving a criterion never meant nothing was left to fix. Reopening would dissolve the proof — a `proof` entry anchors a state of the tree at a point in time, and that content would change underneath it with nothing to signal the fact, which is exactly the falsification anchoring exists to make visible. The new task carries its own scope and its own criterion, and cites the one whose work it corrects. First example in this repository: `TASK-dc87e0ecfb6c` corrects the lock-retry strategy written by `TASK-244a842bc0cc`, which stays `done` with its proof intact.
 
-**`closed` is ratified abandonment.** Terminal, reachable from `open` and `in_progress`, restricted to human identities through `ank close <id> --reason <r>` — the reason goes into the log. It is the answer to an active corpus ageing: the dead scopes and orphan tasks `check` detects must be closable explicitly, never automatically, and never by deleting the file (deleting would break other tasks' `blocked_by` references, whereas `closed` preserves them). **`closed` does not unblock**: a closed task was not done, so its dependents stay blocked, and `check` reports "blocked by a closed task" so a human decides — close down the chain, or rewrite the dependency. Two operational points: `claim` refuses a task one of whose `blocked_by` is `closed` (code 7, naming the closed blocker, as for any active blocker), and `close` on an `in_progress` task revokes the active claim in the same operation — the ref is deleted, and the holding agent learns this at its next `log` (code 6, the task is no longer in work).
+**`closed` is ratified abandonment.** Terminal, reachable from `open` and `in_progress` through `ank close <id> --reason <r>`, with the reason mandatory and going into the log. The verb is outside the loop SKILL.md teaches (§4) rather than closed to agents: what makes the abandonment ratified is the reason left in the record, not the identity of whoever typed it. It is the answer to an active corpus ageing: the dead scopes and orphan tasks `check` detects must be closable explicitly, never automatically, and never by deleting the file (deleting would break other tasks' `blocked_by` references, whereas `closed` preserves them). **`closed` does not unblock**: a closed task was not done, so its dependents stay blocked, and `check` reports "blocked by a closed task" so a human decides — close down the chain, or rewrite the dependency. Two operational points: `claim` refuses a task one of whose `blocked_by` is `closed` (code 7, naming the closed blocker, as for any active blocker), and `close` on an `in_progress` task revokes the active claim in the same operation — the ref is deleted, and the holding agent learns this at its next `log` (code 6, the task is no longer in work).
 
 **`blocked` is not a status, it is a derived property.** A task is blocked if and only if it has at least one unfinished `blocked_by`. Nothing is entered by hand, so nothing can go stale. `claim` refuses a blocked task and names the blocker.
 
@@ -241,7 +243,7 @@ Modifying a decision means creating a new ADR that `supersedes` it. **The `accep
 
 The succession such an ADR declares follows the same reasoning. A `supersedes` whose target is already marked `superseded`, with no other accepted ADR claiming that target, is a succession already on record — bootstrap again, or an `accept` interrupted between its two writes — and ratification records it in the commit without rewriting the file. A target still `proposed` was never binding, and remains a refusal.
 
-**Ratification.** An agent creates in `proposed`. Only a human identity promotes to `accepted`. A `proposed` ADR is visible in orientation mode, **never injected in execution mode**: non-binding means it must not consume the attention budget of an agent that is writing code.
+**Ratification.** An agent creates in `proposed`. Promotion to `accepted` goes through `accept` and through nothing else, and `accept` produces the signed ratification commit (§8, §12): the authority is carried by the signature, verifiable by anyone against `allowed_signers`, not by the identity string of the caller. A `proposed` ADR is visible in orientation mode, **never injected in execution mode**: non-binding means it must not consume the attention budget of an agent that is writing code.
 
 The underlying principle, which explains the asymmetry with tasks: **ratification applies where an artifact commits others, not where it records work.** An ADR constrains every agent that comes after it; a task commits nobody. Hence `new task` without restriction and `new adr` in `proposed`.
 
@@ -251,20 +253,26 @@ The symmetric risk — an agent going off the rails and flooding the repository 
 
 ## 4. CLI surface
 
-The memorisation budget is **per audience**, not global. Git has more than a hundred commands and stays learnable because nobody ever needs all hundred. Ank applies the same split: an agent surface, frozen and minimal, and a human surface that can grow without ever touching it.
+**Ank exposes one surface** (ADR-9ede1ffd04e2). Every verb is available to every caller, and the CLI refuses on state, never on identity. Git has more than a hundred commands, every one of them reachable by anybody who types it, and stays learnable because of what a newcomer is taught first — not because the porcelain sorts callers into classes. Ank borrows that shape.
 
-### Agent surface — eight verbs, frozen
+The memorisation budget is real; it is simply not the binary's job. It is spent on documentation, and it is enforced where it operates: what an agent is taught is the loop, and the content of what teaches it is frozen. What a human may type is everything.
+
+### The loop, and the freeze on SKILL.md
 
 ```
 Loop:        context → claim → show → log → done
 Off-loop:    new, find, release
 ```
 
-This is the entire content of SKILL.md. It grows only by succession: ADR-3859eb46bdc3 names these eight and requires an ADR superseding it in turn for any ninth, so a verb costs a ratified decision and a human signature rather than a commit. Anything short of that lands on the human side or in the format.
+**This is the entire content of SKILL.md, and that content is frozen.** SKILL.md is loaded permanently (§9), so the surface an agent reads about is the one that costs tokens on every call; growing what it teaches costs an ADR superseding ADR-9ede1ffd04e2, exactly as growing a verb list once did. The freeze constrains the documentation, not the dispatch table: an agent that runs `ank graph` gets the graph; it was simply never told the verb existed, and being untold is not being refused.
 
-`show` is on this side by that route, and the reasoning is worth keeping because it is the argument any ninth verb has to beat. It sat on the human surface at first, as the only unbounded reader in the system. That argument was about output size, and §5 answers size with a budget and a truncation notice that says what it cut. What it did not answer is the body: `context` serves the criterion and the constraints, never the prose that justifies them, and the prose is where the reasoning an agent is supposed to inherit actually lives. With `.ank/` closed to direct reads (ADR-01b6dd05f0db), withholding it entirely was the worse trade.
+That distinction is the whole revision. ADR-3859eb46bdc3 froze an *agent surface* at these same eight verbs and sent everything else to a human side, but the split it protected was never a boundary — the CLI told callers apart by `$ANK_AGENT`, a variable the caller sets itself (§8). A wall whose bricks are self-declared identity is a sign, not a wall. What the freeze actually protected was the token budget, and that protection moves here, where it holds without pretending to be a check.
 
-### Human surface
+`show` is in the loop by that route, and the reasoning is worth keeping because it is the argument any addition to SKILL.md has to beat. It sat outside at first, as the only unbounded reader in the system. That argument was about output size, and §5 answers size with a budget and a truncation notice that says what it cut. What it did not answer is the body: `context` serves the criterion and the constraints, never the prose that justifies them, and the prose is where the reasoning an agent is supposed to inherit actually lives. With `.ank/` closed to direct reads (ADR-01b6dd05f0db), withholding it entirely was the worse trade.
+
+### The rest of the surface
+
+These verbs serve human ergonomics: the ratification queue, corpus health, the plan revisions a human makes on somebody else's task. They are outside the loop because SKILL.md does not teach them, and outside is not withheld — none of the refusals below consults who is calling.
 
 ```
 review    ratification queue, pending proposals, corpus health
@@ -273,6 +281,10 @@ accept    promotes a proposed ADR to accepted (produces the signed commit, §8, 
 check     mechanical invariants, exit code usable in CI
 close     closes a task that will never be done (--reason mandatory)
 amend     changes `blocked_by` and `scope` on an entity that already exists
+status    where am I: branch, claim, perimeter, queue, findings
+edit      opens an entity in the editor and validates what comes back
+graph     the `blocked_by` DAG in readable text
+scope     what covers a path
 ```
 
 `review` and `accept` are not comfort features: **the entire authority model of ADRs depends on them**. Without them an agent creates in `proposed` and nothing ever becomes binding.
@@ -293,7 +305,40 @@ It **adds and removes explicitly** and never takes a replacement list: a verb gi
 
 Amending the `scope` of a task under a live claim is **allowed and warned about**. The claim record anchors the hash of the constraints that scope selects (§7), so the change moves what binds the work in progress. Refusing would be wrong — a scope discovered false mid-task is exactly the situation the verb exists for — and allowing it silently would be worse.
 
-Everything else (editing fields, reordering, deleting) goes through **a human** editing the file directly, since the format is the specification. The actor matters here and is not decoration: ADR-01b6dd05f0db closes `.ank/` to direct reads and writes *by an agent*, and leaves a human with an editor every power they had. Written without the subject, this sentence reads as a general permission and hands back what that ADR withdrew.
+Everything else (editing fields, reordering, deleting) goes through **`ank edit`**, which is the paved road rather than a gate: it opens the same file in the same editor and validates what comes back. Below it, the direct edit remains possible, since the format is the specification and the CLI is not a gatekeeper. The actor matters there and is not decoration: ADR-01b6dd05f0db closes `.ank/` to direct reads and writes *by an agent*, and leaves **a human** with an editor every power they had. Written without the subject, that sentence reads as a general permission and hands back what the ADR withdrew.
+
+### Refusals are on state
+
+The binary refuses, and what it refuses on is always a fact about the corpus or the repository, never a fact about the caller.
+
+| Refusal | Code |
+|---|---|
+| frozen field diverged from its anchoring hash, or illegal transition | 6 |
+| claim held by another agent, or task already finished on another branch | 4 |
+| task blocked, no `done_criteria`, or `accept` off the default branch | 7 |
+| proof missing or invalid | 5 |
+
+That list is the guarantee. A state refusal applies to every caller equally and means the same thing to all of them, which is what makes it worth writing an exit code for; a refusal conditioned on identity would mean whatever the caller declared itself to be. `$ANK_AGENT` names who acted — it goes into the log, into the claim ref and into `check`'s signals — and it is never consulted to decide whether a verb runs.
+
+**The one hard line of authority is the signed ratification commit** (§8, §12), and it holds precisely because it is not a role check: `accept` produces it, `check` verifies it against `allowed_signers`, and an anchor no key covers is reported as unverifiable. That is a proof requirement, the same shape as every other anchor in the system. Everything else that looks like permission is policy, and policy lives above the binary (§8).
+
+### Four verbs and two forms, for the reader at the keyboard
+
+With the surface no longer a boundary, verbs serving human ergonomics enter it without ceremony. None of them introduces state: each one composes what `context`, `find`, `review` and `check` already derive, or wraps a write that was being done by hand anyway.
+
+**`status`** answers *where am I* in one call: the branch, the active claim and its expiry, the constraints on the current perimeter, the ratification queue, completion refs the default branch has not caught up with (§7), and the corpus findings `check` would report. It **degrades with a warning** rather than failing when there is no remote or no determinable default branch — the parts that need neither are still worth printing. Terse `git status` register, and it ends with the next command to run, like every other output here.
+
+**`edit <id>`** opens the entity in the editor named by `$EDITOR`, validates the result on save, and writes it back in canonical form (§3). **A change to a frozen field is refused by naming the command that legally performs it**: `release --reason` for a `done_criteria` frozen at claim, `new adr --supersedes` for the `constraint` of a ratified ADR. An invalid result leaves the entity untouched and says why, so a mistyped frontmatter costs a re-edit and never a corrupt file. This is the argument that put `amend` and `attest` on this surface, generalised: an edit performed by hand is indistinguishable, in the resulting file, from any other edit performed by hand, and chaperoning it through the tool strengthens the invariants instead of relaxing them.
+
+**`graph [<path>]`** prints the `blocked_by` DAG in readable text, restricted by an optional path the way `context` is, with `--json` for the raw edges. It **names the perimeter it drew** and says so explicitly when that perimeter holds no task. The ordering of §5 already walks these edges to count what a task unblocks, and this makes the same structure visible to a reader. `show` surfaces the narrow case from the same derivation: on a task it lists what that task **directly unblocks** alongside its blockers, one line each with status. Both are computed from the corpus at read time and stored nowhere — a stored reverse edge is a second copy of `blocked_by` that can disagree with the first.
+
+**`scope <path>`** lists every entity whose declared scope matches the path, grouped by type, one line each with its status, and says so explicitly when nothing matches. The resolution is the **same glob matching `context` uses**, resolved deterministically against the filesystem, so the answer is the one that will actually bind. It is the `check-ignore` of Ank: a dead or over-broad scope is otherwise visible only after the fact, through `check`, and this makes glob resolution observable before an entity is written wrong.
+
+**`new` without its mandatory flags opens a pre-filled template** in `$EDITOR` instead of failing, validates the result, and refuses to write an entity that would not pass validation. The `git commit` pattern: no `-m`, an editor. **The flag form is unchanged and remains the scripted path** — it is what SKILL.md teaches and what an agent uses, and nothing about the interactive form reaches it.
+
+**`log <id>` with no message reads** the task's log section, newest first, and requires no claim. `log` with a message keeps writing and renewing the claim, unchanged (§3). The disambiguation is stated rather than inferred: an argument that resolves to an entity id is a read, anything else is a message, and a message that also resolves to an id is an error naming both readings rather than picking one. This closes the one place the git intuition was betrayed — `git log` reads — without renaming the verb.
+
+**`$EDITOR` unset is an environment failure, not a task failure**: `edit` and the interactive form of `new` exit with **code 9** and name the flag form as the way through, consistent with how `sh` not found is treated below. Nothing falls back to a guessed editor.
 
 ### HEAD
 
@@ -332,17 +377,22 @@ released TASK-8f3a -> open
 ank context [<path>]        [--json] [--limit N]
 ank claim <id>              [--criteria <c>] [--ttl 30m]
 ank show <id>
-ank log [<id>] <message>
+ank log [<id>] [<message>]  (id alone reads; a message writes)
 ank done [<id>]             [--proof <type>:<ref>]
 ank release [<id>] --reason <r>
 ank new task --title <t> --scope <glob>... [--criteria <c>] [--blocked-by <id>...]
-ank new adr  --title <t> --scope <glob>... --constraint <c>
+ank new adr  --title <t> --scope <glob>... --constraint <c> [--supersedes <id>]
+ank new task|adr            (no flags: pre-filled template in $EDITOR)
 ank find <query>            [--type task|adr] [--status ...] [--scope <path>]
+ank status
 ank review [<path>]
 ank accept <id>
 ank close <id> --reason <r>
 ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
                             [--scope <glob>...] [--drop-scope <glob>...]
+ank edit <id>
+ank graph [<path>]
+ank scope <path>
 ank check [<path>]
 ```
 
@@ -354,9 +404,9 @@ ank check [<path>]
 
 **`find` is subject to the same cap as `context`**, one line per result, and it announces what it cut. A search command without a budget is a context-explosion vector at least as effective as a badly bounded `context`. `--scope <path>` filters by scope match — it is the command the truncation counters point to (§5).
 
-**`log` requires holding the claim.** It is the task's anchoring register: if anyone can write to it, it stops being a reliable trace of what the holder did. A human who wants to annotate edits the body of the file — which is already the normal route for anything that is not a state transition.
+**Writing to `log` requires holding the claim**; reading it requires nothing. It is the task's anchoring register: if anyone can write to it, it stops being a reliable trace of what the holder did — that is a state condition on the claim, not a condition on who is calling, and it is why `log <id>` with no message is a read available to everybody. Someone who wants to annotate without holding the task edits the body of the entity, which is already the normal route for anything that is not a state transition.
 
-Human commands take **paths**, uniformly: `review [<path>]` and `check [<path>]` share the same perimeter semantics as `context`.
+Commands that take a perimeter take **paths**, uniformly: `review [<path>]`, `check [<path>]` and `graph [<path>]` share the same semantics as `context`, and `scope <path>` resolves against the same globs.
 
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
 
@@ -657,6 +707,14 @@ Two branches that modified the same task meet like any other git conflict: v1 sh
 
 ## 8. Permissions
 
+There is one surface (§4) and the CLI refuses on state. What is left here is **policy applied over that surface**, and policy has to live somewhere it can actually hold. Three places, in decreasing order of how much they hold:
+
+- **SKILL.md**, whose content is frozen (§4, §9). It is what an agent is taught, it is the only description of Ank most agents will ever read, and a verb it does not name is a verb that does not come up. This is the strongest of the three precisely because it does not pretend to be a check.
+- **Harness hooks**, which is where enforcement is real. A `PreToolUse` hook that refuses a tool call cannot be talked out of it by an environment variable, because the process it guards does not get to set it. This repository's own hook, refusing direct reads of `.ank/` per ADR-01b6dd05f0db, is the working example.
+- **Roles in `config.yml`**, which are **advisory** and are named as such. They catch honest drift and nothing else.
+
+### Roles, and what they are worth
+
 A declarative model in `.ank/config.yml`, identity through `$ANK_AGENT`.
 
 ```yaml
@@ -672,6 +730,8 @@ identities:
 
 **The default role is `agent`.** An unknown identity — including `$ANK_AGENT` being absent, in which case the fallback identity is `<user>@<hostname>` — gets least privilege. Declaring yourself human in the config confers no real authority anyway: the signature is what carries it.
 
+They are kept, three lines and advisory, rather than dropped. They express intent where a reader can see it, an unknown identity defaulting to least privilege is a sane default, and `check` can say when the record and the behaviour disagree. What they never do is make the CLI refuse: a refusal derived from `$ANK_AGENT` would be a refusal the caller can lift by exporting a different string, and shipping that as a guarantee is worse than shipping no guarantee at all. Dropping them entirely was considered and rejected on the same grounds — the cost is three lines, and honest drift is worth catching.
+
 The main guardrail is not the permission but **the status**: an agent writes freely, in `proposed`. It captures information immediately without being able to constrain anyone. Human ratification is the only path to authority.
 
 ### Anchoring human identity
@@ -682,7 +742,7 @@ The only anchor that holds is therefore external: **ratification requires a sign
 
 **What the signature proves — and does not.** It proves access to an authorised key, not human intent. An agent running on a developer's machine whose git signing is configured and unlocked can produce a valid signed commit. The defence against that case is operational, not cryptographic: a ratification key protected by passphrase or hardware (touch-to-sign), distinct from the everyday commit key if needed. This is consistent with the threat model (§1): we protect against drift, not against an adversary.
 
-With no signing configured, permissions are **advisory** — they protect against accidental drift, not against an agent actively trying to get around them. That is an accepted limitation, displayed by `check` rather than hidden.
+With no signing configured, **the hard line is gone and nothing replaces it**: roles were already advisory, and the ratification anchor becomes a hash in a commit message that anyone can write. Ank protects against accidental drift there, not against an agent actively trying to get around it. That is an accepted limitation, and `check` displays it rather than hiding it — a corpus whose ratifications cannot be verified says so, since a verification that degrades to success is not a verification.
 
 ---
 
@@ -698,7 +758,7 @@ Skills install from repositories rather than npm packages: the identifier is `ow
 
 The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, OpenCode, and many others) and creates links from each agent to a canonical copy — exactly the desired design, already maintained by a third party.
 
-**Token economy.** These files are loaded permanently. SKILL.md therefore carries the eight commands and the mental model; flag details stay in `ank help`, loaded on demand.
+**Token economy.** These files are loaded permanently, which is why the content of SKILL.md is frozen (§4): it carries the loop and the mental model, nothing else, and growing that costs a superseding ADR. Flag details and the rest of the surface stay in `ank help`, loaded on demand.
 
 `ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`.
 
@@ -710,7 +770,7 @@ The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, Open
 
 ### In
 
-File format · agent surface (8 verbs, `show` included) and human surface (`review`, `accept`, `check`, `close`) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · declarative permissions anchored on a signed commit, versioned `allowed_signers` · bootstrap skill · `check` (full scope in §4).
+File format · one command surface, refusing on state and never on identity, with the loop SKILL.md teaches frozen at eight verbs (`show` included) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · advisory roles, authority anchored on a signed commit, versioned `allowed_signers` · `status`, `edit`, `graph`, `scope`, the interactive form of `new` and the read form of `log` · bootstrap skill · `check` (full scope in §4).
 
 ### Out of v1, in order of expected value
 
@@ -755,7 +815,7 @@ This turns the pressure the right way round: growing context pushes you to write
 
 The "suitable ecosystem" argument used to be third here; it is withdrawn rather than watered down. It rested on `gix` and `clap`, both rejected — git plumbing goes through the binary (below), argument parsing is written by hand (below) — leaving only `rusqlite` and `globset`, whose equivalents exist in every candidate language. That is not what decides it.
 
-**Argument parsing is written by hand**, with no library. The reason is not saving a dependency but character-level control over two surfaces read by agents: the self-correcting errors (§4), which a generic parser would replace with its own messages, and `ank help`, which §9 says carries the flag details — generated help is verbose, and its cost is paid on every call that triggers it. With the surface frozen at twelve commands (§4), the cost of writing it by hand does not grow.
+**Argument parsing is written by hand**, with no library. The reason is not saving a dependency but character-level control over two surfaces read by agents: the self-correcting errors (§4), which a generic parser would replace with its own messages, and `ank help`, which §9 says carries the flag details — generated help is verbose, and its cost is paid on every call that triggers it. Neither argument depends on the surface being frozen, which it is not (§4): the cost of hand-written parsing is paid once per verb, and the verbs share one parser, so what grows is linear and small against a `help` and an error surface that stay exactly as written.
 
 The real cost is iteration speed on a design that is still moving. Mitigation: freeze and implement the **format parser** first, independently of the CLI. It is the stable part and the only one interoperability depends on.
 
