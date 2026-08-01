@@ -782,6 +782,125 @@ fn new_adr_writes_the_succession_it_declares() {
     assert!(stderr(&out).contains("--supersedes"), "{}", stderr(&out));
 }
 
+/// The two fields a plan actually changes on, and the two edits that were done
+/// by hand this session because no command reached them.
+///
+/// Through the binary and reading the file, because what is asserted is that
+/// the amendment lands on disk and that everything it did not name comes back
+/// untouched — which is the whole difference between a verb and an editor.
+#[test]
+fn amend_adds_and_removes_without_disturbing_the_rest() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_task("TASK-000000000002", Some("Another criterion."));
+    r.seed_task("TASK-000000000003", Some("A third criterion."));
+    let before = r.task_text(ID);
+
+    // Nothing named is a refusal, not a silent no-op that bumps `version`.
+    let out = r.ank("marie@laptop", &["amend", ID]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert_eq!(r.task_text(ID), before, "a refusal writes nothing");
+
+    // A blocker added to a task that already exists, resolved by prefix.
+    let out = r.ank(
+        "marie@laptop",
+        &[
+            "amend",
+            "0000000000 01",
+            "--blocked-by",
+            "TASK-000000000002",
+            "--scope",
+            "docs/**",
+        ],
+    );
+    // The odd id above is deliberate: it must not resolve.
+    assert_ne!(code(&out), 0, "a bad prefix is refused");
+
+    let out = r.ank(
+        "marie@laptop",
+        &[
+            "amend",
+            ID,
+            "--blocked-by",
+            "TASK-000000000002",
+            "--blocked-by",
+            "TASK-000000000003",
+            "--scope",
+            "docs/**",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = r.task_text(ID);
+    assert!(
+        text.contains("blocked_by: [TASK-000000000002, TASK-000000000003]"),
+        "{text}"
+    );
+    assert!(text.contains("  - src/**\n  - docs/**"), "{text}");
+    assert!(text.contains("version: 2"), "the write increments: {text}");
+    assert!(
+        text.contains("amended: +blocked_by TASK-000000000002"),
+        "the log says what changed: {text}"
+    );
+    assert!(text.contains("+scope docs/**"), "{text}");
+    // Everything it did not name is still there, byte for byte.
+    assert!(
+        text.contains("done_criteria: |\n  A verifiable criterion."),
+        "{text}"
+    );
+
+    // Removal is explicit, and removing what is not there is refused rather
+    // than succeeding quietly.
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--drop-blocked-by", "TASK-000000000003"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = r.task_text(ID);
+    assert!(text.contains("blocked_by: [TASK-000000000002]"), "{text}");
+    assert!(text.contains("-blocked_by TASK-000000000003"), "{text}");
+
+    let out = r.ank("marie@laptop", &["amend", ID, "--drop-scope", "nowhere/**"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("not in the scope"),
+        "{}",
+        stderr(&out)
+    );
+
+    // An entity attached to nothing is invisible, so the last glob cannot go.
+    let out = r.ank(
+        "marie@laptop",
+        &[
+            "amend",
+            ID,
+            "--drop-scope",
+            "src/**",
+            "--drop-scope",
+            "docs/**",
+        ],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(stderr(&out).contains("no scope"), "{}", stderr(&out));
+
+    // The frozen field is refused by name, with the command that applies.
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--criteria", "Anything at all."],
+    );
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("frozen"), "{err}");
+    assert!(
+        err.contains("ank release"),
+        "the command that applies: {err}"
+    );
+    assert!(
+        r.task_text(ID).contains("A verifiable criterion."),
+        "the criterion did not move"
+    );
+}
+
 #[test]
 fn new_refuses_a_verifier_that_config_does_not_declare() {
     let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");

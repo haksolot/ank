@@ -1466,6 +1466,271 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     Ok(0)
 }
 
+// ---------------------------------------------------------------------------
+// amend
+// ---------------------------------------------------------------------------
+
+/// Changes the two fields of an existing entity that no other command reaches:
+/// `blocked_by` and `scope`.
+///
+/// Both were edited by hand during the session that produced this verb — a
+/// blocker added to a task already filed, and a scope that omitted six files
+/// without which its own task could not compile. Both edits were legitimate.
+/// Neither was checkable by anything, which is the argument TASK-1f4f7b57039b
+/// already made for `attest`: an edit performed by hand is indistinguishable,
+/// in the resulting file, from any other edit performed by hand. A verb can
+/// guarantee that the fields it did not name come back byte-identical.
+///
+/// **Human side.** Adding a blocker to a task that already exists is a change
+/// to a plan that is not yours, which is TASK-bc214fd815b2's reasoning for
+/// leaving it off the agent surface in the first place. ADR-3859eb46bdc3
+/// freezes that surface at eight and sends new functionality here.
+///
+/// **Add and remove, never replace.** A verb taking the whole list silently
+/// drops whatever the caller forgot to repeat, and the round-trip guarantees
+/// nothing about intent. Naming what enters and what leaves is also what makes
+/// the log line worth reading afterwards.
+pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(1, "amend expects an id").with_hint("ank amend <id> --blocked-by <id>")
+    })?;
+
+    // Refused by name rather than through the parser's unknown-flag path. The
+    // criterion is frozen by hash at claim, the anchor is held where the file's
+    // editor cannot reach it (ADR-6b3f19e08a24), and a verb that edited it
+    // would offer to do the one thing the freeze exists to make visible. What
+    // a wrong criterion actually calls for is a release.
+    if inv.value("--criteria").is_some() {
+        return Err(CliError::new(
+            6,
+            "done_criteria is frozen at claim and amend will not touch it",
+        )
+        .with_hint("ank release --reason \"<why the criterion is wrong>\""));
+    }
+
+    let store = Store::new(&repo.ank);
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let id = loaded.entity.id().clone();
+
+    let add_scope: Vec<String> = trimmed(inv.values("--scope"));
+    let drop_scope: Vec<String> = trimmed(inv.values("--drop-scope"));
+    let add_blocked = resolve_all(&store, inv.values("--blocked-by"))?;
+    let drop_blocked = resolve_all(&store, inv.values("--drop-blocked-by"))?;
+
+    if add_scope.is_empty()
+        && drop_scope.is_empty()
+        && add_blocked.is_empty()
+        && drop_blocked.is_empty()
+    {
+        return Err(
+            CliError::new(7, format!("nothing to amend on {id}")).with_hint(format!(
+                "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
+                 --scope <glob> | --drop-scope <glob>"
+            )),
+        );
+    }
+
+    let mut changes: Vec<String> = Vec::new();
+
+    match loaded.entity {
+        Entity::Task(mut task) => {
+            // §3 allows exactly one write to a task after completion, and it is
+            // an addition to the proof list — which is `attest`, not this.
+            // Amending a finished task would produce the corpus fault `check`
+            // reports as "done task modified beyond appending a proof".
+            if matches!(task.status, TaskStatus::Done | TaskStatus::Closed) {
+                return Err(CliError::new(
+                    7,
+                    format!("{id} is {}, and its plan is settled", task.status.as_str()),
+                )
+                .with_hint(format!("ank show {id}")));
+            }
+
+            for b in &drop_blocked {
+                if !task.blocked_by.contains(b) {
+                    return Err(CliError::new(7, format!("{b} does not block {id}"))
+                        .with_hint(format!("ank show {id}")));
+                }
+            }
+            task.blocked_by.retain(|b| !drop_blocked.contains(b));
+            for b in add_blocked {
+                if b == id {
+                    return Err(CliError::new(
+                        7,
+                        format!("{id} cannot block itself: that is a cycle of one"),
+                    )
+                    .with_hint(format!("ank amend {id} --blocked-by <other-id>")));
+                }
+                if !task.blocked_by.contains(&b) {
+                    changes.push(format!("+blocked_by {b}"));
+                    task.blocked_by.push(b);
+                }
+            }
+            for b in &drop_blocked {
+                changes.push(format!("-blocked_by {b}"));
+            }
+
+            amend_scope(&mut task.scope, &add_scope, &drop_scope, &id, &mut changes)?;
+
+            if changes.is_empty() {
+                return Err(CliError::new(7, format!("{id} already reads that way"))
+                    .with_hint(format!("ank show {id}")));
+            }
+
+            // A scope change moves which ADRs bear on the work, and the claim
+            // record anchors the hash of exactly that set — `done` compares
+            // against it and warns. Refusing would be wrong, since a scope
+            // discovered false mid-task is what produced this verb; allowing it
+            // silently would be worse.
+            let touched_scope = !add_scope.is_empty() || !drop_scope.is_empty();
+            let holder = match claim::read(&repo.root, &id)?.map(|h| h.record) {
+                Some(Record::Claim(c)) => Some(c.holder),
+                _ => None,
+            };
+
+            task.body = append_log(
+                &task.body,
+                &LogEntry {
+                    timestamp: claim::now_utc(),
+                    who: identity.to_string(),
+                    message: format!("amended: {}", changes.join(", ")),
+                },
+            );
+            store.write(&Entity::Task(task), base_version)?;
+
+            report_amend(inv, &id, &changes, out);
+            if touched_scope {
+                if let Some(holder) = holder {
+                    let _ = writeln!(
+                        out,
+                        "warning: {id} is held by {holder}, and the scope change moves \
+                         the constraints its claim anchors"
+                    );
+                }
+            }
+        }
+        Entity::Adr(mut adr) => {
+            if !add_blocked.is_empty() || !drop_blocked.is_empty() {
+                return Err(CliError::new(
+                    1,
+                    "blocked_by applies to a task: an ADR blocks nothing",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
+            // `constraint` and `scope` are hashed into the ratification commit
+            // (§8), so amending the scope of an accepted ADR would diverge from
+            // the anchor and `check` would call it altered — while suspending
+            // its injection into `context`. The succession is the way to change
+            // a ratified decision, and it has its own verb.
+            if adr.status != AdrStatus::Proposed {
+                return Err(CliError::new(
+                    6,
+                    format!(
+                        "{id} is {} and its scope is anchored in the ratification commit",
+                        adr.status.as_str()
+                    ),
+                )
+                .with_hint(
+                    "ank new adr --supersedes <id> --title \"<t>\" --scope \"<glob>\" \
+                     --constraint \"<rule>\"",
+                ));
+            }
+
+            amend_scope(&mut adr.scope, &add_scope, &drop_scope, &id, &mut changes)?;
+            if changes.is_empty() {
+                return Err(CliError::new(7, format!("{id} already reads that way"))
+                    .with_hint(format!("ank show {id}")));
+            }
+            // An ADR has no log section, so the change is recorded by `version`
+            // and by the diff, which is what every other write to an ADR does.
+            store.write(&Entity::Adr(adr), base_version)?;
+            report_amend(inv, &id, &changes, out);
+        }
+    }
+
+    Ok(0)
+}
+
+/// The scope half, shared by both kinds.
+///
+/// A scope that empties out is refused for the reason `new` refuses one at
+/// creation: attachment happens through `scope` and nothing else, so an entity
+/// without one appears in no `context` and nobody finds it again.
+fn amend_scope(
+    scope: &mut Vec<String>,
+    add: &[String],
+    drop: &[String],
+    id: &EntityId,
+    changes: &mut Vec<String>,
+) -> Result<()> {
+    for g in drop {
+        if !scope.iter().any(|s| s == g) {
+            return Err(
+                CliError::new(7, format!("'{g}' is not in the scope of {id}"))
+                    .with_hint(format!("ank show {id}")),
+            );
+        }
+    }
+    scope.retain(|s| !drop.iter().any(|d| d == s));
+    for g in add {
+        if !scope.iter().any(|s| s == g) {
+            changes.push(format!("+scope {g}"));
+            scope.push(g.clone());
+        }
+    }
+    for g in drop {
+        changes.push(format!("-scope {g}"));
+    }
+    if scope.is_empty() {
+        return Err(CliError::new(
+            7,
+            format!("{id} would be left with no scope, and attach to nothing"),
+        )
+        .with_hint(format!("ank amend {id} --scope \"<glob>\"")));
+    }
+    // Validated here rather than trusted: a glob that does not compile would
+    // otherwise surface in `check` as a corpus fault nobody can attribute.
+    ank_core::scope::validate_globs(scope).map_err(|e| {
+        CliError::new(7, format!("{e}")).with_hint("ank amend <id> --scope \"src/**\"")
+    })
+}
+
+fn trimmed(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// Every reference resolved at the point of the edit. An unknown one refused
+/// here rather than in `check`, where nobody can attribute it to the act that
+/// caused it — the same doctrine `new` applies to `--blocked-by`.
+fn resolve_all(store: &Store, raw: &[String]) -> Result<Vec<EntityId>> {
+    let mut out = Vec::new();
+    for r in raw {
+        let id = store.resolve(r.trim())?;
+        if !out.contains(&id) {
+            out.push(id);
+        }
+    }
+    Ok(out)
+}
+
+fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut dyn Write) {
+    if inv.json() {
+        let items: Vec<String> = changes.iter().map(|c| json_str(c)).collect();
+        let _ = writeln!(
+            out,
+            "{{\"entity\":\"{id}\",\"amended\":[{}]}}",
+            items.join(",")
+        );
+    } else if !inv.quiet() {
+        let _ = writeln!(out, "amended {id} {}", changes.join(" "));
+    }
+}
+
 /// The whole entity, verbatim. Everything else in the tool summarises; this is
 /// the one command that does not.
 pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
@@ -1650,6 +1915,7 @@ mod tests {
                 "review" => review(&inv, &repo, &cfg, &mut out)?,
                 "accept" => accept(&inv, &repo, &cfg, who, &mut out)?,
                 "close" => close(&inv, &repo, who, &mut out)?,
+                "amend" => amend(&inv, &repo, who, &mut out)?,
                 "show" => show(&inv, &repo, &mut out)?,
                 other => panic!("not a human verb: {other}"),
             };
@@ -2633,6 +2899,103 @@ mod tests {
     // -----------------------------------------------------------------------
     // close, show, review
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // amend
+    // -----------------------------------------------------------------------
+
+    /// Allowed, because a scope discovered false mid-task is the situation the
+    /// verb exists for. Warned about, because the claim record anchors the hash
+    /// of the constraints that scope selects and the change moves them.
+    #[test]
+    fn amending_the_scope_under_a_live_claim_is_allowed_and_says_so() {
+        let t = Temp::new();
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.write(&task("000000000001", TaskStatus::InProgress, &[]));
+        t.claim_as(&id, "codex@host-9", "A verifiable criterion.\n");
+
+        let (code, out) = t
+            .call(&["amend", "0000", "--scope", "docs/**"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("amended"), "{out}");
+        assert!(out.contains("warning"), "silence would be worse: {out}");
+        assert!(out.contains("codex@host-9"), "it names the holder: {out}");
+
+        let Entity::Task(after) = t.store().load(&id).unwrap().entity else {
+            panic!()
+        };
+        assert_eq!(after.scope, vec!["src/**", "docs/**"]);
+        assert_eq!(after.version, 2);
+
+        // A blocked_by change touches no constraint, so it says nothing. The
+        // negative half matters as much as the warning: a verb that warned on
+        // every amendment would be a verb whose warning nobody reads.
+        t.write(&task("000000000002", TaskStatus::Open, &[]));
+        let (code, out) = t
+            .call(
+                &[
+                    "amend",
+                    "TASK-000000000001",
+                    "--blocked-by",
+                    "TASK-000000000002",
+                ],
+                "marie@laptop",
+            )
+            .unwrap();
+        assert_eq!(code, 0, "{out}");
+        assert!(out.contains("+blocked_by"), "{out}");
+        assert!(!out.contains("warning"), "{out}");
+    }
+
+    /// §3 allows exactly one write to a task after completion and it is
+    /// `attest`'s. Amending a finished task would produce the corpus fault
+    /// `check` reports as a done task modified beyond appending a proof.
+    #[test]
+    fn amend_refuses_a_finished_task_and_a_ratified_scope() {
+        let t = Temp::new();
+        t.write(&task("000000000001", TaskStatus::Done, &[]));
+        let err = t
+            .call(&["amend", "0000", "--scope", "docs/**"], "marie@laptop")
+            .unwrap_err();
+        assert_eq!(err.code, 7, "{}", err.message);
+        assert!(err.message.contains("settled"), "{}", err.message);
+
+        // An accepted ADR's scope is hashed into the ratification commit, so
+        // amending it would diverge from the anchor and suspend its injection
+        // into context. Changing a ratified decision is a succession.
+        t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
+        let err = t
+            .call(
+                &["amend", "ADR-00000000aaaa", "--scope", "docs/**"],
+                "marie@laptop",
+            )
+            .unwrap_err();
+        assert_eq!(err.code, 6, "{}", err.message);
+        assert!(
+            err.hint.unwrap().contains("--supersedes"),
+            "the way through"
+        );
+
+        // A proposed one is free: nothing was ever binding.
+        t.write(&adr("00000000bbbb", AdrStatus::Proposed, &["src/**"]));
+        let (code, _) = t
+            .call(
+                &["amend", "ADR-00000000bbbb", "--scope", "docs/**"],
+                "marie@laptop",
+            )
+            .unwrap();
+        assert_eq!(code, 0);
+        let Entity::Adr(after) = t
+            .store()
+            .load(&EntityId::parse("ADR-00000000bbbb").unwrap())
+            .unwrap()
+            .entity
+        else {
+            panic!()
+        };
+        assert_eq!(after.scope, vec!["src/**", "docs/**"]);
+    }
 
     #[test]
     fn close_requires_a_reason_and_revokes_the_active_claim() {

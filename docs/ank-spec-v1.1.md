@@ -262,6 +262,7 @@ accept    promotes a proposed ADR to accepted (produces the signed commit, §8, 
           requires the default branch)
 check     mechanical invariants, exit code usable in CI
 close     closes a task that will never be done (--reason mandatory)
+amend     changes `blocked_by` and `scope` on an entity that already exists
 ```
 
 `review` and `accept` are not comfort features: **the entire authority model of ADRs depends on them**. Without them an agent creates in `proposed` and nothing ever becomes binding.
@@ -275,6 +276,12 @@ $ ank accept 19d0
 error[7]: accept requires the default branch (current: feat/opaque-sessions, default: main)
   -> git switch main && ank accept 19d0
 ```
+
+**`amend` covers the two fields a plan actually changes on**, `blocked_by` and `scope`, and covers nothing else. A subtask discovered after a task was filed is a `blocked_by` added to something that already exists; a scope found to omit the files the work must touch is a scope corrected before the task can be claimed at all. Both are ordinary, both were done by hand until this verb existed, and an edit done by hand is indistinguishable in the resulting file from any other edit done by hand — which is the argument that put `attest` on this surface too.
+
+It **adds and removes explicitly** and never takes a replacement list: a verb given the whole list silently drops whatever the caller forgot to repeat. It refuses a `done` or `closed` task, since §3 allows exactly one write after completion and that write is `attest`'s. It refuses the `scope` of an accepted ADR, whose `scope` is hashed into the ratification commit (§8) — changing a ratified decision is a succession, and succession has its own verb. And it refuses `done_criteria` by name rather than by omission, because the flag a caller reaches for deserves the command that actually applies: `release --reason`.
+
+Amending the `scope` of a task under a live claim is **allowed and warned about**. The claim record anchors the hash of the constraints that scope selects (§7), so the change moves what binds the work in progress. Refusing would be wrong — a scope discovered false mid-task is exactly the situation the verb exists for — and allowing it silently would be worse.
 
 Everything else (editing fields, reordering, deleting) goes through **a human** editing the file directly, since the format is the specification. The actor matters here and is not decoration: ADR-01b6dd05f0db closes `.ank/` to direct reads and writes *by an agent*, and leaves a human with an editor every power they had. Written without the subject, this sentence reads as a general permission and hands back what that ADR withdrew.
 
@@ -324,6 +331,8 @@ ank find <query>            [--type task|adr] [--status ...] [--scope <path>]
 ank review [<path>]
 ank accept <id>
 ank close <id> --reason <r>
+ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
+                            [--scope <glob>...] [--drop-scope <glob>...]
 ank check [<path>]
 ```
 

@@ -310,6 +310,25 @@ pub const COMMANDS: &[CommandSpec] = &[
         owner_task: None,
     },
     CommandSpec {
+        name: "amend",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[
+            multi("--blocked-by"),
+            multi("--drop-blocked-by"),
+            multi("--scope"),
+            multi("--drop-scope"),
+            // Declared only so it can be refused by name. The parser's "unknown
+            // flag" would list the valid ones and leave the caller to work out
+            // why the obvious one is missing; §4 wants the exact command to run
+            // next, and for a frozen criterion that command is `ank release`.
+            flag("--criteria"),
+        ],
+        audience: Audience::Human,
+        owner_task: None,
+    },
+    CommandSpec {
         name: "attest",
         subcommands: &[],
         max_positionals: 1,
@@ -784,6 +803,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "accept" => crate::human::accept(&inv, &s.repo, &s.config, &s.identity, out),
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
         "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
+        "amend" => crate::human::amend(&inv, &s.repo, &s.identity, out),
         "show" => crate::human::show(&inv, &s.repo, out),
         _ => Err(not_implemented(spec)),
     }
@@ -869,8 +889,9 @@ mod tests {
         }
         assert_eq!(
             COMMANDS.len(),
-            15,
-            "twelve verbs from §4, init and help from §9, and attest on the human side"
+            16,
+            "twelve verbs from §4, init and help from §9, and attest and amend \
+             on the human side"
         );
     }
 
@@ -942,6 +963,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "claim", "context", "done", "log", "release", "new", "find", "attest",
+            "amend", "show",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
