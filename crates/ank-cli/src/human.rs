@@ -1,16 +1,13 @@
-//! Human surface: check, review, accept, close and attest (§4, §8, §11).
+//! check, review, accept, close, attest, amend and show (§4, §8, §11).
 //!
-//! The side of the CLI that can grow freely — that is what makes the eight-verb
-//! freeze sustainable (ADR-3859eb46bdc3) — and it carries the two acts an agent
-//! must never perform alone: ratifying a constraint, and closing a task nobody
-//! finished.
-//!
-//! **`show` lives here and is not one of them.** ADR-3859eb46bdc3 moved it onto
-//! the agent surface; the ADR governs who may call a verb, not which file holds
-//! it, and moving the function would buy nothing but a diff. So this module is
-//! no longer "the half that does not run in the agent loop", and that sentence
-//! is gone rather than quietly kept: a header describing an audience is exactly
-//! the kind of prose that rots into a lie one decision at a time.
+//! **This is a file, not a side.** The CLI exposes one surface
+//! (ADR-c656cbcc33a9): every verb here is available to every caller, and what
+//! the module holds is what grew together rather than what a class of caller
+//! was allowed to run. Successive headers described this as the human half, the
+//! side that may grow freely, the half outside the loop — each true when
+//! written and each false a decision later. A header describing an audience is
+//! exactly the prose that rots into a lie one decision at a time, so there is
+//! none.
 //!
 //! **`check` is the only command that prunes.** `claim` and `context` are
 //! readers, and a reader does not sanitise the coordination plane underneath
@@ -1725,10 +1722,11 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 /// observe it. Here the entries already present are carried over untouched by
 /// construction, and the version bump goes through the store's compare-and-swap.
 ///
-/// **Human side, and not as a consolation.** ADR-2f8a61c04b7d freezes the agent
-/// surface at seven verbs and sends new functionality here. Attesting to a task
-/// somebody else finished is not loop work, and an agent able to reopen its own
-/// completed tasks is an agent that can grade itself twice.
+/// **Outside the loop, and not as a consolation.** Attesting to a task somebody
+/// else finished is not loop work, and SKILL.md does not teach it. That is a
+/// fact about what an agent is taught, never a refusal: `attest` runs for
+/// whoever types it, and what stops an agent grading itself twice is the state
+/// the verb refuses on, not the identity of the caller.
 ///
 /// `tree` and `verifier` stay empty: this records an attestation made
 /// elsewhere, not a run Ank performed. Claiming either would be the overstated
@@ -1817,10 +1815,10 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
 /// in the resulting file, from any other edit performed by hand. A verb can
 /// guarantee that the fields it did not name come back byte-identical.
 ///
-/// **Human side.** Adding a blocker to a task that already exists is a change
-/// to a plan that is not yours, which is TASK-bc214fd815b2's reasoning for
-/// leaving it off the agent surface in the first place. ADR-3859eb46bdc3
-/// freezes that surface at eight and sends new functionality here.
+/// **Outside the loop.** Adding a blocker to a task that already exists is a
+/// change to a plan that is not yours, which is TASK-bc214fd815b2's reasoning
+/// for keeping it out of what SKILL.md teaches. Keeping it out of the teaching
+/// is the whole of it: the verb itself refuses nobody on identity.
 ///
 /// **Add and remove, never replace.** A verb taking the whole list silently
 /// drops whatever the caller forgot to repeat, and the round-trip guarantees

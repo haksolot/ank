@@ -1,9 +1,9 @@
 //! The new, find, log and release verbs.
 //!
-//! Four verbs that share almost nothing except being the rest of the agent
-//! surface (ADR-2f8a61c04b7d). What they do have in common is the discipline of
-//! §4: each refuses precisely, names the command to run next, and writes as
-//! little as the transition needs.
+//! Four verbs that share almost nothing except being the part of the loop that
+//! is not the loop's spine — SKILL.md teaches them off-loop (§4). What they do
+//! have in common is the discipline of §4: each refuses precisely, names the
+//! command to run next, and writes as little as the transition needs.
 //!
 //! - **`new`** requires a scope. A glob is the only mechanism attaching an
 //!   entity to code, and an entity attached to nothing is invisible to

@@ -10,7 +10,7 @@
 //! against those hashes and reindexes what diverged. That is why an entity
 //! edited by hand, by another tool, or by a `git checkout` is reflected on the
 //! next read with no explicit command — there is no reindex verb to forget,
-//! and the agent surface stays at seven verbs (ADR-2f8a61c04b7d).
+//! and none to teach.
 //!
 //! An index that is absent, of an unknown schema, or not a database at all is
 //! rebuilt silently rather than reported: a cache that can refuse to work is a

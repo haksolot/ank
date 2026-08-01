@@ -919,7 +919,7 @@ fn other_ready_task(store: &Store, task: &Task) -> Option<EntityId> {
 /// Anchors the ADRs whose constraint applies here, so that a reader of this
 /// module lands on them: claims in refs (ADR-4e7c25b1f639), the ref's second
 /// state (ADR-bcf222a31525), plumbing by criterion (ADR-b8884edcebe3), freeze
-/// by hash (ADR-6b3f19e08a24), seven frozen verbs (ADR-2f8a61c04b7d).
+/// by hash (ADR-6b3f19e08a24), one surface (ADR-c656cbcc33a9).
 #[cfg(test)]
 mod tests {
     use super::*;

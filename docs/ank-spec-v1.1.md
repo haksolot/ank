@@ -9,6 +9,8 @@ Settled relative to v1: orientation and constraints reconciled (§5) · immutabi
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
 
+Additions of revision k: **`ank help` is one flat listing** (§4, §9, ADR-c656cbcc33a9, superseding ADR-9ede1ffd04e2) — revision i dissolved the split between an agent surface and a human one and left a layered `help` behind it, whose headings were still named after callers; layering is grouping, and a grouping printed by the binary is a claim about who a verb is for. The order of §4 carries the same information without asserting a category, and the loop stays where it is enforced, in the frozen content of SKILL.md.
+
 Additions of revision j: **the ratification signature is verified and not merely read** (§8, §4) — `check` was comparing the anchor in the ratification commit against the file without asking who signed the commit, so an ordinary unsigned commit whose subject read `ratify <id>` was accepted as a ratification; the four outcomes are specified, an unchecked signature is a signal and never a success, and the layout of `allowed_signers` is documented along with the fact that git enforces it only under `gpg.format = ssh`, OpenPGP leaving the match to `check` itself.
 
 Additions of revision i: **one command surface instead of two** (§4, §8, ADR-9ede1ffd04e2, superseding ADR-3859eb46bdc3) — every verb is available to every caller, the CLI refuses on state and never on identity, and the eight-verb freeze is restated as a freeze on the content of SKILL.md, which is where the token budget it actually protected is spent · the refusals are tabulated against their exit codes, and the signed ratification commit is named as the single hard line of authority, a proof requirement rather than a role check (§4) · `status`, `edit`, `graph` and `scope` enter the surface, along with the interactive form of `new` and the read form of `log` (§4) · roles in `config.yml` are named what they always were, advisory, and policy is placed where it holds: SKILL.md, harness hooks, then roles (§8).
@@ -255,7 +257,7 @@ The symmetric risk — an agent going off the rails and flooding the repository 
 
 ## 4. CLI surface
 
-**Ank exposes one surface** (ADR-9ede1ffd04e2). Every verb is available to every caller, and the CLI refuses on state, never on identity. Git has more than a hundred commands, every one of them reachable by anybody who types it, and stays learnable because of what a newcomer is taught first — not because the porcelain sorts callers into classes. Ank borrows that shape.
+**Ank exposes one surface** (ADR-c656cbcc33a9). Every verb is available to every caller, and the CLI refuses on state, never on identity. Git has more than a hundred commands, every one of them reachable by anybody who types it, and stays learnable because of what a newcomer is taught first — not because the porcelain sorts callers into classes. Ank borrows that shape.
 
 The memorisation budget is real; it is simply not the binary's job. It is spent on documentation, and it is enforced where it operates: what an agent is taught is the loop, and the content of what teaches it is frozen. What a human may type is everything.
 
@@ -266,7 +268,7 @@ Loop:        context → claim → show → log → done
 Off-loop:    new, find, release
 ```
 
-**This is the entire content of SKILL.md, and that content is frozen.** SKILL.md is loaded permanently (§9), so the surface an agent reads about is the one that costs tokens on every call; growing what it teaches costs an ADR superseding ADR-9ede1ffd04e2, exactly as growing a verb list once did. The freeze constrains the documentation, not the dispatch table: an agent that runs `ank graph` gets the graph; it was simply never told the verb existed, and being untold is not being refused.
+**This is the entire content of SKILL.md, and that content is frozen.** SKILL.md is loaded permanently (§9), so the surface an agent reads about is the one that costs tokens on every call; growing what it teaches costs an ADR superseding ADR-c656cbcc33a9, exactly as growing a verb list once did. The freeze constrains the documentation, not the dispatch table: an agent that runs `ank graph` gets the graph; it was simply never told the verb existed, and being untold is not being refused.
 
 That distinction is the whole revision. ADR-3859eb46bdc3 froze an *agent surface* at these same eight verbs and sent everything else to a human side, but the split it protected was never a boundary — the CLI told callers apart by `$ANK_AGENT`, a variable the caller sets itself (§8). A wall whose bricks are self-declared identity is a sign, not a wall. What the freeze actually protected was the token budget, and that protection moves here, where it holds without pretending to be a check.
 
@@ -783,6 +785,8 @@ Skills install from repositories rather than npm packages: the identifier is `ow
 The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, OpenCode, and many others) and creates links from each agent to a canonical copy — exactly the desired design, already maintained by a third party.
 
 **Token economy.** These files are loaded permanently, which is why the content of SKILL.md is frozen (§4): it carries the loop and the mental model, nothing else, and growing that costs a superseding ADR. Flag details and the rest of the surface stay in `ank help`, loaded on demand.
+
+**`ank help` is one flat listing** (ADR-c656cbcc33a9): every verb, in the order of §4, with no headings and no grouping. The loop is what SKILL.md teaches, not what the binary prints — a heading printed by the CLI is a claim about who a verb is for, and that is the claim §4 withdraws. The order carries what a heading would have said, since §4 puts the loop first, and it carries it without asserting a category. `ank help <verb>` answers about that verb alone: its usage, its flags with their value placeholders, and the globals. An unknown verb is a **code 2** and never a fallback to the general listing — an agent that asked about one verb and received all sixteen has to work out that its question went unanswered.
 
 `ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`.
 

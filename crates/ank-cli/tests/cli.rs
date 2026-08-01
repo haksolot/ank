@@ -1118,9 +1118,9 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
         stderr(&out)
     );
 
-    // The verbs, by audience. Listed by hand here on purpose: cli.rs walks its
-    // own table, which would agree with itself even if the table were wrong,
-    // and the criterion is about what an agent reads.
+    // Listed by hand here on purpose: cli.rs walks its own table, which would
+    // agree with itself even if the table were wrong, and the criterion is
+    // about what an agent reads.
     for verb in [
         "context", "claim", "log", "done", "release", "new", "find", "review", "accept", "close",
         "check", "show", "init", "help", "attest",
@@ -1130,9 +1130,33 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
             "{verb} missing:\n{text}"
         );
     }
-    for heading in ["agent loop", "agent off-loop", "human", "setup"] {
-        assert!(text.contains(heading), "no '{heading}' heading:\n{text}");
+
+    // One flat listing (ADR-c656cbcc33a9). The headings were named after
+    // callers -- agent loop, agent off-loop, human -- which is the two-surface
+    // model speaking through the output an agent reads, and a CLI that refuses
+    // on state and never on identity has no such grouping to print.
+    for heading in ["agent loop", "off-loop", "human", "setup"] {
+        assert!(
+            !text.contains(heading),
+            "'{heading}' still groups the listing:\n{text}"
+        );
     }
+
+    // Flat is not sorted: §4 puts the loop first, and that order is the only
+    // structure left. Alphabetical would bury `context` between `close` and
+    // `done`, so the order is asserted through the binary rather than trusted.
+    let at = |needle: &str| {
+        text.find(needle)
+            .unwrap_or_else(|| panic!("{needle} missing:\n{text}"))
+    };
+    assert!(at("ank context") < at("ank done"), "{text}");
+    assert!(at("ank done") < at("ank release"), "{text}");
+    assert!(at("ank release") < at("ank review"), "{text}");
+    assert!(at("ank review") < at("ank check"), "{text}");
+    assert!(
+        text.starts_with("ank context"),
+        "a title or a heading precedes the first verb:\n{text}"
+    );
     // And the flags each verb takes, which is the part §9 keeps out of
     // SKILL.md.
     for flag in [
@@ -1156,6 +1180,11 @@ fn help_for_one_verb_answers_and_an_unknown_one_is_a_two() {
     assert!(text.contains("ank claim <id>"), "{text}");
     assert!(text.contains("--ttl"), "{text}");
     assert!(text.contains("--criteria"), "{text}");
+    assert!(
+        !text.contains("audience"),
+        "the audience line is what ADR-c656cbcc33a9 removes, and it is the \
+         line an agent reads about itself:\n{text}"
+    );
     assert!(
         !text.contains("ank accept"),
         "one verb means one verb:\n{text}"
@@ -1191,5 +1220,63 @@ fn help_json_reaches_the_process_intact() {
     assert!(text.starts_with("{\"verbs\":["), "{text}");
     assert!(text.trim_end().ends_with("]}"), "{text}");
     assert!(text.contains("\"name\":\"claim\""), "{text}");
-    assert!(text.contains("\"audience\":\"setup\""), "{text}");
+    assert!(
+        !text.contains("audience"),
+        "the grouping survived into the scripted output:\n{text}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Dead constraints in the prose (ADR-c656cbcc33a9)
+// ---------------------------------------------------------------------------
+
+/// A comment citing a superseded ADR as the reason for a design is worse than
+/// no comment: it hands the next reader a constraint that binds nobody, with
+/// the authority of a decision record. Two of them went on asserting a frozen
+/// agent surface -- at seven verbs in one, at eight in the other -- in module
+/// headers and doc comments, long after the split they protected had been
+/// dissolved and while the file around them had already stopped obeying it.
+///
+/// The needles are assembled from fragments so this file does not defeat its
+/// own assertion by containing what it forbids. It reads as an affectation
+/// until you picture the test failing on itself.
+///
+/// This is not a general ban on naming a superseded ADR: history is worth
+/// writing down, and `.ank/` is where it is written. It is a ban on these two,
+/// which have no live claim left to make anywhere in this crate.
+#[test]
+fn no_superseded_adr_is_cited_in_the_crate() {
+    const DEAD: [&str; 2] = [
+        concat!("ADR-", "2f8a61c04b7d"),
+        concat!("ADR-", "3859eb46bdc3"),
+    ];
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut walked = 0usize;
+    for dir in ["src", "tests"] {
+        for entry in std::fs::read_dir(root.join(dir)).expect("the crate has this directory") {
+            let path = entry.expect("a readable entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            for dead in DEAD {
+                assert!(
+                    !text.contains(dead),
+                    "{} cites {dead}, which is superseded: name the ADR that \
+                     binds today, or drop the citation",
+                    path.display()
+                );
+            }
+            walked += 1;
+        }
+    }
+    // A walk that quietly found nothing would pass forever, which is the one
+    // way a test like this fails at being a test.
+    assert!(walked >= 8, "only {walked} source files walked");
+
+    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("a readable manifest");
+    for dead in DEAD {
+        assert!(!manifest.contains(dead), "Cargo.toml cites {dead}");
+    }
 }

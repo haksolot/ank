@@ -10,7 +10,7 @@ edition = "2021"
 # in ci.yml so the claim turns something red the day it stops being true.
 rust-version = "1.95"
 license = "GPL-3.0-only"
-description = "The Ank CLI: agent surface (7 verbs) and human surface."
+description = "The Ank CLI: one surface, refusing on state and never on identity."
 
 [[bin]]
 name = "ank"
