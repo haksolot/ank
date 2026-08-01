@@ -73,8 +73,12 @@ run on all three.
 - `accept` only runs on the default branch (`default_branch` in `config.yml`,
   falling back to `refs/remotes/origin/HEAD`), with no way around it.
 - Ank never commits, except `accept`.
-- No new dependency without necessity; a static binary is the goal; the MSRV is
-  loose but Cargo.lock pins for rustc 1.75 (liftable if needed — note it).
+- No new dependency without necessity; a static binary is the goal; **the MSRV
+  is 1.95**, declared in both manifests and pinned in `ci.yml`. It was measured
+  by walking toolchains against the tree — 1.78 through 1.94 all fail — and it
+  is the current stable, so there is no headroom: `libsqlite3-sys` alone sets
+  it (TASK-973e9dc3f9ce). Raising it means re-running the walk, never editing
+  the number.
 
 ## Style
 

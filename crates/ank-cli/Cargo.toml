@@ -2,6 +2,13 @@
 name = "ank-cli"
 version = "0.1.0"
 edition = "2021"
+# Measured on 2026-08-01 by walking toolchains upward against this tree, which
+# is the only way this number means anything: 1.78, 1.91, 1.92, 1.93 and 1.94
+# all fail, 1.95 is the first that compiles and passes the suite. The cause is
+# a single dependency and it is named below. Declared here so cargo refuses an
+# older toolchain by name instead of failing inside a build script, and pinned
+# in ci.yml so the claim turns something red the day it stops being true.
+rust-version = "1.95"
 license = "GPL-3.0-only"
 description = "The Ank CLI: agent surface (7 verbs) and human surface."
 
@@ -26,11 +33,18 @@ hex = "0.4"
 # against. The price is a C compiler at build time on the three platforms.
 #
 # On the MSRV: neither rusqlite 0.40 nor libsqlite3-sys 0.38 declares a
-# rust-version, and this lockfile was resolved by a 1.95 toolchain, so whether
-# it still builds under the 1.75 the pin used to assume is unknown rather than
-# known-broken — no 1.75 toolchain has been run against it. Stated as unknown
-# on purpose: a comment claiming otherwise would be a guess, and CI pins
-# nothing below stable today.
+# rust-version, and this pair is what sets the workspace floor at 1.95. The
+# build script of libsqlite3-sys 0.38.1 calls `cfg_select!`, which is unknown
+# to 1.78 and still unstable through 1.94 (E0658); 1.95 is the first stable
+# release that accepts it. Lockfile v4 puts a floor at 1.78 on its own, but
+# that floor is not the binding one and never was — the dependency is
+# seventeen minor versions above it.
+#
+# The consequence is worth stating plainly rather than discovering later: this
+# workspace requires the current stable, so it has no MSRV headroom at all, and
+# the floor moves whenever this dependency does. Whether that price is worth
+# paying for `bundled` SQLite is a dependency question, not an MSRV question,
+# and it is TASK-973e9dc3f9ce's to answer.
 #
 # `default-features = false` is not tidiness: the default set includes
 # `ffi-sqlite-wasm-rs`, which drags wasm-bindgen, js-sys and a wasm VFS into the

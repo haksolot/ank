@@ -69,3 +69,36 @@ jobs:
       #
       # Exit 8 means findings, and that is a failure here. Signals exit 0.
       - run: cargo run -q --bin ank -- check
+
+  # The MSRV declared in the manifests, built on the toolchain it names. The
+  # job above runs on whatever the runner image ships, which is what lets an
+  # MSRV claim rot in silence: it was wrong by seventeen minor versions before
+  # anyone ran the number (TASK-daf25ab8a9b7).
+  #
+  # All three platforms, because the crate that sets the floor sets it from a
+  # build script, and a build script is the one place where the floor can
+  # legitimately differ per target.
+  msrv:
+    name: msrv 1.95 / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # rustup is preinstalled on the runners, so pinning costs no new action
+      # and no new supply-chain surface — the same argument the job above makes
+      # for using the image's toolchain.
+      - name: install the declared MSRV
+        run: rustup toolchain install 1.95 --profile minimal
+
+      - name: versions
+        run: cargo +1.95 --version
+
+      # --locked because the lockfile is half the claim: lockfile v4 needs 1.78
+      # on its own, and a resolution performed here would measure a different
+      # tree from the one that ships.
+      - run: cargo +1.95 build --workspace --locked

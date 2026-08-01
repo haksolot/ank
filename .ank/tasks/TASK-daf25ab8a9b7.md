@@ -15,7 +15,7 @@ done_criteria: |
   The minimum supported Rust version is established by running that toolchain against the tree, not by assertion. rust-version is declared in the manifests, CLAUDE.md states the same number, and CI builds on that exact toolchain so the claim cannot rot again without turning something red.
 criteria_by: creator
 schema: 1
-version: 3
+version: 5
 ---
 
 CLAUDE.md says "the MSRV is loose but Cargo.lock pins for rustc 1.75 (liftable
@@ -40,3 +40,6 @@ number at all — it reads as verified.
 
 The last clause of the criterion is the point. An MSRV asserted in a comment
 rots silently; an MSRV that CI builds on turns red the day it stops being true.
+
+## Log
+- 2026-08-01T19:37:10Z seanl@sean-laptop — Toolchain walk complete. Measured, not asserted: 1.78 fails (libsqlite3-sys 0.38.1 build.rs uses cfg_select!, macro not found), 1.91/1.92/1.93/1.94 all fail the same call as E0658 use of unstable library feature cfg_select. 1.95 is the first toolchain that compiles: cargo +1.95 test --workspace --locked green, 239 tests. MSRV is 1.95, the current stable, and the sole cause is one build script in libsqlite3-sys 0.38.1. The lockfile v4 floor of 1.78 is real but not binding: the dependency floor is 17 minor versions above it.
