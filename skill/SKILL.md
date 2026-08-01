@@ -51,8 +51,10 @@ and hand the task back rather than letting the claim lapse in silence.
   divergence. If it is wrong, `release --reason` and say why.
 - **`constraint` in an ADR is binding**, not advice. Read the ones covering the
   files you are about to touch — that is what `context` hands you.
-- **Read the entity file when you want the whole body.** The format is the
-  specification and `cat` is your `show`; the CLI is not the only way in.
+- **`.ank/` is opaque, like `.git/`.** Never read or write those files
+  directly. `ank show <id>` gives you an entity whole, `ank find` lists,
+  `ank context` binds — the CLI knows the budget, the freeze and who holds what;
+  the files do not.
 
 Exit codes carry meaning: `4` unavailable, `6` a frozen field diverged, `8`
 findings, `9` environment. Errors always name the exact next command.
