@@ -4,7 +4,7 @@ type: adr
 slug: frozen-agent-surface
 title: The agent surface is frozen at seven verbs
 created: 2026-07-27T09:05:00Z
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
   - skill/**
@@ -13,7 +13,7 @@ constraint: |
   release. No verb is ever added to it. Any new functionality lands on the
   human side or in the format.
 schema: 1
-version: 2
+version: 3
 ---
 
 An agent's memorisation budget is the real limiting factor: SKILL.md is loaded
