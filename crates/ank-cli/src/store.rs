@@ -597,6 +597,7 @@ mod tests {
             slug: Some("example".into()),
             title: title.into(),
             created: "2026-07-28T00:00:00Z".into(),
+            author: None,
             status: TaskStatus::Open,
             scope: vec!["src/**".into()],
             blocked_by: vec![],

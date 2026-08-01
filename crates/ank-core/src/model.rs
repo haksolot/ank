@@ -2,9 +2,24 @@ use crate::error::{Error, Result};
 use crate::id::EntityId;
 use serde::{Deserialize, Serialize};
 
-/// Format version supported by this crate. A file with another schema is
-/// cleanly refused (never a silent break).
-pub const SCHEMA_VERSION: u32 = 1;
+/// Format version this crate **writes**, and the newest it reads.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Oldest format version this crate reads.
+///
+/// A range rather than a single version, and the asymmetry is the point (§3).
+/// Reading older is a promise the format keeps: a corpus is never migrated by a
+/// tool that refuses to read it, so every field introduced after version 1 is
+/// optional at parse time and its absence means "written before this existed".
+/// Reading newer is refused, because the fields this tool does not know about
+/// are exactly the ones it would silently drop on the next rewrite.
+///
+/// Refusing on the *version* is also the only diagnosis that helps. The
+/// frontmatter denies unknown fields, so a reader limited to its own version
+/// reports a newer file as `unknown field 'author'` while the file plainly
+/// declares the schema that explains it — and sends the reader hunting for a
+/// typo.
+pub const MIN_SCHEMA: u32 = 1;
 
 // ---------------------------------------------------------------------------
 // Statuses and transitions
@@ -173,6 +188,14 @@ pub struct Task {
     /// ISO 8601 timestamp of the act of creation, immutable. Makes task
     /// ordering deterministic without depending on git.
     pub created: String,
+    /// The identity that ran `new`, as `$ANK_AGENT` resolves it (§8).
+    ///
+    /// `None` means the entity predates the field, never that nobody wrote it:
+    /// schema 1 had no such thing, and the author of a file that already exists
+    /// cannot be recovered — `git log` would say who committed it, and
+    /// ADR-b8884edcebe3 forbids porcelain. The signals that need it skip those
+    /// entities and `check` says so once for the corpus.
+    pub author: Option<String>,
     pub status: TaskStatus,
     pub scope: Vec<String>,
     pub blocked_by: Vec<EntityId>,
@@ -215,6 +238,8 @@ pub struct Adr {
     pub slug: Option<String>,
     pub title: String,
     pub created: String,
+    /// The identity that ran `new`. `None` means the entity predates the field.
+    pub author: Option<String>,
     pub status: AdrStatus,
     pub scope: Vec<String>,
     pub constraint: String,

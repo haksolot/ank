@@ -9,6 +9,8 @@ Settled relative to v1: orientation and constraints reconciled (§5) · immutabi
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
 
+Additions of revision g: **`author` on the common base** (§3) — the identity that ran `new`, optional and immutable, without which two of §4's signals could not be computed at all · **`schema` names a range of versions a tool reads, not a single one** (§3): the frontmatter rejects unknown fields, so a reader limited to its own version would report a newer file as *unknown field* while the file plainly declares the schema that explains it · the agent surface becomes **eight verbs with `show`** (§4, ADR-3859eb46bdc3), and the invitation to read `.ank/` directly is withdrawn (ADR-01b6dd05f0db).
+
 Additions of revision f: **English is the only language of the project** (ADR-d3a8dcf38817) — specification, CLI output, identifiers and entity bodies alike · the `criteria` field of a proof entry is documented in §3, where it was previously present in the code and in the golden fixtures without appearing in the specification, which the ordering rule of ADR-63b59c5c26f7 forbids.
 
 Additions of revision e: **the project is called `ank`** — the binary, the `.ank/` directory, the `refs/ank/*` ref namespace and the `$ANK_AGENT` identity variable (§6, §7, §8) · **the claim ref is no longer deleted at `done`, it becomes a completion ref** with no TTL, pruned only once the default branch has caught up with durable state: this is what closes the window during which a task finished on an unmerged branch looks free everywhere else (§7) · `claim` refuses a task carrying a completion ref, naming the commit and the branch (§4) · **`accept` requires the default branch**, with no way around it, because a constraint ratified on a feature branch would be a constraint of variable geometry (§4, §12) · `default_branch` enters `config.yml`, with fallback detection through `refs/remotes/origin/HEAD` (§7) · git plumbing extended with `merge-base`, `for-each-ref` and `symbolic-ref`, still plumbing only (§12).
@@ -88,6 +90,7 @@ Every Ank object is a markdown file with YAML frontmatter. Shared fields:
 | `type` | `task` \| `adr` |
 | `slug` | Cosmetic, never used for resolution |
 | `created` | ISO 8601 timestamp of the act of creation, **always in UTC** (`Z` suffix): the ordering of §5 must not depend on a timezone. Immutable. This is what makes task ordering deterministic without depending on git, and what gives `check` a basis for the burst-creation and plausibility signals. |
+| `author` | The identity that ran `new`, in the form `$ANK_AGENT` resolves to (§8). Optional, immutable, and written by `new` on every entity it creates. Together with `created` it is what makes two of §4's signals computable at all: an authorless corpus cannot say who created a burst, nor whether a blocker was written by the agent that would benefit from it. |
 | `scope` | List of globs. Source of truth for context routing. **Mandatory**: without a scope an entity appears in no `context` and becomes invisible. `new` fails rather than create a silent orphan. |
 | `status` | Lifecycle, typed per entity |
 | `version` | Integer, incremented on every write. Intra-tree compare-and-swap (§7). |
@@ -121,6 +124,7 @@ type: task
 slug: migrate-auth-sessions
 title: Migrate auth to opaque sessions
 created: 2026-07-25T09:14:00Z
+author: claude-code@host-3   # the identity that ran `new`. Optional: a corpus predates it.
 status: in_progress          # open | in_progress | done | closed   (blocked is derived)
 scope:
   - src/auth/**
@@ -141,7 +145,7 @@ proof:                       # append-only list, required for done
     ref: local/e51b22@a3f9c21
     tree: scope/4be2d10c
     verifier: no-jwt@9ab0c1d2
-schema: 1
+schema: 2
 version: 7
 ---
 
@@ -157,6 +161,10 @@ Free-form context, notes, links.
 **The claim is not in the file.** It lives exclusively in the ephemeral coordination plane (§7). Recording it here would produce a git diff on every task pickup, which is precisely what separating the two planes exists to avoid. A task that is `in_progress` with no active claim and no completion ref is simply a task whose TTL expired: it can be picked up again, and its log says where the previous holder stopped.
 
 **`schema`** carries the format version, with explicit migration and never a silent break. It is the counterpart of the promise "the format is the specification": a third-party tool must be able to cleanly refuse a file it does not know how to read.
+
+A tool therefore declares a **range of versions it reads**, not a single one, and refuses anything outside it naming the version rather than the symptom. The distinction is not academic, and adding `author` is what made it concrete. The frontmatter rejects unknown fields — that is what lets a typo like `priorty:` be an error instead of a silent loss — so a tool that read only its own version would report a file one version newer as *unknown field `author`*, while the file plainly declares the schema that explains it. The reader would go looking for a typo. Refusing on the version says the one true thing: this file is newer than this tool.
+
+The rule is asymmetric on purpose. Reading **older** versions is a promise the format keeps: a corpus is never migrated by a tool that refuses to read it, so every field introduced after version 1 is optional at parse time, and its absence means "written before this existed" rather than "invalid". Reading **newer** versions is refused, because the fields a tool does not know about are exactly the ones it would silently drop on the next rewrite.
 
 **Lifecycle.** `open` → `in_progress` (via `claim`) → `done` (via `done`, proof mandatory). There is no separate `claimed` status: a successful claim puts the task directly into work. **`claim` on an `in_progress` task with no active claim is a legal transition** — that is pickup after expiry, not an anomaly. The single exception is a task carrying a **completion ref**: it was finished on another branch, and `claim` refuses with code 4, naming the commit and the branch (§7). That is precisely the case the file's status cannot express, since a `done` lives in the durable state of the branch that produced it and exists nowhere else before the merge. After `done`, the only legal write is **appending** a proof to the `proof` list; any other modification is reported by `check`.
 
@@ -199,6 +207,7 @@ type: adr
 slug: opaque-sessions
 title: Opaque sessions rather than stateless JWT
 created: 2026-07-18T11:02:00Z
+author: marie@laptop         # the identity that ran `new`
 status: accepted             # proposed | accepted | superseded
 scope:
   - src/auth/**
@@ -437,9 +446,14 @@ Summary of the invariants and signals, all mechanical:
 - expired claims, `blocked_by` cycles, broken supersede chains, dead scopes (no file matched), over-constrained scopes (§5);
 - frozen fields diverging from their anchoring hash — `done_criteria` against the claim, `constraint`/`scope` against the ratification commit;
 - weak proofs (`assertion`, unverified), `done` tasks modified beyond appending a proof;
-- behavioural signals, reported without being faults: blockers created by the holder after claiming, criterion set by the claimer, verifier modified inside the task's activity window or proof hash diverging from its definition, scope test files modified by the task that invokes them, burst creation by a single identity (abnormal volume of `new` over a short window, through `created`), implausible `created` (in the future, or well before the commit that introduces the file — the field is declarative, git is the anchor), repeated claim renewals with no modification to the scope files (possible hoarding; a best-effort signal, since another agent's tree is not observable), constraint accepted after the claim of a task in progress, tasks blocked by a `closed` task;
+- behavioural signals, reported without being faults: blockers created by the holder after claiming (`author` of the blocker is the current holder and its `created` is later than the claim), criterion set by the claimer, verifier modified inside the task's activity window or proof hash diverging from its definition, scope test files modified by the task that invokes them, burst creation by a single identity (**more than 10 entities by one `author` within an hour**, through `created`), implausible `created` (in the future, or well before the commit that introduces the file — the field is declarative, git is the anchor), repeated claim renewals with no modification to the scope files (possible hoarding; a best-effort signal, since another agent's tree is not observable), constraint accepted after the claim of a task in progress, tasks blocked by a `closed` task;
+- entities predating `author`, **reported once for the corpus and never per file**: they are skipped by the two signals above, and saying so once is what keeps that fact visible. One line per file would add a line for every entity written before the field existed — the volume that teaches a reader to stop reading `check`;
 - unresolved git conflict markers in `.ank/` files (§7);
 - maintenance of the coordination plane (§7): pruning orphan refs, and completion refs whose task is `done` or `closed` on the default branch. `check` is the only command that prunes. A task carrying a completion ref for a long time without the default branch catching up is reported as a signal — that is a branch never merged, not a corpus anomaly, and the answer is human.
+
+**The two signals that need `author`, and why they are signals.** A blocker written by the agent currently holding the task is the shape of an agent building itself an excuse — but it is also the shape of an agent doing exactly what §3 asks, since a discovered subtask *is* a new task with a `blocked_by`. Only a reader knows which, so it is reported and never refused. Burst creation is the same argument at the corpus scale: §3 accepts task flooding without a quota, on the grounds that the defence is visibility rather than restriction, and this is that visibility.
+
+**The numbers are constants, not configuration.** More than 10 entities by one `author` within an hour: a threshold high enough that a session filing the four tasks of a plan passes in silence, low enough that a runaway loop is named within minutes. They live in the tool rather than in `config.yml` because a repository that can raise its own flooding threshold has a flooding threshold that will be raised the first time it fires — and the signal costs nothing to ignore, which is what makes it safe to leave unadjustable.
 
 ---
 

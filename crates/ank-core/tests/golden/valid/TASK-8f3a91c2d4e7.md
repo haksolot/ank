@@ -4,6 +4,7 @@ type: task
 slug: migrate-auth-sessions
 title: Migrate auth to opaque sessions
 created: 2026-07-25T09:14:00Z
+author: claude-code@host-3
 status: in_progress
 scope:
   - src/auth/**
@@ -24,7 +25,7 @@ proof:
     ref: local/e51b22@a3f9c21
     tree: scope/4be2d10c
     verifier: no-jwt@9ab0c1d2
-schema: 1
+schema: 2
 version: 7
 ---
 

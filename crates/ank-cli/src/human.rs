@@ -260,6 +260,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     }
 
     check_cycles(&entities, &mut report);
+    check_authorship(&entities, &coord, &in_scope, &mut report);
 
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
@@ -631,6 +632,150 @@ fn check_adr(
         report
             .findings
             .push(Finding::fault(&a.id, "no constraint: it binds nothing"));
+    }
+}
+
+/// More than this many entities by one `author` inside [`BURST_WINDOW`] is a
+/// burst (§4).
+///
+/// High enough that a session filing the four tasks of a plan passes in
+/// silence, low enough that a runaway loop is named within minutes. A constant
+/// and not a config key: a repository able to raise its own flooding threshold
+/// has a threshold that will be raised the first time it fires, and the signal
+/// costs nothing to ignore — which is what makes it safe to leave unadjustable.
+const BURST_COUNT: usize = 10;
+const BURST_WINDOW: i64 = 3600;
+
+/// The three signals that need `author` (§4).
+///
+/// Two of them were unreachable for want of the field, and the third is what
+/// keeps their silence honest: an entity written before `author` existed is
+/// skipped by both, so the corpus says how many such entities it holds — once,
+/// never per file. One line each would add a line for every entity predating
+/// the field, which is the volume that teaches a reader to stop reading
+/// `check`.
+fn check_authorship(
+    entities: &[(PathBuf, Entity)],
+    coord: &HashMap<EntityId, Record>,
+    in_scope: &dyn Fn(&Entity) -> bool,
+    report: &mut Report,
+) {
+    let considered: Vec<&Entity> = entities
+        .iter()
+        .map(|(_, e)| e)
+        .filter(|e| in_scope(e))
+        .collect();
+
+    // Skipped, and said so once. `None` means the entity predates the field and
+    // never that nobody wrote it: the author of a file that already exists
+    // cannot be recovered, since git would name whoever committed it — a
+    // different fact about a possibly different person — and ADR-b8884edcebe3
+    // forbids the porcelain that would ask.
+    let authorless = considered.iter().filter(|e| author_of(e).is_none()).count();
+    if authorless > 0 {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "{authorless} entities predate the author field: the burst and \
+                 self-blocking signals skip them"
+            ),
+        ));
+    }
+
+    // Burst creation by a single identity (§3, §4). §3 accepts task flooding
+    // without a quota, on the argument that the defence is visibility rather
+    // than restriction. This is that visibility, and nothing more: a burst is
+    // reported, never refused.
+    let mut by_author: HashMap<&str, Vec<i64>> = HashMap::new();
+    for e in &considered {
+        if let (Some(author), Some(at)) = (author_of(e), claim::parse_utc(created_of(e))) {
+            by_author.entry(author).or_default().push(at);
+        }
+    }
+    let mut bursts: Vec<(&str, usize)> = Vec::new();
+    for (author, mut times) in by_author {
+        times.sort_unstable();
+        // A sliding window over the sorted timestamps: for each entity, how
+        // many fall within BURST_WINDOW before it. Reporting the widest run
+        // rather than one finding per window keeps a long burst to one line.
+        let mut widest = 0usize;
+        let mut start = 0usize;
+        for end in 0..times.len() {
+            while times[end] - times[start] > BURST_WINDOW {
+                start += 1;
+            }
+            widest = widest.max(end - start + 1);
+        }
+        if widest > BURST_COUNT {
+            bursts.push((author, widest));
+        }
+    }
+    bursts.sort_unstable();
+    for (author, count) in bursts {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "burst creation by {author}: {count} entities within an hour \
+                 (over {BURST_COUNT})"
+            ),
+        ));
+    }
+
+    // A blocker written by the agent that holds the blocked task, after it took
+    // it. That is the shape of an agent building itself an excuse — and equally
+    // the shape of an agent doing what §3 asks, since a discovered subtask *is*
+    // a new task with a blocked_by. Only a reader knows which, so it is
+    // reported and never refused.
+    let authors: HashMap<&EntityId, (&str, i64)> = considered
+        .iter()
+        .filter_map(|e| {
+            let at = claim::parse_utc(created_of(e))?;
+            Some((e.id(), (author_of(e)?, at)))
+        })
+        .collect();
+
+    for e in &considered {
+        let Entity::Task(t) = e else { continue };
+        let Some(Record::Claim(c)) = coord.get(&t.id) else {
+            continue;
+        };
+        let Some(claimed) = claim::parse_utc(&c.claimed) else {
+            continue;
+        };
+        let mut own: Vec<String> = t
+            .blocked_by
+            .iter()
+            .filter(|b| match authors.get(b) {
+                Some((author, created)) => *author == c.holder && *created > claimed,
+                None => false,
+            })
+            .map(|b| b.to_string())
+            .collect();
+        own.sort();
+        if !own.is_empty() {
+            report.findings.push(Finding::signal(
+                &t.id,
+                format!(
+                    "blocked by {} created by the holder ({}) after claiming",
+                    own.join(" "),
+                    c.holder
+                ),
+            ));
+        }
+    }
+}
+
+fn author_of(e: &Entity) -> Option<&str> {
+    match e {
+        Entity::Task(t) => t.author.as_deref(),
+        Entity::Adr(a) => a.author.as_deref(),
+    }
+}
+
+fn created_of(e: &Entity) -> &str {
+    match e {
+        Entity::Task(t) => &t.created,
+        Entity::Adr(a) => &a.created,
     }
 }
 
@@ -1524,6 +1669,7 @@ mod tests {
             slug: Some("example".into()),
             title: "Example task".into(),
             created: "2026-07-28T00:00:00Z".into(),
+            author: None,
             status,
             scope: vec!["src/**".into()],
             blocked_by: blocked
@@ -1556,6 +1702,7 @@ mod tests {
             slug: Some("example".into()),
             title: "A decision".into(),
             created: "2026-07-20T00:00:00Z".into(),
+            author: None,
             status,
             scope: scope.iter().map(|s| s.to_string()).collect(),
             constraint: "A binding rule.\n".into(),
@@ -1758,6 +1905,151 @@ mod tests {
             r.findings
                 .iter()
                 .any(|f| f.subject.contains("cccc") && f.level == Level::Fault),
+            "{:?}",
+            r.findings
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // check: the three signals that need `author`
+    // -----------------------------------------------------------------------
+
+    /// Counted once for the corpus, never per file. The fixtures carry no
+    /// author, which is the state of every entity written before the field.
+    #[test]
+    fn entities_predating_the_author_field_are_counted_once() {
+        let t = Temp::new();
+        for hex in ["000000000001", "000000000002", "000000000003"] {
+            t.write(&task(hex, TaskStatus::Open, &[]));
+        }
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+
+        let r = t.report();
+        let lines: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("predate the author field"))
+            .collect();
+        assert_eq!(lines.len(), 1, "once for the corpus: {:?}", r.findings);
+        assert_eq!(lines[0].level, Level::Signal);
+        assert!(lines[0].message.starts_with("4 entities"), "{:?}", lines[0]);
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+    }
+
+    /// §3 accepts flooding without a quota, on the argument that the defence is
+    /// visibility rather than restriction. This is that visibility.
+    #[test]
+    fn a_burst_by_one_identity_is_reported_and_a_steady_pace_is_not() {
+        let t = Temp::new();
+        // Eleven inside the hour, one over the threshold.
+        for i in 0..11 {
+            let mut e = task(&format!("0000000000{i:02}"), TaskStatus::Open, &[]);
+            if let Entity::Task(x) = &mut e {
+                x.author = Some("codex@host-9".into());
+                x.created = format!("2026-07-28T00:{:02}:00Z", i * 5);
+            }
+            t.write(&e);
+        }
+        // The same volume by another identity, spread across the day: the
+        // signal is about one agent's rate, not the corpus filling up.
+        for i in 0..11 {
+            let mut e = task(&format!("0000000001{i:02}"), TaskStatus::Open, &[]);
+            if let Entity::Task(x) = &mut e {
+                x.author = Some("marie@laptop".into());
+                x.created = format!("2026-07-28T{:02}:00:00Z", i + 1);
+            }
+            t.write(&e);
+        }
+
+        let r = t.report();
+        let bursts: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("burst creation"))
+            .collect();
+        assert_eq!(bursts.len(), 1, "{:?}", r.findings);
+        assert!(
+            bursts[0].message.contains("codex@host-9"),
+            "{:?}",
+            bursts[0]
+        );
+        assert!(!bursts[0].message.contains("marie"), "{:?}", bursts[0]);
+        assert_eq!(bursts[0].level, Level::Signal, "reported, never refused");
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+    }
+
+    /// A blocker written by the holder after claiming: the shape of an agent
+    /// building itself an excuse, and equally the shape of §3's discovered
+    /// subtask. Only a reader knows which, so it is reported.
+    #[test]
+    fn a_blocker_the_holder_created_after_claiming_is_reported() {
+        let t = Temp::new();
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.write(&task(
+            "000000000001",
+            TaskStatus::InProgress,
+            &["TASK-000000000002", "TASK-000000000003"],
+        ));
+        t.claim_as(&id, "codex@host-9", "A verifiable criterion.\n");
+
+        // Written by the holder, after the claim: the case.
+        let mut own = task("000000000002", TaskStatus::Open, &[]);
+        if let Entity::Task(x) = &mut own {
+            x.author = Some("codex@host-9".into());
+            x.created = claim::format_utc(claim::now_secs() + 60);
+        }
+        t.write(&own);
+
+        // Written by somebody else, at the same moment: not the case, and the
+        // distinction is the whole content of the signal.
+        let mut other = task("000000000003", TaskStatus::Open, &[]);
+        if let Entity::Task(x) = &mut other {
+            x.author = Some("marie@laptop".into());
+            x.created = claim::format_utc(claim::now_secs() + 60);
+        }
+        t.write(&other);
+
+        let r = t.report();
+        let found: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("created by the holder"))
+            .collect();
+        assert_eq!(found.len(), 1, "{:?}", r.findings);
+        assert_eq!(found[0].level, Level::Signal);
+        assert!(found[0].message.contains("TASK-000000000002"), "{found:?}");
+        assert!(
+            !found[0].message.contains("TASK-000000000003"),
+            "another agent's blocker is not the signal: {found:?}"
+        );
+        assert!(found[0].message.contains("codex@host-9"), "{found:?}");
+    }
+
+    /// The blocker predates the claim, so it is not an excuse built after the
+    /// fact -- it is a dependency that was already there.
+    #[test]
+    fn a_blocker_the_holder_created_before_claiming_is_silent() {
+        let t = Temp::new();
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.write(&task(
+            "000000000001",
+            TaskStatus::InProgress,
+            &["TASK-000000000002"],
+        ));
+        t.claim_as(&id, "codex@host-9", "A verifiable criterion.\n");
+
+        let mut before = task("000000000002", TaskStatus::Open, &[]);
+        if let Entity::Task(x) = &mut before {
+            x.author = Some("codex@host-9".into());
+            x.created = claim::format_utc(claim::now_secs() - 86_400);
+        }
+        t.write(&before);
+
+        let r = t.report();
+        assert!(
+            !r.findings
+                .iter()
+                .any(|f| f.message.contains("created by the holder")),
             "{:?}",
             r.findings
         );

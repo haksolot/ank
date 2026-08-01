@@ -107,6 +107,11 @@ pub fn new(
                 slug: Some(slugify(&title)),
                 title: title.clone(),
                 created: created.clone(),
+                // The identity that ran this, recorded at the only moment it is
+                // knowable. Nothing recovers it afterwards: git would say who
+                // committed the file, which is a different fact and a different
+                // person, and ADR-b8884edcebe3 forbids the porcelain anyway.
+                author: Some(identity.to_string()),
                 status: TaskStatus::Open,
                 scope,
                 blocked_by,
@@ -138,6 +143,7 @@ pub fn new(
                 slug: Some(slugify(&title)),
                 title: title.clone(),
                 created: created.clone(),
+                author: Some(identity.to_string()),
                 // Never `accepted`: ratification is a signed commit produced by
                 // `accept`, on the default branch, and an ADR born accepted
                 // would bind before anyone agreed to it.
@@ -850,6 +856,64 @@ mod tests {
         let on_disk = std::fs::read_to_string(t.store().path_of(&task.id)).unwrap();
         assert_eq!(preview(&Entity::Task(task)), on_disk);
         assert!(!on_disk.contains('\r'), "LF on write");
+    }
+
+    /// The only moment the author is knowable is the one that writes the file.
+    /// Nothing recovers it afterwards: git names whoever committed the entity,
+    /// which is a different fact about a possibly different person, and
+    /// ADR-b8884edcebe3 forbids the porcelain that would ask.
+    ///
+    /// Asserted on the bytes on disk and not on the returned model, because a
+    /// field set on the struct and dropped by the serializer would pass every
+    /// check made in memory and leave nothing in the corpus.
+    #[test]
+    fn new_records_the_acting_identity_on_both_kinds() {
+        let t = Temp::new();
+        t.call(
+            &["new", "task", "--title", "A task", "--scope", "src/**"],
+            "codex@host-9",
+        )
+        .unwrap();
+        t.call(
+            &[
+                "new",
+                "adr",
+                "--title",
+                "A rule",
+                "--scope",
+                "src/**",
+                "--constraint",
+                "A binding rule.",
+            ],
+            "marie@laptop",
+        )
+        .unwrap();
+
+        let task = t.only_task();
+        assert_eq!(task.author.as_deref(), Some("codex@host-9"));
+        let on_disk = std::fs::read_to_string(t.store().path_of(&task.id)).unwrap();
+        assert!(
+            on_disk.contains("author: codex@host-9\n"),
+            "the field has to reach the file:\n{on_disk}"
+        );
+        // Written at the schema this tool writes, which is what tells an older
+        // reader to refuse on the version rather than on the field.
+        assert!(on_disk.contains("schema: 2\n"), "{on_disk}");
+
+        let adr_id = t
+            .store()
+            .list_ids()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.kind() == EntityKind::Adr)
+            .unwrap();
+        let Entity::Adr(adr) = t.store().load(&adr_id).unwrap().entity else {
+            panic!()
+        };
+        assert_eq!(adr.author.as_deref(), Some("marie@laptop"));
+        assert!(std::fs::read_to_string(t.store().path_of(&adr_id))
+            .unwrap()
+            .contains("author: marie@laptop\n"));
     }
 
     #[test]

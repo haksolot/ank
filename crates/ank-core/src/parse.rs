@@ -29,6 +29,10 @@ struct TaskFm {
     slug: Option<String>,
     title: String,
     created: String,
+    // Absent in schema 1, so `Option` is what makes an older file readable
+    // rather than a parse error. serde treats a missing `Option` as `None`
+    // even under `deny_unknown_fields`, which is exactly the shape wanted.
+    author: Option<String>,
     status: TaskStatus,
     scope: Vec<String>,
     #[serde(default)]
@@ -52,6 +56,10 @@ struct AdrFm {
     slug: Option<String>,
     title: String,
     created: String,
+    // Absent in schema 1, so `Option` is what makes an older file readable
+    // rather than a parse error. serde treats a missing `Option` as `None`
+    // even under `deny_unknown_fields`, which is exactly the shape wanted.
+    author: Option<String>,
     status: AdrStatus,
     scope: Vec<String>,
     constraint: String,
@@ -165,7 +173,11 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
         return Err(Error::EmptyScope);
     }
     validate_globs(&raw.scope)?;
-    if raw.schema != SCHEMA_VERSION {
+    // A range, not an equality (§3). Older parses — every field added after
+    // version 1 is optional, so its absence reads as "written before this
+    // existed". Newer is refused on the version rather than on the first field
+    // it does not recognise, which is the only diagnosis that names the cause.
+    if raw.schema < MIN_SCHEMA || raw.schema > SCHEMA_VERSION {
         return Err(Error::UnknownSchema {
             found: raw.schema,
             supported: SCHEMA_VERSION,
@@ -185,6 +197,7 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
         slug: raw.slug,
         title: raw.title,
         created: raw.created,
+        author: raw.author,
         status: raw.status,
         scope: raw.scope,
         blocked_by,
@@ -211,7 +224,11 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         return Err(Error::EmptyScope);
     }
     validate_globs(&raw.scope)?;
-    if raw.schema != SCHEMA_VERSION {
+    // A range, not an equality (§3). Older parses — every field added after
+    // version 1 is optional, so its absence reads as "written before this
+    // existed". Newer is refused on the version rather than on the first field
+    // it does not recognise, which is the only diagnosis that names the cause.
+    if raw.schema < MIN_SCHEMA || raw.schema > SCHEMA_VERSION {
         return Err(Error::UnknownSchema {
             found: raw.schema,
             supported: SCHEMA_VERSION,
@@ -224,6 +241,7 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         slug: raw.slug,
         title: raw.title,
         created: raw.created,
+        author: raw.author,
         status: raw.status,
         scope: raw.scope,
         constraint: raw.constraint,
@@ -314,6 +332,11 @@ pub fn serialize_task(t: &Task) -> String {
     }
     o.push_str(&format!("title: {}\n", emit_scalar(&t.title)));
     o.push_str(&format!("created: {}\n", emit_scalar(&t.created)));
+    // Omitted when absent, never emitted empty: that is what lets a schema 1
+    // file round-trip byte for byte through a tool that knows the field.
+    if let Some(author) = &t.author {
+        o.push_str(&format!("author: {}\n", emit_scalar(author)));
+    }
     o.push_str(&format!("status: {}\n", t.status.as_str()));
     emit_scope(&mut o, &t.scope);
     let blocked: Vec<String> = t.blocked_by.iter().map(|b| b.to_string()).collect();
@@ -359,6 +382,9 @@ pub fn serialize_adr(a: &Adr) -> String {
     }
     o.push_str(&format!("title: {}\n", emit_scalar(&a.title)));
     o.push_str(&format!("created: {}\n", emit_scalar(&a.created)));
+    if let Some(author) = &a.author {
+        o.push_str(&format!("author: {}\n", emit_scalar(author)));
+    }
     o.push_str(&format!("status: {}\n", a.status.as_str()));
     emit_scope(&mut o, &a.scope);
     emit_block(&mut o, "constraint", &a.constraint);
@@ -382,5 +408,75 @@ pub fn serialize_entity(e: &Entity) -> String {
     match e {
         Entity::Task(t) => serialize_task(t),
         Entity::Adr(a) => serialize_adr(a),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A task at a given schema, with `author` present or not. Written out
+    /// rather than built from the model, because what is being tested is what a
+    /// file on disk does to the parser.
+    fn task_text(schema: u32, author: Option<&str>) -> String {
+        let author = author.map(|a| format!("author: {a}\n")).unwrap_or_default();
+        format!(
+            "---\nid: TASK-aaaa11112222\ntype: task\ntitle: A task\n\
+             created: 2026-07-25T09:14:00Z\n{author}status: open\nscope:\n  - src/**\n\
+             blocked_by: []\nschema: {schema}\nversion: 1\n---\n"
+        )
+    }
+
+    /// The promise the format keeps in one direction only (§3).
+    #[test]
+    fn an_older_schema_parses_and_a_newer_one_is_refused_by_version() {
+        // Schema 1 predates `author`, and its absence means "written before
+        // this existed" rather than "invalid". Without this the task adding the
+        // field could not read the repository it is developed in.
+        let old = parse_task(&task_text(1, None)).expect("schema 1 must still parse");
+        assert_eq!(old.schema, 1);
+        assert_eq!(old.author, None);
+
+        let current = parse_task(&task_text(SCHEMA_VERSION, Some("marie@laptop"))).unwrap();
+        assert_eq!(current.author.as_deref(), Some("marie@laptop"));
+
+        // One past the newest, which is the boundary the golden suite cannot
+        // reach: `bad-schema.md` carries 99 and would pass a check that only
+        // rejected absurd values.
+        match parse_task(&task_text(SCHEMA_VERSION + 1, None)) {
+            Err(Error::UnknownSchema { found, supported }) => {
+                assert_eq!(found, SCHEMA_VERSION + 1);
+                assert_eq!(supported, SCHEMA_VERSION);
+            }
+            other => panic!("a newer schema must be refused by version: {other:?}"),
+        }
+    }
+
+    /// The omission is what makes the asymmetry work. An entity with no author
+    /// must serialise without the key at all — emitting `author:` empty would
+    /// change every schema 1 file on its first rewrite, and the round-trip is
+    /// byte-identical on canonical form (ADR-63b59c5c26f7).
+    #[test]
+    fn an_absent_author_is_omitted_and_the_round_trip_holds() {
+        for (schema, author) in [(1, None), (SCHEMA_VERSION, Some("codex@host-9"))] {
+            let text = task_text(schema, author);
+            let parsed = parse_task(&text).unwrap();
+            let out = serialize_task(&parsed);
+            assert_eq!(out, text, "round-trip differs at schema {schema}");
+            assert_eq!(out.contains("author:"), author.is_some());
+        }
+    }
+
+    /// `author` sits between `created` and `status`, and the position is part
+    /// of the format rather than a detail: canonical form is a fixed field
+    /// order, so a serializer emitting it elsewhere would make every file
+    /// carrying it non-canonical.
+    #[test]
+    fn author_is_emitted_between_created_and_status() {
+        let t = parse_task(&task_text(SCHEMA_VERSION, Some("a@h"))).unwrap();
+        let out = serialize_task(&t);
+        let at = |needle: &str| out.find(needle).unwrap_or_else(|| panic!("{needle}"));
+        assert!(at("created:") < at("author:"));
+        assert!(at("author:") < at("status:"));
     }
 }

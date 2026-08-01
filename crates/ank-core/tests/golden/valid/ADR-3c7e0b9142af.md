@@ -4,6 +4,7 @@ type: adr
 slug: opaque-sessions
 title: Opaque sessions rather than stateless JWT
 created: 2026-07-25T09:14:00Z
+author: marie@laptop
 status: accepted
 scope:
   - src/auth/**
@@ -13,7 +14,7 @@ constraint: |
 see: src/auth/session_store.ts
 supersedes: ADR-9a12ff03b8e1
 ratified: 4c1e9a20
-schema: 1
+schema: 2
 version: 2
 ---
 
