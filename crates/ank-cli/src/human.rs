@@ -1245,6 +1245,12 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 /// `tree` and `verifier` stay empty: this records an attestation made
 /// elsewhere, not a run Ank performed. Claiming either would be the overstated
 /// proof that TASK-c2fae25adc66 existed to remove.
+///
+/// The `--proof` grammar is [`crate::done::submitted_proof`], shared with
+/// `done` rather than copied beside it. Both verbs therefore accept the same
+/// types, return the same codes and check a commit against git the same way, by
+/// construction — while each still names itself in its own hints, because
+/// `ank done --proof commit:<sha>` is not the command an `attest` caller needs.
 pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
     let prefix = inv.positionals.first().ok_or_else(|| {
         CliError::new(1, "attest expects an id")
@@ -1273,7 +1279,12 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
         .with_hint(format!("ank done {id}")));
     }
 
-    let proof = submitted(inv, &repo.root, &id, task.done_criteria.as_deref())?;
+    let usage = crate::done::ProofUsage {
+        command: format!("ank attest {id}"),
+        purpose: format!("attest {id}"),
+    };
+    let proof =
+        crate::done::submitted_proof(inv, &repo.root, &usage, task.done_criteria.as_deref())?;
     let kind = proof.proof_type.as_str().to_string();
     let reference = proof.reference.clone();
 
@@ -1301,74 +1312,6 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
         let _ = writeln!(out, "attested {id} {kind}:{reference} ({entries} proofs)");
     }
     Ok(0)
-}
-
-/// The `--proof` argument, in the grammar `done` already uses.
-///
-/// Deliberately a second implementation rather than a call into `done.rs`: that
-/// module's version is private, and widening it is outside this task's scope.
-/// The duplication is real and worth removing — TASK-4c21f06caa3a carries it —
-/// but silently diverging error codes would be worse than either.
-fn submitted(
-    inv: &Invocation,
-    cwd: &Path,
-    id: &EntityId,
-    criteria: Option<&str>,
-) -> Result<ank_core::Proof> {
-    use ank_core::{Proof, ProofType};
-
-    let Some(raw) = inv.value("--proof") else {
-        return Err(CliError::new(5, format!("proof required to attest {id}"))
-            .with_hint(format!("ank attest {id} --proof test:<ci-run-ref>")));
-    };
-    let (kind, reference) = raw.split_once(':').ok_or_else(|| {
-        CliError::new(
-            5,
-            format!("unreadable proof '{raw}', expected <type>:<ref>"),
-        )
-        .with_hint(format!("ank attest {id} --proof commit:<sha>"))
-    })?;
-    let proof_type = match kind {
-        "commit" => ProofType::Commit,
-        "human-review" => ProofType::HumanReview,
-        "assertion" => ProofType::Assertion,
-        "test" => ProofType::Test,
-        _ => {
-            return Err(
-                CliError::new(5, format!("unknown proof type '{kind}'")).with_hint(format!(
-                    "ank attest {id} --proof commit|test|human-review|assertion:<ref>"
-                )),
-            )
-        }
-    };
-    if reference.trim().is_empty() {
-        return Err(
-            CliError::new(5, format!("proof '{raw}' carries no reference"))
-                .with_hint(format!("ank attest {id} --proof commit:<sha>")),
-        );
-    }
-
-    // Ank validates what it can, here as in `done`: a commit is checkable by
-    // anyone with git, so it is checked rather than trusted.
-    if proof_type == ProofType::Commit {
-        let spec = format!("{}^{{commit}}", reference.trim());
-        let args = ["rev-parse", "--verify", "--quiet", spec.as_str()];
-        if !git::output(cwd, &args)?.status.success() {
-            return Err(CliError::new(
-                5,
-                format!("commit {reference} not found in this repository"),
-            )
-            .with_hint(format!("git log --oneline -1 {reference}")));
-        }
-    }
-
-    Ok(Proof {
-        proof_type,
-        reference: reference.trim().to_string(),
-        tree: None,
-        criteria: criteria.map(freeze::freeze_hash_short),
-        verifier: None,
-    })
 }
 
 /// The whole entity, verbatim. Everything else in the tool summarises; this is

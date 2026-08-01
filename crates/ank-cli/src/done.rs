@@ -144,7 +144,11 @@ pub fn run(
 
     let declared: Vec<String> = task.verify.clone();
     let proofs = if declared.is_empty() {
-        vec![submitted_proof(inv, &repo.root, &id, &criteria)?]
+        let usage = ProofUsage {
+            command: "ank done".to_string(),
+            purpose: format!("move {id} to done"),
+        };
+        vec![submitted_proof(inv, &repo.root, &usage, Some(&criteria))?]
     } else {
         if inv.value("--proof").is_some() {
             return Err(CliError::new(
@@ -323,29 +327,64 @@ fn run_verifiers(
     Ok(proofs)
 }
 
-/// The `--proof` path, taken only by a task that declares no verifier.
-fn submitted_proof(inv: &Invocation, cwd: &Path, id: &EntityId, criteria: &str) -> Result<Proof> {
+/// How a caller of [`submitted_proof`] names itself in the hints that parser
+/// emits.
+///
+/// The grammar is one thing and the next command is another. §4 is explicit
+/// that a hint is the exact command to run, and `ank done --proof commit:<sha>`
+/// is not the command an `attest` caller needs — a shared parser emitting a
+/// generic hint would trade a real duplication for a broken error surface.
+/// So the caller supplies its own, and only its own.
+pub struct ProofUsage {
+    /// The command up to `--proof`: `ank done`, or `ank attest TASK-8f3a`.
+    pub command: String,
+    /// What the proof is required *for*, completing "proof required to ...".
+    pub purpose: String,
+}
+
+/// The `<type>:<ref>` grammar of `--proof`, parsed in one place.
+///
+/// Two callers: `done`, on the path taken only by a task that declares no
+/// verifier, and `attest`, which records a proof made elsewhere. `attest` was
+/// written with a copy of this because the original was private and widening it
+/// was outside TASK-1f4f7b57039b's scope, and the failure mode was never the
+/// duplication itself — it was the drift. The day one copy learned a new proof
+/// type, or stopped checking a commit against git, nothing made the other
+/// follow, and two verbs disagreeing about what a proof *is* would be a worse
+/// defect than the copy.
+///
+/// `criteria` is optional because the two callers differ there and the
+/// difference is real: `done` always holds the frozen criterion it just
+/// verified, while `attest` records against whatever the finished task carries,
+/// which may be nothing.
+pub fn submitted_proof(
+    inv: &Invocation,
+    cwd: &Path,
+    usage: &ProofUsage,
+    criteria: Option<&str>,
+) -> Result<Proof> {
+    let ProofUsage { command, purpose } = usage;
+
     let Some(raw) = inv.value("--proof") else {
-        return Err(
-            CliError::new(5, format!("proof required to move {id} to done"))
-                .with_hint("ank done --proof test:<ci-run-ref>"),
-        );
+        return Err(CliError::new(5, format!("proof required to {purpose}"))
+            .with_hint(format!("{command} --proof test:<ci-run-ref>")));
     };
     let (kind, reference) = raw.split_once(':').ok_or_else(|| {
         CliError::new(
             5,
             format!("unreadable proof '{raw}', expected <type>:<ref>"),
         )
-        .with_hint("ank done --proof commit:<sha>")
+        .with_hint(format!("{command} --proof commit:<sha>"))
     })?;
     let proof_type = parse_proof_type(kind).ok_or_else(|| {
-        CliError::new(5, format!("unknown proof type '{kind}'"))
-            .with_hint("ank done --proof commit|test|human-review|assertion:<ref>")
+        CliError::new(5, format!("unknown proof type '{kind}'")).with_hint(format!(
+            "{command} --proof commit|test|human-review|assertion:<ref>"
+        ))
     })?;
     if reference.trim().is_empty() {
         return Err(
             CliError::new(5, format!("proof '{raw}' carries no reference"))
-                .with_hint("ank done --proof commit:<sha>"),
+                .with_hint(format!("{command} --proof commit:<sha>")),
         );
     }
 
@@ -368,7 +407,7 @@ fn submitted_proof(inv: &Invocation, cwd: &Path, id: &EntityId, criteria: &str) 
         proof_type,
         reference: reference.trim().to_string(),
         tree: None,
-        criteria: Some(freeze_hash_short(criteria)),
+        criteria: criteria.map(freeze_hash_short),
         verifier: None,
     })
 }
@@ -709,6 +748,97 @@ mod tests {
             assert!(err.message.contains(needle), "{arg}: {}", err.message);
             assert!(err.hint.is_some(), "{arg}");
         }
+    }
+
+    /// Through both verbs, on the same repository, in the same test.
+    ///
+    /// `attest` carried a copy of this grammar, and the failure mode was never
+    /// the duplication itself -- it was the drift. Two verbs disagreeing about
+    /// what a proof *is* would be a worse defect than the copy, and asserting
+    /// the agreement by inspection is how it goes unnoticed. So the two are run
+    /// against the same inputs and compared, which is a test that fails if
+    /// anyone reintroduces a second parser.
+    #[test]
+    fn done_and_attest_refuse_a_malformed_proof_identically() {
+        let t = Temp::new("");
+        let id = t.seed(&[]);
+        t.claim(&id, "claude-code@ank");
+
+        let attest = |arg: &str| {
+            let argv: Vec<String> = ["attest", &id.to_string(), "--proof", arg]
+                .iter()
+                .map(|a| a.to_string())
+                .collect();
+            let inv = crate::cli::parse(&argv).unwrap();
+            let mut out = Vec::new();
+            crate::human::attest(&inv, &t.repo(), "marie@laptop", &mut out).unwrap_err()
+        };
+
+        // Finished first, because `attest` applies to a done task and refusing
+        // an unfinished one would answer before the proof is ever parsed.
+        t.done(
+            &["--proof", "assertion:reviewed by hand"],
+            "claude-code@ank",
+        )
+        .unwrap();
+
+        // The last one reaches the git check rather than the grammar: a commit
+        // is verifiable by anyone with git, so both verbs check it rather than
+        // trust it, and both have to say the same thing when it is not there.
+        for arg in [
+            "no-colon-at-all",
+            "nonsense:x",
+            "assertion:",
+            "commit:",
+            "commit:deadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+        ] {
+            let by_done = {
+                // The task is finished now, so `done` refuses it before parsing.
+                // A second repository, at the same point of the grammar.
+                let u = Temp::new("");
+                let i = u.seed(&[]);
+                u.claim(&i, "claude-code@ank");
+                u.done(&["--proof", arg], "claude-code@ank").unwrap_err()
+            };
+            let by_attest = attest(arg);
+
+            assert_eq!(
+                by_done.code, by_attest.code,
+                "{arg}: done says {} and attest says {}",
+                by_done.code, by_attest.code
+            );
+            assert_eq!(
+                by_done.message, by_attest.message,
+                "{arg}: the diagnosis is the grammar's, not the verb's"
+            );
+
+            // The hint is where the two are allowed to differ, and only there:
+            // §4 makes it the exact command to run, and that command names the
+            // verb. Strip each caller's own prefix and what remains must match.
+            //
+            // Not every hint carries one. A commit that is not in the
+            // repository points at `git log`, which is the same next command
+            // whoever asked -- so both strip to themselves and still agree.
+            let done_hint = by_done.hint.expect("done names a next command");
+            let attest_hint = by_attest.hint.expect("attest names a next command");
+            assert_eq!(
+                done_hint.trim_start_matches("ank done "),
+                attest_hint.trim_start_matches(&format!("ank attest {id} ") as &str),
+                "{arg}: the hints differ only by who is speaking\n  done:   {done_hint}\n  attest: {attest_hint}"
+            );
+            if done_hint.starts_with("ank ") {
+                assert!(done_hint.starts_with("ank done "), "{arg}: {done_hint}");
+                assert!(
+                    attest_hint.starts_with(&format!("ank attest {id} ")),
+                    "{arg}: {attest_hint}"
+                );
+            }
+        }
+
+        // And the missing-proof case, where the message names the purpose and
+        // is therefore the one place the two are allowed to read differently.
+        let missing = attest("");
+        assert_eq!(missing.code, 5);
     }
 
     // -----------------------------------------------------------------------
