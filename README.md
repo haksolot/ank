@@ -97,10 +97,11 @@ nothing to run. That is what "stupid" means here.
 
 ## Status: pre-v1, and the CLI runs
 
-Twelve verbs work end to end — the seven of the agent surface (`context`,
-`claim`, `log`, `done`, `new`, `find`, `release`), the five of the human one
-(`check`, `review`, `accept`, `close`, `show`), plus `init`. There are no
-published binaries yet: build from source with `cargo build --release`.
+Thirteen verbs work end to end — the eight of the agent surface (`context`,
+`claim`, `show`, `log`, `done`, `new`, `find`, `release`), the five of the human
+one (`check`, `review`, `accept`, `close`, `attest`), plus `init` and `help`.
+There are no published binaries yet: build from source with
+`cargo build --release`.
 
 This repository is built by dogfooding its own format. The development plan
 lives in [`.ank/`](.ank/), and the tool now reads, claims and closes its own
@@ -135,17 +136,24 @@ Build it once, then let it drive:
 `ank check` validates the corpus (parse, byte-for-byte round-trip, `blocked_by`
 references) and must stay green after any edit to `.ank/`.
 
-Reading `.ank/` directly is still a first-class use — the format is the
-specification, and `cat` is an agent's `show`. What it is not is a way around
-`claim` and `done`: those write to git refs and run verifiers, and editing the
-files by hand skips both.
+`.ank/` is opaque to an agent, the way `.git/` is (ADR-01b6dd05f0db): reach it
+with `ank show <id>` for an entity whole, `ank find` to list, `ank context` to
+learn what binds. The tool knows what the files do not — the context budget, the
+frozen criterion, who holds which claim — and a `PreToolUse` hook in
+[`.claude/`](.claude/) refuses the direct route rather than trusting anyone to
+remember. A human with an editor keeps every power they had; `check` remains
+what notices.
+
+That was already the rule for writing, and for a sharper reason: `claim` and
+`done` write to git refs and run verifiers, so editing the files by hand skips
+both. Reading joined it once there was nothing left the CLI could not serve.
 
 Detailed conventions are in [`CLAUDE.md`](CLAUDE.md).
 
 ## Layout
 
     crates/ank-core   parser and data model — the reference implementation of the format
-    crates/ank-cli    the `ank` binary — twelve verbs
+    crates/ank-cli    the `ank` binary — thirteen verbs, plus init and help
     docs/             the specification, source of truth
     .ank/             Ank's own development plan, in the Ank format
     skill/            the bootstrap skill for agents
