@@ -89,6 +89,13 @@ pub struct Report {
     /// Ratification signatures no local key could check. Accumulated across the
     /// corpus and reported once (§4), never per ADR.
     pub unchecked_signatures: usize,
+    /// Ratification signatures git refused to answer about at all. Counted
+    /// apart from `unchecked_signatures` because the two are different
+    /// failures: no key for the answer, versus no answer.
+    pub unreadable_signatures: usize,
+    /// What git said the first time it refused, so the one corpus line can name
+    /// the cause instead of only reporting that there was one.
+    pub signature_failure: Option<String>,
 }
 
 impl Report {
@@ -278,6 +285,21 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         ));
     }
 
+    // Same rule, other cause: git was asked and did not answer. Silence here
+    // was the defect — an ADR whose signature could not be read used to look
+    // exactly like one in a corpus that declares no key at all.
+    if report.unreadable_signatures > 0 {
+        let n = report.unreadable_signatures;
+        let why = report.signature_failure.as_deref().unwrap_or("git failed");
+        report.findings.push(Finding::signal(
+            "allowed_signers",
+            format!(
+                "{n} ratification signature(s) could not be read, so they are \
+                 neither verified nor refused: {why}"
+            ),
+        ));
+    }
+
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
     match &default_branch {
@@ -358,10 +380,11 @@ pub fn parse_signers(text: &str) -> Vec<Signer> {
 
 /// What a ratification commit's signature is worth.
 ///
-/// Five states and not three, because collapsing any two of them loses the
+/// Six states and not three, because collapsing any two of them loses the
 /// distinction the check exists to draw. `Unchecked` in particular must never
 /// read as `Trusted`: a verification that degrades to success on a machine
-/// missing a public key is not a verification.
+/// missing a public key is not a verification. `Unreadable` is the same rule
+/// applied to the error path, where the degradation was to silence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signature {
     /// Good signature from a key `allowed_signers` declares.
@@ -374,6 +397,13 @@ pub enum Signature {
     Absent,
     /// Present, checkable, and refused: bad, expired or revoked.
     Invalid { status: char },
+    /// Git could not be asked at all: it exited non-zero instead of answering.
+    /// Not a verdict about the commit — a verdict about this machine.
+    ///
+    /// The one state `classify_signature` never produces, because it is the
+    /// absence of the facts that function classifies. It exists so that a
+    /// failure to ask is something rather than nothing (TASK-c92b7cc10f13).
+    Unreadable { reason: String },
 }
 
 /// Turns git's facts into the verdict, against the declared keys.
@@ -816,6 +846,16 @@ fn check_adr(
         // still never silence, because a verification that degrades to success
         // is not a verification.
         Some(Signature::Unchecked) => report.unchecked_signatures += 1,
+
+        // Counted for the same reason, and kept apart from `Unchecked` because
+        // they say different things: one machine holds no key for a signature
+        // that is there, the other could not look. Neither is a fault — a
+        // broken environment is not a forged ratification, and reporting one as
+        // the other is how a finding becomes noise. But it is never nothing.
+        Some(Signature::Unreadable { reason }) => {
+            report.unreadable_signatures += 1;
+            report.signature_failure.get_or_insert(reason);
+        }
 
         Some(Signature::Trusted) | None => {}
     }
@@ -1609,8 +1649,16 @@ pub fn signature_state(repo: &Repo, adr: &Adr) -> Option<Signature> {
     }
 
     let sha = ratification_of(repo, adr)?.sha;
-    let facts = git::signature_of(&repo.root, &sha, Some(&signers)).ok()?;
-    Some(classify_signature(&facts, &declared))
+    // `.ok()?` here used to fold every git failure into `None`, the one verdict
+    // `check_adr` says nothing about — so a machine where the signature could
+    // not be read looked exactly like a corpus that declared no key at all
+    // (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
+    match git::signature_of(&repo.root, &sha, Some(&signers)) {
+        Ok(facts) => Some(classify_signature(&facts, &declared)),
+        Err(e) => Some(Signature::Unreadable {
+            reason: e.to_string(),
+        }),
+    }
 }
 
 /// Hash of `constraint` + `scope`, normalised. What the ratification commit
@@ -3452,8 +3500,11 @@ mod tests {
         }
     }
 
-    /// Every state, and each one distinguishable from the others. Pure, so the
-    /// five live here rather than behind five fixtures with five keyrings.
+    /// Every state git's facts can produce, and each one distinguishable from
+    /// the others. Pure, so the five live here rather than behind five fixtures
+    /// with five keyrings. The sixth, `Unreadable`, is the absence of those
+    /// facts and so cannot appear here: it is covered through the binary, where
+    /// a git that refuses to answer is something one can actually arrange.
     #[test]
     fn every_signature_state_is_distinguished() {
         let fp = "739A603FB05F9F2F7D3C8D50624FCFCC1482554A";
