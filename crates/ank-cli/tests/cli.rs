@@ -168,10 +168,18 @@ impl Repo {
     /// `--repo` rather than a working directory, so that the flag stays on a
     /// path a real invocation takes.
     fn ank(&self, agent: &str, args: &[&str]) -> Output {
+        self.ank_at(agent, args, &self.0)
+    }
+
+    /// The same invocation, pointed at another checkout of the same
+    /// repository. A worktree shares `refs/ank/` with the checkout that made
+    /// it, which is why a question about a ref can never be answered from a
+    /// working tree.
+    fn ank_at(&self, agent: &str, args: &[&str], repo: &Path) -> Output {
         Command::new(ANK)
             .args(args)
             .arg("--repo")
-            .arg(&self.0)
+            .arg(repo)
             .env("ANK_AGENT", agent)
             .current_dir(std::env::temp_dir())
             .output()
@@ -356,6 +364,91 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
         !said.contains("altered since ratification") && !said.contains("is reachable"),
         "only the signature is gone: {said}"
     );
+}
+
+/// A claim is not an orphan just because this checkout is too old to have
+/// heard of the task (TASK-52fbffbfdf65).
+///
+/// Observed three times while diagnosing TASK-1ea38a17d854, each time on a
+/// claim being held: a `check` run from a detached worktree at an earlier
+/// commit printed `pruned refs/ank/claims/<id>` and deleted it. `refs/ank/` is
+/// shared by every worktree, so the older checkout reached into the coordination
+/// plane of the current one. A lost claim is a task two agents can hold at once.
+///
+/// Through the binary, and with the ref read by git afterwards rather than
+/// through `claim::read`: what has to be true is the state of the repository,
+/// not the module's agreement with itself.
+#[test]
+fn a_check_from_an_older_checkout_leaves_a_live_claim_alone() {
+    let r = Repo::new();
+    // An ADR-less corpus still needs its scope to exist, or `check` exits 8 on
+    // a dead scope before any of this is reached.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    let before_the_task = r.head();
+
+    // The task arrives after that commit, which is the whole point: the older
+    // checkout below cannot see it.
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "add the task",
+    ]);
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(r.claim_ref(ID).is_some(), "the claim must exist to be lost");
+
+    let older = r.0.with_extension("older-checkout");
+    r.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        older.to_str().unwrap(),
+        &before_the_task,
+    ]);
+
+    // Another agent, running `check` from that checkout. It sees no tasks at
+    // all, and must still not touch a ref it cannot judge.
+    let out = r.ank_at("codex@host-9", &["check"], &older);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stdout(&out).contains("pruned"),
+        "nothing to prune from a checkout that cannot see the corpus: {}",
+        stdout(&out)
+    );
+    assert!(
+        r.claim_ref(ID).is_some(),
+        "the claim survives a check run from a checkout older than the task"
+    );
+
+    r.git(&["worktree", "remove", "--force", older.to_str().unwrap()]);
+
+    // The other half, or the fix would be "never prune". A ref whose task the
+    // default branch really has lost is still collected, and the live one is
+    // still left alone in the same pass.
+    let gone = "TASK-00000000dead";
+    r.seed_task(gone, Some("A verifiable criterion."));
+    let out = r.ank("codex@host-9", &["claim", gone]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    std::fs::remove_file(r.0.join(".ank/tasks").join(format!("{gone}.md"))).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "drop it"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        r.claim_ref(gone).is_none(),
+        "a real orphan is still collected: {}",
+        stdout(&out)
+    );
+    assert!(r.claim_ref(ID).is_some(), "and the live claim still is not");
 }
 
 #[test]

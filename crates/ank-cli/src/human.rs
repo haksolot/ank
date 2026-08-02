@@ -1048,19 +1048,43 @@ fn maintain(
     ids.sort_by_key(|i| i.to_string());
     for id in ids {
         let record = &coord[id];
+        let path = format!("{rel}/tasks/{id}.md");
         // An orphan: a ref for a task that no longer exists anywhere.
+        //
+        // "Anywhere" is the load-bearing word, and asking the working tree
+        // cannot answer it. `refs/ank/` is shared by every worktree of a
+        // repository, so a checkout older than a task sees no such task and
+        // used to delete a claim another worktree was holding at that moment
+        // (TASK-52fbffbfdf65). The default branch is the one copy every
+        // checkout agrees on, and the `settled` test below already reads it —
+        // this asks the same question of the same source, one step earlier.
         if !statuses.contains_key(id) {
-            if prune {
-                claim::delete(&repo.root, id)?;
-                report.pruned.push(claim::ref_name(id));
-            } else {
-                report
-                    .findings
-                    .push(Finding::signal(id, "orphan ref: no such task"));
+            match git::file_at(&repo.root, default_branch, &path) {
+                // Not an orphan: this checkout is simply older than the task,
+                // or on a branch that never carried it. Silent on purpose. The
+                // ref belongs to whoever holds it now, and a signal here would
+                // fire on every check run from every branch predating the task.
+                Ok(Some(_)) => {}
+                Ok(None) => {
+                    if prune {
+                        claim::delete(&repo.root, id)?;
+                        report.pruned.push(claim::ref_name(id));
+                    } else {
+                        report
+                            .findings
+                            .push(Finding::signal(id, "orphan ref: no such task"));
+                    }
+                }
+                // Unable to ask is not permission to delete: report once and
+                // keep the ref, which is the reader's behaviour §2 asks for.
+                Err(_) => {
+                    if unreachable_branch.is_none() {
+                        unreachable_branch = Some(default_branch.to_string());
+                    }
+                }
             }
             continue;
         }
-        let path = format!("{rel}/tasks/{id}.md");
         // A branch that names nothing yet is the nominal state of a repository
         // freshly `ank init`-ed: it has a default branch and no commit on it.
         // Reporting once and pruning nothing is the reader's behaviour (§2);
