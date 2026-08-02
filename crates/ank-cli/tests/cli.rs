@@ -262,6 +262,102 @@ fn an_edited_constraint_is_reported_altered_and_stops_being_injected() {
     );
 }
 
+/// Declares the key `enable_signing` generated, so the signature is judged at
+/// all. Without the file there is no allowlist and §8 puts the corpus in
+/// advisory mode, where every verdict is `None` — which is the shape of silence
+/// this test exists to refuse.
+fn declare_signing_key(r: &Repo) {
+    let pub_key = std::fs::read_to_string(r.0.join("signing-key.pub")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/allowed_signers"),
+        format!("test@ank.local {}", pub_key.trim()),
+    )
+    .unwrap();
+}
+
+/// The incident of TASK-1ea38a17d854, reproduced at the only altitude that
+/// would have caught it. GitHub rebased a ratification commit while merging a
+/// pull request: same tree, same message, same anchor, signature gone. Anyone
+/// who can push a branch can produce that commit, and the anchor it carries is
+/// then worth nothing.
+///
+/// Through the binary, and that is the whole point. `signature_state` already
+/// answered `Absent` in a unit test, and `check` already turned `Absent` into a
+/// fault in another — and the binary measured on the real corpus still exited
+/// 0, because the binary in hand was older than the check itself. Nothing
+/// asserted that a process invocation runs the wiring end to end, so nothing
+/// noticed that one wasn't.
+///
+/// The negative is only worth what the positive above it is worth: a real
+/// `accept` runs first and must be silent, or an exit 8 here would prove
+/// nothing but a broken fixture.
+#[test]
+fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary() {
+    const ADR: &str = "ADR-0000000000cd";
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    // A scope matching nothing is a fault of its own, and it would exit 8
+    // before the signature was ever consulted.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    declare_signing_key(&r);
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let ratification = r.head();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a real ratification must be silent, or the fault below proves nothing: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(!stdout(&out).contains("not signed"), "{}", stdout(&out));
+
+    // The rewrite. `--amend` keeps the message and the tree and drops the
+    // signature, which is exactly what the merge did to f770c98.
+    r.git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "--amend",
+        "--no-edit",
+        "-q",
+    ]);
+    assert_ne!(
+        r.head(),
+        ratification,
+        "the commit must have been rewritten"
+    );
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&out),
+        8,
+        "an unsigned ratification is a fault: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    assert!(
+        said.contains(ADR) && said.contains("not signed"),
+        "the finding names the ADR and says what is wrong: {said}"
+    );
+
+    // And it is that finding and no other. The anchor still agrees with the
+    // file and the commit is still reachable, so a report crying divergence or
+    // unverifiability here would be describing a different repository.
+    assert!(
+        !said.contains("altered since ratification") && !said.contains("is reachable"),
+        "only the signature is gone: {said}"
+    );
+}
+
 #[test]
 fn claiming_through_the_binary_takes_the_ref_and_moves_the_task() {
     let r = Repo::new();
