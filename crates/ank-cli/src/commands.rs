@@ -24,12 +24,13 @@ use crate::claim::{self, ClaimRecord, Record};
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::Config;
 use crate::context;
+use crate::editor;
 use crate::index::{Index, Row};
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use ank_core::{
-    append_log, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId, EntityKind,
-    LogEntry, Task, TaskStatus, SCHEMA_VERSION,
+    append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
+    EntityKind, LogEntry, Task, TaskStatus, SCHEMA_VERSION,
 };
 use std::io::Write;
 use std::path::Path;
@@ -76,6 +77,13 @@ pub fn new(
             )
         }
     };
+
+    // The `git commit` pattern: no flags, an editor (§4). Checked before the
+    // first `required`, because reaching one of those is the failure the
+    // interactive form exists to replace.
+    if is_interactive(inv, kind) {
+        return new_interactive(inv, repo, cfg, identity, kind, out);
+    }
 
     let title = required(inv, "--title", "a one-line title")?;
     let scope = scope_of(inv, kind)?;
@@ -173,6 +181,422 @@ pub fn new(
         let _ = writeln!(out, "created {id} {title}");
     }
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// new, interactive
+// ---------------------------------------------------------------------------
+
+/// The mandatory flags of each kind, and the whole of what decides the form.
+///
+/// **All of them absent, not some.** §4 says it two ways — the prose has "`new`
+/// without its mandatory flags" and the commands block has "no flags" — and
+/// this is the reading that satisfies both: `ank new task` opens an editor,
+/// `ank new task --title "x"` still exits 7 on the missing scope. The
+/// difference matters because the flag form is the scripted path and must keep
+/// failing the way a script can act on. A build that forgot `--scope` has to
+/// stop, not sit in `vi` waiting for somebody who is not there.
+fn mandatory_flags(kind: EntityKind) -> &'static [&'static str] {
+    match kind {
+        EntityKind::Task => &["--title", "--scope"],
+        EntityKind::Adr => &["--title", "--scope", "--constraint"],
+    }
+}
+
+fn is_interactive(inv: &Invocation, kind: EntityKind) -> bool {
+    mandatory_flags(kind)
+        .iter()
+        .all(|f| inv.value(f).is_none_or(|v| v.trim().is_empty()))
+}
+
+/// The flag form of the kind, which is what every refusal on this path names.
+/// §4 requires it by name for the missing `$EDITOR`, and it is the right answer
+/// for the rest too: whoever hit this wanted an entity, and that is the other
+/// way to get one.
+fn flag_form(kind: EntityKind) -> String {
+    match kind {
+        EntityKind::Task => "ank new task --title \"<t>\" --scope \"<glob>\"".to_string(),
+        EntityKind::Adr => {
+            "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"".to_string()
+        }
+    }
+}
+
+fn new_interactive(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    kind: EntityKind,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    // Stamped once, here, and kept: the act of creation is the invocation of
+    // `new`, not the moment the editor happened to be closed. The id hashes it
+    // (§3) and is refused below if the file comes back carrying another.
+    let created = claim::now_utc();
+    let title = inv.value("--title").unwrap_or("").trim().to_string();
+    let id = EntityId::generate(kind, &created, identity, &title, &entropy());
+
+    let skeleton = skeleton(inv, cfg, kind, &id, &created, identity)?;
+    let hint = flag_form(kind);
+    let editor = editor::command(&hint)?;
+    let scratch = editor::scratch_path(&id.to_string());
+    std::fs::write(&scratch, template(&skeleton))
+        .map_err(|e| CliError::new(9, format!("cannot write {}: {e}", scratch.display())))?;
+
+    let store = Store::new(&repo.ank);
+    let outcome = (|| -> Result<i32> {
+        editor::open(&editor, &repo.root, &scratch, &hint)?;
+        let filled = std::fs::read_to_string(&scratch).map_err(|e| {
+            CliError::new(9, format!("cannot read back {}: {e}", scratch.display()))
+        })?;
+        create_filled(inv, &store, cfg, &skeleton, &filled, out)
+    })();
+
+    match outcome {
+        Ok(code) => {
+            let _ = std::fs::remove_file(&scratch);
+            Ok(code)
+        }
+        Err(e) => Err(editor::kept(e, &scratch)),
+    }
+}
+
+/// The entity the template renders: everything ank knows already, and empty
+/// where the caller has to speak.
+///
+/// Flags that were supplied are honoured rather than ignored. Reaching the
+/// editor does not mean nothing was said — `ank new task --criteria "..."`
+/// carries none of the mandatory flags and every word of it is still meant.
+fn skeleton(
+    inv: &Invocation,
+    cfg: &Config,
+    kind: EntityKind,
+    id: &EntityId,
+    created: &str,
+    identity: &str,
+) -> Result<Entity> {
+    let title = inv.value("--title").unwrap_or("").trim().to_string();
+    let scope: Vec<String> = inv
+        .values("--scope")
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let slug = (!title.is_empty()).then(|| slugify(&title));
+    Ok(match kind {
+        EntityKind::Task => Entity::Task(Task {
+            id: id.clone(),
+            slug,
+            title,
+            created: created.to_string(),
+            author: Some(identity.to_string()),
+            status: TaskStatus::Open,
+            scope,
+            blocked_by: Vec::new(),
+            done_criteria: inv.value("--criteria").map(ensure_newline),
+            criteria_by: inv.value("--criteria").map(|_| CriteriaBy::Creator),
+            verify: verifiers_of(inv, cfg)?,
+            proof: Vec::new(),
+            schema: SCHEMA_VERSION,
+            version: 1,
+            body: body_of(inv),
+        }),
+        EntityKind::Adr => Entity::Adr(Adr {
+            id: id.clone(),
+            slug,
+            title,
+            created: created.to_string(),
+            author: Some(identity.to_string()),
+            status: AdrStatus::Proposed,
+            scope,
+            constraint: inv
+                .value("--constraint")
+                .map(ensure_newline)
+                .unwrap_or_default(),
+            see: None,
+            supersedes: None,
+            ratified: None,
+            schema: SCHEMA_VERSION,
+            version: 1,
+            body: body_of(inv),
+        }),
+    })
+}
+
+/// The skeleton in canonical form, with the guidance a reader needs to fill it.
+///
+/// **Canonical form and not a second rendering.** The template is a real entity
+/// file, so what the caller edits is the format itself and there is no shape
+/// here that `parse` does not already read — a template with a surface of its
+/// own would be exactly the drift ADR-63b59c5c26f7 forbids.
+///
+/// The guidance rides in YAML comments inside the frontmatter, where the parser
+/// strips it and nobody has to remember to. It never goes below the second
+/// `---`: the body is markdown, `#` there is a heading, and a tool that deleted
+/// those lines would eat the reasoning it asked for.
+fn template(skeleton: &Entity) -> String {
+    let canonical = serialize_entity(skeleton);
+    let rest = canonical
+        .strip_prefix("---\n")
+        .expect("canonical form opens with a frontmatter fence");
+    // `scope:` with nothing under it reads back as null, and serde reports it as
+    // a type error about a sequence — true, and useless. `[]` reads back as the
+    // empty scope it is, which `parse` already refuses in the words that say
+    // why. Only when empty: a scope with globs is emitted as a block list and
+    // this would corrupt it.
+    let rest = if skeleton.scope().is_empty() {
+        rest.replacen("scope:\n", "scope: []\n", 1)
+    } else {
+        rest.to_string()
+    };
+    let guidance = match skeleton {
+        Entity::Task(_) => TASK_GUIDANCE,
+        Entity::Adr(_) => ADR_GUIDANCE,
+    };
+    format!("---\n{guidance}{rest}")
+}
+
+const TASK_GUIDANCE: &str = "\
+# Fill this in and save. A # to the end of the line is a comment and is
+# dropped. Below the second --- is the body, in prose, and nothing there is
+# dropped: that is where the reasoning goes.
+# id, created and author are ank's, and are refused if they come back changed.
+# title          required, one line.
+# scope          required. The globs this attaches to, '  - <glob>' per line.
+#                Attachment happens through scope and nothing else, so an
+#                entity without one is invisible to every context, forever.
+# done_criteria  what makes this verifiably done, in one testable sentence.
+#                Leave it out and whoever claims the task sets it instead.
+# blocked_by     ids that must be done first, as [ID, ID].
+# verify         verifiers declared in .ank/config.yml, as [name, name].
+";
+
+const ADR_GUIDANCE: &str = "\
+# Fill this in and save. A # to the end of the line is a comment and is
+# dropped. Below the second --- is the body, in prose, and nothing there is
+# dropped: that is where the reasoning goes.
+# id, created and author are ank's, and are refused if they come back changed.
+# title       required, one line.
+# scope       required. The globs this binds, '  - <glob>' per line.
+#             Attachment happens through scope and nothing else, so an entity
+#             without one is invisible to every context, forever.
+# constraint  required. The binding rule, in one sentence. It is what gets
+#             injected into every context this scope covers, so write it to be
+#             obeyed rather than admired.
+# supersedes  the id of the ADR this replaces, if it replaces one.
+# status stays proposed: ratification is a signed commit, produced by accept.
+";
+
+/// Parses what came back, refuses what the flag form would have refused, and
+/// creates the entity.
+///
+/// Every check here has a counterpart on the flag path. That is the point: an
+/// interactive form that validated less would not be a convenience, it would be
+/// the hole in the wall — the way to write the entity `new` refuses.
+fn create_filled(
+    inv: &Invocation,
+    store: &Store,
+    cfg: &Config,
+    skeleton: &Entity,
+    filled: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    let kind = skeleton.id().kind();
+    let hint = flag_form(kind);
+    let parsed =
+        parse_entity(filled).map_err(|e| editor::invalid_entity(e, "nothing created", &hint))?;
+
+    // The id hashes the act of creation and the file name carries it. A caller
+    // who wants a different one runs `new` again; there is no command that mints
+    // one to order, so this refusal names none.
+    if parsed.id() != skeleton.id() {
+        return Err(CliError::new(
+            6,
+            format!(
+                "the id is ank's and cannot be chosen: {} came back as {}",
+                skeleton.id(),
+                parsed.id()
+            ),
+        )
+        .with_hint(hint));
+    }
+
+    let entity = match (skeleton, parsed) {
+        (Entity::Task(s), Entity::Task(mut t)) => {
+            require_title(&t.title, &hint)?;
+            // Born `open`, like the flag form writes it. A task that arrived
+            // `done` would carry a proof of nothing, and `check` reports the
+            // shape rather than the moment it was introduced.
+            if t.status != TaskStatus::Open {
+                return Err(CliError::new(
+                    7,
+                    format!("a new task is born open, not {}", t.status.as_str()),
+                )
+                .with_hint(hint));
+            }
+            if !t.proof.is_empty() {
+                return Err(CliError::new(
+                    7,
+                    "a proof is what `done` writes, and there is nothing yet to prove",
+                )
+                .with_hint(hint));
+            }
+            resolve_blockers(store, &t.blocked_by, &hint)?;
+            check_verifiers(&t.verify, cfg)?;
+            // An empty block scalar is the template's own placeholder coming
+            // back untouched, which means no criterion rather than a criterion
+            // that is blank — and `criteria_by` follows it, or `parse` refuses
+            // the pair on the next read.
+            t.done_criteria = t.done_criteria.filter(|c| !c.trim().is_empty());
+            t.criteria_by = t.done_criteria.as_ref().map(|_| CriteriaBy::Creator);
+            adopt(
+                &mut t.slug,
+                &t.title,
+                &mut t.created,
+                &s.created,
+                &mut t.author,
+                &s.author,
+            );
+            t.schema = SCHEMA_VERSION;
+            t.version = 1;
+            Entity::Task(t)
+        }
+        (Entity::Adr(s), Entity::Adr(mut a)) => {
+            require_title(&a.title, &hint)?;
+            if a.constraint.trim().is_empty() {
+                return Err(CliError::new(
+                    7,
+                    "a constraint is required: an ADR with nothing to enforce binds nobody",
+                )
+                .with_hint(hint));
+            }
+            // Never born `accepted`, and never born anchored: ratification is a
+            // signed commit produced by `accept`, on the default branch, and an
+            // ADR that arrived ratified would bind before anyone agreed to it.
+            if a.status != AdrStatus::Proposed {
+                return Err(CliError::new(
+                    7,
+                    format!("a new adr is born proposed, not {}", a.status.as_str()),
+                )
+                .with_hint("ank accept <id>"));
+            }
+            if a.ratified.is_some() {
+                return Err(CliError::new(
+                    7,
+                    "ratified names a signed commit, and only `accept` writes it",
+                )
+                .with_hint("ank accept <id>"));
+            }
+            if let Some(sup) = &a.supersedes {
+                resolve_blockers(store, std::slice::from_ref(sup), &hint)?;
+            }
+            a.constraint = ensure_newline(&a.constraint);
+            adopt(
+                &mut a.slug,
+                &a.title,
+                &mut a.created,
+                &s.created,
+                &mut a.author,
+                &s.author,
+            );
+            a.schema = SCHEMA_VERSION;
+            a.version = 1;
+            Entity::Adr(a)
+        }
+        // Unreachable: `parse` resolves the variant from `type:` and refuses a
+        // `type` the id does not carry, and the id was compared above.
+        _ => return Err(CliError::new(1, "the template came back as another kind").with_hint(hint)),
+    };
+
+    let id = entity.id().clone();
+    let title = match &entity {
+        Entity::Task(t) => t.title.clone(),
+        Entity::Adr(a) => a.title.clone(),
+    };
+    store.create(&entity)?;
+    if inv.json() {
+        let _ = writeln!(
+            out,
+            "{{\"id\":\"{id}\",\"kind\":\"{}\",\"created\":\"{}\"}}",
+            kind.as_str(),
+            match &entity {
+                Entity::Task(t) => &t.created,
+                Entity::Adr(a) => &a.created,
+            }
+        );
+    } else if !inv.quiet() {
+        let _ = writeln!(out, "created {id} {title}");
+    }
+    Ok(0)
+}
+
+fn require_title(title: &str, hint: &str) -> Result<()> {
+    if title.trim().is_empty() {
+        return Err(CliError::new(
+            7,
+            "a title is required: it is what a listing shows and what the id hashes",
+        )
+        .with_hint(hint.to_string()));
+    }
+    Ok(())
+}
+
+/// The three fields ank owns, put back where the caller moved them, and the slug
+/// derived when it was left alone.
+///
+/// `created` and `author` are the act of creation, already stamped; the template
+/// shows them so that what the caller edits is a whole entity, not so that they
+/// become an input. The slug is a handle rather than an identifier, so a caller
+/// who wrote one keeps it.
+fn adopt(
+    slug: &mut Option<String>,
+    title: &str,
+    created: &mut String,
+    born: &str,
+    author: &mut Option<String>,
+    by: &Option<String>,
+) {
+    if slug.as_deref().unwrap_or("").trim().is_empty() {
+        *slug = Some(slugify(title));
+    }
+    *created = born.to_string();
+    *author = by.clone();
+}
+
+/// Every reference resolved at the point of creation, exactly as the flag form
+/// resolves `--blocked-by`: an unknown one would otherwise surface in `check`,
+/// long afterwards, as a corpus error nobody can attribute to the act.
+fn resolve_blockers(store: &Store, ids: &[EntityId], hint: &str) -> Result<()> {
+    for id in ids {
+        if store.load(id).is_err() {
+            let _ = hint;
+            return Err(CliError::new(7, format!("no entity {id} in this corpus"))
+                .with_hint(format!("ank find {id}")));
+        }
+    }
+    Ok(())
+}
+
+/// The `verify` names, checked against `config.yml` the way `verifiers_of`
+/// checks the flag.
+fn check_verifiers(names: &[String], cfg: &Config) -> Result<()> {
+    for name in names {
+        if cfg.verifier(name.trim()).is_none() {
+            let mut known: Vec<&str> = cfg.verifiers.keys().map(|s| s.as_str()).collect();
+            known.sort_unstable();
+            let hint = if known.is_empty() {
+                "declare it under verifiers: in .ank/config.yml".to_string()
+            } else {
+                format!("declared in .ank/config.yml: {}", known.join(" "))
+            };
+            return Err(
+                CliError::new(7, format!("no verifier '{name}' in .ank/config.yml"))
+                    .with_hint(hint),
+            );
+        }
+    }
+    Ok(())
 }
 
 /// A scope is mandatory and must be made of valid globs.

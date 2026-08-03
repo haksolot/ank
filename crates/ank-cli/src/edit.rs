@@ -25,13 +25,13 @@
 use crate::claim::{self, Record};
 use crate::cli::{CliError, Invocation, Result};
 use crate::commands::json_string;
+use crate::editor;
 use crate::human::{self, Freeze};
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
-use crate::verify;
 use ank_core::{freeze, parse_entity, Entity, EntityId};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     let prefix = inv
@@ -54,9 +54,10 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     // Before anything is written anywhere: an unset `$EDITOR` is an environment
     // failure, not a task failure (§4), and the id is already resolved so the
     // hint can name the exact invocation to retry.
-    let editor = editor_command(&id)?;
+    let hint = format!("EDITOR=vi ank edit {id}");
+    let editor = editor::command(&hint)?;
 
-    let scratch = scratch_path(&id);
+    let scratch = editor::scratch_path(&id.to_string());
     std::fs::write(&scratch, &original).map_err(|e| {
         CliError::new(9, format!("cannot write {}: {e}", scratch.display())).with_hint(format!(
             "ls -ld {}",
@@ -65,7 +66,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     })?;
 
     let outcome = (|| -> Result<i32> {
-        open_in_editor(&editor, &repo.root, &scratch, &id)?;
+        editor::open(&editor, &repo.root, &scratch, &hint)?;
         let edited = std::fs::read_to_string(&scratch).map_err(|e| {
             CliError::new(9, format!("cannot read back {}: {e}", scratch.display()))
         })?;
@@ -89,7 +90,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             let _ = std::fs::remove_file(&scratch);
             Ok(code)
         }
-        Err(e) => Err(kept(e, &scratch)),
+        Err(e) => Err(editor::kept(e, &scratch)),
     }
 }
 
@@ -108,11 +109,11 @@ fn write_back(
 ) -> Result<i32> {
     let id = before.id();
     let after = parse_entity(edited).map_err(|e| {
-        CliError::new(
-            1,
-            format!("{id} left untouched, the result does not parse: {e}"),
+        editor::invalid_entity(
+            e,
+            &format!("{id} left untouched, the result does not parse"),
+            &format!("ank edit {id}"),
         )
-        .with_hint(format!("ank edit {id}"))
     })?;
 
     check_id(id, after.id())?;
@@ -269,112 +270,6 @@ fn live_claim_anchor(cwd: &Path, id: &EntityId) -> Result<Option<String>> {
 }
 
 // ---------------------------------------------------------------------------
-// The editor
-// ---------------------------------------------------------------------------
-
-/// `$EDITOR`, or the environment failure §4 specifies for its absence.
-///
-/// Code 9 and nothing guessed: an editor picked for the caller would open
-/// something they did not ask for, on a file they are about to commit. `new`
-/// answers the same absence by naming its flag form; `edit` has no flag form,
-/// so the way through is the variable itself and the hint sets it.
-fn editor_command(id: &EntityId) -> Result<String> {
-    editor_from(std::env::var("EDITOR").ok().as_deref(), id)
-}
-
-/// The decision, separated from the reading.
-///
-/// Not a flourish: `std::env::set_var` is unsound while another thread reads
-/// the environment, and the test harness is threaded — `std::env::temp_dir`
-/// alone reads `TMPDIR`, and a neighbouring test calls it. Passing the value in
-/// is what lets the empty and untrimmed cases be tested at all without a test
-/// that is racy by construction. The absence itself is tested in
-/// `tests/cli.rs`, in a process of its own, which is where it belongs anyway.
-fn editor_from(value: Option<&str>, id: &EntityId) -> Result<String> {
-    match value {
-        // Set but empty is unset: a caller who exported it to nothing gets the
-        // same answer as one who never exported it, rather than `sh` being
-        // handed a bare file name to execute.
-        Some(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
-        _ => Err(
-            CliError::new(9, format!("EDITOR is not set, and edit opens {id} in it"))
-                .with_hint(format!("EDITOR=vi ank edit {id}")),
-        ),
-    }
-}
-
-/// Runs the editor on `file` and waits for it.
-///
-/// Through `sh -c`, like the verifiers, and for the same reason: `$EDITOR` is a
-/// command line and not a program name — `code -w`, `emacsclient -nw` and
-/// `vim -f` are all ordinary values of it — so splitting it here would mean
-/// reimplementing word splitting and quoting badly. `sh` is already a hard
-/// dependency of `done`, and `verify::find_sh` already knows where to find one
-/// on Windows.
-fn open_in_editor(editor: &str, cwd: &Path, file: &Path, id: &EntityId) -> Result<()> {
-    let sh = verify::find_sh()?;
-    let command = format!("{editor} {}", sh_quote(&file.to_string_lossy()));
-    // stdio is inherited: the editor is the foreground process for as long as it
-    // runs, and capturing any of the three would leave a full-screen editor
-    // drawing into a pipe.
-    let status = std::process::Command::new(&sh)
-        .current_dir(cwd)
-        .arg("-c")
-        .arg(&command)
-        .status()
-        .map_err(|e| {
-            CliError::new(9, format!("cannot run the editor: {e}"))
-                .with_hint(format!("EDITOR=vi ank edit {id}"))
-        })?;
-    if status.success() {
-        return Ok(());
-    }
-    // An editor that exits non-zero has not delivered a result, which is the
-    // environment failing rather than the corpus refusing — the same reading
-    // `verify` applies to a shell that cannot run what it was given.
-    let code = match status.code() {
-        Some(c) => c.to_string(),
-        None => "a signal".to_string(),
-    };
-    Err(
-        CliError::new(9, format!("the editor exited {code}, so {id} is untouched"))
-            .with_hint(format!("EDITOR=vi ank edit {id}")),
-    )
-}
-
-/// Single quotes, with the one character they cannot hold spliced out. The path
-/// is ours, but it sits under a temporary directory the environment chooses.
-fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// A scratch file outside `.ank/`, carrying the id and the `.md` extension so
-/// that an editor opens it with the right mode and the caller recognises it in
-/// a message. Never inside `.ank/`: a stray `.md` there is a corpus fault, and
-/// a crash mid-edit would leave one.
-fn scratch_path(id: &EntityId) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
-        "ank-edit-{}-{}-{id}.md",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ))
-}
-
-/// Names the scratch file in a refusal, so that the text survives the message.
-fn kept(e: CliError, scratch: &Path) -> CliError {
-    CliError {
-        message: format!(
-            "{} (the edited text is kept at {})",
-            e.message,
-            scratch.display()
-        ),
-        ..e
-    }
-}
-
-// ---------------------------------------------------------------------------
 // What changed
 // ---------------------------------------------------------------------------
 
@@ -479,31 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn a_quoted_path_survives_the_shell() {
-        assert_eq!(sh_quote("/tmp/a b.md"), "'/tmp/a b.md'");
-        // The one character single quotes cannot hold. Left unhandled, a
-        // temporary directory with an apostrophe in it would end the quoting
-        // and hand the rest of the path to the shell as words.
-        assert_eq!(sh_quote("/tmp/o'brien.md"), r"'/tmp/o'\''brien.md'");
-        // Backslashes are literal inside single quotes, which is what makes a
-        // Windows path survive `sh -c` unchanged.
-        assert_eq!(sh_quote(r"C:\Users\a\x.md"), r"'C:\Users\a\x.md'");
-    }
-
-    #[test]
-    fn the_scratch_file_is_outside_the_corpus_and_names_the_entity() {
-        let id = EntityId::parse("TASK-000000000001").unwrap();
-        let p = scratch_path(&id);
-        let text = p.display().to_string();
-        assert!(text.contains("TASK-000000000001"), "{text}");
-        assert!(text.ends_with(".md"), "{text}");
-        assert!(!text.contains(".ank"), "never inside the corpus: {text}");
-        // Two calls in one process must not collide: an editor left open on the
-        // first would otherwise be writing into the second's file.
-        assert_ne!(p, scratch_path(&id));
-    }
-
-    #[test]
     fn a_changed_id_is_refused_and_names_no_command() {
         let a = EntityId::parse("TASK-000000000001").unwrap();
         let b = EntityId::parse("TASK-000000000002").unwrap();
@@ -536,26 +406,5 @@ mod tests {
             changed_fields(&before, &Entity::Adr(a)),
             ["scope", "constraint"]
         );
-    }
-
-    #[test]
-    fn an_unset_editor_is_an_environment_failure_that_names_the_retry() {
-        let id = EntityId::parse("TASK-000000000001").unwrap();
-
-        let err = editor_from(None, &id).unwrap_err();
-        assert_eq!(err.code, 9);
-        assert_eq!(
-            err.hint.as_deref(),
-            Some("EDITOR=vi ank edit TASK-000000000001")
-        );
-
-        // Exported to nothing is the same answer as never exported, rather than
-        // `sh` being handed a bare file name to execute.
-        assert_eq!(editor_from(Some(""), &id).unwrap_err().code, 9);
-        assert_eq!(editor_from(Some("   "), &id).unwrap_err().code, 9);
-
-        // A command line, not a program name, and the surrounding blanks a
-        // shell profile leaves behind are not part of it.
-        assert_eq!(editor_from(Some(" vim -f "), &id).unwrap(), "vim -f");
     }
 }
