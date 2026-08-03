@@ -366,6 +366,74 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// The binary can say what it is, and can say it where nothing else works
+/// (TASK-548c518cb705).
+///
+/// TASK-1ea38a17d854 cost a full investigation to conclude that the binary in
+/// hand predated the feature it was being measured for. The answer was a file
+/// timestamp. One command should have said it.
+///
+/// The second half is the half that matters and the one a unit test cannot
+/// reach: `--version` has to answer *before* the repository is resolved, git is
+/// checked and the config is loaded. A version flag that needs a healthy
+/// environment is mute in the one situation it exists for, and only a process
+/// launched somewhere hostile proves it is not.
+#[test]
+fn the_version_answers_before_anything_can_stop_it() {
+    let r = Repo::new();
+
+    let out = r.ank("claude-code@ank", &["--version"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out).trim().to_string();
+    assert!(
+        said.starts_with(&format!("ank {}", env!("CARGO_PKG_VERSION"))),
+        "the crate version, so a build can be placed against a release: {said}"
+    );
+    assert!(
+        said.contains('(') && said.ends_with(')'),
+        "and the commit it was built from: {said}"
+    );
+    // Empty parentheses would satisfy the shape and answer nothing.
+    let commit = said
+        .rsplit_once('(')
+        .and_then(|(_, c)| c.strip_suffix(')'))
+        .unwrap_or("");
+    assert!(
+        commit.len() >= 4,
+        "a sha or the word `unknown`, never a blank: {said}"
+    );
+
+    // Nowhere in particular: no `.ank/`, no git repository, no config. This is
+    // where a stale or unidentified binary is actually met.
+    let nowhere = std::env::temp_dir().join("ank-cli-it-nowhere");
+    std::fs::create_dir_all(&nowhere).unwrap();
+    let bare = Command::new(ANK)
+        .arg("--version")
+        .current_dir(&nowhere)
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(
+        code(&bare),
+        0,
+        "outside any repository it must still answer: {}",
+        stderr(&bare)
+    );
+    assert_eq!(
+        stdout(&bare).trim(),
+        said,
+        "and answer the same thing, since it describes the binary and not the place"
+    );
+    let _ = std::fs::remove_dir_all(&nowhere);
+
+    // Discoverable, or it answers a question nobody knows how to ask.
+    let out = r.ank("claude-code@ank", &["help"]);
+    assert!(
+        stdout(&out).contains("--version"),
+        "help must name it: {}",
+        stdout(&out)
+    );
+}
+
 /// Git refusing to answer is an answer, and it used to be silence
 /// (TASK-c92b7cc10f13).
 ///
