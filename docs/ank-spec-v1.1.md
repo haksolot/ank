@@ -5,9 +5,9 @@ Last revised: 1 August 2026
 
 ## Decisions settled in this revision
 
-Settled relative to v1: orientation and constraints reconciled (§5) · immutability anchored by hash, verifiable without making the CLI a gatekeeper (§3, §8) · nominal execution model, one worktree per agent (§7) · claims on git refs from level 0 onward, one ref per task (§7) · Ank never commits, except `accept` (§12) · return after TTL expiry, and a TTL ceiling (§3) · `verify` becomes a list (§3) · `proof` becomes an append-only list, CI attestation deferred to v1.1 (§3, §10) · log format fixed as an append-only section of the task file (§3) · index lifecycle fixed (§6) · verifier timeout fixed (§4) · `--reason` mandatory on `release` (§4) · `check` signals extended (§4) · identity, default roles and signature verification specified (§8).
+Settled relative to v1: orientation and constraints reconciled (§5) · immutability anchored by hash, verifiable without making the CLI a gatekeeper (§3, §8) · nominal execution model, one worktree per agent (§7) · claims on git refs from level 0 onward, one ref per task (§7) · Ank never commits, except `accept` (§12) · return after TTL expiry, and a TTL ceiling (§3) · `verify` becomes a list (§3) · `proof` becomes an append-only list, with `attest` as the one write allowed after `done` (§3, §10) · log format fixed as an append-only section of the task file (§3) · index lifecycle fixed (§6) · verifier timeout fixed (§4) · `--reason` mandatory on `release` (§4) · `check` signals extended (§4) · identity, default roles and signature verification specified (§8).
 
-Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver and CI attestation specified but implemented in v1.1 (§13).
+Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver specified but implemented in v1.1 (§13). `attest` was deferred alongside it and ships in v1: the command was written before a CI ever called it, so what remains deferred is the integration and not the verb (§10).
 
 Additions of revision k: **`ank help` is one flat listing** (§4, §9, ADR-c656cbcc33a9, superseding ADR-9ede1ffd04e2) — revision i dissolved the split between an agent surface and a human one and left a layered `help` behind it, whose headings were still named after callers; layering is grouping, and a grouping printed by the binary is a claim about who a verb is for. The order of §4 carries the same information without asserting a category, and the loop stays where it is enforced, in the frozen content of SKILL.md.
 
@@ -285,6 +285,7 @@ accept    promotes a proposed ADR to accepted (produces the signed commit, §8, 
 check     mechanical invariants, exit code usable in CI
 close     closes a task that will never be done (--reason mandatory)
 amend     changes `blocked_by` and `scope` on an entity that already exists
+attest    appends a proof to a finished task: the one write §3 allows after `done`
 status    where am I: branch, claim, perimeter, queue, findings
 edit      opens an entity in the editor and validates what comes back
 graph     the `blocked_by` DAG in readable text
@@ -394,13 +395,18 @@ ank accept <id>
 ank close <id> --reason <r>
 ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
                             [--scope <glob>...] [--drop-scope <glob>...]
+ank attest <id> --proof <type>:<ref>
 ank edit <id>
 ank graph [<path>]
 ank scope <path>
 ank check [<path>]
+ank init [<path>]           (§9)
+ank help [<verb>]           (§9)
 
 ank --version               (the build itself: version and commit, no verb, no repository)
 ```
+
+**This block is the whole dispatch table**, and that is a property worth stating rather than assuming: `attest`, `init` and `help` were reachable in the binary while appearing nowhere here, so a reader comparing the two documents could not tell which one was wrong (TASK-5c868c20472f). `init` and `help` are specified in §9 and listed here only so the list is complete; `ank help` prints this order, minus whatever is not yet implemented, which is what ADR-c656cbcc33a9 requires of it.
 
 **`ank context` with no argument** covers the whole repository. It is the first call an agent should make, before it even knows which path it works on — an agent launched on "fix the login bug" does not yet know its perimeter.
 
@@ -518,7 +524,11 @@ The dividing line is not local versus hosted, it is **who controls the environme
 
 **What local proof anchors.** An agent's nominal case is an uncommitted working tree: anchoring proof on the HEAD SHA alone would almost always point at a stale state. The proof therefore records three things: the HEAD SHA, a dirty-tree indicator, and **a hash of the scope files' content at execution time** (`tree:scope/<hash>`, git hash-object style). That last one is what actually captures what was tested. `check` additionally reports the case where the task itself modified the test files it invokes.
 
-The levels stack: local proof at `done` time, a CI reference **appended** later to the `proof` list — appending proof is the only legal post-`done` write (§3). The CI attestation mechanism itself (`ank attest`) is deferred to v1.1 (§10): the data structure allows it already, the command will come when a CI calls it.
+The levels stack: local proof at `done` time, a CI reference **appended** later to the `proof` list — appending proof is the only legal post-`done` write (§3).
+
+**`ank attest` is in v1, and this settles it.** Earlier revisions deferred it with its shape frozen, on the reasoning that the data structure was ready and the command would come *when a CI called it*. The command was implemented before that happened, and has been used: this repository's own corpus carries `attest`ed CI references. A deferral whose condition has been overtaken is not a plan, it is a document disagreeing with its binary — the state ADR-63b59c5c26f7 orders the work to prevent, and the one a reader could not resolve from §4 and §10 alone (TASK-5c868c20472f).
+
+What that deferral was actually protecting is worth keeping, because it is still deferred and it is not a command: **nothing calls `attest` automatically**. A CI provider appending its own run reference at the end of a pipeline is an integration, not a verb, and it is listed below as such. The verb exists and anyone — an agent, a human, a CI script — can call it today.
 
 The `assertion` type exists because "refactor for readability" has no hash to attach. It is allowed but visible as weak, which avoids a `--force` becoming the default path within two weeks.
 
@@ -808,14 +818,14 @@ The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, Open
 
 ### In
 
-File format · one command surface, refusing on state and never on identity, with the loop SKILL.md teaches frozen at eight verbs (`show` included) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · advisory roles, authority anchored on a signed commit, versioned `allowed_signers` · `status`, `edit`, `graph`, `scope`, the interactive form of `new` and the read form of `log` · bootstrap skill · `check` (full scope in §4).
+File format · one command surface, refusing on state and never on identity, with the loop SKILL.md teaches frozen at eight verbs (`show` included) · HEAD · `release` (reason mandatory) · IDs and prefix resolution · mandatory declared scope · `blocked_by` and derived blocking · named verifiers as a list, timeout, local execution of proofs · freeze by hash (`done_criteria` at claim, `constraint`/`scope` at ratification) · exit codes · two-phase `context` · sync levels 0 and 1, claims on per-task refs, completion refs and their pruning by `check` · `default_branch` and `accept`'s branch precondition · advisory roles, authority anchored on a signed commit, versioned `allowed_signers` · `status`, `edit`, `graph`, `scope`, the interactive form of `new` and the read form of `log` · `attest`, the one write allowed after `done` · bootstrap skill · `check` (full scope in §4).
 
 ### Out of v1, in order of expected value
 
 | Deferred | Reason |
 |---|---|
 | `--since` (differential context) | Large token saving on long loops, but requires per-agent "seen" state. First candidate for v1.1. |
-| `ank attest <id> --proof ci://<provider>/<run-id>` | Shape frozen now; the append-only `proof` list is ready, the command will come when a CI calls it. |
+| A CI calling `attest` on its own | The verb itself is in v1 (above). What is deferred is a pipeline appending its run reference without being asked — an integration per provider, not a command. |
 | `.ank/` merge driver | The resolution rules are fixed (§7); automating them can wait for the first real conflicts. |
 | `touched` inferred from commits | Scope-drift detection. A git dependency, not blocking to get started. |
 | `enforced_by` (mechanisation) | The underlying mechanism against context inflation (see §11). Useless while the ADR corpus is small. |
@@ -891,6 +901,6 @@ The consequence to respect in the implementation: every operation must produce a
 
 **Platforms: Linux, macOS, Windows, native in v1.** Rust cross-compiles all three without friction, and the portability of the plumbing comes not from a library but from git itself, identical on all three operating systems — git is also what provides the verifiers' `sh` on Windows (§4). One external dependency, present everywhere, rather than a per-platform reimplementation. Distribution: `curl | sh`, Homebrew, Scoop/winget, npm.
 
-**Deferred to v1.1, shape frozen now**: the `.ank/` merge driver (rules fixed in §7 — `version` = max + 1, log = timestamped union — automated at the first real conflicts) and `ank attest` (command shape frozen in §10, implemented when a CI calls it).
+**Deferred to v1.1, shape frozen now**: the `.ank/` merge driver (rules fixed in §7 — `version` = max + 1, log = timestamped union — automated at the first real conflicts). `ank attest` was on this list and is not any more: it ships in v1 (§10), and what remains deferred is a CI calling it unprompted, which is an integration and not a verb.
 
 No open points remain: the format, the agent loop, the three platforms and levels 0 and 1 are fully specified.
