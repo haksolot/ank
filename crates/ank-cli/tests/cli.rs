@@ -366,6 +366,110 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// One directory, one answer, however it is typed (TASK-df4c39031583).
+///
+/// Reported from a Windows shell against the real corpus. `docs` answered five
+/// live constraints, `docs\` answered **four**, `.\docs\` answered zero. The
+/// zeros were survivable because they were obvious; the four was not. It is what
+/// tab-completion produces on Windows, it looks like a correct answer, and it
+/// silently dropped a rule that binds — because the argument reached glob
+/// matching verbatim, where a `**` glob still matched a backslash as an ordinary
+/// character and a glob naming a segment did not.
+///
+/// Through the binary and across all four path-taking verbs, because the defect
+/// was never in the matcher: it was in what each verb handed to it, and three of
+/// them had their own copy of the handing.
+///
+/// **No claim is held in this fixture, and that is load-bearing.** `context`
+/// with a claim is in execution mode and ignores the path entirely (§5), so a
+/// comparison made while holding one would pass whatever the code did. I made
+/// that exact mistake measuring the fix by hand.
+#[test]
+fn a_directory_resolves_the_same_however_the_path_is_written() {
+    const ADR: &str = "ADR-00000000dddd";
+    let r = Repo::new();
+    r.enable_signing();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/guide.md"), "# guide\n").unwrap();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    // One entity inside the perimeter, one outside: an answer that ignored the
+    // path would match both and look like success.
+    r.seed_adr(ADR, "Do not do X.", "docs/**");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    // A dead scope under `docs/` and nowhere else. `check` reports corpus-wide
+    // totals whatever the perimeter, so without a finding that exists on one
+    // side and not the other it answers identically for every path — and the
+    // comparison below would be measuring nothing. The assertion caught that too.
+    r.seed_adr("ADR-00000000eeee", "Do not do Y.", "docs/missing/**");
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    // Ratified, or `review` lists no live constraint at all and the two
+    // perimeters answer identically for a reason that has nothing to do with
+    // the path. The assertion below catches exactly that, and did.
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let forms = [
+        "docs",
+        "docs/",
+        "docs\\",
+        "./docs",
+        ".\\docs\\",
+        "docs/../docs",
+        "docs//",
+    ];
+    for verb in ["context", "review", "check", "scope"] {
+        let base = r.ank("claude-code@ank", &[verb, "docs"]);
+        let expected = stdout(&base);
+        let expected_code = code(&base);
+        for form in forms {
+            let got = r.ank("claude-code@ank", &[verb, form]);
+            assert_eq!(
+                code(&got),
+                expected_code,
+                "`ank {verb} {form}` exits differently from `ank {verb} docs`: {}",
+                stderr(&got)
+            );
+            assert_eq!(
+                stdout(&got),
+                expected,
+                "`ank {verb} {form}` must answer as `ank {verb} docs` does"
+            );
+        }
+        // And the perimeter is real: the ADR lives under docs/, the task under
+        // src/, so the two paths must not give the same answer.
+        let elsewhere = stdout(&r.ank("claude-code@ank", &[verb, "src"]));
+        assert_ne!(
+            elsewhere, expected,
+            "`ank {verb}` gives one answer for two different perimeters, so \
+             comparing path forms proves nothing"
+        );
+    }
+
+    // `scope` echoes the perimeter it drew, and it has to echo the one it used.
+    let out = r.ank("claude-code@ank", &["scope", ".\\docs\\"]);
+    assert_eq!(
+        stdout(&out).lines().next().unwrap_or_default(),
+        "docs",
+        "the echoed path is the normalised one: {}",
+        stdout(&out)
+    );
+
+    // A path that leaves the repository has no answer, and saying nothing would
+    // be the silently-partial set all over again.
+    for outside in ["/etc/passwd", "..", "../sibling", "docs/../../elsewhere"] {
+        let out = r.ank("claude-code@ank", &["review", outside]);
+        assert_eq!(code(&out), 1, "{outside} must be refused: {}", stdout(&out));
+        let err = stderr(&out);
+        assert!(err.starts_with("error[1]:"), "{err}");
+        assert!(
+            err.contains("ank review"),
+            "a refusal always says what to run next: {err}"
+        );
+    }
+}
+
 /// `ank scope <path>` answers what covers a path (TASK-e717ee625c5c).
 ///
 /// The `check-ignore` of ank: a glob that matches nothing is otherwise only

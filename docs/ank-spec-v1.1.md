@@ -420,6 +420,10 @@ ank --version               (the build itself: version and commit, no verb, no r
 
 Commands that take a perimeter take **paths**, uniformly: `review [<path>]`, `check [<path>]` and `graph [<path>]` share the same semantics as `context`, and `scope <path>` resolves against the same globs.
 
+**A path is normalised before it is matched, and a directory has one meaning however it is typed.** Separators are unified to `/`, repeated and trailing ones collapse, `.` disappears and `..` is resolved lexically — so `docs`, `docs/`, `docs\`, `./docs`, `.\docs\` and `docs/../docs` are one perimeter. A path naming nothing inside the repository, because it is absolute or because it climbs above the root, is **refused with the command to run next**; it is never answered. Case is not folded, deliberately: `DOCS` matches nothing here and matches nothing on Linux, and folding it on Windows alone would give one corpus two meanings depending on the machine reading it.
+
+The rule is not cosmetic, and it is written down because its absence was not obvious. Measured on this repository against `docs/`, which five accepted ADRs bind: `docs` answered five, `docs\` answered **four**, `./docs` answered zero (TASK-df4c39031583). The zeros announce themselves. The four does not — it is the form Windows tab-completion produces, it looks like an answer, and it withholds a binding rule from an agent that has no way to know one is missing. A perimeter resolved two ways is a constraint set that depends on typing.
+
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
 
 **`ank --version` is not a fourth global flag**, and the limit above is untouched. The three modify a verb; this one replaces it — there is no `ank check --version`, and asking for the build while also asking for something else is not a question anyone has. It prints the crate version and the commit the binary was built from, on one line, and exits 0.

@@ -124,8 +124,8 @@ impl Report {
 // ---------------------------------------------------------------------------
 
 pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
-    let path = inv.positionals.first().map(|s| s.as_str());
-    let report = inspect(repo, cfg, path, true)?;
+    let path = crate::context::perimeter(inv, repo)?;
+    let report = inspect(repo, cfg, path.as_deref(), true)?;
     render(&report, inv, out);
     Ok(report.exit_code())
 }
@@ -1255,8 +1255,8 @@ fn json_str(s: &str) -> String {
 /// The human read of a perimeter: what binds it, what has died, and what
 /// `check` would say — without touching the coordination plane.
 pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
-    let path = inv.positionals.first().map(|s| s.as_str());
-    let report = inspect(repo, cfg, path, false)?;
+    let path = crate::context::perimeter(inv, repo)?;
+    let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
     let files = tracked_files(&repo.root);
 
@@ -1274,13 +1274,11 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         if row.kind != EntityKind::Adr || row.status != "accepted" {
             continue;
         }
-        if let Some(p) = path {
-            let touches = ScopeSet::new(&row.scope)
-                .map(|s| s.overlaps_dir(p, &row.scope))
-                .unwrap_or(false);
-            if !touches {
-                continue;
-            }
+        // The third copy of this matching, now gone the way of the other two:
+        // `review` deciding for itself what a perimeter contains is how it came
+        // to disagree with `context` about `docs\` (TASK-df4c39031583).
+        if !crate::context::in_perimeter(&row.scope, path.as_deref()) {
+            continue;
         }
         if dead.contains(&row.id.to_string()) {
             continue;
