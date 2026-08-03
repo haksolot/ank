@@ -276,6 +276,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--proof")],
         owner_task: None,
     },
+    // Between `attest` and `check`, which is where §4 puts it once the verbs it
+    // sits behind there — `edit` and `graph` — are skipped for not existing yet.
+    // `tests/skill.rs` is what holds this to §4's order rather than to memory.
+    CommandSpec {
+        name: "scope",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "<path>",
+        flags: &[],
+        owner_task: None,
+    },
     CommandSpec {
         name: "check",
         subcommands: &[],
@@ -743,6 +754,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         "new" => crate::commands::new(&inv, &s.repo, &s.config, &s.identity, out),
         "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
+        "scope" => crate::commands::scope(&inv, &s.repo, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
         "check" => crate::human::check(&inv, &s.repo, &s.config, out),
@@ -834,11 +846,15 @@ mod tests {
                 .unwrap_or_else(|e| panic!("--json refused on {}: {}", spec.name, e.render()));
             assert!(inv.json(), "--json not retained on {}", spec.name);
         }
+        // A count, so that a verb added without a thought about `--json` fails
+        // here. What §4 lists and what this table holds is a stronger question
+        // and has its own test, in `tests/skill.rs`, which reads §4 rather than
+        // counting.
         assert_eq!(
             COMMANDS.len(),
-            16,
-            "twelve verbs from §4, plus attest and amend, plus init and help \
-             from §9"
+            17,
+            "the verbs of §4 that ship, plus init and help from §9; `scope` \
+             brought it to 17 (TASK-e717ee625c5c)"
         );
     }
 

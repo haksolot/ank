@@ -231,7 +231,12 @@ pub fn short_ids(ids: &[EntityId]) -> HashMap<EntityId, String> {
 /// Whether an entity's scope meets the requested perimeter. `None` is the whole
 /// repository, which is what `context` with no argument covers — an agent
 /// launched on "fix the login bug" does not know its perimeter yet.
-fn in_perimeter(scope: &[String], path: Option<&str>) -> bool {
+///
+/// Shared rather than reimplemented: `find --scope` and `scope` answer the same
+/// question and must answer it identically, or the perimeter an agent explores
+/// stops being the perimeter that binds it. `scope` in particular exists to make
+/// this resolution observable, which is worth nothing if it is a second copy.
+pub(crate) fn in_perimeter(scope: &[String], path: Option<&str>) -> bool {
     let Some(path) = path else {
         return true;
     };

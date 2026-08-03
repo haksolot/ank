@@ -1,9 +1,9 @@
-//! The new, find, log and release verbs.
+//! The new, find, log, release and scope verbs.
 //!
-//! Four verbs that share almost nothing except being the part of the loop that
-//! is not the loop's spine — SKILL.md teaches them off-loop (§4). What they do
-//! have in common is the discipline of §4: each refuses precisely, names the
-//! command to run next, and writes as little as the transition needs.
+//! Verbs that share almost nothing except being off the loop's spine — SKILL.md
+//! teaches the first four off-loop and does not teach `scope` at all (§4). What
+//! they do have in common is the discipline of §4: each refuses precisely, names
+//! the command to run next, and writes as little as the transition needs.
 //!
 //! - **`new`** requires a scope. A glob is the only mechanism attaching an
 //!   entity to code, and an entity attached to nothing is invisible to
@@ -16,6 +16,9 @@
 //!   Working is what keeps the lock; there is no heartbeat verb to memorise.
 //! - **`release`** requires a reason, because it is the delegation mechanism
 //!   between agents: the reason reaches the next holder through the log.
+//! - **`scope`** makes glob resolution observable before an entity is written
+//!   wrong, and answers with the matching `context` binds with rather than one
+//!   of its own.
 
 use crate::claim::{self, ClaimRecord, Record};
 use crate::cli::{CliError, Invocation, Result};
@@ -26,7 +29,7 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use ank_core::{
     append_log, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId, EntityKind,
-    LogEntry, ScopeSet, Task, TaskStatus, SCHEMA_VERSION,
+    LogEntry, Task, TaskStatus, SCHEMA_VERSION,
 };
 use std::io::Write;
 use std::path::Path;
@@ -425,6 +428,105 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     Ok(0)
 }
 
+// ---------------------------------------------------------------------------
+// scope
+// ---------------------------------------------------------------------------
+
+/// `ank scope <path>`: what covers a path (§4).
+///
+/// The `check-ignore` of ank. A dead scope is otherwise only visible after the
+/// fact, through `check`, and a glob that matches nothing is discovered once the
+/// entity is already written and already invisible. This makes the resolution
+/// observable before that, and it answers with [`context::in_perimeter`] — the
+/// same matching `context` binds with, not a second implementation that agrees
+/// today (TASK-e717ee625c5c).
+///
+/// **No budget cap, unlike `find`.** `find` is an open query over the corpus and
+/// caps because it must; `scope` is asked about one path, so its answer is
+/// bounded by what the caller already named. Capping would also make the verb
+/// lie: "what covers this path" is a question whose partial answer is wrong
+/// rather than short, since the constraint left out is exactly the one nobody
+/// would then read.
+pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+    let Some(raw) = inv.positionals.first() else {
+        return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
+    };
+    // `/`-separated, as globs are written and as git speaks on all three
+    // platforms; a trailing separator is the same directory named twice.
+    let path = raw.replace('\\', "/");
+    let path = path.trim_end_matches('/');
+    if path.is_empty() {
+        return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
+    }
+
+    let index = Index::open(&repo.ank)?;
+    let all = index.all()?;
+    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
+    let shorts = context::short_ids(&ids);
+
+    // `all()` arrives in identifier order, so the answer is a function of the
+    // corpus and the path and of nothing else — the filesystem is never
+    // consulted, and a path that does not exist yet resolves like any other.
+    let hits: Vec<&Row> = all
+        .iter()
+        .filter(|r| context::in_perimeter(&r.scope, Some(path)))
+        .collect();
+    let (adrs, tasks): (Vec<&Row>, Vec<&Row>) =
+        hits.iter().partition(|r| r.kind == EntityKind::Adr);
+
+    if inv.json() {
+        let item = |r: &&Row| {
+            format!(
+                "{{\"id\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\"title\":{}}}",
+                r.id,
+                r.kind.as_str(),
+                r.status,
+                json_string(&r.title)
+            )
+        };
+        let adr: Vec<String> = adrs.iter().map(item).collect();
+        let task: Vec<String> = tasks.iter().map(item).collect();
+        let _ = writeln!(
+            out,
+            "{{\"path\":{},\"total\":{},\"adr\":[{}],\"tasks\":[{}]}}",
+            json_string(path),
+            hits.len(),
+            adr.join(","),
+            task.join(",")
+        );
+        return Ok(0);
+    }
+    if inv.quiet() {
+        return Ok(0);
+    }
+
+    // Names the perimeter it drew, the way §4 asks `graph` to: an answer about
+    // a path the caller mistyped is indistinguishable from an empty one unless
+    // the path is echoed.
+    let _ = writeln!(out, "{path}");
+    if hits.is_empty() {
+        // Explicit, never an empty answer. Silence here reads as "nothing
+        // constrains this", which is the same sentence as "ank could not tell",
+        // and only one of the two is safe to act on.
+        let _ = writeln!(out, "nothing covers this path");
+        return Ok(0);
+    }
+    for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
+        if group.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "\n{label} ({})", group.len());
+        for r in group.iter() {
+            let short = shorts
+                .get(&r.id)
+                .cloned()
+                .unwrap_or_else(|| r.id.to_string());
+            let _ = writeln!(out, "  {short}  [{}] {}", r.status, r.title);
+        }
+    }
+    Ok(0)
+}
+
 /// The same budget `context` answers under (§4, §5), converted to a number of
 /// one-line results. A cap in characters and a cap in lines are the same rule
 /// seen from two sides; expressing it in lines here keeps the output stable
@@ -434,10 +536,7 @@ fn cap_from(cfg: &Config) -> usize {
 }
 
 fn scope_touches(scope: &[String], path: &str) -> bool {
-    match ScopeSet::new(scope) {
-        Ok(set) => set.overlaps_dir(path, scope),
-        Err(_) => false,
-    }
+    context::in_perimeter(scope, Some(path))
 }
 
 /// Title, identifier and slug first, then the text that carries the meaning: a

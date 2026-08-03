@@ -366,6 +366,84 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// `ank scope <path>` answers what covers a path (TASK-e717ee625c5c).
+///
+/// The `check-ignore` of ank: a glob that matches nothing is otherwise only
+/// discovered through `check`, after the entity is written and already
+/// invisible. Through the binary, because the criterion is about what the
+/// process prints and because dispatch reaching a new verb is the thing that
+/// has silently failed here before (TASK-45d18f45de2c).
+#[test]
+fn scope_says_what_covers_a_path_and_says_when_nothing_does() {
+    const ADR: &str = "ADR-00000000c0de";
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let out = r.ank("claude-code@ank", &["scope", "src/main.rs"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+
+    // Grouped by type, one line each, carrying the status.
+    assert!(said.contains("ADR (1)"), "{said}");
+    assert!(said.contains("TASKS (1)"), "{said}");
+    assert!(said.contains("[proposed] A decision"), "{said}");
+    assert!(said.contains("[open] Example task"), "{said}");
+    assert!(
+        said.lines()
+            .next()
+            .unwrap_or_default()
+            .contains("src/main.rs"),
+        "it names the perimeter it drew: {said}"
+    );
+
+    // The same resolution `context` binds with. A directory the globs reach
+    // under is covered, which is what `overlaps_dir` means and what an agent
+    // asking about a package rather than a file needs.
+    let out = r.ank("claude-code@ank", &["scope", "src"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("ADR (1)"), "{}", stdout(&out));
+
+    // Nothing matching is said, never left to an empty answer: silence reads as
+    // "nothing constrains this", which is the same sentence as "ank could not
+    // tell", and only one of the two is safe to act on.
+    let out = r.ank("claude-code@ank", &["scope", "docs/whitepaper.md"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("nothing covers this path"),
+        "{}",
+        stdout(&out)
+    );
+
+    // It answers about a path, not about the filesystem: a file that does not
+    // exist yet resolves like any other, which is the point of asking before
+    // writing the entity.
+    let out = r.ank("claude-code@ank", &["scope", "src/not_written_yet.rs"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("ADR (1)"), "{}", stdout(&out));
+
+    // `--json` is available on every command without exception (§4).
+    let out = r.ank("claude-code@ank", &["scope", "src/main.rs", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let j = stdout(&out);
+    assert!(j.contains("\"path\":\"src/main.rs\""), "{j}");
+    assert!(j.contains("\"total\":2"), "{j}");
+    assert!(j.contains("\"adr\":[{"), "{j}");
+    assert!(j.contains("\"tasks\":[{"), "{j}");
+
+    // A missing path is a refusal carrying the command to run next, not a
+    // silent listing of the whole corpus.
+    let out = r.ank("claude-code@ank", &["scope"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("ank scope <path>"),
+        "{}",
+        stderr(&out)
+    );
+}
+
 /// The stamp follows the commit, including a commit that changes no file
 /// (TASK-0b26c8b5bfc5).
 ///
