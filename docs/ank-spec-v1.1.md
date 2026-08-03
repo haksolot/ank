@@ -422,6 +422,8 @@ It answers **before the foundation**, like `help` and for a sharper reason: the 
 
 The commit is embedded at build time through `rev-parse`, which §8's plumbing rule already allows, and is `unknown` when the build had no checkout to ask — a source tarball, a vendored dependency. Naming the absence beats inventing a value, and it beats the silence that made TASK-1ea38a17d854 cost an investigation to conclude that the binary in hand predated the feature being measured for.
 
+**What the stamp guarantees, and on which builds.** It names the commit the build script last ran at, and the script reruns whenever the commit moves — including a commit that changes no source file, which is the case that catches a binary quietly left behind. It does not depend on the source having changed. The files a commit moves are located through `rev-parse --git-path` rather than assumed at `.git/`, so a linked worktree and a packed ref are covered rather than hoped for; on a detached HEAD the sha lives in the HEAD file, which is watched on its own account. A release, built from a fresh checkout, is exact by construction. The stamp is not a claim about the working tree: uncommitted edits are invisible to it, and a binary built from a dirty tree names the commit it was based on, not the code it contains (TASK-0b26c8b5bfc5).
+
 ### Exit codes
 
 The semantics are carried by the code so that the shell can route without parsing output.
