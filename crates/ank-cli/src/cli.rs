@@ -276,8 +276,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--proof")],
         owner_task: None,
     },
-    // Between `attest` and `check`, which is where §4 puts it once the verbs it
-    // sits behind there — `edit` and `graph` — are skipped for not existing yet.
+    CommandSpec {
+        name: "graph",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "[<path>]",
+        flags: &[],
+        owner_task: None,
+    },
+    // Between `graph` and `check`, which is where §4 puts it once `edit` — the
+    // one verb still missing from that stretch — is skipped.
     // `tests/skill.rs` is what holds this to §4's order rather than to memory.
     CommandSpec {
         name: "scope",
@@ -754,6 +762,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         "new" => crate::commands::new(&inv, &s.repo, &s.config, &s.identity, out),
         "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
+        "graph" => crate::graph::run(&inv, &s.repo, out),
         "scope" => crate::commands::scope(&inv, &s.repo, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
@@ -852,9 +861,10 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            17,
+            18,
             "the verbs of §4 that ship, plus init and help from §9; `scope` \
-             brought it to 17 (TASK-e717ee625c5c)"
+             brought it to 17 (TASK-e717ee625c5c) and `graph` to 18 \
+             (TASK-253e897d3330)"
         );
     }
 

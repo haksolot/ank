@@ -121,6 +121,27 @@ impl Repo {
         .unwrap();
     }
 
+    /// The same seed with a scope of its own, for a fixture that needs an
+    /// entity outside the perimeter under test.
+    fn seed_task_scoped(&self, id: &str, scope: &str) {
+        self.seed_task(id, Some("A verifiable criterion."));
+        let text = self
+            .task_text(id)
+            .replace("  - src/**", &format!("  - {scope}"));
+        std::fs::write(self.0.join(".ank/tasks").join(format!("{id}.md")), text).unwrap();
+    }
+
+    /// Adds blockers to a seeded task. Written into the file rather than through
+    /// `amend`, so that a graph fixture does not depend on the verb that edits
+    /// the field it is drawing.
+    fn blocked(&self, id: &str, blockers: &[&str]) {
+        let list = blockers.join(", ");
+        let text = self
+            .task_text(id)
+            .replace("blocked_by: []", &format!("blocked_by: [{list}]"));
+        std::fs::write(self.0.join(".ank/tasks").join(format!("{id}.md")), text).unwrap();
+    }
+
     fn task_text(&self, id: &str) -> String {
         std::fs::read_to_string(self.0.join(".ank/tasks").join(format!("{id}.md"))).unwrap()
     }
@@ -363,6 +384,165 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     assert!(
         !said.contains("altered since ratification") && !said.contains("is reachable"),
         "only the signature is gone: {said}"
+    );
+}
+
+/// `ank graph` draws the `blocked_by` DAG (TASK-253e897d3330).
+///
+/// §5's ordering already walks these edges to count what a task unblocks; this
+/// makes the same structure visible to a reader. Through the binary, because the
+/// criterion is about what the process prints.
+///
+/// The chain is built so that every clause has something to be wrong about: a
+/// root, two levels under it, a diamond, and a task whose only blocker sits
+/// outside the perimeter.
+#[test]
+fn graph_draws_the_dag_and_names_the_perimeter() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/guide.md"), "# guide\n").unwrap();
+
+    // root <- mid <- leaf, and `side` also blocked by root: a diamond only in
+    // the sense that `leaf` is reachable twice once `side` blocks it too.
+    let root = "TASK-000000000a01";
+    let mid = "TASK-000000000a02";
+    let leaf = "TASK-000000000a03";
+    let outer = "TASK-000000000a04";
+    let held = "TASK-000000000a05";
+    for id in [root, mid, leaf, held] {
+        r.seed_task(id, Some("A verifiable criterion."));
+    }
+    r.blocked(mid, &[root]);
+    r.blocked(leaf, &[mid]);
+    // Scoped to docs/, so it is outside the src/ perimeter below.
+    r.seed_task_scoped(outer, "docs/**");
+    r.blocked(held, &[outer]);
+
+    let out = r.ank("claude-code@ank", &["graph", "src"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+
+    // Names the perimeter it drew (§4).
+    assert_eq!(
+        said.lines().next().unwrap_or_default(),
+        "src",
+        "the perimeter is named: {said}"
+    );
+
+    // The shape: each level one indent deeper than what blocks it.
+    let depth = |needle: &str| -> usize {
+        let line = said
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing from:\n{said}"));
+        line.len() - line.trim_start().len()
+    };
+    assert_eq!(depth("000000000a01"), 0, "the root is flush left: {said}");
+    assert_eq!(depth("000000000a02"), 2, "{said}");
+    assert_eq!(depth("000000000a03"), 4, "{said}");
+
+    // A blocker outside the perimeter is never silently dropped: drawing this
+    // one flush left with no mark would say nothing is stopping it.
+    let held_line = said
+        .lines()
+        .find(|l| l.contains("000000000a05"))
+        .unwrap_or_default();
+    assert!(
+        held_line.contains("outside"),
+        "a task held by something outside the perimeter says so: {said}"
+    );
+    assert!(
+        !said.contains("000000000a04"),
+        "and the outside task itself is not drawn: {said}"
+    );
+
+    // Says so explicitly when the perimeter holds no task (§4). `LICENSE` and
+    // not `docs/nowhere`: the latter is *inside* `docs/**`, which is the whole
+    // point of `overlaps_dir`, and the fixture would have been testing nothing.
+    let out = r.ank("claude-code@ank", &["graph", "LICENSE"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no task in this perimeter"),
+        "{}",
+        stdout(&out)
+    );
+
+    // `--json` for the raw edges (§4) — including the edge leaving the
+    // perimeter, which the drawing can only mark and not show.
+    let out = r.ank("claude-code@ank", &["graph", "src", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let j = stdout(&out);
+    assert!(j.contains("\"path\":\"src\""), "{j}");
+    assert!(
+        j.contains(&format!("{{\"task\":\"{mid}\",\"blocked_by\":\"{root}\"}}")),
+        "{j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"task\":\"{held}\",\"blocked_by\":\"{outer}\"}}"
+        )),
+        "the raw edges include the one leaving the perimeter: {j}"
+    );
+}
+
+/// A cycle is a corpus fault `check` reports, and `graph` still has to draw the
+/// repository that has one rather than hang on it.
+///
+/// **Two cycles, because they take different paths through the code and only
+/// one exercises the guard.** A cycle with no way in has no root, so nothing
+/// recurses into it and it is collected flat at the end. A cycle reachable from
+/// a root is walked, and only there does the visited-path check stand between
+/// the drawing and a stack overflow. Removing that check left the first case
+/// passing, which is how this test was found to be weaker than it looked — by a
+/// mutation run, not by reading it.
+#[test]
+fn graph_terminates_on_a_cycle_and_says_where_it_is() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    // Closed on itself and unreachable: no root, so nothing recurses into it.
+    let a = "TASK-000000000b01";
+    let b = "TASK-000000000b02";
+    // A root leading into a cycle: this is the one that recurses, and the only
+    // one the visited-path guard stands in front of.
+    let root = "TASK-000000000b03";
+    let mid = "TASK-000000000b04";
+    let back = "TASK-000000000b05";
+    for id in [a, b, root, mid, back] {
+        r.seed_task(id, Some("A verifiable criterion."));
+    }
+    r.blocked(a, &[b]);
+    r.blocked(b, &[a]);
+    r.blocked(mid, &[root, back]);
+    r.blocked(back, &[mid]);
+
+    let out = r.ank("claude-code@ank", &["graph", "src"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a cycle is check's fault to report, not graph's: {}",
+        stderr(&out)
+    );
+    let said = stdout(&out);
+
+    // Reachable: walked, and stopped at the repetition rather than at the stack.
+    assert!(
+        said.contains("(cycle)"),
+        "the walk names where it turned back: {said}"
+    );
+    assert!(
+        said.contains("000000000b04") && said.contains("000000000b05"),
+        "{said}"
+    );
+
+    // Unreachable: under no root, so it would vanish under a header with
+    // nothing beneath it. Drawn, and named as the reason.
+    assert!(said.contains("under no root"), "{said}");
+    assert!(
+        said.contains("000000000b01") && said.contains("000000000b02"),
+        "{said}"
     );
 }
 
