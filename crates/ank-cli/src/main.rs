@@ -32,6 +32,7 @@ mod claim;
 mod commands;
 mod context;
 mod done;
+mod edit;
 mod graph;
 mod human;
 mod index;

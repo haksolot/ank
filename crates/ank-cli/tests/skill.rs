@@ -111,16 +111,17 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// The one hand-maintained list here, and it cannot rot: the test below fails
-/// if any of these becomes dispatchable, so implementing one forces its removal
-/// in the same commit. What remains is `edit`, TASK-7ed19b16895e -- the last
-/// verb §4 specifies that the binary does not answer to.
+/// **Empty, and that is the state worth keeping.** Every verb §4 specifies now
+/// ships. The list stays because it is the only place a future verb may be
+/// declared missing, and because the test below fails the moment a declared one
+/// starts shipping -- so the declaration cannot outlive the gap it describes.
 ///
-/// `scope`, `graph` and `status` were here and are not any more, which is the
+/// `scope`, `graph`, `status` and `edit` were all here in turn, which is the
 /// guard working as intended rather than a maintenance chore: shipping each of
-/// them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5) turned the
-/// suite red until this line was edited, in the same commit.
-const NOT_YET_DISPATCHED: [&str; 1] = ["edit"];
+/// them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
+/// TASK-7ed19b16895e) turned the suite red until this line was edited, in the
+/// same commit.
+const NOT_YET_DISPATCHED: [&str; 0] = [];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

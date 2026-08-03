@@ -206,6 +206,40 @@ impl Repo {
             .output()
             .expect("the binary must have been built")
     }
+
+    /// The same invocation with `$EDITOR` under the test's control. `None`
+    /// removes it, which is the environment failure §4 specifies — and removing
+    /// it rather than trusting its absence matters, because the developer
+    /// running this suite very probably has one exported.
+    fn ank_edit(&self, agent: &str, args: &[&str], editor: Option<&str>) -> Output {
+        let mut c = Command::new(ANK);
+        c.args(args)
+            .arg("--repo")
+            .arg(&self.0)
+            .env("ANK_AGENT", agent)
+            .current_dir(std::env::temp_dir());
+        match editor {
+            Some(e) => c.env("EDITOR", e),
+            None => c.env_remove("EDITOR"),
+        };
+        c.output().expect("the binary must have been built")
+    }
+
+    /// A non-interactive editor that saves `text`.
+    ///
+    /// `cp` is the exact shape of one: `edit` appends the file to open as the
+    /// last word of the command line, so `EDITOR="cp <replacement>"` runs
+    /// `cp <replacement> <scratch>` and the editor has saved. It ships beside
+    /// git on all three platforms, which is the reason `enable_signing` reaches
+    /// for `ssh-keygen`.
+    fn editor_saving(&self, text: &str) -> String {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = self
+            .0
+            .join(format!("saved-{}.md", SEQ.fetch_add(1, Ordering::Relaxed)));
+        std::fs::write(&p, text).unwrap();
+        format!("cp '{}'", p.display())
+    }
 }
 
 impl Drop for Repo {
@@ -2190,4 +2224,205 @@ fn no_superseded_adr_is_cited_in_the_crate() {
     for dead in DEAD {
         assert!(!manifest.contains(dead), "Cargo.toml cites {dead}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// edit
+// ---------------------------------------------------------------------------
+//
+// Through the binary, and not only because the criterion says so: `edit` spends
+// most of its life in a child process and in a file outside the corpus, and
+// there is no in-process test that could reach either.
+
+/// The seeded task, written back out of order and with two fields moved. What
+/// comes out must be canonical form regardless of how the editor left it (§3).
+const EDITED_TASK: &str = "---\ntype: task\nid: TASK-000000000001\nstatus: open\n\
+     title: A better title\nslug: example\ncreated: 2026-07-28T00:00:00Z\n\
+     scope:\n  - src/**\nblocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+     criteria_by: creator\nschema: 1\nversion: 1\n---\n\nRewritten body.\n";
+
+#[test]
+fn edit_writes_back_what_the_editor_saved_in_canonical_form() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let editor = r.editor_saving(EDITED_TASK);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.starts_with(&format!("edited {ID}")), "{said}");
+    // Named field by field, so that a reader can tell a title fix from a scope
+    // change without reaching for the diff.
+    assert!(said.contains("title") && said.contains("body"), "{said}");
+    assert!(said.contains("version 2"), "{said}");
+
+    let on_disk = r.task_text(ID);
+    // Canonical order, not the editor's: `id`, then `type`, then `slug`,
+    // whatever the file that came back said.
+    assert!(
+        on_disk.starts_with(
+            "---\nid: TASK-000000000001\ntype: task\nslug: example\ntitle: A better title\n"
+        ),
+        "{on_disk}"
+    );
+    assert!(on_disk.contains("\nversion: 2\n"), "{on_disk}");
+    assert!(on_disk.ends_with("---\n\nRewritten body.\n"), "{on_disk}");
+}
+
+/// Code 9 and nothing guessed (§4). An editor chosen on the caller's behalf
+/// would open something they never asked for, on a file they are about to
+/// commit.
+#[test]
+fn edit_without_an_editor_is_an_environment_failure_and_touches_nothing() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], None);
+    assert_eq!(code(&out), 9, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("EDITOR is not set"), "{err}");
+    assert!(
+        err.contains(&format!("EDITOR=vi ank edit {ID}")),
+        "the exact command to run next, never generic help: {err}"
+    );
+    assert_eq!(r.task_text(ID), before, "the entity is untouched");
+}
+
+/// The clause the temporary copy exists for: nothing reaches `.ank/` until the
+/// text has parsed, so a mistyped frontmatter costs a re-edit and never a
+/// corrupt file. And the text survives the refusal, which is the difference
+/// between a validation and a punishment.
+#[test]
+fn an_invalid_result_leaves_the_entity_untouched_and_says_why() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+    let broken = "---\nid: TASK-000000000001\ntype: task\ntitle: Half a file\n";
+    let editor = r.editor_saving(broken);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("does not parse"), "{err}");
+    assert!(err.contains("missing frontmatter"), "says why: {err}");
+    assert_eq!(r.task_text(ID), before, "byte for byte");
+
+    // The named file is real and holds what the editor saved. A message that
+    // pointed at nothing would be worse than no message.
+    let kept = err
+        .split("kept at ")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .expect("the refusal names where the text was kept");
+    assert_eq!(
+        std::fs::read_to_string(kept.trim()).expect("the kept file exists"),
+        broken
+    );
+    let _ = std::fs::remove_file(kept.trim());
+}
+
+/// `done_criteria` is frozen at claim (§3), and the refusal names the command
+/// that legally performs the change rather than the flag the caller reached for.
+#[test]
+fn a_claimed_criterion_is_refused_and_names_release() {
+    let r = Repo::new().with_verifiers("");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let before = r.task_text(ID);
+
+    let weakened = EDITED_TASK.replace("A verifiable criterion.", "Something easier.");
+    let editor = r.editor_saving(&weakened);
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("frozen by the claim"), "{err}");
+    assert!(err.contains("ank release --reason"), "{err}");
+    assert_eq!(r.task_text(ID), before, "the entity is untouched");
+
+    // The guard is on the field, not on the claim: the same task, the same
+    // claim, an edit that leaves the criterion alone. Refusing this would make
+    // `edit` useless exactly where the work happens.
+    let editor = r.editor_saving(EDITED_TASK);
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(ID).contains("A better title"),
+        "{}",
+        r.task_text(ID)
+    );
+}
+
+/// `constraint` and `scope` are hashed into the signed ratification commit
+/// (§8), so changing a ratified decision is a succession — and succession has
+/// its own verb.
+#[test]
+fn a_ratified_constraint_is_refused_and_names_the_succession() {
+    const ADR: &str = "ADR-0000000000ab";
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let before = r.adr_text(ADR);
+
+    let altered = before.replace("Do not do X.", "Do not do Y.");
+    let editor = r.editor_saving(&altered);
+    let out = r.ank_edit("marie@laptop", &["edit", ADR], Some(&editor));
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("ratified"), "{err}");
+    assert!(err.contains("ank new adr --supersedes"), "{err}");
+    assert_eq!(r.adr_text(ADR), before, "the entity is untouched");
+
+    // The body of an accepted ADR stays editable (§3): what is anchored is the
+    // constraint and the scope, and the refusal must not reach past them.
+    let reasoned = before.replace("Why.", "Why, at length.");
+    let editor = r.editor_saving(&reasoned);
+    let out = r.ank_edit("marie@laptop", &["edit", ADR], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("body"), "{}", stdout(&out));
+}
+
+/// An editor opened and closed without saving writes nothing at all — no
+/// version bump, no rewrite. The alternative is a verb that dirties a file for
+/// having been looked at.
+#[test]
+fn an_editor_that_saves_nothing_writes_nothing() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some("true"));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with(&format!("unchanged {ID}")),
+        "{}",
+        stdout(&out)
+    );
+    assert_eq!(r.task_text(ID), before);
+}
+
+/// An editor that fails is the environment failing, not the corpus refusing —
+/// the same reading `verify` applies to a shell that cannot run what it is
+/// given, and the same code.
+#[test]
+fn an_editor_that_exits_non_zero_leaves_the_entity_untouched() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some("false"));
+    assert_eq!(code(&out), 9, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("the editor exited 1"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(r.task_text(ID), before);
 }
