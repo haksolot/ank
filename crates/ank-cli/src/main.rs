@@ -35,6 +35,7 @@ mod done;
 mod graph;
 mod human;
 mod index;
+mod status;
 mod verify;
 
 fn main() {

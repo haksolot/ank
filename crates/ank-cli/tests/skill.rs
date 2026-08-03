@@ -113,14 +113,14 @@ fn help_order() -> Vec<String> {
 ///
 /// The one hand-maintained list here, and it cannot rot: the test below fails
 /// if any of these becomes dispatchable, so implementing one forces its removal
-/// in the same commit. Each is a specified verb with an open task -- `status`
-/// TASK-15336a0012d5, `edit` TASK-7ed19b16895e.
+/// in the same commit. What remains is `edit`, TASK-7ed19b16895e -- the last
+/// verb §4 specifies that the binary does not answer to.
 ///
-/// `scope` and `graph` were here and are not any more, which is the guard
-/// working as intended rather than a maintenance chore: shipping each of them
-/// (TASK-e717ee625c5c, TASK-253e897d3330) turned the suite red until this line
-/// was edited, in the same commit.
-const NOT_YET_DISPATCHED: [&str; 2] = ["status", "edit"];
+/// `scope`, `graph` and `status` were here and are not any more, which is the
+/// guard working as intended rather than a maintenance chore: shipping each of
+/// them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5) turned the
+/// suite red until this line was edited, in the same commit.
+const NOT_YET_DISPATCHED: [&str; 1] = ["edit"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

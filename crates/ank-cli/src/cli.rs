@@ -226,6 +226,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--type"), flag("--status"), flag("--scope")],
         owner_task: None,
     },
+    // After `find` and before `review`, which is where §4 puts it. Placing it
+    // beside `graph` instead read as tidy and was wrong; `tests/skill.rs`
+    // refused the commit until it moved (TASK-15336a0012d5).
+    CommandSpec {
+        name: "status",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[],
+        owner_task: None,
+    },
     CommandSpec {
         name: "review",
         subcommands: &[],
@@ -762,6 +773,7 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         "new" => crate::commands::new(&inv, &s.repo, &s.config, &s.identity, out),
         "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
+        "status" => crate::status::run(&inv, &s.repo, &s.config, &s.identity, out),
         "graph" => crate::graph::run(&inv, &s.repo, out),
         "scope" => crate::commands::scope(&inv, &s.repo, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
@@ -861,10 +873,10 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            18,
-            "the verbs of §4 that ship, plus init and help from §9; `scope` \
-             brought it to 17 (TASK-e717ee625c5c) and `graph` to 18 \
-             (TASK-253e897d3330)"
+            19,
+            "the verbs of §4 that ship, plus init and help from §9. `edit` is \
+             the only one of §4 still missing (TASK-7ed19b16895e), so this \
+             reaches 20 and stops"
         );
     }
 

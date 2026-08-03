@@ -387,6 +387,120 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// `ank status` answers where am I, in one command (TASK-15336a0012d5).
+///
+/// The four scenarios the task names, in order: orientation with no claim,
+/// execution with one, the ratification queue and an unmerged completion seen
+/// from the default branch, and the degraded case with no default branch at all.
+///
+/// Through the binary, and the degraded case is the reason: `status` is what an
+/// agent runs when it does not know where it is, so every one of its inputs can
+/// be missing — no claim, no remote, no default branch, no commit — and each has
+/// to be a line rather than an error. That is a property of the process, not of
+/// the functions it composes.
+#[test]
+fn status_answers_where_am_i_in_every_state() {
+    const ADR: &str = "ADR-00000000f001";
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    // 1. Orientation: no claim, and the whole repository as the perimeter.
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.starts_with("branch main (default main)"), "{said}");
+    assert!(said.contains("no claim"), "{said}");
+    assert!(said.contains("the whole repository"), "{said}");
+    // A proposed ADR is the ratification queue.
+    assert!(said.contains("queue 1 proposal(s)"), "{said}");
+    assert!(said.contains("corpus 0 fault(s)"), "{said}");
+    // Ends with the command to run next (§4), and it is the one this state
+    // calls for rather than a fixed string.
+    assert!(
+        said.trim_end().ends_with("> ank context"),
+        "orientation points at context: {said}"
+    );
+
+    // 2. Execution: the claim, its expiry, and the perimeter it implies.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(said.contains(&format!("claim {ID}")), "{said}");
+    assert!(
+        said.contains("expires 20"),
+        "the expiry is what makes a claim actionable: {said}"
+    );
+    assert!(
+        said.contains(&format!("the scope of {ID}")),
+        "under a claim the perimeter is the task's own scope: {said}"
+    );
+    assert!(
+        said.trim_end().ends_with("> ank done"),
+        "holding a claim points at done: {said}"
+    );
+
+    // The claim of another agent is not this agent's claim.
+    let out = r.ank("codex@host-9", &["status"]);
+    assert!(stdout(&out).contains("no claim"), "{}", stdout(&out));
+
+    // 3. Accepted, so the queue empties and the constraint starts counting.
+    r.enable_signing();
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["release", "--reason", "x"])),
+        0
+    );
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(said.contains("queue 0 proposal(s)"), "{said}");
+    assert!(said.contains("1 constraint(s)"), "{said}");
+
+    // 4. Degraded: no default branch and no remote to infer one from. It is a
+    // warning and a full report, never a refusal.
+    let bare = Repo::new();
+    std::fs::write(
+        bare.0.join(".ank/config.yml"),
+        "schema: 1\nclaim_ttl_max: 2h\n",
+    )
+    .unwrap();
+    bare.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(bare.0.join("src")).unwrap();
+    std::fs::write(bare.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    bare.git(&["add", "-A"]);
+    bare.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    let out = bare.ank("claude-code@ank", &["status"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a missing default branch degrades, it does not refuse: {}",
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    assert!(said.contains("warning: no default branch"), "{said}");
+    assert!(
+        said.contains("default_branch"),
+        "the warning carries the fix: {said}"
+    );
+    assert!(
+        said.contains("corpus "),
+        "and the rest of the report still arrives: {said}"
+    );
+
+    // `--json` is available on every command without exception (§4).
+    let out = r.ank("claude-code@ank", &["status", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let j = stdout(&out);
+    assert!(j.contains("\"branch\":\"main\""), "{j}");
+    assert!(j.contains("\"claim\":null"), "{j}");
+    assert!(j.contains("\"queue\":0"), "{j}");
+}
+
 /// `ank graph` draws the `blocked_by` DAG (TASK-253e897d3330).
 ///
 /// §5's ordering already walks these edges to count what a task unblocks; this
