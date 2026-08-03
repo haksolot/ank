@@ -398,6 +398,8 @@ ank edit <id>
 ank graph [<path>]
 ank scope <path>
 ank check [<path>]
+
+ank --version               (the build itself: version and commit, no verb, no repository)
 ```
 
 **`ank context` with no argument** covers the whole repository. It is the first call an agent should make, before it even knows which path it works on — an agent launched on "fix the login bug" does not yet know its perimeter.
@@ -413,6 +415,12 @@ ank check [<path>]
 Commands that take a perimeter take **paths**, uniformly: `review [<path>]`, `check [<path>]` and `graph [<path>]` share the same semantics as `context`, and `scope <path>` resolves against the same globs.
 
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
+
+**`ank --version` is not a fourth global flag**, and the limit above is untouched. The three modify a verb; this one replaces it — there is no `ank check --version`, and asking for the build while also asking for something else is not a question anyone has. It prints the crate version and the commit the binary was built from, on one line, and exits 0.
+
+It answers **before the foundation**, like `help` and for a sharper reason: the caller who needs it is the one holding an artifact they cannot identify. A version that required a resolved repository, a git of 2.34 and a readable `config.yml` would fall silent in exactly the situation it exists for. Outside any git repository, in a directory with no `.ank/`, it still prints and still exits 0.
+
+The commit is embedded at build time through `rev-parse`, which §8's plumbing rule already allows, and is `unknown` when the build had no checkout to ask — a source tarball, a vendored dependency. Naming the absence beats inventing a value, and it beats the silence that made TASK-1ea38a17d854 cost an investigation to conclude that the binary in hand predated the feature being measured for.
 
 ### Exit codes
 

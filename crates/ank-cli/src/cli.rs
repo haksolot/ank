@@ -634,12 +634,22 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
     }
     let _ = writeln!(out, "\nglobal: {}", globals_line());
     let _ = writeln!(out, "ank help <verb> for one verb");
+    // A trailing pointer, beside the one above it and in the same shape: not a
+    // heading and not a grouping, so the flat listing ADR-c656cbcc33a9 requires
+    // is untouched. A flag nobody can discover answers nobody's question.
+    let _ = writeln!(out, "ank --version for the build");
     Ok(0)
 }
 
 // ---------------------------------------------------------------------------
 // Dispatch
 // ---------------------------------------------------------------------------
+
+/// What the binary is, on one line (§4): the crate version, and the commit
+/// `build.rs` stamped in. `unknown` where there was no checkout to ask.
+pub fn version_line() -> String {
+    format!("ank {} ({})", env!("CARGO_PKG_VERSION"), env!("ANK_COMMIT"))
+}
 
 fn not_implemented(spec: &CommandSpec) -> CliError {
     let task = spec.owner_task.unwrap_or("TASK-unknown");
@@ -701,6 +711,16 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
 /// TASK-45d18f45de2c the fall-through was total, while six module headers
 /// asserted the opposite.
 fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write) -> Result<i32> {
+    // Before `parse`, and not as a flag on a verb (§4). `--version` replaces the
+    // verb rather than modifying one, so the parser — which resolves a command
+    // first and would reject this as an unknown one — never sees it. It is also
+    // ahead of every check below for the reason `help` is: the caller who needs
+    // it is holding an artifact they cannot identify, and a version that
+    // demanded a healthy repository would go quiet exactly there.
+    if argv.first().is_some_and(|a| a == "--version") {
+        let _ = writeln!(out, "{}", version_line());
+        return Ok(0);
+    }
     let inv = parse(argv)?;
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
 
