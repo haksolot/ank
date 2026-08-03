@@ -14,12 +14,165 @@
 
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
-fn skill() -> String {
+fn repo_file(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("skill/SKILL.md");
+        .join(rel);
     fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
+fn skill() -> String {
+    repo_file("skill/SKILL.md")
+}
+
+// ---------------------------------------------------------------------------
+// §4's order, and the listing that has to match it (TASK-973fc0173b98)
+// ---------------------------------------------------------------------------
+
+/// The leading verb of a usage line, `ank <verb> ...`.
+///
+/// `ank --version` yields nothing and is meant to: it is not a verb, and §4
+/// says so in as many words.
+fn leading_verb(line: &str) -> Option<String> {
+    let rest = line.strip_prefix("ank ")?;
+    let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
+    (!verb.is_empty()).then_some(verb)
+}
+
+fn push_once(verbs: &mut Vec<String>, verb: String) {
+    if !verbs.contains(&verb) {
+        verbs.push(verb);
+    }
+}
+
+/// The verbs of §4's `Commands` block, in the order the block lists them.
+///
+/// Read from the specification rather than restated here: a second
+/// hand-maintained copy of the order is the very drift this is checking for.
+fn section_4_order() -> Vec<String> {
+    let spec = repo_file("docs/ank-spec-v1.1.md");
+    let mut verbs = Vec::new();
+    let mut seen_heading = false;
+    let mut inside = false;
+    for line in spec.lines() {
+        if line.trim() == "### Commands" {
+            seen_heading = true;
+            continue;
+        }
+        if !seen_heading {
+            continue;
+        }
+        if line.trim_start().starts_with("```") {
+            // The opening fence, then the closing one: the block is over.
+            if inside {
+                break;
+            }
+            inside = true;
+            continue;
+        }
+        if inside {
+            if let Some(v) = leading_verb(line) {
+                push_once(&mut verbs, v);
+            }
+        }
+    }
+    assert!(
+        !verbs.is_empty(),
+        "the Commands block of §4 was not found: this test reads the \
+         specification, so a renamed heading must fail loudly rather than pass \
+         on an empty list"
+    );
+    verbs
+}
+
+/// The verbs `ank help` prints, in the order it prints them.
+///
+/// Through the binary, because ADR-c656cbcc33a9 is a statement about what the
+/// process prints, not about the table it is derived from. The listing ends at
+/// the blank line before `global:`.
+fn help_order() -> Vec<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_ank"))
+        .arg("help")
+        .output()
+        .expect("the binary must have been built");
+    assert!(out.status.success(), "ank help must succeed");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut verbs = Vec::new();
+    for line in text.lines().take_while(|l| !l.trim().is_empty()) {
+        if let Some(v) = leading_verb(line) {
+            push_once(&mut verbs, v);
+        }
+    }
+    assert!(!verbs.is_empty(), "ank help printed no verb");
+    verbs
+}
+
+/// Verbs §4 specifies and the binary does not dispatch yet.
+///
+/// The one hand-maintained list here, and it cannot rot: the test below fails
+/// if any of these becomes dispatchable, so implementing one forces its removal
+/// in the same commit. Each is a specified verb with an open task -- `status`
+/// TASK-15336a0012d5, `edit` TASK-7ed19b16895e, `graph` TASK-253e897d3330,
+/// `scope` TASK-e717ee625c5c.
+const NOT_YET_DISPATCHED: [&str; 4] = ["status", "edit", "graph", "scope"];
+
+/// A verb the binary answers to and §4 never mentions. `attest`, `init` and
+/// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
+/// two documents could not tell which one was wrong.
+#[test]
+fn every_dispatched_verb_is_listed_in_section_4() {
+    let spec = section_4_order();
+    for verb in help_order() {
+        assert!(
+            spec.contains(&verb),
+            "`ank {verb}` is dispatched and §4's Commands block does not list \
+             it: the specification is the source of truth (ADR-63b59c5c26f7), \
+             so the block is what has to change"
+        );
+    }
+}
+
+/// The other direction, and the reason the exemption list stays honest. Every
+/// verb §4 lists either ships or is declared unimplemented -- and a declared
+/// one that has started shipping fails here until the declaration is removed.
+#[test]
+fn every_verb_section_4_lists_ships_or_is_declared_unimplemented() {
+    let dispatched = help_order();
+    for verb in section_4_order() {
+        let exempt = NOT_YET_DISPATCHED.contains(&verb.as_str());
+        let ships = dispatched.contains(&verb);
+        assert!(
+            ships || exempt,
+            "§4 lists `ank {verb}`, the binary does not dispatch it, and it is \
+             not in NOT_YET_DISPATCHED: either implement it or declare it there \
+             with its task"
+        );
+        assert!(
+            !(ships && exempt),
+            "`ank {verb}` ships and is still declared unimplemented: remove it \
+             from NOT_YET_DISPATCHED, in the commit that implemented it"
+        );
+    }
+}
+
+/// **One flat listing, in the order of §4** (ADR-c656cbcc33a9). Until this
+/// test the ADR described the output rather than constraining it, and the two
+/// orders agreed only while somebody remembered. Fixing the drift of
+/// TASK-5c868c20472f introduced a fresh one in the same edit -- `attest` placed
+/// after `check` where the binary prints it before -- and only a diff caught it.
+#[test]
+fn help_prints_section_4s_order() {
+    let dispatched = help_order();
+    let expected: Vec<String> = section_4_order()
+        .into_iter()
+        .filter(|v| dispatched.contains(v))
+        .collect();
+    assert_eq!(
+        expected, dispatched,
+        "`ank help` must print §4's order, minus what it does not dispatch"
+    );
 }
 
 /// The loop, and the content of SKILL.md is frozen at exactly these
