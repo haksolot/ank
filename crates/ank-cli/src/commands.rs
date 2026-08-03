@@ -541,7 +541,7 @@ fn scope_touches(scope: &[String], path: &str) -> bool {
 /// Title, identifier and slug first, then the text that carries the meaning: a
 /// task's criterion, an ADR's constraint. Not the whole body — a query matching
 /// a paragraph of reasoning is a match an agent cannot act on.
-fn json_string(s: &str) -> String {
+pub(crate) fn json_string(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
