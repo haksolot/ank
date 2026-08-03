@@ -366,6 +366,78 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// Git refusing to answer is an answer, and it used to be silence
+/// (TASK-c92b7cc10f13).
+///
+/// `signature_state` ended in `.ok()?`, so any failure of the git invocation
+/// became `None` — the one verdict `check_adr` says nothing about. An ADR whose
+/// signature could not be read was indistinguishable from one in a corpus that
+/// declares no key at all, which is the degradation to success ADR-6b3f refuses
+/// and the `Unchecked` counter already exists to prevent one level down.
+///
+/// The lever is a `gpg.format` git rejects, one of the causes the task named.
+/// It is surgical: `rev-list --full-history`, `cat-file`, `rev-parse` and
+/// `for-each-ref` all still answer, so the corpus is read normally and the
+/// ratification commit is still reached — only the signature read exits
+/// non-zero. That is exactly the state under test, and no other.
+///
+/// A signal and not a fault, deliberately: a broken environment is not a forged
+/// ratification, and exiting 8 over one would fail the `check-repo` verifier of
+/// every task on a machine missing nothing but a working gpg config.
+#[test]
+fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
+    const ADR: &str = "ADR-0000000000ef";
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    declare_signing_key(&r);
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // Readable and trusted: the silence below has to be broken by the config
+    // change and by nothing else.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stdout(&out).contains("could not be read"),
+        "{}",
+        stdout(&out)
+    );
+
+    r.git(&["config", "gpg.format", "bogus"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+    assert!(
+        said.contains("could not be read"),
+        "a signature git refuses to answer about must be reported: {said}"
+    );
+    assert!(
+        said.contains("neither verified nor refused"),
+        "and it must say what that leaves undecided: {said}"
+    );
+    assert!(
+        said.contains("gpg.format"),
+        "carrying git's own reason, or the reader cannot act on it: {said}"
+    );
+
+    // Not a fault, and not confused with the missing-key case either.
+    assert_eq!(
+        code(&out),
+        0,
+        "a broken environment is not a forgery: {said}"
+    );
+    assert!(
+        !said.contains("not signed") && !said.contains("no public key"),
+        "an unread signature is not an absent one: {said}"
+    );
+}
+
 /// A claim is not an orphan just because this checkout is too old to have
 /// heard of the task (TASK-52fbffbfdf65).
 ///
