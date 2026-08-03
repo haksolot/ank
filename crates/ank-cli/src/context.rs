@@ -228,6 +228,41 @@ pub fn short_ids(ids: &[EntityId]) -> HashMap<EntityId, String> {
     out
 }
 
+/// The perimeter a path-taking verb was given, normalised once (§4).
+///
+/// Every verb that takes a path goes through here — `context`, `review`,
+/// `check`, `scope` — so that a directory has one meaning rather than one per
+/// way of typing it (TASK-df4c39031583). Normalising inside [`in_perimeter`]
+/// instead would be cheaper and wrong twice over: a refusal cannot be expressed
+/// through a `bool`, and `scope` echoes the perimeter it drew, which has to be
+/// the one it actually used.
+///
+/// `None` is the whole repository: no argument at all, or `.`, which names the
+/// root and therefore everything.
+pub(crate) fn perimeter(inv: &Invocation, repo: &Repo) -> Result<Option<String>> {
+    let Some(raw) = inv.positionals.first() else {
+        return Ok(None);
+    };
+    if let Some(path) = ank_core::normalize_path(raw) {
+        return Ok((!path.is_empty()).then_some(path));
+    }
+    // Never a silent answer about an invented perimeter. The hint is the exact
+    // command when the path is simply the absolute form of one inside the
+    // repository, which is the way this is usually typed.
+    let hint = std::path::Path::new(raw)
+        .strip_prefix(&repo.root)
+        .ok()
+        .map(|rel| rel.to_string_lossy().replace('\\', "/"))
+        .filter(|rel| !rel.is_empty())
+        .map(|rel| format!("ank {} {rel}", inv.command))
+        .unwrap_or_else(|| format!("ank {} <path inside the repository>", inv.command));
+    Err(CliError::new(
+        1,
+        format!("'{raw}' does not name a path in this repository"),
+    )
+    .with_hint(hint))
+}
+
 /// Whether an entity's scope meets the requested perimeter. `None` is the whole
 /// repository, which is what `context` with no argument covers — an agent
 /// launched on "fix the login bug" does not know its perimeter yet.
@@ -922,8 +957,8 @@ pub fn run(
         })?),
         None => None,
     };
-    let path = inv.positionals.first().map(|s| s.as_str());
-    let mut view = build(repo, cfg, identity, path, limit)?;
+    let path = perimeter(inv, repo)?;
+    let mut view = build(repo, cfg, identity, path.as_deref(), limit)?;
 
     // A path argument with a claim in hand is ignored, and said so: exploring
     // another perimeter mid-task is what the one-claim-per-agent rule

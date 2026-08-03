@@ -34,4 +34,4 @@ pub use parse::{
     has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_task, serialize_adr,
     serialize_entity, serialize_task,
 };
-pub use scope::ScopeSet;
+pub use scope::{normalize_path, ScopeSet};

@@ -448,16 +448,15 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
 /// rather than short, since the constraint left out is exactly the one nobody
 /// would then read.
 pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
-    let Some(raw) = inv.positionals.first() else {
-        return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
-    };
-    // `/`-separated, as globs are written and as git speaks on all three
-    // platforms; a trailing separator is the same directory named twice.
-    let path = raw.replace('\\', "/");
-    let path = path.trim_end_matches('/');
-    if path.is_empty() {
+    if inv.positionals.first().is_none() {
         return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
     }
+    // Normalised by the one helper every path-taking verb uses, rather than
+    // here: this verb shipped with its own half of the rule -- separator and
+    // trailing slash, not a leading `./` -- and answered differently from
+    // `context` about the same directory for it (TASK-df4c39031583).
+    let perimeter = context::perimeter(inv, repo)?;
+    let shown = perimeter.as_deref().unwrap_or(".");
 
     let index = Index::open(&repo.ank)?;
     let all = index.all()?;
@@ -469,7 +468,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
     // consulted, and a path that does not exist yet resolves like any other.
     let hits: Vec<&Row> = all
         .iter()
-        .filter(|r| context::in_perimeter(&r.scope, Some(path)))
+        .filter(|r| context::in_perimeter(&r.scope, perimeter.as_deref()))
         .collect();
     let (adrs, tasks): (Vec<&Row>, Vec<&Row>) =
         hits.iter().partition(|r| r.kind == EntityKind::Adr);
@@ -489,7 +488,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
         let _ = writeln!(
             out,
             "{{\"path\":{},\"total\":{},\"adr\":[{}],\"tasks\":[{}]}}",
-            json_string(path),
+            json_string(shown),
             hits.len(),
             adr.join(","),
             task.join(",")
@@ -503,7 +502,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
     // Names the perimeter it drew, the way §4 asks `graph` to: an answer about
     // a path the caller mistyped is indistinguishable from an empty one unless
     // the path is echoed.
-    let _ = writeln!(out, "{path}");
+    let _ = writeln!(out, "{shown}");
     if hits.is_empty() {
         // Explicit, never an empty answer. Silence here reads as "nothing
         // constrains this", which is the same sentence as "ank could not tell",
