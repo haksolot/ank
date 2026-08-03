@@ -1,6 +1,6 @@
 [package]
 name = "ank-core"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # Measured, not assumed: see the note in ank-cli's manifest. This crate's own
 # code needs far less, but the workspace resolves one lockfile and builds as a
