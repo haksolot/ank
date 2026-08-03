@@ -1580,6 +1580,140 @@ fn the_whole_agent_loop_runs_through_the_binary() {
     assert!(ctx.contains("needs staging access"), "{ctx}");
 }
 
+/// `git log` reads, and now so does `ank log` given nothing but an id (§4).
+///
+/// Through the binary because the criterion says so, and because what has to be
+/// true is a property of the process: a read that took the claim path would
+/// still pass a module test run under the holder's identity, and fail for every
+/// caller who is not it.
+#[test]
+fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // An empty log is an answer, not a blank. Read here by an agent that holds
+    // nothing, before any claim exists at all.
+    let out = r.ank("marie@laptop", &["log", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no log entry yet"),
+        "{}",
+        stdout(&out)
+    );
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    assert_eq!(code(&r.ank("claude-code@ank", &["log", "first thing"])), 0);
+    assert_eq!(code(&r.ank("claude-code@ank", &["log", "second thing"])), 0);
+
+    // Still `marie@laptop`, who holds no claim on anything: the claim is what
+    // writing needs, never reading.
+    let before = r.task_text(ID);
+    let out = r.ank("marie@laptop", &["log", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    let newest = text
+        .find("second thing")
+        .unwrap_or_else(|| panic!("the newer entry is missing:\n{text}"));
+    let oldest = text
+        .find("first thing")
+        .unwrap_or_else(|| panic!("the older entry is missing:\n{text}"));
+    assert!(newest < oldest, "newest first (§4):\n{text}");
+    assert_eq!(
+        r.task_text(ID),
+        before,
+        "a read that writes is not a read: {text}"
+    );
+    assert!(
+        r.claim_ref(ID).is_some(),
+        "reading neither takes nor drops the holder's claim"
+    );
+
+    // Scriptable like every other verb, and the same order.
+    let out = r.ank("marie@laptop", &["log", ID, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let j = stdout(&out);
+    assert!(
+        j.starts_with(&format!("{{\"task\":\"{ID}\",\"entries\":[")),
+        "{j}"
+    );
+    assert!(
+        j.find("second thing").unwrap() < j.find("first thing").unwrap(),
+        "{j}"
+    );
+
+    // Only a task has a log, and the refusal names the verb that does answer.
+    const ADR: &str = "ADR-0000000000ab";
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    let out = r.ank("marie@laptop", &["log", ADR]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("ank show {ADR}")),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The disambiguation of §4, exercised on all three of its branches. It is
+/// stated rather than inferred precisely so that it can be asserted this way:
+/// one question — does the argument resolve — and one answer.
+#[test]
+fn log_decides_between_reading_and_writing_by_what_resolves() {
+    const OTHER: &str = "TASK-000000000002";
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_task(OTHER, Some("Another verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    // Shaped like an id, resolving to nothing: a message.
+    let out = r.ank("claude-code@ank", &["log", "TASK-000000000009"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(ID).contains("TASK-000000000009"),
+        "{}",
+        r.task_text(ID)
+    );
+
+    // An ambiguous prefix resolves to no single entity, so it is a message too.
+    // "It resolved" is the whole test, and a second question — did it nearly
+    // resolve — would be one an agent has to guess the answer to.
+    let out = r.ank("claude-code@ank", &["log", "TASK-00000000000"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(ID)
+            .lines()
+            .any(|l| l.ends_with("TASK-00000000000")),
+        "{}",
+        r.task_text(ID)
+    );
+
+    // A message that also resolves: refused, naming both readings, writing
+    // neither.
+    let before = r.task_text(ID);
+    let out = r.ank("claude-code@ank", &["log", ID, OTHER]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let e = stderr(&out);
+    assert!(e.contains(OTHER), "the read it could have been: {e}");
+    assert!(e.contains(ID), "the write it could have been: {e}");
+    assert_eq!(r.task_text(ID), before, "a refusal writes nothing");
+
+    // The redundant write form is untouched when the message is a message.
+    let out = r.ank("claude-code@ank", &["log", ID, "a real message"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(r.task_text(ID).contains("a real message"));
+
+    // And an id alone reads even for the agent holding it: what decides is the
+    // argument, not who is asking.
+    let out = r.ank("claude-code@ank", &["log", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("a real message"), "{}", stdout(&out));
+    assert_eq!(
+        stdout(&out).matches("a real message").count(),
+        1,
+        "reading appended an entry: {}",
+        stdout(&out)
+    );
+}
+
 #[test]
 fn init_runs_where_there_is_no_ank_directory_yet() {
     // The one verb that precedes the foundation. Kept here because the reason

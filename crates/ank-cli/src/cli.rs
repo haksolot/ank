@@ -181,7 +181,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "log",
         subcommands: &[],
         max_positionals: 2,
-        positional_help: "[<id>] <message>",
+        // Both optional, and what is given decides which of the two things the
+        // verb does: an id alone reads, a message writes (§4).
+        positional_help: "[<id>] [<message>]",
         flags: &[],
         owner_task: None,
     },
