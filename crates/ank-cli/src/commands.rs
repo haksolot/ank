@@ -565,6 +565,18 @@ pub(crate) fn json_string(s: &str) -> String {
 /// is the task's anchoring register, and if anyone could write to it, it would
 /// stop being a reliable trace of what the holder did (§4).
 fn head_of(cwd: &Path, identity: &str) -> Result<(EntityId, String, ClaimRecord)> {
+    held_by(cwd, identity)?.ok_or_else(|| {
+        CliError::new(6, "no task in progress for this agent").with_hint("ank context")
+    })
+}
+
+/// The same lookup without the refusal, for the caller that reports rather than
+/// acts. `status` describes a repository that may well have no claim in it, and
+/// a reader must never fail because there is nothing to say.
+pub(crate) fn held_by(
+    cwd: &Path,
+    identity: &str,
+) -> Result<Option<(EntityId, String, ClaimRecord)>> {
     for r in crate::git::ank_refs(cwd)? {
         let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
             continue;
@@ -577,11 +589,11 @@ fn head_of(cwd: &Path, identity: &str) -> Result<(EntityId, String, ClaimRecord)
         };
         if let Record::Claim(c) = held.record {
             if c.holder == identity && !claim::is_expired(&c, claim::now_secs(), &id)? {
-                return Ok((id, held.object, c));
+                return Ok(Some((id, held.object, c)));
             }
         }
     }
-    Err(CliError::new(6, "no task in progress for this agent").with_hint("ank context"))
+    Ok(None)
 }
 
 /// The optional id is redundant by construction and must match HEAD (§4). It
