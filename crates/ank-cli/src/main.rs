@@ -33,6 +33,7 @@ mod commands;
 mod context;
 mod done;
 mod edit;
+mod editor;
 mod graph;
 mod human;
 mod index;

@@ -242,6 +242,33 @@ impl Repo {
     }
 }
 
+/// An editor that fills a `new` template in, rather than replacing it.
+///
+/// It has to transform: the id is minted by `new` before the editor runs and is
+/// refused if it comes back changed, so the wholesale `cp` that serves `edit`
+/// cannot serve here.
+///
+/// A shell function, and not `sed -i`, because `-i` is where the three
+/// platforms part company: it takes a mandatory backup suffix on the BSD sed
+/// macOS ships, so `sed -i -e ...` consumes `-e` as the suffix there and the
+/// suite would pass on two runners and fail on the third. Redirecting into a
+/// second file and moving it is POSIX everywhere. The path arrives as `$1`
+/// because `sh -c 'f; f <path>'` binds it — which is also what makes this read
+/// like an editor rather than a fixture.
+fn editor_filling(title: &str, scope: &str, body: &str) -> String {
+    format!(
+        r#"f() {{ sed -e "s|^title:.*|title: {title}|" -e "s|^scope: .*|scope: [\"{scope}\"]|" "$1" > "$1.new"; printf "%s\n" "" "{body}" >> "$1.new"; mv "$1.new" "$1"; }}; f"#
+    )
+}
+
+/// The same, plus one arbitrary substitution — for the tests that need to move
+/// a field the template does not invite anyone to touch.
+fn editor_filling_and(title: &str, scope: &str, extra: &str) -> String {
+    format!(
+        r#"f() {{ sed -e "s|^title:.*|title: {title}|" -e "s|^scope: .*|scope: [\"{scope}\"]|" -e "{extra}" "$1" > "$1.new"; mv "$1.new" "$1"; }}; f"#
+    )
+}
+
 impl Drop for Repo {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
@@ -2425,4 +2452,258 @@ fn an_editor_that_exits_non_zero_leaves_the_entity_untouched() {
         stderr(&out)
     );
     assert_eq!(r.task_text(ID), before);
+}
+
+// ---------------------------------------------------------------------------
+// new, interactive
+// ---------------------------------------------------------------------------
+//
+// The `git commit` pattern: no flags, an editor (§4). The flag form is what
+// SKILL.md teaches and what an agent uses, and the tests that matter most here
+// are the ones asserting nothing about it moved.
+
+/// The entities a repository holds, read off the disk rather than through the
+/// tool: what has to be true is the state of the corpus, not `find`'s agreement
+/// with itself.
+fn entity_files(r: &Repo, sub: &str) -> Vec<String> {
+    let dir = r.0.join(".ank").join(sub);
+    let mut v: Vec<String> = std::fs::read_dir(&dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .filter(|n| n.ends_with(".md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+#[test]
+fn new_task_without_flags_opens_a_template_and_writes_what_comes_back() {
+    let r = Repo::new();
+    let editor = editor_filling("A task typed in an editor", "crates/**", "The reasoning.");
+
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("created TASK-")
+            && stdout(&out).contains("A task typed in an editor"),
+        "{}",
+        stdout(&out)
+    );
+
+    let files = entity_files(&r, "tasks");
+    assert_eq!(files.len(), 1, "exactly one task: {files:?}");
+    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+
+    // The guidance rides in YAML comments and the parser drops them. A template
+    // whose help text reached the corpus would put it in every `show` forever.
+    assert!(!text.contains('#'), "the comments are stripped: {text}");
+    assert!(text.contains("title: A task typed in an editor"), "{text}");
+    assert!(
+        text.contains("  - crates/**"),
+        "canonical block scope: {text}"
+    );
+    // Derived, not typed: the template never asks for a slug.
+    assert!(text.contains("slug: a-task-typed-in-an-editor"), "{text}");
+    assert!(
+        text.ends_with("The reasoning.\n"),
+        "the body survives: {text}"
+    );
+    assert!(
+        text.contains("status: open") && text.contains("version: 1"),
+        "{text}"
+    );
+}
+
+#[test]
+fn new_adr_without_flags_opens_a_template_and_writes_what_comes_back() {
+    let r = Repo::new();
+    // The constraint is the ADR's mandatory field, and the template leaves it an
+    // empty block for the caller to fill.
+    let editor = editor_filling_and(
+        "A decision typed in an editor",
+        "docs/**",
+        r"s|^  $|  Do not do X.|",
+    );
+
+    let out = r.ank_edit("marie@laptop", &["new", "adr"], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let files = entity_files(&r, "adr");
+    assert_eq!(files.len(), 1, "exactly one adr: {files:?}");
+    let text = std::fs::read_to_string(r.0.join(".ank/adr").join(&files[0])).unwrap();
+    assert!(text.contains("Do not do X."), "{text}");
+    // Never born accepted and never born anchored: ratification is a signed
+    // commit produced by `accept`, and an ADR that arrived ratified would bind
+    // before anyone agreed to it.
+    assert!(text.contains("status: proposed"), "{text}");
+    assert!(!text.contains("ratified:"), "{text}");
+}
+
+/// The clause that keeps the interactive form from being the hole in the wall:
+/// it refuses what the flag form refuses, in the flag form's words and with the
+/// flag form's code.
+#[test]
+fn a_template_saved_untouched_is_refused_and_creates_nothing() {
+    let r = Repo::new();
+
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], Some("true"));
+    assert_eq!(
+        code(&out),
+        7,
+        "the same code the flag form gives an empty scope: {}",
+        stderr(&out)
+    );
+    let err = stderr(&out);
+    assert!(err.contains("empty scope"), "says why: {err}");
+    assert!(
+        err.contains("ank new task --title"),
+        "names the flag form: {err}"
+    );
+    assert!(
+        entity_files(&r, "tasks").is_empty(),
+        "nothing is created: {:?}",
+        entity_files(&r, "tasks")
+    );
+}
+
+/// §4 requires this one by name: `$EDITOR` unset is an environment failure, and
+/// what it names as the way through is the flag form.
+#[test]
+fn new_without_an_editor_names_the_flag_form() {
+    let r = Repo::new();
+
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], None);
+    assert_eq!(code(&out), 9, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("EDITOR is not set"), "{err}");
+    assert_eq!(
+        err.lines().nth(1).map(str::trim),
+        Some(r#"-> ank new task --title "<t>" --scope "<glob>""#),
+        "{err}"
+    );
+
+    let out = r.ank_edit("marie@laptop", &["new", "adr"], None);
+    assert_eq!(code(&out), 9, "{}", stderr(&out));
+    assert!(stderr(&out).contains("--constraint"), "{}", stderr(&out));
+    assert!(entity_files(&r, "tasks").is_empty());
+}
+
+/// The property the whole trigger rule was chosen for. A script that forgot
+/// `--scope` has to stop, not sit in an editor waiting for somebody who is not
+/// there — so a partial invocation stays the flag form and fails as it always
+/// did, with an editor set and willing.
+#[test]
+fn the_flag_form_is_untouched_by_the_interactive_one() {
+    let r = Repo::new();
+    // An editor that would happily create a valid entity if it were ever run.
+    // Reaching it is the failure this test exists to catch.
+    let editor = editor_filling("Should never be created", "src/**", "x");
+
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["new", "task", "--title", "Half an invocation"],
+        Some(&editor),
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("a scope is required"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        entity_files(&r, "tasks").is_empty(),
+        "the editor was reached: {:?}",
+        entity_files(&r, "tasks")
+    );
+
+    // And the complete flag form still writes exactly what it always wrote.
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["new", "task", "--title", "Scripted", "--scope", "src/**"],
+        Some(&editor),
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let files = entity_files(&r, "tasks");
+    assert_eq!(files.len(), 1, "{files:?}");
+    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+    assert!(text.contains("title: Scripted"), "{text}");
+    assert!(text.contains("  - src/**"), "{text}");
+}
+
+/// The id hashes the act of creation (§3) and the file name carries it. Letting
+/// the caller choose one would let them collide with an entity that exists, or
+/// mint a reference nothing can resolve.
+#[test]
+fn a_template_that_comes_back_with_another_id_is_refused() {
+    let r = Repo::new();
+    let editor = editor_filling_and(
+        "Renamed",
+        "src/**",
+        r"s|^id: TASK-.*|id: TASK-000000000009|",
+    );
+
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], Some(&editor));
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("cannot be chosen"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(entity_files(&r, "tasks").is_empty());
+}
+
+/// Reaching the editor does not mean nothing was said. A flag that is not one of
+/// the mandatory ones carries into the template rather than being dropped.
+#[test]
+fn the_flags_that_were_given_are_carried_into_the_template() {
+    let r = Repo::new().with_verifiers("verifiers:\n  unit:\n    run: 'true'\n    timeout: 1m\n");
+    let editor = editor_filling("Pre-filled", "src/**", "x");
+
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--criteria",
+            "The binary answers.",
+            "--verify",
+            "unit",
+        ],
+        Some(&editor),
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let files = entity_files(&r, "tasks");
+    assert_eq!(files.len(), 1, "{files:?}");
+    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+    assert!(text.contains("The binary answers."), "{text}");
+    assert!(text.contains("verify: [unit]"), "{text}");
+    // Set by the creator, because that is who typed it — the same thing the flag
+    // form records.
+    assert!(text.contains("criteria_by: creator"), "{text}");
+}
+
+/// The references are resolved at the point of creation, exactly as the flag
+/// form resolves `--blocked-by`: an unknown one would otherwise surface in
+/// `check`, long afterwards, as a corpus error nobody can attribute to the act.
+#[test]
+fn a_blocker_that_does_not_exist_is_refused_at_creation() {
+    let r = Repo::new();
+    let editor = editor_filling_and(
+        "Blocked on nothing",
+        "src/**",
+        r"s|^blocked_by: .*|blocked_by: [TASK-000000000404]|",
+    );
+
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], Some(&editor));
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(err.contains("TASK-000000000404"), "{err}");
+    assert!(
+        err.contains("ank find"),
+        "the exact command to run next: {err}"
+    );
+    assert!(entity_files(&r, "tasks").is_empty());
 }
