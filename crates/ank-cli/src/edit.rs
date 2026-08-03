@@ -279,8 +279,23 @@ fn live_claim_anchor(cwd: &Path, id: &EntityId) -> Result<Option<String>> {
 /// answers the same absence by naming its flag form; `edit` has no flag form,
 /// so the way through is the variable itself and the hint sets it.
 fn editor_command(id: &EntityId) -> Result<String> {
-    match std::env::var("EDITOR") {
-        Ok(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
+    editor_from(std::env::var("EDITOR").ok().as_deref(), id)
+}
+
+/// The decision, separated from the reading.
+///
+/// Not a flourish: `std::env::set_var` is unsound while another thread reads
+/// the environment, and the test harness is threaded — `std::env::temp_dir`
+/// alone reads `TMPDIR`, and a neighbouring test calls it. Passing the value in
+/// is what lets the empty and untrimmed cases be tested at all without a test
+/// that is racy by construction. The absence itself is tested in
+/// `tests/cli.rs`, in a process of its own, which is where it belongs anyway.
+fn editor_from(value: Option<&str>, id: &EntityId) -> Result<String> {
+    match value {
+        // Set but empty is unset: a caller who exported it to nothing gets the
+        // same answer as one who never exported it, rather than `sh` being
+        // handed a bare file name to execute.
+        Some(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
         _ => Err(
             CliError::new(9, format!("EDITOR is not set, and edit opens {id} in it"))
                 .with_hint(format!("EDITOR=vi ank edit {id}")),
@@ -525,30 +540,22 @@ mod tests {
 
     #[test]
     fn an_unset_editor_is_an_environment_failure_that_names_the_retry() {
-        // The variable is process-wide, so this test is the one place it is
-        // touched and it puts it back.
-        let saved = std::env::var("EDITOR").ok();
-        std::env::remove_var("EDITOR");
         let id = EntityId::parse("TASK-000000000001").unwrap();
-        let err = editor_command(&id).unwrap_err();
+
+        let err = editor_from(None, &id).unwrap_err();
         assert_eq!(err.code, 9);
         assert_eq!(
             err.hint.as_deref(),
             Some("EDITOR=vi ank edit TASK-000000000001")
         );
 
-        // Set but empty is unset: a caller who exported it to nothing gets the
-        // same answer as one who never exported it, rather than `sh` being
-        // handed a bare file name to execute.
-        std::env::set_var("EDITOR", "   ");
-        assert_eq!(editor_command(&id).unwrap_err().code, 9);
+        // Exported to nothing is the same answer as never exported, rather than
+        // `sh` being handed a bare file name to execute.
+        assert_eq!(editor_from(Some(""), &id).unwrap_err().code, 9);
+        assert_eq!(editor_from(Some("   "), &id).unwrap_err().code, 9);
 
-        std::env::set_var("EDITOR", " vim -f ");
-        assert_eq!(editor_command(&id).unwrap(), "vim -f");
-
-        match saved {
-            Some(v) => std::env::set_var("EDITOR", v),
-            None => std::env::remove_var("EDITOR"),
-        }
+        // A command line, not a program name, and the surrounding blanks a
+        // shell profile leaves behind are not part of it.
+        assert_eq!(editor_from(Some(" vim -f "), &id).unwrap(), "vim -f");
     }
 }
