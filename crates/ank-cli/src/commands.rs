@@ -14,6 +14,8 @@
 //!   as effective as a badly bounded `context`.
 //! - **`log`** requires holding the claim and renews the TTL by writing.
 //!   Working is what keeps the lock; there is no heartbeat verb to memorise.
+//!   Given nothing but an id it reads instead, and then asks for no claim at
+//!   all: `git log` reads, and this is what stops the borrowed name from lying.
 //! - **`release`** requires a reason, because it is the delegation mechanism
 //!   between agents: the reason reaches the next holder through the log.
 //! - **`scope`** makes glob resolution observable before an entity is written
@@ -1035,6 +1037,15 @@ fn check_matches_head(store: &Store, given: Option<&String>, head: &EntityId) ->
     Ok(())
 }
 
+/// `log [<id>] [<message>]` (§4). `git log` reads, and so does this one when it
+/// is given nothing but an id — the one place the git intuition was betrayed,
+/// closed without renaming the verb.
+///
+/// **The disambiguation is stated, not inferred**: an argument that resolves to
+/// an entity id is a read, anything else is a message. "It resolved" is the
+/// whole test, so an argument that fails to resolve for any reason at all —
+/// absent, too short, ambiguous — is a message. A rule with one question has one
+/// answer, and an agent can predict it without running it.
 pub fn log(
     inv: &Invocation,
     repo: &Repo,
@@ -1042,24 +1053,105 @@ pub fn log(
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<i32> {
-    // `log [<id>] <message>`: the message is always the last positional, so one
-    // argument is the message and two are an id and a message.
-    let (given, message) = match inv.positionals.as_slice() {
-        [message] => (None, message.clone()),
-        [id, message] => (Some(id), message.clone()),
-        _ => {
-            return Err(CliError::new(1, "log expects a message")
-                .with_hint("ank log \"<what you just did>\""))
+    let store = Store::new(&repo.ank);
+    match inv.positionals.as_slice() {
+        [one] => match store.resolve(one) {
+            Ok(id) => log_read(inv, &store, &id, out),
+            Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
+        },
+        [given, message] => {
+            // The one invocation the rule above cannot decide: the message sits
+            // where a message goes and still names an entity. Both readings are
+            // live, so neither is picked (§4).
+            if let Ok(other) = store.resolve(message) {
+                return Err(CliError::new(
+                    1,
+                    format!(
+                        "{message} reads two ways: the log of {other} to print, \
+                         or a message to write on {given}"
+                    ),
+                )
+                .with_hint(format!("ank log {other}")));
+            }
+            log_write(inv, repo, cfg, identity, &store, Some(given), message, out)
         }
+        _ => Err(
+            CliError::new(1, "log expects a message to write or an id to read")
+                .with_hint("ank log \"<what you just did>\""),
+        ),
+    }
+}
+
+/// The task's log section, newest first, and no claim asked for: printing what
+/// somebody else recorded takes nothing from them (§4). The file is append-only,
+/// so the entry a reader came for is the last line of it — reversing is what
+/// makes the answer start with it.
+fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write) -> Result<i32> {
+    let Entity::Task(task) = store.load(id)?.entity else {
+        return Err(
+            CliError::new(1, format!("{id} is not a task, and only a task has a log"))
+                .with_hint(format!("ank show {id}")),
+        );
     };
+    let entries: Vec<LogEntry> = ank_core::parse_log(&task.body).into_iter().rev().collect();
+
+    if inv.json() {
+        let items: Vec<String> = entries
+            .iter()
+            .map(|e| {
+                format!(
+                    "{{\"timestamp\":{},\"who\":{},\"message\":{}}}",
+                    json_string(&e.timestamp),
+                    json_string(&e.who),
+                    json_string(&e.message)
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "{{\"task\":\"{id}\",\"entries\":[{}]}}",
+            items.join(",")
+        );
+        return Ok(0);
+    }
+    if inv.quiet() {
+        return Ok(0);
+    }
+
+    let _ = writeln!(out, "{id}  {}", task.title);
+    if entries.is_empty() {
+        // Named rather than left blank: an empty answer and an answer about the
+        // wrong task look identical otherwise.
+        let _ = writeln!(out, "\nno log entry yet");
+        return Ok(0);
+    }
+    let _ = writeln!(out);
+    for e in &entries {
+        // The section's own formatter, so the printed line and the stored line
+        // cannot drift into two shapes for one thing.
+        let _ = writeln!(out, "{}", e.format_line());
+    }
+    Ok(0)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn log_write(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    store: &Store,
+    given: Option<&String>,
+    message: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     if message.trim().is_empty() {
         return Err(CliError::new(1, "an empty log entry records nothing")
             .with_hint("ank log \"<what you just did>\""));
     }
 
-    let store = Store::new(&repo.ank);
     let (id, witness, record) = head_of(&repo.root, identity)?;
-    check_matches_head(&store, given, &id)?;
+    check_matches_head(store, given, &id)?;
 
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
