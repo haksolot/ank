@@ -366,6 +366,112 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// The stamp follows the commit, including a commit that changes no file
+/// (TASK-0b26c8b5bfc5).
+///
+/// The first `build.rs` emitted no `rerun-if-changed`, so Cargo watched the
+/// package instead and a commit touching no file in it never reran the script.
+/// Measured on the build that shipped `--version`: `HEAD 3110392`, stamp
+/// `aeb1841`. A diagnostic that is sometimes wrong is one people learn to
+/// re-verify by hand.
+///
+/// **Why a fixture crate and not `ank` itself.** The claim is about when Cargo
+/// reruns the build script, and that needs a real `cargo build` around a real
+/// commit — but rebuilding `ank` from inside its own test suite relinks
+/// `target/debug/ank.exe` while other tests are executing it, which is the
+/// Windows relink trap the development guide documents, and a fresh target
+/// directory would rebuild `libsqlite3-sys` on every CI job of all three
+/// platforms. So the fixture is a trivial crate driving **the real
+/// `build.rs`** — the file under test, not a copy of its logic — through a real
+/// cargo build and a real git commit. What that leaves unexercised is ank's own
+/// linking, which the claim does not depend on. The literal measurement on
+/// `ank --version` was taken by hand and recorded in the task log.
+#[test]
+fn the_stamp_follows_a_commit_that_changes_no_file() {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build.rs");
+
+    let dir = std::env::temp_dir().join(format!("ank-stamp-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("src")).unwrap();
+    std::fs::copy(&script, dir.join("build.rs")).unwrap();
+    // An empty `[workspace]` so the fixture is not adopted by any workspace it
+    // happens to sit under, and no dependencies so the build needs no registry.
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        "[workspace]\n\n[package]\nname = \"stamp\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("src/main.rs"),
+        "fn main() { println!(\"{}\", env!(\"ANK_COMMIT\")); }\n",
+    )
+    .unwrap();
+
+    let git = |args: &[&str]| {
+        let out = Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q", "-b", "main"]);
+    git(&["config", "user.email", "test@ank.local"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["add", "-A"]);
+    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    let build_and_read = || {
+        let out = Command::new(&cargo)
+            .current_dir(&dir)
+            .args(["run", "-q"])
+            .env("CARGO_TARGET_DIR", dir.join("target"))
+            .output()
+            .expect("cargo must be on PATH");
+        assert!(
+            out.status.success(),
+            "cargo run: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    let first = build_and_read();
+    assert_eq!(
+        first,
+        git(&["rev-parse", "--short", "HEAD"]),
+        "the stamp must name the commit it was built at"
+    );
+
+    // The case the old script missed: the commit moves, no file does.
+    git(&[
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "nothing changes but the commit",
+    ]);
+    let moved = git(&["rev-parse", "--short", "HEAD"]);
+    assert_ne!(moved, first, "the fixture must actually have moved");
+
+    let second = build_and_read();
+    assert_eq!(
+        second, moved,
+        "a rebuild after a commit that touches no file must name the new HEAD, \
+         not the one before it"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The binary can say what it is, and can say it where nothing else works
 /// (TASK-548c518cb705).
 ///
