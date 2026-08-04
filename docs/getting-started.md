@@ -14,16 +14,22 @@ the tool refuses, the refusal is shown as it appears.
   checks the version at startup.
 - **`sh`.** Verifiers run under `sh -c` on all three operating systems. On
   Windows it comes with Git for Windows, so requiring git makes it free.
-- **Rust 1.95 or newer**, to build. There are no published binaries yet.
+- **Rust 1.95 or newer**, only if you build from source.
 
 ## Install
 
-    git clone https://github.com/haksolot/ank
-    cd ank
-    cargo build --release
+Every release carries a static binary for three targets —
+`x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
+`x86_64-pc-windows-msvc` — each with a `.sha256` beside it. Take the archive for
+your platform from the [releases page](https://github.com/haksolot/ank/releases/latest),
+check the hash, unpack it, and put `ank` on your `PATH`.
 
-The binary is `target/release/ank`. Put it on your `PATH`, then check it
-answers:
+To build instead:
+
+    cargo install --git https://github.com/haksolot/ank ank-cli
+
+That puts `ank` in `~/.cargo/bin`. From a clone, `cargo build --release` leaves
+it at `target/release/ank`. Either way, check it answers:
 
     $ ank --version
     ank 0.1.1 (bc59636)
