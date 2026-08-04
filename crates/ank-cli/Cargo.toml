@@ -4,10 +4,11 @@ version = "0.1.1"
 edition = "2021"
 # Measured on 2026-08-01 by walking toolchains upward against this tree, which
 # is the only way this number means anything: 1.78, 1.91, 1.92, 1.93 and 1.94
-# all fail, 1.95 is the first that compiles and passes the suite. The cause is
-# a single dependency and it is named below. Declared here so cargo refuses an
-# older toolchain by name instead of failing inside a build script, and pinned
-# in ci.yml so the claim turns something red the day it stops being true.
+# all fail, 1.95 is the first that compiles and passes the suite. Re-walked on
+# 2026-08-03 against the same pair, unchanged. The cause is a single dependency
+# and it is named below. Declared here so cargo refuses an older toolchain by
+# name instead of failing inside a build script, and pinned in ci.yml so the
+# claim turns something red the day it stops being true.
 rust-version = "1.95"
 license = "GPL-3.0-only"
 description = "The Ank CLI: one surface, refusing on state and never on identity."
@@ -40,11 +41,39 @@ hex = "0.4"
 # that floor is not the binding one and never was — the dependency is
 # seventeen minor versions above it.
 #
-# The consequence is worth stating plainly rather than discovering later: this
-# workspace requires the current stable, so it has no MSRV headroom at all, and
-# the floor moves whenever this dependency does. Whether that price is worth
-# paying for `bundled` SQLite is a dependency question, not an MSRV question,
-# and it is TASK-973e9dc3f9ce's to answer.
+# Whether to pin back to a version that asks for less was TASK-973e9dc3f9ce's
+# question, and it was answered by walking toolchains against both trees rather
+# than by reading changelogs (2026-08-03, `--ignore-rust-version` throughout,
+# since `rust-version` otherwise refuses before compiling anything):
+#
+#   rusqlite 0.40.1 / libsqlite3-sys 0.38.1   1.78 1.91 1.92 1.93 1.94 fail
+#                                             1.95 builds, suite green
+#   rusqlite 0.39.0 / libsqlite3-sys 0.37.0   1.78 1.81 fail
+#                                             1.82 .. 1.94 build, suite green
+#
+# So the alternative is real — 1.82, thirteen versions lower, and the full
+# suite passes on it, which is the part no changelog would have told us. It is
+# rejected anyway, for three measured reasons. It adds eleven crates to the
+# lockfile, `sqlite-wasm-rs`, `rsqlite-vfs`, `wasm-bindgen` and its satellites
+# among them, because opting out of `sqlite-wasm-rs` on wasm32 is a 0.40.0
+# feature and `default-features = false` buys nothing one major back. It drops
+# the bundled amalgamation from SQLite 3.53.2 to 3.51.3. And 0.40.1 is the
+# release that fixed a SQL injection through a tainted SAVEPOINT name — not
+# reachable from `index.rs`, which opens plain transactions and never names a
+# savepoint, but declining a security release to lower a build floor is a
+# habit, and the next one may be reachable.
+#
+# The premise that made this urgent has also expired. The floor was measured on
+# a machine whose stable was 1.95, so "requires the newest stable, zero
+# headroom" was a snapshot of that machine and not a property of the tree:
+# stable was already 1.97.1 by the time the question was asked. The floor drifts
+# backwards on its own every six weeks, whereas the pinned-back position holds
+# only while rusqlite 0.40 is refused — including for security — and has to be
+# renewed at every bump. A floor that requires standing still is a freeze.
+#
+# The MSRV is therefore a consequence, not a target: it is what this dependency
+# needs, it is measured and never asserted, and `ci.yml` builds on exactly that
+# toolchain so the claim turns something red the day it stops being true.
 #
 # `default-features = false` is not tidiness: the default set includes
 # `ffi-sqlite-wasm-rs`, which drags wasm-bindgen, js-sys and a wasm VFS into the
