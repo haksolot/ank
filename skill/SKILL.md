@@ -1,6 +1,8 @@
 ---
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
+metadata:
+  revision: "605f771e1955"
 ---
 
 # ank
