@@ -17,8 +17,11 @@ proof:
   - type: commit
     ref: 5dcd3eb
     criteria: 813e525c9ffb
+  - type: test
+    ref: "30936328404"
+    criteria: 813e525c9ffb
 schema: 2
-version: 5
+version: 6
 ---
 
 Asked for on 2026-08-04, from the question of whether CI could attest by itself
@@ -69,3 +72,4 @@ implementing.
 - 2026-08-04T17:46:00Z seanl@sean-laptop — Measured the blast radius before designing, with a throwaway signal rather than by guessing: 8 of the 64 done tasks carry no test: proof, all of them commit:-only. That settles the question the body left open about a backlog. I expected something near 60, which would have needed the 'predates the convention' exemption the author-field signal uses; 8 is a worklist that clears, so no exemption is warranted and the design gets simpler. Second decision, on the transient: the signal will fire on the merge commit's own CI run, in the window between the merge landing and the run going green. Accepting that rather than adding a grace period or a commit-distance constant. It is not a false positive -- the statement is true when printed and clears when someone attests -- and the alternative buys quiet at the cost of a magic number, which section 6 only justifies for the flooding thresholds. Third: gating on 'done on the default branch' is load-bearing and not decoration. Without it the signal fires on a feature branch straight after ank done, when attesting is impossible because no merge run exists yet -- a finding the reader cannot act on, which is the failure mode the weak-proof comment in human.rs was written about.
 - 2026-08-04T17:52:04Z seanl@sean-laptop — The specification had already settled the design question, at section 4 line 553: 'nothing calls attest automatically. A CI provider appending its own run reference at the end of a pipeline is an integration, not a verb.' Found it while looking for where to record the new signal, after the reasoning was written rather than before -- so the detector shape was re-derived rather than read off, and the two agree. That deferral is the positive half of the same choice; this signal is the negative half, and section 4 now carries both next to each other. Also measured that no existing finding covers this case: commit is not weak, so the weak-proof signal stays silent by design on a commit:-only proof list, which is why the omission was invisible rather than merely unreported.
 - 2026-08-04T17:53:57Z seanl@sean-laptop — done, proof commit:5dcd3eb
+- 2026-08-04T18:03:40Z seanl@sean-laptop — attested test:30936328404
