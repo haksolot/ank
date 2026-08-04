@@ -17,8 +17,11 @@ proof:
   - type: commit
     ref: 1b655c2
     criteria: 0ebd573cf48c
+  - type: test
+    ref: "30954352678"
+    criteria: 0ebd573cf48c
 schema: 2
-version: 4
+version: 5
 ---
 
 TASK-548c518cb705 made the binary say what it is. TASK-b495234f192c made the skill say which revision it is. Neither says anything about the other, so telling a stale installed skill from a current one still needs a third value from somewhere -- the repository, a release note, a person who remembers.
@@ -32,3 +35,4 @@ The design question for whoever claims this: where the value belongs. ank --vers
 ## Log
 - 2026-08-04T21:42:22Z seanl@sean-laptop — Decided where the value belongs: the existing single line of `ank --version`, extended to `ank <ver> (<commit>, skill <rev>)`. `ank status` was the other candidate and is out on the criterion itself -- it runs after startup, so it needs a resolved repository, and the reader this exists for holds a binary and a SKILL.md and nothing else. Keeping one line also leaves section 4's shape untouched: the specification edit says what the line contains, not that it grew a second line.
 - 2026-08-04T21:54:37Z seanl@sean-laptop — done, proof commit:1b655c2
+- 2026-08-04T22:54:31Z seanl@sean-laptop — attested test:30954352678
