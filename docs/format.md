@@ -26,7 +26,7 @@ run against.
       allowed_signers     public keys allowed to ratify (§8), versioned
       tasks/TASK-<hex>.md
       adr/ADR-<hex>.md
-      index.db            derived, disposable, gitignored — never a source of truth
+      index.db            derived, disposable, belongs in .gitignore — never a source of truth
 
 Flat, deliberately: attachment happens through the `scope` field, not through
 location (§3). A file's name is its id; nothing resolves through the directory
