@@ -5,7 +5,7 @@ slug: the-msrv-is-the-current-stable-and-one-dependenc
 title: The MSRV is the current stable, and one dependency decides it
 created: 2026-08-01T19:38:31Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/Cargo.toml
   - Cargo.lock
@@ -16,8 +16,12 @@ blocked_by: []
 done_criteria: |
   The choice between keeping libsqlite3-sys at a version that requires the current stable and pinning back to one that does not is made in writing, measured the same way the floor was: a toolchain run against the tree, not an assumption about what a version needs. Whichever way it goes, the manifests, CLAUDE.md and ci.yml agree with the measurement afterwards.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: "8e15058"
+    criteria: 73513b52fadc
 schema: 2
-version: 10
+version: 11
 ---
 
 Found by TASK-daf25ab8a9b7, which established the floor and stopped there because its criterion was to measure and record, not to move it.
@@ -37,3 +41,4 @@ The other side of the trade is in the manifest already: bundled is what keeps th
 - 2026-08-04T04:47:38Z seanl@sean-laptop — amended: +scope CLAUDE.md, +scope .github/workflows/ci.yml, +scope crates/ank-core/Cargo.toml
 - 2026-08-04T04:48:06Z seanl@sean-laptop — Scope amended to add CLAUDE.md, ci.yml and ank-core's manifest. The criterion's last clause requires those three to agree with the measurement afterwards, and the declared scope named only ank-cli's manifest and Cargo.lock, so the scope omitted files the work has to touch. That is what amend is for; the criterion is untouched and the claim holds. The warning it printed is correct and expected: the scope change moves the constraint set the claim anchors.
 - 2026-08-04T04:50:22Z seanl@sean-laptop — Decided: keep libsqlite3-sys where it is, MSRV stays 1.95. The alternative was measured to a floor of exactly 1.82 -- 1.81 fails on unsafe extern C, 1.82 builds -- and the full suite passes on it, so this is a trade and not a forced move, and the writing says so. Rejected on three measured costs and one expired premise. Eleven crates enter the lockfile including sqlite-wasm-rs and the wasm-bindgen stack, since the opt-out is a 0.40.0 feature; the bundled amalgamation drops from SQLite 3.53.2 to 3.51.3; and 0.40.1 carries the SAVEPOINT SQL injection fix, which index.rs does not reach but which sets the habit. The premise: stable was 1.97.1 when this task was written, so 'requires the newest stable, zero headroom' described the measuring machine, not the tree. The floor drifts backwards by itself every six weeks; the pinned position holds only while rusqlite 0.40 is refused, security releases included. Written into ank-cli's manifest with both measured rows, into CLAUDE.md, and into the msrv job of ci.yml.
+- 2026-08-04T04:52:40Z seanl@sean-laptop — done, proof commit:8e15058
