@@ -3,6 +3,24 @@
 Status: working draft, arbitration revision
 Last revised: 1 August 2026
 
+## Who this document is for
+
+This is the normative document and the source of truth: every question the
+other two defer to it is settled here, and where any of them disagrees with
+this one, this one is right.
+
+It is not a tutorial, and it no longer stands in for one. A reader who wants to
+install Ank and finish a first task reads [getting-started.md](getting-started.md);
+a reader implementing a tool that reads or writes `.ank/` reads
+[format.md](format.md), which carries the mechanical half — field order,
+emission rules, conformance suite — and points back here for every rule it
+depends on. Both are written so that this document does not have to teach.
+
+What is here instead is the argument. Sections state a decision, the
+alternatives rejected, and what the decision costs, because a specification
+that records only its conclusions cannot be revised by anyone who was not in
+the room.
+
 ## Decisions settled in this revision
 
 Settled relative to v1: orientation and constraints reconciled (§5) · immutability anchored by hash, verifiable without making the CLI a gatekeeper (§3, §8) · nominal execution model, one worktree per agent (§7) · claims on git refs from level 0 onward, one ref per task (§7) · Ank never commits, except `accept` (§12) · return after TTL expiry, and a TTL ceiling (§3) · `verify` becomes a list (§3) · `proof` becomes an append-only list, with `attest` as the one write allowed after `done` (§3, §10) · log format fixed as an append-only section of the task file (§3) · index lifecycle fixed (§6) · verifier timeout fixed (§4) · `--reason` mandatory on `release` (§4) · `check` signals extended (§4) · identity, default roles and signature verification specified (§8).
