@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/ank-dark.svg">
+    <img src="assets/ank.svg" alt="" width="88" height="88">
+  </picture>
+</p>
+
 <h1 align="center">ank</h1>
 
 <p align="center">
@@ -200,6 +207,7 @@ crates/ank-core   parser and data model — the reference implementation of the 
 crates/ank-cli    the `ank` binary
 docs/             the specification, getting started, the format
 skill/            the bootstrap skill for agents
+assets/           the project mark, one file per theme
 .ank/             ank's own development plan, in the ank format
 ```
 
