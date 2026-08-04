@@ -2072,6 +2072,119 @@ fn attest_refuses_a_task_that_is_not_finished_and_names_the_verb_that_applies() 
     );
 }
 
+/// Writes a `done` task carrying exactly `proofs`, which the seeding helpers
+/// cannot express: they build open tasks, and `done` is the one status whose
+/// proof list is the subject here.
+fn seed_done(r: &Repo, id: &str, proofs: &str) {
+    std::fs::write(
+        r.0.join(".ank/tasks").join(format!("{id}.md")),
+        format!(
+            "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
+             created: 2026-07-28T00:00:00Z\nstatus: done\nscope:\n  - src/**\n\
+             blocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+             criteria_by: creator\nproof:\n{proofs}schema: 1\nversion: 1\n---\n\nFree body.\n"
+        ),
+    )
+    .unwrap();
+}
+
+const ATTESTED: &str = "TASK-00000000a77e";
+const UNATTESTED: &str = "TASK-00000000c0dd";
+
+/// `done` records what ran on the machine that ran it; `attest` anchors the
+/// same criterion to a run anybody can re-read. Nothing used to notice a task
+/// that never got the second one: it reads `done`, its proof list is not empty,
+/// and `commit` is not weak, so every existing finding stayed silent.
+///
+/// Through the binary, and the negative half carries the weight: a signal that
+/// fired on the attested task too would be reporting every finished task in the
+/// corpus, which is a line readers learn to skip rather than a finding.
+#[test]
+fn check_reports_a_done_task_that_was_never_attested_and_spares_one_that_was() {
+    let r = Repo::new();
+    seed_done(&r, UNATTESTED, "  - type: commit\n    ref: abc1234\n");
+    seed_done(
+        &r,
+        ATTESTED,
+        "  - type: commit\n    ref: abc1234\n  - type: test\n    ref: \"991\"\n",
+    );
+    // The seeded scope has to match something tracked, or a dead-scope fault
+    // fires and the exit code under test stops being about attestation.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+
+    // A signal and not a fault: the corpus is intact, the record is thin.
+    // Exit 8 here would redden CI on the merge that introduced the task.
+    assert_eq!(
+        code(&out),
+        0,
+        "attestation is a signal, not a fault: {said}"
+    );
+
+    let reported: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("no test proof"))
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "exactly the unattested task should be named:\n{said}"
+    );
+    assert!(reported[0].contains(UNATTESTED), "{said}");
+    assert!(
+        reported[0].contains(&format!("ank attest {UNATTESTED}")),
+        "a finding names the exact command that clears it: {said}"
+    );
+}
+
+/// The gate, which is load-bearing and not decoration.
+///
+/// On a feature branch straight after `done`, attesting is impossible: no merge
+/// run exists to cite yet. Reporting there would name work the reader cannot
+/// do, and the completion ref already covers that window with a signal that
+/// says the useful thing instead.
+#[test]
+fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
+    let r = Repo::new();
+    // A commit on `main` that does not carry the task, so the question asked of
+    // the default branch is answerable and the answer is no. Without this, the
+    // branch would carry no commit at all and the silence below would prove
+    // only that git could not be asked.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    seed_done(&r, UNATTESTED, "  - type: commit\n    ref: abc1234\n");
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "work"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{said}");
+    assert!(
+        !said.contains("no test proof"),
+        "reported before the merge, when attesting is impossible:\n{said}"
+    );
+
+    // And it appears the moment the default branch catches up, so the silence
+    // above is the gate and not the signal being broken outright.
+    r.git(&["checkout", "-q", "main"]);
+    r.git(&["merge", "-q", "--no-ff", "-m", "merge", "feature"]);
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("no test proof") && said.contains(UNATTESTED),
+        "the default branch caught up and nothing was reported:\n{said}"
+    );
+}
+
 /// A task created through the binary needs no hand finishing.
 ///
 /// The assertion is about what lands on disk, so the file is read back rather
