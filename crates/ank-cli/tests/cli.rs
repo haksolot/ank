@@ -1857,6 +1857,108 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// §6 calls the index derived, disposable and gitignored. The first two were
+/// true of what `init` produced; the third was true of no repository it had
+/// ever produced, because it wrote no ignore rule at all. This repository was
+/// not the counterexample -- it carries the line by hand, written before
+/// `init` existed to write it, which is exactly how the gap survived.
+///
+/// Through the binary end to end, and deliberately not by reading
+/// `.gitignore`: what has to be true is that *git* treats the file as ignored,
+/// and a line present in a file it does not consult would satisfy any
+/// assertion about the file's content while proving nothing.
+#[test]
+fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
+    let dir = std::env::temp_dir().join(format!("ank-cli-ignore-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let git = |args: &[&str]| -> Output {
+        Command::new("git")
+            .current_dir(&dir)
+            .args(args)
+            .output()
+            .expect("git must be installed: it is a hard dependency")
+    };
+    assert!(git(&["init", "-q", "-b", "main"]).status.success());
+
+    // A `.gitignore` the user curated first: `init` has to append to it, not
+    // replace it, and that is only observable when there is something to lose.
+    std::fs::write(dir.join(".gitignore"), "/target\n").unwrap();
+
+    let init = || -> Output {
+        Command::new(ANK)
+            .arg("init")
+            .arg(&dir)
+            .env("ANK_AGENT", "claude-code@ank")
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    };
+    let out = init();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("wrote .gitignore"),
+        "{}",
+        stdout(&out)
+    );
+
+    // A command that builds the index, so the file under test actually exists.
+    let out = Command::new(ANK)
+        .args(["find", "--status", "open"])
+        .arg("--repo")
+        .arg(&dir)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        dir.join(".ank/index.db").exists(),
+        "nothing built the index, so the assertion below would pass vacuously"
+    );
+
+    // Ignored, positively: `check-ignore` names a rule that matches.
+    let ci = git(&["check-ignore", "-v", ".ank/index.db"]);
+    assert!(
+        ci.status.success(),
+        "git does not consider the index ignored: {}{}",
+        String::from_utf8_lossy(&ci.stdout),
+        String::from_utf8_lossy(&ci.stderr)
+    );
+
+    // And untracked, negatively: `status` must not offer it. `-uall` because
+    // the default collapses an untracked directory to its name, which would
+    // hide the very path in question behind `.ank/`.
+    let st = git(&["status", "--porcelain", "-uall"]);
+    let st = String::from_utf8_lossy(&st.stdout).replace('\\', "/");
+    assert!(
+        !st.contains("index.db"),
+        "the index is still offered for commit:\n{st}"
+    );
+    // The fixture is sound only if `status` sees the rest of `.ank/`.
+    assert!(
+        st.contains(".ank/config.yml"),
+        "empty status proves nothing:\n{st}"
+    );
+
+    // The user's own rule survived, and a second init adds nothing.
+    let gi = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert!(gi.starts_with("/target\n"), "{gi:?}");
+
+    let out = init();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stdout(&out).contains("wrote .gitignore"),
+        "re-init rewrote it: {}",
+        stdout(&out)
+    );
+    let again = std::fs::read_to_string(dir.join(".gitignore")).unwrap();
+    assert_eq!(gi, again, "re-init changed .gitignore");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The bug this exists for, end to end and through the binary: a corpus that a
 /// Windows clone handed back in CRLF was entirely unreadable, and every entity
 /// was reported as "missing frontmatter" -- a diagnostic that sends the reader

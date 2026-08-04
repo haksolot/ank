@@ -2,13 +2,18 @@
 //!
 //! A narrow, fixed perimeter: create `.ank/`, write `config.yml`, add the
 //! `refs/ank/*` refspec, place a pointer in `AGENTS.md`, and write a
-//! `.gitattributes`.
+//! `.gitattributes` and a `.gitignore`.
 //!
-//! That last point is not cosmetic. On Windows `core.autocrlf=true` is the
+//! Neither git file is cosmetic. On Windows `core.autocrlf=true` is the
 //! default, and without `.gitattributes` git converts back to CRLF on every
 //! checkout what the tool has just written in LF — making any fresh clone
-//! unreadable. Fixing it only in Ank's own repository would have left it
-//! broken for every user.
+//! unreadable. Without `.gitignore`, §6 calls the index derived, disposable
+//! and gitignored while no repository `init` produces is any of the third:
+//! the first `git add -A` commits a binary file that every command rewrites.
+//! Fixing either one only in Ank's own repository would have left it broken
+//! for every user — which is precisely how the second survived, since this
+//! repository carries the ignore line by hand, written before `init` existed
+//! to write it.
 
 use crate::cli::{CliError, Invocation, Result};
 use crate::{config, git, repo};
@@ -17,6 +22,10 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const GITATTRIBUTES_LINE: &str = ".ank/** text eol=lf";
+/// Root-relative on purpose: a `gitignore` pattern holding a `/` is anchored
+/// to the directory of the file that carries it, so this stays correct when
+/// `init` runs on a subdirectory rather than on the repository root.
+pub const GITIGNORE_LINE: &str = ".ank/index.db";
 pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
@@ -41,6 +50,7 @@ pub struct Report {
     pub created_dirs: bool,
     pub wrote_config: bool,
     pub wrote_gitattributes: bool,
+    pub wrote_gitignore: bool,
     pub wrote_agents_pointer: bool,
     pub added_refspec: bool,
 }
@@ -58,6 +68,9 @@ impl Report {
         }
         if self.wrote_gitattributes {
             v.push("wrote .gitattributes".to_string());
+        }
+        if self.wrote_gitignore {
+            v.push("wrote .gitignore".to_string());
         }
         if self.wrote_agents_pointer {
             v.push("pointer added to AGENTS.md".to_string());
@@ -99,6 +112,9 @@ pub fn init_at(root: &Path) -> Result<Report> {
 
     let ga = root.join(".gitattributes");
     report.wrote_gitattributes = ensure_line(&ga, GITATTRIBUTES_LINE)?;
+
+    let gi = root.join(".gitignore");
+    report.wrote_gitignore = ensure_line(&gi, GITIGNORE_LINE)?;
 
     let agents = root.join("AGENTS.md");
     report.wrote_agents_pointer = ensure_line(&agents, AGENTS_POINTER)?;
@@ -182,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn init_produces_all_five_effects() {
+    fn init_produces_all_six_effects() {
         let t = Temp::new_repo();
         let r = init_at(&t.0).unwrap();
 
@@ -197,6 +213,10 @@ mod tests {
         assert!(r.wrote_gitattributes);
         let ga = fs::read_to_string(t.0.join(".gitattributes")).unwrap();
         assert!(ga.contains(GITATTRIBUTES_LINE), "{ga}");
+
+        assert!(r.wrote_gitignore);
+        let gi = fs::read_to_string(t.0.join(".gitignore")).unwrap();
+        assert!(gi.contains(GITIGNORE_LINE), "{gi}");
 
         assert!(r.wrote_agents_pointer);
         assert!(fs::read_to_string(t.0.join("AGENTS.md"))
@@ -234,6 +254,26 @@ mod tests {
         assert!(s.starts_with("# Notes\n\nAlready here.\n"), "{s:?}");
         assert!(s.contains(AGENTS_POINTER));
         assert!(!ensure_line(&f, AGENTS_POINTER).unwrap(), "second pass");
+    }
+
+    /// A `.gitignore` is a file the user curates, far more often than a
+    /// `.gitattributes` is. Appending to it must leave every rule already
+    /// there intact, and must not grow a second copy of ours on re-init.
+    #[test]
+    fn an_existing_gitignore_keeps_its_content() {
+        let t = Temp::new_repo();
+        let gi = t.0.join(".gitignore");
+        fs::write(&gi, "/target\nnode_modules/\n").unwrap();
+
+        init_at(&t.0).unwrap();
+        let s = fs::read_to_string(&gi).unwrap();
+        assert!(s.starts_with("/target\nnode_modules/\n"), "{s:?}");
+        assert!(s.contains(GITIGNORE_LINE), "{s:?}");
+
+        let second = init_at(&t.0).unwrap();
+        assert!(!second.wrote_gitignore);
+        let s = fs::read_to_string(&gi).unwrap();
+        assert_eq!(s.lines().filter(|l| l.trim() == GITIGNORE_LINE).count(), 1);
     }
 
     /// The test the original bug was asking for: a repository initialised,

@@ -644,7 +644,7 @@ In orientation mode, where the agent is not writing code yet, truncation is acce
   allowed_signers   # public keys allowed to ratify (§8), versioned
   tasks/TASK-<id>.md
   adr/ADR-<id>.md
-  index.db          # derived, disposable, gitignored
+  index.db          # derived, disposable, gitignored by init (§9)
 ```
 
 **Flat tree.** Attachment happens through `scope`, not through location. One entity can constrain several modules; a tree mirroring the code would force a single parent and break at the first refactor.
@@ -830,7 +830,9 @@ The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, Open
 
 **`ank help` is one flat listing** (ADR-c656cbcc33a9): every verb, in the order of §4, with no headings and no grouping. The loop is what SKILL.md teaches, not what the binary prints — a heading printed by the CLI is a claim about who a verb is for, and that is the claim §4 withdraws. The order carries what a heading would have said, since §4 puts the loop first, and it carries it without asserting a category. `ank help <verb>` answers about that verb alone: its usage, its flags with their value placeholders, and the globals. An unknown verb is a **code 2** and never a fallback to the general listing — an agent that asked about one verb and received all sixteen has to work out that its question went unanswered.
 
-`ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`.
+`ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`, write a `.gitattributes` (§2) and a `.gitignore` (§6).
+
+Both git files are written at the root of the initialised directory, and both carry a single line added idempotently to whatever is already there. The `.gitignore` line is `.ank/index.db`: §6 calls the index derived, disposable and gitignored, and the third adjective is only true of a repository where something wrote the rule. It goes at the root rather than inside `.ank/` for the same reason `.gitattributes` does — one place to look for what `init` changed — and because ADR-01b6dd05f0db makes `.ank/` opaque to agents, so a rule hidden there could not be read by the agent asking why the index is tracked.
 
 **Binary distribution**: the skill says *how* to use Ank, it does not install the CLI. Plan for `curl | sh` and Homebrew in addition to npm.
 

@@ -46,14 +46,21 @@ From the root of a git repository:
     created .ank/tasks .ank/adr
     wrote .ank/config.yml
     wrote .gitattributes
+    wrote .gitignore
     pointer added to AGENTS.md
     refspec added: +refs/ank/*:refs/ank/*
 
-Five effects, and re-running changes nothing — `init` is idempotent and says
+Six effects, and re-running changes nothing — `init` is idempotent and says
 `already initialised, nothing to do`. The `.gitattributes` line keeps `.ank/`
 in LF on checkout: on Windows git would otherwise convert back to CRLF
-everything the tool has just written, on every clone. The refspec is what makes
-claims travel, since hosts do not fetch non-standard refs on their own.
+everything the tool has just written, on every clone. The `.gitignore` line is
+`.ank/index.db`, the derived SQLite index: it is rebuilt from the files
+whenever it is missing, so committing it would only track a binary that every
+command rewrites. The refspec is what makes claims travel, since hosts do not
+fetch non-standard refs on their own.
+
+Both git files are appended to, never replaced — an existing `.gitignore`
+keeps everything already in it.
 
 Two edits to make now, before the first real command.
 
