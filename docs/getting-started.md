@@ -236,10 +236,12 @@ mandatory:
     error[5]: proof required to move TASK-0ff108d8e2ca to done
       -> ank done --proof test:<ci-run-ref>
 
-The proof types are `commit`, `test`, `human-review` and `assertion`, in
-descending order of what they guarantee. `commit:<sha>` is checked with git.
-`assertion:"..."` guarantees nothing and is marked weak, which is what keeps it
-from quietly becoming the default path.
+The proof types are `commit`, `test`, `human-review` and `assertion`, and what
+separates them is not local versus hosted but **who controls the environment**.
+A CI reference is out of the agent's reach and guarantees the most;
+`commit:<sha>` is checked with git; a local test proves what ran in a tree the
+agent could have altered; `assertion:"..."` guarantees nothing and is marked
+weak, which is what keeps it from quietly becoming the default path.
 
 If a verifier fails or times out, the transition is refused and the task stays
 where it is.
