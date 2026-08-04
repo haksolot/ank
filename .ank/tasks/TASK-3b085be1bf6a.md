@@ -5,15 +5,19 @@ slug: the-msrv-job-hardcodes-the-number-the-manifests
 title: The msrv job hardcodes the number the manifests declare
 created: 2026-08-04T18:17:37Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - .github/workflows/ci.yml
 blocked_by: []
 done_criteria: |
   The msrv job derives the toolchain it installs and builds with from rust-version in the manifests rather than naming it literally, so that bumping rust-version cannot leave the job measuring a toolchain the tree no longer declares. Asserted by changing the declared value and observing the job follow it, without editing the workflow.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 62cb9c6
+    criteria: 5297297678eb
 schema: 2
-version: 3
+version: 5
 ---
 
 Found while implementing TASK-d81a05ef8e8d, and deliberately left out of it:
@@ -41,3 +45,5 @@ that is a third piece of work, belongs to whoever picks it up.
 
 ## Log
 - 2026-08-04T18:32:03Z seanl@sean-laptop — Three decisions. The job name: a GitHub job name is evaluated before any step runs, so it cannot read a step output -- carrying the number there would need a separate floor job whose only work is a sed, adding a runner spin-up and a dependency edge that serialises both msrv jobs behind it. Dropping the number from the name instead: 'msrv / <os>'. It also makes the check name stable across a bump, which a derived name would not be. Checked that nothing depends on the current name -- main has no branch protection, so no required check references 'msrv 1.95 / ubuntu-latest'. Second, the open question the body left me, and I am the one who picked it up so I am answering it rather than deferring again: the two manifests declare rust-version independently and nothing checked they agree, which is exactly the hole that deriving from ank-cli alone opens. Added the comparison to the derivation step, exit 9 naming both files. It belongs in the msrv job rather than msrv-tight because that is the job about the declared number, and learning about a manifest disagreement from the tightness job would send the reader to the wrong place. Third, shell: bash on every derived step. This job runs the three-platform matrix and the default shell on windows-latest is pwsh, where $DECLARED is a PowerShell variable and an env var is $env:DECLARED -- so a bare run: would silently expand to nothing on Windows and install a toolchain named ''. The test job already sets shell: bash for the same reason.
+- 2026-08-04T18:38:49Z seanl@sean-laptop — Asserted the criterion the way it is written -- by changing the declared value and observing CI follow it, with no workflow edit -- on a throwaway branch that touched only the two manifests. Run 30939293330: msrv printed 'declared 1.96, in both manifests' and installed rustc 1.96.1, where the old job would have installed 1.95 regardless and stayed green. The same run doubled as the first real exercise of TASK-d81a05ef8e8d's job in the direction it was built for: msrv-tight derived 1.96, tested 1.95, found that 1.95 genuinely builds the whole workspace in 11.83s, and failed with 'the declared MSRV 1.96 is higher than this tree needs'. So one push proved both jobs, one by following and one by refusing. Branch deleted after reading, never merged, and the manifests on the real branch are untouched at 1.95.
+- 2026-08-04T18:40:18Z seanl@sean-laptop — done, proof commit:62cb9c6
