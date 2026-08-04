@@ -2135,8 +2135,19 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
     }
 }
 
-/// The whole entity, verbatim. Everything else in the tool summarises; this is
-/// the one command that does not.
+/// The whole entity, verbatim, and on a task the two directions of
+/// `blocked_by` (§4).
+///
+/// Everything above the sections is byte for byte what is on disk; everything
+/// else in the tool summarises, and this is still the one command that does
+/// not. The sections under it are derived from the corpus at read time and
+/// stored nowhere — a stored reverse edge is a second copy of `blocked_by` that
+/// can disagree with the first, and the copy that disagrees is the one a reader
+/// happens to open.
+///
+/// **Both headings print even at zero.** An absent heading and a heading with
+/// nothing under it would be the same page, and only one of the two is an
+/// answer to *what waits on this*.
 pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     let prefix = inv
         .positionals
@@ -2145,6 +2156,12 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let text = serialize_entity(&loaded.entity);
+    // An ADR has no `blocked_by` to have two directions of, so it costs nothing
+    // and the index is never opened for one.
+    let edges = match &loaded.entity {
+        Entity::Task(t) => Some(edges_of(repo, t)?),
+        Entity::Adr(_) => None,
+    };
 
     if inv.json() {
         let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
@@ -2154,16 +2171,116 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             }
             None => "null".to_string(),
         };
+        let derived = match &edges {
+            Some((blocked_by, unblocks)) => format!(
+                ",\"blocked_by\":{},\"unblocks\":{}",
+                edges_json(blocked_by),
+                edges_json(unblocks)
+            ),
+            None => String::new(),
+        };
         let _ = writeln!(
             out,
-            "{{\"id\":\"{}\",\"coordination\":{state},\"content\":{}}}",
+            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"content\":{}}}",
             loaded.entity.id(),
             json_str(&text)
         );
     } else if !inv.quiet() {
         let _ = write!(out, "{text}");
+        if let Some((blocked_by, unblocks)) = &edges {
+            edge_section(out, "BLOCKED BY", blocked_by);
+            edge_section(out, "UNBLOCKS", unblocks);
+        }
     }
     Ok(0)
+}
+
+/// One end of a `blocked_by` edge, resolved against the corpus.
+///
+/// `status` is `None` when the reference resolves to nothing. A dangling
+/// `blocked_by` is a fault `check` reports; `show` still prints the line it
+/// could not resolve, because dropping it would produce a shorter list and a
+/// shorter list is a wrong answer to a question about what blocks this.
+struct Edge {
+    id: EntityId,
+    short: String,
+    status: Option<String>,
+    title: Option<String>,
+}
+
+/// What blocks this task, and what this task directly unblocks.
+///
+/// The reverse direction is not filtered by status: `graph` draws the whole
+/// edge set and this is the narrow view onto the same derivation, so a blocker
+/// that is already `done` and a task that is already `done` both keep their
+/// line and carry their status. The §5 ordering counts something else — how
+/// many tasks are still *held up* — and a count is not a list.
+fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
+    let index = Index::open(&repo.ank)?;
+    let all = index.all()?;
+    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
+    let shorts = crate::context::short_ids(&ids);
+    let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
+
+    let edge = |id: &EntityId| -> Edge {
+        let row = row_of.get(id);
+        Edge {
+            id: id.clone(),
+            short: shorts.get(id).cloned().unwrap_or_else(|| id.to_string()),
+            status: row.map(|r| r.status.clone()),
+            title: row.map(|r| r.title.clone()),
+        }
+    };
+
+    // Declared order for the blockers: the frontmatter printed just above says
+    // the same thing in the same order, and two orders for one list is a
+    // difference a reader has to account for before trusting either.
+    let blocked_by: Vec<Edge> = task.blocked_by.iter().map(&edge).collect();
+
+    // The reverse direction is derived and has no declared order, so it takes
+    // the one every other listing uses.
+    let mut waiting: Vec<&crate::index::Row> = all
+        .iter()
+        .filter(|r| r.kind == EntityKind::Task && r.blocked_by.contains(&task.id))
+        .collect();
+    waiting.sort_by_key(|r| r.id.to_string());
+    let unblocks: Vec<Edge> = waiting.iter().map(|r| edge(&r.id)).collect();
+
+    Ok((blocked_by, unblocks))
+}
+
+fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge]) {
+    let _ = writeln!(out, "\n{heading} ({})", edges.len());
+    for e in edges {
+        match (&e.status, &e.title) {
+            (Some(status), Some(title)) => {
+                let _ = writeln!(out, "  {}  [{status}] {title}", e.short);
+            }
+            _ => {
+                let _ = writeln!(out, "  {}  (no such entity)", e.short);
+            }
+        }
+    }
+}
+
+fn edges_json(edges: &[Edge]) -> String {
+    let items: Vec<String> = edges
+        .iter()
+        .map(|e| {
+            let field = |v: &Option<String>| match v {
+                Some(s) => json_str(s),
+                None => "null".to_string(),
+            };
+            format!(
+                "{{\"id\":\"{}\",\"short\":\"{}\",\"status\":{},\"title\":{}}}",
+                e.id,
+                e.short,
+                field(&e.status),
+                field(&e.title)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 #[cfg(test)]
@@ -4013,10 +4130,31 @@ mod tests {
         t.write(&task("000000000001", TaskStatus::Open, &[]));
         let (code, out) = t.call(&["show", "0000"], "marie@laptop").unwrap();
         assert_eq!(code, 0);
+        // The entity comes first and comes whole: the derived sections are
+        // appended under it, and nothing is allowed to reformat what is above.
+        let file = std::fs::read_to_string(t.store().path_of(&id)).unwrap();
+        assert!(
+            out.starts_with(&file),
+            "byte for byte, which is what makes it a reliable read: {out}"
+        );
+        assert_eq!(
+            &out[file.len()..],
+            "\nBLOCKED BY (0)\n\nUNBLOCKS (0)\n",
+            "both headings print at zero: an absent heading is not an answer"
+        );
+    }
+
+    /// An ADR has no `blocked_by`, so `show` on one is unchanged.
+    #[test]
+    fn show_on_an_adr_stays_verbatim_and_adds_nothing() {
+        let t = Temp::new();
+        let id = EntityId::parse("ADR-00000000aaaa").unwrap();
+        t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
+        let (code, out) = t.call(&["show", "ADR-0000"], "marie@laptop").unwrap();
+        assert_eq!(code, 0);
         assert_eq!(
             out,
-            std::fs::read_to_string(t.store().path_of(&id)).unwrap(),
-            "byte for byte, which is what makes it a reliable read"
+            std::fs::read_to_string(t.store().path_of(&id)).unwrap()
         );
     }
 

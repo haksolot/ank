@@ -721,6 +721,124 @@ fn graph_terminates_on_a_cycle_and_says_where_it_is() {
     );
 }
 
+/// `ank show` on a task says what it unblocks, not only what blocks it
+/// (TASK-2415ddb92df8).
+///
+/// The same derivation `graph` draws, narrowed to one entity. Through the
+/// binary, because the criterion is about what the process prints — and because
+/// the entity has to still come out whole above the sections, which is a
+/// property of the bytes on the pipe and of nothing else.
+///
+/// The fixture gives every clause something to be wrong about: a blocker that
+/// is already `done`, two tasks waiting on the same one, a blocker naming an
+/// entity the corpus does not hold, and a leaf with neither direction.
+#[test]
+fn show_lists_what_a_task_unblocks_alongside_its_blockers() {
+    let r = Repo::new();
+    let root = "TASK-000000000c01";
+    let mid = "TASK-000000000c02";
+    let leaf = "TASK-000000000c03";
+    let side = "TASK-000000000c04";
+    let ghost = "TASK-0000000000ff";
+    for id in [root, mid, leaf, side] {
+        r.seed_task(id, Some("A verifiable criterion."));
+    }
+    // One finished in each direction. A `done` entity keeps its line and
+    // carries its status, which is what makes the status on each line worth
+    // printing — and it is the difference between this list and §5's count,
+    // which drops what is no longer held up because it is ordering work.
+    for id in [root, side] {
+        let done = r.task_text(id).replace("status: open", "status: done");
+        std::fs::write(r.0.join(".ank/tasks").join(format!("{id}.md")), done).unwrap();
+    }
+    r.blocked(mid, &[root, ghost]);
+    r.blocked(leaf, &[mid]);
+    r.blocked(side, &[mid]);
+
+    let before = r.task_text(mid);
+    let out = r.ank("claude-code@ank", &["show", mid]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+
+    // The entity first, whole and unreformatted. `show` is still the one
+    // command that does not summarise; the sections are appended under it.
+    assert!(
+        said.starts_with(&before),
+        "the entity is no longer verbatim:\n{said}"
+    );
+    let derived = &said[before.len()..];
+
+    // One line each, with status, in both directions.
+    assert!(derived.contains("BLOCKED BY (2)"), "{said}");
+    assert!(
+        derived.contains(&format!("{root}  [done]")),
+        "a blocker keeps its line and its status once done: {said}"
+    );
+    assert!(
+        derived.contains(&format!("{ghost}  (no such entity)")),
+        "a dangling blocker is named, never dropped: {said}"
+    );
+    assert!(derived.contains("UNBLOCKS (2)"), "{said}");
+    let at = |needle: &str| derived.find(needle).unwrap_or_else(|| panic!("{said}"));
+    assert!(
+        derived.contains(&format!("{side}  [done]")),
+        "a task that waited and is now done keeps its line: the list is the edge \
+         set, not the count of what is still held up: {said}"
+    );
+    assert!(
+        at(&format!("{leaf}  [open]")) < at(&format!("{side}  [done]")),
+        "the derived direction is ordered by id, like every other listing: {said}"
+    );
+    // The two directions are not one list: `mid` is blocked by `root` and
+    // unblocks `leaf`, and neither may appear under the other heading.
+    let (blockers, unblocks) = derived.split_at(at("UNBLOCKS"));
+    assert!(!blockers.contains(leaf), "{said}");
+    assert!(!unblocks.contains(root), "{said}");
+
+    // A leaf has neither direction, and both headings still print: an absent
+    // heading and a heading with nothing under it are not the same answer.
+    let out = r.ank("claude-code@ank", &["show", leaf]);
+    let said = stdout(&out);
+    assert!(said.contains("BLOCKED BY (1)"), "{said}");
+    assert!(said.contains("UNBLOCKS (0)"), "{said}");
+
+    // Derived at read time and stored nowhere: a task that did not exist at the
+    // first read appears at the second, and the file `show` printed from is
+    // byte for byte what it was.
+    let late = "TASK-000000000c05";
+    r.seed_task(late, Some("A verifiable criterion."));
+    r.blocked(late, &[mid]);
+    let out = r.ank("claude-code@ank", &["show", mid]);
+    let said = stdout(&out);
+    assert!(
+        said.contains("UNBLOCKS (3)") && said.contains(&format!("{late}  [open]")),
+        "the reverse edge is derived, not stored: {said}"
+    );
+    assert_eq!(
+        r.task_text(mid),
+        before,
+        "show wrote the derivation into the entity it was asked to print"
+    );
+
+    // `--json` carries the same two lists, and the null of an unresolved one.
+    let out = r.ank("claude-code@ank", &["show", mid, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let j = stdout(&out);
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{root}\",\"short\":\"{root}\",\"status\":\"done\""
+        )),
+        "{j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{ghost}\",\"short\":\"{ghost}\",\"status\":null,\"title\":null}}"
+        )),
+        "{j}"
+    );
+    assert!(j.contains("\"unblocks\":[{"), "{j}");
+}
+
 /// One directory, one answer, however it is typed (TASK-df4c39031583).
 ///
 /// Reported from a Windows shell against the real corpus. `docs` answered five
