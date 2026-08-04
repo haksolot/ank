@@ -83,8 +83,23 @@ jobs:
   # needs. Pinning back to a version that needs less was measured and rejected
   # in ank-cli's manifest (TASK-973e9dc3f9ce). This job is the whole enforcement
   # — when the floor moves, it moves here first, in red.
+  #
+  # The number carried here is read from the manifests, never written. It used
+  # to appear literally in the job name and in both commands, so bumping
+  # `rust-version` left this job installing and building a toolchain the tree no
+  # longer declared — green, and measuring the wrong thing. That is the same rot
+  # this job exists to prevent, one level up (TASK-3b085be1bf6a).
+  #
+  # No number in the name either: a job name is evaluated before any step runs,
+  # so it cannot read a step output, and a name that has to be edited by hand is
+  # the defect again. The `versions` step is what says which toolchain ran.
+  #
+  # `shell: bash` throughout because this matrix includes windows-latest, where
+  # the default shell is pwsh: `$DECLARED` is a PowerShell variable there and an
+  # environment variable is `$env:DECLARED`, so a bare `run:` would expand to
+  # nothing and install a toolchain with an empty name.
   msrv:
-    name: msrv 1.95 / ${{ matrix.os }}
+    name: msrv / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -94,19 +109,55 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: the declared MSRV
+        id: floor
+        shell: bash
+        run: |
+          read_floor() {
+            sed -n 's/^rust-version *= *"\([0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' "$1" | head -1
+          }
+          cli=$(read_floor crates/ank-cli/Cargo.toml)
+          core=$(read_floor crates/ank-core/Cargo.toml)
+          if [ -z "$cli" ] || [ -z "$core" ]; then
+            echo "no rust-version in crates/ank-cli/Cargo.toml or crates/ank-core/Cargo.toml"
+            exit 9
+          fi
+          # Both manifests declare it independently and nothing else compares
+          # them. Reading one and trusting the other is only correct while they
+          # agree, so the disagreement is made to fail rather than assumed away.
+          if [ "$cli" != "$core" ]; then
+            echo "::error::the manifests disagree on rust-version"
+            echo "  crates/ank-cli/Cargo.toml:  $cli"
+            echo "  crates/ank-core/Cargo.toml: $core"
+            echo "The floor is one number for the workspace. Make them agree."
+            exit 9
+          fi
+          echo "declared=$cli" >> "$GITHUB_OUTPUT"
+          echo "declared $cli, in both manifests"
+
       # rustup is preinstalled on the runners, so pinning costs no new action
       # and no new supply-chain surface — the same argument the job above makes
       # for using the image's toolchain.
       - name: install the declared MSRV
-        run: rustup toolchain install 1.95 --profile minimal
+        shell: bash
+        env:
+          DECLARED: ${{ steps.floor.outputs.declared }}
+        run: rustup toolchain install "$DECLARED" --profile minimal
 
       - name: versions
-        run: cargo +1.95 --version
+        shell: bash
+        env:
+          DECLARED: ${{ steps.floor.outputs.declared }}
+        run: cargo +"$DECLARED" --version
 
       # --locked because the lockfile is half the claim: lockfile v4 needs 1.78
       # on its own, and a resolution performed here would measure a different
       # tree from the one that ships.
-      - run: cargo +1.95 build --workspace --locked
+      - name: build on the declared MSRV
+        shell: bash
+        env:
+          DECLARED: ${{ steps.floor.outputs.declared }}
+        run: cargo +"$DECLARED" build --workspace --locked
 
   # The job above proves the declared MSRV is *sufficient*. Nothing proved it
   # was *tight*, and the asymmetry is the one TASK-daf25ab8a9b7 corrected in the
