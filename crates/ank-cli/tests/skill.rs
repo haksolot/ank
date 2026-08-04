@@ -4,9 +4,10 @@
 //! permanently, on every session, in every repository that installs it. That is
 //! what makes its content the thing actually frozen (ADR-c656cbcc33a9) -- the
 //! dispatch table refuses nobody, and the loop exists because this file teaches
-//! it and teaches nothing else. Two properties are therefore worth a test
-//! rather than a habit: that it carries the whole loop, and that it stays small
-//! enough to be worth loading.
+//! it and teaches nothing else. Three properties are therefore worth a test
+//! rather than a habit: that it carries the whole loop, that it stays small
+//! enough to be worth loading, and that a copy in the wild says which revision
+//! it is.
 //!
 //! This file exists because the task's declared verifier is `cargo-test`. A
 //! criterion nothing executes is a criterion nobody checked, and a proof that
@@ -234,4 +235,76 @@ fn the_skill_teaches_nothing_beyond_the_loop() {
              frozen at"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Which revision is installed (TASK-b495234f192c)
+// ---------------------------------------------------------------------------
+
+/// Frontmatter and body, split on the same delimiters the entity format uses.
+/// A second rule for a second file is a second thing to get wrong.
+///
+/// Line endings are unified first: `.gitattributes` covers `.ank/**` and not
+/// `skill/`, so a Windows checkout of this file can legitimately be CRLF and
+/// the closing delimiter is then `\r\n---\r\n`.
+fn split_skill(text: &str) -> (String, String) {
+    let lf = text.replace("\r\n", "\n");
+    let rest = lf
+        .strip_prefix("---\n")
+        .expect("SKILL.md must open with frontmatter")
+        .to_string();
+    let end = rest
+        .find("\n---\n")
+        .expect("SKILL.md frontmatter must be closed");
+    (
+        rest[..end].to_string(),
+        rest[end + "\n---\n".len()..].to_string(),
+    )
+}
+
+/// The value the frontmatter declares under `metadata.revision`, unquoted.
+fn declared_revision(front: &str) -> Option<String> {
+    front.lines().find_map(|l| {
+        let v = l.trim().strip_prefix("revision:")?;
+        Some(v.trim().trim_matches('"').to_string())
+    })
+}
+
+/// **A copy in the wild says which revision it is.** Measured on 2026-08-02:
+/// the SKILL.md installed at `~/.claude/skills/ank` was byte-identical to the
+/// blob at a004ac7, two commits and nine hours behind a tree that had just
+/// withdrawn the invitation to read `.ank/` by hand (ADR-01b6dd05f0db). It was
+/// not merely old, it instructed against a ratified decision -- and it carried
+/// nothing by which its reader or its owner could have noticed.
+///
+/// The marker is a hash of the body rather than a version anyone keeps by hand,
+/// for two reasons. A hand-kept number drifts the first time somebody edits the
+/// body and forgets it, whereas this one cannot: the assertion below recomputes
+/// it. And a date would not have caught the case above -- a004ac7 at 10:18 and
+/// 7429cdd at 19:16 shipped on the same day, so a date-stamped stale copy would
+/// have looked current.
+///
+/// It sits in `metadata`, which the Agent Skills standard defines as an
+/// arbitrary map for properties the standard does not itself define, so it is
+/// metadata about the file and not part of what the file teaches. That is the
+/// whole of the freeze (ADR-c656cbcc33a9), and the three assertions above are
+/// the enforcement -- none of them moves because of a fingerprint.
+#[test]
+fn the_skill_says_which_revision_it_is() {
+    let text = skill();
+    let (front, body) = split_skill(&text);
+
+    let declared = declared_revision(&front).unwrap_or_else(|| {
+        panic!(
+            "SKILL.md declares no metadata.revision, so an installed copy \
+             identifies itself to nobody"
+        )
+    });
+    let actual = ank_core::freeze_hash_short(&body);
+
+    assert_eq!(
+        declared, actual,
+        "SKILL.md was edited without its revision: set metadata.revision to \
+         \"{actual}\""
+    );
 }
