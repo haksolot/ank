@@ -17,8 +17,11 @@ proof:
   - type: commit
     ref: 5b65a90
     criteria: 2d79b3ea378f
+  - type: test
+    ref: "30877806179"
+    criteria: 2d79b3ea378f
 schema: 2
-version: 6
+version: 7
 ---
 
 The specification stays the single source of truth per ADR-63b59c5c26f7; the two new documents point at it and never restate normative content. Blocked by the spec revision so the newcomer document does not teach a surface about to change.
@@ -28,3 +31,4 @@ The specification stays the single source of truth per ADR-63b59c5c26f7; the two
 - 2026-08-04T04:17:39Z seanl@sean-laptop — The walk also turned up a defect outside this scope, filed as TASK-c1783c841710: init writes no ignore rule, so .ank/index.db lands in the first commit of every repository it creates, while section 6 calls the index gitignored. This repository hides it -- its own .gitignore carries the line by hand. getting-started.md documents the behaviour as it is and tells the reader to add the line.
 - 2026-08-04T04:24:07Z seanl@sean-laptop — Three readings the criterion left open, decided and written into the documents rather than left implicit. First, 'stops serving as tutorial' is a change of role, not a deletion: the argued examples in sections 3, 4 and 5 are what a normative document owes a reader who has to revise it, and cutting them would weaken the source of truth to satisfy a clause about routing. The spec now carries a 'Who this document is for' section that says it is not a tutorial and names the two documents that are, and the README no longer sends a newcomer to it. Second, format.md documents the field order, the emission rules and the quoting predicate -- none of which the specification enumerates, since section 3 states canonical form as a property -- and defers every rule it depends on with a section pointer plus a stated precedence: where the two disagree, the specification is right and format.md is a bug. Third, getting-started.md quotes real output only. Every block in it was produced by a scratch repository, which is how the two first-run refusals were found.
 - 2026-08-04T04:24:37Z seanl@sean-laptop — done, proof commit:5b65a90
+- 2026-08-04T04:31:55Z seanl@sean-laptop — attested test:30877806179
