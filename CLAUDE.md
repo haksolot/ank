@@ -85,6 +85,13 @@ run on all three.
   consequence of a dependency, not a target to hold.** It moves when the
   dependency moves, `ci.yml` is what turns red, and re-measuring means re-running
   the walk with `--ignore-rust-version` — never editing the number.
+  `ci.yml` turns red in **both** directions: `msrv` builds on the declared
+  toolchain, proving it is sufficient, and `msrv-tight` requires the minor below
+  it to fail, proving it is not higher than the tree needs. The second is a
+  negative test, so it attributes the failure rather than merely observing it —
+  a positive control on `ank-core` first, then a required rustc diagnostic code.
+  A build that unexpectedly succeeds names the number to lower; it never lowers
+  it, because the walk is what decides and a human runs the walk.
 
 ## Style
 

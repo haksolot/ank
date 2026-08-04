@@ -107,3 +107,119 @@ jobs:
       # on its own, and a resolution performed here would measure a different
       # tree from the one that ships.
       - run: cargo +1.95 build --workspace --locked
+
+  # The job above proves the declared MSRV is *sufficient*. Nothing proved it
+  # was *tight*, and the asymmetry is the one TASK-daf25ab8a9b7 corrected in the
+  # other direction: an MSRV asserted and never run rots in silence. The floor
+  # comes from one build script in libsqlite3-sys, so the day that crate stops
+  # calling `cfg_select!` — or the day the dependency is replaced — the declared
+  # number becomes higher than the tree needs, every job stays green, and the
+  # only signal is that nobody can build ank on a toolchain that would have
+  # worked.
+  #
+  # This is a negative test, and negative tests fail for free: a build that dies
+  # of a network hiccup or a missing C compiler "passes" a naive check while
+  # proving nothing. So the failure is attributed by two independent gates
+  # rather than merely observed.
+  #
+  #  1. A positive control. `ank-core` alone has no C dependency and builds on
+  #     the previous minor. If *that* fails, the toolchain, the network or the
+  #     registry is broken, and this job says so instead of reporting a floor.
+  #  2. The workspace failure has to carry a rustc diagnostic code. That is what
+  #     separates "the compiler rejected this tree" from "the environment fell
+  #     over": cargo's own infrastructure errors and a missing `cc` produce
+  #     `error: failed to ...` with no code.
+  #
+  # Deliberately not pinned to `E0658`, the code the floor currently produces.
+  # Pinning it would break the day the floor moves for another reason — exactly
+  # the event this job exists to notice — and it would go red pointing at the
+  # wrong cause. ADR: the floor is a consequence of a dependency, not a target.
+  #
+  # One platform, and ubuntu because it is the cheapest that can falsify the
+  # claim: the number is one per workspace, and `cfg_select!` is a rustc feature
+  # gate, so it fires the same on all three. If a floor ever does differ per
+  # target, the job above runs the matrix and is what catches the disagreement —
+  # this one only ever says "look again", never "lower it for me".
+  msrv-tight:
+    name: msrv is tight / ubuntu-latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Read from the manifest rather than written here. A number in two places
+      # is a number that will disagree with itself, and re-measuring means
+      # re-running the walk, never editing a constant.
+      - name: the minor below the declared MSRV
+        id: floor
+        run: |
+          declared=$(sed -n 's/^rust-version *= *"\([0-9][0-9]*\.[0-9][0-9]*\)".*/\1/p' \
+            crates/ank-cli/Cargo.toml | head -1)
+          if [ -z "$declared" ]; then
+            echo "no rust-version found in crates/ank-cli/Cargo.toml"
+            exit 9
+          fi
+          prev="${declared%%.*}.$(( ${declared#*.} - 1 ))"
+          echo "declared=$declared" >> "$GITHUB_OUTPUT"
+          echo "prev=$prev" >> "$GITHUB_OUTPUT"
+          echo "declared $declared, testing $prev"
+
+      # A toolchain that has not shipped is an environment failure and never a
+      # passing check: without this step its absence would make the build below
+      # fail, which is what the job is looking for, and the check would pass
+      # while measuring nothing at all.
+      # Through the environment rather than interpolated into the script. The
+      # value is `[0-9]+\.[0-9]+` by construction above, so nothing here is
+      # injectable — this is the habit, not the fix for a live hole.
+      - name: install the previous minor
+        env:
+          PREV: ${{ steps.floor.outputs.prev }}
+        run: |
+          rustup toolchain install "$PREV" --profile minimal \
+            || { echo "rustup has no $PREV: environment, not a result"; exit 9; }
+          cargo +"$PREV" --version \
+            || { echo "toolchain installed but unusable: environment, not a result"; exit 9; }
+
+      - name: positive control on the same toolchain
+        env:
+          PREV: ${{ steps.floor.outputs.prev }}
+        run: |
+          cargo +"$PREV" build -p ank-core --locked --ignore-rust-version \
+            || {
+              echo "ank-core does not build on $PREV."
+              echo "That is the toolchain, the network or the registry, not the MSRV:"
+              echo "the failure below would have been unattributable, so this job stops here."
+              exit 9
+            }
+
+      - name: the declared MSRV must be the lowest that works
+        env:
+          DECLARED: ${{ steps.floor.outputs.declared }}
+          PREV: ${{ steps.floor.outputs.prev }}
+        run: |
+          set +e
+          out=$(cargo +"$PREV" build --workspace --locked --ignore-rust-version 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+
+          if [ "$code" -eq 0 ]; then
+            echo "::error::the declared MSRV $DECLARED is higher than this tree needs"
+            echo "$PREV builds the whole workspace. Re-walk before lowering it:"
+            echo "  cargo +$PREV build --workspace --locked --ignore-rust-version"
+            echo "then set rust-version in crates/ank-cli/Cargo.toml and"
+            echo "crates/ank-core/Cargo.toml to the lowest minor that builds and"
+            echo "passes the suite, and update the pin in this workflow."
+            exit 1
+          fi
+
+          if ! printf '%s' "$out" | grep -q 'error\[E[0-9]'; then
+            echo "::error::$PREV failed, but not with a compiler diagnostic"
+            echo "The positive control passed, so the toolchain works. A failure"
+            echo "carrying no error[E....] is not evidence the floor is real:"
+            echo "read the output above before trusting this number."
+            exit 9
+          fi
+
+          echo "$PREV is refused by the compiler, so $DECLARED is tight:"
+          printf '%s' "$out" | grep -o 'error\[E[0-9]*\]' | sort -u
