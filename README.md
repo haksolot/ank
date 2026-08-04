@@ -112,9 +112,26 @@ Still missing before v1: binaries for the three platforms and the installable
 skill. `ank find` scans the index rather than querying FTS5, which is a
 performance gap and not a behavioural one.
 
-- **The specification is the source of truth**: [`docs/ank-spec-v1.1.md`](docs/ank-spec-v1.1.md)
-- **The development plan**: `.ank/tasks/` (a DAG through `blocked_by`), the
-  decisions in `.ank/adr/`
+## Documentation
+
+Four documents, and which one you want depends on what you are about to do.
+
+- **You want to use it.** [`docs/getting-started.md`](docs/getting-started.md)
+  takes you from install to a first claim and a first `done`, with real output
+  at every step. It assumes nothing and does not send you to the specification.
+- **You are writing a tool that reads or writes `.ank/`.**
+  [`docs/format.md`](docs/format.md) has the field order, the emission rules,
+  the two hashes and the conformance suite — the mechanical half, for a second
+  implementation.
+- **You want to know why it is shaped this way, or you need the normative
+  answer.** [`docs/ank-spec-v1.1.md`](docs/ank-spec-v1.1.md) is the source of
+  truth. It argues the design and settles every question the other two defer to
+  it; it is not a tutorial, and the two documents above exist so that it does
+  not have to be one.
+- **You are an agent working on this repository.**
+  [`CLAUDE.md`](CLAUDE.md) has the conventions, and the section below has the
+  loop. The development plan itself lives in `.ank/` — a DAG of tasks through
+  `blocked_by`, and the decisions in `.ank/adr/` — reached through the CLI.
 
 ## For agents working on this repository
 
@@ -154,7 +171,7 @@ Detailed conventions are in [`CLAUDE.md`](CLAUDE.md).
 
     crates/ank-core   parser and data model — the reference implementation of the format
     crates/ank-cli    the `ank` binary — thirteen verbs, plus init and help
-    docs/             the specification, source of truth
+    docs/             the specification (source of truth), getting started, the format
     .ank/             Ank's own development plan, in the Ank format
     skill/            the bootstrap skill for agents
 
