@@ -5,7 +5,7 @@ slug: nothing-notices-a-done-task-that-was-never-attes
 title: Nothing notices a done task that was never attested
 created: 2026-08-04T17:39:22Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - .github/workflows/ci.yml
@@ -14,7 +14,7 @@ done_criteria: |
   ank check reports a task that is done on the default branch and carries no test: proof, naming the task and the exact attest command to run. It is a signal and not a fault: exit stays 0. Asserted through the binary against a fixture corpus holding both cases, a done task with a commit: proof only and a done task with both, and the second must not be reported.
 criteria_by: creator
 schema: 2
-version: 1
+version: 4
 ---
 
 Asked for on 2026-08-04, from the question of whether CI could attest by itself
@@ -60,3 +60,7 @@ merge run itself takes minutes to go green, and a signal that fires in that gap
 is noise on every single merge. Whether the answer is a grace period, a commit
 distance, or simply accepting the transient is the decision to record before
 implementing.
+
+## Log
+- 2026-08-04T17:46:00Z seanl@sean-laptop — Measured the blast radius before designing, with a throwaway signal rather than by guessing: 8 of the 64 done tasks carry no test: proof, all of them commit:-only. That settles the question the body left open about a backlog. I expected something near 60, which would have needed the 'predates the convention' exemption the author-field signal uses; 8 is a worklist that clears, so no exemption is warranted and the design gets simpler. Second decision, on the transient: the signal will fire on the merge commit's own CI run, in the window between the merge landing and the run going green. Accepting that rather than adding a grace period or a commit-distance constant. It is not a false positive -- the statement is true when printed and clears when someone attests -- and the alternative buys quiet at the cost of a magic number, which section 6 only justifies for the flooding thresholds. Third: gating on 'done on the default branch' is load-bearing and not decoration. Without it the signal fires on a feature branch straight after ank done, when attesting is impossible because no merge run exists yet -- a finding the reader cannot act on, which is the failure mode the weak-proof comment in human.rs was written about.
+- 2026-08-04T17:52:04Z seanl@sean-laptop — The specification had already settled the design question, at section 4 line 553: 'nothing calls attest automatically. A CI provider appending its own run reference at the end of a pipeline is an integration, not a verb.' Found it while looking for where to record the new signal, after the reasoning was written rather than before -- so the detector shape was re-derived rather than read off, and the two agree. That deferral is the positive half of the same choice; this signal is the negative half, and section 4 now carries both next to each other. Also measured that no existing finding covers this case: commit is not weak, so the weak-proof signal stays silent by design on a commit:-only proof list, which is why the omission was invisible rather than merely unreported.

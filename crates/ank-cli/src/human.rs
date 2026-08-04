@@ -38,7 +38,7 @@ use ank_core::{
     append_log, freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity,
     verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus,
 };
-use ank_core::{CriteriaBy, ScopeSet};
+use ank_core::{CriteriaBy, ProofType, ScopeSet};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -261,7 +261,16 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
         check_scope_alive(entity, &files, &mut report);
         match entity {
-            Entity::Task(t) => check_task(t, repo, &statuses, &coord, cfg, &store, &mut report),
+            Entity::Task(t) => check_task(
+                t,
+                repo,
+                &statuses,
+                &coord,
+                cfg,
+                &store,
+                default_branch.as_deref().ok(),
+                &mut report,
+            ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
         }
     }
@@ -575,6 +584,7 @@ fn check_task(
     coord: &HashMap<EntityId, Record>,
     cfg: &Config,
     store: &Store,
+    default_branch: Option<&str>,
     report: &mut Report,
 ) {
     for b in &t.blocked_by {
@@ -683,6 +693,37 @@ fn check_task(
         report.findings.push(Finding::signal(
             &t.id,
             format!("weak proof '{kind}': it anchors nothing"),
+        ));
+    }
+
+    // Attestation is the half of `done` nothing used to notice. `done` records
+    // what ran on the machine that ran it; `attest` is what anchors the same
+    // criterion to a run anybody can re-read. A task that never got the second
+    // one rests entirely on a local claim, and the omission is invisible: the
+    // task reads `done`, the proof list is non-empty, and no existing finding
+    // fires — `commit` is not weak, so the check above stays silent by design.
+    //
+    // Gated on the default branch, and that gate is load-bearing rather than
+    // decoration. On a feature branch straight after `done` the attestation
+    // cannot exist yet — no merge run has happened — so reporting there would
+    // name work the reader is unable to do, which is the failure the weak-proof
+    // comment above was written about. The window where `main` carries the task
+    // and the run is still going green is left to fire on purpose: the
+    // statement is true when printed and clears when someone attests, and
+    // buying that quiet would cost a grace constant §6 only justifies for the
+    // flooding thresholds.
+    if t.status == TaskStatus::Done
+        && !t.proof.is_empty()
+        && !t.proof.iter().any(|p| p.proof_type == ProofType::Test)
+        && done_on(repo, default_branch, &t.id)
+    {
+        report.findings.push(Finding::signal(
+            &t.id,
+            format!(
+                "done with no test proof: nothing external anchors it \
+                 (ank attest {} --proof test:<run-id>)",
+                t.id
+            ),
         ));
     }
 
@@ -1068,6 +1109,28 @@ fn check_cycles(entities: &[(PathBuf, Entity)], report: &mut Report) {
             report,
         );
     }
+}
+
+/// Whether `default_branch` carries this task as `done`.
+///
+/// The committed blob and not the working tree, for the same reason `maintain`
+/// reads it there: the default branch is the one copy every checkout agrees on,
+/// and a working tree can say `done` on a branch nobody has merged.
+///
+/// False whenever the question cannot be asked — no default branch resolved, a
+/// branch with no commit yet, git refusing. Unable to ask is not permission to
+/// accuse, and `inspect` already reports the unaskable case once, as a corpus
+/// line rather than once per task.
+fn done_on(repo: &Repo, default_branch: Option<&str>, id: &EntityId) -> bool {
+    let Some(branch) = default_branch else {
+        return false;
+    };
+    let path = format!("{}/tasks/{id}.md", ank_relative(repo));
+    matches!(
+        git::file_at(&repo.root, branch, &path),
+        Ok(Some(text))
+            if matches!(parse_entity(&text), Ok(Entity::Task(t)) if t.status == TaskStatus::Done)
+    )
 }
 
 /// Maintenance of the coordination plane (§7). The only place that prunes.
