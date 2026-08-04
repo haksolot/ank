@@ -32,11 +32,15 @@ That puts `ank` in `~/.cargo/bin`. From a clone, `cargo build --release` leaves
 it at `target/release/ank`. Either way, check it answers:
 
     $ ank --version
-    ank 0.1.1 (bc59636)
+    ank 0.1.1 (bc59636, skill 605f771e1955)
 
-It prints the version and the commit it was built from. That second half
-matters the first time you suspect the binary in your hand is older than the
-behaviour you are reading about.
+It prints the version, the commit it was built from, and the revision of the
+skill it was built alongside. The commit matters the first time you suspect the
+binary in your hand is older than the behaviour you are reading about. The
+revision answers the same question about the other half: it is the value
+`skill/SKILL.md` carries under `metadata.revision`, so an agent that has loaded
+that file can compare two strings it already holds and see that its
+instructions predate its tool.
 
 ## Initialise a repository
 

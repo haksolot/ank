@@ -5,7 +5,7 @@ slug: nothing-connects-the-binary-s-identity-to-the-sk
 title: Nothing connects the binary's identity to the skill's
 created: 2026-08-04T05:17:24Z
 author: seanl@sean-laptop
-status: open
+status: done
 scope:
   - crates/ank-cli/src/**
   - crates/ank-cli/tests/cli.rs
@@ -13,8 +13,15 @@ blocked_by: []
 done_criteria: |
   A reader holding only the binary and the installed skill can tell whether the two agree, with no repository and no network. The binary prints the SKILL.md revision it was built alongside, that value is derived at build time from skill/SKILL.md rather than typed, and tests/skill.rs proves the printed value and the file agree. Asserted through the binary.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 1b655c2
+    criteria: 0ebd573cf48c
+  - type: test
+    ref: "30954352678"
+    criteria: 0ebd573cf48c
 schema: 2
-version: 1
+version: 5
 ---
 
 TASK-548c518cb705 made the binary say what it is. TASK-b495234f192c made the skill say which revision it is. Neither says anything about the other, so telling a stale installed skill from a current one still needs a third value from somewhere -- the repository, a release note, a person who remembers.
@@ -24,3 +31,8 @@ Closing it is cheap because both halves exist. The build script already stamps t
 What that buys is the check the original failure needed: an agent that has loaded a SKILL.md and can run ank --version compares two strings it already holds and learns, offline, that its instructions predate its tool.
 
 The design question for whoever claims this: where the value belongs. ank --version prints one line and section 4 says so in as many words, so a second line is a specification change before it is a code change (ADR-63b59c5c26f7). ank status is the other candidate and answers where am I, which is arguably the same question.
+
+## Log
+- 2026-08-04T21:42:22Z seanl@sean-laptop — Decided where the value belongs: the existing single line of `ank --version`, extended to `ank <ver> (<commit>, skill <rev>)`. `ank status` was the other candidate and is out on the criterion itself -- it runs after startup, so it needs a resolved repository, and the reader this exists for holds a binary and a SKILL.md and nothing else. Keeping one line also leaves section 4's shape untouched: the specification edit says what the line contains, not that it grew a second line.
+- 2026-08-04T21:54:37Z seanl@sean-laptop — done, proof commit:1b655c2
+- 2026-08-04T22:54:31Z seanl@sean-laptop — attested test:30954352678

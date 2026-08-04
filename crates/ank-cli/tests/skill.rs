@@ -308,3 +308,72 @@ fn the_skill_says_which_revision_it_is() {
          \"{actual}\""
     );
 }
+
+// ---------------------------------------------------------------------------
+// Whether the two halves agree (TASK-ecda4070354f)
+// ---------------------------------------------------------------------------
+
+/// The `skill <rev>` token of `ank --version`, or `None` if the line does not
+/// carry one.
+fn printed_skill_revision() -> Option<String> {
+    let out = Command::new(env!("CARGO_BIN_EXE_ank"))
+        .arg("--version")
+        .output()
+        .expect("the binary must have been built");
+    assert!(out.status.success(), "ank --version must succeed");
+    let said = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let (_, after) = said.split_once("skill ")?;
+    Some(
+        after
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect(),
+    )
+}
+
+/// **The binary and the skill can be compared with nothing else in hand.**
+///
+/// The two markers existed and said nothing about each other: TASK-548c518cb705
+/// made the binary name its commit, TASK-b495234f192c made the skill name its
+/// revision, and telling a stale installed skill from a current one still needed
+/// a third value from somewhere — the repository, a release note, a person who
+/// remembers.
+///
+/// What closes it is that the printed value is *derived* at build time from
+/// `skill/SKILL.md` rather than typed. A stamp somebody maintains by hand would
+/// reproduce the original failure one edit later, and would reproduce it
+/// confidently.
+///
+/// Through the binary, because the claim is about what an agent holding only
+/// that binary can read — a unit test on the formatting would pass on a build
+/// whose stamp was never taken.
+#[test]
+fn the_binary_names_the_skill_revision_it_was_built_alongside() {
+    let (front, body) = split_skill(&skill());
+    let declared = declared_revision(&front).expect("SKILL.md declares no metadata.revision");
+
+    let printed = printed_skill_revision().unwrap_or_else(|| {
+        panic!(
+            "`ank --version` names no skill revision, so a reader holding the \
+             binary and the skill cannot tell whether the two agree"
+        )
+    });
+
+    assert_ne!(
+        printed, "unknown",
+        "the build found no skill/SKILL.md to hash: this suite runs from the \
+         repository, where it is there to be read"
+    );
+    assert_eq!(
+        printed,
+        ank_core::freeze_hash_short(&body),
+        "the binary was built alongside a different SKILL.md than the one in \
+         this tree: rebuild, and if it persists the stamp is not being derived \
+         from the file"
+    );
+    assert_eq!(
+        printed, declared,
+        "the binary and the file disagree on the revision: whichever is stale, \
+         the comparison this exists for would mislead its reader"
+    );
+}

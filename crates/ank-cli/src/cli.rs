@@ -684,10 +684,23 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
 // Dispatch
 // ---------------------------------------------------------------------------
 
-/// What the binary is, on one line (§4): the crate version, and the commit
-/// `build.rs` stamped in. `unknown` where there was no checkout to ask.
+/// What the binary is, on one line (§4): the crate version, the commit
+/// `build.rs` stamped in, and the revision of the `SKILL.md` it was built
+/// alongside. `unknown` where there was no checkout, or no `skill/`, to ask.
+///
+/// The third value is the one a reader can act on with nothing else in hand
+/// (TASK-ecda4070354f). The commit places the binary against the repository,
+/// which is a thing to go and look at; the skill revision is compared against
+/// `metadata.revision` in the file the agent has already loaded, so a stale
+/// instruction set announces itself offline instead of costing an
+/// investigation.
 pub fn version_line() -> String {
-    format!("ank {} ({})", env!("CARGO_PKG_VERSION"), env!("ANK_COMMIT"))
+    format!(
+        "ank {} ({}, skill {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("ANK_COMMIT"),
+        env!("ANK_SKILL")
+    )
 }
 
 fn not_implemented(spec: &CommandSpec) -> CliError {
