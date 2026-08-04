@@ -1051,10 +1051,23 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::copy(&script, dir.join("build.rs")).unwrap();
     // An empty `[workspace]` so the fixture is not adopted by any workspace it
-    // happens to sit under, and no dependencies so the build needs no registry.
+    // happens to sit under, and the one build-dependency the real script has:
+    // it hashes SKILL.md with `ank_core::freeze_hash_short` (TASK-ecda4070354f),
+    // and the fixture drives the real script rather than a copy of its logic, so
+    // it has to build like the real one. By path, and the builds below are
+    // `--offline`, so this still needs no registry beyond the cache the
+    // workspace build has already warmed.
+    let core = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../ank-core")
+        .to_string_lossy()
+        .replace('\\', "/");
     std::fs::write(
         dir.join("Cargo.toml"),
-        "[workspace]\n\n[package]\nname = \"stamp\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        format!(
+            "[workspace]\n\n[package]\nname = \"stamp\"\nversion = \"0.0.0\"\n\
+             edition = \"2021\"\n\n[build-dependencies]\n\
+             ank-core = {{ path = \"{core}\" }}\n"
+        ),
     )
     .unwrap();
     std::fs::write(
@@ -1085,7 +1098,7 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     let build_and_read = || {
         let out = Command::new(&cargo)
             .current_dir(&dir)
-            .args(["run", "-q"])
+            .args(["run", "-q", "--offline"])
             .env("CARGO_TARGET_DIR", dir.join("target"))
             .output()
             .expect("cargo must be on PATH");
@@ -1154,14 +1167,22 @@ fn the_version_answers_before_anything_can_stop_it() {
         said.contains('(') && said.ends_with(')'),
         "and the commit it was built from: {said}"
     );
-    // Empty parentheses would satisfy the shape and answer nothing.
-    let commit = said
+    // Empty parentheses would satisfy the shape and answer nothing. The commit
+    // is the first value inside them; the skill revision beside it is
+    // TASK-ecda4070354f's and is asserted against the file itself in
+    // tests/skill.rs, which is the only place that comparison means anything.
+    let inside = said
         .rsplit_once('(')
         .and_then(|(_, c)| c.strip_suffix(')'))
         .unwrap_or("");
+    let commit = inside.split(',').next().unwrap_or("").trim();
     assert!(
         commit.len() >= 4,
         "a sha or the word `unknown`, never a blank: {said}"
+    );
+    assert!(
+        inside.contains("skill "),
+        "and the skill revision it was built alongside: {said}"
     );
 
     // Nowhere in particular: no `.ank/`, no git repository, no config. This is

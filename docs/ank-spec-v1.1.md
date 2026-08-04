@@ -421,7 +421,7 @@ ank check [<path>]
 ank init [<path>]           (§9)
 ank help [<verb>]           (§9)
 
-ank --version               (the build itself: version and commit, no verb, no repository)
+ank --version               (the build itself: version, commit and skill revision, no verb, no repository)
 ```
 
 **This block is the whole dispatch table**, and that is a property worth stating rather than assuming: `attest`, `init` and `help` were reachable in the binary while appearing nowhere here, so a reader comparing the two documents could not tell which one was wrong (TASK-5c868c20472f). `init` and `help` are specified in §9 and listed here only so the list is complete; `ank help` prints this order, minus whatever is not yet implemented, which is what ADR-c656cbcc33a9 requires of it.
@@ -444,13 +444,15 @@ The rule is not cosmetic, and it is written down because its absence was not obv
 
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
 
-**`ank --version` is not a fourth global flag**, and the limit above is untouched. The three modify a verb; this one replaces it — there is no `ank check --version`, and asking for the build while also asking for something else is not a question anyone has. It prints the crate version and the commit the binary was built from, on one line, and exits 0.
+**`ank --version` is not a fourth global flag**, and the limit above is untouched. The three modify a verb; this one replaces it — there is no `ank check --version`, and asking for the build while also asking for something else is not a question anyone has. It prints the crate version, the commit the binary was built from and the revision of the `skill/SKILL.md` it was built alongside, on one line, and exits 0.
 
 It answers **before the foundation**, like `help` and for a sharper reason: the caller who needs it is the one holding an artifact they cannot identify. A version that required a resolved repository, a git of 2.34 and a readable `config.yml` would fall silent in exactly the situation it exists for. Outside any git repository, in a directory with no `.ank/`, it still prints and still exits 0.
 
 The commit is embedded at build time through `rev-parse`, which §8's plumbing rule already allows, and is `unknown` when the build had no checkout to ask — a source tarball, a vendored dependency. Naming the absence beats inventing a value, and it beats the silence that made TASK-1ea38a17d854 cost an investigation to conclude that the binary in hand predated the feature being measured for.
 
 **What the stamp guarantees, and on which builds.** It names the commit the build script last ran at, and the script reruns whenever the commit moves — including a commit that changes no source file, which is the case that catches a binary quietly left behind. It does not depend on the source having changed. The files a commit moves are located through `rev-parse --git-path` rather than assumed at `.git/`, so a linked worktree and a packed ref are covered rather than hoped for; on a detached HEAD the sha lives in the HEAD file, which is watched on its own account. A release, built from a fresh checkout, is exact by construction. The stamp is not a claim about the working tree: uncommitted edits are invisible to it, and a binary built from a dirty tree names the commit it was based on, not the code it contains (TASK-0b26c8b5bfc5).
+
+**The skill revision, and what it lets a reader do offline.** The third value is `skill <rev>`, where `<rev>` is the short form of the same freeze hash that anchors a frozen `done_criteria` (§3), taken over the body of `skill/SKILL.md` — the same value that file declares under `metadata.revision`, computed at build time from the file rather than typed. An agent has both halves in hand and nothing else: the skill is loaded into its context, the binary is on its `PATH`. Comparing the two strings tells it, with no repository and no network, whether the instructions it is following predate the tool it is holding. That is the check TASK-1ea38a17d854 needed and did not have, and the case that motivated it was measured (TASK-b495234f192c): an installed `SKILL.md` two commits behind a tree that had just withdrawn the invitation to read `.ank/` by hand. The hash covers the body and not the frontmatter, so the revision the frontmatter carries does not change its own input. It is `unknown` on a build with no `skill/` to read, for the same reason and with the same honesty as the commit.
 
 ### Exit codes
 

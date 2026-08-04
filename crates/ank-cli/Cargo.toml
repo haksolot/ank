@@ -17,6 +17,14 @@ description = "The Ank CLI: one surface, refusing on state and never on identity
 name = "ank"
 path = "src/main.rs"
 
+# No new crate: `ank-core` is already a dependency below, and the skill revision
+# the build script stamps in has to be the *same* hash the frozen fields use
+# (§4). A second implementation of the freeze hash inside `build.rs` would be a
+# second thing to get wrong, and it would be wrong silently — the value it
+# printed would still look like a revision.
+[build-dependencies]
+ank-core = { path = "../ank-core" }
+
 [dependencies]
 ank-core = { path = "../ank-core" }
 # Already in the tree through ank-core: no new crate enters here.
