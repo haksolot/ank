@@ -78,10 +78,13 @@ run on all three.
 - Ank never commits, except `accept`.
 - No new dependency without necessity; a static binary is the goal; **the MSRV
   is 1.95**, declared in both manifests and pinned in `ci.yml`. It was measured
-  by walking toolchains against the tree — 1.78 through 1.94 all fail — and it
-  is the current stable, so there is no headroom: `libsqlite3-sys` alone sets
-  it (TASK-973e9dc3f9ce). Raising it means re-running the walk, never editing
-  the number.
+  by walking toolchains against the tree — 1.78 through 1.94 all fail — and
+  `libsqlite3-sys` alone sets it. The alternative was measured too and rejected
+  (TASK-973e9dc3f9ce): one major back the floor is 1.82, at the price of eleven
+  crates including a wasm stack this binary has no target for. **The floor is a
+  consequence of a dependency, not a target to hold.** It moves when the
+  dependency moves, `ci.yml` is what turns red, and re-measuring means re-running
+  the walk with `--ignore-rust-version` — never editing the number.
 
 ## Style
 

@@ -78,6 +78,11 @@ jobs:
   # All three platforms, because the crate that sets the floor sets it from a
   # build script, and a build script is the one place where the floor can
   # legitimately differ per target.
+  #
+  # The number is not a target held on purpose: it is what libsqlite3-sys 0.38
+  # needs. Pinning back to a version that needs less was measured and rejected
+  # in ank-cli's manifest (TASK-973e9dc3f9ce). This job is the whole enforcement
+  # — when the floor moves, it moves here first, in red.
   msrv:
     name: msrv 1.95 / ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
