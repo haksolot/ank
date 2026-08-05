@@ -681,6 +681,27 @@ fn finished_elsewhere(
     .with_hint(other_task_hint(other_ready))
 }
 
+/// The same fact as `finished_elsewhere`, about a blocker rather than about the
+/// task being claimed: code 7, because what refuses here is the prerequisite,
+/// not the ref.
+fn blocker_finished_elsewhere(
+    task: &EntityId,
+    blocker: &EntityId,
+    done: &CompletedRecord,
+    other_ready: Option<&str>,
+) -> CliError {
+    let commit: String = done.commit.chars().take(7).collect();
+    let where_ = match &done.branch {
+        Some(b) => format!("finished on {b} (commit {commit})"),
+        None => format!("finished on a detached HEAD (commit {commit})"),
+    };
+    CliError::new(
+        7,
+        format!("{task} is blocked by {blocker}, {where_}, not merged here yet"),
+    )
+    .with_hint(other_task_hint(other_ready))
+}
+
 fn lost_the_race(
     cwd: &Path,
     id: &EntityId,
@@ -782,7 +803,7 @@ pub fn run(
     };
 
     let ttl = resolve_ttl(inv.value("--ttl"), cfg)?;
-    let ready = other_ready_task(&store, &task).map(|id| id.to_string());
+    let ready = other_ready_task(&repo.root, &store, &task).map(|id| id.to_string());
 
     // Preconditions first, in the order of §3: no ref is touched by a claim
     // that was never going to be legal.
@@ -803,7 +824,7 @@ pub fn run(
             )
         }
     };
-    check_blockers(&store, &task)?;
+    check_blockers(&repo.root, &store, &task, ready.as_deref())?;
     task.status
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", task.id)))?;
@@ -871,11 +892,33 @@ fn status_map(store: &Store) -> Result<HashMap<EntityId, TaskStatus>> {
 
 /// A blocker that is not `done` refuses the claim with code 7 and names it.
 /// `closed` does not unblock either — the work was not carried out (§3).
-fn check_blockers(store: &Store, task: &Task) -> Result<()> {
+///
+/// A blocker finished on another branch reads, in the working tree, exactly
+/// like one nobody has started: `status_map` sees the file this branch carries
+/// and nothing else. The completion ref is the only witness of that window
+/// (ADR-bcf222a31525), so it is consulted here. The refusal itself does not
+/// move — claiming on top of unmerged work is the real risk — only what the
+/// agent is told about it, which is the answer `acquire` already gives for the
+/// claimed task itself.
+fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&str>) -> Result<()> {
     let map = status_map(store)?;
     let blockers = task
         .active_blockers(|id| map.get(id).copied())
         .map_err(|e| CliError::new(7, e.to_string()).with_hint("ank check"))?;
+
+    // A blocker carrying a completion ref is named ahead of the first one,
+    // wherever it sits in the list: it is the one fact the plain message hides,
+    // and the order of `blocked_by` says nothing about which blocker matters.
+    for id in &blockers {
+        if let Some(Held {
+            record: Record::Completed(c),
+            ..
+        }) = read(cwd, id)?
+        {
+            return Err(blocker_finished_elsewhere(&task.id, id, &c, other_ready));
+        }
+    }
+
     if let Some(first) = blockers.first() {
         let closed = map.get(*first) == Some(&TaskStatus::Closed);
         let why = if closed { " (closed)" } else { "" };
@@ -891,7 +934,11 @@ fn check_blockers(store: &Store, task: &Task) -> Result<()> {
 /// Same scope first, since that is what the message claims; any ready task
 /// otherwise is not offered, because pointing somewhere else entirely would be
 /// the generic help the style forbids.
-fn other_ready_task(store: &Store, task: &Task) -> Option<EntityId> {
+///
+/// A candidate carrying a completion ref is skipped: its file says `open` on
+/// this branch, and offering it would print an exact command that refuses the
+/// moment it is run — which is the generic help by another route.
+fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> {
     let map = status_map(store).ok()?;
     let mut candidates: Vec<&EntityId> = map
         .iter()
@@ -909,9 +956,19 @@ fn other_ready_task(store: &Store, task: &Task) -> Option<EntityId> {
         {
             continue;
         }
-        if scopes_intersect(&task.scope, &t.scope).unwrap_or(false) {
-            return Some(id.clone());
+        if !scopes_intersect(&task.scope, &t.scope).unwrap_or(false) {
+            continue;
         }
+        if matches!(
+            read(cwd, id),
+            Ok(Some(Held {
+                record: Record::Completed(_),
+                ..
+            }))
+        ) {
+            continue;
+        }
+        return Some(id.clone());
     }
     None
 }
