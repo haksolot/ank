@@ -9,7 +9,7 @@
 
 <p align="center">
   <strong>The stupid coordination tool</strong><br>
-  Tasks and architecture decisions as files in your repo, readable by any coding agent.
+  Tasks and architecture decisions in your repo, behind one CLI any coding agent can call.
 </p>
 
 <p align="center">
@@ -25,9 +25,16 @@ your tracker, your wiki, or the thread where you decided six months ago that
 sessions must never be self-contained JWTs. So it writes plausible code that
 breaks a rule nobody wrote down where it could be found.
 
-Ank puts that layer in the repository, attached to the code it constrains, in a
-format an agent consumes in one call and under 2000 tokens. No server, no
-daemon, no account — two kinds of file and a CLI.
+Ank puts that layer in the repository, attached to the code it constrains, and
+serves it through one command surface. `ank context` answers what binds here in
+a single call; `.ank/` itself is opaque to an agent, the way `.git/` is —
+`ank show` for an entity whole, `ank find` to list, `ank context` to learn what
+binds. Not a directory to grep, a CLI to call.
+
+What comes back is sized by a budget you set: `context_budget` in
+`config.yml`, 8000 characters by default — roughly 2000 tokens. It is an
+optimisation, not a property of the format: raise it on a wide perimeter, lower
+it to pay less per call. No server, no daemon, no account.
 
 ## Quick start
 
@@ -51,19 +58,43 @@ ank log "<what you learned>"  # renews the claim; working is what holds it
 ank done                      # runs the verifiers itself and writes the proof
 ```
 
-**Hand it to an agent.**
+**Hand it to an agent.** The `skills` CLI detects what you run — Claude Code,
+Codex, Cursor, OpenCode and others — and links each one to a single copy:
 
 ```
 npx skills add haksolot/ank
 ```
+
+That installs the skill, not the binary. The skill is one plain markdown file,
+[`skill/SKILL.md`](skill/SKILL.md): where that command does not fit, copy it by
+hand into whatever your agent loads.
 
 [**Getting started**](docs/getting-started.md) walks all of that with real
 output, including the two refusals a fresh repository will give you.
 
 ## What it looks like
 
-A decision that constrains code, and a unit of work with what would prove it
-finished. Both are markdown with YAML frontmatter, flat in `.ank/`:
+An agent asks what applies where it is about to work, and gets only that:
+
+```
+$ ank context src/auth/
+
+CONSTRAINTS (2 active)
+  ADR-3c7e  Do not introduce self-contained JWTs for user auth.
+            Every session goes through the Redis store.
+  ADR-8b41  Rate limiting mandatory on every public endpoint.
+
+TASKS (2)
+  TASK-8f3a  [claimed:pi@host-3] Migrate auth to opaque sessions
+  TASK-51c2  [open] Add secret rotation
+
+> ank claim 51c2 to start
+```
+
+Behind it, two kinds of entity: a decision that constrains code, and a unit of
+work with what would prove it finished. Both are markdown with YAML
+frontmatter, flat in `.ank/` — written through `ank new` and the verbs, read
+through `ank show`:
 
 ```yaml
 ---
@@ -93,23 +124,6 @@ done_criteria: |
   jwt.verify remains in src/auth/
 verify: [auth-tests, no-jwt]
 ---
-```
-
-An agent asks what applies where it is about to work, and gets only that:
-
-```
-$ ank context src/auth/
-
-CONSTRAINTS (2 active)
-  ADR-3c7e  Do not introduce self-contained JWTs for user auth.
-            Every session goes through the Redis store.
-  ADR-8b41  Rate limiting mandatory on every public endpoint.
-
-TASKS (2)
-  TASK-8f3a  [claimed:claude-code@host-3] Migrate auth to opaque sessions
-  TASK-51c2  [open] Add secret rotation
-
-> ank claim 51c2 to start
 ```
 
 ## Why it works this way

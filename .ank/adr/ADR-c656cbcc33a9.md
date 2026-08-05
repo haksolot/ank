@@ -5,7 +5,7 @@ slug: the-help-is-a-flat-listing-and-the-loop-is-taugh
 title: The help is a flat listing, and the loop is taught rather than printed
 created: 2026-08-01T23:07:04Z
 author: seanl@sean-laptop
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
   - skill/**
@@ -15,7 +15,7 @@ constraint: |
 supersedes: ADR-9ede1ffd04e2
 ratified: 7fd54c01c3e0
 schema: 2
-version: 2
+version: 3
 ---
 
 ADR-9ede1ffd04e2 dissolved the split between an agent surface and a human one, and kept one residue of it: a help that presents the loop first and the rest layered. This supersedes it to remove that residue, and changes nothing else.
