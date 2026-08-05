@@ -853,6 +853,8 @@ Both git files are written at the root of the initialised directory, and both ca
 
 **Binary distribution**: the skill says *how* to use Ank, it does not install the CLI. Plan for `curl | sh` and Homebrew in addition to npm.
 
+**npm is the first channel implemented**, and it is implemented for one reason that shapes it entirely: the workstation whose firewall blocks downloading a bare executable but lets the registry through. The binaries therefore travel **inside** the packages — one package per target, listed as `optionalDependencies` on a wrapper that carries `os` and `cpu`, so npm installs exactly the one that matches. **No `postinstall` download**, because a `postinstall` that fetched the binary would die behind the very firewall the channel exists to cross, and would do it after the install appeared to succeed. The wrapper resolves and executes; it forwards the child's exit code unchanged, since the codes above are an interface an agent branches on, and it reserves 9 — the environment code — for its own failures. The package name is scoped, `@haksolot/ank`: the bare name was taken on the registry before this project existed, and the scope is the closest thing to the name the project actually has (ADR-85e6664c67d8).
+
 ---
 
 ## 10. v1 scope

@@ -24,6 +24,17 @@ Every release carries a static binary for three targets —
 your platform from the [releases page](https://github.com/haksolot/ank/releases/latest),
 check the hash, unpack it, and put `ank` on your `PATH`.
 
+From npm instead, which is the channel to reach for on a machine whose firewall
+blocks downloading a bare executable but lets the registry through:
+
+    npx @haksolot/ank --version
+    npm install -g @haksolot/ank
+
+The binary is inside the package — one package per platform, installed through
+`optionalDependencies`, and no `postinstall` fetches anything. A `postinstall`
+download would die behind the very firewall this channel exists to cross, and
+would do it after the install looked like it had worked.
+
 To build instead:
 
     cargo install --git https://github.com/haksolot/ank ank-cli

@@ -105,6 +105,10 @@ jobs:
             sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
           fi
 
+      # The loose binary travels beside the archives, for the npm packages
+      # below: extracting a .zip would need `unzip`, which the Windows runner's
+      # bash does not have, and building a second time to avoid that would be
+      # two binaries where the point is one.
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
@@ -112,11 +116,134 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.sha256
+            dist/*/ank
+            dist/*/ank.exe
           if-no-files-found: error
+
+  # The npm channel exists for the workstation whose firewall blocks downloading
+  # a bare executable but lets the registry through, so the binaries travel
+  # inside the platform packages and nothing is fetched at install time
+  # (npm/README.md). This job proves that on the machine that will run it.
+  npm-smoke:
+    name: npm ${{ matrix.os }}
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            package: ank-linux-x64-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            package: ank-darwin-arm64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            package: ank-win32-x64
+
+    steps:
+      - uses: actions/checkout@v5
+      # Pinned rather than inherited: `engines` declares node 18, and a channel
+      # that works on one runner's default and not another's is the kind of
+      # thing this job exists to catch before a tag does.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ matrix.target }}
+          path: dist
+
+      # Assembling and testing on the same OS is the point: an install that
+      # works on Linux says nothing about the .cmd shim npm writes on Windows,
+      # and a wrapper is exactly the kind of code that is right on one platform
+      # and wrong on another.
+      - name: assemble
+        shell: bash
+        run: bash .github/scripts/npm-assemble.sh "0.0.0-smoke" "${{ matrix.package }}"
+
+      - name: install from the tarballs
+        shell: bash
+        run: |
+          mkdir -p smoke && cd smoke
+          npm init -y > /dev/null
+          npm install --no-audit --no-fund \
+            "../npm/${{ matrix.package }}/"*.tgz "../npm/ank/"*.tgz
+
+      # The criterion in as many words: the same line as the release binary.
+      # Compared against the artefact itself rather than against a literal, so
+      # the assertion cannot drift from the version it ships.
+      - name: npx answers like the binary
+        shell: bash
+        run: |
+          set -e
+          direct=$(find dist -type f \( -name 'ank' -o -name 'ank.exe' \) | head -n 1)
+          chmod +x "$direct" 2>/dev/null || true
+          expected=$("$direct" --version)
+          actual=$(cd smoke && npx ank --version)
+          echo "binary: $expected"
+          echo "npx:    $actual"
+          test "$expected" = "$actual"
+
+      # The exit codes carry meaning (section 4) and a wrapper is where they go
+      # to die. An unknown verb is a 2, and 2 rather than 1 is the point: a
+      # wrapper collapsing every failure into "it failed" would still pass a
+      # test that only asked for non-zero. It also needs no repository, so what
+      # is under test is the wrapper and not the fixture.
+      - name: the exit code survives the wrapper
+        shell: bash
+        run: |
+          cd smoke
+          npx ank --version > /dev/null
+          set +e
+          npx ank help nosuchverb
+          code=$?
+          set -e
+          echo "an unknown verb exited $code"
+          test "$code" -eq 2
+
+  publish-npm:
+    # Only on a tag, and only once all three smoke tests agree. Publishing is
+    # the one step here that cannot be taken back.
+    needs: npm-smoke
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: assemble
+        shell: bash
+        run: bash .github/scripts/npm-assemble.sh "${GITHUB_REF_NAME#v}"
+
+      # The platform packages first: the wrapper pins them exactly, so a
+      # wrapper on the registry ahead of its binaries is an install that
+      # resolves to nothing.
+      - name: publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64 ank; do
+            npm publish --access public "npm/$p"
+          done
 
   publish:
     # Only after all three. A release carrying two platforms out of three would
     # be worse than no release: it looks complete.
+    #
+    # `build` and not `npm-smoke`, deliberately: the release page is the primary
+    # channel and npm is a convenience on top of it, so a broken wrapper costs
+    # the npm packages and not the release. The reverse would hold the binaries
+    # hostage to a JavaScript shim.
     needs: build
     # And only for a tag. A dispatch run builds and stops there.
     if: startsWith(github.ref, 'refs/tags/v')
@@ -138,7 +265,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          # Named globs, not dist/*: the artefacts now also carry the loose
+          # binary the npm packages are built from, in a directory, and
+          # `gh release create` takes files.
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
-            dist/*
+            dist/*.tar.gz dist/*.zip dist/*.sha256

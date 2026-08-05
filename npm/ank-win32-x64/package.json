@@ -1,0 +1,21 @@
+{
+  "name": "@haksolot/ank-win32-x64",
+  "version": "0.1.1",
+  "description": "The ank binary for Windows x86_64.",
+  "license": "GPL-3.0-only",
+  "homepage": "https://github.com/haksolot/ank",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haksolot/ank.git"
+  },
+  "os": [
+    "win32"
+  ],
+  "cpu": [
+    "x64"
+  ],
+  "files": [
+    "bin/ank.exe",
+    "LICENSE"
+  ]
+}
