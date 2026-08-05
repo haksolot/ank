@@ -444,6 +444,51 @@ The rule is not cosmetic, and it is written down because its absence was not obv
 
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
 
+### Short forms
+
+Every long flag keeps its form. Short forms are an addition and never a replacement (ADR-962c25797569): single-dash, single-letter, and this table is the whole of them.
+
+| Short | Long | Legal on |
+|---|---|---|
+| `-j` | `--json` | every verb |
+| `-q` | `--quiet` | every verb |
+| `-r` | `--repo` | every verb |
+| `-b` | `--blocked-by` | `new`, `amend` |
+| `-c` | `--criteria` | `claim`, `new`, `amend` |
+| `-l` | `--limit` | `context` |
+| `-p` | `--proof` | `done`, `attest` |
+| `-s` | `--status` | `find` |
+| `-t` | `--type` | `find` |
+| `-v` | `--verify` | `new` |
+
+**The letter is the first letter of the long flag, and one letter has one meaning in every verb.** Where several long flags begin with the same letter, exactly one takes it and the others keep only their long form. That is the whole rule, and it is worth the flags it costs: a `-s` meaning `--status` in `find` and `--scope` in `new` would not be a saving but a silent wrong answer, since `ank find -s open` would filter on a scope named `open` and return nothing at all. A short form is only useful if it can be typed without checking which verb it is being typed at.
+
+The long flags left without one, with the letter that would have been theirs: `--body` and `--drop-blocked-by` (`b`), `--constraint` (`c`), `--reason` (`r`), `--scope`, `--supersedes` and `--drop-scope` (`s`), `--title` and `--ttl` (`t`). The three globals take their letter ahead of everything else, because they are legal on every verb and a letter they did not hold everywhere would be a letter nobody could rely on — that is what leaves `--reason` on its long form, `r` being `--repo`'s.
+
+A short form takes its value both ways, exactly as the long form does: `ank find -s open` and `ank find -s=open`.
+
+**Bundling is refused, and the refusal names the flags to type instead.** `-st` is not `-s -t`, because a parser that accepts bundling has to decide what `-sopen` means, and every answer to that is a guess about the caller's intent:
+
+```
+$ ank find bug -st task
+error[1]: '-st' bundles short flags
+  -> ank find -s <v> -t <v>
+```
+
+**A single dash is a flag, which is what makes `--` matter.** It was already the only way to write a positional beginning with a dash; short forms make it reachable rather than theoretical, since `ank log "-1 rebuilt the index"` now names a flag where it used to name a message. An argument that begins with a dash and contains whitespace is refused as what it is — no flag contains a space — and the refusal names the escape:
+
+```
+$ ank log "-1 rebuilt the index"
+error[1]: '-1 rebuilt the index' is not a flag: it contains a space
+  -> ank log -- "-1 rebuilt the index"
+```
+
+Values are untouched by any of this. A flag's value is taken verbatim, whichever form the flag was typed in, so `ank release --reason "-x"` and `ank find bug -s=-x` both pass their dash through and only a positional ever needs escaping.
+
+**Verbs are never abbreviated.** `ank cl` is not `ank claim`, and it is `unknown command 'cl'` naming the verbs. A prefix that resolves today stops resolving the day a second verb shares it, which would make a working script break on a release that added a verb.
+
+`ank help <verb>` shows both forms; `ank help` does not, and the flat listing is unchanged (ADR-c656cbcc33a9, §9). The overview buys its token economy by staying short, and the detail is one call away for the caller who wants it.
+
 **`ank --version` is not a fourth global flag**, and the limit above is untouched. The three modify a verb; this one replaces it — there is no `ank check --version`, and asking for the build while also asking for something else is not a question anyone has. It prints the crate version, the commit the binary was built from and the revision of the `skill/SKILL.md` it was built alongside, on one line, and exits 0.
 
 It answers **before the foundation**, like `help` and for a sharper reason: the caller who needs it is the one holding an artifact they cannot identify. A version that required a resolved repository, a git of 2.34 and a readable `config.yml` would fall silent in exactly the situation it exists for. Outside any git repository, in a directory with no `.ank/`, it still prints and still exits 0.

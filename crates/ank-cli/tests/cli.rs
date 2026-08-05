@@ -1601,6 +1601,200 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
     );
 }
 
+// ---------------------------------------------------------------------------
+// Short forms (TASK-f3e92656b5df, ADR-962c25797569)
+// ---------------------------------------------------------------------------
+
+/// The short form is the long form, and the output proves it byte for byte.
+///
+/// Comparing the two invocations against each other rather than against an
+/// expected listing is what makes this a test of the parser: it cannot pass
+/// because `find` was taught to print something, only because both spellings
+/// reached the same flag with the same value.
+#[test]
+fn a_short_flag_is_the_long_flag_and_takes_its_value_both_ways() {
+    let r = Repo::new();
+    r.seed_task("TASK-000000000f01", Some("A criterion."));
+    r.seed_task("TASK-000000000f02", Some("A criterion."));
+    seed_done(
+        &r,
+        "TASK-000000000f03",
+        "  - type: commit\n    ref: abc1234\n",
+    );
+
+    let long = r.ank(
+        "claude-code@ank",
+        &["find", "criterion", "--status", "open"],
+    );
+    assert_eq!(code(&long), 0, "{}", stderr(&long));
+    let expected = stdout(&long);
+    assert!(
+        expected.contains("TASK-000000000f01") && !expected.contains("TASK-000000000f03"),
+        "the fixture must actually filter, or the comparison proves nothing:\n{expected}"
+    );
+
+    for argv in [
+        vec!["find", "criterion", "-s", "open"],
+        vec!["find", "criterion", "-s=open"],
+    ] {
+        let out = r.ank("claude-code@ank", &argv);
+        assert_eq!(code(&out), 0, "{argv:?}: {}", stderr(&out));
+        assert_eq!(stdout(&out), expected, "{argv:?} answered differently");
+    }
+
+    // And a global one, which is legal on every verb rather than declared per
+    // verb -- the path through the parser is the same, the table is not.
+    let out = r.ank("claude-code@ank", &["find", "criterion", "-j"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).trim_start().starts_with('{'),
+        "-j is --json: {}",
+        stdout(&out)
+    );
+}
+
+/// Bundling is refused, and the refusal is the command to type instead.
+#[test]
+fn bundled_short_flags_are_refused_by_naming_the_flags_to_type_separately() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+
+    let out = r.ank("claude-code@ank", &["find", "criterion", "-st", "task"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(said.contains("'-st' bundles"), "{said}");
+    // The exact flags, each with its value placeholder: an error that only said
+    // "no bundling" would leave the caller to work out what to write.
+    assert!(
+        said.contains("ank find -s <v> -t <v>"),
+        "the hint is the command to run next: {said}"
+    );
+
+    // A letter that names nothing on this verb is reported as itself rather
+    // than folded into the bundling message, which would advise a command that
+    // would refuse too.
+    let out = r.ank("claude-code@ank", &["find", "criterion", "-sz"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(said.contains("unknown flag '-z'"), "{said}");
+}
+
+/// A letter that is a real flag on another verb is a different mistake from a
+/// letter that is nothing, and the error says which.
+#[test]
+fn a_short_flag_the_verb_does_not_take_names_the_flag_it_stands_for() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+
+    let out = r.ank("claude-code@ank", &["claim", ID, "-s", "open"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(
+        said.contains("'-s' is --status") && said.contains("'claim' does not take"),
+        "{said}"
+    );
+    assert!(
+        r.task_text(ID).contains("status: open"),
+        "a refused parse claims nothing"
+    );
+
+    let out = r.ank("claude-code@ank", &["claim", ID, "-z"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(said.contains("unknown flag '-z'"), "{said}");
+}
+
+/// `ank help <verb>` shows both forms; `ank help` shows what it always did.
+///
+/// The second half is the one worth a test. ADR-c656cbcc33a9 froze the flat
+/// listing, and a second spelling of every flag is exactly the kind of addition
+/// that arrives looking like an improvement.
+#[test]
+fn help_shows_both_forms_for_one_verb_and_leaves_the_flat_listing_alone() {
+    let r = Repo::new();
+
+    let one = stdout(&r.ank("claude-code@ank", &["help", "find"]));
+    assert!(one.contains("-s, --status <v>"), "{one}");
+    assert!(one.contains("-t, --type <v>"), "{one}");
+    assert!(one.contains("-j, --json"), "the globals too: {one}");
+    // `--scope` has no letter: `s` went to `--status`, and §4 says so rather
+    // than leaving a reader to wonder whether it was forgotten.
+    assert!(
+        one.contains("--scope <v>") && !one.contains(", --scope"),
+        "a flag with no short form shows none: {one}"
+    );
+
+    let all = stdout(&r.ank("claude-code@ank", &["help"]));
+    assert!(
+        all.contains("--status"),
+        "the listing still names flags: {all}"
+    );
+    assert!(
+        !all.contains("-s, ") && !all.contains("-j, "),
+        "the flat listing is unchanged: {all}"
+    );
+
+    // A script reads the mapping from --json, or it cannot use it at all.
+    let j = stdout(&r.ank("claude-code@ank", &["help", "find", "--json"]));
+    assert!(j.contains("\"name\":\"--status\",\"short\":\"-s\""), "{j}");
+    assert!(j.contains("\"name\":\"--scope\",\"short\":null"), "{j}");
+}
+
+/// A single dash is a flag now, so the escape had to become reachable.
+///
+/// `ank log "-1 rebuilt"` used to be a message and is now an argument starting
+/// with a dash. It is refused for what it is rather than reported as a bundle
+/// of unknown letters, and `--` still carries it through.
+#[test]
+fn a_positional_that_starts_with_a_dash_is_refused_by_naming_the_escape() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let message = "-1 rebuilt the index";
+    let out = r.ank("claude-code@ank", &["log", message]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(
+        said.contains("is not a flag: it contains a space"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!("ank log -- \"{message}\"")),
+        "the hint is the exact command that works: {said}"
+    );
+
+    // And it does work. Invoked directly rather than through the harness,
+    // because `--` terminates everything after it and the harness appends
+    // `--repo` last -- which is the terminator behaving exactly as specified,
+    // and worth seeing once from the caller's side.
+    let out = Command::new(ANK)
+        .args(["log", "--repo"])
+        .arg(&r.0)
+        .args(["--", message])
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(r.task_text(ID).contains(message), "{}", r.task_text(ID));
+
+    // A value keeps taking its dash verbatim, whichever form the flag took:
+    // only a positional ever needs the escape.
+    let out = r.ank("claude-code@ank", &["find", "criterion", "-s=open"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+/// Verbs are never abbreviated, and the short forms did not open a door to it.
+#[test]
+fn a_verb_is_never_abbreviated() {
+    let r = Repo::new();
+    let out = r.ank("claude-code@ank", &["cl", ID]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(said.contains("unknown command 'cl'"), "{said}");
+}
+
 /// A second claim under one identity is named, never refused (TASK-d79dc424c63d).
 ///
 /// Observed while dogfooding: a task claimed in one terminal follows you into a
