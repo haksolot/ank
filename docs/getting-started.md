@@ -200,6 +200,29 @@ wrong, hand the task back — `ank release --reason "<why>"` — and say so.
 `claim` also sets HEAD, so the following commands need no id. One claim at a
 time, per person and per agent.
 
+### One identity per session
+
+Claiming a second task while you already hold one is allowed, and it says so:
+
+    $ ank claim 51c2
+    warning: marie@laptop already holds TASK-820d259af6a7 until 2026-07-28T12:30:00Z
+    warning: a second session on this machine sets its own ANK_AGENT
+    claimed TASK-51c2a7f0b3d9 add-secret-rotation -> HEAD
+
+If that is what you meant, ignore it. If it surprises you, it is almost
+certainly two terminals: `$ANK_AGENT` unset resolves to `<user>@<hostname>`, so
+two sessions on one machine are the same agent as far as the refs can tell —
+they see each other's claims, and each renews the other's. Give every
+concurrent session an identity of its own:
+
+    $ ANK_AGENT=marie-2@laptop ank claim 51c2
+
+Nothing is broken in the refs when you do not: identity is declared, never
+proved, and it is deliberately not bound to the session — a PID or a TTY in it
+would mean losing your claim to a restarted terminal. Parallel agents, each
+with its own `ANK_AGENT`, are the supported case; one ref per task is what
+arbitrates them.
+
 Run `ank context` again and the output inverts: no other task, the full
 criterion, and the constraints matching this task's scope.
 
