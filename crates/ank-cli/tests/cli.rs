@@ -1601,6 +1601,80 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
     );
 }
 
+/// A blocker finished on another branch says which one (TASK-b5ad06f134f6).
+///
+/// Through the binary, because the defect is precisely a working tree being
+/// asked a question only the refs can answer: `check_blockers` built its status
+/// map from the files this branch carries, and on `main` the blocker's file
+/// still reads `open`. Nothing below is observable from the function — it needs
+/// a real repository holding a real completion ref for a commit `main` does not
+/// have.
+#[test]
+fn a_blocker_finished_on_another_branch_is_named_with_its_branch_and_commit() {
+    let blocker = "TASK-000000000c01";
+    let dependent = "TASK-000000000c02";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(blocker, Some("A criterion."), &["ok"]);
+    r.seed_task(dependent, Some("A criterion."));
+    r.blocked(dependent, &[blocker]);
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed tasks"]);
+
+    // A commit of its own on the branch, so the commit the completion record
+    // names is one `main` genuinely does not carry. Branching alone would leave
+    // HEAD on a commit both branches share, and the assertion below would pass
+    // on a repository where nothing was unmerged at all.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("work.txt"), "y").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "work"]);
+    let finished_at = r.head();
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", blocker])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "done"]);
+
+    // Back where the work has not landed: the blocker's file says `open` again,
+    // and the ref is the only thing that remembers otherwise.
+    r.git(&["checkout", "-q", "main"]);
+    assert!(
+        r.task_text(blocker).contains("status: open"),
+        "the fixture is wrong if main already carries the done"
+    );
+
+    let out = r.ank("claude-code@ank", &["claim", dependent]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 7, "the refusal itself does not move: {said}");
+    assert!(
+        said.contains(&format!("blocked by {blocker}")),
+        "the blocker is still named: {said}"
+    );
+    assert!(
+        said.contains("finished on feature"),
+        "the branch is the half an agent cannot guess: {said}"
+    );
+    assert!(
+        said.contains(&finished_at[..7]),
+        "the commit is what makes the branch checkable: {said}"
+    );
+    assert!(
+        said.contains("not merged here yet"),
+        "and why it still blocks: {said}"
+    );
+    // The hint is never a command that refuses: the blocker carries the
+    // completion ref, so claiming it is exactly what fails.
+    assert!(
+        !said.contains(&format!("ank claim {blocker}")),
+        "offered a claim that would refuse on the spot: {said}"
+    );
+    assert!(
+        r.task_text(dependent).contains("status: open"),
+        "a refused claim moves nothing"
+    );
+}
+
 #[test]
 fn a_failing_done_through_the_binary_leaves_the_claim_intact() {
     let r = Repo::new().with_verifiers("verifiers:\n  nope:\n    run: exit 2\n");

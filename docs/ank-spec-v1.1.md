@@ -705,6 +705,16 @@ error[4]: TASK-8f3a finished on another branch (commit abc1234, branch feat/opaq
   -> ank claim 51c2   (another ready task in this scope)
 ```
 
+**A blocker carrying a `completed` record gets the same answer, with code 7.** The refusal itself is unchanged — `blocked_by` names work whose result this branch does not have, and claiming on top of it is the risk the ref exists to make visible — but the bare message hides the one fact that decides what to do next. `claim` therefore consults the ref of every active blocker, and a blocker finished elsewhere is named ahead of the first one in the list, wherever it sits there: the order of `blocked_by` says nothing about which blocker matters, and being told about the merged-nowhere one is the point.
+
+```
+$ ank claim 51c2
+error[7]: TASK-51c2 is blocked by TASK-8f3a, finished on feat/opaque-sessions (commit abc1234), not merged here yet
+  -> ank context
+```
+
+The hint follows the same rule as everywhere else and never names a command that would refuse on the spot: the task offered as another thing to take is one whose ref is free, not one whose file reads `open` on this branch only because a completion has not landed yet.
+
 **Pruning is conditioned on durable state, not on a TTL.** A completion ref is pruned once the task appears `done` or `closed` **on the default branch**: the information the ref carried is then present where everyone reads it, and the ref has no further use. That is what makes "ephemeral" accurate rather than decorative — the ref lives exactly as long as it is useful, three minutes or three weeks depending on how long review takes.
 
 The predicate is about the task file as it appears on the default branch (`git cat-file -p <default_branch>:.ank/tasks/TASK-<id>.md`), **and not about the reachability of the recorded commit**. The difference is not theoretical: `done` writes only to the working tree (§12), so the commit it records is the current HEAD, which is frequently already an ancestor of the default branch — an agent that branches and then runs `done` before its first commit would see its ref pruned immediately, which would reopen the very window the mechanism exists to close. The recorded commit serves the diagnostic above, never the pruning decision.
