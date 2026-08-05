@@ -130,6 +130,49 @@ const fn multi(name: &'static str) -> FlagSpec {
 /// than declaring them per command, which would leave room to forget one.
 pub const GLOBAL_FLAGS: &[FlagSpec] = &[switch("--json"), switch("--quiet"), flag("--repo")];
 
+/// The short forms of §4 (ADR-962c25797569), and the whole of them.
+///
+/// One table rather than a letter beside each declaration: `--scope` and
+/// `--criteria` are declared in three [`CommandSpec`]s each, and three
+/// declarations of one letter are three chances for two of them to disagree.
+/// Here a letter can only mean one thing, which is exactly the property §4
+/// claims for it.
+///
+/// The letter is the first letter of the long flag, without exception. Where
+/// several long flags share one, exactly one takes it and the others keep only
+/// their long form — a `-s` that meant `--status` under `find` and `--scope`
+/// under `new` would not be a saving but a silent wrong answer.
+pub const SHORT_FORMS: &[(&str, char)] = &[
+    ("--json", 'j'),
+    ("--quiet", 'q'),
+    ("--repo", 'r'),
+    ("--blocked-by", 'b'),
+    ("--criteria", 'c'),
+    ("--limit", 'l'),
+    ("--proof", 'p'),
+    ("--status", 's'),
+    ("--type", 't'),
+    ("--verify", 'v'),
+];
+
+/// The short form of a long flag, if §4 gave it one.
+pub fn short_of(long: &str) -> Option<char> {
+    SHORT_FORMS
+        .iter()
+        .find(|(name, _)| *name == long)
+        .map(|(_, c)| *c)
+}
+
+/// The long flag a letter stands for, anywhere. Whether that flag is legal on
+/// the verb being parsed is a separate question, and asking it separately is
+/// what lets the error say "not for this verb" instead of "no such flag".
+fn long_of(c: char) -> Option<&'static str> {
+    SHORT_FORMS
+        .iter()
+        .find(|(_, letter)| *letter == c)
+        .map(|(name, _)| *name)
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct CommandSpec {
     pub name: &'static str,
@@ -403,6 +446,83 @@ impl Invocation {
 // Parsing
 // ---------------------------------------------------------------------------
 
+/// `name=value` split, for both forms: `--status=open` and `-s=open` reach it
+/// with the dashes already accounted for by the caller.
+fn split_inline(arg: &str) -> (String, Option<String>) {
+    match arg.split_once('=') {
+        Some((n, v)) => (n.to_string(), Some(v.to_string())),
+        None => (arg.to_string(), None),
+    }
+}
+
+/// A single-dash argument, resolved to the long flag it names (§4).
+///
+/// Bundling is refused rather than parsed. Accepting `-st` forces a decision
+/// about `-sopen` — is that three flags, or `-s` with a value? — and every
+/// answer to that is a guess about what the caller meant. The refusal costs one
+/// round trip and names exactly what to type instead; a guess costs a wrong
+/// answer that looks right.
+fn short_flag(spec: &CommandSpec, arg: &str) -> Result<(String, String, Option<String>)> {
+    // No flag contains whitespace, so this one is a positional that starts with
+    // a dash -- `ank log "-1 rebuilt the index"`. Saying so beats reporting it
+    // as a bundle of nine unknown letters, and it is a fact rather than a guess
+    // about intent. Single-dash arguments became flags the day short forms did,
+    // and that is the one consequence a caller has to be told rather than left
+    // to discover.
+    if arg.contains(char::is_whitespace) {
+        return Err(
+            CliError::new(1, format!("'{arg}' is not a flag: it contains a space"))
+                .with_hint(format!("ank {} -- \"{arg}\"", spec.name)),
+        );
+    }
+
+    let (letters, inline) = split_inline(&arg[1..]);
+    let chars: Vec<char> = letters.chars().collect();
+
+    if chars.len() > 1 {
+        return Err(bundled(spec, &chars, &letters));
+    }
+
+    let unknown = |typed: &str| {
+        CliError::new(1, format!("unknown flag '{typed}' for '{}'", spec.name))
+            .with_hint(format!("valid flags: {}", known_flags(spec).join(" ")))
+    };
+
+    // `-` alone never reaches here, and `-=v` leaves nothing to resolve.
+    let Some(c) = chars.first() else {
+        return Err(unknown(arg));
+    };
+    let typed = format!("-{c}");
+    let Some(long) = long_of(*c) else {
+        return Err(unknown(&typed));
+    };
+    Ok((typed, long.to_string(), inline))
+}
+
+/// `-st`, and the two flags to type instead.
+///
+/// A letter that names nothing on this verb is reported as itself: naming a
+/// flag the caller could type separately would be advice about a command that
+/// would refuse too.
+fn bundled(spec: &CommandSpec, chars: &[char], letters: &str) -> CliError {
+    let mut parts: Vec<String> = Vec::new();
+    for c in chars {
+        match long_of(*c).and_then(|long| find_flag(spec, long)) {
+            Some(fs) if fs.takes_value => parts.push(format!("-{c} <v>")),
+            Some(_) => parts.push(format!("-{c}")),
+            None => {
+                return CliError::new(1, format!("unknown flag '-{c}' for '{}'", spec.name))
+                    .with_hint(format!("valid flags: {}", known_flags(spec).join(" ")))
+            }
+        }
+    }
+    CliError::new(1, format!("'-{letters}' bundles short flags")).with_hint(format!(
+        "ank {} {}",
+        spec.name,
+        parts.join(" ")
+    ))
+}
+
 pub fn parse(argv: &[String]) -> Result<Invocation> {
     let Some(first) = argv.first() else {
         return Err(CliError::new(1, "no command").with_hint("ank context"));
@@ -454,54 +574,70 @@ pub fn parse(argv: &[String]) -> Result<Invocation> {
             continue;
         }
 
-        if !terminated && arg.starts_with("--") {
-            let (name, inline) = match arg.split_once('=') {
-                Some((n, v)) => (n.to_string(), Some(v.to_string())),
-                None => (arg.clone(), None),
-            };
+        // `typed` is what the caller wrote and `name` is the long flag it
+        // names; they differ only for a short form. Every error below quotes
+        // `typed`, because an agent that typed `-s` is helped by an error about
+        // `-s` and not about a flag it never wrote.
+        let named: Option<(String, String, Option<String>)> = if terminated {
+            None
+        } else if arg.starts_with("--") {
+            let (name, inline) = split_inline(arg);
+            Some((name.clone(), name, inline))
+        } else if arg.starts_with('-') && arg.len() > 1 {
+            Some(short_flag(spec, arg)?)
+        } else {
+            None
+        };
 
-            let Some(fs) = find_flag(spec, &name) else {
-                return Err(
-                    CliError::new(1, format!("unknown flag '{name}' for '{}'", spec.name))
-                        .with_hint(format!("valid flags: {}", known_flags(spec).join(" "))),
-                );
-            };
+        let Some((typed, name, inline)) = named else {
+            positionals.push(arg.clone());
+            i += 1;
+            continue;
+        };
 
-            if !fs.takes_value {
-                if inline.is_some() {
-                    return Err(CliError::new(1, format!("'{name}' takes no value"))
-                        .with_hint(format!("ank {} {name}", spec.name)));
-                }
-                flags.entry(name).or_default();
-                i += 1;
-                continue;
+        let Some(fs) = find_flag(spec, &name) else {
+            // A letter that names a real flag the verb does not take is a
+            // different mistake from a letter that names nothing, and saying
+            // which one it is saves the round trip.
+            let message = if typed == name {
+                format!("unknown flag '{typed}' for '{}'", spec.name)
+            } else {
+                format!("'{typed}' is {name}, which '{}' does not take", spec.name)
+            };
+            return Err(CliError::new(1, message)
+                .with_hint(format!("valid flags: {}", known_flags(spec).join(" "))));
+        };
+
+        if !fs.takes_value {
+            if inline.is_some() {
+                return Err(CliError::new(1, format!("'{typed}' takes no value"))
+                    .with_hint(format!("ank {} {typed}", spec.name)));
             }
-
-            let value = match inline {
-                Some(v) => {
-                    i += 1;
-                    v
-                }
-                None => {
-                    let v = rest.get(i + 1).ok_or_else(|| {
-                        CliError::new(1, format!("'{name}' expects a value"))
-                            .with_hint(format!("ank {} {name} <value>", spec.name))
-                    })?;
-                    i += 2;
-                    v.clone()
-                }
-            };
-
-            let slot = flags.entry(name.clone()).or_default();
-            if !fs.repeatable {
-                slot.clear();
-            }
-            slot.push(value);
+            flags.entry(name).or_default();
+            i += 1;
             continue;
         }
 
-        positionals.push(arg.clone());
-        i += 1;
+        let value = match inline {
+            Some(v) => {
+                i += 1;
+                v
+            }
+            None => {
+                let v = rest.get(i + 1).ok_or_else(|| {
+                    CliError::new(1, format!("'{typed}' expects a value"))
+                        .with_hint(format!("ank {} {typed} <value>", spec.name))
+                })?;
+                i += 2;
+                v.clone()
+            }
+        };
+
+        let slot = flags.entry(name).or_default();
+        if !fs.repeatable {
+            slot.clear();
+        }
+        slot.push(value);
     }
 
     if positionals.len() > spec.max_positionals {
@@ -542,11 +678,21 @@ pub fn usage(spec: &CommandSpec) -> String {
 
 /// A flag as `help` shows it: the name alone says nothing about whether a value
 /// follows, and an agent that guesses wrong pays a round trip to find out.
-fn flag_display(f: &FlagSpec) -> String {
+///
+/// `with_short` is what separates the two surfaces of §9. `ank help <verb>`
+/// shows both forms, since that is the call made to learn one verb precisely.
+/// The flat listing does not, and stays byte for byte what it was: it buys its
+/// token economy by being short, and spending it on a second spelling of every
+/// flag would spend exactly what the split saves.
+fn flag_display(f: &FlagSpec, with_short: bool) -> String {
+    let name = match short_of(f.name) {
+        Some(c) if with_short => format!("-{c}, {}", f.name),
+        _ => f.name.to_string(),
+    };
     match (f.takes_value, f.repeatable) {
-        (false, _) => f.name.to_string(),
-        (true, false) => format!("{} <v>", f.name),
-        (true, true) => format!("{} <v>...", f.name),
+        (false, _) => name,
+        (true, false) => format!("{name} <v>"),
+        (true, true) => format!("{name} <v>..."),
     }
 }
 
@@ -561,10 +707,10 @@ fn flag_names(spec: &CommandSpec) -> String {
         .join(" ")
 }
 
-fn globals_line() -> String {
+fn globals_line(with_short: bool) -> String {
     GLOBAL_FLAGS
         .iter()
-        .map(flag_display)
+        .map(|f| flag_display(f, with_short))
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -597,9 +743,17 @@ fn json_of(specs: &[&CommandSpec]) -> String {
                 .iter()
                 .chain(GLOBAL_FLAGS.iter())
                 .map(|f| {
+                    // The short form is here and not only in the human listing:
+                    // `--json` is how a script reads the surface, and a mapping
+                    // it cannot see is a mapping it cannot use.
+                    let short = match short_of(f.name) {
+                        Some(c) => json_str(&format!("-{c}")),
+                        None => "null".to_string(),
+                    };
                     format!(
-                        "{{\"name\":{},\"takes_value\":{},\"repeatable\":{}}}",
+                        "{{\"name\":{},\"short\":{},\"takes_value\":{},\"repeatable\":{}}}",
                         json_str(f.name),
+                        short,
                         f.takes_value,
                         f.repeatable
                     )
@@ -644,10 +798,10 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
         }
         let _ = writeln!(out, "{}", usage(spec));
         if !spec.flags.is_empty() {
-            let flags: Vec<String> = spec.flags.iter().map(flag_display).collect();
+            let flags: Vec<String> = spec.flags.iter().map(|f| flag_display(f, true)).collect();
             let _ = writeln!(out, "  flags:    {}", flags.join(" "));
         }
-        let _ = writeln!(out, "  global:   {}", globals_line());
+        let _ = writeln!(out, "  global:   {}", globals_line(true));
         return Ok(0);
     }
 
@@ -671,7 +825,7 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
             let _ = writeln!(out, "{:width$}  {names}", usage(spec));
         }
     }
-    let _ = writeln!(out, "\nglobal: {}", globals_line());
+    let _ = writeln!(out, "\nglobal: {}", globals_line(false));
     let _ = writeln!(out, "ank help <verb> for one verb");
     // A trailing pointer, beside the one above it and in the same shape: not a
     // heading and not a grouping, so the flat listing ADR-c656cbcc33a9 requires
