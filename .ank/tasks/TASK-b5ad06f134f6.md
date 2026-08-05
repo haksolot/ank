@@ -21,8 +21,11 @@ proof:
   - type: commit
     ref: f12ee8a
     criteria: ab7defbf6e22
+  - type: test
+    ref: "30976148653"
+    criteria: ab7defbf6e22
 schema: 2
-version: 4
+version: 5
 ---
 
 check_blockers() builds its status map from task files in the local working
@@ -40,3 +43,4 @@ extends to blockers the same answer claim already gives for the task itself
 ## Log
 - 2026-08-05T04:46:31Z seanl@sean-laptop — check_blockers now reads the ref of every active blocker, not only the task files. A blocker carrying a completion record refuses with code 7 and names branch and commit: 'is blocked by <id>, finished on <branch> (commit <sha>), not merged here yet'. It is named ahead of the first blocker in the list, since the order of blocked_by says nothing about which one matters. Found while testing: other_ready_task would have offered the blocker itself as another ready task, because its file reads open on this branch — an exact command that refuses on the spot. It now skips a candidate carrying a completion ref. Section 7 of the specification documents both. Tested through the binary with a negative control: without the ref lookup the message is the bare 'is blocked by <id>' and the test fails on the branch name.
 - 2026-08-05T04:47:06Z seanl@sean-laptop — done, proof commit:f12ee8a
+- 2026-08-05T04:50:24Z seanl@sean-laptop — attested test:30976148653
