@@ -21,8 +21,11 @@ proof:
   - type: commit
     ref: 7c7c9ea
     criteria: d83f94613a9d
+  - type: test
+    ref: "30976703821"
+    criteria: d83f94613a9d
 schema: 2
-version: 4
+version: 5
 ---
 
 Observed while dogfooding: a task claimed in one terminal follows you into a
@@ -45,3 +48,4 @@ the design, one ref per task.
 ## Log
 - 2026-08-05T04:58:13Z seanl@sean-laptop — claim now warns when the claiming identity already holds a live claim on another task, naming it and its expiry, plus one line pointing at ANK_AGENT. It warns and never refuses: parallel agents each with their own identity are the design, one claim at a time is a convention. live_claims_of takes now as a parameter for the same reason is_expired does — the drift tolerance is two minutes, so an integration test waiting for a lapse would wait two minutes; the lapsed case is a module test instead. The warning survives --quiet, since what it reports is not the confirmation that flag silences, and in --json it goes into a warnings array rather than polluting the object. Section 8 of the specification and getting-started both document it, and the guide is checked against what the binary actually prints rather than against a hand-copied string.
 - 2026-08-05T04:58:34Z seanl@sean-laptop — done, proof commit:7c7c9ea
+- 2026-08-05T05:02:50Z seanl@sean-laptop — attested test:30976703821
