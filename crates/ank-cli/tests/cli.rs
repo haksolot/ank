@@ -1601,6 +1601,109 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
     );
 }
 
+/// A second claim under one identity is named, never refused (TASK-d79dc424c63d).
+///
+/// Observed while dogfooding: a task claimed in one terminal follows you into a
+/// second one, because `ANK_AGENT` unset makes both `<user>@<hostname>`. The
+/// identity is not bound to the session on purpose — a PID or a TTY in it would
+/// break resuming a claim after a restart — so what the fix owes the user is the
+/// warning and the way out.
+///
+/// Through the binary, because a warning that never reaches stdout is not a
+/// warning, and because the environment variable under test is read by the
+/// process and not by the function.
+#[test]
+fn a_second_claim_under_one_identity_warns_and_names_what_is_already_held() {
+    let first = "TASK-000000000d01";
+    let second = "TASK-000000000d02";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(first, Some("A criterion."));
+    r.seed_task(second, Some("A criterion."));
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", first])), 0);
+
+    let out = r.ank("claude-code@ank", &["claim", second]);
+    let said = stdout(&out);
+    assert_eq!(
+        code(&out),
+        0,
+        "a convention warns, it does not refuse: {said}"
+    );
+    assert!(
+        said.contains(&format!("already holds {first}")),
+        "the claim already held is named: {said}"
+    );
+    assert!(said.contains("ANK_AGENT"), "and the way out of it: {said}");
+    assert!(
+        said.contains(&format!("claimed {second}")),
+        "the claim itself still went through: {said}"
+    );
+
+    // The other identity is the supported case and must stay silent: parallel
+    // agents, one ref per task, is the design and not the anomaly.
+    let third = "TASK-000000000d03";
+    r.seed_task(third, Some("A criterion."));
+    let out = r.ank("codex@ank", &["claim", third]);
+    let said = stdout(&out);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !said.contains("warning:"),
+        "a distinct identity holding its own task is not an anomaly: {said}"
+    );
+
+    // The lapsed case is a module test: the drift tolerance is two minutes, so
+    // waiting for an expiry here would cost two minutes of wall time.
+}
+
+/// The warning sends the reader to `getting-started`, so `getting-started` has
+/// to be where the answer is (TASK-d79dc424c63d).
+///
+/// Driven by the binary rather than by a hand-copied string: the point is not
+/// that the guide mentions a variable, it is that the exact line the binary
+/// prints has somewhere to land. A warning naming a fix nobody wrote down is
+/// the defect this task is about, one level up.
+#[test]
+fn the_guide_documents_the_identity_the_warning_tells_you_to_set() {
+    let first = "TASK-000000000d11";
+    let second = "TASK-000000000d12";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(first, Some("A criterion."));
+    r.seed_task(second, Some("A criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", first])), 0);
+
+    let said = stdout(&r.ank("claude-code@ank", &["claim", second]));
+    let warned: Vec<&str> = said.lines().filter(|l| l.starts_with("warning:")).collect();
+    assert!(!warned.is_empty(), "nothing to document: {said}");
+
+    let guide = std::fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/getting-started.md"),
+    )
+    .expect("the guide is in the repository the tests run from");
+
+    // The variable the warning names, and the shape of an invocation that sets
+    // it: naming it without showing how to use it is half an answer.
+    let named: Vec<&str> = warned
+        .iter()
+        .flat_map(|l| l.split_whitespace())
+        .filter(|w| w.contains("ANK_AGENT"))
+        .collect();
+    assert!(!named.is_empty(), "the warning names no way out: {said}");
+    for w in named {
+        assert!(
+            guide.contains(w),
+            "the binary tells the reader about {w} and the guide never mentions it"
+        );
+    }
+    assert!(
+        guide.contains("ANK_AGENT=") && guide.contains("ank claim"),
+        "the guide names the variable without showing an invocation that sets it"
+    );
+    assert!(
+        guide.contains("concurrent session"),
+        "the guide never says the fix is per session, which is the whole point"
+    );
+}
+
 /// A blocker finished on another branch says which one (TASK-b5ad06f134f6).
 ///
 /// Through the binary, because the defect is precisely a working tree being

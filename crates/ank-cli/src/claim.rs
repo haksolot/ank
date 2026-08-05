@@ -27,6 +27,7 @@ use crate::cli::{CliError, Invocation, Result};
 use crate::config::{self, Config};
 use crate::git;
 use crate::human::Freeze;
+use crate::identity::ENV_AGENT;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_core::{
@@ -271,6 +272,59 @@ pub fn parse_record(text: &str, id: &EntityId) -> Result<Record> {
 // ---------------------------------------------------------------------------
 // Ref operations. The compare-and-swap is git's.
 // ---------------------------------------------------------------------------
+
+/// Every task this identity holds a live claim on, `except` aside, ordered by
+/// id.
+///
+/// One claim at a time is the convention, and nothing enforces it. It is worth
+/// saying because the default identity is `<user>@<hostname>` (§8): two
+/// terminals on one machine are the same agent as far as the refs can tell, so
+/// they share and renew each other's claims in silence. Binding identity to the
+/// session instead — a PID, a TTY — would break resuming a claim after a
+/// restart, and identity is declared, never proof. What is fixable is the
+/// silence.
+///
+/// `now` is a parameter for the same reason `is_expired` takes one: the drift
+/// tolerance is two minutes, so a test that waited on the clock for a lapse
+/// would wait two minutes.
+///
+/// A damaged or unreadable record is skipped rather than raised: this feeds a
+/// warning, and a reader of other people's refs does not get to fail the write
+/// it accompanies. `acquire` is the one that reads the ref it is about to
+/// touch, and it is right to call the same damage a hard error.
+pub fn live_claims_of(
+    cwd: &Path,
+    identity: &str,
+    except: &EntityId,
+    now: i64,
+) -> Result<Vec<(EntityId, ClaimRecord)>> {
+    let mut held = Vec::new();
+    for r in git::ank_refs(cwd)? {
+        let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
+            continue;
+        };
+        let Ok(id) = EntityId::parse(rest) else {
+            continue;
+        };
+        if &id == except {
+            continue;
+        }
+        let out = git::output(cwd, &["cat-file", "-p", r.object.as_str()])?;
+        if !out.status.success() {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let Ok(Record::Claim(c)) = parse_record(&text, &id) else {
+            continue;
+        };
+        if c.holder != identity || is_expired(&c, now, &id).unwrap_or(true) {
+            continue;
+        }
+        held.push((id, c));
+    }
+    held.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+    Ok(held)
+}
 
 /// The record a task's ref carries, if it carries one. An absent ref is
 /// `None`, never an error: that is the nominal state of a free task.
@@ -845,15 +899,43 @@ pub fn run(
     task.status = TaskStatus::InProgress;
     store.write(&Entity::Task(task.clone()), base_version)?;
 
+    // Held after the ref is taken, so nothing is said about a claim that was
+    // refused. One claim at a time is a convention and not a lock, so this
+    // warns and never refuses: parallel agents, each with its own identity, are
+    // the design (§7), and the case worth naming is the one where they are not.
+    let also_held = live_claims_of(&repo.root, identity, &acquired.id, now_secs())?;
+    let warnings: Vec<String> = also_held
+        .iter()
+        .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
+        .chain(
+            (!also_held.is_empty())
+                .then(|| format!("a second session on this machine sets its own {ENV_AGENT}")),
+        )
+        .collect();
+
     if inv.json() {
         let _ = writeln!(
             out,
-            "{{\"task\":\"{}\",\"holder\":\"{}\",\"expires\":\"{}\"}}",
-            acquired.id, acquired.holder, acquired.expires
+            "{{\"task\":\"{}\",\"holder\":\"{}\",\"expires\":\"{}\",\"warnings\":[{}]}}",
+            acquired.id,
+            acquired.holder,
+            acquired.expires,
+            warnings
+                .iter()
+                .map(|w| crate::commands::json_string(w))
+                .collect::<Vec<_>>()
+                .join(",")
         );
-    } else if !inv.quiet() {
-        let slug = task.slug.as_deref().unwrap_or("");
-        let _ = writeln!(out, "claimed {} {slug} -> HEAD", acquired.id);
+    } else {
+        // A warning survives `--quiet`: what it reports is not the confirmation
+        // the flag is there to silence.
+        for w in &warnings {
+            let _ = writeln!(out, "warning: {w}");
+        }
+        if !inv.quiet() {
+            let slug = task.slug.as_deref().unwrap_or("");
+            let _ = writeln!(out, "claimed {} {slug} -> HEAD", acquired.id);
+        }
     }
     Ok(0)
 }
@@ -1079,6 +1161,38 @@ mod tests {
             version: 1,
             body: "\nFree body.\n".into(),
         }
+    }
+
+    /// The lapsed half of the warning, which the integration test cannot reach:
+    /// the drift tolerance is two minutes, so a claim expiring through the clock
+    /// costs two minutes of wall time. Here `now` is a parameter and the lapse
+    /// is free.
+    #[test]
+    fn a_lapsed_claim_is_not_something_its_holder_still_holds() {
+        let t = Temp::new_repo();
+        let a = open_task("00000000ee01");
+        let b = open_task("00000000ee02");
+        t.seed(&a);
+        t.seed(&b);
+        t.commit_all("seed");
+
+        let ttl = Duration::from_secs(30 * 60);
+        acquire(&t.0, &a, "mia@laptop", ttl, "h", "c", None).unwrap();
+
+        let now = now_secs();
+        let held = live_claims_of(&t.0, "mia@laptop", &b.id, now).unwrap();
+        assert_eq!(held.len(), 1, "held while live: {held:?}");
+        assert_eq!(held[0].0, a.id);
+
+        // Past the expiry and past the tolerance, the ref is still there and
+        // nobody holds it: that is exactly the state a takeover reads.
+        let later = now + ttl.as_secs() as i64 + DRIFT_TOLERANCE.as_secs() as i64 + 1;
+        let held = live_claims_of(&t.0, "mia@laptop", &b.id, later).unwrap();
+        assert!(held.is_empty(), "a lapsed claim is not held: {held:?}");
+
+        // And it was never anybody else's to begin with.
+        let held = live_claims_of(&t.0, "codex@ank", &b.id, now).unwrap();
+        assert!(held.is_empty(), "another identity holds nothing: {held:?}");
     }
 
     fn adr(hex: &str, scope: &[&str], constraint: &str, status: AdrStatus) -> Entity {
