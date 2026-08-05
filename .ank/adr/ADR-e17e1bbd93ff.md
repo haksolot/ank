@@ -5,7 +5,7 @@ slug: the-skill-teaches-planning-as-well-as-the-loop
 title: The skill teaches planning as well as the loop
 created: 2026-08-05T04:03:55Z
 author: seanl@sean-laptop
-status: proposed
+status: accepted
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -26,8 +26,9 @@ constraint: |
   The size ceiling moves with the content: at most 140 lines and 1200 words,
   a ceiling to notice drift, not a target to fill.
 supersedes: ADR-c656cbcc33a9
+ratified: ddcb4b4ec828
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context
