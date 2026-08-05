@@ -5,7 +5,7 @@ slug: the-threat-model-becomes-a-security-policy
 title: The threat model becomes a security policy
 created: 2026-08-05T18:35:37Z
 author: seanl@sean-laptop
-status: open
+status: done
 scope:
   - SECURITY.md
 blocked_by: []
@@ -21,8 +21,12 @@ done_criteria: |
   which is enabled on the repository. No sentence in it contradicts
   docs/ank-spec-v1.1.md.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 55f2d7cad592869bae4c246b135d6f0284c8f934
+    criteria: d1716893bbd0
 schema: 2
-version: 1
+version: 3
 ---
 
 The project published its first package to a registry with v0.1.2, so it is
@@ -49,3 +53,6 @@ ank done. Git had this problem with hooks and solved it the same way.
 Reports go to GitHub private vulnerability reporting, which has to be enabled
 on the repository before the file names it. A policy pointing at a channel
 that does not exist is worse than no policy.
+
+## Log
+- 2026-08-05T22:00:44Z seanl@sean-laptop — done, proof commit:55f2d7cad592869bae4c246b135d6f0284c8f934
