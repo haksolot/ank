@@ -40,7 +40,16 @@ it to pay less per call. No server, no daemon, no account.
 
 **Install.** Take a binary from the [latest release][releases] — Linux
 (`x86_64-musl`), macOS (Apple silicon) or Windows (`x86_64`), each with a
-`.sha256` beside it — and put `ank` on your `PATH`. Or build it:
+`.sha256` beside it — and put `ank` on your `PATH`. Or from npm, where the
+binary travels inside the package and nothing is downloaded at install time,
+which is what makes this the channel that works behind a firewall:
+
+```
+npx @haksolot/ank --version
+npm install -g @haksolot/ank
+```
+
+Or build it:
 
 ```
 cargo install --git https://github.com/haksolot/ank ank-cli

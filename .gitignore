@@ -1,2 +1,6 @@
 /target
 .ank/index.db
+# The release run fills these from the artefacts it just built (npm/README.md).
+npm/ank-*/bin/
+npm/*/LICENSE
+npm/*/*.tgz
