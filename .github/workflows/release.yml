@@ -163,6 +163,21 @@ jobs:
         shell: bash
         run: bash .github/scripts/npm-assemble.sh "0.0.0-smoke" "${{ matrix.package }}"
 
+      # The argument publish-npm passes, run on every dispatch and every tag,
+      # with the one flag that stops short of the registry. This is the step
+      # that was missing when v0.1.2 shipped no packages: the smoke job proved
+      # the tarballs install, but it reached them through globs that expand to
+      # real files, and `npm pack` runs from inside the directory. Nothing
+      # anywhere gave npm the path itself, which is precisely the argument that
+      # was wrong -- a bare `npm/ank` is a GitHub shorthand to npm, not a
+      # folder. Tested here because a publish is not something you get to
+      # retry: the tag is spent whether or not the registry accepted it.
+      - name: the publish argument is a path
+        shell: bash
+        run: |
+          npm publish --dry-run --access public "./npm/${{ matrix.package }}"
+          npm publish --dry-run --access public "./npm/ank"
+
       - name: install from the tarballs
         shell: bash
         run: |
@@ -228,12 +243,17 @@ jobs:
       # The platform packages first: the wrapper pins them exactly, so a
       # wrapper on the registry ahead of its binaries is an install that
       # resolves to nothing.
+      #
+      # `./npm/$p` and not `npm/$p`: to npm, a bare `a/b` is a GitHub shorthand
+      # before it is a directory, so `npm/ank` sent v0.1.2 to
+      # ssh://git@github.com/npm/ank.git and the job died at the first package.
+      # The leading `./` is what makes it a path.
       - name: publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64 ank; do
-            npm publish --access public "npm/$p"
+            npm publish --access public "./npm/$p"
           done
 
   publish:
