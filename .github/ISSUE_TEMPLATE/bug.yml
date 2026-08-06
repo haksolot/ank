@@ -1,0 +1,107 @@
+name: Bug report
+description: ank did something other than what it says it does
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Every refusal in ank prints the exact command to run next, and every
+        exit code carries a meaning. This form asks for what the tool already
+        gave you, so the report arrives classifiable.
+
+        A suspected vulnerability does not belong here: report it privately at
+        <https://github.com/haksolot/ank/security/advisories/new>.
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command, and its output
+      description: >
+        Verbatim, not a paraphrase. Ank's errors name the command to run next,
+        and if that line was wrong or missing it is itself the defect -- which
+        cannot be recovered from a summary.
+      render: shell
+      placeholder: |
+        $ ank claim TASK-8ebd
+        error[4]: TASK-8ebd6e02f125 is held by pi@host-3 until 2026-08-06T18:12:00Z
+          -> ank find --status open
+    validations:
+      required: true
+
+  - type: dropdown
+    id: exit_code
+    attributes:
+      label: Exit code
+      description: >
+        Section 4 of the specification defines these. It is the fastest triage
+        available: the number narrows the search before anyone reads the prose.
+        `echo $?` on a POSIX shell, `$LASTEXITCODE` in PowerShell.
+      options:
+        - "0 -- ok (and that is the bug: it should have refused)"
+        - "1 -- generic error"
+        - "2 -- entity not found, or ambiguous prefix"
+        - "3 -- version conflict"
+        - "4 -- task unavailable"
+        - "5 -- proof missing or invalid"
+        - "6 -- illegal transition, or frozen field modified"
+        - "7 -- missing prerequisite"
+        - "8 -- check: invariants violated"
+        - "9 -- environment unavailable"
+        - "something else, or the command never returned"
+    validations:
+      required: true
+
+  - type: input
+    id: ank_version
+    attributes:
+      label: ank --version
+      description: >
+        The whole line. It names the build and the skill revision it shipped
+        alongside.
+      placeholder: ank 0.1.2 (skill 7f3c1a9)
+    validations:
+      required: true
+
+  - type: input
+    id: git_version
+    attributes:
+      label: git --version
+      description: >
+        The minimum is 2.34, and claims are git refs -- so the git version is
+        part of the reproduction, not an afterthought.
+      placeholder: git version 2.47.1.windows.1
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - other
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+      description: >
+        One sentence is enough. If the specification says something different
+        from the binary, open a specification divergence instead -- that form
+        asks which section.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: How to reproduce
+      description: >
+        The steps from an empty repository, if you have them. Prefer a minimal
+        throwaway repository over anything real.
+    validations:
+      required: false

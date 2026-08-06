@@ -1,0 +1,76 @@
+name: Specification divergence
+description: The binary and docs/ank-spec-v1.1.md disagree
+labels: ["spec"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        The specification is the source of truth, so this is its own kind of
+        report. The question is not only what the binary did, but which section
+        it disagrees with -- and that answer decides whether the fix belongs in
+        the code or in the document.
+
+  - type: dropdown
+    id: section
+    attributes:
+      label: Which section
+      description: >
+        [docs/ank-spec-v1.1.md](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md).
+        Pick the section that states the rule you read.
+      options:
+        - "3. Data model"
+        - "4. CLI surface"
+        - "5. Attention budget"
+        - "6. Storage and search"
+        - "7. Synchronisation"
+        - "8. Permissions"
+        - "9. Bootstrapping"
+        - "10. v1 scope"
+        - "11. Constraint lifecycle"
+        - "12. Implementation"
+        - "13. Final decisions"
+        - "somewhere else, or I could not find it"
+    validations:
+      required: true
+
+  - type: textarea
+    id: quote
+    attributes:
+      label: What the specification says
+      description: >
+        Quote the sentence, and give the heading or table it sits under. A
+        paraphrase is where two readings of the same rule start to diverge.
+    validations:
+      required: true
+
+  - type: textarea
+    id: observed
+    attributes:
+      label: What the binary does
+      description: The exact command and its output, verbatim.
+      render: shell
+    validations:
+      required: true
+
+  - type: input
+    id: ank_version
+    attributes:
+      label: ank --version
+      placeholder: ank 0.1.2 (skill 7f3c1a9)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: which_is_wrong
+    attributes:
+      label: Which one do you think is wrong
+      description: >
+        Your reading, not a verdict. The maintainer may disagree, and saying
+        which way you lean is what makes that conversation short.
+      options:
+        - The code -- the specification is right
+        - The specification -- the code is right and the document is stale
+        - Both are defensible; the text is ambiguous
+        - No opinion
+    validations:
+      required: true
