@@ -175,6 +175,8 @@ nothing to run. That is what "stupid" means here.
 | write a tool that reads or writes `.ank/` | [The file format](docs/format.md) |
 | know why it is shaped this way, or need the normative answer | [The specification](docs/ank-spec-v1.1.md) |
 | work on ank itself | [CLAUDE.md](CLAUDE.md), and the section below |
+| open a pull request | [Contributing](CONTRIBUTING.md) |
+| report a vulnerability, or know what ank does not protect against | [Security policy](SECURITY.md) |
 
 The specification is the source of truth. It argues the design and settles every
 question the other documents defer to it; it is not a tutorial, and the first two
@@ -235,6 +237,11 @@ assets/           the project mark, one file per theme
 ```
 
 Conventions for agents are in [CLAUDE.md](CLAUDE.md).
+[CONTRIBUTING.md](CONTRIBUTING.md) has the three gates CI runs, the order a
+format change follows, and the one thing a fork has to know: without push access
+to `refs/ank/*` a claim stays local and invisible upstream, so coordination
+happens in the issue or the pull request. Participation is governed by the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Licence
 
