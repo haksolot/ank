@@ -1,0 +1,29 @@
+# Blank issues stay open: a report that fits no form is still a report, and a
+# chooser that refuses one teaches people to file it as the wrong kind.
+blank_issues_enabled: true
+
+contact_links:
+  - name: Report a vulnerability (private)
+    url: https://github.com/haksolot/ank/security/advisories/new
+    about: >
+      Never a public issue. Private vulnerability reporting is enabled on this
+      repository; SECURITY.md says what is in scope, and what section 1 already
+      answers.
+
+  - name: Read the specification first
+    url: https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md
+    about: >
+      The source of truth. It settles every question the other documents defer
+      to it, including why a verb refuses on state and never on identity.
+
+  - name: Getting started
+    url: https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+    about: >
+      Install to a first finished task, with real output -- including the two
+      refusals a fresh repository will give you.
+
+  - name: Contributing
+    url: https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md
+    about: >
+      The three gates CI runs, the order a format change follows, and what a
+      claim does from a fork.
