@@ -16,7 +16,7 @@ done_criteria: |
   its constraint. ank check reports no dead scope and stays green.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 Repair of a sequencing defect in this batch, not new design.
@@ -39,3 +39,6 @@ exactly this.
 
 Worth remembering when writing an ADR ahead of the files it governs: name only
 paths that exist, and grow the scope as the files arrive.
+
+## Log
+- 2026-08-08T17:49:40Z seanl@sean-laptop — released: Releasing to measure, not because the approach is wrong: ank context <path> ignores the path while a claim is held, so whether a proposed ADR's constraint is served cannot be observed from inside the claim.
