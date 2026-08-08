@@ -78,6 +78,17 @@ That installs the skill, not the binary. The skill is one plain markdown file,
 [`skill/SKILL.md`](skill/SKILL.md): where that command does not fit, copy it by
 hand into whatever your agent loads.
 
+Claude Code can take it as a plugin instead, this repository serving as its own
+marketplace:
+
+```
+/plugin marketplace add haksolot/ank
+/plugin install ank@ank
+```
+
+Same file either way — the plugin points at `skill/SKILL.md` where it already
+lives, and there is no second copy to fall behind it.
+
 [**Getting started**](docs/getting-started.md) walks all of that with real
 output, including the two refusals a fresh repository will give you.
 
