@@ -207,6 +207,29 @@ impl Repo {
             .expect("the binary must have been built")
     }
 
+    /// The same invocation with extra environment variables set.
+    ///
+    /// What the color rule of §4 reads, besides the terminal itself, is the
+    /// environment — so the environment has to be under the test's control
+    /// rather than inherited from whoever is running the suite. A developer
+    /// with `NO_COLOR` exported would otherwise be testing a different rule
+    /// from CI, and both would pass.
+    fn ank_env(&self, agent: &str, args: &[&str], env: &[(&str, Option<&str>)]) -> Output {
+        let mut c = Command::new(ANK);
+        c.args(args)
+            .arg("--repo")
+            .arg(&self.0)
+            .env("ANK_AGENT", agent)
+            .current_dir(std::env::temp_dir());
+        for (key, value) in env {
+            match value {
+                Some(v) => c.env(key, v),
+                None => c.env_remove(key),
+            };
+        }
+        c.output().expect("the binary must have been built")
+    }
+
     /// The same invocation with `$EDITOR` under the test's control. `None`
     /// removes it, which is the environment failure §4 specifies — and removing
     /// it rather than trusting its absence matters, because the developer
@@ -606,17 +629,45 @@ fn graph_draws_the_dag_and_names_the_perimeter() {
         "the perimeter is named: {said}"
     );
 
-    // The shape: each level one indent deeper than what blocks it.
+    // The shape: each level one connector deeper than what blocks it.
+    //
+    // Measured over the drawing alphabet of §4 rather than over whitespace. The
+    // claim is unchanged — a01 flush left, a02 under it, a03 under that — but
+    // `trim_start` answered it by counting spaces, and a row now begins with a
+    // connector. It would have read zero for every indented line and gone on
+    // passing for the wrong reason.
     let depth = |needle: &str| -> usize {
         let line = said
             .lines()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} missing from:\n{said}"));
-        line.len() - line.trim_start().len()
+        let drawing = line
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '│' | '├' | '└' | '─'))
+            .count();
+        // Reported in the old unit so the numbers below still say what they
+        // said: four columns per level, two before.
+        drawing / 2
     };
     assert_eq!(depth("000000000a01"), 0, "the root is flush left: {said}");
     assert_eq!(depth("000000000a02"), 2, "{said}");
     assert_eq!(depth("000000000a03"), 4, "{said}");
+
+    // The connectors themselves, not only their width: a level drawn with the
+    // right number of blanks and no glyph would satisfy every count above.
+    let row = |needle: &str| -> &str {
+        said.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing from:\n{said}"))
+    };
+    assert!(
+        row("000000000a02").starts_with("└── "),
+        "the only child of the root is drawn as the last one: {said}"
+    );
+    assert!(
+        row("000000000a03").starts_with("    └── "),
+        "and its child continues under a cleared gutter: {said}"
+    );
 
     // A blocker outside the perimeter is never silently dropped: drawing this
     // one flush left with no mark would say nothing is stopping it.
@@ -3565,4 +3616,303 @@ fn a_blocker_that_does_not_exist_is_refused_at_creation() {
         "the exact command to run next: {err}"
     );
     assert!(entity_files(&r, "tasks").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Color: the guarantee is negative (§4, ADR-962c25797569)
+// ---------------------------------------------------------------------------
+
+/// Every verb worth styling, exercised against a corpus that actually has
+/// something to style: a claimed task, an ADR, a blocker, a finding.
+///
+/// Kept as one fixture and one list because the property under test is
+/// universal — "no verb" is the claim, so a list that quietly omits one is the
+/// hole. `--version` and `help` are in it for the same reason they answer
+/// before the foundation: they are reachable when nothing else is.
+fn styled_surface() -> Vec<Vec<&'static str>> {
+    vec![
+        vec!["context"],
+        vec!["status"],
+        vec!["find", "Example"],
+        vec!["find", "nothing-matches-this"],
+        vec!["show", ID],
+        vec!["log", ID],
+        vec!["graph"],
+        vec!["scope", "src"],
+        vec!["check"],
+        vec!["review"],
+        vec!["help"],
+        vec!["--version"],
+    ]
+}
+
+fn color_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_task(ID, Some("a criterion to freeze"));
+    r.seed_task("TASK-000000000002", Some("another criterion"));
+    r.seed_adr("ADR-0000000000ab", "a rule that binds", "src/**");
+    r.blocked("TASK-000000000002", &[ID]);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    // A live claim: markers, warnings and the execution mode of `context` are
+    // all unreachable without one, and they are exactly what carries colour.
+    r.ank("claude-code@ank", &["claim", ID]);
+    r
+}
+
+/// The one assertion the whole feature exists to satisfy.
+///
+/// A spawned process writes to a pipe, so this suite *is* the piped case — the
+/// same shape an agent shelling out to `ank` sees. An escape byte anywhere in
+/// either stream is the defect ADR-962c25797569 forbids, and `--json` is
+/// checked beside the plain form because it is the one surface that must stay
+/// clean even at a terminal.
+#[test]
+fn no_verb_writes_an_escape_sequence_to_a_pipe() {
+    let r = color_fixture();
+
+    for base in styled_surface() {
+        for json in [false, true] {
+            let mut args = base.clone();
+            if json {
+                args.push("--json");
+            }
+            let out = r.ank("claude-code@ank", &args);
+            assert!(
+                !out.stdout.contains(&0x1b),
+                "{args:?} put an escape sequence on stdout: {:?}",
+                stdout(&out)
+            );
+            assert!(
+                !out.stderr.contains(&0x1b),
+                "{args:?} put an escape sequence on stderr: {:?}",
+                stderr(&out)
+            );
+        }
+    }
+}
+
+/// Structure ships in the bytes, and `--json` carries none of it.
+///
+/// The other half of ADR-0c8ab846d262, and the half a test can only make in a
+/// pipe: this suite spawns the binary, so its stdout *is* the pipe an agent
+/// reads. Colour must be absent from it and the connectors must be present —
+/// the two assertions point in opposite directions on purpose, because a
+/// gate that confused the two layers would satisfy either one alone.
+#[test]
+fn a_pipe_receives_the_drawing_and_never_an_escape_sequence() {
+    let r = color_fixture();
+
+    let drawn = r.ank("claude-code@ank", &["graph"]);
+    let said = stdout(&drawn);
+    assert!(
+        !drawn.stdout.contains(&0x1b),
+        "graph coloured a pipe: {said:?}"
+    );
+    assert!(
+        said.contains("└── ") || said.contains("├── "),
+        "the connectors are text, so a pipe gets them: {said}"
+    );
+
+    // `show` draws the same relation from one task's point of view.
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ID]));
+    assert!(
+        shown.contains("UNBLOCKS (1)") && shown.contains("└── "),
+        "show draws its edges: {shown}"
+    );
+
+    // The machine surface carries neither layer. Asserted over the whole
+    // alphabet rather than over one connector: a new glyph reaching `--json`
+    // through some other verb is exactly what this is here to catch.
+    for verb in [
+        vec!["graph", "--json"],
+        vec!["show", ID, "--json"],
+        vec!["find", "Example", "--json"],
+        vec!["context", "--json"],
+    ] {
+        let out = r.ank("claude-code@ank", &verb);
+        let j = stdout(&out);
+        assert!(!out.stdout.contains(&0x1b), "{verb:?} coloured json: {j:?}");
+        for glyph in ['│', '├', '└', '─'] {
+            assert!(!j.contains(glyph), "{verb:?} drew {glyph:?} into json: {j}");
+        }
+    }
+}
+
+/// The held row is marked, and the margin it is drawn in was already there.
+#[test]
+fn a_listing_marks_the_row_the_caller_holds() {
+    let r = color_fixture();
+
+    // `color_fixture` leaves the claim with claude-code@ank.
+    let mine = stdout(&r.ank("claude-code@ank", &["find", "Example"]));
+    let theirs = stdout(&r.ank("someone-else@ank", &["find", "Example"]));
+
+    assert!(
+        mine.lines().any(|l| l.starts_with("* TASK-")),
+        "the holder sees their own row marked: {mine}"
+    );
+    assert!(
+        theirs.lines().all(|l| !l.starts_with("* ")),
+        "and nobody else does: {theirs}"
+    );
+    // Same width for both readers: the marker is spent out of the margin, not
+    // added to it, so a listing does not reflow depending on who is asking.
+    for (a, b) in mine.lines().zip(theirs.lines()) {
+        assert_eq!(a.len(), b.len(), "{a:?} and {b:?} are not the same width");
+    }
+}
+
+/// The transition grammar of §4, walked through the binary.
+///
+/// Every one of these lines was bare before TASK-4601ed18d84e, and none of them
+/// can live in `styled_surface`: that list is replayed against one fixture, and
+/// each line here is produced by a verb that mutates. So they are walked once,
+/// in the loop's own order — a task created, taken, logged, released, retaken,
+/// finished and attested; a second one amended and closed.
+///
+/// Two assertions per line, and the second is the one that would survive a
+/// wrong colour. Absence of an escape byte proves the pipe is clean; the shape
+/// proves the grammar is the one the specification declares, because a call
+/// site that painted the wrong token would still be escape-free here.
+#[test]
+fn every_transition_line_reads_one_grammar_and_stays_plain_in_a_pipe() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("a criterion to freeze"));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let run = |args: &[&str]| -> String {
+        let out = r.ank("claude-code@ank", args);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+        assert!(
+            !out.stdout.contains(&0x1b),
+            "{args:?} coloured a pipe: {:?}",
+            stdout(&out)
+        );
+        assert!(
+            !out.stderr.contains(&0x1b),
+            "{args:?} coloured stderr: {:?}",
+            stderr(&out)
+        );
+        stdout(&out)
+    };
+
+    let created = run(&[
+        "new",
+        "task",
+        "--title",
+        "A second task",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "The binary answers.",
+    ]);
+    assert!(
+        created.starts_with("created TASK-"),
+        "created names what it made: {created:?}"
+    );
+    let second = created
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id>")
+        .to_string();
+
+    let claimed = run(&["claim", &second]);
+    assert!(claimed.starts_with("claimed TASK-"), "{claimed:?}");
+
+    let logged = run(&["log", &second, "something learned"]);
+    assert!(logged.starts_with("logged on TASK-"), "{logged:?}");
+
+    let released = run(&["release", &second, "--reason", "the criterion is wrong"]);
+    assert!(
+        released.starts_with("released TASK-") && released.trim_end().ends_with("-> open"),
+        "a release names the state it lands on: {released:?}"
+    );
+
+    run(&["claim", &second]);
+    let finished = run(&["done", &second, "--proof", "test:ci-run-1"]);
+    assert!(finished.trim_end().ends_with("-> done"), "{finished:?}");
+
+    let attested = run(&["attest", &second, "--proof", "test:ci-run-2"]);
+    assert!(attested.starts_with("attested TASK-"), "{attested:?}");
+
+    let amended = run(&["amend", ID, "--scope", "docs/**"]);
+    assert!(amended.starts_with("amended TASK-"), "{amended:?}");
+
+    let closed = run(&["close", ID, "--reason", "superseded by the second"]);
+    assert!(
+        closed.starts_with("closed TASK-") && closed.trim_end().ends_with("-> closed"),
+        "{closed:?}"
+    );
+}
+
+/// The error envelope travels the same rule, and it is the one line that does
+/// not go through the writer every verb shares.
+#[test]
+fn a_refusal_is_plain_in_a_pipe_too() {
+    let r = color_fixture();
+
+    // One refusal per stream-producing shape: an unknown entity, a held claim,
+    // and a flag error caught before any verb runs.
+    for args in [
+        vec!["claim", "TASK-00000000dead"],
+        vec!["claim", "TASK-000000000002"],
+        vec!["find", "bug", "-st", "task"],
+        vec!["context", "--limit", "not-a-number"],
+    ] {
+        let out = r.ank("someone-else@ank", &args);
+        assert_ne!(code(&out), 0, "{args:?} was supposed to refuse");
+        assert!(
+            !out.stderr.contains(&0x1b),
+            "{args:?} coloured a refusal into a pipe: {:?}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).starts_with("error["),
+            "{args:?} lost the envelope: {:?}",
+            stderr(&out)
+        );
+    }
+}
+
+/// The detection rule read from the other side: nothing in the environment can
+/// turn colour *on*, because the terminal test has already failed.
+///
+/// This is what catches a wiring inversion. `NO_COLOR` implemented backwards,
+/// or a Windows allowlist consulted instead of the terminal check, would leave
+/// every assertion above green and change the bytes here.
+#[test]
+fn no_environment_makes_a_pipe_colored() {
+    let r = color_fixture();
+
+    let environments: [&[(&str, Option<&str>)]; 6] = [
+        &[("NO_COLOR", None), ("TERM", None), ("WT_SESSION", None)],
+        &[("NO_COLOR", Some("1"))],
+        &[("NO_COLOR", Some(""))],
+        &[("TERM", Some("dumb"))],
+        &[("TERM", Some("xterm-256color"))],
+        // The Windows allowlist, set on every platform: it is only ever an
+        // additional condition, never a substitute for the terminal itself.
+        &[("WT_SESSION", Some("1")), ("ANSICON", Some("1"))],
+    ];
+
+    for base in styled_surface() {
+        let reference = r.ank_env(
+            "claude-code@ank",
+            &base,
+            &[("NO_COLOR", None), ("TERM", None), ("WT_SESSION", None)],
+        );
+        for env in environments {
+            let out = r.ank_env("claude-code@ank", &base, env);
+            assert!(
+                !out.stdout.contains(&0x1b),
+                "{base:?} under {env:?} coloured a pipe"
+            );
+            assert_eq!(
+                out.stdout, reference.stdout,
+                "{base:?} answered differently under {env:?}"
+            );
+        }
+    }
 }

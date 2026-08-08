@@ -21,6 +21,7 @@ mod identity;
 mod init;
 mod repo;
 mod store;
+mod style;
 
 // Verb modules. Each is filled in by its own task — see .ank/tasks/ — and each
 // adds its own arm to cli.rs::dispatch at that point; a verb whose module is
@@ -44,5 +45,9 @@ fn main() {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut out = std::io::stdout();
-    std::process::exit(cli::run(&argv, &cwd, &mut out));
+    // Detected here and nowhere else: this is the only place that knows what
+    // the process was actually attached to, and answering the question once
+    // keeps every verb downstream from asking it differently (§4).
+    let style = style::detect();
+    std::process::exit(cli::run(&argv, &cwd, &mut out, style));
 }

@@ -108,42 +108,58 @@ pub fn run(
         return Ok(0);
     }
 
+    // The keys recede and the values do not (§4). `status` is the one output
+    // whose lines are label-and-value rather than sentences, so the label is
+    // what a reader skips once they know the shape.
+    let style = inv.style();
     match (&branch, &default) {
         (Some(b), Ok(d)) => {
-            let _ = writeln!(out, "branch {b} (default {d})");
+            let _ = writeln!(out, "{} {b} (default {d})", style.key("branch"));
         }
         (Some(b), Err(_)) => {
-            let _ = writeln!(out, "branch {b}");
+            let _ = writeln!(out, "{} {b}", style.key("branch"));
             // Degraded, and named. Without a default branch nothing can say
             // whether a completion ref has landed, and a silent zero above
             // would read as "nothing is pending".
             let _ = writeln!(
                 out,
-                "warning: no default branch, so completion refs are neither pruned nor \
-                 judged (add \"default_branch: <name>\" to .ank/config.yml)"
+                "{} no default branch, so completion refs are neither pruned nor \
+                 judged (add \"default_branch: <name>\" to .ank/config.yml)",
+                inv.style().yellow("warning:")
             );
         }
         // A repository with no commit is the nominal state of one freshly
         // `ank init`-ed, not an error.
         (None, _) => {
-            let _ = writeln!(out, "branch unborn, no commit yet");
+            let _ = writeln!(out, "{} unborn, no commit yet", style.key("branch"));
         }
     }
 
     match &claimed {
         Some((task, expires)) => {
-            let _ = writeln!(out, "claim {} {}", task.id, task.title);
-            let _ = writeln!(out, "  expires {expires}");
+            let _ = writeln!(
+                out,
+                "{} {} {}",
+                style.key("claim"),
+                style.id(&task.id.to_string()),
+                task.title
+            );
+            let _ = writeln!(out, "  {} {expires}", style.key("expires"));
         }
         // A held claim whose task the index has lost would print nothing at
         // all, so the ref is reported on its own rather than dropped.
         None => match &held {
             Some((id, _, record)) => {
-                let _ = writeln!(out, "claim {id} (no such task in the corpus)");
-                let _ = writeln!(out, "  expires {}", record.expires);
+                let _ = writeln!(
+                    out,
+                    "{} {} (no such task in the corpus)",
+                    style.key("claim"),
+                    style.id(&id.to_string())
+                );
+                let _ = writeln!(out, "  {} {}", style.key("expires"), record.expires);
             }
             None => {
-                let _ = writeln!(out, "no claim");
+                let _ = writeln!(out, "{}", style.key("no claim"));
             }
         },
     }
@@ -152,15 +168,25 @@ pub fn run(
         Some((task, _)) => format!("the scope of {}", task.id),
         None => "the whole repository".to_string(),
     };
-    let _ = writeln!(out, "perimeter {perimeter}, {constraints} constraint(s)");
     let _ = writeln!(
         out,
-        "queue {queue} proposal(s), {unmerged} finished elsewhere"
+        "{} {perimeter}, {constraints} constraint(s)",
+        style.key("perimeter")
     );
     let _ = writeln!(
         out,
-        "corpus {} fault(s), {} signal(s)",
-        report.faults(),
+        "{} {queue} proposal(s), {unmerged} finished elsewhere",
+        style.key("queue")
+    );
+    let _ = writeln!(
+        out,
+        "{} {} fault(s), {} signal(s)",
+        style.key("corpus"),
+        if report.faults() == 0 {
+            report.faults().to_string()
+        } else {
+            style.red(&report.faults().to_string())
+        },
         report.signals()
     );
 
@@ -173,7 +199,7 @@ pub fn run(
     } else {
         "ank context"
     };
-    let _ = writeln!(out, "\n> {next}");
+    let _ = writeln!(out, "\n{}", style.next(&format!("> {next}")));
     Ok(0)
 }
 

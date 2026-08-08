@@ -1271,24 +1271,25 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
     if inv.quiet() {
         return;
     }
+    let style = inv.style();
     for f in &report.findings {
         let tag = if f.level == Level::Fault {
-            "error"
+            style.red("error:")
         } else {
-            "signal"
+            style.yellow("signal:")
         };
-        let _ = writeln!(out, "{tag}: {}: {}", f.subject, f.message);
+        let _ = writeln!(out, "{tag} {}: {}", f.subject, f.message);
     }
     for p in &report.pruned {
-        let _ = writeln!(out, "pruned {p}");
+        let _ = writeln!(out, "{} {}", style.retracted("pruned"), style.id(p));
     }
     let _ = writeln!(
         out,
         "check: {} — {} tasks, {} adr, {} signal(s)",
         if report.faults() == 0 {
-            "ok".to_string()
+            style.green("ok")
         } else {
-            format!("{} fault(s)", report.faults())
+            style.red(&format!("{} fault(s)", report.faults()))
         },
         report.tasks,
         report.adrs,
@@ -1378,20 +1379,38 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         return Ok(report.exit_code());
     }
     if !inv.quiet() {
-        let _ = writeln!(out, "LIVE CONSTRAINTS ({})", live.len());
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{}",
+            style.header(&format!("LIVE CONSTRAINTS ({})", live.len()))
+        );
         for (r, n) in &live {
-            let _ = writeln!(out, "  {}  {} ({n} files)", r.id, r.title);
+            let _ = writeln!(
+                out,
+                "  {}  {} ({n} files)",
+                style.id(&r.id.to_string()),
+                r.title
+            );
         }
         if !dead.is_empty() {
-            let _ = writeln!(out, "\nDEAD SCOPES ({})", dead.len());
+            let _ = writeln!(
+                out,
+                "\n{}",
+                style.header(&format!("DEAD SCOPES ({})", dead.len()))
+            );
             for id in &dead {
-                let _ = writeln!(out, "  {id}");
+                let _ = writeln!(out, "  {}", style.id(&id.to_string()));
             }
         }
         let _ = writeln!(
             out,
             "\n{} fault(s), {} signal(s)",
-            report.faults(),
+            if report.faults() == 0 {
+                report.faults().to_string()
+            } else {
+                style.red(&report.faults().to_string())
+            },
             report.signals()
         );
     }
@@ -1546,9 +1565,21 @@ pub fn accept(
         } else {
             "accepted"
         };
-        let _ = writeln!(out, "{verb} {id} -> {}", &commit[..commit.len().min(7)]);
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            style.advanced(verb),
+            style.id(&id.to_string()),
+            &commit[..commit.len().min(7)]
+        );
         if let Succession::Pending(t) = &replaced {
-            let _ = writeln!(out, "superseded {}", t.id);
+            let _ = writeln!(
+                out,
+                "{} {}",
+                style.retracted("superseded"),
+                style.id(&t.id.to_string())
+            );
         }
     }
     Ok(0)
@@ -1829,7 +1860,13 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             "{{\"task\":\"{id}\",\"status\":\"closed\",\"claim_revoked\":{revoked}}}"
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "closed {id} -> closed");
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            inv.style().retracted("closed"),
+            inv.style().id(&id.to_string()),
+            inv.style().landed("closed")
+        );
         if revoked {
             let _ = writeln!(out, "the active claim was revoked");
         }
@@ -1928,7 +1965,12 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
             json_str(&reference)
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "attested {id} {kind}:{reference} ({entries} proofs)");
+        let _ = writeln!(
+            out,
+            "{} {} {kind}:{reference} ({entries} proofs)",
+            inv.style().advanced("attested"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -2071,8 +2113,9 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 if let Some(holder) = holder {
                     let _ = writeln!(
                         out,
-                        "warning: {id} is held by {holder}, and the scope change moves \
-                         the constraints its claim anchors"
+                        "{} {id} is held by {holder}, and the scope change moves \
+                         the constraints its claim anchors",
+                        inv.style().yellow("warning:")
                     );
                 }
             }
@@ -2194,7 +2237,13 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
             items.join(",")
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "amended {id} {}", changes.join(" "));
+        let _ = writeln!(
+            out,
+            "{} {} {}",
+            inv.style().advanced("amended"),
+            inv.style().id(&id.to_string()),
+            changes.join(" ")
+        );
     }
 }
 
@@ -2251,8 +2300,8 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     } else if !inv.quiet() {
         let _ = write!(out, "{text}");
         if let Some((blocked_by, unblocks)) = &edges {
-            edge_section(out, "BLOCKED BY", blocked_by);
-            edge_section(out, "UNBLOCKS", unblocks);
+            edge_section(out, "BLOCKED BY", blocked_by, inv.style());
+            edge_section(out, "UNBLOCKS", unblocks, inv.style());
         }
     }
     Ok(0)
@@ -2312,15 +2361,32 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     Ok((blocked_by, unblocks))
 }
 
-fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge]) {
-    let _ = writeln!(out, "\n{heading} ({})", edges.len());
-    for e in edges {
+fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge], style: crate::style::Style) {
+    let _ = writeln!(
+        out,
+        "\n{}",
+        style.header(&format!("{heading} ({})", edges.len()))
+    );
+    // One level deep by construction — these are the two directions of
+    // `blocked_by` for a single task, not a walk — so the alphabet reduces to
+    // its two connectors and no gutter is ever needed under them (§4).
+    for (i, e) in edges.iter().enumerate() {
+        let connector = if i + 1 == edges.len() {
+            crate::style::glyph::LAST
+        } else {
+            crate::style::glyph::BRANCH
+        };
         match (&e.status, &e.title) {
             (Some(status), Some(title)) => {
-                let _ = writeln!(out, "  {}  [{status}] {title}", e.short);
+                let _ = writeln!(
+                    out,
+                    "{connector}{}  {} {title}",
+                    style.id(&e.short),
+                    style.status(&format!("[{status}]"))
+                );
             }
             _ => {
-                let _ = writeln!(out, "  {}  (no such entity)", e.short);
+                let _ = writeln!(out, "{connector}{}  (no such entity)", style.id(&e.short));
             }
         }
     }

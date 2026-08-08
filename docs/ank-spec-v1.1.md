@@ -499,6 +499,65 @@ The commit is embedded at build time through `rev-parse`, which §8's plumbing r
 
 **The skill revision, and what it lets a reader do offline.** The third value is `skill <rev>`, where `<rev>` is the short form of the same freeze hash that anchors a frozen `done_criteria` (§3), taken over the body of `skill/SKILL.md` — the same value that file declares under `metadata.revision`, computed at build time from the file rather than typed. An agent has both halves in hand and nothing else: the skill is loaded into its context, the binary is on its `PATH`. Comparing the two strings tells it, with no repository and no network, whether the instructions it is following predate the tool it is holding. That is the check TASK-1ea38a17d854 needed and did not have, and the case that motivated it was measured (TASK-b495234f192c): an installed `SKILL.md` two commits behind a tree that had just withdrawn the invitation to read `.ank/` by hand. The hash covers the body and not the frontmatter, so the revision the frontmatter carries does not change its own input. It is `unknown` on a build with no `skill/` to read, for the same reason and with the same honesty as the commit.
 
+### Presentation
+
+Presentation splits in two, and only one half depends on who is reading (ADR-0c8ab846d262). **Color is a property of the reader**: an escape sequence means nothing to a parser, so it is emitted only when a human is demonstrably at the other end. **Structure is a property of the corpus**: a tree is what the `blocked_by` edges *are*, and it is drawn in the bytes, identically for everyone. `--json` carries neither — it is the machine surface, and it is the one place where both would be wrong.
+
+#### Structure
+
+The alphabet is bounded here, before any code uses it, for the reason the palette and the short-form table are: the grammar is the specification.
+
+| Element | Characters |
+|---|---|
+| a child with siblings after it | `├── ` |
+| the last child | `└── ` |
+| the gutter under an expanded node | `│   ` |
+| the gutter under a wrapped constraint | `│  ` |
+| the task the caller holds, in a listing | `* ` |
+
+`graph` and `show`'s `BLOCKED BY` / `UNBLOCKS` draw the relation; `context` gutters a constraint that wraps, so a multi-line rule reads as one rule; `find` and `scope` mark the row the caller is holding, the way `git branch` marks the current branch.
+
+**The prefix of a row is derived from its parent's connector, never from a depth.** A node under `├── ` continues as `│   ` because its parent still has siblings below; a node under `└── ` continues as four spaces because nothing follows. A depth counter cannot tell the two apart, and the difference is exactly what makes a diamond legible.
+
+**Two of these replace indentation instead of adding to it**, and that is load-bearing rather than tidy: the constraint gutter occupies the columns the alignment already spent, and the held marker takes the two leading spaces of a listing row. So the attention budget of §5 measures what it measured before, and truncation does not become a function of the drawing.
+
+Ank already writes non-ASCII to standard output — the em-dash separating a log entry's author from its message — so the alphabet introduces no new encoding question on any platform.
+
+#### Color
+
+Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
+
+The guarantee bought is negative, and it is the whole point. **No escape sequence ever reaches captured output** — a pipe, a file, a `$(...)`, a CI log. `--json` is never colored even at a terminal: it is the one place both conditions can hold and styling still be wrong, so the rule is stated separately rather than left to follow.
+
+`NO_COLOR` set to any non-empty value disables it, which is what a human at a terminal types to get the raw bytes; `TERM=dumb` disables it too.
+
+The palette is small on purpose, and it is bounded here rather than in the code for the same reason the short-form table is: the grammar is the specification, and the implementation is only its application. Status markers, section headers, identifiers, the error line. Nothing that carries meaning is carried by color alone — every marker still reads as `[open]` or `[done]` in a pipe.
+
+| Element | Style |
+|---|---|
+| section headers: `CONSTRAINTS`, `PROPOSED`, `TASKS`, `DONE_CRITERIA`, `LOG`, `BLOCKED BY`, `UNBLOCKS` | bold |
+| identifiers: `TASK-8ebd`, `ADR-962c` | yellow |
+| `[open]` | default |
+| `[claimed:…]`, `[… expired:…]` | cyan, yellow |
+| `[done]`, `[finished:… on …]` | green |
+| `[closed]`, `[blocked]` | dim |
+| a transition word that advanced the corpus: `created`, `claimed`, `logged`, `attested`, `amended`, `accepted` | green |
+| a transition word that gave something up: `released`, `closed`, `superseded`, `pruned` | dim |
+| the state a transition landed on: `-> done`, `-> open`, `-> closed` | as its marker above |
+| `status`'s keys: `branch`, `claim`, `perimeter`, `queue`, `corpus` | dim |
+| `error[N]:` and `check`'s `error:` tag | red |
+| `warning:` and `check`'s `signal:` tag | yellow |
+| a verifier's `ok` / `FAILED` | green / red |
+| the trailing next-command line, `> ank …` | bold |
+
+**A transition reads the same whichever verb produced it.** Every verb that changes state confirms it in one shape — the word for what happened, the identifier it happened to, and where the entity landed — and the color follows that shape rather than the verb. The word carries the direction, the identifier is yellow like every other identifier, and the landing state takes exactly the color its bracketed marker takes in a listing: `-> done` and `[done]` are the same fact seen twice, and a reader who has learned one has learned the other. This is why the rule is stated as a grammar and not as a list of verbs — `attested` is legible to someone who has only ever run `claim`.
+
+`status` is the one output whose lines are label-and-value rather than sentences, so its labels recede and its values do not. The counters keep their own rule: a fault count is red when it is not zero, and the reader is meant to see the number before the word.
+
+The error line follows the same rule applied to its own stream: it is colored when stderr is a terminal **and** the condition above already holds, a conjunction rather than a substitution, so that no arrangement of redirections produces an escape sequence stdout's rule forbids.
+
+**On Windows the terminal must also announce itself**: one of `WT_SESSION`, `TERM`, `TERM_PROGRAM`, `ConEmuANSI` or `ANSICON` present in the environment. Legacy `conhost` does not interpret escape sequences unless the process turns them on, and turning them on means a console API call that this feature does not justify. A console announcing nothing is served plain text — the failure that costs a reader nothing, rather than the one that prints `←[1m` at them.
+
 ### Exit codes
 
 The semantics are carried by the code so that the shell can route without parsing output.

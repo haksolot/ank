@@ -62,9 +62,20 @@ impl CliError {
 
     /// Terse rendering, `git status` style, on standard error.
     pub fn render(&self) -> String {
+        self.render_styled(crate::style::PLAIN)
+    }
+
+    /// The same line, with the `error[N]:` tag painted when §4 allows it.
+    ///
+    /// Only the tag: the message and the hint are the part a reader has to
+    /// read, and the hint is a command to copy. Painting either would be
+    /// decoration, and the hint is the last thing that should be hard to
+    /// select.
+    pub fn render_styled(&self, style: crate::style::Style) -> String {
+        let tag = style.red(&format!("error[{}]:", self.code));
         match &self.hint {
-            Some(h) => format!("error[{}]: {}\n  -> {}", self.code, self.message, h),
-            None => format!("error[{}]: {}", self.code, self.message),
+            Some(h) => format!("{tag} {}\n  -> {}", self.message, h),
+            None => format!("{tag} {}", self.message),
         }
     }
 }
@@ -414,6 +425,14 @@ pub struct Invocation {
     pub positionals: Vec<String>,
     /// Values per flag. A switch carries an empty list.
     pub flags: BTreeMap<String, Vec<String>>,
+    /// How this invocation is allowed to paint (§4).
+    ///
+    /// Not parsed — [`parse`] has no way to know what the process is attached
+    /// to and leaves it [`style::PLAIN`], which is what keeps every unit test
+    /// that builds an `Invocation` through the parser uncolored without saying
+    /// so. [`dispatch`] is what fills it in, and what forces it back off under
+    /// `--json`.
+    pub style: crate::style::Style,
 }
 
 impl Invocation {
@@ -439,6 +458,10 @@ impl Invocation {
 
     pub fn repo(&self) -> Option<&str> {
         self.value("--repo")
+    }
+
+    pub fn style(&self) -> crate::style::Style {
+        self.style
     }
 }
 
@@ -657,6 +680,7 @@ pub fn parse(argv: &[String]) -> Result<Invocation> {
         subcommand,
         positionals,
         flags,
+        style: crate::style::PLAIN,
     })
 }
 
@@ -865,11 +889,16 @@ fn not_implemented(spec: &CommandSpec) -> CliError {
 
 /// Entry point. Returns the exit code; never calls `exit` itself, so that it
 /// stays testable.
-pub fn run(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write) -> i32 {
-    match dispatch(argv, cwd, out) {
+pub fn run(
+    argv: &[String],
+    cwd: &std::path::Path,
+    out: &mut dyn std::io::Write,
+    style: crate::style::Style,
+) -> i32 {
+    match dispatch(argv, cwd, out, style) {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("{}", err.render());
+            eprintln!("{}", err.render_styled(style.on_stderr()));
             err.code
         }
     }
@@ -916,7 +945,12 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
 /// and the fall-through is the honest default rather than a placeholder: until
 /// TASK-45d18f45de2c the fall-through was total, while six module headers
 /// asserted the opposite.
-fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write) -> Result<i32> {
+fn dispatch(
+    argv: &[String],
+    cwd: &std::path::Path,
+    out: &mut dyn std::io::Write,
+    style: crate::style::Style,
+) -> Result<i32> {
     // Before `parse`, and not as a flag on a verb (§4). `--version` replaces the
     // verb rather than modifying one, so the parser — which resolves a command
     // first and would reject this as an unknown one — never sees it. It is also
@@ -927,8 +961,20 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         let _ = writeln!(out, "{}", version_line());
         return Ok(0);
     }
-    let inv = parse(argv)?;
+    let mut inv = parse(argv)?;
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
+
+    // The one gate, and the reason it is one. `--json` is never colored (§4),
+    // and three verbs print an unconditional non-JSON line onto stdout while
+    // it is set — `done`'s `running:`, and the takeover warnings of `log` and
+    // `amend`. Suppressing color at each printing site would be three chances
+    // to forget one; suppressing it here makes "no escape sequence under
+    // --json" a property of the invocation rather than of the discipline.
+    inv.style = if inv.json() {
+        crate::style::PLAIN
+    } else {
+        style
+    };
 
     // Two verbs run without the foundation. `init` precedes the existence of
     // the repository. `help` describes the surface rather than acting on it,
@@ -948,10 +994,10 @@ fn dispatch(argv: &[String], cwd: &std::path::Path, out: &mut dyn std::io::Write
         "done" => crate::done::run(&inv, &s.repo, &s.config, &s.identity, out),
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         "new" => crate::commands::new(&inv, &s.repo, &s.config, &s.identity, out),
-        "find" => crate::commands::find(&inv, &s.repo, &s.config, out),
+        "find" => crate::commands::find(&inv, &s.repo, &s.config, &s.identity, out),
         "status" => crate::status::run(&inv, &s.repo, &s.config, &s.identity, out),
         "graph" => crate::graph::run(&inv, &s.repo, out),
-        "scope" => crate::commands::scope(&inv, &s.repo, out),
+        "scope" => crate::commands::scope(&inv, &s.repo, &s.identity, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
         "check" => crate::human::check(&inv, &s.repo, &s.config, out),
@@ -1151,6 +1197,7 @@ mod tests {
             &argv(&["check", "--repo", "/path/that/does/not/exist"]),
             std::path::Path::new("."),
             &mut out,
+            crate::style::PLAIN,
         );
         assert_eq!(code, 1);
 
@@ -1167,6 +1214,7 @@ mod tests {
             &argv(&["check", "--repo", root.to_str().unwrap(), "--quiet"]),
             std::path::Path::new("."),
             &mut out,
+            crate::style::PLAIN,
         );
         assert!(code == 0 || code == 8, "check answered with {code}");
     }

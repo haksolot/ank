@@ -180,7 +180,12 @@ pub fn new(
             kind.as_str()
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "created {id} {title}");
+        let _ = writeln!(
+            out,
+            "{} {} {title}",
+            inv.style().advanced("created"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -528,7 +533,12 @@ fn create_filled(
             }
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "created {id} {title}");
+        let _ = writeln!(
+            out,
+            "{} {} {title}",
+            inv.style().advanced("created"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -751,7 +761,13 @@ fn slugify(title: &str) -> String {
 /// the virtual table a rebuild rather than a migration when it is wanted. What
 /// the criterion is about is the cap, which a scan respects exactly as well as
 /// a ranked query would.
-pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
+pub fn find(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let query = inv
         .positionals
         .first()
@@ -832,12 +848,26 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         return Ok(0);
     }
 
+    let style = inv.style();
+    // The row the caller is holding, marked the way `git branch` marks the
+    // current branch (§4). A listing is where a held task is otherwise
+    // indistinguishable from any other claimed one — `[claimed:who]` says who,
+    // and the reader has to recognise their own identity to answer "is that
+    // mine".
+    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
     for r in &hits[..shown] {
         let short = shorts
             .get(&r.id)
             .cloned()
             .unwrap_or_else(|| r.id.to_string());
-        let _ = writeln!(out, "{short}  [{}] {}", r.status, r.title);
+        let _ = writeln!(
+            out,
+            "{}{}  {} {}",
+            marker_of(&held, &r.id),
+            style.id(&short),
+            style.status(&format!("[{}]", r.status)),
+            r.title
+        );
     }
     if total > shown {
         // Announced, never silent. A search that quietly drops results teaches
@@ -873,7 +903,7 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
 /// lie: "what covers this path" is a question whose partial answer is wrong
 /// rather than short, since the constraint left out is exactly the one nobody
 /// would then read.
-pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
     if inv.positionals.first().is_none() {
         return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
     }
@@ -936,17 +966,30 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
         let _ = writeln!(out, "nothing covers this path");
         return Ok(0);
     }
+    let style = inv.style();
+    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
     for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
         if group.is_empty() {
             continue;
         }
-        let _ = writeln!(out, "\n{label} ({})", group.len());
+        let _ = writeln!(
+            out,
+            "\n{}",
+            style.header(&format!("{label} ({})", group.len()))
+        );
         for r in group.iter() {
             let short = shorts
                 .get(&r.id)
                 .cloned()
                 .unwrap_or_else(|| r.id.to_string());
-            let _ = writeln!(out, "  {short}  [{}] {}", r.status, r.title);
+            let _ = writeln!(
+                out,
+                "{}{}  {} {}",
+                marker_of(&held, &r.id),
+                style.id(&short),
+                style.status(&format!("[{}]", r.status)),
+                r.title
+            );
         }
     }
     Ok(0)
@@ -999,6 +1042,19 @@ fn head_of(cwd: &Path, identity: &str) -> Result<(EntityId, String, ClaimRecord)
 /// The same lookup without the refusal, for the caller that reports rather than
 /// acts. `status` describes a repository that may well have no claim in it, and
 /// a reader must never fail because there is nothing to say.
+/// The two columns a listing spends on its left margin, spent on saying whether
+/// this row is the caller's own (§4).
+///
+/// Width-neutral by construction: `scope` already indented by two, and `find`
+/// gains the margin every other listing has. Neither becomes wider for having
+/// something to say.
+fn marker_of(held: &Option<EntityId>, id: &EntityId) -> &'static str {
+    match held {
+        Some(h) if h == id => crate::style::glyph::HELD,
+        _ => crate::style::glyph::UNHELD,
+    }
+}
+
 pub(crate) fn held_by(
     cwd: &Path,
     identity: &str,
@@ -1118,7 +1174,7 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
         return Ok(0);
     }
 
-    let _ = writeln!(out, "{id}  {}", task.title);
+    let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), task.title);
     if entries.is_empty() {
         // Named rather than left blank: an empty answer and an answer about the
         // wrong task look identical otherwise.
@@ -1184,7 +1240,8 @@ fn log_write(
             // hour.
             let _ = writeln!(
                 out,
-                "warning: {id} was taken over while logging, the claim was not renewed"
+                "{} {id} was taken over while logging, the claim was not renewed",
+                inv.style().yellow("warning:")
             );
         }
     }
@@ -1192,7 +1249,12 @@ fn log_write(
     if inv.json() {
         let _ = writeln!(out, "{{\"task\":\"{id}\",\"logged\":true}}");
     } else if !inv.quiet() {
-        let _ = writeln!(out, "logged on {id}");
+        let _ = writeln!(
+            out,
+            "{} on {}",
+            inv.style().advanced("logged"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -1246,7 +1308,13 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
             json_string(&reason)
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "released {id} -> open");
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            inv.style().retracted("released"),
+            inv.style().id(&id.to_string()),
+            inv.style().landed("open")
+        );
     }
     Ok(0)
 }
@@ -1321,7 +1389,7 @@ mod tests {
             let cfg = self.cfg();
             match inv.command {
                 "new" => new(&inv, &repo, &cfg, who, &mut out)?,
-                "find" => find(&inv, &repo, &cfg, &mut out)?,
+                "find" => find(&inv, &repo, &cfg, who, &mut out)?,
                 "log" => log(&inv, &repo, &cfg, who, &mut out)?,
                 "release" => release(&inv, &repo, who, &mut out)?,
                 other => panic!("not one of these verbs: {other}"),
@@ -1847,7 +1915,13 @@ mod tests {
         .unwrap();
 
         let out = t.call(&["find", "task"], "a").unwrap();
-        let listed = out.lines().filter(|l| l.starts_with("TASK-")).count();
+        // Every row carries the two-column margin of §4, held or not, which is
+        // also what keeps the count honest: a row that lost its marker column
+        // would stop being counted here rather than pass unnoticed.
+        let listed = out
+            .lines()
+            .filter(|l| l.starts_with("  TASK-") || l.starts_with("* TASK-"))
+            .count();
         assert_eq!(listed, 5, "the cap follows context_budget:\n{out}");
         assert!(out.contains("+25 more"), "and says what it cut:\n{out}");
         assert!(
