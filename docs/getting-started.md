@@ -348,7 +348,51 @@ that your work is wrong. Fix the machine, not the code.
 
 ## Handing the loop to an agent
 
-    npx skills add haksolot/ank
+Four routes install the same file. Pick the one your agent already understands.
+
+**The `skills` CLI**, which detects what you run — Claude Code, Codex, Cursor,
+OpenCode and some thirty more — and links each one to a single copy. Ask it what
+it found before you let it install:
+
+    $ npx skills add haksolot/ank --list
+    Source: https://github.com/haksolot/ank.git
+    Repository cloned
+    Found 1 skill
+
+    Available Skills
+    Ank
+      ank
+        Read a repository's tasks and binding constraints, claim work, and
+        finish it with proof. Use when working in a repo that has a .ank/
+        directory.
+
+Drop `--list` to install it.
+
+**Claude Code as a plugin**, this repository serving as its own marketplace:
+
+    /plugin marketplace add haksolot/ank
+    /plugin install ank@ank
+
+`claude plugin details ank` then tells you what it costs you, which is the
+question worth asking of anything loaded on every session:
+
+    Tasks and architecture decisions in your repo, behind one CLI any coding
+    agent can call.
+
+    Component inventory
+      Skills (1)  ank
+
+    Projected token cost
+      Always-on:   ~58 tok   added to every session
+
+**pi**, from the registry or from a clone:
+
+    $ pi install npm:@haksolot/ank
+    $ pi install git:github.com/haksolot/ank
+    Installed git:github.com/haksolot/ank
+
+The git route clones the repository and reads its `pi` manifest; the npm route
+takes the published package, which carries the skill beside the binary.
 
 That installs the skill, not the binary. The skill teaches one page: the loop
 `context → claim → show → log → done`, the three off-loop verbs `new`, `find`

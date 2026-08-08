@@ -67,16 +67,14 @@ ank log "<what you learned>"  # renews the claim; working is what holds it
 ank done                      # runs the verifiers itself and writes the proof
 ```
 
-**Hand it to an agent.** The `skills` CLI detects what you run — Claude Code,
-Codex, Cursor, OpenCode and others — and links each one to a single copy:
+**Hand it to an agent.** Four routes, and the same file behind all of them.
+
+The `skills` CLI detects what you run — Claude Code, Codex, Cursor, OpenCode and
+some thirty more — and links each one to a single copy:
 
 ```
 npx skills add haksolot/ank
 ```
-
-That installs the skill, not the binary. The skill is one plain markdown file,
-[`skill/SKILL.md`](skill/SKILL.md): where that command does not fit, copy it by
-hand into whatever your agent loads.
 
 Claude Code can take it as a plugin instead, this repository serving as its own
 marketplace:
@@ -86,8 +84,17 @@ marketplace:
 /plugin install ank@ank
 ```
 
-Same file either way — the plugin points at `skill/SKILL.md` where it already
-lives, and there is no second copy to fall behind it.
+pi takes it from the registry, or from a clone:
+
+```
+pi install npm:@haksolot/ank
+pi install git:github.com/haksolot/ank
+```
+
+All four install the skill, not the binary — `ank` goes on your `PATH` as above.
+The skill is one plain markdown file, [`skill/SKILL.md`](skill/SKILL.md): where
+none of these fits, copy it by hand into whatever your agent loads. No route
+holds a copy of it, so no route can fall behind it.
 
 [**Getting started**](docs/getting-started.md) walks all of that with real
 output, including the two refusals a fresh repository will give you.
