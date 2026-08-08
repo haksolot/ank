@@ -163,6 +163,25 @@ jobs:
         shell: bash
         run: bash .github/scripts/npm-assemble.sh "0.0.0-smoke" "${{ matrix.package }}"
 
+      # The wrapper is also the pi package, and a pi package is its skill: with
+      # skills/ank/SKILL.md missing, `pi install npm:@haksolot/ank` installs a
+      # binary and teaches nothing, while every other assertion in this job
+      # still passes. The copy is made at assembly time and never committed
+      # (npm-assemble.sh), so nothing else in the repository can notice it went
+      # missing. Read out of the tarball rather than off the disk, because the
+      # tarball is what the registry receives -- a `files` entry that stopped
+      # matching would leave the file on disk and out of the package.
+      - name: the wrapper carries the skill
+        shell: bash
+        run: |
+          set -e
+          tgz=$(ls npm/ank/*.tgz | head -n 1)
+          packed=$(tar -xzOf "$tgz" package/skills/ank/SKILL.md | sha256sum | cut -d' ' -f1)
+          source=$(sha256sum skill/SKILL.md | cut -d' ' -f1)
+          echo "packed: $packed"
+          echo "source: $source"
+          test "$packed" = "$source"
+
       # The argument publish-npm passes, run on every dispatch and every tag,
       # with the one flag that stops short of the registry. This is the step
       # that was missing when v0.1.2 shipped no packages: the smoke job proved

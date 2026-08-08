@@ -4,3 +4,5 @@
 npm/ank-*/bin/
 npm/*/LICENSE
 npm/*/*.tgz
+# And this one from skill/SKILL.md, which is the only copy that exists in git.
+npm/ank/skills/

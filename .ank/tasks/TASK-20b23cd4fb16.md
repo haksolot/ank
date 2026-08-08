@@ -5,7 +5,7 @@ slug: the-npm-package-is-a-pi-package-skill-included
 title: The npm package is a pi package, skill included
 created: 2026-08-08T16:17:02Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - npm/**
   - .github/scripts/npm-assemble.sh
@@ -23,7 +23,7 @@ done_criteria: |
   cargo test and ank check stay green.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 The pi route, and the one that carries discovery: a package published with the
@@ -52,3 +52,6 @@ Note that pi does not put the binary on PATH when it installs an npm package: it
 loads resources. The skill's Install section already tells a reader the skill is
 not the binary, so nothing there needs to change -- and must not, since that body
 is frozen and TASK-e70d28a5fba8 already holds the pen on it.
+
+## Log
+- 2026-08-08T16:54:00Z seanl@sean-laptop — Verified locally end to end. npm-assemble.sh copies skill/SKILL.md into npm/ank/skills/ank/SKILL.md; npm publish --dry-run lists it at 3.2kB among five files; the tarball assertion matches sha256 9e4161fb... on both sides. Negative direction proved too: repacked with skills/ removed, the same assertion exits 1, so the step fails when the skill is absent rather than passing vacuously. pi accepts the package -- pi install ./npm/ank succeeds and pi list shows it -- but pi could not be made to print its resolved skills on this machine, so what is proved is that the manifest is accepted, not that the skill loads. Two findings outside this criterion. First, npm 11.14.1 refuses the dry-run the smoke job runs: 0.0.0-smoke is a prerelease and needs --tag, and even 0.0.0 is refused as lower than the published 0.1.2. CI passes today on the runner's npm 10, so this is latent, and it fails closed. Second, git checkout -- npm/ to undo the version stamping also reverts hand edits to the same file; assemble in a throwaway tree or restore the version field alone.
