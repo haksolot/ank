@@ -77,5 +77,17 @@ for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64; do
   npm pkg set "optionalDependencies.@haksolot/$p=$version"
 done
 cp ../../LICENSE LICENSE
+
+# pi reads a package's skills from its pi.skills path, and its convention is
+# skills/<name>/SKILL.md. The source is skill/SKILL.md at the repository root,
+# where the freeze lives: build.rs hashes it into `ank --version` and
+# tests/skill.rs holds the file to that hash. A second copy committed beside it
+# would have no such anchor and would drift with nothing turning red, which is
+# what ADR-e3cb36646d77 refuses. So the copy is made here, from the one file, on
+# every run, and .gitignore keeps it out of the tree -- the same arrangement as
+# LICENSE on the line above. The release smoke job is what checks it arrived.
+mkdir -p skills/ank
+cp ../../skill/SKILL.md skills/ank/SKILL.md
+
 npm pack --silent > /dev/null
 echo "assembled npm/ank at $version"
