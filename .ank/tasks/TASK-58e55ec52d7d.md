@@ -5,7 +5,7 @@ slug: a-git-clone-of-the-repository-installs-into-pi
 title: A git clone of the repository installs into pi
 created: 2026-08-08T16:17:19Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - package.json
   - README.md
@@ -19,8 +19,12 @@ done_criteria: |
   revision 605f771e1955, cargo test and ank check stay green, and no npm publish
   flow reaches this file.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31269131338"
+    criteria: aaec9e55bc5f
 schema: 2
-version: 3
+version: 5
 ---
 
 The second pi route, for a user who installs from source:
@@ -53,3 +57,5 @@ the freeze hash in build.rs, and the tests that hold it.
 
 ## Log
 - 2026-08-08T17:14:37Z seanl@sean-laptop — Both questions answered by running, not by reading. Question one: pi's own loader accepts a path naming a directory that holds SKILL.md directly. Its documented rule is 'if a directory contains SKILL.md, treat it as a skill root and do not recurse further', and calling loadSkillsFromDir from pi's dist against skill/ returns one skill named ank, description intact, zero diagnostics. So pi.skills is ./skill and no skills/<name>/ shape is needed. Question two: pi install ./ succeeds against this working copy, pi list shows it, and nothing is fetched -- npm install at the root is a clean no-op. Two things learned that the task body got wrong. The manifest needs no version field at all: pi installs it and npm is content, so the root manifest adds no sixth place where 0.1.2 is written by hand, which was the reason to hesitate. And private: true is weaker than assumed -- npm 11 ignores it under --dry-run and reports a successful publish of 205 files. It still blocks a real publish, but the guard that matters is that no publish flow here targets the root: every npm publish in release.yml names ./npm/<pkg>, and npm-assemble only ever npm pkg set inside npm/. The name is scoped to @haksolot/ank-pi rather than the bare ank the body proposed, because ank is an existing package on the registry owned by someone else.
+- 2026-08-08T17:23:15Z seanl@sean-laptop — The route itself now runs, which was only possible once main carried the manifest. pi install git:github.com/haksolot/ank clones to ~/.pi/agent/git/github.com/haksolot/ank, runs npm install ('up to date, audited 1 package', no node_modules created, so the no-dependency manifest is the no-op it was meant to be), and registers in pi list. Probing pi's own loader against that clone's skill/ returns the skill named ank. One trap for anyone repeating this: pass the loader a Windows path. Given a git-bash /c/... path node's existsSync returns false and loadSkillsFromDir answers zero skills with zero diagnostics, which reads exactly like a rejected path form and is not one.
+- 2026-08-08T17:23:15Z seanl@sean-laptop — done, proof test:31269131338
