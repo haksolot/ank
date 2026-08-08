@@ -5,12 +5,22 @@ slug: color-on-a-terminal-bytes-unchanged-in-a-pipe
 title: Color on a terminal, bytes unchanged in a pipe
 created: 2026-08-05T04:06:09Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-cli/src/context.rs
   - crates/ank-cli/src/status.rs
   - docs/**
+  - crates/ank-cli/src/style.rs
+  - crates/ank-cli/src/main.rs
+  - crates/ank-cli/src/commands.rs
+  - crates/ank-cli/src/human.rs
+  - crates/ank-cli/src/done.rs
+  - crates/ank-cli/src/claim.rs
+  - crates/ank-cli/src/graph.rs
+  - crates/ank-cli/src/edit.rs
+  - crates/ank-cli/src/init.rs
+  - crates/ank-cli/tests/cli.rs
 blocked_by: []
 done_criteria: |
   Output is colored — hand-written ANSI, no new dependency — only when stdout is
@@ -20,7 +30,7 @@ done_criteria: |
   including the piped case.
 criteria_by: creator
 schema: 2
-version: 2
+version: 4
 ---
 
 Execution of ADR-962c25797569, presentation half. The guarantee that matters
@@ -33,3 +43,4 @@ engine.
 
 ## Log
 - 2026-08-05T04:06:58Z seanl@sean-laptop — amended: -blocked_by ADR-962c25797569
+- 2026-08-08T18:11:16Z seanl@sean-laptop — amended: +scope crates/ank-cli/src/style.rs, +scope crates/ank-cli/src/main.rs, +scope crates/ank-cli/src/commands.rs, +scope crates/ank-cli/src/human.rs, +scope crates/ank-cli/src/done.rs, +scope crates/ank-cli/src/claim.rs, +scope crates/ank-cli/src/graph.rs, +scope crates/ank-cli/src/edit.rs, +scope crates/ank-cli/src/init.rs, +scope crates/ank-cli/tests/cli.rs
