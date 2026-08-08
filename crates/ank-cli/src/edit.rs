@@ -153,7 +153,12 @@ fn write_back(
         } else {
             changed.join(", ")
         };
-        let _ = writeln!(out, "edited {id} {what} (version {version})");
+        let _ = writeln!(
+            out,
+            "{} {} {what} (version {version})",
+            inv.style().advanced("edited"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -165,7 +170,9 @@ fn report_unchanged(inv: &Invocation, id: &EntityId, version: u64, out: &mut dyn
             "{{\"entity\":\"{id}\",\"changed\":[],\"version\":{version}}}"
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "unchanged {id}");
+        // Not a transition: nothing moved, so the word takes no direction and
+        // only the identifier is painted.
+        let _ = writeln!(out, "unchanged {}", inv.style().id(&id.to_string()));
     }
 }
 

@@ -3664,6 +3664,90 @@ fn no_verb_writes_an_escape_sequence_to_a_pipe() {
     }
 }
 
+/// The transition grammar of §4, walked through the binary.
+///
+/// Every one of these lines was bare before TASK-4601ed18d84e, and none of them
+/// can live in `styled_surface`: that list is replayed against one fixture, and
+/// each line here is produced by a verb that mutates. So they are walked once,
+/// in the loop's own order — a task created, taken, logged, released, retaken,
+/// finished and attested; a second one amended and closed.
+///
+/// Two assertions per line, and the second is the one that would survive a
+/// wrong colour. Absence of an escape byte proves the pipe is clean; the shape
+/// proves the grammar is the one the specification declares, because a call
+/// site that painted the wrong token would still be escape-free here.
+#[test]
+fn every_transition_line_reads_one_grammar_and_stays_plain_in_a_pipe() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("a criterion to freeze"));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let run = |args: &[&str]| -> String {
+        let out = r.ank("claude-code@ank", args);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+        assert!(
+            !out.stdout.contains(&0x1b),
+            "{args:?} coloured a pipe: {:?}",
+            stdout(&out)
+        );
+        assert!(
+            !out.stderr.contains(&0x1b),
+            "{args:?} coloured stderr: {:?}",
+            stderr(&out)
+        );
+        stdout(&out)
+    };
+
+    let created = run(&[
+        "new",
+        "task",
+        "--title",
+        "A second task",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "The binary answers.",
+    ]);
+    assert!(
+        created.starts_with("created TASK-"),
+        "created names what it made: {created:?}"
+    );
+    let second = created
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id>")
+        .to_string();
+
+    let claimed = run(&["claim", &second]);
+    assert!(claimed.starts_with("claimed TASK-"), "{claimed:?}");
+
+    let logged = run(&["log", &second, "something learned"]);
+    assert!(logged.starts_with("logged on TASK-"), "{logged:?}");
+
+    let released = run(&["release", &second, "--reason", "the criterion is wrong"]);
+    assert!(
+        released.starts_with("released TASK-") && released.trim_end().ends_with("-> open"),
+        "a release names the state it lands on: {released:?}"
+    );
+
+    run(&["claim", &second]);
+    let finished = run(&["done", &second, "--proof", "test:ci-run-1"]);
+    assert!(finished.trim_end().ends_with("-> done"), "{finished:?}");
+
+    let attested = run(&["attest", &second, "--proof", "test:ci-run-2"]);
+    assert!(attested.starts_with("attested TASK-"), "{attested:?}");
+
+    let amended = run(&["amend", ID, "--scope", "docs/**"]);
+    assert!(amended.starts_with("amended TASK-"), "{amended:?}");
+
+    let closed = run(&["close", ID, "--reason", "superseded by the second"]);
+    assert!(
+        closed.starts_with("closed TASK-") && closed.trim_end().ends_with("-> closed"),
+        "{closed:?}"
+    );
+}
+
 /// The error envelope travels the same rule, and it is the one line that does
 /// not go through the writer every verb shares.
 #[test]

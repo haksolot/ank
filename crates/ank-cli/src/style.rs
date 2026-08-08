@@ -97,17 +97,44 @@ impl Style {
     /// not the other.
     pub fn status(&self, marker: &str) -> String {
         let inner = marker.trim_start_matches('[').trim_end_matches(']');
-        // Checked before the split: an expired marker is `[open expired:who]`,
-        // whose leading word is the status it expired from.
-        if inner.contains("expired") {
-            return self.yellow(marker);
+        match state_sgr(inner) {
+            Some(sgr) => self.paint(sgr, marker),
+            None => marker.to_string(),
         }
-        match inner.split(':').next().unwrap_or(inner) {
-            "done" | "finished" | "accepted" => self.green(marker),
-            "claimed" => self.cyan(marker),
-            "closed" | "blocked" | "superseded" => self.dim(marker),
-            _ => marker.to_string(),
+    }
+
+    /// The state a transition landed on: the `done` of `TASK-8ebd -> done`.
+    ///
+    /// Deliberately the same table `status` reads. `-> done` and `[done]` are
+    /// the same fact seen twice, and §4 asks that a reader who has learned one
+    /// have learned the other — which is only true if one lookup answers both.
+    pub fn landed(&self, state: &str) -> String {
+        match state_sgr(state) {
+            Some(sgr) => self.paint(sgr, state),
+            None => state.to_string(),
         }
+    }
+
+    /// A transition word for something the corpus gained: `created`, `claimed`,
+    /// `logged`, `attested`, `amended`, `accepted`.
+    pub fn advanced(&self, s: &str) -> String {
+        self.green(s)
+    }
+
+    /// A transition word for something given up or retired: `released`,
+    /// `closed`, `superseded`, `pruned`.
+    ///
+    /// Dim rather than red: nothing here failed. A release is how the loop is
+    /// meant to end when a criterion turns out to be wrong, and colouring it as
+    /// an error would teach an agent to avoid the honest move.
+    pub fn retracted(&self, s: &str) -> String {
+        self.dim(s)
+    }
+
+    /// A label whose value is what the reader came for — `status`'s `branch`,
+    /// `perimeter`, `queue`, `corpus`.
+    pub fn key(&self, s: &str) -> String {
+        self.dim(s)
     }
 
     /// The style for standard error, derived from this one.
@@ -122,6 +149,25 @@ impl Style {
         } else {
             PLAIN
         }
+    }
+}
+
+/// The colour a state carries, from the one table §4 declares.
+///
+/// Free rather than a method because it answers about the state and not about
+/// the [`Style`] asking: `status` reads it for `[done]` and `landed` for the
+/// `done` of `-> done`, and the two must not be able to drift apart.
+fn state_sgr(state: &str) -> Option<&'static str> {
+    // Checked before the split: an expired marker is `[open expired:who]`,
+    // whose leading word is the status it expired from.
+    if state.contains("expired") {
+        return Some("33");
+    }
+    match state.split(':').next().unwrap_or(state) {
+        "done" | "finished" | "accepted" => Some("32"),
+        "claimed" => Some("36"),
+        "closed" | "blocked" | "superseded" => Some("2"),
+        _ => None,
     }
 }
 
@@ -202,6 +248,10 @@ mod tests {
             assert_eq!(s.id(input), input);
             assert_eq!(s.status(input), input);
             assert_eq!(s.next(input), input);
+            assert_eq!(s.landed(input), input);
+            assert_eq!(s.advanced(input), input);
+            assert_eq!(s.retracted(input), input);
+            assert_eq!(s.key(input), input);
         }
     }
 
@@ -215,8 +265,60 @@ mod tests {
         assert_eq!(s.yellow("x"), "\x1b[33mx\x1b[0m");
         assert_eq!(s.cyan("x"), "\x1b[36mx\x1b[0m");
         // Every sequence closes. An unreset attribute bleeds into the prompt.
-        for painted in [s.header("h"), s.id("i"), s.next("n"), s.status("[done]")] {
+        for painted in [
+            s.header("h"),
+            s.id("i"),
+            s.next("n"),
+            s.status("[done]"),
+            s.landed("done"),
+            s.advanced("created"),
+            s.retracted("released"),
+            s.key("branch"),
+        ] {
             assert!(painted.ends_with(RESET), "{painted:?} did not reset");
+        }
+    }
+
+    /// `-> done` and `[done]` are the same fact, so they read one table (§4).
+    ///
+    /// Asserted as an equality between the two accessors rather than against a
+    /// literal: a literal would still pass if someone gave `landed` a table of
+    /// its own that happened to agree today.
+    #[test]
+    fn a_landing_state_carries_the_colour_its_marker_carries() {
+        let s = COLOR;
+        for state in [
+            "done",
+            "accepted",
+            "claimed",
+            "closed",
+            "blocked",
+            "superseded",
+            "open",
+            "proposed",
+        ] {
+            // The painted marker with its brackets removed *from the text it
+            // wraps*, which is the only substitution that leaves an escape
+            // sequence — itself full of brackets — untouched.
+            let marker = s.status(&format!("[{state}]"));
+            assert_eq!(
+                marker.replace(&format!("[{state}]"), state),
+                s.landed(state),
+                "{state} disagrees between the marker and the landing"
+            );
+        }
+    }
+
+    /// The direction of a transition word, which is what §4 asks a reader to
+    /// learn once and apply to every verb.
+    #[test]
+    fn a_transition_word_is_coloured_by_its_direction() {
+        let s = COLOR;
+        for word in ["created", "claimed", "logged", "attested", "amended"] {
+            assert_eq!(s.advanced(word), s.green(word));
+        }
+        for word in ["released", "closed", "superseded", "pruned"] {
+            assert_eq!(s.retracted(word), s.dim(word));
         }
     }
 

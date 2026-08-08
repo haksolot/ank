@@ -501,7 +501,7 @@ The commit is embedded at build time through `rev-parse`, which §8's plumbing r
 
 ### Color
 
-Presentation and nothing else (ADR-962c25797569). Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
+Presentation and nothing else (ADR-0c8ab846d262). Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
 
 The guarantee bought is negative, and it is the whole point. **Captured output is byte-for-byte what it was before color existed** — a pipe, a file, a `$(...)`, a CI log, all unchanged. `--json` is never colored even at a terminal: it is the one place both conditions can hold and styling still be wrong, so the rule is stated separately rather than left to follow.
 
@@ -517,10 +517,18 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 | `[claimed:…]`, `[… expired:…]` | cyan, yellow |
 | `[done]`, `[finished:… on …]` | green |
 | `[closed]`, `[blocked]` | dim |
+| a transition word that advanced the corpus: `created`, `claimed`, `logged`, `attested`, `amended`, `accepted` | green |
+| a transition word that gave something up: `released`, `closed`, `superseded`, `pruned` | dim |
+| the state a transition landed on: `-> done`, `-> open`, `-> closed` | as its marker above |
+| `status`'s keys: `branch`, `claim`, `perimeter`, `queue`, `corpus` | dim |
 | `error[N]:` and `check`'s `error:` tag | red |
 | `warning:` and `check`'s `signal:` tag | yellow |
 | a verifier's `ok` / `FAILED` | green / red |
 | the trailing next-command line, `> ank …` | bold |
+
+**A transition reads the same whichever verb produced it.** Every verb that changes state confirms it in one shape — the word for what happened, the identifier it happened to, and where the entity landed — and the color follows that shape rather than the verb. The word carries the direction, the identifier is yellow like every other identifier, and the landing state takes exactly the color its bracketed marker takes in a listing: `-> done` and `[done]` are the same fact seen twice, and a reader who has learned one has learned the other. This is why the rule is stated as a grammar and not as a list of verbs — `attested` is legible to someone who has only ever run `claim`.
+
+`status` is the one output whose lines are label-and-value rather than sentences, so its labels recede and its values do not. The counters keep their own rule: a fault count is red when it is not zero, and the reader is meant to see the number before the word.
 
 The error line follows the same rule applied to its own stream: it is colored when stderr is a terminal **and** the condition above already holds, a conjunction rather than a substitution, so that no arrangement of redirections produces an escape sequence stdout's rule forbids.
 

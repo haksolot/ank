@@ -1281,7 +1281,7 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
         let _ = writeln!(out, "{tag} {}: {}", f.subject, f.message);
     }
     for p in &report.pruned {
-        let _ = writeln!(out, "pruned {p}");
+        let _ = writeln!(out, "{} {}", style.retracted("pruned"), style.id(p));
     }
     let _ = writeln!(
         out,
@@ -1565,9 +1565,21 @@ pub fn accept(
         } else {
             "accepted"
         };
-        let _ = writeln!(out, "{verb} {id} -> {}", &commit[..commit.len().min(7)]);
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            style.advanced(verb),
+            style.id(&id.to_string()),
+            &commit[..commit.len().min(7)]
+        );
         if let Succession::Pending(t) = &replaced {
-            let _ = writeln!(out, "superseded {}", t.id);
+            let _ = writeln!(
+                out,
+                "{} {}",
+                style.retracted("superseded"),
+                style.id(&t.id.to_string())
+            );
         }
     }
     Ok(0)
@@ -1848,7 +1860,13 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             "{{\"task\":\"{id}\",\"status\":\"closed\",\"claim_revoked\":{revoked}}}"
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "closed {id} -> closed");
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            inv.style().retracted("closed"),
+            inv.style().id(&id.to_string()),
+            inv.style().landed("closed")
+        );
         if revoked {
             let _ = writeln!(out, "the active claim was revoked");
         }
@@ -1947,7 +1965,12 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
             json_str(&reference)
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "attested {id} {kind}:{reference} ({entries} proofs)");
+        let _ = writeln!(
+            out,
+            "{} {} {kind}:{reference} ({entries} proofs)",
+            inv.style().advanced("attested"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -2214,7 +2237,13 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
             items.join(",")
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "amended {id} {}", changes.join(" "));
+        let _ = writeln!(
+            out,
+            "{} {} {}",
+            inv.style().advanced("amended"),
+            inv.style().id(&id.to_string()),
+            changes.join(" ")
+        );
     }
 }
 

@@ -180,7 +180,12 @@ pub fn new(
             kind.as_str()
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "created {id} {title}");
+        let _ = writeln!(
+            out,
+            "{} {} {title}",
+            inv.style().advanced("created"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -528,7 +533,12 @@ fn create_filled(
             }
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "created {id} {title}");
+        let _ = writeln!(
+            out,
+            "{} {} {title}",
+            inv.style().advanced("created"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -1211,7 +1221,12 @@ fn log_write(
     if inv.json() {
         let _ = writeln!(out, "{{\"task\":\"{id}\",\"logged\":true}}");
     } else if !inv.quiet() {
-        let _ = writeln!(out, "logged on {id}");
+        let _ = writeln!(
+            out,
+            "{} on {}",
+            inv.style().advanced("logged"),
+            inv.style().id(&id.to_string())
+        );
     }
     Ok(0)
 }
@@ -1265,7 +1280,13 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
             json_string(&reason)
         );
     } else if !inv.quiet() {
-        let _ = writeln!(out, "released {id} -> open");
+        let _ = writeln!(
+            out,
+            "{} {} -> {}",
+            inv.style().retracted("released"),
+            inv.style().id(&id.to_string()),
+            inv.style().landed("open")
+        );
     }
     Ok(0)
 }

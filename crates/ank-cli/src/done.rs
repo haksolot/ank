@@ -216,7 +216,9 @@ pub fn run(
             out,
             "{} -> {}",
             inv.style().id(&id.to_string()),
-            inv.style().green("done")
+            // Through `landed`, not `green`: the colour of a landing state is
+            // the colour of its marker, and one table answers both (§4).
+            inv.style().landed("done")
         );
     }
     Ok(0)

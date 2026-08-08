@@ -936,7 +936,8 @@ pub fn run(
             let slug = task.slug.as_deref().unwrap_or("");
             let _ = writeln!(
                 out,
-                "claimed {} {slug} -> HEAD",
+                "{} {} {slug} -> HEAD",
+                inv.style().advanced("claimed"),
                 inv.style().id(&acquired.id.to_string())
             );
         }
