@@ -499,6 +499,33 @@ The commit is embedded at build time through `rev-parse`, which §8's plumbing r
 
 **The skill revision, and what it lets a reader do offline.** The third value is `skill <rev>`, where `<rev>` is the short form of the same freeze hash that anchors a frozen `done_criteria` (§3), taken over the body of `skill/SKILL.md` — the same value that file declares under `metadata.revision`, computed at build time from the file rather than typed. An agent has both halves in hand and nothing else: the skill is loaded into its context, the binary is on its `PATH`. Comparing the two strings tells it, with no repository and no network, whether the instructions it is following predate the tool it is holding. That is the check TASK-1ea38a17d854 needed and did not have, and the case that motivated it was measured (TASK-b495234f192c): an installed `SKILL.md` two commits behind a tree that had just withdrawn the invitation to read `.ank/` by hand. The hash covers the body and not the frontmatter, so the revision the frontmatter carries does not change its own input. It is `unknown` on a build with no `skill/` to read, for the same reason and with the same honesty as the commit.
 
+### Color
+
+Presentation and nothing else (ADR-962c25797569). Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
+
+The guarantee bought is negative, and it is the whole point. **Captured output is byte-for-byte what it was before color existed** — a pipe, a file, a `$(...)`, a CI log, all unchanged. `--json` is never colored even at a terminal: it is the one place both conditions can hold and styling still be wrong, so the rule is stated separately rather than left to follow.
+
+`NO_COLOR` set to any non-empty value disables it, which is what a human at a terminal types to get the raw bytes; `TERM=dumb` disables it too.
+
+The palette is small on purpose, and it is bounded here rather than in the code for the same reason the short-form table is: the grammar is the specification, and the implementation is only its application. Status markers, section headers, identifiers, the error line. Nothing that carries meaning is carried by color alone — every marker still reads as `[open]` or `[done]` in a pipe.
+
+| Element | Style |
+|---|---|
+| section headers: `CONSTRAINTS`, `PROPOSED`, `TASKS`, `DONE_CRITERIA`, `LOG`, `BLOCKED BY`, `UNBLOCKS` | bold |
+| identifiers: `TASK-8ebd`, `ADR-962c` | yellow |
+| `[open]` | default |
+| `[claimed:…]`, `[… expired:…]` | cyan, yellow |
+| `[done]`, `[finished:… on …]` | green |
+| `[closed]`, `[blocked]` | dim |
+| `error[N]:` and `check`'s `error:` tag | red |
+| `warning:` and `check`'s `signal:` tag | yellow |
+| a verifier's `ok` / `FAILED` | green / red |
+| the trailing next-command line, `> ank …` | bold |
+
+The error line follows the same rule applied to its own stream: it is colored when stderr is a terminal **and** the condition above already holds, a conjunction rather than a substitution, so that no arrangement of redirections produces an escape sequence stdout's rule forbids.
+
+**On Windows the terminal must also announce itself**: one of `WT_SESSION`, `TERM`, `TERM_PROGRAM`, `ConEmuANSI` or `ANSICON` present in the environment. Legacy `conhost` does not interpret escape sequences unless the process turns them on, and turning them on means a console API call that this feature does not justify. A console announcing nothing is served plain text — the failure that costs a reader nothing, rather than the one that prints `←[1m` at them.
+
 ### Exit codes
 
 The semantics are carried by the code so that the shell can route without parsing output.

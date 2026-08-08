@@ -207,6 +207,29 @@ impl Repo {
             .expect("the binary must have been built")
     }
 
+    /// The same invocation with extra environment variables set.
+    ///
+    /// What the color rule of §4 reads, besides the terminal itself, is the
+    /// environment — so the environment has to be under the test's control
+    /// rather than inherited from whoever is running the suite. A developer
+    /// with `NO_COLOR` exported would otherwise be testing a different rule
+    /// from CI, and both would pass.
+    fn ank_env(&self, agent: &str, args: &[&str], env: &[(&str, Option<&str>)]) -> Output {
+        let mut c = Command::new(ANK);
+        c.args(args)
+            .arg("--repo")
+            .arg(&self.0)
+            .env("ANK_AGENT", agent)
+            .current_dir(std::env::temp_dir());
+        for (key, value) in env {
+            match value {
+                Some(v) => c.env(key, v),
+                None => c.env_remove(key),
+            };
+        }
+        c.output().expect("the binary must have been built")
+    }
+
     /// The same invocation with `$EDITOR` under the test's control. `None`
     /// removes it, which is the environment failure §4 specifies — and removing
     /// it rather than trusting its absence matters, because the developer
@@ -3565,4 +3588,148 @@ fn a_blocker_that_does_not_exist_is_refused_at_creation() {
         "the exact command to run next: {err}"
     );
     assert!(entity_files(&r, "tasks").is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Color: the guarantee is negative (§4, ADR-962c25797569)
+// ---------------------------------------------------------------------------
+
+/// Every verb worth styling, exercised against a corpus that actually has
+/// something to style: a claimed task, an ADR, a blocker, a finding.
+///
+/// Kept as one fixture and one list because the property under test is
+/// universal — "no verb" is the claim, so a list that quietly omits one is the
+/// hole. `--version` and `help` are in it for the same reason they answer
+/// before the foundation: they are reachable when nothing else is.
+fn styled_surface() -> Vec<Vec<&'static str>> {
+    vec![
+        vec!["context"],
+        vec!["status"],
+        vec!["find", "Example"],
+        vec!["find", "nothing-matches-this"],
+        vec!["show", ID],
+        vec!["log", ID],
+        vec!["graph"],
+        vec!["scope", "src"],
+        vec!["check"],
+        vec!["review"],
+        vec!["help"],
+        vec!["--version"],
+    ]
+}
+
+fn color_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_task(ID, Some("a criterion to freeze"));
+    r.seed_task("TASK-000000000002", Some("another criterion"));
+    r.seed_adr("ADR-0000000000ab", "a rule that binds", "src/**");
+    r.blocked("TASK-000000000002", &[ID]);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    // A live claim: markers, warnings and the execution mode of `context` are
+    // all unreachable without one, and they are exactly what carries colour.
+    r.ank("claude-code@ank", &["claim", ID]);
+    r
+}
+
+/// The one assertion the whole feature exists to satisfy.
+///
+/// A spawned process writes to a pipe, so this suite *is* the piped case — the
+/// same shape an agent shelling out to `ank` sees. An escape byte anywhere in
+/// either stream is the defect ADR-962c25797569 forbids, and `--json` is
+/// checked beside the plain form because it is the one surface that must stay
+/// clean even at a terminal.
+#[test]
+fn no_verb_writes_an_escape_sequence_to_a_pipe() {
+    let r = color_fixture();
+
+    for base in styled_surface() {
+        for json in [false, true] {
+            let mut args = base.clone();
+            if json {
+                args.push("--json");
+            }
+            let out = r.ank("claude-code@ank", &args);
+            assert!(
+                !out.stdout.contains(&0x1b),
+                "{args:?} put an escape sequence on stdout: {:?}",
+                stdout(&out)
+            );
+            assert!(
+                !out.stderr.contains(&0x1b),
+                "{args:?} put an escape sequence on stderr: {:?}",
+                stderr(&out)
+            );
+        }
+    }
+}
+
+/// The error envelope travels the same rule, and it is the one line that does
+/// not go through the writer every verb shares.
+#[test]
+fn a_refusal_is_plain_in_a_pipe_too() {
+    let r = color_fixture();
+
+    // One refusal per stream-producing shape: an unknown entity, a held claim,
+    // and a flag error caught before any verb runs.
+    for args in [
+        vec!["claim", "TASK-00000000dead"],
+        vec!["claim", "TASK-000000000002"],
+        vec!["find", "bug", "-st", "task"],
+        vec!["context", "--limit", "not-a-number"],
+    ] {
+        let out = r.ank("someone-else@ank", &args);
+        assert_ne!(code(&out), 0, "{args:?} was supposed to refuse");
+        assert!(
+            !out.stderr.contains(&0x1b),
+            "{args:?} coloured a refusal into a pipe: {:?}",
+            stderr(&out)
+        );
+        assert!(
+            stderr(&out).starts_with("error["),
+            "{args:?} lost the envelope: {:?}",
+            stderr(&out)
+        );
+    }
+}
+
+/// The detection rule read from the other side: nothing in the environment can
+/// turn colour *on*, because the terminal test has already failed.
+///
+/// This is what catches a wiring inversion. `NO_COLOR` implemented backwards,
+/// or a Windows allowlist consulted instead of the terminal check, would leave
+/// every assertion above green and change the bytes here.
+#[test]
+fn no_environment_makes_a_pipe_colored() {
+    let r = color_fixture();
+
+    let environments: [&[(&str, Option<&str>)]; 6] = [
+        &[("NO_COLOR", None), ("TERM", None), ("WT_SESSION", None)],
+        &[("NO_COLOR", Some("1"))],
+        &[("NO_COLOR", Some(""))],
+        &[("TERM", Some("dumb"))],
+        &[("TERM", Some("xterm-256color"))],
+        // The Windows allowlist, set on every platform: it is only ever an
+        // additional condition, never a substitute for the terminal itself.
+        &[("WT_SESSION", Some("1")), ("ANSICON", Some("1"))],
+    ];
+
+    for base in styled_surface() {
+        let reference = r.ank_env(
+            "claude-code@ank",
+            &base,
+            &[("NO_COLOR", None), ("TERM", None), ("WT_SESSION", None)],
+        );
+        for env in environments {
+            let out = r.ank_env("claude-code@ank", &base, env);
+            assert!(
+                !out.stdout.contains(&0x1b),
+                "{base:?} under {env:?} coloured a pipe"
+            );
+            assert_eq!(
+                out.stdout, reference.stdout,
+                "{base:?} answered differently under {env:?}"
+            );
+        }
+    }
 }

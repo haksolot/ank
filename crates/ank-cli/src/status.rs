@@ -119,8 +119,9 @@ pub fn run(
             // would read as "nothing is pending".
             let _ = writeln!(
                 out,
-                "warning: no default branch, so completion refs are neither pruned nor \
-                 judged (add \"default_branch: <name>\" to .ank/config.yml)"
+                "{} no default branch, so completion refs are neither pruned nor \
+                 judged (add \"default_branch: <name>\" to .ank/config.yml)",
+                inv.style().yellow("warning:")
             );
         }
         // A repository with no commit is the nominal state of one freshly
@@ -130,16 +131,26 @@ pub fn run(
         }
     }
 
+    let style = inv.style();
     match &claimed {
         Some((task, expires)) => {
-            let _ = writeln!(out, "claim {} {}", task.id, task.title);
+            let _ = writeln!(
+                out,
+                "claim {} {}",
+                style.id(&task.id.to_string()),
+                task.title
+            );
             let _ = writeln!(out, "  expires {expires}");
         }
         // A held claim whose task the index has lost would print nothing at
         // all, so the ref is reported on its own rather than dropped.
         None => match &held {
             Some((id, _, record)) => {
-                let _ = writeln!(out, "claim {id} (no such task in the corpus)");
+                let _ = writeln!(
+                    out,
+                    "claim {} (no such task in the corpus)",
+                    style.id(&id.to_string())
+                );
                 let _ = writeln!(out, "  expires {}", record.expires);
             }
             None => {
@@ -160,7 +171,11 @@ pub fn run(
     let _ = writeln!(
         out,
         "corpus {} fault(s), {} signal(s)",
-        report.faults(),
+        if report.faults() == 0 {
+            report.faults().to_string()
+        } else {
+            style.red(&report.faults().to_string())
+        },
         report.signals()
     );
 
@@ -173,7 +188,7 @@ pub fn run(
     } else {
         "ank context"
     };
-    let _ = writeln!(out, "\n> {next}");
+    let _ = writeln!(out, "\n{}", style.next(&format!("> {next}")));
     Ok(0)
 }
 

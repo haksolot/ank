@@ -85,6 +85,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     // still has to draw the corpus that has one rather than hang on it. A cycle
     // also means no root, which would otherwise print a header and nothing
     // under it — so what has not been drawn is drawn flat at the end.
+    let style = inv.style();
     let mut drawn: HashSet<&EntityId> = HashSet::new();
     for root in &roots {
         draw(
@@ -97,13 +98,18 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             &mut drawn,
             &mut Vec::new(),
             out,
+            style,
         );
     }
     let stranded: Vec<&&Row> = nodes.iter().filter(|r| !drawn.contains(&r.id)).collect();
     if !stranded.is_empty() {
         let _ = writeln!(out, "\nin a cycle, so under no root:");
         for row in stranded {
-            let _ = writeln!(out, "  {}", line(&row.id, &row_of, &shorts, &outside_count));
+            let _ = writeln!(
+                out,
+                "  {}",
+                line(&row.id, &row_of, &shorts, &outside_count, style)
+            );
         }
     }
 
@@ -133,15 +139,24 @@ fn draw<'a>(
     drawn: &mut HashSet<&'a EntityId>,
     path: &mut Vec<&'a EntityId>,
     out: &mut dyn Write,
+    style: crate::style::Style,
 ) {
     let indent = "  ".repeat(depth);
     if path.contains(&id) {
-        let _ = writeln!(out, "{indent}{} (cycle)", line(id, row_of, shorts, outside));
+        let _ = writeln!(
+            out,
+            "{indent}{} (cycle)",
+            line(id, row_of, shorts, outside, style)
+        );
         return;
     }
     let repeat = drawn.contains(&id);
     let mark = if repeat { " (above)" } else { "" };
-    let _ = writeln!(out, "{indent}{}{mark}", line(id, row_of, shorts, outside));
+    let _ = writeln!(
+        out,
+        "{indent}{}{mark}",
+        line(id, row_of, shorts, outside, style)
+    );
     if repeat {
         return;
     }
@@ -158,6 +173,7 @@ fn draw<'a>(
             drawn,
             path,
             out,
+            style,
         );
     }
     path.pop();
@@ -168,12 +184,18 @@ fn line<'a>(
     row_of: &HashMap<&'a EntityId, &'a Row>,
     shorts: &HashMap<EntityId, String>,
     outside: &HashMap<&'a EntityId, usize>,
+    style: crate::style::Style,
 ) -> String {
     let short = shorts.get(id).cloned().unwrap_or_else(|| id.to_string());
     let Some(row) = row_of.get(id) else {
-        return short;
+        return style.id(&short);
     };
-    let mut s = format!("{short}  [{}] {}", row.status, row.title);
+    let mut s = format!(
+        "{}  {} {}",
+        style.id(&short),
+        style.status(&format!("[{}]", row.status)),
+        row.title
+    );
     // Never silently a root. A task held up by something the perimeter excludes
     // is not free to start, and drawing it flush left would say it is.
     if let Some(n) = outside.get(id) {

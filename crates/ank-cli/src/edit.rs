@@ -126,7 +126,8 @@ fn write_back(
     if version_of(&after) != base_version && !inv.quiet() && !inv.json() {
         let _ = writeln!(
             out,
-            "warning: version is maintained by ank, and the edit to it was discarded"
+            "{} version is maintained by ank, and the edit to it was discarded",
+            inv.style().yellow("warning:")
         );
     }
 

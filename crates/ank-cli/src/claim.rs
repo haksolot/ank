@@ -930,11 +930,15 @@ pub fn run(
         // A warning survives `--quiet`: what it reports is not the confirmation
         // the flag is there to silence.
         for w in &warnings {
-            let _ = writeln!(out, "warning: {w}");
+            let _ = writeln!(out, "{} {w}", inv.style().yellow("warning:"));
         }
         if !inv.quiet() {
             let slug = task.slug.as_deref().unwrap_or("");
-            let _ = writeln!(out, "claimed {} {slug} -> HEAD", acquired.id);
+            let _ = writeln!(
+                out,
+                "claimed {} {slug} -> HEAD",
+                inv.style().id(&acquired.id.to_string())
+            );
         }
     }
     Ok(0)

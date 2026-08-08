@@ -160,7 +160,16 @@ pub fn run(
             )
             .with_hint("ank done"));
         }
-        run_verifiers(repo, cfg, &declared, &task.scope, &criteria, &id, out)?
+        run_verifiers(
+            repo,
+            cfg,
+            &declared,
+            &task.scope,
+            &criteria,
+            &id,
+            out,
+            inv.style(),
+        )?
     };
 
     // Durable state first, the ref second. A file written and a ref left behind
@@ -203,7 +212,12 @@ pub fn run(
                     .unwrap_or_default()
             );
         }
-        let _ = writeln!(out, "{id} -> done");
+        let _ = writeln!(
+            out,
+            "{} -> {}",
+            inv.style().id(&id.to_string()),
+            inv.style().green("done")
+        );
     }
     Ok(0)
 }
@@ -288,6 +302,7 @@ fn run_verifiers(
     criteria: &str,
     id: &EntityId,
     out: &mut dyn Write,
+    style: crate::style::Style,
 ) -> Result<Vec<Proof>> {
     let head = git::run(&repo.root, &["rev-parse", "HEAD"]).unwrap_or_default();
     let tree = scope_hash(&repo.root, scope);
@@ -308,7 +323,11 @@ fn run_verifiers(
         let _ = writeln!(
             out,
             "running: {name} ... {} ({:.1}s)",
-            if outcome.ok { "ok" } else { "FAILED" },
+            if outcome.ok {
+                style.green("ok")
+            } else {
+                style.red("FAILED")
+            },
             outcome.elapsed.as_secs_f64()
         );
         if !outcome.ok {

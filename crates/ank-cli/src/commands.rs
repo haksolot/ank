@@ -832,12 +832,19 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         return Ok(0);
     }
 
+    let style = inv.style();
     for r in &hits[..shown] {
         let short = shorts
             .get(&r.id)
             .cloned()
             .unwrap_or_else(|| r.id.to_string());
-        let _ = writeln!(out, "{short}  [{}] {}", r.status, r.title);
+        let _ = writeln!(
+            out,
+            "{}  {} {}",
+            style.id(&short),
+            style.status(&format!("[{}]", r.status)),
+            r.title
+        );
     }
     if total > shown {
         // Announced, never silent. A search that quietly drops results teaches
@@ -936,17 +943,28 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
         let _ = writeln!(out, "nothing covers this path");
         return Ok(0);
     }
+    let style = inv.style();
     for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
         if group.is_empty() {
             continue;
         }
-        let _ = writeln!(out, "\n{label} ({})", group.len());
+        let _ = writeln!(
+            out,
+            "\n{}",
+            style.header(&format!("{label} ({})", group.len()))
+        );
         for r in group.iter() {
             let short = shorts
                 .get(&r.id)
                 .cloned()
                 .unwrap_or_else(|| r.id.to_string());
-            let _ = writeln!(out, "  {short}  [{}] {}", r.status, r.title);
+            let _ = writeln!(
+                out,
+                "  {}  {} {}",
+                style.id(&short),
+                style.status(&format!("[{}]", r.status)),
+                r.title
+            );
         }
     }
     Ok(0)
@@ -1118,7 +1136,7 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
         return Ok(0);
     }
 
-    let _ = writeln!(out, "{id}  {}", task.title);
+    let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), task.title);
     if entries.is_empty() {
         // Named rather than left blank: an empty answer and an answer about the
         // wrong task look identical otherwise.
@@ -1184,7 +1202,8 @@ fn log_write(
             // hour.
             let _ = writeln!(
                 out,
-                "warning: {id} was taken over while logging, the claim was not renewed"
+                "{} {id} was taken over while logging, the claim was not renewed",
+                inv.style().yellow("warning:")
             );
         }
     }

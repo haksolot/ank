@@ -30,6 +30,7 @@ use crate::git;
 use crate::index::{Index, Row};
 use crate::repo::Repo;
 use crate::store::Store;
+use crate::style::Style;
 use ank_core::{parse_log, Entity, EntityId, EntityKind, ScopeSet};
 use std::collections::HashMap;
 use std::io::Write;
@@ -639,16 +640,18 @@ fn end_of_loop(view: &View) -> String {
     }
 }
 
-fn constraint_block(c: &ConstraintLine) -> Vec<String> {
+fn constraint_block(c: &ConstraintLine, style: Style) -> Vec<String> {
     // Continuation lines align under the text, so a multi-line constraint
-    // reads as one rule rather than several.
+    // reads as one rule rather than several. The indent is measured on the
+    // unpainted identifier: an escape sequence has no width on screen, and
+    // counting it here would push every continuation line out by five columns.
     let indent = " ".repeat(2 + c.short.len() + 2);
     c.text
         .lines()
         .enumerate()
         .map(|(i, line)| {
             if i == 0 {
-                format!("  {}  {}", c.short, line.trim())
+                format!("  {}  {}", style.id(&c.short), line.trim())
             } else {
                 format!("{indent}{}", line.trim())
             }
@@ -656,14 +659,42 @@ fn constraint_block(c: &ConstraintLine) -> Vec<String> {
         .collect()
 }
 
+/// The cost of a block, in characters a reader actually sees.
+///
+/// Escape sequences are skipped rather than counted. The budget of §5 is about
+/// what fits in an agent's context and on a human's screen, and a styled header
+/// costs the reader exactly what the plain one did — charging it nine invisible
+/// characters would make a terminal truncate the log one entry earlier than a
+/// pipe, which is the same output differing by who is watching.
 fn chars(lines: &[String]) -> usize {
-    lines.iter().map(|l| l.chars().count() + 1).sum()
+    lines.iter().map(|l| visible_len(l) + 1).sum()
 }
 
-pub fn render(view: &View, budget: usize) -> String {
+/// Characters in `s`, ignoring SGR sequences (`ESC [ … m`).
+fn visible_len(s: &str) -> usize {
+    let mut n = 0usize;
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            // Consume up to and including the terminating `m`. An unterminated
+            // sequence swallows the rest, which cannot happen here: every
+            // sequence this binary writes comes from `style` and is closed.
+            for c in it.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            n += 1;
+        }
+    }
+    n
+}
+
+pub fn render(view: &View, budget: usize, style: Style) -> String {
     let mut out: Vec<String> = Vec::new();
     for w in &view.warnings {
-        out.push(format!("warning: {w}"));
+        out.push(format!("{} {w}", style.yellow("warning:")));
     }
 
     match &view.mode {
@@ -675,22 +706,22 @@ pub fn render(view: &View, budget: usize) -> String {
             ..
         } => {
             out.push(String::new());
-            out.push(format!("{short}  {title}"));
+            out.push(format!("{}  {title}", style.id(short)));
             if let Some(c) = criteria {
                 out.push(String::new());
-                out.push("DONE_CRITERIA".to_string());
+                out.push(style.header("DONE_CRITERIA"));
                 for line in c.lines() {
                     out.push(format!("  {}", line.trim_end()));
                 }
             }
             if !view.constraints.is_empty() {
                 out.push(String::new());
-                out.push(format!("CONSTRAINTS ({} active)", view.constraints.len()));
+                out.push(style.header(&format!("CONSTRAINTS ({} active)", view.constraints.len())));
                 // Never truncated here, budget or no budget: an agent that
                 // violates a rule it was never shown is the failure this whole
                 // design exists to prevent.
                 for c in &view.constraints {
-                    out.extend(constraint_block(c));
+                    out.extend(constraint_block(c, style));
                 }
             }
             if !log.is_empty() {
@@ -709,7 +740,7 @@ pub fn render(view: &View, budget: usize) -> String {
                 }
                 kept.reverse();
                 out.push(String::new());
-                out.push(format!("LOG ({} of {})", kept.len(), log.len()));
+                out.push(style.header(&format!("LOG ({} of {})", kept.len(), log.len())));
                 out.extend(kept);
             }
         }
@@ -737,6 +768,7 @@ pub fn render(view: &View, budget: usize) -> String {
                     cut_constraints,
                     &scope_arg,
                     view,
+                    style,
                 )) + chars(&out);
                 if size <= budget {
                     break;
@@ -765,6 +797,7 @@ pub fn render(view: &View, budget: usize) -> String {
                 cut_constraints,
                 &scope_arg,
                 view,
+                style,
             ));
         }
     }
@@ -784,13 +817,14 @@ fn orientation_lines(
     cut_constraints: usize,
     scope_arg: &str,
     view: &View,
+    style: Style,
 ) -> Vec<String> {
     let mut out = Vec::new();
     if !constraints.is_empty() || cut_constraints > 0 {
         out.push(String::new());
-        out.push(format!("CONSTRAINTS ({} active)", constraints.len()));
+        out.push(style.header(&format!("CONSTRAINTS ({} active)", constraints.len())));
         for c in constraints {
-            out.extend(constraint_block(c));
+            out.extend(constraint_block(c, style));
         }
         if cut_constraints > 0 {
             out.push(format!(
@@ -800,9 +834,9 @@ fn orientation_lines(
     }
     if !proposals.is_empty() || cut_proposals > 0 {
         out.push(String::new());
-        out.push(format!("PROPOSED ({}, non-binding)", proposals.len()));
+        out.push(style.header(&format!("PROPOSED ({}, non-binding)", proposals.len())));
         for p in proposals {
-            out.push(format!("  {}  {}", p.short, p.title));
+            out.push(format!("  {}  {}", style.id(&p.short), p.title));
         }
         if cut_proposals > 0 {
             out.push(format!("  +{cut_proposals} more"));
@@ -810,9 +844,14 @@ fn orientation_lines(
     }
     if !tasks.is_empty() {
         out.push(String::new());
-        out.push(format!("TASKS ({})", tasks.len()));
+        out.push(style.header(&format!("TASKS ({})", tasks.len())));
         for t in tasks {
-            out.push(format!("  {}  {} {}", t.short, marker(t), t.title));
+            out.push(format!(
+                "  {}  {} {}",
+                style.id(&t.short),
+                style.status(&marker(t)),
+                t.title
+            ));
         }
         if cut_tasks > 0 {
             out.push(format!(
@@ -822,11 +861,11 @@ fn orientation_lines(
     }
     out.push(String::new());
     match tasks.iter().find(|t| t.ready) {
-        Some(t) => out.push(format!("> ank claim {} to start", t.short)),
-        None if cut_tasks > 0 => out.push(format!(
+        Some(t) => out.push(style.next(&format!("> ank claim {} to start", t.short))),
+        None if cut_tasks > 0 => out.push(style.next(&format!(
             "> ank find --type task --scope {scope_arg} for the {cut_tasks} tasks not shown"
-        )),
-        None => out.push(format!("> {}", end_of_loop(view))),
+        ))),
+        None => out.push(style.next(&format!("> {}", end_of_loop(view)))),
     }
     out
 }
@@ -972,7 +1011,7 @@ pub fn run(
     if inv.json() {
         let _ = writeln!(out, "{}", render_json(&view));
     } else if !inv.quiet() {
-        let _ = write!(out, "{}", render(&view, cfg.context_budget));
+        let _ = write!(out, "{}", render(&view, cfg.context_budget, inv.style()));
     }
     // No ready task is a normal state, not an error (§5).
     Ok(0)
@@ -1218,7 +1257,7 @@ mod tests {
         // The narrow scope comes first, which is what survives truncation.
         assert_eq!(view.constraints[0].title, "No self-contained JWTs");
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(text.contains("CONSTRAINTS (2 active)"), "{text}");
         assert!(text.contains("PROPOSED (1, non-binding)"), "{text}");
         assert!(text.contains("TASKS (3)"), "{text}");
@@ -1252,11 +1291,62 @@ mod tests {
                 .ready
         );
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(
             text.contains(&format!("> ank claim {} to start", ready[0].short)),
             "{text}"
         );
+    }
+
+    /// Strip the SGR sequences back out of a styled render and what is left has
+    /// to be the unstyled render, exactly.
+    ///
+    /// This is the invariant the whole of §4's colour rule rests on, and it is
+    /// stronger than looking at the two outputs: it fails on a doubled paint, on
+    /// an escape landing inside a padded column, on a header styled in one mode
+    /// and not the other, and on the budget spending itself on invisible bytes
+    /// so that a terminal truncates the log one entry earlier than a pipe.
+    fn undo_sgr(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut it = s.chars();
+        while let Some(c) = it.next() {
+            if c == '\x1b' {
+                for c in it.by_ref() {
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn colour_changes_the_bytes_and_never_the_content() {
+        let t = seeded();
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.claim_as(&id, "codex@host-9");
+
+        // Both modes, and a budget tight enough that truncation is in play:
+        // that is where counting an escape sequence as content would show.
+        for (view, budget) in [
+            (t.view("claude-code@ank", None), 8000),
+            (t.view("claude-code@ank", None), 400),
+            (t.view("codex@host-9", None), 8000),
+            (t.view("codex@host-9", None), 300),
+        ] {
+            let plain = render(&view, budget, crate::style::PLAIN);
+            let painted = render(&view, budget, crate::style::COLOR);
+            assert_ne!(plain, painted, "nothing was painted at all");
+            assert!(painted.contains('\x1b'));
+            assert_eq!(
+                undo_sgr(&painted),
+                plain,
+                "colour moved the content at budget {budget}"
+            );
+        }
     }
 
     #[test]
@@ -1286,7 +1376,7 @@ mod tests {
         assert!(matches!(line.coordination, Coordination::Claimed { .. }));
         assert_eq!(view.in_progress, vec!["codex@host-9".to_string()]);
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(text.contains("[claimed:codex@host-9]"), "{text}");
     }
 
@@ -1312,7 +1402,7 @@ mod tests {
         // for, and the display is what avoids the round trip to `claim`.
         assert_eq!(line.status, "open");
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(
             text.contains(&format!("[finished:{} on main]", &done.commit[..7])),
             "{text}"
@@ -1348,7 +1438,7 @@ mod tests {
         assert_eq!(view.ready_count(), 0);
         assert_eq!(view.blocked, 1);
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(text.contains("no ready tasks in scope"), "{text}");
         assert!(text.contains("1 blocked"), "{text}");
         assert!(text.contains("in progress by codex@host-9"), "{text}");
@@ -1385,7 +1475,7 @@ mod tests {
         );
         assert_eq!(view.constraints.len(), 2, "the task's own scope");
 
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(text.contains("DONE_CRITERIA"), "{text}");
         assert!(text.contains("A verifiable criterion."), "{text}");
         assert!(text.contains("LOG (2 of 2)"), "{text}");
@@ -1420,7 +1510,7 @@ mod tests {
 
         let view = t.view("claude-code@ank", None);
         // A budget far below the constraint's own size.
-        let text = render(&view, 200);
+        let text = render(&view, 200, crate::style::PLAIN);
         assert!(text.contains("CONSTRAINTS (1 active)"), "{text}");
         assert!(
             text.contains("A very long binding rule. A very long binding rule."),
@@ -1463,7 +1553,7 @@ mod tests {
 
         let view = t.view("claude-code@ank", None);
         assert_eq!(view.tasks.len(), 12);
-        let text = render(&view, 400);
+        let text = render(&view, 400, crate::style::PLAIN);
 
         assert!(text.contains("more tasks, ank find --type task"), "{text}");
         // The narrow constraint outlives the broad one.
@@ -1513,7 +1603,7 @@ mod tests {
         assert_eq!(view.tasks.len(), 3);
         assert_eq!(view.constraints.len(), 2);
         assert_eq!(view.finished_elsewhere, 1);
-        let text = render(&view, 8000);
+        let text = render(&view, 8000, crate::style::PLAIN);
         assert!(
             text.contains("warning: default branch indeterminable"),
             "{text}"
