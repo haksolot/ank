@@ -2367,18 +2367,26 @@ fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge], style: crate
         "\n{}",
         style.header(&format!("{heading} ({})", edges.len()))
     );
-    for e in edges {
+    // One level deep by construction — these are the two directions of
+    // `blocked_by` for a single task, not a walk — so the alphabet reduces to
+    // its two connectors and no gutter is ever needed under them (§4).
+    for (i, e) in edges.iter().enumerate() {
+        let connector = if i + 1 == edges.len() {
+            crate::style::glyph::LAST
+        } else {
+            crate::style::glyph::BRANCH
+        };
         match (&e.status, &e.title) {
             (Some(status), Some(title)) => {
                 let _ = writeln!(
                     out,
-                    "  {}  {} {title}",
+                    "{connector}{}  {} {title}",
                     style.id(&e.short),
                     style.status(&format!("[{status}]"))
                 );
             }
             _ => {
-                let _ = writeln!(out, "  {}  (no such entity)", style.id(&e.short));
+                let _ = writeln!(out, "{connector}{}  (no such entity)", style.id(&e.short));
             }
         }
     }

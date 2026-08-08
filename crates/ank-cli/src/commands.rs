@@ -761,7 +761,13 @@ fn slugify(title: &str) -> String {
 /// the virtual table a rebuild rather than a migration when it is wanted. What
 /// the criterion is about is the cap, which a scan respects exactly as well as
 /// a ranked query would.
-pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
+pub fn find(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let query = inv
         .positionals
         .first()
@@ -843,6 +849,12 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     }
 
     let style = inv.style();
+    // The row the caller is holding, marked the way `git branch` marks the
+    // current branch (§4). A listing is where a held task is otherwise
+    // indistinguishable from any other claimed one — `[claimed:who]` says who,
+    // and the reader has to recognise their own identity to answer "is that
+    // mine".
+    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
     for r in &hits[..shown] {
         let short = shorts
             .get(&r.id)
@@ -850,7 +862,8 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
             .unwrap_or_else(|| r.id.to_string());
         let _ = writeln!(
             out,
-            "{}  {} {}",
+            "{}{}  {} {}",
+            marker_of(&held, &r.id),
             style.id(&short),
             style.status(&format!("[{}]", r.status)),
             r.title
@@ -890,7 +903,7 @@ pub fn find(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
 /// lie: "what covers this path" is a question whose partial answer is wrong
 /// rather than short, since the constraint left out is exactly the one nobody
 /// would then read.
-pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
     if inv.positionals.first().is_none() {
         return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
     }
@@ -954,6 +967,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
         return Ok(0);
     }
     let style = inv.style();
+    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
     for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
         if group.is_empty() {
             continue;
@@ -970,7 +984,8 @@ pub fn scope(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> 
                 .unwrap_or_else(|| r.id.to_string());
             let _ = writeln!(
                 out,
-                "  {}  {} {}",
+                "{}{}  {} {}",
+                marker_of(&held, &r.id),
                 style.id(&short),
                 style.status(&format!("[{}]", r.status)),
                 r.title
@@ -1027,6 +1042,19 @@ fn head_of(cwd: &Path, identity: &str) -> Result<(EntityId, String, ClaimRecord)
 /// The same lookup without the refusal, for the caller that reports rather than
 /// acts. `status` describes a repository that may well have no claim in it, and
 /// a reader must never fail because there is nothing to say.
+/// The two columns a listing spends on its left margin, spent on saying whether
+/// this row is the caller's own (§4).
+///
+/// Width-neutral by construction: `scope` already indented by two, and `find`
+/// gains the margin every other listing has. Neither becomes wider for having
+/// something to say.
+fn marker_of(held: &Option<EntityId>, id: &EntityId) -> &'static str {
+    match held {
+        Some(h) if h == id => crate::style::glyph::HELD,
+        _ => crate::style::glyph::UNHELD,
+    }
+}
+
 pub(crate) fn held_by(
     cwd: &Path,
     identity: &str,
@@ -1361,7 +1389,7 @@ mod tests {
             let cfg = self.cfg();
             match inv.command {
                 "new" => new(&inv, &repo, &cfg, who, &mut out)?,
-                "find" => find(&inv, &repo, &cfg, &mut out)?,
+                "find" => find(&inv, &repo, &cfg, who, &mut out)?,
                 "log" => log(&inv, &repo, &cfg, who, &mut out)?,
                 "release" => release(&inv, &repo, who, &mut out)?,
                 other => panic!("not one of these verbs: {other}"),
@@ -1887,7 +1915,13 @@ mod tests {
         .unwrap();
 
         let out = t.call(&["find", "task"], "a").unwrap();
-        let listed = out.lines().filter(|l| l.starts_with("TASK-")).count();
+        // Every row carries the two-column margin of §4, held or not, which is
+        // also what keeps the count honest: a row that lost its marker column
+        // would stop being counted here rather than pass unnoticed.
+        let listed = out
+            .lines()
+            .filter(|l| l.starts_with("  TASK-") || l.starts_with("* TASK-"))
+            .count();
         assert_eq!(listed, 5, "the cap follows context_budget:\n{out}");
         assert!(out.contains("+25 more"), "and says what it cut:\n{out}");
         assert!(

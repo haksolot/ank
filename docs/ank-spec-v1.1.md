@@ -499,11 +499,35 @@ The commit is embedded at build time through `rev-parse`, which §8's plumbing r
 
 **The skill revision, and what it lets a reader do offline.** The third value is `skill <rev>`, where `<rev>` is the short form of the same freeze hash that anchors a frozen `done_criteria` (§3), taken over the body of `skill/SKILL.md` — the same value that file declares under `metadata.revision`, computed at build time from the file rather than typed. An agent has both halves in hand and nothing else: the skill is loaded into its context, the binary is on its `PATH`. Comparing the two strings tells it, with no repository and no network, whether the instructions it is following predate the tool it is holding. That is the check TASK-1ea38a17d854 needed and did not have, and the case that motivated it was measured (TASK-b495234f192c): an installed `SKILL.md` two commits behind a tree that had just withdrawn the invitation to read `.ank/` by hand. The hash covers the body and not the frontmatter, so the revision the frontmatter carries does not change its own input. It is `unknown` on a build with no `skill/` to read, for the same reason and with the same honesty as the commit.
 
-### Color
+### Presentation
 
-Presentation and nothing else (ADR-0c8ab846d262). Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
+Presentation splits in two, and only one half depends on who is reading (ADR-0c8ab846d262). **Color is a property of the reader**: an escape sequence means nothing to a parser, so it is emitted only when a human is demonstrably at the other end. **Structure is a property of the corpus**: a tree is what the `blocked_by` edges *are*, and it is drawn in the bytes, identically for everyone. `--json` carries neither — it is the machine surface, and it is the one place where both would be wrong.
 
-The guarantee bought is negative, and it is the whole point. **Captured output is byte-for-byte what it was before color existed** — a pipe, a file, a `$(...)`, a CI log, all unchanged. `--json` is never colored even at a terminal: it is the one place both conditions can hold and styling still be wrong, so the rule is stated separately rather than left to follow.
+#### Structure
+
+The alphabet is bounded here, before any code uses it, for the reason the palette and the short-form table are: the grammar is the specification.
+
+| Element | Characters |
+|---|---|
+| a child with siblings after it | `├── ` |
+| the last child | `└── ` |
+| the gutter under an expanded node | `│   ` |
+| the gutter under a wrapped constraint | `│  ` |
+| the task the caller holds, in a listing | `* ` |
+
+`graph` and `show`'s `BLOCKED BY` / `UNBLOCKS` draw the relation; `context` gutters a constraint that wraps, so a multi-line rule reads as one rule; `find` and `scope` mark the row the caller is holding, the way `git branch` marks the current branch.
+
+**The prefix of a row is derived from its parent's connector, never from a depth.** A node under `├── ` continues as `│   ` because its parent still has siblings below; a node under `└── ` continues as four spaces because nothing follows. A depth counter cannot tell the two apart, and the difference is exactly what makes a diamond legible.
+
+**Two of these replace indentation instead of adding to it**, and that is load-bearing rather than tidy: the constraint gutter occupies the columns the alignment already spent, and the held marker takes the two leading spaces of a listing row. So the attention budget of §5 measures what it measured before, and truncation does not become a function of the drawing.
+
+Ank already writes non-ASCII to standard output — the em-dash separating a log entry's author from its message — so the alphabet introduces no new encoding question on any platform.
+
+#### Color
+
+Color is emitted when **stdout is a terminal and `NO_COLOR` is unset**, and under no other condition. There is no `--color` flag: the globals stay at three, and a flag able to force color into a pipe is a flag that eventually puts an escape sequence into an agent's context window. Detection is not a preference to be configured, it is an observation about who is reading.
+
+The guarantee bought is negative, and it is the whole point. **No escape sequence ever reaches captured output** — a pipe, a file, a `$(...)`, a CI log. `--json` is never colored even at a terminal: it is the one place both conditions can hold and styling still be wrong, so the rule is stated separately rather than left to follow.
 
 `NO_COLOR` set to any non-empty value disables it, which is what a human at a terminal types to get the raw bytes; `TERM=dumb` disables it too.
 

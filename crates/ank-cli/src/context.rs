@@ -645,7 +645,18 @@ fn constraint_block(c: &ConstraintLine, style: Style) -> Vec<String> {
     // reads as one rule rather than several. The indent is measured on the
     // unpainted identifier: an escape sequence has no width on screen, and
     // counting it here would push every continuation line out by five columns.
-    let indent = " ".repeat(2 + c.short.len() + 2);
+    let width = 2 + c.short.len() + 2;
+    // The gutter is *paid for* out of that width rather than added to it (§4):
+    // three columns of glyph, and the blanks before it are three fewer. A
+    // continuation line is therefore exactly as wide as it was before the
+    // gutter existed, which is what keeps `chars` — and with it the truncation
+    // of §5 — answering what it answered yesterday. A gutter that widened the
+    // line would make the budget a function of the drawing.
+    let gutter = format!(
+        "{}{}",
+        " ".repeat(width - crate::style::glyph::WRAP.chars().count()),
+        crate::style::glyph::WRAP
+    );
     c.text
         .lines()
         .enumerate()
@@ -653,7 +664,7 @@ fn constraint_block(c: &ConstraintLine, style: Style) -> Vec<String> {
             if i == 0 {
                 format!("  {}  {}", style.id(&c.short), line.trim())
             } else {
-                format!("{indent}{}", line.trim())
+                format!("{gutter}{}", line.trim())
             }
         })
         .collect()
@@ -1020,6 +1031,52 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The gutter is paid for out of the indentation, never added to it (§4).
+    ///
+    /// This is the assertion the whole width-neutrality argument rests on, and
+    /// it is made mechanically rather than by reading the format string: every
+    /// continuation line must be exactly as wide as the blank indent it
+    /// replaced, `2 + short.len() + 2`. If it were not, `chars` would return a
+    /// larger number for the same constraint and §5 would truncate the log one
+    /// entry earlier than it did — the same command answering differently
+    /// because of a drawing.
+    #[test]
+    fn a_gutter_costs_the_columns_the_indent_already_spent() {
+        for short in ["ADR-962c", "ADR-0c8ab846d262", "A"] {
+            let c = ConstraintLine {
+                id: EntityId::parse("ADR-0c8ab846d262").unwrap(),
+                short: short.to_string(),
+                title: "a rule".into(),
+                text: "First line of the rule.
+Second line.
+
+After a blank one."
+                    .into(),
+                specificity: 0,
+                overlap: 0,
+            };
+            let expected = 2 + short.chars().count() + 2;
+            for style in [crate::style::PLAIN, crate::style::COLOR] {
+                let block = constraint_block(&c, style);
+                assert_eq!(block.len(), 4, "{short}: {block:?}");
+                for line in block.iter().skip(1) {
+                    let indent =
+                        line.chars().count() - line.trim_start_matches([' ', '│']).chars().count();
+                    assert_eq!(
+                        indent, expected,
+                        "{short}: {line:?} is not the width the blank indent was"
+                    );
+                }
+                // And the drawing is there, which a test on width alone would
+                // not notice if the gutter silently became blanks again.
+                assert!(
+                    block[1].contains('│'),
+                    "{short}: the continuation lost its gutter: {block:?}"
+                );
+            }
+        }
+    }
     use ank_core::{serialize_entity, Adr, AdrStatus, CriteriaBy, Task, TaskStatus};
     use std::path::PathBuf;
     use std::process::Command;

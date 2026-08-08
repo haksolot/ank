@@ -94,7 +94,8 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             &row_of,
             &shorts,
             &outside_count,
-            0,
+            "",
+            None,
             &mut drawn,
             &mut Vec::new(),
             out,
@@ -128,6 +129,14 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 /// terminate rather than recurse. `drawn` is every node already expanded
 /// somewhere: a diamond is real in a DAG, so the node appears again where it
 /// belongs, marked, and is not expanded twice.
+///
+/// **The prefix is derived from the parent's connector, never from a depth**
+/// (§4). `last` says whether this node is the final child of its parent —
+/// `None` for a root, which is drawn flush left with no connector at all. A
+/// node under `├──` continues as `│  ` because its parent still has siblings
+/// below it; a node under `└──` continues as blanks because nothing does. A
+/// depth counter has no way to tell those apart, and on a corpus with any
+/// branching at all that difference is most of what makes the drawing readable.
 #[allow(clippy::too_many_arguments)]
 fn draw<'a>(
     id: &'a EntityId,
@@ -135,17 +144,23 @@ fn draw<'a>(
     row_of: &HashMap<&'a EntityId, &'a Row>,
     shorts: &HashMap<EntityId, String>,
     outside: &HashMap<&'a EntityId, usize>,
-    depth: usize,
+    prefix: &str,
+    last: Option<bool>,
     drawn: &mut HashSet<&'a EntityId>,
     path: &mut Vec<&'a EntityId>,
     out: &mut dyn Write,
     style: crate::style::Style,
 ) {
-    let indent = "  ".repeat(depth);
+    use crate::style::glyph;
+    let connector = match last {
+        None => "",
+        Some(true) => glyph::LAST,
+        Some(false) => glyph::BRANCH,
+    };
     if path.contains(&id) {
         let _ = writeln!(
             out,
-            "{indent}{} (cycle)",
+            "{prefix}{connector}{} (cycle)",
             line(id, row_of, shorts, outside, style)
         );
         return;
@@ -154,7 +169,7 @@ fn draw<'a>(
     let mark = if repeat { " (above)" } else { "" };
     let _ = writeln!(
         out,
-        "{indent}{}{mark}",
+        "{prefix}{connector}{}{mark}",
         line(id, row_of, shorts, outside, style)
     );
     if repeat {
@@ -162,14 +177,24 @@ fn draw<'a>(
     }
     drawn.insert(id);
     path.push(id);
-    for child in blocks.get(id).into_iter().flatten() {
+    let children: Vec<&&EntityId> = blocks.get(id).into_iter().flatten().collect();
+    let child_prefix = format!(
+        "{prefix}{}",
+        match last {
+            None => "",
+            Some(true) => glyph::CLEAR,
+            Some(false) => glyph::GUTTER,
+        }
+    );
+    for (i, child) in children.iter().enumerate() {
         draw(
             child,
             blocks,
             row_of,
             shorts,
             outside,
-            depth + 1,
+            &child_prefix,
+            Some(i + 1 == children.len()),
             drawn,
             path,
             out,

@@ -20,6 +20,33 @@
 
 use std::io::IsTerminal;
 
+/// The structure alphabet of §4 (ADR-0c8ab846d262).
+///
+/// Text, not escapes, and therefore not gated on [`Style`] at all: a tree is
+/// what the `blocked_by` edges are, and drawing it one way for a human and
+/// another for an agent would give one corpus two shapes. These live beside the
+/// palette because they answer the same question — what this binary is allowed
+/// to draw — and a reader auditing the output reads one file.
+pub mod glyph {
+    /// A child with siblings after it.
+    pub const BRANCH: &str = "├── ";
+    /// The last child.
+    pub const LAST: &str = "└── ";
+    /// What a [`BRANCH`] continues as, one level down.
+    pub const GUTTER: &str = "│   ";
+    /// What a [`LAST`] continues as: nothing follows, so nothing is drawn.
+    pub const CLEAR: &str = "    ";
+    /// The continuation of a constraint that wrapped. Three columns, and the
+    /// caller pays for them out of the indentation it already computed — §5's
+    /// budget must not learn that a gutter exists.
+    pub const WRAP: &str = "│  ";
+    /// The row the caller is holding, in the two columns a listing already
+    /// spends on its left margin.
+    pub const HELD: &str = "* ";
+    /// The same two columns on every other row.
+    pub const UNHELD: &str = "  ";
+}
+
 /// Whether output may carry escape sequences, and the palette if it may.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Style {

@@ -629,17 +629,45 @@ fn graph_draws_the_dag_and_names_the_perimeter() {
         "the perimeter is named: {said}"
     );
 
-    // The shape: each level one indent deeper than what blocks it.
+    // The shape: each level one connector deeper than what blocks it.
+    //
+    // Measured over the drawing alphabet of §4 rather than over whitespace. The
+    // claim is unchanged — a01 flush left, a02 under it, a03 under that — but
+    // `trim_start` answered it by counting spaces, and a row now begins with a
+    // connector. It would have read zero for every indented line and gone on
+    // passing for the wrong reason.
     let depth = |needle: &str| -> usize {
         let line = said
             .lines()
             .find(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} missing from:\n{said}"));
-        line.len() - line.trim_start().len()
+        let drawing = line
+            .chars()
+            .take_while(|c| matches!(c, ' ' | '│' | '├' | '└' | '─'))
+            .count();
+        // Reported in the old unit so the numbers below still say what they
+        // said: four columns per level, two before.
+        drawing / 2
     };
     assert_eq!(depth("000000000a01"), 0, "the root is flush left: {said}");
     assert_eq!(depth("000000000a02"), 2, "{said}");
     assert_eq!(depth("000000000a03"), 4, "{said}");
+
+    // The connectors themselves, not only their width: a level drawn with the
+    // right number of blanks and no glyph would satisfy every count above.
+    let row = |needle: &str| -> &str {
+        said.lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing from:\n{said}"))
+    };
+    assert!(
+        row("000000000a02").starts_with("└── "),
+        "the only child of the root is drawn as the last one: {said}"
+    );
+    assert!(
+        row("000000000a03").starts_with("    └── "),
+        "and its child continues under a cleared gutter: {said}"
+    );
 
     // A blocker outside the perimeter is never silently dropped: drawing this
     // one flush left with no mark would say nothing is stopping it.
@@ -3661,6 +3689,77 @@ fn no_verb_writes_an_escape_sequence_to_a_pipe() {
                 stderr(&out)
             );
         }
+    }
+}
+
+/// Structure ships in the bytes, and `--json` carries none of it.
+///
+/// The other half of ADR-0c8ab846d262, and the half a test can only make in a
+/// pipe: this suite spawns the binary, so its stdout *is* the pipe an agent
+/// reads. Colour must be absent from it and the connectors must be present —
+/// the two assertions point in opposite directions on purpose, because a
+/// gate that confused the two layers would satisfy either one alone.
+#[test]
+fn a_pipe_receives_the_drawing_and_never_an_escape_sequence() {
+    let r = color_fixture();
+
+    let drawn = r.ank("claude-code@ank", &["graph"]);
+    let said = stdout(&drawn);
+    assert!(
+        !drawn.stdout.contains(&0x1b),
+        "graph coloured a pipe: {said:?}"
+    );
+    assert!(
+        said.contains("└── ") || said.contains("├── "),
+        "the connectors are text, so a pipe gets them: {said}"
+    );
+
+    // `show` draws the same relation from one task's point of view.
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ID]));
+    assert!(
+        shown.contains("UNBLOCKS (1)") && shown.contains("└── "),
+        "show draws its edges: {shown}"
+    );
+
+    // The machine surface carries neither layer. Asserted over the whole
+    // alphabet rather than over one connector: a new glyph reaching `--json`
+    // through some other verb is exactly what this is here to catch.
+    for verb in [
+        vec!["graph", "--json"],
+        vec!["show", ID, "--json"],
+        vec!["find", "Example", "--json"],
+        vec!["context", "--json"],
+    ] {
+        let out = r.ank("claude-code@ank", &verb);
+        let j = stdout(&out);
+        assert!(!out.stdout.contains(&0x1b), "{verb:?} coloured json: {j:?}");
+        for glyph in ['│', '├', '└', '─'] {
+            assert!(!j.contains(glyph), "{verb:?} drew {glyph:?} into json: {j}");
+        }
+    }
+}
+
+/// The held row is marked, and the margin it is drawn in was already there.
+#[test]
+fn a_listing_marks_the_row_the_caller_holds() {
+    let r = color_fixture();
+
+    // `color_fixture` leaves the claim with claude-code@ank.
+    let mine = stdout(&r.ank("claude-code@ank", &["find", "Example"]));
+    let theirs = stdout(&r.ank("someone-else@ank", &["find", "Example"]));
+
+    assert!(
+        mine.lines().any(|l| l.starts_with("* TASK-")),
+        "the holder sees their own row marked: {mine}"
+    );
+    assert!(
+        theirs.lines().all(|l| !l.starts_with("* ")),
+        "and nobody else does: {theirs}"
+    );
+    // Same width for both readers: the marker is spent out of the margin, not
+    // added to it, so a listing does not reflow depending on who is asking.
+    for (a, b) in mine.lines().zip(theirs.lines()) {
+        assert_eq!(a.len(), b.len(), "{a:?} and {b:?} are not the same width");
     }
 }
 
