@@ -155,6 +155,20 @@ jobs:
           name: ${{ matrix.target }}
           path: dist
 
+      # The node version is pinned above; the npm inside it is not, and that is
+      # the one that moved. npm 11 refuses to publish a prerelease, or a version
+      # below the one already on the registry, without an explicit --tag, where
+      # npm 10 applied "latest" silently -- so this job passed on the runner's
+      # bundled npm while the same command failed on a maintainer's machine.
+      # Taking the newest npm in both jobs makes the rehearsal use the npm the
+      # publish will use, and makes the next tightening of these rules turn a
+      # dispatch red instead of a tag.
+      - name: npm
+        shell: bash
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       # Assembling and testing on the same OS is the point: an install that
       # works on Linux says nothing about the .cmd shim npm writes on Windows,
       # and a wrapper is exactly the kind of code that is right on one platform
@@ -191,11 +205,16 @@ jobs:
       # was wrong -- a bare `npm/ank` is a GitHub shorthand to npm, not a
       # folder. Tested here because a publish is not something you get to
       # retry: the tag is spent whether or not the registry accepted it.
+      #
+      # `--tag latest` is not a flag this rehearsal carries alone: publish-npm
+      # passes the same one. It names the tag npm 10 was applying implicitly, so
+      # it changes nothing about what a release does and everything about
+      # whether the command still runs on npm 11, which refuses to guess.
       - name: the publish argument is a path
         shell: bash
         run: |
-          npm publish --dry-run --access public "./npm/${{ matrix.package }}"
-          npm publish --dry-run --access public "./npm/ank"
+          npm publish --dry-run --access public --tag latest "./npm/${{ matrix.package }}"
+          npm publish --dry-run --access public --tag latest "./npm/ank"
 
       - name: install from the tarballs
         shell: bash
@@ -255,6 +274,15 @@ jobs:
           path: dist
           merge-multiple: true
 
+      # The same npm the smoke job rehearsed on. A rehearsal against one npm and
+      # a publish against another rehearses nothing, and the publish is the step
+      # that cannot be taken back.
+      - name: npm
+        shell: bash
+        run: |
+          npm install -g npm@latest
+          npm --version
+
       - name: assemble
         shell: bash
         run: bash .github/scripts/npm-assemble.sh "${GITHUB_REF_NAME#v}"
@@ -267,12 +295,18 @@ jobs:
       # before it is a directory, so `npm/ank` sent v0.1.2 to
       # ssh://git@github.com/npm/ank.git and the job died at the first package.
       # The leading `./` is what makes it a path.
+      #
+      # `--tag latest` names what npm 10 was applying without being asked, so it
+      # changes nothing a release has ever done and lets the smoke job rehearse
+      # the identical command. It does mean a prerelease tag would publish as
+      # latest rather than failing -- which is already what happens today, and is
+      # recorded as its own question rather than decided here.
       - name: publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64 ank; do
-            npm publish --access public "./npm/$p"
+            npm publish --access public --tag latest "./npm/$p"
           done
 
   publish:

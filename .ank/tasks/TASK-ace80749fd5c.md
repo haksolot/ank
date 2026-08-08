@@ -5,7 +5,7 @@ slug: the-release-dry-run-passes-on-an-npm-that-would
 title: The release dry-run passes on an npm that would refuse it
 created: 2026-08-08T16:55:44Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - .github/workflows/release.yml
   - .github/scripts/npm-assemble.sh
@@ -19,7 +19,7 @@ done_criteria: |
   publish-npm does not also carry. cargo test and ank check stay green.
 criteria_by: creator
 schema: 2
-version: 1
+version: 2
 ---
 
 Found while adding the pi skill to the wrapper (TASK-20b23cd4fb16), by running
