@@ -1,0 +1,15 @@
+{
+  "name": "ank",
+  "description": "The ank skill, served from the repository that carries the tool.",
+  "owner": {
+    "name": "haksolot",
+    "url": "https://github.com/haksolot"
+  },
+  "plugins": [
+    {
+      "name": "ank",
+      "source": "./",
+      "description": "Read a repository's tasks and binding constraints, claim work, and finish it with proof."
+    }
+  ]
+}
