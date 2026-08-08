@@ -30,7 +30,7 @@ done_criteria: |
   including the piped case.
 criteria_by: creator
 schema: 2
-version: 4
+version: 7
 ---
 
 Execution of ADR-962c25797569, presentation half. The guarantee that matters
@@ -44,3 +44,5 @@ engine.
 ## Log
 - 2026-08-05T04:06:58Z seanl@sean-laptop — amended: -blocked_by ADR-962c25797569
 - 2026-08-08T18:11:16Z seanl@sean-laptop — amended: +scope crates/ank-cli/src/style.rs, +scope crates/ank-cli/src/main.rs, +scope crates/ank-cli/src/commands.rs, +scope crates/ank-cli/src/human.rs, +scope crates/ank-cli/src/done.rs, +scope crates/ank-cli/src/claim.rs, +scope crates/ank-cli/src/graph.rs, +scope crates/ank-cli/src/edit.rs, +scope crates/ank-cli/src/init.rs, +scope crates/ank-cli/tests/cli.rs
+- 2026-08-08T18:14:04Z seanl@sean-laptop — released: Reclaiming under the agent's own ANK_AGENT: taken while seanl@sean-laptop already held TASK-1613794deccf, and two live claims on one identity make HEAD ambiguous between verbs.
+- 2026-08-08T18:15:41Z claude-code@ank — Correction to the release note above: HEAD was never ambiguous between verbs. A second session finished TASK-1613794deccf at 18:12:14Z, between this session's ank status and its ank done, so done saw one remaining claim and correctly asked for a proof. The release was taken on a misread and cost nothing but this entry. The real lesson stands and is the one the claim warning names: an unset ANK_AGENT makes two sessions on one machine a single agent, and one-claim-per-agent then arbitrates between them.
