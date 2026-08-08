@@ -5,7 +5,7 @@ slug: the-blocked-by-relation-is-drawn-not-indented
 title: The blocked_by relation is drawn, not indented
 created: 2026-08-08T22:50:05Z
 author: claude-code@ank
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/graph.rs
   - crates/ank-cli/src/context.rs
@@ -23,8 +23,13 @@ done_criteria: |
   
   The attention budget of section 5 does not move. context's gutter and the held-task marker replace indentation that is already there instead of adding to it, so visible_len and the truncation return today's answers -- proven by a test that renders a constraint long enough to wrap and compares the visible width of every line against the width before the gutter existed.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31283724227"
+    criteria: 9f91a207dee5
 schema: 2
-version: 3
+version: 4
 ---
 ## Log
 - 2026-08-08T23:19:22Z claude-code@ank — The alphabet lives in style::glyph beside the palette, because a reader auditing what this binary draws should read one file. Two findings worth keeping. The prefix has to be derived from the parent's connector, never from a depth: a node under a branch continues as a gutter and one under a last-child continues as blanks, and a usize cannot tell those apart -- on this corpus that is most of what makes the diamond under TASK-c3d4 readable. And the width neutrality of the constraint gutter is arithmetic, not approximate: three columns of glyph, three fewer blanks before it, verified by a test that fails when the gutter is added instead of substituted (falsified on purpose).
+- 2026-08-08T23:23:10Z claude-code@ank — done, proof test:31283724227
