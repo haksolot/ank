@@ -5,7 +5,7 @@ slug: ank-help-verb-is-silent-on-what-the-verb-refuses
 title: ank help <verb> is silent on what the verb refuses
 created: 2026-08-07T16:59:47Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/human.rs
@@ -14,8 +14,12 @@ blocked_by: []
 done_criteria: |
   docs/ank-spec-v1.1.md section 9 is rewritten first: ank help <verb> carries what the verb does and the state conditions on which it refuses, with the exit code, alongside the usage, flags and globals it already carries. The top-level flat listing stays one flat listing, unchanged. ank help amend no longer presents --criteria as an available flag. ank help done names that a proof is required on state and enumerates the four accepted proof types. ank help edit names that EDITOR is a command line run through sh, not a program name. A test in crates/ank-cli/tests/cli.rs walks every verb through the binary and fails if any flag its help lists is refused unconditionally.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31298043345"
+    criteria: 67e6cb08173b
 schema: 2
-version: 3
+version: 4
 ---
 
 Not an implementation drift: section 9 specifies ank help <verb> as usage,
@@ -71,3 +75,4 @@ The test needs valid values per flag, and finding that out was the useful part. 
 One exception survives in the invariant and it is the flag doing its job: when the baseline is a 7, a missing prerequisite, a flag may change the code, because supplying the prerequisite is exactly what close --reason and release --reason are for. Measured that those two are the only verbs where it happens rather than assuming it.
 
 Falsified by re-listing --criteria on amend, which is the defect as it shipped: the test fails naming the verb, the flag, and both codes.
+- 2026-08-09T06:06:28Z seanl@sean-laptop — done, proof test:31298043345
