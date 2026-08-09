@@ -319,7 +319,7 @@ fn run_verifiers(
                 9,
                 format!("{id} declares verifier '{name}', absent from config.yml"),
             )
-            .with_hint("add it under verifiers: in .ank/config.yml"));
+            .with_hint(format!("ank config verifiers.{name}.run \"<command>\"")));
         };
         let outcome = verify::run(&repo.root, name, def)?;
         let _ = writeln!(

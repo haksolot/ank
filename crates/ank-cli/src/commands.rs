@@ -376,7 +376,7 @@ const TASK_GUIDANCE: &str = "\
 # done_criteria  what makes this verifiably done, in one testable sentence.
 #                Leave it out and whoever claims the task sets it instead.
 # blocked_by     ids that must be done first, as [ID, ID].
-# verify         verifiers declared in .ank/config.yml, as [name, name].
+# verify         verifiers declared by ank config, as [name, name].
 ";
 
 const ADR_GUIDANCE: &str = "\
@@ -590,22 +590,32 @@ fn resolve_blockers(store: &Store, ids: &[EntityId], hint: &str) -> Result<()> {
     Ok(())
 }
 
+/// The next command for a `--verify` naming a verifier that is not declared.
+///
+/// It names the command that declares one rather than the file to open
+/// (ADR-e64dfaafd578): a hint telling an agent to edit `.ank/config.yml` is the
+/// tool instructing it to do what ADR-01b6dd05f0db forbids. The names already
+/// declared come first when there are any, because a typo is the likelier of
+/// the two mistakes and the list settles it in one line.
+fn undeclared_verifier(name: &str, cfg: &Config) -> CliError {
+    let mut known: Vec<&str> = cfg.verifiers.keys().map(|s| s.as_str()).collect();
+    known.sort_unstable();
+    let declare = format!("ank config verifiers.{name}.run \"<command>\"");
+    let hint = if known.is_empty() {
+        declare
+    } else {
+        format!("declared: {}\n  -> or {declare}", known.join(" "))
+    };
+    CliError::new(7, format!("no verifier '{name}' in .ank/config.yml")).with_hint(hint)
+}
+
 /// The `verify` names, checked against `config.yml` the way `verifiers_of`
 /// checks the flag.
 fn check_verifiers(names: &[String], cfg: &Config) -> Result<()> {
     for name in names {
-        if cfg.verifier(name.trim()).is_none() {
-            let mut known: Vec<&str> = cfg.verifiers.keys().map(|s| s.as_str()).collect();
-            known.sort_unstable();
-            let hint = if known.is_empty() {
-                "declare it under verifiers: in .ank/config.yml".to_string()
-            } else {
-                format!("declared in .ank/config.yml: {}", known.join(" "))
-            };
-            return Err(
-                CliError::new(7, format!("no verifier '{name}' in .ank/config.yml"))
-                    .with_hint(hint),
-            );
+        let name = name.trim();
+        if cfg.verifier(name).is_none() {
+            return Err(undeclared_verifier(name, cfg));
         }
     }
     Ok(())
@@ -670,17 +680,7 @@ fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
     for raw in inv.values("--verify") {
         let name = raw.trim();
         if cfg.verifier(name).is_none() {
-            let mut known: Vec<&str> = cfg.verifiers.keys().map(|s| s.as_str()).collect();
-            known.sort_unstable();
-            let hint = if known.is_empty() {
-                "declare it under verifiers: in .ank/config.yml".to_string()
-            } else {
-                format!("declared in .ank/config.yml: {}", known.join(" "))
-            };
-            return Err(
-                CliError::new(7, format!("no verifier '{name}' in .ank/config.yml"))
-                    .with_hint(hint),
-            );
+            return Err(undeclared_verifier(name, cfg));
         }
         if !out.iter().any(|v| v == name) {
             out.push(name.to_string());
@@ -2126,5 +2126,55 @@ mod tests {
         );
         assert!(slugify(&"long title ".repeat(20)).len() <= 48);
         assert!(slugify("!!!").is_empty(), "nothing readable is nothing");
+    }
+
+    /// Both routes into a `verify` name reach one refusal, and it names a
+    /// command (ADR-e64dfaafd578).
+    ///
+    /// The flag form is exercised through the binary in `tests/cli.rs`. This
+    /// one covers the other route -- a `verify:` filled into the `$EDITOR`
+    /// template, which `check_verifiers` guards -- and the shared
+    /// `undeclared_verifier` is what makes the two answer alike rather than a
+    /// second copy of the message that would drift.
+    #[test]
+    fn an_undeclared_verifier_names_the_command_that_declares_one() {
+        let empty =
+            crate::config::parse(&crate::config::default_yaml(), Path::new("config.yml")).unwrap();
+        let err = check_verifiers(&["nope".to_string()], &empty).unwrap_err();
+        assert_eq!(err.code, 7);
+        assert_eq!(
+            err.hint.as_deref(),
+            Some("ank config verifiers.nope.run \"<command>\""),
+            "a hint that names the file is the tool telling an agent to do \
+             what ADR-01b6dd05f0db forbids"
+        );
+
+        // With verifiers already declared, the names come first -- a typo is
+        // the likelier of the two mistakes -- and the command still follows.
+        let declared = crate::config::parse(
+            "schema: 1\nverifiers:\n  cargo-test:\n    run: cargo test\n",
+            Path::new("config.yml"),
+        )
+        .unwrap();
+        let err = check_verifiers(&["nope".to_string()], &declared).unwrap_err();
+        let hint = err.hint.unwrap();
+        assert!(hint.contains("declared: cargo-test"), "{hint}");
+        assert!(hint.contains("ank config verifiers.nope.run"), "{hint}");
+        assert!(!hint.contains(".ank/config.yml"), "{hint}");
+
+        // And `verifiers_of`, the flag route, is the same refusal.
+        let argv: Vec<String> = [
+            "new", "task", "--title", "T", "--scope", "s/**", "--verify", "nope",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let inv = crate::cli::parse(&argv).unwrap();
+        assert_eq!(
+            verifiers_of(&inv, &empty).unwrap_err().hint,
+            check_verifiers(&["nope".to_string()], &empty)
+                .unwrap_err()
+                .hint
+        );
     }
 }

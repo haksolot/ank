@@ -124,7 +124,7 @@ pub fn run(
             let _ = writeln!(
                 out,
                 "{} no default branch, so completion refs are neither pruned nor \
-                 judged (add \"default_branch: <name>\" to .ank/config.yml)",
+                 judged (ank config default_branch <name>)",
                 inv.style().yellow("warning:")
             );
         }
