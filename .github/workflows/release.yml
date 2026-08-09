@@ -206,15 +206,52 @@ jobs:
       # folder. Tested here because a publish is not something you get to
       # retry: the tag is spent whether or not the registry accepted it.
       #
-      # `--tag latest` is not a flag this rehearsal carries alone: publish-npm
-      # passes the same one. It names the tag npm 10 was applying implicitly, so
-      # it changes nothing about what a release does and everything about
-      # whether the command still runs on npm 11, which refuses to guess.
+      # The derivation of §9, exercised on both of its branches before anything
+      # publishes. This is the half a dry-run cannot reach: the smoke job
+      # assembles one version, so the publish below rehearses one branch, and
+      # the branch it does not take is the one that would put a release
+      # candidate on every machine running a bare install.
+      - name: a prerelease resolves to next and a release to latest
+        shell: bash
+        run: |
+          set -e
+          check() {
+            got=$(bash .github/scripts/npm-dist-tag.sh "$1")
+            echo "$1 -> $got"
+            test "$got" = "$2"
+          }
+          check 0.2.0 latest
+          check 1.0.0 latest
+          check 0.2.0-rc1 next
+          check 1.0.0-beta.1 next
+          check 0.0.0-smoke next
+          # Build metadata is not a prerelease identifier, and a hyphen inside
+          # it says nothing about the version in front of it.
+          check 1.2.3+build latest
+          check 1.2.3+build-7 latest
+
+      # The argument publish-npm passes, run on every dispatch and every tag,
+      # with the one flag that stops short of the registry. This is the step
+      # that was missing when v0.1.2 shipped no packages: the smoke job proved
+      # the tarballs install, but it reached them through globs that expand to
+      # real files, and `npm pack` runs from inside the directory. Nothing
+      # anywhere gave npm the path itself, which is precisely the argument that
+      # was wrong -- a bare `npm/ank` is a GitHub shorthand to npm, not a
+      # folder. Tested here because a publish is not something you get to
+      # retry: the tag is spent whether or not the registry accepted it.
+      #
+      # `--tag` is derived, not written: publish-npm computes it from the same
+      # script on the same input shape, so the two cannot drift into passing
+      # different flags. npm 11 refuses to guess a dist-tag, which is what made
+      # the implicit `latest` of npm 10 visible enough to be worth deciding.
       - name: the publish argument is a path
         shell: bash
         run: |
-          npm publish --dry-run --access public --tag latest "./npm/${{ matrix.package }}"
-          npm publish --dry-run --access public --tag latest "./npm/ank"
+          set -e
+          tag=$(bash .github/scripts/npm-dist-tag.sh "0.0.0-smoke")
+          echo "dist-tag: $tag"
+          npm publish --dry-run --access public --tag "$tag" "./npm/${{ matrix.package }}"
+          npm publish --dry-run --access public --tag "$tag" "./npm/ank"
 
       - name: install from the tarballs
         shell: bash
@@ -296,17 +333,22 @@ jobs:
       # ssh://git@github.com/npm/ank.git and the job died at the first package.
       # The leading `./` is what makes it a path.
       #
-      # `--tag latest` names what npm 10 was applying without being asked, so it
-      # changes nothing a release has ever done and lets the smoke job rehearse
-      # the identical command. It does mean a prerelease tag would publish as
-      # latest rather than failing -- which is already what happens today, and is
-      # recorded as its own question rather than decided here.
+      # `--tag` is derived from the version and from nothing else (§9): `latest`
+      # for a release, `next` for a prerelease. So `v0.2.0-rc1` is installable
+      # by whoever asks for it by name and never becomes what a bare
+      # `npm install @haksolot/ank` resolves to. The smoke job reads the same
+      # script, which is what keeps the rehearsal rehearsing: a flag chosen here
+      # and not there would be a publish nobody had tried.
       - name: publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          set -e
+          version="${GITHUB_REF_NAME#v}"
+          tag=$(bash .github/scripts/npm-dist-tag.sh "$version")
+          echo "publishing $version under $tag"
           for p in ank-linux-x64-musl ank-darwin-arm64 ank-win32-x64 ank; do
-            npm publish --access public --tag latest "./npm/$p"
+            npm publish --access public --tag "$tag" "./npm/$p"
           done
 
   publish:
@@ -325,6 +367,11 @@ jobs:
       contents: write
 
     steps:
+      # Checked out for one file: the dist-tag derivation of §9, which decides
+      # whether this release is a prerelease. Reading it is what stops a second
+      # copy of the rule existing here -- two channels reading one tag
+      # differently is how a reader ends up trusting whichever they opened.
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -338,10 +385,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -e
+          # The same version read the same way npm reads it, so the release page
+          # and the registry cannot disagree about what this tag is.
+          version="${GITHUB_REF_NAME#v}"
+          prerelease=""
+          if [ "$(bash .github/scripts/npm-dist-tag.sh "$version")" = "next" ]; then
+            prerelease="--prerelease"
+          fi
+          echo "publishing $GITHUB_REF_NAME ${prerelease:---release}"
           # Named globs, not dist/*: the artefacts now also carry the loose
           # binary the npm packages are built from, in a directory, and
           # `gh release create` takes files.
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --generate-notes \
+            $prerelease \
             dist/*.tar.gz dist/*.zip dist/*.sha256
