@@ -77,10 +77,12 @@ fetch non-standard refs on their own.
 Both git files are appended to, never replaced — an existing `.gitignore`
 keeps everything already in it.
 
-Two edits to make now, before the first real command.
+One edit to make now, before the first real command.
 
-**Name your default branch.** `.ank/config.yml` is written through the CLI
-rather than by hand:
+**Name your default branch.** It is the one key `init` leaves unset on purpose:
+it runs where the reference branch is not known yet, and writing `main` there
+would be exactly the guess the tool refuses everywhere else. `.ank/config.yml`
+is written through the CLI rather than by hand:
 
     $ ank config default_branch main
     default_branch (unset) -> main
@@ -92,12 +94,6 @@ remote has none. It refuses rather than guessing:
     error[9]: default branch indeterminable (default_branch absent from .ank/config.yml, refs/remotes/origin/HEAD absent)
       -> git remote set-head origin -a
       -> or ank config default_branch <name>
-
-**Ignore the index.** `.ank/index.db` is a derived SQLite cache, rebuildable
-from the files and safe to delete at any time. It does not belong in git, and
-`init` does not yet write the rule for you:
-
-    echo '.ank/index.db' >> .gitignore
 
 ## The two kinds of file
 
