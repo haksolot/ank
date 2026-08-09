@@ -2,12 +2,12 @@
 //!
 //! `skill/SKILL.md` is not documentation: it is loaded into an agent's context
 //! permanently, on every session, in every repository that installs it. That is
-//! what makes its content the thing actually frozen (ADR-c656cbcc33a9) -- the
-//! dispatch table refuses nobody, and the loop exists because this file teaches
-//! it and teaches nothing else. Three properties are therefore worth a test
-//! rather than a habit: that it carries the whole loop, that it stays small
-//! enough to be worth loading, and that a copy in the wild says which revision
-//! it is.
+//! what makes its content the thing actually frozen (ADR-e17e1bbd93ff) -- the
+//! dispatch table refuses nobody, and the two modes exist because this file
+//! teaches them and teaches nothing else. Four properties are therefore worth a
+//! test rather than a habit: that it carries the whole loop, that it carries
+//! the planning that fills the loop, that it stays small enough to be worth
+//! loading, and that a copy in the wild says which revision it is.
 //!
 //! This file exists because the task's declared verifier is `cargo-test`. A
 //! criterion nothing executes is a criterion nobody checked, and a proof that
@@ -181,11 +181,17 @@ fn help_prints_section_4s_order() {
     );
 }
 
-/// The loop, and the content of SKILL.md is frozen at exactly these
-/// (ADR-c656cbcc33a9).
+/// The loop and what is off it: how work gets done (ADR-e17e1bbd93ff).
 const LOOP_VERBS: [&str; 8] = [
     "context", "claim", "show", "log", "done", "new", "find", "release",
 ];
+
+/// Planning: how the work that gets done comes to exist (ADR-e17e1bbd93ff).
+///
+/// `new adr` is spelled out rather than covered by `new`, because the whole
+/// point of the addition is the path from noticing an architectural problem to
+/// recording one — and `ank new task` alone does not carry it.
+const PLANNING_VERBS: [&str; 5] = ["review", "graph", "check", "amend", "new adr"];
 
 #[test]
 fn the_skill_carries_the_whole_loop() {
@@ -199,40 +205,127 @@ fn the_skill_carries_the_whole_loop() {
     }
 }
 
-/// One page, and the budget is the reason: §9 puts the loop and the mental
-/// model here, and sends flag detail to `ank help`, loaded on demand.
-/// The number is a ceiling to notice drift, not a target to fill.
+/// The half ADR-e17e1bbd93ff added. An agent taught only the loop can execute
+/// work and cannot propose a decision, correct a graph, or notice the corpus
+/// has gone incoherent -- which is the gap that ADR names and this asserts is
+/// closed.
+///
+/// **What this checks is that the verb is named, not that it is explained**,
+/// exactly as `the_skill_carries_the_whole_loop` has always done: the summary
+/// block at the top of the file satisfies it on its own. That is the right
+/// standard here, because the property being protected is the one the ADR
+/// states -- "a verb it does not name is a verb that does not come up" (§11) --
+/// and it was measured: deleting the explanatory paragraph alone leaves this
+/// green, deleting the name from both places turns it red.
+#[test]
+fn the_skill_carries_the_planning_mode() {
+    let text = skill();
+    for verb in PLANNING_VERBS {
+        assert!(
+            text.contains(&format!("ank {verb}")),
+            "SKILL.md never shows `ank {verb}`: planning is frozen content \
+             now, not an optional extra"
+        );
+    }
+}
+
+/// **`accept` is described and never invited** (ADR-e17e1bbd93ff).
+///
+/// The two halves are one rule and neither works alone. The skill must say what
+/// `accept` is, so a planning agent knows where its own authority ends rather
+/// than discovering the boundary by hitting it; and it must never show the
+/// command form, because showing a command is how a file that is loaded
+/// permanently invites it to be run.
+/// The description is asserted by the three things it has to say rather than by
+/// one exact phrase: a test pinned to `` `accept` `` with its backticks fails
+/// on a rewording that is perfectly correct, and a test that cannot tell a
+/// rewrite from a removal is a test nobody trusts twice.
+#[test]
+fn the_skill_describes_accept_without_inviting_it() {
+    let text = skill();
+    for token in ["accept", "signed", "default branch"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?} about `accept`: an agent that \
+             cannot see the one hard authority line will find it by hitting it"
+        );
+    }
+    // The other half is `the_skill_teaches_nothing_beyond_what_is_frozen`,
+    // which keeps `ank accept` out. Described, never invited -- and neither
+    // assertion means anything without the other.
+}
+
+/// The budget is the reason: §9 puts the loop, the planning that fills it and
+/// the mental model behind both here, and sends flag detail to `ank help`,
+/// loaded on demand. The number is a ceiling to notice drift, not a target to
+/// fill.
+///
+/// It moved from 80/700 to 140/1200 with ADR-e17e1bbd93ff, and moved because a
+/// decision said so — which is the only way it is allowed to move. A ceiling
+/// raised to accommodate whatever was just written is not a ceiling.
 #[test]
 fn the_skill_stays_within_one_page() {
     let text = skill();
     let lines = text.lines().count();
     let words = text.split_whitespace().count();
     assert!(
-        lines <= 80,
+        lines <= 140,
         "SKILL.md is {lines} lines: it is loaded permanently, so growth costs \
          every session in every repo. Move detail to `ank help`."
     );
-    assert!(words <= 700, "SKILL.md is {words} words, over one page");
+    assert!(words <= 1200, "SKILL.md is {words} words, over the ceiling");
 }
 
 /// These verbs run for whoever types them -- nothing here is refused to an
-/// agent (ADR-c656cbcc33a9). What this asserts is narrower and is the whole of
+/// agent (ADR-e17e1bbd93ff). What this asserts is narrower and is the whole of
 /// the freeze: SKILL.md does not *teach* them. Naming one as a thing to run
 /// would grow what every session pays for, by habit rather than by decision,
 /// which is how a permanently loaded file actually grows.
 ///
-/// `show` is absent from this list because it was moved into the loop by
-/// decision and with the reason recorded, back when the loop was still called a
-/// surface. That is what the list is for -- everything else still costs a
-/// succession.
+/// The list shrinks only by decision, and it has twice. `show` left it when it
+/// moved into the loop, back when the loop was still called a surface;
+/// `review`, `check` and `amend` left it with ADR-e17e1bbd93ff, which bought
+/// planning with a raised ceiling and said so. `accept` is the interesting
+/// survivor: the skill now *describes* it, and still must not show the command,
+/// so it stays here while `the_skill_describes_accept_without_inviting_it`
+/// holds the other half. Everything remaining costs a succession.
 #[test]
-fn the_skill_teaches_nothing_beyond_the_loop() {
+fn the_skill_teaches_nothing_beyond_what_is_frozen() {
     let text = skill();
-    for verb in ["accept", "review", "close", "attest", "check"] {
+    for verb in ["accept", "close", "attest", "edit", "status", "scope"] {
         assert!(
             !text.contains(&format!("ank {verb}")),
-            "SKILL.md shows `ank {verb}`, which is outside the loop it is \
+            "SKILL.md shows `ank {verb}`, which is outside the content it is \
              frozen at"
+        );
+    }
+}
+
+/// **What an agent reads is plain bytes, and the skill says so**
+/// (TASK-21031b516bb2).
+///
+/// The guarantee existed and was written down everywhere except the one file
+/// every agent actually loads. That gap has a cost the others do not: an agent
+/// that does not know the rule can reasonably suspect its input of carrying
+/// escape sequences, and the repairs it would then reach for -- stripping
+/// output, hunting for a `--no-color` that does not exist, preferring `--json`
+/// for cleanliness rather than for parsing -- are all wasted work built on a
+/// guess. Saying it once costs one line of a permanently loaded file and
+/// removes the whole class.
+///
+/// Asserted by what the sentence has to establish rather than by its exact
+/// wording, for the reason `the_skill_describes_accept_without_inviting_it`
+/// records: a test pinned to one phrasing fails on a correct rewrite, and
+/// reports it as a removal.
+#[test]
+fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
+    let text = skill();
+    for token in ["terminal", "pipe", "--json"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?}: an agent that cannot read the \
+             guarantee has to guess whether its input is styled, and every \
+             repair it reaches for from that guess is wasted"
         );
     }
 }

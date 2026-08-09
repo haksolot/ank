@@ -275,18 +275,23 @@ The symmetric risk — an agent going off the rails and flooding the repository 
 
 ## 4. CLI surface
 
-**Ank exposes one surface** (ADR-c656cbcc33a9). Every verb is available to every caller, and the CLI refuses on state, never on identity. Git has more than a hundred commands, every one of them reachable by anybody who types it, and stays learnable because of what a newcomer is taught first — not because the porcelain sorts callers into classes. Ank borrows that shape.
+**Ank exposes one surface** (ADR-e17e1bbd93ff, superseding ADR-c656cbcc33a9). Every verb is available to every caller, and the CLI refuses on state, never on identity. Git has more than a hundred commands, every one of them reachable by anybody who types it, and stays learnable because of what a newcomer is taught first — not because the porcelain sorts callers into classes. Ank borrows that shape.
 
-The memorisation budget is real; it is simply not the binary's job. It is spent on documentation, and it is enforced where it operates: what an agent is taught is the loop, and the content of what teaches it is frozen. What a human may type is everything.
+The memorisation budget is real; it is simply not the binary's job. It is spent on documentation, and it is enforced where it operates: what an agent is taught is the loop and the planning that fills it, and the content of what teaches it is frozen. What a human may type is everything.
 
-### The loop, and the freeze on SKILL.md
+### What the skill teaches, and the freeze on SKILL.md
 
 ```
 Loop:        context → claim → show → log → done
 Off-loop:    new, find, release
+Planning:    new adr, amend, review, graph, check, find --status open
 ```
 
-**This is the entire content of SKILL.md, and that content is frozen.** SKILL.md is loaded permanently (§9), so the surface an agent reads about is the one that costs tokens on every call; growing what it teaches costs an ADR superseding ADR-c656cbcc33a9, exactly as growing a verb list once did. The freeze constrains the documentation, not the dispatch table: an agent that runs `ank graph` gets the graph; it was simply never told the verb existed, and being untold is not being refused.
+**This is the entire content of SKILL.md, and that content is frozen** (ADR-e17e1bbd93ff). SKILL.md is loaded permanently (§9), so what it teaches is what costs tokens on every call, for every agent, including the ones that only loop; growing it costs an ADR superseding ADR-e17e1bbd93ff, exactly as growing a verb list once did. The freeze constrains the documentation, not the dispatch table: an agent that runs `ank scope` gets the answer; it was simply never told the verb existed, and being untold is not being refused.
+
+**Two modes, because an agent that can only execute is half an agent.** The loop is how work gets done; planning is how the work that gets done comes to exist — deciding which tasks should exist, in what order, under which constraints. ADR-c656cbcc33a9 taught the loop alone, and an agent taught by it could not propose a decision, correct a graph, or notice that the corpus had gone incoherent: `ank new adr` was never mentioned, so an agent seeing an architectural problem had no documented path from the observation to a recorded ADR. Planning is the highest-leverage activity in the corpus, and a badly shaped backlog wastes more downstream than the teaching costs upstream. The ceiling moves with the content — **at most 140 lines and 1200 words**, up from 80 and 700 — and stays a ceiling to notice drift, not a target to fill.
+
+**`accept` is described and never invited.** The skill says what it is — a human act, signed, on the default branch only — so that a planning agent knows where its own authority ends, and it never shows the command as something to run. That is the one hard authority line in the system (§8, §12), and describing it is what makes it legible rather than mysterious. `close` and `attest` stay outside for the ordinary reason: nothing has decided they are worth what every session pays for them.
 
 That distinction is the whole revision. ADR-3859eb46bdc3 froze an *agent surface* at these same eight verbs and sent everything else to a human side, but the split it protected was never a boundary — the CLI told callers apart by `$ANK_AGENT`, a variable the caller sets itself (§8). A wall whose bricks are self-declared identity is a sign, not a wall. What the freeze actually protected was the token budget, and that protection moves here, where it holds without pretending to be a check.
 
@@ -294,7 +299,7 @@ That distinction is the whole revision. ADR-3859eb46bdc3 froze an *agent surface
 
 ### The rest of the surface
 
-These verbs serve human ergonomics: the ratification queue, corpus health, the plan revisions a human makes on somebody else's task. They are outside the loop because SKILL.md does not teach them, and outside is not withheld — none of the refusals below consults who is calling.
+These verbs are the rest of the surface. Four of them — `review`, `check`, `amend` and `graph` — are what the planning mode above teaches, and the others are outside what the skill teaches rather than withheld from anyone: none of the refusals below consults who is calling, and an agent that types one gets its answer.
 
 ```
 review    ratification queue, pending proposals, corpus health
@@ -983,9 +988,9 @@ Skills install from repositories rather than npm packages: the identifier is `ow
 
 The `skills` CLI handles multi-agent detection (Claude Code, Codex, Cursor, OpenCode, and many others) and creates links from each agent to a canonical copy — exactly the desired design, already maintained by a third party.
 
-**Token economy.** These files are loaded permanently, which is why the content of SKILL.md is frozen (§4): it carries the loop and the mental model, nothing else, and growing that costs a superseding ADR. Flag details and the rest of the surface stay in `ank help`, loaded on demand.
+**Token economy.** These files are loaded permanently, which is why the content of SKILL.md is frozen (§4): it carries the loop, the planning that fills it, and the mental model behind both — nothing else, and growing that costs a superseding ADR. Flag details and the rest of the surface stay in `ank help`, loaded on demand.
 
-**`ank help` is one flat listing** (ADR-c656cbcc33a9): every verb, in the order of §4, with no headings and no grouping. The loop is what SKILL.md teaches, not what the binary prints — a heading printed by the CLI is a claim about who a verb is for, and that is the claim §4 withdraws. The order carries what a heading would have said, since §4 puts the loop first, and it carries it without asserting a category. `ank help <verb>` answers about that verb alone: its usage, its flags with their value placeholders, and the globals. An unknown verb is a **code 2** and never a fallback to the general listing — an agent that asked about one verb and received all sixteen has to work out that its question went unanswered.
+**`ank help` is one flat listing** (ADR-e17e1bbd93ff): every verb, in the order of §4, with no headings and no grouping. What SKILL.md teaches is not what the binary prints — a heading printed by the CLI is a claim about who a verb is for, and that is the claim §4 withdraws. The order carries what a heading would have said, since §4 puts the loop first, and it carries it without asserting a category. `ank help <verb>` answers about that verb alone: its usage, its flags with their value placeholders, and the globals. An unknown verb is a **code 2** and never a fallback to the general listing — an agent that asked about one verb and received all sixteen has to work out that its question went unanswered.
 
 `ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`, write a `.gitattributes` (§2) and a `.gitignore` (§6).
 
