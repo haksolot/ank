@@ -4448,6 +4448,142 @@ fn the_errors_that_named_the_file_now_name_the_command() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The git boundary (TASK-2f01baf94632)
+// ---------------------------------------------------------------------------
+//
+// Through the binary and **without `--repo`**, which is the only way to reach
+// this at all: the finding is about the walk `discover` performs from the
+// working directory, and every other test in this file short-circuits that walk
+// by naming the repository.
+
+/// Runs `ank` from `dir` with no `--repo`, so resolution is the walk.
+fn ank_walking(dir: &Path, args: &[&str]) -> Output {
+    Command::new(ANK)
+        .args(args)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(dir)
+        .output()
+        .expect("the binary must have been built")
+}
+
+/// A git repository of its own, with no `.ank/`, nested inside `outer`.
+///
+/// The layout nobody sets up on purpose — a checkout cloned inside another
+/// checkout — and the one where the walk succeeds at the wrong place.
+fn nest_a_repository_in(outer: &Repo) -> PathBuf {
+    let inner = outer.0.join("inner");
+    std::fs::create_dir_all(inner.join("src")).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "t@ank.local"][..],
+        &["config", "user.name", "T"][..],
+    ] {
+        let out = Command::new("git")
+            .current_dir(&inner)
+            .args(args)
+            .output()
+            .expect("git is a hard dependency");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    inner
+}
+
+#[test]
+fn a_verb_resolving_a_corpus_across_a_git_boundary_names_the_root() {
+    let outer = Repo::new();
+    let inner = nest_a_repository_in(&outer);
+    let root = outer.0.file_name().unwrap().to_string_lossy().to_string();
+
+    let out = ank_walking(&inner.join("src"), &["status"]);
+    // Degrade, do not fail (§2): the walk succeeded, and the caller may well
+    // have meant it.
+    assert!(out.status.success(), "{}", erred(&out));
+
+    let err = erred(&out);
+    assert!(err.contains("warning:"), "nothing was said at all: {err}");
+    assert!(
+        err.contains(&root),
+        "the resolved root is not named, which is the whole criterion: {err}"
+    );
+    // Claims are git refs, and that is why this is not merely reading the wrong
+    // files: the refs land in the outer repository while the code being changed
+    // is versioned by the inner one.
+    assert!(err.contains("claims"), "{err}");
+    // Both ways out, named.
+    assert!(err.contains("ank init") && err.contains("--repo"), "{err}");
+}
+
+#[test]
+fn the_boundary_warning_never_reaches_standard_output() {
+    // §4 requires --json to stay byte-for-byte what a caller's parser already
+    // reads. A line on stdout would break every one of them to say something no
+    // parser asked for -- so the warning is on stderr, and this is what holds it
+    // there.
+    let outer = Repo::new();
+    let inner = nest_a_repository_in(&outer);
+
+    for args in [
+        &["status", "--json"][..],
+        &["find", "--status", "open", "--json"][..],
+    ] {
+        let out = ank_walking(&inner.join("src"), args);
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        assert!(
+            !stdout.contains("warning"),
+            "{args:?} put the warning on stdout: {stdout}"
+        );
+        assert!(
+            stdout.trim().is_empty() || stdout.trim_start().starts_with('{'),
+            "{args:?} left stdout unparseable: {stdout}"
+        );
+        // It was still said, on the stream that carries it.
+        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+    }
+}
+
+#[test]
+fn naming_the_repository_is_what_silences_the_boundary_warning() {
+    let outer = Repo::new();
+    let inner = nest_a_repository_in(&outer);
+
+    // `--repo` is the caller saying which corpus they mean. Warning about an
+    // answer that was asked for by name would fire forever in the one layout
+    // this behaviour makes usable: a single `.ank/` above several checkouts.
+    let out = ank_walking(
+        &inner.join("src"),
+        &["status", "--repo", outer.0.to_str().unwrap()],
+    );
+    assert!(
+        !erred(&out).contains("warning:"),
+        "an explicit --repo was still warned about: {}",
+        erred(&out)
+    );
+
+    // And --quiet means no chatter, here as everywhere.
+    let out = ank_walking(&inner.join("src"), &["status", "--quiet"]);
+    assert!(!erred(&out).contains("warning:"), "{}", erred(&out));
+}
+
+#[test]
+fn an_ordinary_subdirectory_of_the_same_repository_is_not_warned_about() {
+    // The guard against a warning that fires when nothing is wrong. Walking up
+    // from a subdirectory is the nominal case -- §6 specifies it -- and a
+    // warning there would be noise nobody reads the day something is actually
+    // wrong.
+    let outer = Repo::new();
+    let deep = outer.0.join("crates").join("ank-cli").join("src");
+    std::fs::create_dir_all(&deep).unwrap();
+
+    let out = ank_walking(&deep, &["status"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert!(
+        !erred(&out).contains("warning:"),
+        "the nominal walk was warned about: {}",
+        erred(&out)
+    );
+}
+
 #[test]
 fn help_answers_about_config_the_way_it_answers_about_every_verb() {
     let r = Repo::new();

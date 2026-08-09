@@ -190,6 +190,66 @@ pub fn ensure_usable(cwd: &Path) -> Result<PathBuf> {
     toplevel(cwd)
 }
 
+/// The **common** git directory of the repository containing `cwd`, absolute,
+/// or `None` when `cwd` is not inside a repository at all.
+///
+/// The common directory and not the toplevel, and the difference is the whole
+/// point: a linked worktree has a toplevel of its own and shares `refs/` with
+/// the checkout that made it, so comparing toplevels would report two worktrees
+/// of one repository as two repositories. The question being asked is where a
+/// claim ref lands (§7), and that is the common directory.
+///
+/// `--path-format=absolute` rather than canonicalising the answer ourselves:
+/// `--git-common-dir` is relative when git is run from the repository root, and
+/// two paths compared without agreeing on that are two strings that differ for
+/// no reason. It has existed since git 2.31 and [`MIN_VERSION`] is 2.34.
+///
+/// Never an error. Every caller is asking a question whose answer may legibly
+/// be "there is no repository here", and a failure to run git is that answer
+/// too — this is used to decide whether to say something extra, never to
+/// refuse.
+pub fn common_dir(cwd: &Path) -> Option<PathBuf> {
+    let out = output(
+        cwd,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    )
+    .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!text.is_empty()).then(|| PathBuf::from(text))
+}
+
+/// Whether the resolved corpus and the working directory sit in two different
+/// git repositories (TASK-2f01baf94632).
+///
+/// `discover` walks parents until it finds a `.ank/`, and its stopping
+/// condition is the filesystem root — it never consults `.git` and never stops
+/// at a repository boundary. From `outer/inner/src` with no `inner/.ank/`, the
+/// walk reaches `outer/.ank/` and the verb runs there. Measured: a `claim` made
+/// from `inner/src` writes `refs/ank/claims/<id>` into `outer/.git`, and
+/// `inner/.git` — the repository holding the code being changed — ends with no
+/// ank ref at all. The coordination plane and the code part company, and
+/// nothing says so.
+///
+/// Pure on purpose, like [`resolve_default_branch`]: the two sources are passed
+/// in rather than read here, so every combination is testable without building
+/// two repositories on disk.
+pub fn crosses_repository(here: Option<&Path>, root: Option<&Path>) -> bool {
+    match (here, root) {
+        // Two repositories, and the claim plane is in the one the caller is not
+        // standing in.
+        (Some(a), Some(b)) => a != b,
+        // No repository here, and one where the corpus was found. Worth saying
+        // for the same reason: the refs are somewhere the caller is not.
+        (None, Some(_)) => true,
+        // The corpus is not in a repository. `ensure_usable` has already
+        // refused with code 9, and there is no second thing to say about it.
+        (_, None) => false,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Refs, branches, reachability (§7, §12)
 // ---------------------------------------------------------------------------
@@ -758,6 +818,100 @@ mod tests {
             assert_eq!(err.code, 9);
             assert_eq!(err.hint.as_deref(), Some("git init"));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The four combinations, without building two repositories on disk
+    /// (TASK-2f01baf94632).
+    ///
+    /// Pure for the reason `resolve_default_branch` is: a decision that only
+    /// exists inside a fixture is a decision tested under one layout, and the
+    /// interesting cases here are the ones nobody sets up by accident.
+    #[test]
+    fn crossing_a_repository_boundary_is_decided_from_the_two_common_dirs() {
+        let a = Path::new("/w/outer/.git");
+        let b = Path::new("/w/outer/inner/.git");
+
+        assert!(
+            crosses_repository(Some(b), Some(a)),
+            "standing in the inner repository with the corpus resolved in the \
+             outer one is the whole finding"
+        );
+        assert!(
+            !crosses_repository(Some(a), Some(a)),
+            "one repository, whichever subdirectory the caller stands in"
+        );
+        assert!(
+            crosses_repository(None, Some(a)),
+            "no repository here and refs over there is the same parting"
+        );
+        assert!(
+            !crosses_repository(Some(a), None),
+            "a corpus outside any repository is ensure_usable's code 9, and \
+             saying it twice helps nobody"
+        );
+        assert!(!crosses_repository(None, None));
+    }
+
+    /// Two worktrees of one repository are one repository.
+    ///
+    /// This is why the comparison is on the common directory and not on the
+    /// toplevel: a linked worktree has a toplevel of its own, so a toplevel
+    /// comparison would warn about a layout where the refs are in fact shared —
+    /// and a warning that fires when nothing is wrong is a warning nobody reads
+    /// the day something is.
+    #[test]
+    fn a_linked_worktree_shares_its_common_dir_with_the_checkout_that_made_it() {
+        let dir = std::env::temp_dir().join(format!("ank-common-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let main = dir.join("main");
+        std::fs::create_dir_all(&main).unwrap();
+
+        let git = |cwd: &Path, args: &[&str]| {
+            Command::new("git")
+                .current_dir(cwd)
+                .args(args)
+                .output()
+                .expect("git is a hard dependency")
+        };
+        git(&main, &["init", "-q", "-b", "main"]);
+        git(&main, &["config", "user.email", "t@ank.local"]);
+        git(&main, &["config", "user.name", "T"]);
+        std::fs::write(main.join("seed.txt"), "x").unwrap();
+        git(&main, &["add", "-A"]);
+        git(&main, &["-c", "commit.gpgsign=false", "commit", "-qm", "s"]);
+        let wt = dir.join("wt");
+        git(
+            &main,
+            &["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "side"],
+        );
+
+        let from_main = common_dir(&main);
+        let from_wt = common_dir(&wt);
+        assert!(from_main.is_some() && from_wt.is_some(), "both resolved");
+        assert_eq!(
+            from_main, from_wt,
+            "a linked worktree shares refs/ with the checkout that made it, so \
+             it must not read as a second repository"
+        );
+        assert!(!crosses_repository(
+            from_wt.as_deref(),
+            from_main.as_deref()
+        ));
+
+        // And a repository nested inside another does read as a second one.
+        let inner = main.join("inner");
+        std::fs::create_dir_all(&inner).unwrap();
+        git(&inner, &["init", "-q", "-b", "main"]);
+        let from_inner = common_dir(&inner);
+        assert!(from_inner.is_some());
+        assert_ne!(from_inner, from_main);
+        assert!(crosses_repository(
+            from_inner.as_deref(),
+            from_main.as_deref()
+        ));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
