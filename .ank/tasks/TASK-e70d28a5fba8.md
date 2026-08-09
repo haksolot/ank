@@ -5,7 +5,7 @@ slug: skill-md-teaches-planning-and-the-freeze-moves-t
 title: SKILL.md teaches planning, and the freeze moves to the new content
 created: 2026-08-05T04:05:45Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -22,7 +22,7 @@ done_criteria: |
   matches the skill hash ank --version reports.
 criteria_by: creator
 schema: 2
-version: 2
+version: 3
 ---
 
 Execution of ADR-e17e1bbd93ff, in the order the project imposes: specification
