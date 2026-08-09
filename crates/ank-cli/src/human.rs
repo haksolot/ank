@@ -2022,8 +2022,21 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let base_version = version_of(&loaded.entity);
     let id = loaded.entity.id().clone();
 
-    let add_scope: Vec<String> = trimmed(inv.values("--scope"));
-    let drop_scope: Vec<String> = trimmed(inv.values("--drop-scope"));
+    // Both normalised, and both for the same reason `new --scope` is: one is
+    // written into the entity, and the other is compared against what is
+    // already stored there, which is now always a normal form. A raw
+    // `--drop-scope .\docs\**` would match no stored glob and be refused as
+    // absent from a scope that carries it (TASK-8dd89053fa33).
+    let add_scope = crate::context::normalised_globs(
+        inv.values("--scope"),
+        repo,
+        &format!("ank amend {prefix} --scope"),
+    )?;
+    let drop_scope = crate::context::normalised_globs(
+        inv.values("--drop-scope"),
+        repo,
+        &format!("ank amend {prefix} --drop-scope"),
+    )?;
     let add_blocked = resolve_all(&store, inv.values("--blocked-by"))?;
     let drop_blocked = resolve_all(&store, inv.values("--drop-blocked-by"))?;
 

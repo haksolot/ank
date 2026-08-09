@@ -235,23 +235,34 @@ pub fn short_ids(ids: &[EntityId]) -> HashMap<EntityId, String> {
     out
 }
 
-/// The perimeter a path-taking verb was given, normalised once (§4).
+/// One caller-supplied path or glob, in the form matching and storage expect.
 ///
-/// Every verb that takes a path goes through here — `context`, `review`,
-/// `check`, `scope` — so that a directory has one meaning rather than one per
-/// way of typing it (TASK-df4c39031583). Normalising inside [`in_perimeter`]
-/// instead would be cheaper and wrong twice over: a refusal cannot be expressed
-/// through a `bool`, and `scope` echoes the perimeter it drew, which has to be
-/// the one it actually used.
+/// **The property, stated once instead of enumerated per verb**: every path and
+/// every glob a caller supplies passes through here before it reaches glob
+/// matching or is written into an entity — positional argument, flag value or
+/// `$EDITOR` template alike.
 ///
-/// `None` is the whole repository: no argument at all, or `.`, which names the
-/// root and therefore everything.
-pub(crate) fn perimeter(inv: &Invocation, repo: &Repo) -> Result<Option<String>> {
-    let Some(raw) = inv.positionals.first() else {
-        return Ok(None);
-    };
-    if let Some(path) = ank_core::normalize_path(raw) {
-        return Ok((!path.is_empty()).then_some(path));
+/// Saying it that way is the whole point of TASK-8dd89053fa33. The normaliser
+/// and the measurement behind it came from TASK-df4c39031583, whose criterion
+/// named four verbs rather than the property; the fix satisfied that text
+/// exactly, and `find --scope`, `new --scope` and `amend --scope` stayed
+/// outside it for as long as the enumeration was the authority. Re-measured on
+/// this corpus with `docs/` present: `--scope docs` and `docs/` answered eight
+/// tasks, `docs\` answered **five**, `./docs` and `.\docs\` answered none. The
+/// zeros are survivable because they are obvious; the five is not.
+///
+/// `new --scope` was worse than a wrong answer, because it persisted: it stored
+/// `.\docs\` verbatim into the entity, where it matches nothing on any platform
+/// for the life of the corpus, and `check` then reported the consequence as a
+/// possible typo. It was not a typo — it was the form the caller's own shell
+/// completed, which `new` accepted without a word. The tool wrote something it
+/// could not read back.
+///
+/// `usage` is the command the refusal names, since the caller has to be told
+/// what to type and only the call site knows which argument it is holding.
+pub(crate) fn normalised(raw: &str, repo: &Repo, usage: &str) -> Result<String> {
+    if let Some(normal) = ank_core::normalize_path(raw) {
+        return Ok(normal);
     }
     // Never a silent answer about an invented perimeter. The hint is the exact
     // command when the path is simply the absolute form of one inside the
@@ -261,13 +272,59 @@ pub(crate) fn perimeter(inv: &Invocation, repo: &Repo) -> Result<Option<String>>
         .ok()
         .map(|rel| rel.to_string_lossy().replace('\\', "/"))
         .filter(|rel| !rel.is_empty())
-        .map(|rel| format!("ank {} {rel}", inv.command))
-        .unwrap_or_else(|| format!("ank {} <path inside the repository>", inv.command));
+        .map(|rel| format!("{usage} {rel}"))
+        .unwrap_or_else(|| format!("{usage} <inside the repository>"));
     Err(CliError::new(
         1,
         format!("'{raw}' does not name a path in this repository"),
     )
     .with_hint(hint))
+}
+
+/// The perimeter a path-taking verb was given, normalised once (§4).
+///
+/// Every verb that takes a positional path goes through here, and every one
+/// that takes a path or a glob as a flag value goes through [`normalised`],
+/// which this is a thin reading of.
+///
+/// `None` is the whole repository: no argument at all, or `.`, which names the
+/// root and therefore everything.
+pub(crate) fn perimeter(inv: &Invocation, repo: &Repo) -> Result<Option<String>> {
+    let Some(raw) = inv.positionals.first() else {
+        return Ok(None);
+    };
+    let path = normalised(raw, repo, &format!("ank {}", inv.command))?;
+    Ok((!path.is_empty()).then_some(path))
+}
+
+/// A caller-supplied glob, normalised and validated before it is stored.
+///
+/// A glob normalising to nothing is the repository root, which is a perimeter
+/// and not a pattern: `--scope .` would be stored as an empty string and match
+/// nothing. It is refused by name, with the pattern that means what the caller
+/// meant.
+pub(crate) fn normalised_globs(raw: &[String], repo: &Repo, usage: &str) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+    for g in raw {
+        let g = g.trim();
+        if g.is_empty() {
+            continue;
+        }
+        let normal = normalised(g, repo, usage)?;
+        if normal.is_empty() {
+            return Err(CliError::new(
+                7,
+                format!("'{g}' names the repository root, which is not a pattern"),
+            )
+            .with_hint(format!("{usage} \"**\"")));
+        }
+        if !out.contains(&normal) {
+            out.push(normal);
+        }
+    }
+    ank_core::scope::validate_globs(&out)
+        .map_err(|e| CliError::new(7, format!("{e}")).with_hint(format!("{usage} \"src/**\"")))?;
+    Ok(out)
 }
 
 /// Whether an entity's scope meets the requested perimeter. `None` is the whole

@@ -88,7 +88,7 @@ pub fn new(
     }
 
     let title = required(inv, "--title", "a one-line title")?;
-    let scope = scope_of(inv, kind)?;
+    let scope = scope_of(inv, repo, kind)?;
     let created = claim::now_utc();
     let id = EntityId::generate(kind, &created, identity, &title, &entropy());
     let store = Store::new(&repo.ank);
@@ -244,7 +244,7 @@ fn new_interactive(
     let title = inv.value("--title").unwrap_or("").trim().to_string();
     let id = EntityId::generate(kind, &created, identity, &title, &entropy());
 
-    let skeleton = skeleton(inv, cfg, kind, &id, &created, identity)?;
+    let skeleton = skeleton(inv, repo, cfg, kind, &id, &created, identity)?;
     let hint = flag_form(kind);
     let editor = editor::command(&hint)?;
     let scratch = editor::scratch_path(&id.to_string());
@@ -257,7 +257,7 @@ fn new_interactive(
         let filled = std::fs::read_to_string(&scratch).map_err(|e| {
             CliError::new(9, format!("cannot read back {}: {e}", scratch.display()))
         })?;
-        create_filled(inv, &store, cfg, &skeleton, &filled, out)
+        create_filled(inv, repo, &store, cfg, &skeleton, &filled, out)
     })();
 
     match outcome {
@@ -277,6 +277,7 @@ fn new_interactive(
 /// carries none of the mandatory flags and every word of it is still meant.
 fn skeleton(
     inv: &Invocation,
+    repo: &Repo,
     cfg: &Config,
     kind: EntityKind,
     id: &EntityId,
@@ -284,12 +285,13 @@ fn skeleton(
     identity: &str,
 ) -> Result<Entity> {
     let title = inv.value("--title").unwrap_or("").trim().to_string();
-    let scope: Vec<String> = inv
-        .values("--scope")
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // The template is pre-filled with what the caller typed, so a raw glob
+    // reaching it would be offered back for approval and saved as written.
+    let scope = context::normalised_globs(
+        inv.values("--scope"),
+        repo,
+        &format!("ank new {} --scope", kind.as_str()),
+    )?;
     let slug = (!title.is_empty()).then(|| slugify(&title));
     Ok(match kind {
         EntityKind::Task => Entity::Task(Task {
@@ -403,6 +405,7 @@ const ADR_GUIDANCE: &str = "\
 /// the hole in the wall — the way to write the entity `new` refuses.
 fn create_filled(
     inv: &Invocation,
+    repo: &Repo,
     store: &Store,
     cfg: &Config,
     skeleton: &Entity,
@@ -451,6 +454,9 @@ fn create_filled(
             }
             resolve_blockers(store, &t.blocked_by, &hint)?;
             check_verifiers(&t.verify, cfg)?;
+            // A glob typed into the template is caller-supplied like any other,
+            // and it is about to be written into an entity.
+            t.scope = context::normalised_globs(&t.scope, repo, "ank new task --scope")?;
             // An empty block scalar is the template's own placeholder coming
             // back untouched, which means no criterion rather than a criterion
             // that is blank — and `criteria_by` follows it, or `parse` refuses
@@ -499,6 +505,7 @@ fn create_filled(
                 resolve_blockers(store, std::slice::from_ref(sup), &hint)?;
             }
             a.constraint = ensure_newline(&a.constraint);
+            a.scope = context::normalised_globs(&a.scope, repo, "ank new adr --scope")?;
             adopt(
                 &mut a.slug,
                 &a.title,
@@ -627,13 +634,13 @@ fn check_verifiers(names: &[String], cfg: &Config) -> Result<()> {
 /// entity without one is attached to nothing: it never appears in any
 /// `context`, and nobody finds it again. Refusing at creation costs one flag;
 /// discovering it later costs a corpus sweep.
-fn scope_of(inv: &Invocation, kind: EntityKind) -> Result<Vec<String>> {
-    let globs: Vec<String> = inv
-        .values("--scope")
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+fn scope_of(inv: &Invocation, repo: &Repo, kind: EntityKind) -> Result<Vec<String>> {
+    // Normalised before it is stored, never after: a glob written as the shell
+    // completed it -- `.\docs\` -- matches nothing on any platform, and an
+    // entity carrying one is a thing the tool wrote and cannot read back
+    // (TASK-8dd89053fa33).
+    let usage = format!("ank new {} --scope", kind.as_str());
+    let globs = context::normalised_globs(inv.values("--scope"), repo, &usage)?;
     if globs.is_empty() {
         return Err(CliError::new(
             7,
@@ -644,8 +651,6 @@ fn scope_of(inv: &Invocation, kind: EntityKind) -> Result<Vec<String>> {
             kind.as_str()
         )));
     }
-    ank_core::scope::validate_globs(&globs)
-        .map_err(|e| CliError::new(7, format!("{e}")).with_hint("ank new --scope \"src/**\""))?;
     Ok(globs)
 }
 
@@ -785,7 +790,15 @@ pub fn find(
         }
     };
     let status_filter = inv.value("--status").map(|s| s.to_ascii_lowercase());
-    let path_filter = inv.value("--scope");
+    // A path filter, and therefore the same normalisation the positionals get:
+    // an empty normal form is the repository root, which filters nothing.
+    let path_filter = match inv.value("--scope") {
+        Some(raw) => {
+            let normal = context::normalised(raw, repo, "ank find --scope")?;
+            (!normal.is_empty()).then_some(normal)
+        }
+        None => None,
+    };
 
     // Short identifiers are computed over the whole corpus, never over the
     // hits: a prefix that is unique among four results and ambiguous in the
@@ -815,6 +828,7 @@ pub fn find(
         })
         .filter(|r| {
             path_filter
+                .as_deref()
                 .map(|p| scope_touches(&r.scope, p))
                 .unwrap_or(true)
         })
