@@ -79,9 +79,11 @@ keeps everything already in it.
 
 Two edits to make now, before the first real command.
 
-**Name your default branch.** Open `.ank/config.yml` and add one line:
+**Name your default branch.** `.ank/config.yml` is written through the CLI
+rather than by hand:
 
-    default_branch: main
+    $ ank config default_branch main
+    default_branch (unset) -> main
 
 Without it, Ank looks for `refs/remotes/origin/HEAD`, and a repository with no
 remote has none. It refuses rather than guessing:
@@ -89,7 +91,7 @@ remote has none. It refuses rather than guessing:
     $ ank accept 06d2
     error[9]: default branch indeterminable (default_branch absent from .ank/config.yml, refs/remotes/origin/HEAD absent)
       -> git remote set-head origin -a
-      -> or add "default_branch: <name>" to .ank/config.yml
+      -> or ank config default_branch <name>
 
 **Ignore the index.** `.ank/index.db` is a derived SQLite cache, rebuildable
 from the files and safe to delete at any time. It does not belong in git, and
@@ -148,7 +150,16 @@ constraint ratified on a feature branch would bind on that branch alone.
 ## Declare a verifier, then the task that uses it
 
 A task names verifiers; it never carries a shell command. The definitions live
-in `.ank/config.yml`, under the repository's own review:
+in `.ank/config.yml`, under the repository's own review, and they go in through
+the same verb — writing a `run` for a name the file does not carry is how a
+verifier is declared:
+
+    $ ank config verifiers.auth-tests.run "sh tests/auth.sh"
+    verifiers.auth-tests.run (unset) -> sh tests/auth.sh
+    $ ank config verifiers.no-jwt.run "! grep -rq jwt.verify src/auth/"
+    verifiers.no-jwt.run (unset) -> ! grep -rq jwt.verify src/auth/
+
+which is what the file then carries:
 
     verifiers:
       auth-tests:
@@ -156,12 +167,26 @@ in `.ank/config.yml`, under the repository's own review:
       no-jwt:
         run: "! grep -rq jwt.verify src/auth/"
 
+`ank config --unset verifiers.no-jwt` takes one back out. Reading a key says
+where the value comes from — this repository, or a default the tool resolved:
+
+    $ ank config verifiers.auth-tests.run
+    sh tests/auth.sh
+    $ ank config verifiers.auth-tests.timeout
+    10m (default)
+
+The distinction is the reason writing is line surgery rather than a round-trip
+through a YAML serializer. Your comments, blank lines, key order and quoting
+survive a write, and a key you never set is never written out: an unset key
+follows the tool, a written one is pinned here, and a serializer would quietly
+convert every one of the first kind into the second.
+
 Declare them first. A task that names a verifier `config.yml` does not know is
 refused at creation:
 
     $ ank new task --title "Migrate auth" --scope "src/auth/**" --verify auth-tests
     error[7]: no verifier 'auth-tests' in .ank/config.yml
-      -> declare it under verifiers: in .ank/config.yml
+      -> ank config verifiers.auth-tests.run "<command>"
 
 With the definitions in place:
 
