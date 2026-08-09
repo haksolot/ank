@@ -537,10 +537,12 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 |---|---|
 | section headers: `CONSTRAINTS`, `PROPOSED`, `TASKS`, `DONE_CRITERIA`, `LOG`, `BLOCKED BY`, `UNBLOCKS` | bold |
 | identifiers: `TASK-8ebd`, `ADR-962c` | yellow |
-| `[open]` | default |
-| `[claimed:…]`, `[… expired:…]` | cyan, yellow |
-| `[done]`, `[finished:… on …]` | green |
-| `[closed]`, `[blocked]` | dim |
+| `[open]` | blue |
+| `[in_progress]`, `[claimed:…]` | cyan |
+| `[… expired:…]` | yellow |
+| `[done]`, `[finished:… on …]`, `[accepted]` | green |
+| `[closed]`, `[superseded]` | dim |
+| `[proposed]` | magenta |
 | a transition word that advanced the corpus: `created`, `claimed`, `logged`, `attested`, `amended`, `accepted` | green |
 | a transition word that gave something up: `released`, `closed`, `superseded`, `pruned` | dim |
 | the state a transition landed on: `-> done`, `-> open`, `-> closed` | as its marker above |
@@ -549,6 +551,18 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 | `warning:` and `check`'s `signal:` tag | yellow |
 | a verifier's `ok` / `FAILED` | green / red |
 | the trailing next-command line, `> ank …` | bold |
+
+**Every status carries a color, and every base color is spent.** A task is
+`open`, `in_progress`, `done` or `closed`; an ADR is `proposed`, `accepted` or
+`superseded`; and the two sets read from one table, because `find` and `scope`
+list them side by side and a reader should not have to know which kind a row is
+before knowing what its color means. `in_progress` takes the color `[claimed:…]`
+carries, because they are one state seen twice — from the index, and from
+the ref that claimed it. Nothing is left at the terminal's default, and that is
+what makes the table checkable rather than memorable: a status with no color is
+now a defect, where before it was an omission somebody had to notice. `blocked`
+is absent because it is not a status — it is derived from `blocked_by` at read
+time (§3), and no entity is ever stored carrying it.
 
 **A transition reads the same whichever verb produced it.** Every verb that changes state confirms it in one shape — the word for what happened, the identifier it happened to, and where the entity landed — and the color follows that shape rather than the verb. The word carries the direction, the identifier is yellow like every other identifier, and the landing state takes exactly the color its bracketed marker takes in a listing: `-> done` and `[done]` are the same fact seen twice, and a reader who has learned one has learned the other. This is why the rule is stated as a grammar and not as a list of verbs — `attested` is legible to someone who has only ever run `claim`.
 
