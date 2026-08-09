@@ -4936,3 +4936,103 @@ fn help_answers_about_config_the_way_it_answers_about_every_verb() {
     assert!(listing.contains("ank config <key> [<value>]"), "{listing}");
     assert!(listing.contains("--unset"), "{listing}");
 }
+
+// ---------------------------------------------------------------------------
+// Constraint drift at done (TASK-bfa325e55424)
+// ---------------------------------------------------------------------------
+//
+// Through the binary, and the task said why in advance: asserting that a hash
+// comparison returns false proves nothing about the path `done` actually takes,
+// and that is precisely how two earlier defects in this repo passed green unit
+// tests. So the fixture accepts a real constraint, with a real signature, over
+// a scope a real claim already froze.
+
+/// A repository where a task is claimed and one constraint can be landed over
+/// its scope afterwards.
+fn drift_fixture(task: &str) -> Repo {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.enable_signing();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task_with(task, Some("A verifiable criterion."), &["ok"]);
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r
+}
+
+#[test]
+fn done_warns_when_a_constraint_landed_over_the_scope_while_the_claim_was_held() {
+    const TASK: &str = "TASK-0000000000dd";
+    const ADR: &str = "ADR-0000000000ce";
+    let r = drift_fixture(TASK);
+
+    // The claim freezes the constraints applicable to `src/**` -- none yet.
+    let out = r.ank("claude-code@ank", &["claim", TASK]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // A rule lands over those files while the work is in progress. Accepted for
+    // real: `bearing_on` counts accepted ADRs and nothing else, so a proposed
+    // one would leave the hash where it was and this test would pass on a
+    // binary that never looked.
+    r.seed_adr(ADR, "Every session goes through the store.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "adr"]);
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank("claude-code@ank", &["done", TASK]);
+
+    // It warns, and it does not block: a rule that landed after the work
+    // started does not necessarily concern work already finished, and refusing
+    // would punish exactly the case §7 singles out.
+    assert_eq!(code(&out), 0, "done was blocked: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("-> done"),
+        "the transition did not happen: {}",
+        stdout(&out)
+    );
+
+    let err = stderr(&out);
+    assert!(
+        err.contains("constraints over this scope changed"),
+        "done completed in silence, which is the whole defect: {err}"
+    );
+    assert!(
+        err.contains("ank context"),
+        "the warning names no next command: {err}"
+    );
+
+    // On stderr and not on stdout: the `running:` lines already make
+    // `done --json` unparseable, and a second line there would deepen a defect
+    // rather than avoid it.
+    assert!(
+        !stdout(&out).contains("constraints over this scope"),
+        "the warning reached stdout: {}",
+        stdout(&out)
+    );
+}
+
+#[test]
+fn done_says_nothing_when_the_constraints_did_not_move() {
+    // The control, and it is what makes the test above mean anything: a warning
+    // that fires on every `done` would be a warning nobody reads on the one
+    // that matters.
+    const TASK: &str = "TASK-0000000000de";
+    const ADR: &str = "ADR-0000000000cf";
+    let r = drift_fixture(TASK);
+
+    // Accepted *before* the claim, so it is inside the frozen hash.
+    r.seed_adr(ADR, "Every session goes through the store.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "adr"]);
+    assert_eq!(code(&r.ank("marie@laptop", &["accept", ADR])), 0);
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", TASK])), 0);
+    let out = r.ank("claude-code@ank", &["done", TASK]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("constraints over this scope changed"),
+        "warned with nothing to warn about: {}",
+        stderr(&out)
+    );
+}
