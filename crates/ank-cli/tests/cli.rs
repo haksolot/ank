@@ -3636,6 +3636,10 @@ fn styled_surface() -> Vec<Vec<&'static str>> {
         vec!["find", "Example"],
         vec!["find", "nothing-matches-this"],
         vec!["show", ID],
+        // The ADR too: its `constraint` is a block scalar, which is the shape
+        // the entity painter has to walk past without touching, and a task's
+        // `show` alone never reaches it.
+        vec!["show", "ADR-0000000000ab"],
         vec!["log", ID],
         vec!["graph"],
         vec!["scope", "src"],
@@ -3760,6 +3764,46 @@ fn a_listing_marks_the_row_the_caller_holds() {
     // added to it, so a listing does not reflow depending on who is asking.
     for (a, b) in mine.lines().zip(theirs.lines()) {
         assert_eq!(a.len(), b.len(), "{a:?} and {b:?} are not the same width");
+    }
+}
+
+/// One fact, one string, whichever verb prints it.
+///
+/// `context` reads the claim refs and every other listing read the index, so a
+/// claimed task said `[claimed:who]` under one verb and `[in_progress]` under
+/// four others — one state wearing two words, chosen by whichever verb the
+/// reader happened to type. Asserted through the binary because the divergence
+/// was between whole commands and not inside one function: each of these opens
+/// the corpus its own way, and only running them proves they agree.
+#[test]
+fn every_verb_says_the_same_thing_about_a_claimed_task() {
+    let r = color_fixture();
+
+    // `color_fixture` leaves ID claimed by claude-code@ank, and the marker
+    // names the holder whoever is asking — so a stranger reads the same words.
+    let held = format!("[claimed:{}]", "claude-code@ank");
+
+    for args in [
+        vec!["context"],
+        vec!["find", "Example"],
+        vec!["scope", "src"],
+        vec!["graph"],
+        // The reverse edge of the task ID blocks: `show` reaches ID through
+        // another task's `BLOCKED BY`, which is the fourth listing that used to
+        // print the index's word instead.
+        vec!["show", "TASK-000000000002"],
+    ] {
+        let said = stdout(&r.ank("someone-else@ank", &args));
+        assert!(
+            said.contains(&held),
+            "`ank {}` does not say {held}: {said}",
+            args.join(" ")
+        );
+        assert!(
+            !said.contains("[in_progress]"),
+            "`ank {}` still prints the index's word: {said}",
+            args.join(" ")
+        );
     }
 }
 

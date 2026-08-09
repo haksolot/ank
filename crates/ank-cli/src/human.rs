@@ -2298,7 +2298,11 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             json_str(&text)
         );
     } else if !inv.quiet() {
-        let _ = write!(out, "{text}");
+        // Painted here and not above: `--json` carries the entity as data and
+        // must keep receiving `text` itself. `cli::dispatch` already forces the
+        // style to PLAIN under `--json`, so this is the second of two
+        // independent guards rather than the only one.
+        let _ = write!(out, "{}", crate::paint::entity(&text, inv.style()));
         if let Some((blocked_by, unblocks)) = &edges {
             edge_section(out, "BLOCKED BY", blocked_by, inv.style());
             edge_section(out, "UNBLOCKS", unblocks, inv.style());
@@ -2316,7 +2320,13 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 struct Edge {
     id: EntityId,
     short: String,
+    /// The stored status, and only ever that: it is what `--json` carries, and
+    /// the machine surface does not move because a human listing learned to say
+    /// something better.
     status: Option<String>,
+    /// What the human line prints — the stored status seen through the
+    /// coordination plane, brackets included.
+    marker: Option<String>,
     title: Option<String>,
 }
 
@@ -2333,6 +2343,10 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
     let shorts = crate::context::short_ids(&ids);
     let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
+    // The same coordination every other listing reads, so a blocker that is
+    // claimed says so here too instead of reading `[in_progress]` at a reader
+    // who has just been told `[claimed:who]` by `context`.
+    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
 
     let edge = |id: &EntityId| -> Edge {
         let row = row_of.get(id);
@@ -2340,6 +2354,11 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
             id: id.clone(),
             short: shorts.get(id).cloned().unwrap_or_else(|| id.to_string()),
             status: row.map(|r| r.status.clone()),
+            // The whole marker, brackets included, because it is the marker
+            // that varies and not just the word inside it.
+            marker: row.map(|r| {
+                crate::context::marker_for(&r.status, crate::context::coordination_of(&coord, id))
+            }),
             title: row.map(|r| r.title.clone()),
         }
     };
@@ -2376,13 +2395,13 @@ fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge], style: crate
         } else {
             crate::style::glyph::BRANCH
         };
-        match (&e.status, &e.title) {
-            (Some(status), Some(title)) => {
+        match (&e.marker, &e.title) {
+            (Some(marker), Some(title)) => {
                 let _ = writeln!(
                     out,
                     "{connector}{}  {} {title}",
                     style.id(&e.short),
-                    style.status(&format!("[{status}]"))
+                    style.status(marker)
                 );
             }
             _ => {
@@ -4285,6 +4304,51 @@ mod tests {
             out,
             std::fs::read_to_string(t.store().path_of(&id)).unwrap()
         );
+    }
+
+    /// The end-to-end half of the painter's invariant. `paint`'s own tests
+    /// prove the scan; this proves the wiring — that `show` calls it, that
+    /// calling it moved nothing, and that `--json` was left out of it.
+    #[test]
+    fn show_paints_the_entity_and_moves_nothing() {
+        let t = Temp::new();
+        t.write(&task("000000000001", TaskStatus::Open, &[]));
+        t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
+        let repo = t.repo();
+
+        let render = |args: &[&str], style: crate::style::Style| {
+            let argv: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+            let mut inv = crate::cli::parse(&argv).unwrap();
+            inv.style = style;
+            let mut out = Vec::new();
+            show(&inv, &repo, &mut out).unwrap();
+            String::from_utf8(out).unwrap()
+        };
+
+        // Qualified: both entities live in this repo, and a bare `0000` is
+        // ambiguous across the two kinds.
+        for id in ["TASK-0000", "ADR-0000"] {
+            let plain = render(&["show", id], crate::style::PLAIN);
+            let painted = render(&["show", id], crate::style::COLOR);
+            // Asserted before the comparison: `undo_sgr` strips both sides.
+            assert!(
+                !plain.contains('\x1b'),
+                "the plain render carries an escape"
+            );
+            assert_ne!(painted, plain, "show did not paint {id}");
+            assert_eq!(
+                crate::style::undo_sgr(&painted),
+                plain,
+                "colour moved the content of {id}"
+            );
+        }
+
+        // The style is forced to COLOR here rather than left to dispatch, which
+        // would have set it to PLAIN: what is under test is that `show` itself
+        // keeps the machine surface out of the painting, not that something
+        // upstream happens to.
+        let json = render(&["show", "TASK-0000", "--json"], crate::style::COLOR);
+        assert!(!json.contains('\x1b'), "--json was painted: {json}");
     }
 
     #[test]

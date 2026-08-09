@@ -1,7 +1,7 @@
 //! ANSI styling, and the whole of it (§4, ADR-962c25797569).
 //!
 //! Every escape sequence this binary can emit is written here, in one table of
-//! six codes. That is deliberate: color is presentation, and presentation
+//! eight codes. That is deliberate: color is presentation, and presentation
 //! scattered across twelve verb modules is presentation nobody can audit. A
 //! reader asking "can `ank` put an escape sequence in my pipe" reads this file
 //! and no other.
@@ -76,7 +76,7 @@ impl Style {
         }
     }
 
-    // The six codes, and the whole of them.
+    // The eight codes, and the whole of them.
 
     pub fn bold(&self, s: &str) -> String {
         self.paint("1", s)
@@ -95,6 +95,12 @@ impl Style {
     }
     pub fn cyan(&self, s: &str) -> String {
         self.paint("36", s)
+    }
+    pub fn blue(&self, s: &str) -> String {
+        self.paint("34", s)
+    }
+    pub fn magenta(&self, s: &str) -> String {
+        self.paint("35", s)
     }
 
     // Semantic names for the elements §4 names. A call site says what it is
@@ -192,10 +198,51 @@ fn state_sgr(state: &str) -> Option<&'static str> {
     }
     match state.split(':').next().unwrap_or(state) {
         "done" | "finished" | "accepted" => Some("32"),
-        "claimed" => Some("36"),
-        "closed" | "blocked" | "superseded" => Some("2"),
+        // One state seen twice: `in_progress` is what the file says, `claimed`
+        // is what the ref says. A reader who sees them in two colours has to
+        // learn that they are the same fact; a reader who sees one colour does
+        // not.
+        "claimed" | "in_progress" => Some("36"),
+        "closed" | "superseded" => Some("2"),
+        "open" => Some("34"),
+        "proposed" => Some("35"),
+        // Nothing else is a status. Returning None here is not a default for a
+        // state the table forgot -- it is the answer for a string that is not a
+        // state at all, and §4 is now checkable against that.
         _ => None,
     }
+}
+
+/// Strip the SGR sequences back out of a styled render.
+///
+/// The inverse of the painting, and it lives here because this module owns the
+/// escapes: what strips them and what writes them must agree, and they cannot
+/// agree from two files. Every caller uses it the same way — strip the coloured
+/// render and it has to equal the plain one, exactly — which is the invariant
+/// the whole of §4's colour rule rests on. It is stronger than comparing the
+/// two outputs by eye: it fails on a doubled paint, on an escape landing inside
+/// a padded column, on a header styled in one mode and not the other, and on a
+/// budget spending itself on invisible bytes.
+///
+/// **A caller must assert its input carries no escape of its own first.** This
+/// strips from both sides of a comparison, so a fixture that already contained
+/// one would make the equality hold by mutual destruction.
+#[cfg(test)]
+pub(crate) fn undo_sgr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for c in it.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The rule of §4, evaluated once per process.
@@ -291,6 +338,8 @@ mod tests {
         assert_eq!(s.green("x"), "\x1b[32mx\x1b[0m");
         assert_eq!(s.yellow("x"), "\x1b[33mx\x1b[0m");
         assert_eq!(s.cyan("x"), "\x1b[36mx\x1b[0m");
+        assert_eq!(s.blue("x"), "\x1b[34mx\x1b[0m");
+        assert_eq!(s.magenta("x"), "\x1b[35mx\x1b[0m");
         // Every sequence closes. An unreset attribute bleeds into the prompt.
         for painted in [
             s.header("h"),
@@ -318,8 +367,8 @@ mod tests {
             "done",
             "accepted",
             "claimed",
+            "in_progress",
             "closed",
-            "blocked",
             "superseded",
             "open",
             "proposed",
@@ -349,30 +398,94 @@ mod tests {
         }
     }
 
+    /// The table of §4, enumerated rather than sampled.
+    ///
+    /// Expectations are built from the raw accessors, never from an escape
+    /// literal, for the reason `a_landing_state_carries_the_colour_its_marker_carries`
+    /// gives: a literal keeps passing when the meaning underneath it has moved.
     #[test]
     fn the_status_table_is_the_one_section_4_declares() {
         let s = COLOR;
-        assert_eq!(s.status("[done]"), s.green("[done]"));
-        assert_eq!(
-            s.status("[finished:abc1234 on main]"),
-            s.green("[finished:abc1234 on main]")
-        );
-        assert_eq!(s.status("[accepted]"), s.green("[accepted]"));
-        assert_eq!(s.status("[claimed:who@host]"), s.cyan("[claimed:who@host]"));
-        assert_eq!(s.status("[closed]"), s.dim("[closed]"));
-        assert_eq!(s.status("[blocked]"), s.dim("[blocked]"));
-        // Expired wins over the status it expired from, and `[open]` is the
-        // one marker that stays the terminal's own colour.
-        assert_eq!(
-            s.status("[open expired:who@host]"),
-            s.yellow("[open expired:who@host]")
-        );
+        let table: [(&str, fn(&Style, &str) -> String); 10] = [
+            ("open", Style::blue),
+            ("in_progress", Style::cyan),
+            ("claimed:who@host", Style::cyan),
+            ("done", Style::green),
+            ("finished:abc1234 on main", Style::green),
+            ("closed", Style::dim),
+            ("proposed", Style::magenta),
+            ("accepted", Style::green),
+            ("superseded", Style::dim),
+            ("open expired:who@host", Style::yellow),
+        ];
+        for (state, expected) in table {
+            let marker = format!("[{state}]");
+            assert_eq!(
+                s.status(&marker),
+                expected(&s, &marker),
+                "the marker [{state}] is not the colour §4 gives it"
+            );
+            assert_eq!(
+                s.landed(state),
+                expected(&s, state),
+                "the landing {state} is not the colour §4 gives it"
+            );
+        }
+        // Expired wins over the status it expired from, whichever that is —
+        // which is why it is tested from both ends and not only from `open`.
         assert_eq!(
             s.status("[done expired:who@host]"),
             s.yellow("[done expired:who@host]")
         );
-        assert_eq!(s.status("[open]"), "[open]");
-        assert_eq!(s.status("[proposed]"), "[proposed]");
+        // `blocked` is not a status. §4 struck it from the table because it is
+        // derived from `blocked_by` at read time and no entity is ever stored
+        // carrying it, so nothing can print it and it has nothing to colour.
+        assert_eq!(s.status("[blocked]"), "[blocked]");
+    }
+
+    /// The property §4 now states: nothing a listing prints is left at the
+    /// terminal's default.
+    ///
+    /// Driven off the model's own enumerations rather than a list typed here,
+    /// through a match that stops compiling when a variant is added. A bare
+    /// array would have gone stale in silence — which is exactly how
+    /// `in_progress` came to be missing from the table for as long as it was.
+    #[test]
+    fn every_status_the_model_can_hold_has_a_colour() {
+        use ank_core::{AdrStatus, TaskStatus};
+
+        fn task(v: TaskStatus) -> &'static str {
+            match v {
+                TaskStatus::Open
+                | TaskStatus::InProgress
+                | TaskStatus::Done
+                | TaskStatus::Closed => v.as_str(),
+            }
+        }
+        fn adr(v: AdrStatus) -> &'static str {
+            match v {
+                AdrStatus::Proposed | AdrStatus::Accepted | AdrStatus::Superseded => v.as_str(),
+            }
+        }
+
+        let s = COLOR;
+        for state in [
+            task(TaskStatus::Open),
+            task(TaskStatus::InProgress),
+            task(TaskStatus::Done),
+            task(TaskStatus::Closed),
+            adr(AdrStatus::Proposed),
+            adr(AdrStatus::Accepted),
+            adr(AdrStatus::Superseded),
+        ] {
+            let marker = format!("[{state}]");
+            assert_ne!(
+                s.status(&marker),
+                marker,
+                "{state} reaches a reader with no colour"
+            );
+            assert_ne!(s.landed(state), state, "{state} lands with no colour");
+        }
     }
 
     #[test]

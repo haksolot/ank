@@ -537,10 +537,12 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 |---|---|
 | section headers: `CONSTRAINTS`, `PROPOSED`, `TASKS`, `DONE_CRITERIA`, `LOG`, `BLOCKED BY`, `UNBLOCKS` | bold |
 | identifiers: `TASK-8ebd`, `ADR-962c` | yellow |
-| `[open]` | default |
-| `[claimed:…]`, `[… expired:…]` | cyan, yellow |
-| `[done]`, `[finished:… on …]` | green |
-| `[closed]`, `[blocked]` | dim |
+| `[open]` | blue |
+| `[in_progress]`, `[claimed:…]` | cyan |
+| `[… expired:…]` | yellow |
+| `[done]`, `[finished:… on …]`, `[accepted]` | green |
+| `[closed]`, `[superseded]` | dim |
+| `[proposed]` | magenta |
 | a transition word that advanced the corpus: `created`, `claimed`, `logged`, `attested`, `amended`, `accepted` | green |
 | a transition word that gave something up: `released`, `closed`, `superseded`, `pruned` | dim |
 | the state a transition landed on: `-> done`, `-> open`, `-> closed` | as its marker above |
@@ -549,6 +551,40 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 | `warning:` and `check`'s `signal:` tag | yellow |
 | a verifier's `ok` / `FAILED` | green / red |
 | the trailing next-command line, `> ank …` | bold |
+| the `---` fences and the frontmatter keys of the entity `show` prints | dim |
+| the `id` and `supersedes` values of that frontmatter | yellow |
+| its `status` value | as its marker above |
+| a markdown heading in its body | bold |
+| the `- <timestamp> <who>` prefix of a log entry, under `show` and under `log` | dim |
+
+**`show` paints the entity and moves nothing.** ADR-01b6dd05f0db returns the
+entity byte for byte, and that stays exactly true: an escape sequence occupies
+no column, so stripping the escapes from what `show` writes yields the byte
+sequence it wrote before, character for character, in the same order. Nothing is
+added, removed, aligned or re-indented. The file is not re-laid-out for a human,
+because ADR-0c8ab846d262 already refused to give one corpus two shapes — what
+changes is which of those bytes are lit, and only for a reader who is at a
+terminal. Every reader that parses gets what it always got.
+
+The `status` value is painted from the same table its bracketed marker reads, so
+`status: done` at the top of a file and `[done]` in a listing are one fact seen
+twice, which is the rule the transition grammar below already states. A log
+entry's prefix recedes for the reason `status`'s labels do: the timestamp and
+the author are addressing, and the message is what the reader came for. The
+prefix is painted the same way under `log`, because the two verbs print the same
+line and a line printed twice must not have two shapes.
+
+**Every status carries a color, and every base color is spent.** A task is
+`open`, `in_progress`, `done` or `closed`; an ADR is `proposed`, `accepted` or
+`superseded`; and the two sets read from one table, because `find` and `scope`
+list them side by side and a reader should not have to know which kind a row is
+before knowing what its color means. `in_progress` takes the color `[claimed:…]`
+carries, because they are one state seen twice — from the index, and from
+the ref that claimed it. Nothing is left at the terminal's default, and that is
+what makes the table checkable rather than memorable: a status with no color is
+now a defect, where before it was an omission somebody had to notice. `blocked`
+is absent because it is not a status — it is derived from `blocked_by` at read
+time (§3), and no entity is ever stored carrying it.
 
 **A transition reads the same whichever verb produced it.** Every verb that changes state confirms it in one shape — the word for what happened, the identifier it happened to, and where the entity landed — and the color follows that shape rather than the verb. The word carries the direction, the identifier is yellow like every other identifier, and the landing state takes exactly the color its bracketed marker takes in a listing: `-> done` and `[done]` are the same fact seen twice, and a reader who has learned one has learned the other. This is why the rule is stated as a grammar and not as a list of verbs — `attested` is legible to someone who has only ever run `claim`.
 
