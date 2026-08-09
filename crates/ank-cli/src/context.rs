@@ -1355,30 +1355,7 @@ After a blank one."
         );
     }
 
-    /// Strip the SGR sequences back out of a styled render and what is left has
-    /// to be the unstyled render, exactly.
-    ///
-    /// This is the invariant the whole of §4's colour rule rests on, and it is
-    /// stronger than looking at the two outputs: it fails on a doubled paint, on
-    /// an escape landing inside a padded column, on a header styled in one mode
-    /// and not the other, and on the budget spending itself on invisible bytes
-    /// so that a terminal truncates the log one entry earlier than a pipe.
-    fn undo_sgr(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut it = s.chars();
-        while let Some(c) = it.next() {
-            if c == '\x1b' {
-                for c in it.by_ref() {
-                    if c == 'm' {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
+    use crate::style::undo_sgr;
 
     #[test]
     fn colour_changes_the_bytes_and_never_the_content() {
@@ -1396,6 +1373,13 @@ After a blank one."
         ] {
             let plain = render(&view, budget, crate::style::PLAIN);
             let painted = render(&view, budget, crate::style::COLOR);
+            // Asserted before the comparison below: `undo_sgr` strips from both
+            // sides, so a render already carrying an escape would make the
+            // equality hold by mutual destruction.
+            assert!(
+                !plain.contains('\x1b'),
+                "the plain render is not escape-free"
+            );
             assert_ne!(plain, painted, "nothing was painted at all");
             assert!(painted.contains('\x1b'));
             assert_eq!(

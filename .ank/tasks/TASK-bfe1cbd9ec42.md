@@ -5,7 +5,7 @@ slug: every-status-a-listing-prints-carries-a-colour-a
 title: Every status a listing prints carries a colour, and in_progress is not missing from the table
 created: 2026-08-09T02:57:52Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/style.rs
@@ -13,8 +13,12 @@ blocked_by: []
 done_criteria: |
   Section 4 of docs/ank-spec-v1.1.md declares one colour for every status the CLI can print, and it declares it before the code moves: [open] blue, [in_progress] cyan alongside [claimed:...], [proposed] magenta, [accepted] green and [superseded] dim stated rather than left implied by the transition-word rule, and [blocked] struck from the table because nothing emits it. state_sgr in crates/ank-cli/src/style.rs is the only function that changes, it returns a colour for every one of those states, and no status the CLI prints reaches a reader unstyled. [open expired:who] is still yellow. Every escape byte is still written in style.rs and nowhere else. The table test in style.rs enumerates the new table state by state rather than spot-checking it, and asserts through the status and landed accessors both, so a second table that happened to agree today would not pass. The whole integration suite through the binary stays green with no edit: no escape sequence reaches a pipe, and the colour of a status is unit-tested because a spawned binary writes to a pipe and can never observe it.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31291756290"
+    criteria: 0e4bf5f40617
 schema: 2
-version: 3
+version: 4
 ---
 
 ## Why
@@ -62,3 +66,4 @@ task, because it means `find`, `scope` and `graph` reading the claim refs.
 The model-driven test is the one that matters. It reads the variants through a match rather than a typed array, so adding a variant to TaskStatus or AdrStatus stops it compiling. A bare list would have gone stale in silence, and going stale in silence is precisely how in_progress came to be absent from the table: TASK-4601ed18d84e verified the palette covered every verb, and nothing verified it covered every status.
 
 Also struck [blocked] from section 4. It was in the table and in state_sgr and nothing has ever emitted it -- blocked is derived from blocked_by at read time, never stored, so no listing can print it. A dead row in a table that is meant to be checkable is worse than an omission.
+- 2026-08-09T03:10:11Z seanl@sean-laptop — done, proof test:31291756290

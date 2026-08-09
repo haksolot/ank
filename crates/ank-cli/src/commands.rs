@@ -1184,8 +1184,11 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
     let _ = writeln!(out);
     for e in &entries {
         // The section's own formatter, so the printed line and the stored line
-        // cannot drift into two shapes for one thing.
-        let _ = writeln!(out, "{}", e.format_line());
+        // cannot drift into two shapes for one thing — and painted through the
+        // same function `show` uses, for the same reason applied to the two
+        // verbs: `show` prints this line too, and one line must not read one
+        // way here and another there.
+        let _ = writeln!(out, "{}", crate::paint::log_line(e, inv.style()));
     }
     Ok(0)
 }

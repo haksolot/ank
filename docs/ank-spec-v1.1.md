@@ -551,6 +551,28 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 | `warning:` and `check`'s `signal:` tag | yellow |
 | a verifier's `ok` / `FAILED` | green / red |
 | the trailing next-command line, `> ank …` | bold |
+| the `---` fences and the frontmatter keys of the entity `show` prints | dim |
+| the `id` and `supersedes` values of that frontmatter | yellow |
+| its `status` value | as its marker above |
+| a markdown heading in its body | bold |
+| the `- <timestamp> <who>` prefix of a log entry, under `show` and under `log` | dim |
+
+**`show` paints the entity and moves nothing.** ADR-01b6dd05f0db returns the
+entity byte for byte, and that stays exactly true: an escape sequence occupies
+no column, so stripping the escapes from what `show` writes yields the byte
+sequence it wrote before, character for character, in the same order. Nothing is
+added, removed, aligned or re-indented. The file is not re-laid-out for a human,
+because ADR-0c8ab846d262 already refused to give one corpus two shapes — what
+changes is which of those bytes are lit, and only for a reader who is at a
+terminal. Every reader that parses gets what it always got.
+
+The `status` value is painted from the same table its bracketed marker reads, so
+`status: done` at the top of a file and `[done]` in a listing are one fact seen
+twice, which is the rule the transition grammar below already states. A log
+entry's prefix recedes for the reason `status`'s labels do: the timestamp and
+the author are addressing, and the message is what the reader came for. The
+prefix is painted the same way under `log`, because the two verbs print the same
+line and a line printed twice must not have two shapes.
 
 **Every status carries a color, and every base color is spent.** A task is
 `open`, `in_progress`, `done` or `closed`; an ADR is `proposed`, `accepted` or

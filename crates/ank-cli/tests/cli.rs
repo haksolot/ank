@@ -3636,6 +3636,10 @@ fn styled_surface() -> Vec<Vec<&'static str>> {
         vec!["find", "Example"],
         vec!["find", "nothing-matches-this"],
         vec!["show", ID],
+        // The ADR too: its `constraint` is a block scalar, which is the shape
+        // the entity painter has to walk past without touching, and a task's
+        // `show` alone never reaches it.
+        vec!["show", "ADR-0000000000ab"],
         vec!["log", ID],
         vec!["graph"],
         vec!["scope", "src"],

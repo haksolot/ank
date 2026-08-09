@@ -213,6 +213,38 @@ fn state_sgr(state: &str) -> Option<&'static str> {
     }
 }
 
+/// Strip the SGR sequences back out of a styled render.
+///
+/// The inverse of the painting, and it lives here because this module owns the
+/// escapes: what strips them and what writes them must agree, and they cannot
+/// agree from two files. Every caller uses it the same way — strip the coloured
+/// render and it has to equal the plain one, exactly — which is the invariant
+/// the whole of §4's colour rule rests on. It is stronger than comparing the
+/// two outputs by eye: it fails on a doubled paint, on an escape landing inside
+/// a padded column, on a header styled in one mode and not the other, and on a
+/// budget spending itself on invisible bytes.
+///
+/// **A caller must assert its input carries no escape of its own first.** This
+/// strips from both sides of a comparison, so a fixture that already contained
+/// one would make the equality hold by mutual destruction.
+#[cfg(test)]
+pub(crate) fn undo_sgr(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut it = s.chars();
+    while let Some(c) = it.next() {
+        if c == '\x1b' {
+            for c in it.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The rule of §4, evaluated once per process.
 ///
 /// Three conditions, in the order that costs least: a terminal, then an
