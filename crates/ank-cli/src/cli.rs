@@ -109,6 +109,11 @@ pub struct FlagSpec {
     pub name: &'static str,
     pub takes_value: bool,
     pub repeatable: bool,
+    /// Whether `help` offers it. False for a name the parser knows only so the
+    /// verb can refuse it precisely (§9): `help` lists what a caller can use,
+    /// and a name that is always rejected is worse than absent there, because
+    /// the caller reads an offer.
+    pub listed: bool,
 }
 
 const fn flag(name: &'static str) -> FlagSpec {
@@ -116,6 +121,7 @@ const fn flag(name: &'static str) -> FlagSpec {
         name,
         takes_value: true,
         repeatable: false,
+        listed: true,
     }
 }
 
@@ -124,6 +130,7 @@ const fn switch(name: &'static str) -> FlagSpec {
         name,
         takes_value: false,
         repeatable: false,
+        listed: true,
     }
 }
 
@@ -132,7 +139,35 @@ const fn multi(name: &'static str) -> FlagSpec {
         name,
         takes_value: true,
         repeatable: true,
+        listed: true,
     }
+}
+
+/// A name the parser accepts so that the verb can refuse it by name, with the
+/// command to run instead. The parser's "unknown flag" would list the valid
+/// ones and leave the caller to work out why the obvious one is missing.
+const fn refused(name: &'static str) -> FlagSpec {
+    FlagSpec {
+        name,
+        takes_value: true,
+        repeatable: false,
+        listed: false,
+    }
+}
+
+/// One state a verb refuses on, and the code it exits with (§4, §9).
+///
+/// Carried on the spec rather than only in the verb that raises it, because the
+/// question "what will this refuse" is asked *before* the call, and the error is
+/// only available after.
+#[derive(Debug, Clone, Copy)]
+pub struct Refusal {
+    pub code: i32,
+    pub when: &'static str,
+}
+
+const fn refuses(code: i32, when: &'static str) -> Refusal {
+    Refusal { code, when }
 }
 
 /// Global flags, deliberately limited to three (§4). `--json` is available on
@@ -187,11 +222,19 @@ fn long_of(c: char) -> Option<&'static str> {
 #[derive(Debug, Clone, Copy)]
 pub struct CommandSpec {
     pub name: &'static str,
+    /// What the verb does, in one line, for `ank help <verb>` (§9). Not for the
+    /// flat listing, which stays what it was.
+    pub summary: &'static str,
     /// Mandatory subcommands, as in `new task` / `new adr`.
     pub subcommands: &'static [&'static str],
     pub max_positionals: usize,
     pub positional_help: &'static str,
     pub flags: &'static [FlagSpec],
+    /// The states this verb refuses on, with their codes (§9).
+    pub refuses: &'static [Refusal],
+    /// What the usage line cannot carry and the caller needs before calling: a
+    /// value's grammar, or what interprets it. One line each.
+    pub notes: &'static [&'static str],
     /// The task that carries the implementation, **while it does not exist**.
     /// It is therefore also the marker of an unrouted verb: a command that
     /// [`dispatch`] reaches clears the field, so the two never drift apart the
@@ -209,56 +252,81 @@ pub struct CommandSpec {
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "context",
+        summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit")],
+        refuses: &[],
+        notes: &["a constraint is never truncated in execution mode; a cut is always announced"],
         owner_task: None,
     },
     CommandSpec {
         name: "claim",
+        summary: "takes the task and freezes its done_criteria by hash",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--criteria"), flag("--ttl")],
+        refuses: &[
+            refuses(4, "the task is held by another agent, or finished on another branch"),
+            refuses(7, "the task is blocked, or has no done_criteria to freeze"),
+        ],
+        notes: &["--criteria on a task that already has one overwrites it and records the criterion as the claimer's"],
         owner_task: None,
     },
     CommandSpec {
         name: "show",
+        summary: "the entity whole, frontmatter and body, byte for byte",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
+        refuses: &[refuses(2, "no such entity, or the prefix matches more than one")],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "log",
+        summary: "an id alone reads the log; an id and a message appends one and renews the claim",
         subcommands: &[],
         max_positionals: 2,
         // Both optional, and what is given decides which of the two things the
         // verb does: an id alone reads, a message writes (§4).
         positional_help: "[<id>] [<message>]",
         flags: &[],
+        refuses: &[refuses(6, "writing with no claim held by this agent")],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "done",
+        summary: "runs the declared verifiers, records what ran, and moves the task to done",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--proof")],
+        refuses: &[
+            refuses(5, "no proof, and no verifier declared to produce one"),
+            refuses(6, "no claim held by this agent, or the frozen done_criteria has diverged"),
+        ],
+        notes: &["--proof is <type>:<ref>; type is commit, human-review, assertion or test"],
         owner_task: None,
     },
     CommandSpec {
         name: "release",
+        summary: "hands the task back, with the reason recorded in its log",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
+        refuses: &[refuses(6, "no claim held by this agent")],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "new",
+        summary: "writes a task or an ADR that needs no hand finishing",
         subcommands: &["task", "adr"],
         max_positionals: 0,
         positional_help: "",
@@ -272,14 +340,19 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--verify"),
             flag("--body"),
         ],
+        refuses: &[refuses(9, "no --title or --scope and $EDITOR is unset, so there is nothing to open")],
+        notes: &["a scope is mandatory: an entity attached to nothing is invisible"],
         owner_task: None,
     },
     CommandSpec {
         name: "find",
+        summary: "searches titles, scopes and criteria; --status open lists what remains, with no query",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[flag("--type"), flag("--status"), flag("--scope")],
+        refuses: &[],
+        notes: &["--status filters on the stored status; a claimed row still displays as [claimed:who]"],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
@@ -287,38 +360,64 @@ pub const COMMANDS: &[CommandSpec] = &[
     // refused the commit until it moved (TASK-15336a0012d5).
     CommandSpec {
         name: "status",
+        summary: "where am I: branch, claim, perimeter, queue, findings",
         subcommands: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[],
+        refuses: &[],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "review",
+        summary: "the ratification queue and the health of the corpus: what is proposed, and which scopes have gone dead",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        refuses: &[],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "accept",
+        summary: "promotes a proposed ADR to accepted, through a signed ratification commit",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
+        refuses: &[
+            refuses(2, "no such entity, or the prefix matches more than one"),
+            refuses(7, "not on the default branch, and there is no way around it"),
+            refuses(
+                9,
+                "the default branch cannot be determined, from config.yml or from origin",
+            ),
+        ],
+        notes: &["the one act ank commits for; it is a human act, signed"],
         owner_task: None,
     },
     CommandSpec {
         name: "close",
+        summary: "closes a task that will never be done",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--reason")],
+        refuses: &[
+            refuses(
+                7,
+                "no --reason: a closure nobody explained is one nobody can reopen",
+            ),
+            refuses(2, "no such entity, or the prefix matches more than one"),
+        ],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "amend",
+        summary: "changes blocked_by and scope on an entity that already exists",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
@@ -327,70 +426,99 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--drop-blocked-by"),
             multi("--scope"),
             multi("--drop-scope"),
-            // Declared only so it can be refused by name. The parser's "unknown
-            // flag" would list the valid ones and leave the caller to work out
-            // why the obvious one is missing; §4 wants the exact command to run
-            // next, and for a frozen criterion that command is `ank release`.
-            flag("--criteria"),
+            // Known to the parser and not offered by `help`: it exists so the
+            // refusal can name it and point at `ank release` (§9). Listing it
+            // was the defect TASK-84cfad83c308 was filed for -- help did not
+            // merely say too little, it made an offer the verb rejects.
+            refused("--criteria"),
         ],
+        refuses: &[refuses(
+            6,
+            "--criteria: done_criteria is frozen at claim; a wrong criterion is a release",
+        )],
+        notes: &["adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten"],
         owner_task: None,
     },
     CommandSpec {
         name: "attest",
+        summary: "appends a proof to a finished task: the one write allowed after done",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--proof")],
+        refuses: &[refuses(2, "no such entity, or the prefix matches more than one")],
+        notes: &["--proof is <type>:<ref>; type is commit, human-review, assertion or test"],
         owner_task: None,
     },
     // After `attest` and before `graph`: §4's order, and the last gap in it.
     // `tests/skill.rs` is what holds this to §4 rather than to memory.
     CommandSpec {
         name: "edit",
+        summary: "opens an entity in $EDITOR and validates what comes back",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
+        refuses: &[refuses(9, "$EDITOR is unset, and there is no editor to open")],
+        notes: &[
+            "$EDITOR is a command line run through sh, not a program name",
+            "a GUI editor needs its wait flag, or it returns before you have typed and the file is written back unedited",
+        ],
         owner_task: None,
     },
     CommandSpec {
         name: "graph",
+        summary: "the blocked_by DAG in readable text, indented under what blocks it",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        refuses: &[],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "scope",
+        summary: "what covers a path: the constraints that bind it and the tasks that touch it",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<path>",
         flags: &[],
+        refuses: &[],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "check",
+        summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        refuses: &[],
+        notes: &["exit 8 means findings; a signal alone leaves it 0"],
         owner_task: None,
     },
     CommandSpec {
         name: "init",
+        summary: "creates .ank/, writes config.yml, and adds the refs/ank/* refspec",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
+        refuses: &[],
+        notes: &[],
         owner_task: None,
     },
     CommandSpec {
         name: "help",
+        summary: "every verb in one flat listing, or one verb in full",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<verb>]",
         flags: &[],
+        refuses: &[refuses(2, "no such verb; never a fallback to the general listing")],
+        notes: &[],
         owner_task: None,
     },
 ];
@@ -724,11 +852,20 @@ fn flag_display(f: &FlagSpec, with_short: bool) -> String {
 /// overview short and sending the detail to `ank help <verb>`; spelling out every
 /// value placeholder in the listing would spend exactly what the split saves.
 fn flag_names(spec: &CommandSpec) -> String {
-    spec.flags
-        .iter()
+    listed_flags(spec)
+        .into_iter()
         .map(|f| f.name)
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The flags `help` offers, which is not every flag the parser accepts (§9).
+///
+/// One filter, read by the flat listing, the per-verb page and `--json` alike:
+/// three renderings of one surface, and a name hidden from one of them and not
+/// the others would be the same defect in a quieter place.
+fn listed_flags(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
+    spec.flags.iter().filter(|f| f.listed).collect()
 }
 
 fn globals_line(with_short: bool) -> String {
@@ -762,9 +899,14 @@ fn json_of(specs: &[&CommandSpec]) -> String {
     let verbs: Vec<String> = specs
         .iter()
         .map(|spec| {
-            let flags: Vec<String> = spec
-                .flags
+            let refusals: Vec<String> = spec
+                .refuses
                 .iter()
+                .map(|r| format!("{{\"code\":{},\"when\":{}}}", r.code, json_str(r.when)))
+                .collect();
+            let notes: Vec<String> = spec.notes.iter().map(|n| json_str(n)).collect();
+            let flags: Vec<String> = listed_flags(spec)
+                .into_iter()
                 .chain(GLOBAL_FLAGS.iter())
                 .map(|f| {
                     // The short form is here and not only in the human listing:
@@ -784,10 +926,13 @@ fn json_of(specs: &[&CommandSpec]) -> String {
                 })
                 .collect();
             format!(
-                "{{\"name\":{},\"usage\":{},\"flags\":[{}]}}",
+                "{{\"name\":{},\"usage\":{},\"summary\":{},\"flags\":[{}],\"notes\":[{}],\"refuses\":[{}]}}",
                 json_str(spec.name),
                 json_str(&usage(spec)),
-                flags.join(",")
+                json_str(spec.summary),
+                flags.join(","),
+                notes.join(","),
+                refusals.join(",")
             )
         })
         .collect();
@@ -821,11 +966,25 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
             return Ok(0);
         }
         let _ = writeln!(out, "{}", usage(spec));
-        if !spec.flags.is_empty() {
-            let flags: Vec<String> = spec.flags.iter().map(|f| flag_display(f, true)).collect();
+        if !spec.summary.is_empty() {
+            let _ = writeln!(out, "  {}", spec.summary);
+        }
+        let listed = listed_flags(spec);
+        if !listed.is_empty() {
+            let flags: Vec<String> = listed.iter().map(|f| flag_display(f, true)).collect();
             let _ = writeln!(out, "  flags:    {}", flags.join(" "));
         }
         let _ = writeln!(out, "  global:   {}", globals_line(true));
+        for (i, note) in spec.notes.iter().enumerate() {
+            let label = if i == 0 { "note:" } else { "" };
+            let _ = writeln!(out, "  {label:<9} {note}");
+        }
+        // What the verb refuses, and the code it comes back with (§9). The
+        // question is asked before the call; the error is only available after.
+        for (i, r) in spec.refuses.iter().enumerate() {
+            let label = if i == 0 { "refuses:" } else { "" };
+            let _ = writeln!(out, "  {label:<9} {} ({})", r.when, r.code);
+        }
         return Ok(0);
     }
 

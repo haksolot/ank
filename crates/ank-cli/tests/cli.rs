@@ -3767,6 +3767,135 @@ fn a_listing_marks_the_row_the_caller_holds() {
     }
 }
 
+/// A value that is valid for the flag, so that what is measured is the flag
+/// and not the parse of its argument.
+///
+/// Measured the hard way first: a generic `x` makes `--limit` a code 1 and
+/// `--type` a code 1, neither of which is a refusal of the flag -- it is the
+/// verb correctly rejecting a value that is not a number and not a kind. A test
+/// that read those as refusals would have failed on four verbs that are right.
+fn valid_value(flag: &str) -> &'static str {
+    match flag {
+        "--limit" => "5",
+        "--type" => "task",
+        "--status" => "open",
+        "--ttl" => "1h",
+        "--proof" => "test:1",
+        "--scope" | "--drop-scope" => "src/**",
+        "--blocked-by" | "--drop-blocked-by" => "TASK-000000000001",
+        "--supersedes" => "ADR-000000000001",
+        "--verify" => "cargo-test",
+        "--criteria" => "A measurable thing.",
+        "--reason" => "a reason",
+        "--title" => "A title",
+        "--constraint" => "A rule.",
+        "--body" => "Some prose.",
+        other => panic!("no valid value declared for {other}: add one rather than guess"),
+    }
+}
+
+/// The flags a verb's own help offers, read off the human output because that
+/// is the surface the claim is about.
+fn listed_flags(r: &Repo, verb: &str) -> Vec<String> {
+    let out = stdout(&r.ank("claude-code@ank", &["help", verb]));
+    out.lines()
+        .find(|l| l.trim_start().starts_with("flags:"))
+        .map(|l| {
+            l.split_whitespace()
+                .filter(|t| t.starts_with("--"))
+                .map(|t| t.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// **A flag `ank help` offers is a flag the verb can actually be given** (§9).
+///
+/// The defect this exists for: `amend` listed `--criteria` among its flags and
+/// refused it unconditionally, by name and by design. Help did not merely say
+/// too little there, it made an offer the verb rejects -- and the refusal's own
+/// hint pointed at `ank release`, which a task that was never claimed cannot
+/// run. It was found by reading `human.rs`, which is the recovery route that
+/// does not exist in a repository where ank arrives as a binary and a SKILL.md.
+///
+/// The shape is the one `msrv-tight` uses: a negative test that attributes the
+/// drift rather than leaving it for a human to notice two revisions later.
+///
+/// **The invariant.** Against a fixed repository state, adding one flag the
+/// help lists must not change the verb's exit code. A flag that is refused by
+/// name fires before the verb looks at the repository, so it replaces the
+/// ordinary answer -- `amend 9999` is a 2, and `amend 9999 --criteria ...` was a
+/// 6, which is exactly the signature.
+///
+/// **One exception, and it is the flag doing its job.** When the baseline is a
+/// 7 -- a missing prerequisite -- a flag is allowed to change the code, because
+/// supplying the prerequisite is what `close --reason` and `release --reason`
+/// are for. Measured rather than assumed: those two are the only verbs where it
+/// happens.
+#[test]
+fn every_flag_the_help_offers_can_be_given_to_the_verb() {
+    let r = color_fixture();
+    // `sh -c true` on all three platforms: git supplies the shell on Windows.
+    // Without it `new` opens an editor and the run has no deterministic end.
+    let env = [("EDITOR", Some("true"))];
+
+    // Every verb §4 lists, with a positional that resolves to nothing so the
+    // baseline is the verb's ordinary "not found" rather than real work.
+    let verbs: [(&str, &[&str]); 20] = [
+        ("context", &[]),
+        ("claim", &["TASK-999999999999"]),
+        ("show", &["TASK-999999999999"]),
+        ("log", &["TASK-999999999999"]),
+        ("done", &["TASK-999999999999"]),
+        ("release", &["TASK-999999999999"]),
+        ("new", &["task"]),
+        ("find", &["nothing-matches-this"]),
+        ("status", &[]),
+        ("review", &[]),
+        ("accept", &["ADR-999999999999"]),
+        ("close", &["TASK-999999999999"]),
+        ("amend", &["TASK-999999999999"]),
+        ("attest", &["TASK-999999999999"]),
+        ("edit", &["TASK-999999999999"]),
+        ("graph", &[]),
+        ("scope", &["src"]),
+        ("check", &[]),
+        ("init", &[]),
+        ("help", &["find"]),
+    ];
+
+    let mut walked = 0;
+    for (verb, positionals) in verbs {
+        walked += 1;
+        let flags = listed_flags(&r, verb);
+        if flags.is_empty() {
+            continue;
+        }
+        let mut base_args = vec![verb];
+        base_args.extend_from_slice(positionals);
+        let baseline = code(&r.ank_env("claude-code@ank", &base_args, &env));
+
+        for flag in &flags {
+            let value = valid_value(flag);
+            let mut args = base_args.clone();
+            args.push(flag);
+            args.push(value);
+            let got = code(&r.ank_env("claude-code@ank", &args, &env));
+            assert!(
+                got == baseline || baseline == 7,
+                "`ank {verb}` offers {flag} and then answers {got} where it \
+                 answers {baseline} without it: either the verb refuses a flag \
+                 its help advertises, or the help advertises a flag the verb \
+                 refuses"
+            );
+        }
+    }
+    assert_eq!(
+        walked, 20,
+        "a verb was added and this walk did not learn of it"
+    );
+}
+
 /// One fact, one string, whichever verb prints it.
 ///
 /// `context` reads the claim refs and every other listing read the index, so a
