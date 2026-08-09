@@ -5,7 +5,7 @@ slug: config-yml-is-written-through-the-cli-and-the-wr
 title: config.yml is written through the CLI, and the writer touches nothing else
 created: 2026-08-09T06:37:07Z
 author: seanl@sean-laptop
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/config.rs
   - crates/ank-cli/src/init.rs
@@ -30,8 +30,9 @@ constraint: |
   
   This constrains the agent, not the human: a human with an editor keeps every
   power they had, and the file stays reviewable text in the repository.
+ratified: 90a8ce18e750
 schema: 2
-version: 2
+version: 3
 ---
 
 ## Context
