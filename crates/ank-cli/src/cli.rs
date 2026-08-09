@@ -1103,11 +1103,61 @@ struct Startup {
     identity: String,
 }
 
+/// Names the corpus when the walk crossed a git repository boundary
+/// (TASK-2f01baf94632).
+///
+/// `discover` stops at the first `.ank/` and at nothing else, so from a
+/// checkout nested inside another repository it silently resolves the outer
+/// corpus. That is not merely reading the wrong files: claims are git refs
+/// (ADR-4e7c), so they land in the resolved root's repository and not in the
+/// one holding the code being changed. Measured on a fixture, the inner
+/// repository ends with no ank ref at all.
+///
+/// **Only on the walk.** `--repo` is the caller saying which corpus they mean,
+/// and warning about an answer that was asked for by name would fire forever in
+/// the one layout this behaviour makes usable — a single `.ank/` above several
+/// checkouts, scopes written as `repoA/src/**`. That layout was never designed
+/// for and is not forbidden either; naming `--repo` once is what separates it
+/// from the accident.
+///
+/// **On stderr**, and that is not incidental. It is not part of any verb's
+/// answer, and §4 requires `--json` to stay byte-for-byte what a caller's
+/// parser already reads; a line on stdout would break every one of them to say
+/// something no parser asked for. It degrades and never fails (§2): the walk
+/// succeeded, and the caller may well have meant it.
+fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &std::path::Path) {
+    if inv.repo().is_some() || inv.quiet() {
+        return;
+    }
+    let here = crate::git::common_dir(cwd);
+    let root = crate::git::common_dir(&repo.root);
+    if !crate::git::crosses_repository(here.as_deref(), root.as_deref()) {
+        return;
+    }
+    let style = inv.style().on_stderr();
+    let tag = style.yellow("warning:");
+    let root_display = repo.root.display();
+    match here {
+        Some(_) => eprintln!(
+            "{tag} .ank/ resolved to {root_display}, outside the git repository holding {}",
+            cwd.display()
+        ),
+        None => eprintln!(
+            "{tag} .ank/ resolved to {root_display}; {} is in no git repository",
+            cwd.display()
+        ),
+    }
+    eprintln!(
+        "  -> claims are refs and land in {root_display}: ank init here, or --repo to confirm"
+    );
+}
+
 fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     let repo = crate::repo::resolve(inv.repo(), cwd)?;
     // git is a hard dependency, and its version is checked at startup
     // (ADR-b8884edcebe3).
     crate::git::ensure_usable(&repo.root)?;
+    warn_if_outside_repository(inv, &repo, cwd);
     let config = crate::config::load(&repo.config_path())?;
     let identity = crate::identity::resolve();
     Ok(Startup {
@@ -1179,6 +1229,11 @@ fn dispatch(
     }
     if inv.command == "config" {
         let repo = crate::repo::resolve(inv.repo(), cwd)?;
+        // The same hazard, and it reaches this verb too: a `config` run from a
+        // nested checkout edits the outer repository's configuration. `git` is
+        // unchecked here, which costs nothing — `common_dir` answers `None`
+        // when it cannot run, and two `None`s say nothing.
+        warn_if_outside_repository(&inv, &repo, cwd);
         return crate::config::run(&inv, &repo, out);
     }
 
