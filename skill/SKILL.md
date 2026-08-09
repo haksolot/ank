@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "92b32ac69f22"
+  revision: "975e5ca25da1"
 ---
 
 # ank
@@ -91,6 +91,10 @@ ends is part of planning well.
   directly. `ank show <id>` gives you an entity whole, `ank find` lists,
   `ank context` binds — the CLI knows the budget, the freeze and who holds what;
   the files do not.
+
+- **What you read is never styled.** Colour is emitted only when a human is at
+  a terminal, never into a pipe, a file or `--json`, so the bytes reaching you
+  are plain: there is nothing to configure and no second surface to prefer.
 
 Exit codes carry meaning: `4` unavailable, `6` a frozen field diverged, `8`
 findings, `9` environment. Errors always name the exact next command.

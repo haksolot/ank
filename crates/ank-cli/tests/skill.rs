@@ -301,6 +301,35 @@ fn the_skill_teaches_nothing_beyond_what_is_frozen() {
     }
 }
 
+/// **What an agent reads is plain bytes, and the skill says so**
+/// (TASK-21031b516bb2).
+///
+/// The guarantee existed and was written down everywhere except the one file
+/// every agent actually loads. That gap has a cost the others do not: an agent
+/// that does not know the rule can reasonably suspect its input of carrying
+/// escape sequences, and the repairs it would then reach for -- stripping
+/// output, hunting for a `--no-color` that does not exist, preferring `--json`
+/// for cleanliness rather than for parsing -- are all wasted work built on a
+/// guess. Saying it once costs one line of a permanently loaded file and
+/// removes the whole class.
+///
+/// Asserted by what the sentence has to establish rather than by its exact
+/// wording, for the reason `the_skill_describes_accept_without_inviting_it`
+/// records: a test pinned to one phrasing fails on a correct rewrite, and
+/// reports it as a removal.
+#[test]
+fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
+    let text = skill();
+    for token in ["terminal", "pipe", "--json"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?}: an agent that cannot read the \
+             guarantee has to guess whether its input is styled, and every \
+             repair it reaches for from that guess is wasted"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Which revision is installed (TASK-b495234f192c)
 // ---------------------------------------------------------------------------
