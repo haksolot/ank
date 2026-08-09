@@ -20,9 +20,10 @@ constraint: |
   
   The writer changes no byte it was not asked to change. Comments, blank lines,
   key order and quoting style survive a write untouched, and every key other than
-  the one named is byte-identical afterwards. The `run` of a verifier is never
-  rewritten by a write that did not name it: that string is hashed into every
-  proof that verifier has ever produced.
+  the one named is byte-identical afterwards. The file is never round-tripped
+  through a serializer, and no default is ever materialised into it: an unset key
+  stays unset, or absence becomes an assertion the next release contradicts. A
+  form the surgery cannot edit safely is refused by name, never guessed at.
   
   `config` runs without a parsed configuration, as `init` and `help` do. The
   caller who most needs it is the one whose config.yml does not load.
@@ -30,7 +31,7 @@ constraint: |
   This constrains the agent, not the human: a human with an editor keeps every
   power they had, and the file stays reviewable text in the repository.
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context
@@ -80,14 +81,25 @@ writes. A writer built the obvious way -- parse, mutate, re-serialize -- would
 drop every comment and blank line, and would reorder `verifiers`, `roles` and
 `identities`, which are `BTreeMap`s and would come back alphabetical.
 
-That is the visible damage. The invisible damage is worse. `definition_hash` is
-`sha256(run.trim() + NUL + timeout_in_seconds)`, and it is stored in every proof
-that verifier ever produced. Re-quoting or reflowing a `run` scalar changes the
-hash, and `check` then reports "verifier X changed since the proof" on every
-historical task in the corpus -- a corpus-wide false signal produced by a
-formatting change nobody asked for. A useful corollary: `timeout: 600s` and
-`timeout: 10m` hash identically, so a timeout's spelling is free where a `run`'s
-is not.
+That is the visible damage, and it is not the argument. The argument is that a
+round-trip turns absence into assertion. Every field of the wire struct carries
+a serde default and none of them would be skipped on the way out, so a
+serializer materialises the lot: `context_budget: 8000`, `claim_ttl_max: 2h`, a
+`timeout: 10m` on every verifier that omitted one, and empty maps for
+`verifiers`, `roles` and `identities`. An unset key means "follows the tool"; a
+written one means "pinned here". The day a default moves, every repository that
+ever ran one `ank config` is silently holding the old value, and nothing
+anywhere says so.
+
+The proof hashes are safer than they look, and the measurement is worth keeping
+because the wrong version of it is persuasive. `definition_hash` is
+`sha256(run.trim() + NUL + timeout_in_seconds)` over the **resolved** values of
+the parsed struct, not over the YAML text. So `run: cargo test` and
+`run: "cargo test"` hash identically, and re-quoting alone would not disturb a
+single historical proof. What does disturb one is a restyle that changes the
+resolved string -- a block scalar becoming a folded one, where the newlines
+differ -- which is exactly the form the surgery refuses to touch rather than
+guess at. The timeout is hashed in seconds, so `600s` and `10m` agree too.
 
 So the guarantee is not a nicety about respecting the user's comments. It is
 what keeps the coordination plane honest, and it belongs where it binds.
