@@ -198,6 +198,7 @@ pub const SHORT_FORMS: &[(&str, char)] = &[
     ("--proof", 'p'),
     ("--status", 's'),
     ("--type", 't'),
+    ("--unset", 'u'),
     ("--verify", 'v'),
 ];
 
@@ -497,6 +498,30 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &["exit 8 means findings; a signal alone leaves it 0"],
+        owner_task: None,
+    },
+    // After `check` and before `init`: §4's order. It sits beside the verb
+    // that writes `config.yml` in the first place, which is the reading §9
+    // states -- what `init` writes, `config` maintains.
+    CommandSpec {
+        name: "config",
+        summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
+        subcommands: &[],
+        max_positionals: 2,
+        positional_help: "<key> [<value>]",
+        flags: &[switch("--unset")],
+        refuses: &[
+            refuses(
+                1,
+                "a key the parser does not know, or a value in a form the surgery cannot edit safely",
+            ),
+            refuses(7, "verifiers.<name>.timeout on a verifier that is not declared"),
+        ],
+        notes: &[
+            "keys: schema context_budget claim_ttl_max default_branch verifiers.<name>.run verifiers.<name>.timeout",
+            "a resolved default prints marked as one; --json carries value and source as separate fields",
+            "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
+        ],
         owner_task: None,
     },
     CommandSpec {
@@ -880,7 +905,7 @@ fn globals_line(with_short: bool) -> String {
 /// literals and none of them needs it today, which is precisely why it is
 /// written rather than assumed: the day a verb or a flag carries a quote, the
 /// output stays parseable instead of becoming a bug in whatever consumes it.
-fn json_str(s: &str) -> String {
+pub fn json_str(s: &str) -> String {
     let mut out = String::from("\"");
     for c in s.chars() {
         match c {
@@ -1135,16 +1160,26 @@ fn dispatch(
         style
     };
 
-    // Two verbs run without the foundation. `init` precedes the existence of
+    // Three verbs run without the foundation. `init` precedes the existence of
     // the repository. `help` describes the surface rather than acting on it,
     // and the caller most in need of it is the one whose environment is wrong:
     // making `ank help` demand a `.ank/`, a git of 2.34, and a readable
     // `config.yml` would withhold the explanation exactly when it is needed.
+    // `config` is the third and the sharpest case of the same reasoning
+    // (ADR-e64dfaafd578): `startup` loads `config.yml` for every other verb, so
+    // an unreadable one fails all of them — `check` included — and the verb
+    // that exists to repair the file would be disabled by exactly the file it
+    // repairs. It resolves the repository, because the file it edits lives in
+    // one, and nothing else.
     if inv.command == "init" {
         return crate::init::run(&inv, cwd, out);
     }
     if inv.command == "help" {
         return help(&inv, out);
+    }
+    if inv.command == "config" {
+        let repo = crate::repo::resolve(inv.repo(), cwd)?;
+        return crate::config::run(&inv, &repo, out);
     }
 
     let s = startup(&inv, cwd)?;
@@ -1255,7 +1290,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            20,
+            21,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1328,8 +1363,8 @@ mod tests {
         // opposite direction: `init`, `claim` and `context` are the verbs
         // routed today, and all must be clear of it.
         for routed in [
-            "init", "help", "claim", "context", "done", "log", "release", "new", "find", "attest",
-            "amend", "show", "edit",
+            "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
+            "attest", "amend", "show", "edit",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

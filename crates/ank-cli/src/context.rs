@@ -327,7 +327,7 @@ pub fn build(
     if git::resolve_default_branch(cfg.default_branch.as_deref(), origin.as_deref()).is_err() {
         warnings.push(
             "default branch indeterminable, completion refs kept as they are \
-             (add \"default_branch: <name>\" to .ank/config.yml)"
+             (ank config default_branch <name>)"
                 .to_string(),
         );
     }

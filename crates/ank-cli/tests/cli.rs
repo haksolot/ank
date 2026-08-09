@@ -248,6 +248,14 @@ impl Repo {
         c.output().expect("the binary must have been built")
     }
 
+    fn config_text(&self) -> String {
+        std::fs::read_to_string(self.0.join(".ank/config.yml")).unwrap()
+    }
+
+    fn set_config(&self, text: &str) {
+        std::fs::write(self.0.join(".ank/config.yml"), text).unwrap();
+    }
+
     /// A non-interactive editor that saves `text`.
     ///
     /// `cp` is the exact shape of one: `edit` appends the file to open as the
@@ -4088,4 +4096,372 @@ fn no_environment_makes_a_pipe_colored() {
             );
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// `ank config` (§4, ADR-e64dfaafd578)
+// ---------------------------------------------------------------------------
+//
+// Through the binary, and not only through the module, because every clause of
+// the criterion is phrased about `ank config <key>` -- and because the sharpest
+// of them is a claim about dispatch: the verb answers on a `config.yml` that
+// fails `startup`, which no unit test on the writer could reach.
+
+/// Trimmed stdout of one invocation, which is what a caller reads.
+fn said(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+fn erred(o: &Output) -> String {
+    String::from_utf8_lossy(&o.stderr).to_string()
+}
+
+/// A `config.yml` carrying every awkward form at once: comments on their own
+/// line and after a value, blank lines, verifiers out of alphabetical order, a
+/// quoted `run`, and a verifier with no `timeout`.
+const AWKWARD: &str = "\
+# Reviewed like code, and it stays reviewable.
+schema: 1
+
+claim_ttl_max: 2h   # renewed by ank log
+default_branch: main
+
+verifiers:
+  # Out of alphabetical order on purpose.
+  fmt-check:
+    run: \"cargo fmt --check\"
+  cargo-test:
+    run: cargo test --workspace -q
+    timeout: 30m
+";
+
+#[test]
+fn config_reads_the_value_in_effect_and_marks_a_resolved_default() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+    let say = |args: &[&str]| said(&r.ank("claude-code@ank", args));
+
+    assert_eq!(say(&["config", "claim_ttl_max"]), "2h");
+    assert_eq!(say(&["config", "default_branch"]), "main");
+    // A quoted value reads as its value, not as its spelling.
+    assert_eq!(
+        say(&["config", "verifiers.fmt-check.run"]),
+        "cargo fmt --check"
+    );
+    assert_eq!(say(&["config", "verifiers.cargo-test.timeout"]), "30m");
+
+    // Absent from the file and resolved by the tool, said to be so: the
+    // difference between "the tool's value" and "this repository's value" is
+    // the whole question a reader is asking, and a release that moves a default
+    // moves the first and not the second.
+    assert_eq!(say(&["config", "context_budget"]), "8000 (default)");
+    assert_eq!(
+        say(&["config", "verifiers.fmt-check.timeout"]),
+        "10m (default)"
+    );
+
+    // Absent with nothing to resolve.
+    r.set_config("schema: 1\n");
+    assert_eq!(say(&["config", "default_branch"]), "(unset)");
+
+    // The marker is on the human surface alone: --json splits the two, which
+    // is what a script reads.
+    r.set_config(AWKWARD);
+    let json = say(&["config", "context_budget", "--json"]);
+    assert!(json.contains("\"value\":\"8000\""), "{json}");
+    assert!(json.contains("\"source\":\"default\""), "{json}");
+    let json = say(&["config", "claim_ttl_max", "--json"]);
+    assert!(json.contains("\"source\":\"file\""), "{json}");
+}
+
+#[test]
+fn config_writes_the_key_and_no_byte_beside_it() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    let out = r.ank("claude-code@ank", &["config", "claim_ttl_max", "4h"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(said(&out), "claim_ttl_max 2h -> 4h");
+
+    // Every line but the one named is byte-identical, comment column included.
+    let after = r.config_text();
+    let moved: Vec<(&str, &str)> = AWKWARD
+        .lines()
+        .zip(after.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(
+        moved,
+        vec![(
+            "claim_ttl_max: 2h   # renewed by ank log",
+            "claim_ttl_max: 4h   # renewed by ank log"
+        )],
+        "more than the named key moved"
+    );
+    assert_eq!(AWKWARD.lines().count(), after.lines().count());
+
+    // No default was materialised on the way: context_budget was absent and
+    // stays absent, and fmt-check still declares no timeout.
+    assert!(!after.contains("context_budget"), "{after}");
+    let fmt = after.split("fmt-check:").nth(1).unwrap();
+    assert!(!fmt.split("cargo-test:").next().unwrap().contains("timeout"));
+
+    // Nested values are addressed by dotted path, and a new verifier is
+    // declared by writing its run -- which is what the six hints now name.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.audit.run", "cargo audit"],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(said(&out), "verifiers.audit.run (unset) -> cargo audit");
+    assert!(r.config_text().contains("  audit:\n    run: cargo audit\n"));
+
+    // Writing what the file already says touches nothing at all.
+    let before = r.config_text();
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.audit.run", "cargo audit"],
+    );
+    assert_eq!(said(&out), "verifiers.audit.run cargo audit (unchanged)");
+    assert_eq!(r.config_text(), before);
+}
+
+#[test]
+fn config_unset_removes_the_key_and_gives_the_file_back() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    let out = r.ank("claude-code@ank", &["config", "--unset", "default_branch"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(said(&out), "default_branch main -> (unset)");
+    assert!(!r.config_text().contains("default_branch"));
+
+    // Set then unset is the identity, byte for byte -- and the short form of
+    // §4's table does the same thing as the long one.
+    r.ank("claude-code@ank", &["config", "default_branch", "main"]);
+    r.ank("claude-code@ank", &["config", "-u", "default_branch"]);
+    let stripped = AWKWARD.replace("default_branch: main\n", "");
+    assert_eq!(r.config_text(), stripped);
+
+    // A whole verifier is what --unset addresses, which is what makes
+    // declaring one reversible.
+    r.set_config(AWKWARD);
+    r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.audit.run", "cargo audit"],
+    );
+    let out = r.ank("claude-code@ank", &["config", "--unset", "verifiers.audit"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(r.config_text(), AWKWARD);
+
+    // And `run` alone is refused, naming the command that does the job.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "verifiers.cargo-test.run"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(
+        erred(&out).contains("ank config --unset verifiers.cargo-test"),
+        "{}",
+        erred(&out)
+    );
+    assert_eq!(r.config_text(), AWKWARD, "a refusal wrote to the file");
+}
+
+#[test]
+fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    let out = r.ank("claude-code@ank", &["config", "budget_context", "10"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = erred(&out);
+    assert!(err.contains("budget_context"), "{err}");
+    for key in [
+        "schema",
+        "context_budget",
+        "claim_ttl_max",
+        "default_branch",
+        "verifiers.<name>.run",
+        "verifiers.<name>.timeout",
+    ] {
+        assert!(err.contains(key), "{key} missing from the refusal: {err}");
+    }
+    assert_eq!(r.config_text(), AWKWARD);
+
+    // Known to the parser, structured, and refused by name rather than guessed
+    // at -- a different message from "no such key".
+    for key in ["roles", "identities", "roles.agent.can"] {
+        let out = r.ank("claude-code@ank", &["config", key, "x"]);
+        assert_eq!(out.status.code(), Some(1), "{key}");
+        assert!(erred(&out).contains("structured"), "{key}: {}", erred(&out));
+    }
+
+    // A timeout cannot declare a verifier, and the refusal names what can.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.nope.timeout", "5m"],
+    );
+    assert_eq!(out.status.code(), Some(7));
+    assert!(
+        erred(&out).contains("ank config verifiers.nope.run"),
+        "{}",
+        erred(&out)
+    );
+    assert_eq!(r.config_text(), AWKWARD);
+}
+
+#[test]
+fn config_refuses_a_write_that_would_leave_the_file_unreadable() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    // Each of these parses as YAML and fails the configuration's own reading:
+    // a duration in no unit it knows, and a schema it does not support.
+    for (key, value) in [("claim_ttl_max", "30w"), ("schema", "2")] {
+        let out = r.ank("claude-code@ank", &["config", key, value]);
+        assert_eq!(out.status.code(), Some(1), "{key} was accepted");
+        assert!(erred(&out).contains("unreadable"), "{key}: {}", erred(&out));
+        assert_eq!(r.config_text(), AWKWARD, "{key} left the file changed");
+    }
+
+    // A block scalar is refused before any of that: flattening it would move
+    // the definition hash that anchors historical proofs.
+    r.set_config("schema: 1\nverifiers:\n  ci:\n    run: |\n      cargo test\n");
+    let before = r.config_text();
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.ci.run", "cargo test -q"],
+    );
+    assert_eq!(out.status.code(), Some(1));
+    assert!(erred(&out).contains("verifiers.ci.run"), "{}", erred(&out));
+    assert_eq!(r.config_text(), before);
+}
+
+#[test]
+fn config_is_the_one_verb_a_config_that_does_not_parse_does_not_stop() {
+    let r = Repo::new();
+    let broken = "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\nbudget_context: 10\n";
+    r.set_config(broken);
+
+    // `startup` loads the configuration for every other verb, so the file
+    // fails all of them -- `check`, the one an agent would reach for, included.
+    for args in [
+        &["check"][..],
+        &["context"][..],
+        &["status"][..],
+        &["find", "anything"][..],
+    ] {
+        let out = r.ank("claude-code@ank", args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?} ran on a config.yml that does not parse"
+        );
+    }
+
+    // The verb that exists to repair the file is the one the broken file does
+    // not stop. It reads,
+    let out = r.ank("claude-code@ank", &["config", "claim_ttl_max"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(said(&out), "2h");
+
+    // and it writes, saying that the file is still unreadable for a reason it
+    // was not asked about. Refusing here instead would be refusing exactly
+    // where the verb is needed.
+    let out = r.ank("claude-code@ank", &["config", "claim_ttl_max", "4h"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert!(r.config_text().contains("claim_ttl_max: 4h"));
+    assert!(said(&out).contains("warning:"), "{}", said(&out));
+    assert!(said(&out).contains("budget_context"), "{}", said(&out));
+}
+
+#[test]
+fn the_errors_that_named_the_file_now_name_the_command() {
+    // ADR-01b6dd05f0db closed `.ank/` to agents and stopped at the
+    // configuration, which left these telling their caller to open a file the
+    // same tool forbids them to open (ADR-e64dfaafd578).
+    let r = Repo::new();
+
+    // `new`, on a --verify that matches nothing. The criterion calls the two
+    // verify sites "new's and amend's"; they are in fact both `new`'s -- the
+    // flag form here, and the `verify:` filled into the $EDITOR template,
+    // which `commands::check_verifiers` guards and a unit test covers. `amend`
+    // takes no --verify at all.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new", "task", "--title", "T", "--scope", "src/**", "--verify", "nope",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(7), "{}", erred(&out));
+    let err = erred(&out);
+    assert!(err.contains("ank config verifiers.nope.run"), "{err}");
+    assert!(
+        !err.contains("under verifiers: in .ank/config.yml"),
+        "it still tells the caller to open the file: {err}"
+    );
+
+    // `done`, on a task declaring a verifier the configuration does not.
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task_with(
+        "TASK-000000000c01",
+        Some("A verifiable criterion."),
+        &["ok"],
+    );
+    r.ank("claude-code@ank", &["claim", "TASK-000000000c01"]);
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n");
+    let out = r.ank("claude-code@ank", &["done", "TASK-000000000c01"]);
+    assert_eq!(out.status.code(), Some(9), "{}", erred(&out));
+    assert!(
+        erred(&out).contains("ank config verifiers.ok.run"),
+        "{}",
+        erred(&out)
+    );
+
+    // The four sites that ask for a default branch. There is no
+    // `default_branch` and no `refs/remotes/origin/HEAD` to fall back on, so
+    // each of them has to name the command that sets one.
+    let r = Repo::new();
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\n");
+    std::fs::write(r.0.join("seed.txt"), "x").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+
+    r.seed_adr("ADR-000000000c02", "A binding rule.", "src/**");
+    for args in [
+        &["status"][..],
+        &["check"][..],
+        &["context"][..],
+        &["accept", "ADR-000000000c02"][..],
+    ] {
+        let out = r.ank("claude-code@ank", args);
+        let text = format!("{}{}", said(&out), erred(&out));
+        assert!(
+            text.contains("ank config default_branch"),
+            "{args:?} does not name the command: {text}"
+        );
+        assert!(
+            !text.contains("\"default_branch: <name>\""),
+            "{args:?} still quotes the line to add by hand: {text}"
+        );
+    }
+}
+
+#[test]
+fn help_answers_about_config_the_way_it_answers_about_every_verb() {
+    let r = Repo::new();
+    let text = said(&r.ank("claude-code@ank", &["help", "config"]));
+    assert!(text.contains("ank config <key> [<value>]"), "{text}");
+    // The short form of §4's table, on the surface that teaches one verb.
+    assert!(text.contains("-u, --unset"), "{text}");
+    // What it refuses, with the code -- the question is asked before the call.
+    assert!(text.contains("(1)") && text.contains("(7)"), "{text}");
+    // The key set, which is the one thing a caller cannot guess.
+    assert!(text.contains("verifiers.<name>.run"), "{text}");
+
+    // And the flat listing stays flat: one line for the verb, no heading.
+    let listing = said(&r.ank("claude-code@ank", &["help"]));
+    assert!(listing.contains("ank config <key> [<value>]"), "{listing}");
+    assert!(listing.contains("--unset"), "{listing}");
 }

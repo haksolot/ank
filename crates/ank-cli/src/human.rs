@@ -316,7 +316,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         Err(_) => report.findings.push(Finding::signal(
             "coordination",
             "default branch indeterminable, completion refs neither pruned nor judged \
-             (add \"default_branch: <name>\" to .ank/config.yml)",
+             (ank config default_branch <name>)",
         )),
     }
 

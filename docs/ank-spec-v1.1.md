@@ -423,6 +423,7 @@ ank edit <id>
 ank graph [<path>]
 ank scope <path>
 ank check [<path>]
+ank config <key> [<value>]  [--unset]   (a value writes; the key alone reads)
 ank init [<path>]           (§9)
 ank help [<verb>]           (§9)
 
@@ -449,6 +450,48 @@ The rule is not cosmetic, and it is written down because its absence was not obv
 
 Global flags, deliberately limited to three: `--json`, `--quiet`, `--repo <path>`. Every global flag is a memorisation cost. `--json` is available on every command without exception: full scriptability is an invariant, not an option.
 
+### Configuration
+
+`.ank/config.yml` is read and written through `ank config` (ADR-e64dfaafd578). ADR-01b6dd05f0db closed `.ank/` to agents and stopped at the configuration, which left six errors telling their caller to open a file the same tool forbids them to open. This is the verb those errors name instead.
+
+```
+$ ank config claim_ttl_max
+2h
+$ ank config context_budget
+8000 (default)
+$ ank config verifiers.cargo-test.run "cargo test --workspace"
+verifiers.cargo-test.run (unset) -> cargo test --workspace
+$ ank config --unset default_branch
+default_branch main -> (unset)
+```
+
+**The key set is closed**, and it is the set the parser knows:
+
+| Key | Value |
+|---|---|
+| `schema` | the format revision of the file |
+| `context_budget` | tokens, default `8000` |
+| `claim_ttl_max` | duration, default `2h` |
+| `default_branch` | branch name; unset falls back to `refs/remotes/origin/HEAD` (§7) |
+| `verifiers.<name>.run` | the command line, §4 |
+| `verifiers.<name>.timeout` | duration, default `10m` |
+
+Nested values are addressed by dotted path, and `<name>` is any verifier name — writing `verifiers.<name>.run` for a name the file does not carry is how a verifier is declared. `verifiers.<name>` addresses the whole block and is legal for `--unset` alone, which is what makes declaring one reversible; reading it, or writing a value to it, is refused by name with `verifiers.<name>.run` to type instead. `roles` and `identities` are keys the parser knows and this verb does not address: their values are structured, the surgery below has no safe edit for them, and they are refused by name rather than guessed at. A key the parser does not know is refused by name too, with the set it does know, and nothing is written.
+
+**Reading prints the value in effect, and marks a resolved default as one.** `context_budget` on a file that does not carry it is `8000 (default)`, not `8000` — the difference between "the tool's value" and "this repository's value" is the whole question a reader is asking, and a release that moves a default moves the first and not the second. A key with no value in effect is `(unset)`. The marker is on the human surface only: `--json` carries `value` and `source` as separate fields, which is what a script reads.
+
+**Writing is text surgery, and never a round-trip through a serializer.** The file is a repository artifact, reviewed like code: comments, blank lines, key order and quoting style survive a write untouched, and every key other than the one named is byte-identical afterwards. A serializer would return `verifiers`, `roles` and `identities` alphabetised, drop every comment, and — the reason this is not a matter of taste — write out every field carrying a default. An unset key means "follows the tool"; a written one means "pinned here", and a round-trip that materialises the defaults converts every repository that ever ran one `ank config` into one that silently pins the old values the day a default moves. **No default is ever materialised**: a key the file did not carry is still absent after a write to another key.
+
+Two edits touch a byte outside the line named, and both are the parent of the key being written rather than a byte beside it: `verifiers: {}` becomes a block mapping when the first verifier is declared into it, and a block mapping becomes `verifiers: {}` when the last one is removed. Without the first, the file `ank init` writes could never receive a verifier; without the second, `verifiers:` would be left with no children, which is not an empty map but a parse error.
+
+**A form the surgery cannot edit safely is refused by name, never rewritten.** A `run` written as a block or folded scalar — `|` or `>` — is one: its resolved string depends on line structure the replacement would flatten, and `verify::definition_hash` is taken over the resolved value, so flattening it would move a hash that anchors historical proofs. The refusal names the key and says to edit the file by hand, which a human always may. Quoting alone is safe and stays safe: the hash is over the resolved string and over the timeout in seconds, so `run: cargo test` and `run: "cargo test"` hash identically, as do `600s` and `10m`.
+
+**A write that would produce a file the parser cannot read fails, and leaves the file as it was.** The result is parsed before anything is written, so the check is not a repair after the fact. The test is differential and has to be: it refuses a write that *introduces* a parse failure, not one performed on a file that already had one. A file carrying an unknown key fails every other verb, and a repair verb that refused to run on it would refuse exactly where it is needed — so on a file that did not parse to begin with, the write goes through and the parse error is reported as a warning rather than a refusal.
+
+**`ank config` runs without a parsed configuration**, as `init` and `help` do (§9). `startup` loads `config.yml` for every other verb, so a file that does not parse fails all of them — `check` included. A verb that exists to repair the file and is disabled by exactly the file it repairs is not a verb; the caller who most needs it is the one whose configuration does not load.
+
+This constrains the agent and not the human. A human with an editor keeps every power they had, and the file stays reviewable text in the repository.
+
 ### Short forms
 
 Every long flag keeps its form. Short forms are an addition and never a replacement (ADR-962c25797569): single-dash, single-letter, and this table is the whole of them.
@@ -464,6 +507,7 @@ Every long flag keeps its form. Short forms are an addition and never a replacem
 | `-p` | `--proof` | `done`, `attest` |
 | `-s` | `--status` | `find` |
 | `-t` | `--type` | `find` |
+| `-u` | `--unset` | `config` |
 | `-v` | `--verify` | `new` |
 
 **The letter is the first letter of the long flag, and one letter has one meaning in every verb.** Where several long flags begin with the same letter, exactly one takes it and the others keep only their long form. That is the whole rule, and it is worth the flags it costs: a `-s` meaning `--status` in `find` and `--scope` in `new` would not be a saving but a silent wrong answer, since `ank find -s open` would filter on a scope named `open` and return nothing at all. A short form is only useful if it can be typed without checking which verb it is being typed at.
@@ -874,8 +918,10 @@ The predicate is about the task file as it appears on the default branch (`git c
 $ ank accept 19d0
 error[9]: default branch indeterminable (default_branch absent from .ank/config.yml, refs/remotes/origin/HEAD absent)
   -> git remote set-head origin -a
-  -> or add "default_branch: <name>" to .ank/config.yml
+  -> or ank config default_branch <name>
 ```
+
+The second fix names a command rather than a line to add to a file (§4, ADR-e64dfaafd578). It is one of the four sites that ask for this key, and all four say the same thing: telling an agent to open `.ank/config.yml` is the tool instructing it to do what ADR-01b6dd05f0db forbids.
 
 Two uses depend on it, and not in the same way. `accept` **fails** with code 9: without a reference branch its branch precondition (§4) cannot be evaluated, and running anyway would produce precisely the variable-geometry ratification it exists to forbid. `claim` and `context` **degrade**: they keep completion refs, display them, and warn once. That is "degrade, do not fail" (§2) to the letter — reading does not stop because maintenance is impossible, and `claim`'s refusal on a task finished elsewhere is still delivered, which is the safe behaviour.
 
@@ -1003,6 +1049,8 @@ Three consequences, each of which was one of those five:
 The listing and the per-verb page stay two surfaces. The flat listing is unchanged — it buys its token economy by being short, and a summary line per verb is what §9 sends to `ank help <verb>` in the first place.
 
 `ank init` keeps a narrow perimeter: create `.ank/`, write `config.yml`, add the `refs/ank/*` refspec (§7), place a pointer in `AGENTS.md`, write a `.gitattributes` (§2) and a `.gitignore` (§6).
+
+**What `init` writes, `ank config` maintains** (§4). `config.yml` is written through the verb rather than by hand: it is the last thing under `.ank/` that ADR-01b6dd05f0db left an agent no route to, and the six errors that used to say "add it under `verifiers:` in `.ank/config.yml`" now name the command. `config` joins `init` and `help` as the third verb that runs without the foundation, and for the same reason those two do — the caller who needs it is the one whose environment is wrong, and a repair verb gated on the thing it repairs answers nobody.
 
 Both git files are written at the root of the initialised directory, and both carry a single line added idempotently to whatever is already there. The `.gitignore` line is `.ank/index.db`: §6 calls the index derived, disposable and gitignored, and the third adjective is only true of a repository where something wrote the rule. It goes at the root rather than inside `.ank/` for the same reason `.gitattributes` does — one place to look for what `init` changed — and because ADR-01b6dd05f0db makes `.ank/` opaque to agents, so a rule hidden there could not be read by the agent asking why the index is tracked.
 
