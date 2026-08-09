@@ -854,7 +854,12 @@ pub fn find(
     // indistinguishable from any other claimed one — `[claimed:who]` says who,
     // and the reader has to recognise their own identity to answer "is that
     // mine".
-    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
+    // One read of the coordination plane, and it answers both questions this
+    // listing has: which row the caller holds, and what every row's marker
+    // says. It replaces the enumeration `held_by` already performed here and
+    // threw all but one answer away, so the listing pays no more than before.
+    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    let held = crate::context::held_in(&coord, identity);
     for r in &hits[..shown] {
         let short = shorts
             .get(&r.id)
@@ -865,7 +870,10 @@ pub fn find(
             "{}{}  {} {}",
             marker_of(&held, &r.id),
             style.id(&short),
-            style.status(&format!("[{}]", r.status)),
+            style.status(&crate::context::marker_for(
+                &r.status,
+                crate::context::coordination_of(&coord, &r.id)
+            )),
             r.title
         );
     }
@@ -967,7 +975,10 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         return Ok(0);
     }
     let style = inv.style();
-    let held = held_by(&repo.root, identity)?.map(|(id, _, _)| id);
+    // One read, both answers, exactly as in `find`: the two listings print the
+    // same rows and must print them with the same words.
+    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    let held = crate::context::held_in(&coord, identity);
     for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
         if group.is_empty() {
             continue;
@@ -987,7 +998,10 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 "{}{}  {} {}",
                 marker_of(&held, &r.id),
                 style.id(&short),
-                style.status(&format!("[{}]", r.status)),
+                style.status(&crate::context::marker_for(
+                    &r.status,
+                    crate::context::coordination_of(&coord, &r.id)
+                )),
                 r.title
             );
         }

@@ -84,7 +84,13 @@ impl Coordination {
 /// is right to call it a hard error, because it is about to write there;
 /// `context` is a reader, and refusing to describe the corpus because one ref
 /// is damaged would be the opposite of degrading gracefully.
-fn coordination(
+///
+/// Shared with the listing verbs rather than kept here: `find`, `scope`, `graph`
+/// and `show` present the same tasks and must present them with the same words.
+/// A listing has no channel for a warning and passes an empty vector — `check`
+/// is what reports a damaged ref, and a reader must not fail for having nothing
+/// to say about one.
+pub(crate) fn coordination(
     cwd: &std::path::Path,
     warnings: &mut Vec<String>,
 ) -> Result<HashMap<EntityId, Coordination>> {
@@ -332,10 +338,7 @@ pub fn build(
 
     // HEAD is derived, never stored: the task on which this agent holds a
     // claim that has not lapsed.
-    let head = coord.iter().find_map(|(id, state)| match state {
-        Coordination::Claimed { holder, .. } if holder == identity => Some(id.clone()),
-        _ => None,
-    });
+    let head = held_in(&coord, identity);
 
     match head {
         Some(id) => build_execution(&store, repo, &index, &shorts, &coord, id, warnings),
@@ -600,7 +603,20 @@ fn build_execution(
 // ---------------------------------------------------------------------------
 
 fn marker(t: &TaskLine) -> String {
-    match &t.coordination {
+    marker_for(&t.status, &t.coordination)
+}
+
+/// The bracketed marker a row carries, from its stored status and what the
+/// coordination plane says about it.
+///
+/// One function for every verb that prints one. `context` reads the claim refs
+/// and used to be the only listing that did, so the same task read
+/// `[claimed:who]` here and `[in_progress]` under `find`, `scope`, `graph` and
+/// `show` — one fact wearing two words, chosen by whichever verb the reader
+/// happened to type. The words are the file's and the ref's, and the ref is the
+/// one that knows whether anybody is actually on it.
+pub(crate) fn marker_for(status: &str, coordination: &Coordination) -> String {
+    match coordination {
         Coordination::Claimed { holder, .. } => format!("[claimed:{holder}]"),
         Coordination::Finished { commit, branch } => {
             let c: String = commit.chars().take(7).collect();
@@ -612,9 +628,34 @@ fn marker(t: &TaskLine) -> String {
         // A lapsed claim leaves the file `in_progress` and the task takeable.
         // Saying so is the point: the log tells the next agent where the
         // previous one stopped.
-        Coordination::Lapsed { holder } => format!("[{} expired:{holder}]", t.status),
-        Coordination::Free => format!("[{}]", t.status),
+        Coordination::Lapsed { holder } => format!("[{status} expired:{holder}]"),
+        Coordination::Free => format!("[{status}]"),
     }
+}
+
+/// The plane says nothing about most entities: no ADR carries a claim ref, and
+/// neither does a task nobody has touched.
+static FREE: Coordination = Coordination::Free;
+
+/// What the coordination plane says about one id, or `Free` when it says
+/// nothing.
+pub(crate) fn coordination_of<'a>(
+    map: &'a HashMap<EntityId, Coordination>,
+    id: &EntityId,
+) -> &'a Coordination {
+    map.get(id).unwrap_or(&FREE)
+}
+
+/// The task this identity holds, out of a coordination map already read.
+///
+/// HEAD is derived, never stored. Shared so that a listing marking the caller's
+/// own row and `context` switching to execution mode cannot disagree about
+/// whose task it is.
+pub(crate) fn held_in(map: &HashMap<EntityId, Coordination>, identity: &str) -> Option<EntityId> {
+    map.iter().find_map(|(id, state)| match state {
+        Coordination::Claimed { holder, .. } if holder == identity => Some(id.clone()),
+        _ => None,
+    })
 }
 
 /// The end-of-loop message (§5). A normal state, not an error: an agent in a

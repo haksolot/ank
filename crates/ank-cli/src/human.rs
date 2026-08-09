@@ -2320,7 +2320,13 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 struct Edge {
     id: EntityId,
     short: String,
+    /// The stored status, and only ever that: it is what `--json` carries, and
+    /// the machine surface does not move because a human listing learned to say
+    /// something better.
     status: Option<String>,
+    /// What the human line prints — the stored status seen through the
+    /// coordination plane, brackets included.
+    marker: Option<String>,
     title: Option<String>,
 }
 
@@ -2337,6 +2343,10 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
     let shorts = crate::context::short_ids(&ids);
     let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
+    // The same coordination every other listing reads, so a blocker that is
+    // claimed says so here too instead of reading `[in_progress]` at a reader
+    // who has just been told `[claimed:who]` by `context`.
+    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
 
     let edge = |id: &EntityId| -> Edge {
         let row = row_of.get(id);
@@ -2344,6 +2354,11 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
             id: id.clone(),
             short: shorts.get(id).cloned().unwrap_or_else(|| id.to_string()),
             status: row.map(|r| r.status.clone()),
+            // The whole marker, brackets included, because it is the marker
+            // that varies and not just the word inside it.
+            marker: row.map(|r| {
+                crate::context::marker_for(&r.status, crate::context::coordination_of(&coord, id))
+            }),
             title: row.map(|r| r.title.clone()),
         }
     };
@@ -2380,13 +2395,13 @@ fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge], style: crate
         } else {
             crate::style::glyph::BRANCH
         };
-        match (&e.status, &e.title) {
-            (Some(status), Some(title)) => {
+        match (&e.marker, &e.title) {
+            (Some(marker), Some(title)) => {
                 let _ = writeln!(
                     out,
                     "{connector}{}  {} {title}",
                     style.id(&e.short),
-                    style.status(&format!("[{status}]"))
+                    style.status(marker)
                 );
             }
             _ => {

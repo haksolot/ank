@@ -86,6 +86,9 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     // also means no root, which would otherwise print a header and nothing
     // under it — so what has not been drawn is drawn flat at the end.
     let style = inv.style();
+    // Read once for the whole forest, never per node: a task claimed by someone
+    // reads the same here as it does under `context`, `find` and `scope`.
+    let coord = context::coordination(&repo.root, &mut Vec::new())?;
     let mut drawn: HashSet<&EntityId> = HashSet::new();
     for root in &roots {
         draw(
@@ -94,6 +97,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             &row_of,
             &shorts,
             &outside_count,
+            &coord,
             "",
             None,
             &mut drawn,
@@ -109,7 +113,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             let _ = writeln!(
                 out,
                 "  {}",
-                line(&row.id, &row_of, &shorts, &outside_count, style)
+                line(&row.id, &row_of, &shorts, &outside_count, &coord, style)
             );
         }
     }
@@ -144,6 +148,7 @@ fn draw<'a>(
     row_of: &HashMap<&'a EntityId, &'a Row>,
     shorts: &HashMap<EntityId, String>,
     outside: &HashMap<&'a EntityId, usize>,
+    coord: &HashMap<EntityId, context::Coordination>,
     prefix: &str,
     last: Option<bool>,
     drawn: &mut HashSet<&'a EntityId>,
@@ -161,7 +166,7 @@ fn draw<'a>(
         let _ = writeln!(
             out,
             "{prefix}{connector}{} (cycle)",
-            line(id, row_of, shorts, outside, style)
+            line(id, row_of, shorts, outside, coord, style)
         );
         return;
     }
@@ -170,7 +175,7 @@ fn draw<'a>(
     let _ = writeln!(
         out,
         "{prefix}{connector}{}{mark}",
-        line(id, row_of, shorts, outside, style)
+        line(id, row_of, shorts, outside, coord, style)
     );
     if repeat {
         return;
@@ -193,6 +198,7 @@ fn draw<'a>(
             row_of,
             shorts,
             outside,
+            coord,
             &child_prefix,
             Some(i + 1 == children.len()),
             drawn,
@@ -209,6 +215,7 @@ fn line<'a>(
     row_of: &HashMap<&'a EntityId, &'a Row>,
     shorts: &HashMap<EntityId, String>,
     outside: &HashMap<&'a EntityId, usize>,
+    coord: &HashMap<EntityId, context::Coordination>,
     style: crate::style::Style,
 ) -> String {
     let short = shorts.get(id).cloned().unwrap_or_else(|| id.to_string());
@@ -218,7 +225,10 @@ fn line<'a>(
     let mut s = format!(
         "{}  {} {}",
         style.id(&short),
-        style.status(&format!("[{}]", row.status)),
+        style.status(&context::marker_for(
+            &row.status,
+            context::coordination_of(coord, id)
+        )),
         row.title
     );
     // Never silently a root. A task held up by something the perimeter excludes
