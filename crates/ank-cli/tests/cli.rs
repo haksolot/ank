@@ -4449,6 +4449,341 @@ fn the_errors_that_named_the_file_now_name_the_command() {
 }
 
 // ---------------------------------------------------------------------------
+// Path and glob normalisation, over the whole surface (TASK-8dd89053fa33)
+// ---------------------------------------------------------------------------
+//
+// TASK-df4c39031583 measured this defect, fixed it, and wrote a criterion
+// naming four verbs where the property was general. The fix satisfied that text
+// exactly; the flag values were never in it, and the freeze made the
+// enumeration authoritative. So the tests here are built the other way round:
+// the surface is read back from the binary, every argument on it has to be
+// classified, and an argument nobody classified fails the suite.
+
+/// The verbs `ank help` prints, each with its usage line and its listed flags.
+///
+/// Read from the binary rather than restated here, for the reason
+/// `tests/skill.rs` reads §4 rather than restating it: a second hand-maintained
+/// copy of the surface is the drift being checked for.
+fn surface() -> Vec<(String, String, Vec<String>)> {
+    let out = Command::new(ANK)
+        .arg("help")
+        .output()
+        .expect("the binary must have been built");
+    assert!(out.status.success(), "ank help must succeed");
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let mut rows = Vec::new();
+    for line in text.lines().take_while(|l| !l.trim().is_empty()) {
+        // The listing is `<usage>` padded, then the flag names. No usage
+        // contains a double dash, so the first `  --` is the boundary.
+        let (usage, flags) = match line.find("  --") {
+            Some(i) => (&line[..i], &line[i..]),
+            None => (line, ""),
+        };
+        let usage = usage.trim().to_string();
+        let verb = usage
+            .strip_prefix("ank ")
+            .unwrap_or_default()
+            .chars()
+            .take_while(char::is_ascii_lowercase)
+            .collect::<String>();
+        assert!(!verb.is_empty(), "unparseable listing line: {line}");
+        rows.push((
+            verb,
+            usage,
+            flags.split_whitespace().map(|s| s.to_string()).collect(),
+        ));
+    }
+    assert!(!rows.is_empty(), "ank help printed no verb");
+    rows
+}
+
+/// Positionals naming a perimeter inside the corpus, which are normalised.
+const PATH_POSITIONALS: [&str; 5] = ["context", "review", "graph", "scope", "check"];
+
+/// Positionals naming a place on the machine rather than a perimeter in the
+/// corpus. `init` creates `.ank/` somewhere, and that somewhere is legitimately
+/// absolute — normalising it would refuse the ordinary call.
+const MACHINE_POSITIONALS: [&str; 1] = ["init"];
+
+/// Flag values matched against scopes, or stored as one.
+const PATH_FLAGS: [(&str, &str); 1] = [("find", "--scope")];
+const GLOB_FLAGS: [(&str, &str); 3] = [
+    ("new", "--scope"),
+    ("amend", "--scope"),
+    ("amend", "--drop-scope"),
+];
+
+/// Every other flag on the surface, declared as carrying no path.
+///
+/// Enumerated rather than inferred from the name. A heuristic — "it carries a
+/// path if it is called `--scope`" — is exactly what would let the next
+/// `--under <glob>` through in silence, which is the failure this whole task is
+/// a correction of.
+const NOT_A_PATH: [&str; 17] = [
+    "--limit",
+    "--criteria",
+    "--ttl",
+    "--proof",
+    "--reason",
+    "--title",
+    "--blocked-by",
+    "--constraint",
+    "--supersedes",
+    "--verify",
+    "--body",
+    "--type",
+    "--status",
+    "--drop-blocked-by",
+    "--unset",
+    "--json",
+    "--quiet",
+];
+
+/// **The guard.** Every argument the binary offers is classified, and one that
+/// is not fails here.
+///
+/// This is what the criterion asks for in as many words: a call site added
+/// later cannot skip the normalisation, because adding it to the surface makes
+/// this test red until somebody says which kind of argument it is.
+///
+/// Measured rather than assumed: dropping `--limit` from `NOT_A_PATH` turns
+/// this red with the message naming `ank context --limit`, which is the whole
+/// point of writing it this way.
+#[test]
+fn every_argument_on_the_surface_is_classified_as_carrying_a_path_or_not() {
+    for (verb, usage, flags) in surface() {
+        let takes_positional_path = usage.contains("<path>");
+        let classified = PATH_POSITIONALS.contains(&verb.as_str())
+            || MACHINE_POSITIONALS.contains(&verb.as_str());
+        assert_eq!(
+            takes_positional_path, classified,
+            "`{usage}` takes a positional path and is not classified (or is \
+             classified and does not take one): add `{verb}` to \
+             PATH_POSITIONALS or MACHINE_POSITIONALS, and route it through \
+             context::normalised if it names a perimeter"
+        );
+
+        for flag in flags {
+            let known = PATH_FLAGS.contains(&(verb.as_str(), flag.as_str()))
+                || GLOB_FLAGS.contains(&(verb.as_str(), flag.as_str()))
+                || NOT_A_PATH.contains(&flag.as_str());
+            assert!(
+                known,
+                "`ank {verb} {flag}` is on the surface and nobody has said \
+                 whether it carries a path: add it to PATH_FLAGS, GLOB_FLAGS \
+                 or NOT_A_PATH. A flag that carries one must go through \
+                 context::normalised before matching or storage."
+            );
+        }
+    }
+    // `--repo` is the third global and is deliberately in none of the lists: it
+    // names the repository to resolve, on the machine, and is legitimately
+    // absolute. Asserting it is absent keeps that a decision rather than an
+    // omission.
+    assert!(
+        !NOT_A_PATH.contains(&"--repo"),
+        "--repo is excluded on purpose, not by classification"
+    );
+}
+
+/// The spellings a shell actually produces for one directory.
+const SPELLINGS: [&str; 5] = ["docs", "docs/", "docs\\", "./docs", ".\\docs\\"];
+
+/// The globs an entity stores, read out of `ank show`.
+///
+/// The `scope:` block alone, and not the whole entity: `amend` writes a log
+/// entry naming the glob it added or dropped, so a substring search over the
+/// output reports a scope that is only mentioned in the history as one that is
+/// still bound. That mistake cost this test one red run.
+fn stored_scope(shown: &str) -> Vec<String> {
+    shown
+        .lines()
+        .skip_while(|l| l.trim() != "scope:")
+        .skip(1)
+        .take_while(|l| l.starts_with("  - "))
+        .map(|l| l.trim_start_matches("  - ").to_string())
+        .collect()
+}
+
+/// A repository with `docs/` bound by an entity, so a perimeter question has a
+/// non-empty answer to give and a partial one to get wrong.
+fn scoped_repo() -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/guide.md"), "x").unwrap();
+    r.seed_task_scoped("TASK-000000000d01", "docs/**");
+    r.seed_adr("ADR-000000000d02", "Docs are prose.", "docs/**");
+    r
+}
+
+#[test]
+fn every_positional_path_answers_the_same_however_the_directory_is_typed() {
+    let r = scoped_repo();
+    for verb in PATH_POSITIONALS {
+        let reference = r.ank("claude-code@ank", &[verb, "docs"]);
+        assert!(
+            reference.status.success() || reference.status.code() == Some(8),
+            "{verb} docs: {}",
+            erred(&reference)
+        );
+        for spelling in SPELLINGS {
+            let out = r.ank("claude-code@ank", &[verb, spelling]);
+            assert_eq!(
+                out.stdout, reference.stdout,
+                "`ank {verb} {spelling}` answered differently from `ank {verb} docs`"
+            );
+        }
+        // Never a silently partial set: a form naming nothing in the repository
+        // is refused with the command to run next.
+        let out = r.ank("claude-code@ank", &[verb, "../elsewhere"]);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{verb} answered about ../elsewhere"
+        );
+        assert!(
+            erred(&out).contains("does not name a path"),
+            "{}",
+            erred(&out)
+        );
+    }
+}
+
+#[test]
+fn find_scope_answers_the_same_however_the_directory_is_typed() {
+    let r = scoped_repo();
+    let reference = r.ank("claude-code@ank", &["find", "--scope", "docs"]);
+    assert!(reference.status.success(), "{}", erred(&reference));
+    assert!(
+        !said(&reference).contains("no match"),
+        "the fixture must have something to find, or this proves nothing"
+    );
+    for spelling in SPELLINGS {
+        let out = r.ank("claude-code@ank", &["find", "--scope", spelling]);
+        assert_eq!(
+            out.stdout, reference.stdout,
+            "`ank find --scope {spelling}` answered differently from `docs`"
+        );
+    }
+    let out = r.ank("claude-code@ank", &["find", "--scope", "/etc"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(erred(&out).contains("ank find --scope"), "{}", erred(&out));
+}
+
+#[test]
+fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
+    let r = scoped_repo();
+
+    // The form Windows tab-completion produces, which used to be stored
+    // verbatim and then match nothing for the life of the corpus.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Completed by the shell",
+            "--scope",
+            ".\\docs\\**",
+            "--criteria",
+            "It matches.",
+        ],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    let id = said(&out).split_whitespace().nth(1).unwrap().to_string();
+    let shown = said(&r.ank("claude-code@ank", &["show", &id]));
+    assert_eq!(
+        stored_scope(&shown),
+        ["docs/**"],
+        "the scope was stored as typed: {shown}"
+    );
+
+    // And it is reachable, which is the point of storing the normal form.
+    let found = said(&r.ank("claude-code@ank", &["find", "--scope", "docs"]));
+    assert!(found.contains(&id[..9]), "{found}");
+
+    // An ADR takes the same route.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "Also completed",
+            "--scope",
+            "./docs/**",
+            "--constraint",
+            "A rule.",
+        ],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    let id = said(&out).split_whitespace().nth(1).unwrap().to_string();
+    assert_eq!(
+        stored_scope(&said(&r.ank("claude-code@ank", &["show", &id]))),
+        ["docs/**"]
+    );
+
+    // A glob naming nothing in the repository is refused, and nothing is
+    // written -- a scope pointing outside the tree is not a scope.
+    let before = std::fs::read_dir(r.0.join(".ank/tasks")).unwrap().count();
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Outside",
+            "--scope",
+            "../elsewhere/**",
+        ],
+    );
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert_eq!(
+        std::fs::read_dir(r.0.join(".ank/tasks")).unwrap().count(),
+        before,
+        "a refused scope still created the task"
+    );
+
+    // The repository root is a perimeter, not a pattern, and the refusal says
+    // which pattern was meant.
+    let out = r.ank(
+        "claude-code@ank",
+        &["new", "task", "--title", "Root", "--scope", "."],
+    );
+    assert_eq!(out.status.code(), Some(7));
+    assert!(erred(&out).contains("\"**\""), "{}", erred(&out));
+}
+
+#[test]
+fn amend_normalises_both_the_scope_it_adds_and_the_one_it_drops() {
+    let r = scoped_repo();
+    let id = "TASK-000000000d01";
+
+    // Added: stored in normal form beside the one already there.
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", id, "--scope", ".\\src\\auth\\**"],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    let scope = stored_scope(&said(&r.ank("claude-code@ank", &["show", id])));
+    assert_eq!(scope, ["docs/**", "src/auth/**"], "stored as typed");
+
+    // Dropped: the stored form is normal, so a raw argument would match no
+    // glob and be refused as absent from a scope that carries it.
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", id, "--drop-scope", "./src/auth/**"],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    let scope = stored_scope(&said(&r.ank("claude-code@ank", &["show", id])));
+    assert_eq!(
+        scope,
+        ["docs/**"],
+        "the drop did not take, or took too much"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // The git boundary (TASK-2f01baf94632)
 // ---------------------------------------------------------------------------
 //
