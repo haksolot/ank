@@ -142,6 +142,12 @@ pub fn run(
     // credibility the anchor has already withdrawn.
     check_frozen_criteria(&id, &criteria, claim_record)?;
 
+    // The claim record's other hash, and until now the decorative one. Before
+    // anything runs for the same reason: an agent told a new rule landed over
+    // these files should hear it before it spends a minute on verifiers, not
+    // after the transition is already written.
+    warn_on_constraint_drift(&store, repo, &task, claim_record, inv.style());
+
     let declared: Vec<String> = task.verify.clone();
     let proofs = if declared.is_empty() {
         let usage = ProofUsage {
@@ -277,6 +283,55 @@ fn resolve_head(
 
 /// The freeze, checked at the point of use. The CLI is not a gatekeeper: the
 /// hash lives in the claim record, which the file's editor does not control.
+/// A constraint accepted while the claim was held (§7, TASK-bfa325e55424).
+///
+/// The claim record carries two hashes. The criteria freeze is checked above
+/// and refuses; this is the other one, and §7 says exactly what it is for: it
+/// closes the long-work window, because a constraint accepted while the agent
+/// works changes what applies to its scope, and `done` warns — inviting a
+/// re-read of `ank context`.
+///
+/// Half of that was true. `check` reported the case and `done` never read
+/// `ClaimRecord.constraints` at all, so the field was written at every claim,
+/// carried for the whole life of the ref, and consulted only by a verb the
+/// agent is not required to run. The window it left open is the one the design
+/// already judged worth closing: claim, work for an hour, a rule lands over the
+/// scope meanwhile, and the transition completes in silence.
+///
+/// **It warns and never blocks.** A constraint that landed after the work
+/// started does not necessarily concern work already finished, and refusing
+/// would punish exactly the case §7 singles out.
+///
+/// **On standard error**, unlike the `running:` lines beside it. Those already
+/// make `done --json` unparseable, which §4 forbids and which is a defect of
+/// its own; adding a second line to stdout would deepen it to say something no
+/// parser asked for.
+///
+/// A constraint set that cannot be computed says nothing rather than guessing:
+/// this is an advisory read, and failing a `done` over it would be the blocking
+/// this is explicitly not.
+fn warn_on_constraint_drift(
+    store: &Store,
+    repo: &Repo,
+    task: &ank_core::Task,
+    claim: &ClaimRecord,
+    style: crate::style::Style,
+) {
+    let Ok(applicable) = claim::applicable_constraints(store, repo, task) else {
+        return;
+    };
+    if claim::constraints_hash(&applicable) == claim.constraints {
+        return;
+    }
+    let style = style.on_stderr();
+    eprintln!(
+        "{} constraints over this scope changed while the claim was held ({} bind it now)",
+        style.yellow("warning:"),
+        applicable.len()
+    );
+    eprintln!("  -> ank context");
+}
+
 fn check_frozen_criteria(id: &EntityId, criteria: &str, claim: &ClaimRecord) -> Result<()> {
     if criteria.trim().is_empty() {
         return Err(CliError::new(7, format!("{id} has no done_criteria")).with_hint("ank context"));
