@@ -5,15 +5,19 @@ slug: ten-test-fixtures-inherit-the-developer-s-commit
 title: Ten test fixtures inherit the developer's commit.gpgsign
 created: 2026-08-09T17:52:06Z
 author: claude-code@ank
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/tests/cli.rs
 blocked_by: []
 done_criteria: |
   No test in crates/ank-cli/tests/ depends on the git configuration of the machine running it. Demonstrated by running the full suite twice on a machine whose global git config sets commit.gpgsign true: once with the gpg agent locked, and once with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at an empty file. Both are green and produce the same result. Fixtures that need a signature keep making their own through enable_signing. cargo test, cargo fmt --check and ank check stay green.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31355601158"
+    criteria: 695c419c9595
 schema: 2
-version: 3
+version: 4
 ---
 
 Found while executing TASK-2eefcdd80124, and confirmed on a clean worktree of main so it is not a regression of that work.
@@ -40,3 +44,4 @@ The full workspace suite is green in all three conditions and produces the same 
 One obstacle worth recording: restoring the file from a backup copy carried the backup's older mtime, so cargo saw nothing to rebuild and a whole run measured a stale binary. Touch the file after any restore.
 
 Found on the way, and filed separately: with gpg.program pointing at a binary that cannot run, ank judges this repository's own ratifications Absent -- 'not signed' -- where the only correct answers are Trusted or Unchecked. A contributor on a full clone without GnuPG would be told the corpus is unratified.
+- 2026-08-10T04:31:51Z claude-code@ank — done, proof test:31355601158
