@@ -5,7 +5,7 @@ slug: three-verbs-put-non-json-on-stdout-while-json-is
 title: Three verbs put non-JSON on stdout while --json is set
 created: 2026-08-09T17:11:56Z
 author: claude-code@ank
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/commands.rs
@@ -16,8 +16,12 @@ blocked_by: []
 done_criteria: |
   Under --json, every verb writes exactly one JSON document to standard output and nothing else. Measured through the binary on the three known sites -- done progress lines, and the takeover warnings of log and amend -- by capturing stdout alone and requiring it to start with a brace and to contain no line outside the document. A test walks the verbs rather than naming these three, so a line added later to a fourth is caught. What moves off stdout goes to standard error, keeping the information rather than dropping it. cargo test and ank check stay green.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31353485327"
+    criteria: 639eaaf4b3a3
 schema: 2
-version: 3
+version: 5
 ---
 
 Found while executing TASK-bfa325e55424, which put its own warning on standard error rather than beside these.
@@ -43,3 +47,4 @@ The sweep's strength is measured, not claimed. A line printed unconditionally by
 Two obstacles worth recording. The sweep hung the first time because it invokes ank edit, which spawned the EDITOR exported on this machine and waited; it now runs with EDITOR removed, and the resulting code 9 is a state worth sweeping anyway. Then cargo could not relink the test binary because the hung harness still held it -- Windows locks a running executable, same family as the note in CLAUDE.md about ank done.
 
 Ten unrelated tests failed mid-session with 'gpg: signing failed: timeout'. Reproduced on a clean worktree of main, so not a regression here; green again with GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM pointed at an empty file. The seed commits inherit the developer's commit.gpgsign. Filed as TASK-97437c25ddda; the suite in this branch was verified with the environment isolated.
+- 2026-08-10T03:54:24Z claude-code@ank — done, proof test:31353485327
