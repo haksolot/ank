@@ -5,7 +5,7 @@ slug: claims-only-arbitrate-within-one-clone-level-1-i
 title: "Claims only arbitrate within one clone: level 1 is unimplemented"
 created: 2026-08-06T23:24:02Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/**
   - docs/**
@@ -14,7 +14,7 @@ done_criteria: |
   The spec section 7 level-1 description and the code agree: either the push of refs/ank/* on claim, renewal and done exists in crates/ank-cli/, or section 7 states that level 1 is unimplemented and names what a second clone can therefore do.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 Section 7 describes level 1 as "the same ref, pushed": the claim is pushed on
@@ -57,3 +57,14 @@ Two honest exits, and this task deliberately does not pick:
 Whichever is chosen, a criterion about the binary is tested through the binary:
 if the push lands, the test drives two clones of one repository and asserts that
 the second claim is refused with code 4.
+
+## Log
+- 2026-08-10T05:59:47Z claude-code@ank — Took the second exit and both halves of it: section 7 now says what is true, and the implementation is filed as TASK-82c3341502c1 with a criterion written for it alone rather than for either outcome.
+
+Section 7 gains a section before the level list -- what ships, and what a second clone can therefore do -- naming the two cases in the terms this task used: worktrees of one clone are arbitrated by the shared refs/ank/, separate clones are not, both agents succeed and nothing detects it later either, because check prunes on the default branch where two agents having done the same work looks like two agents having done their work. Level 1 and level 2 headings now carry 'not implemented'.
+
+Three other places said or implied the opposite and are corrected, because leaving them would have moved the lie rather than removed it. The nominal execution model offered 'clones or git worktree' as equals and now tells the reader to use worktrees while level 1 is unimplemented, with the reason. 'Why version coexists with git's CAS' claimed git's CAS protects between clones; it protects between working trees sharing a refs/ank/, and between clones once level 1 ships. The deferral table justified deferring level 2 by level 1 being enough, and now lists level 1 as deferred in its own right.
+
+A sentence saying 'not implemented' goes stale in silence, so it gets a tripwire. Every git verb the tool may run passes the PLUMBING list, and a remote-aware claim needs push, fetch or ls-remote to appear there first; a negative test in git.rs asserts none of the three is allowed and names section 7 in the failure. Measured: adding push to the list turns it red with the message that names the file and what the same change owes it. It fails the day the feature lands, not while it is absent.
+
+No code behaviour changed. 386 tests green, fmt clean, check exit 0.

@@ -869,7 +869,9 @@ A git-like model: fully functional locally, deployable progressively, never depe
 
 ### Nominal execution model
 
-The nominal case is **one working tree per agent** — clones or `git worktree` — each on its own branch. That is what local proofs already assume (a `verify` run in a tree other agents are modifying in parallel would prove nothing clean) and it is the effective practice of agent harnesses. Several agents sharing one tree works but is a degraded mode, not a design mode.
+The nominal case is **one working tree per agent**, each on its own branch. That is what local proofs already assume (a `verify` run in a tree other agents are modifying in parallel would prove nothing clean) and it is the effective practice of agent harnesses. Several agents sharing one tree works but is a degraded mode, not a design mode.
+
+**Use `git worktree`, not clones, while level 1 is unimplemented.** The two are not interchangeable here: worktrees of one repository share `refs/ank/`, so claims arbitrate between them; separate clones do not share it, and two agents will hold the same task without either being told. The reasons are below, under what ships.
 
 ### Separation of the two planes
 
@@ -933,13 +935,24 @@ Two uses depend on it, and not in the same way. `accept` **fails** with code 9: 
 
 ### Why `version` coexists with git's CAS
 
-The two cover disjoint ranges. Git's CAS protects **between clones**, at push time. The `version` field protects **inside a single working tree**. With one tree per agent that case becomes rare — but not nil: a human and an agent often share the same tree, and the field costs one integer. We keep it for the residual case, without presenting it as the main defence any more.
+The two cover disjoint ranges. Git's CAS protects **between working trees sharing a `refs/ank/`** — and, once level 1 ships, between clones at push time. The `version` field protects **inside a single working tree**. With one tree per agent that case becomes rare — but not nil: a human and an agent often share the same tree, and the field costs one integer. We keep it for the residual case, without presenting it as the main defence any more.
+
+### What ships, and what a second clone can therefore do
+
+**Only level 0 is implemented.** Levels 1 and 2 below describe where this goes; neither exists in the binary today. There is no push, no fetch and no `ls-remote` anywhere in the code: `ank init` adds the `refs/ank/*` **fetch** refspec and nothing more.
+
+The consequence is exact, and it is stated here rather than left to be discovered:
+
+- **Two working trees of one clone are arbitrated.** Every `git worktree` of a repository shares `refs/ank/`, so the compare-and-swap settles them. One agent wins, the other gets code 4.
+- **Two separate clones are not.** Each holds its own `refs/ank/claims/<id>` and neither ever learns of the other. Both agents claim the same task, both succeed, both work. Nothing detects it, and nothing detects it later either: `check` prunes on the default branch, where two agents having done the same work looks like two agents having done their work.
+
+So "one piece of work, one holder" holds **per clone, not per repository**. Until level 1 ships, an operator running several agents on one repository gets that property from `git worktree` and does not get it from clones.
 
 ### Level 0 — local
 
-No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 becomes literally "the same ref, pushed" — no migration, no state to convert. There is **no fallback without git**: git is a hard dependency, and an uninitialised repository exits with code 9 and the exact command. Functional without configuration, like a `git init` without a push. Default mode.
+No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 becomes literally "the same ref, pushed" — no migration, no state to convert. There is **no fallback without git**: git is a hard dependency, and an uninitialised repository exits with code 9 and the exact command. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
 
-### Level 1 — git remote only
+### Level 1 — git remote only (not implemented)
 
 Any existing remote, GitHub included. Zero infrastructure.
 
@@ -949,7 +962,7 @@ TTL renewal through `log` updates the local ref then pushes; at one log every fe
 
 The trade-off: latency on the order of a second, no notifications. Comfortable up to two or three agents, saturates beyond.
 
-### Level 2 — `ank serve`
+### Level 2 — `ank serve` (not implemented)
 
 A single binary, one port, one SQLite. It stores **only claims**, and broadcasts changes over SSE. Durable state keeps going through git; the daemon never owns it.
 
@@ -1087,7 +1100,8 @@ File format · one command surface, refusing on state and never on identity, wit
 | `.ank/` merge driver | The resolution rules are fixed (§7); automating them can wait for the first real conflicts. |
 | `touched` inferred from commits | Scope-drift detection. A git dependency, not blocking to get started. |
 | `enforced_by` (mechanisation) | The underlying mechanism against context inflation (see §11). Useless while the ADR corpus is small. |
-| `ank serve` (level 2) | Level 1 is enough up to three concurrent agents. |
+| Level 1 (claims pushed to a remote) | Described in §7 and not implemented. Worktrees of one clone are arbitrated today; separate clones are not. |
+| `ank serve` (level 2) | Level 1 is enough up to three concurrent agents, once level 1 exists. |
 | `ank review --coherence` (ADR corpus analysis) | Detecting contradictions and duplicates. No value on a small corpus. The ratification queue itself is in v1. |
 | Read-only web view | To reopen only if non-developers must read the board. |
 | Linear/Jira export | Management visibility. Never writing back into Ank. |
@@ -1139,7 +1153,7 @@ The rule that matters is not the enumeration but its criterion: a command enters
 
 ### Ank and git: who commits
 
-**Ank never commits, with one exception.** The writes of `new`, `log`, `done` and `release` land in the working tree and propagate at the pace of the agent's commits, together with its code — the organisational state and the code it describes travel together, which is exactly the tool's promise. Accepted consequence: at level 1, another clone sees a transition only once the commit is pushed; real-time coordination, meanwhile, goes through claims, which depend on no commit.
+**Ank never commits, with one exception.** The writes of `new`, `log`, `done` and `release` land in the working tree and propagate at the pace of the agent's commits, together with its code — the organisational state and the code it describes travel together, which is exactly the tool's promise. Accepted consequence: at level 1, another clone sees a transition only once the commit is pushed; real-time coordination, meanwhile, goes through claims, which depend on no commit. At level 0 — the only level that ships — that coordination reaches the working trees sharing one `refs/ank/`, and no further (§7).
 
 The exception is **`accept`, which produces the signed ratification commit itself**, containing only the promoted ADR's file (and, where applicable, the replaced ADR moving to `superseded`). The authority model rests on this commit; leaving it to the caller's discretion would make it optional.
 

@@ -570,6 +570,28 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    /// §7 says level 1 is unimplemented, and this is what keeps that sentence
+    /// from going stale in silence (TASK-83d6eefdb36e).
+    ///
+    /// Every git verb the tool may run passes [`PLUMBING`], so a claim that
+    /// crosses clones needs one of these three to appear here first. A negative
+    /// test: it fails the day the feature lands, not while it is absent, and it
+    /// names what the same change owes the specification. The specification is
+    /// the source of truth, and a source of truth that quietly stops describing
+    /// the binary is worse than one that never described it.
+    #[test]
+    fn no_remote_verb_is_allowed_while_the_spec_says_level_1_is_unimplemented() {
+        for verb in ["push", "fetch", "ls-remote"] {
+            assert!(
+                !PLUMBING.contains(&verb),
+                "`{verb}` is allowed now, so claims can reach another clone: \
+                 section 7 of docs/ank-spec-v1.1.md still says level 1 is \
+                 unimplemented and names what a second clone can do, and it has \
+                 to be rewritten in this change"
+            );
+        }
+    }
+
     struct Temp(PathBuf);
 
     impl Temp {
