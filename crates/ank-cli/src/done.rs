@@ -526,6 +526,10 @@ mod tests {
                 vec!["config", "user.email", "test@ank.local"],
                 vec!["config", "user.name", "Test"],
                 vec!["config", "core.autocrlf", "false"],
+                // Signing off at creation, not at each commit
+                // (TASK-40a972e98a9a).
+                vec!["config", "commit.gpgsign", "false"],
+                vec!["config", "tag.gpgsign", "false"],
             ] {
                 assert!(Command::new("git")
                     .current_dir(&t.0)
@@ -545,10 +549,7 @@ mod tests {
         }
 
         fn commit(&self) {
-            for args in [
-                vec!["add", "-A"],
-                vec!["-c", "commit.gpgsign=false", "commit", "-qm", "seed"],
-            ] {
+            for args in [vec!["add", "-A"], vec!["commit", "-qm", "seed"]] {
                 Command::new("git")
                     .current_dir(&self.0)
                     .args(&args)

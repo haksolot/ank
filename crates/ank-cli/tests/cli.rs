@@ -105,6 +105,14 @@ impl Repo {
         r.git(&["config", "user.email", "test@ank.local"]);
         r.git(&["config", "user.name", "Test"]);
         r.git(&["config", "core.autocrlf", "false"]);
+        // Belt and braces, and deliberately so (TASK-40a972e98a9a). The
+        // environment above already puts the machine's configuration out of
+        // reach; this says the same thing in the repository's own config, where
+        // a reader looking at the fixture can see it. `tag.gpgsign` because
+        // nothing tags today and the first thing that does should not have to
+        // rediscover any of this.
+        r.git(&["config", "commit.gpgsign", "false"]);
+        r.git(&["config", "tag.gpgsign", "false"]);
         std::fs::write(
             r.0.join(".ank/config.yml"),
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
@@ -1283,6 +1291,10 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     git(&["init", "-q", "-b", "main"]);
     git(&["config", "user.email", "test@ank.local"]);
     git(&["config", "user.name", "Test"]);
+    // The one fixture in this file that commits without being a `Repo`
+    // (TASK-40a972e98a9a).
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["config", "tag.gpgsign", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-qm", "seed"]);
 

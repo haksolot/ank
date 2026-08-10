@@ -593,6 +593,9 @@ mod tests {
             t.porcelain(&["config", "user.email", "test@ank.local"]);
             t.porcelain(&["config", "user.name", "Test"]);
             t.porcelain(&["config", "core.autocrlf", "false"]);
+            // Signing off at creation, not at each commit (TASK-40a972e98a9a).
+            t.porcelain(&["config", "commit.gpgsign", "false"]);
+            t.porcelain(&["config", "tag.gpgsign", "false"]);
             t
         }
 
@@ -614,7 +617,7 @@ mod tests {
             std::fs::create_dir_all(full.parent().unwrap()).unwrap();
             std::fs::write(&full, content).unwrap();
             self.porcelain(&["add", "-A"]);
-            self.porcelain(&["-c", "commit.gpgsign=false", "commit", "-qm", "step"]);
+            self.porcelain(&["commit", "-qm", "step"]);
             run(&self.0, &["rev-parse", "HEAD"]).unwrap()
         }
     }
@@ -878,9 +881,12 @@ mod tests {
         git(&main, &["init", "-q", "-b", "main"]);
         git(&main, &["config", "user.email", "t@ank.local"]);
         git(&main, &["config", "user.name", "T"]);
+        // Signing off at creation, not at each commit (TASK-40a972e98a9a).
+        git(&main, &["config", "commit.gpgsign", "false"]);
+        git(&main, &["config", "tag.gpgsign", "false"]);
         std::fs::write(main.join("seed.txt"), "x").unwrap();
         git(&main, &["add", "-A"]);
-        git(&main, &["-c", "commit.gpgsign=false", "commit", "-qm", "s"]);
+        git(&main, &["commit", "-qm", "s"]);
         let wt = dir.join("wt");
         git(
             &main,
@@ -904,6 +910,8 @@ mod tests {
         let inner = main.join("inner");
         std::fs::create_dir_all(&inner).unwrap();
         git(&inner, &["init", "-q", "-b", "main"]);
+        git(&inner, &["config", "commit.gpgsign", "false"]);
+        git(&inner, &["config", "tag.gpgsign", "false"]);
         let from_inner = common_dir(&inner);
         assert!(from_inner.is_some());
         assert_ne!(from_inner, from_main);
