@@ -400,9 +400,14 @@ pub enum Signature {
     Trusted,
     /// Good signature, from a key nobody declared.
     Undeclared { fingerprint: String },
-    /// A signature is there and no local key can check it.
+    /// A signature is there and this machine cannot check it: no local key, or
+    /// no working gpg to ask (TASK-f4ed2020c964).
     Unchecked,
     /// No signature at all — the forgery this task was filed for.
+    ///
+    /// Reserved for a commit that carries none. It is the strongest negative
+    /// verdict there is, and it must never be reached by a machine that merely
+    /// failed to look.
     Absent,
     /// Present, checkable, and refused: bad, expired or revoked.
     Invalid { status: char },
@@ -420,8 +425,20 @@ pub enum Signature {
 /// Pure, and that is deliberate: every state is reachable in a unit test
 /// without a keyring, a network or a signed fixture, which is what makes "each
 /// one is tested" affordable rather than aspirational.
-pub fn classify_signature(facts: &git::SignatureFacts, declared: &[Signer]) -> Signature {
+///
+/// `carries_signature` is the fact `%G?` cannot express, and it only decides the
+/// `N` case — see [`commit_carries_signature`] for why `N` is two states wearing
+/// one letter.
+pub fn classify_signature(
+    facts: &git::SignatureFacts,
+    declared: &[Signer],
+    carries_signature: bool,
+) -> Signature {
     match facts.status {
+        // `N` is git saying it has no good signature to report, which covers
+        // both a commit nobody signed and a signature it could not attempt.
+        // The object decides between them.
+        'N' if carries_signature => Signature::Unchecked,
         'N' => Signature::Absent,
         'E' => Signature::Unchecked,
         'G' | 'U' => {
@@ -1746,11 +1763,48 @@ pub fn signature_state(repo: &Repo, adr: &Adr) -> Option<Signature> {
     // not be read looked exactly like a corpus that declared no key at all
     // (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
     match git::signature_of(&repo.root, &sha, Some(&signers)) {
-        Ok(facts) => Some(classify_signature(&facts, &declared)),
+        Ok(facts) => {
+            // Asked only where the answer can change the verdict: every other
+            // status already says whether a signature was there.
+            let carries = facts.status == 'N' && commit_carries_signature(&repo.root, &sha);
+            Some(classify_signature(&facts, &declared, carries))
+        }
         Err(e) => Some(Signature::Unreadable {
             reason: e.to_string(),
         }),
     }
+}
+
+/// Whether the commit object holds a signature header at all, whatever git was
+/// able to make of it.
+///
+/// `%G?` collapses two states into `N`: a commit nobody signed, and a signed
+/// commit whose signature git could not even attempt to check. Measured rather
+/// than inferred — with `gpg.program` pointing at a path that does not exist,
+/// `rev-list --format=%G?` prints `N` for a commit signed by the maintainer and
+/// puts `error: cannot spawn ...` on stderr, where a verdict has no business
+/// living. Reporting that as `Absent` tells a contributor whose only fault is
+/// not having GnuPG installed that the corpus is ratified by nobody
+/// (TASK-f4ed2020c964).
+///
+/// The object itself is not ambiguous. A signed commit carries a `gpgsig`
+/// header — `gpgsig-sha256` in a SHA-256 repository, and an SSH signature uses
+/// the same header — and `cat-file` reads it without gpg, without a keyring and
+/// without an opinion.
+///
+/// A failure to read is `false`: this only ever weakens `Unchecked` back to
+/// `Absent`, which is the verdict the caller would have reached anyway, and
+/// `Unreadable` already covers a git that cannot answer at all.
+fn commit_carries_signature(root: &Path, sha: &str) -> bool {
+    let Ok(object) = git::run(root, &["cat-file", "commit", sha]) else {
+        return false;
+    };
+    // Headers stop at the first blank line. A message body quoting `gpgsig` is
+    // not a signature, and a continuation line of the block starts with a space.
+    object
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .any(|l| l.starts_with("gpgsig"))
 }
 
 /// Hash of `constraint` + `scope`, normalised. What the ratification commit
@@ -2524,6 +2578,35 @@ mod tests {
                     .status()
                     .unwrap();
             }
+        }
+
+        fn git_ok(&self, args: &[&str]) {
+            let out = Command::new("git")
+                .current_dir(&self.0)
+                .args(args)
+                .output()
+                .expect("git must be installed: it is a hard dependency");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+
+        /// The same, keeping standard output. Trailing whitespace only is
+        /// trimmed, so a commit object comes back byte for byte.
+        fn git_out(&self, args: &[&str]) -> String {
+            let out = Command::new("git")
+                .current_dir(&self.0)
+                .args(args)
+                .output()
+                .expect("git must be installed: it is a hard dependency");
+            assert!(
+                out.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            String::from_utf8_lossy(&out.stdout).trim_end().to_string()
         }
 
         /// A real signing key, because `accept` signs for real and the two
@@ -3790,27 +3873,34 @@ mod tests {
         let declared = gpg_signer(fp);
 
         assert_eq!(
-            classify_signature(&facts('G', fp), &declared),
+            classify_signature(&facts('G', fp), &declared, false),
             Signature::Trusted
         );
         assert_eq!(
-            classify_signature(&facts('N', ""), &declared),
+            classify_signature(&facts('N', ""), &declared, false),
             Signature::Absent,
             "no signature is the forgery this check exists for"
         );
         assert_eq!(
-            classify_signature(&facts('E', fp), &declared),
+            classify_signature(&facts('N', ""), &declared, true),
+            Signature::Unchecked,
+            "the same letter over a commit that does carry a signature is a \
+             machine that could not look, not a forgery"
+        );
+        assert_eq!(
+            classify_signature(&facts('E', fp), &declared, false),
             Signature::Unchecked,
             "a missing public key must never read as a valid signature"
         );
         assert_eq!(
-            classify_signature(&facts('B', fp), &declared),
+            classify_signature(&facts('B', fp), &declared, false),
             Signature::Invalid { status: 'B' }
         );
         assert_eq!(
             classify_signature(
                 &facts('G', "0000000000000000000000000000000000000000"),
-                &declared
+                &declared,
+                false
             ),
             Signature::Undeclared {
                 fingerprint: "0000000000000000000000000000000000000000".into()
@@ -3827,7 +3917,8 @@ mod tests {
         assert_eq!(
             classify_signature(
                 &facts('G', "739A603FB05F9F2F7D3C8D50624FCFCC1482554A"),
-                &declared
+                &declared,
+                false
             ),
             Signature::Trusted
         );
@@ -3840,7 +3931,7 @@ mod tests {
     fn an_untrusted_openpgp_key_is_still_judged_by_the_declaration() {
         let fp = "739A603FB05F9F2F7D3C8D50624FCFCC1482554A";
         assert_eq!(
-            classify_signature(&facts('U', fp), &gpg_signer(fp)),
+            classify_signature(&facts('U', fp), &gpg_signer(fp), false),
             Signature::Trusted
         );
     }
@@ -3855,11 +3946,11 @@ mod tests {
         let ssh = "SHA256:KjhREDTh0GcSpp8doZ/yhLAG62FZ7h26dQTVffo3JFE";
         let unrelated = gpg_signer("739A603FB05F9F2F7D3C8D50624FCFCC1482554A");
         assert_eq!(
-            classify_signature(&facts('G', ssh), &unrelated),
+            classify_signature(&facts('G', ssh), &unrelated, false),
             Signature::Trusted
         );
         assert!(matches!(
-            classify_signature(&facts('U', ssh), &unrelated),
+            classify_signature(&facts('U', ssh), &unrelated, false),
             Signature::Undeclared { .. }
         ));
     }
@@ -3938,6 +4029,103 @@ mod tests {
             r.findings
         );
         assert!(r.faults() > 0);
+    }
+
+    /// Puts an OpenPGP signature header on `HEAD`, without gpg.
+    ///
+    /// The commit object is read back, `gpgsig` is inserted where git puts it,
+    /// the result is stored with `hash-object` and `main` is moved onto it: same
+    /// tree, same parent, same subject, one header more. The block itself is
+    /// never parsed — nothing in this fixture can reach gpg to try — so what it
+    /// says does not matter. That it is there is the whole point.
+    fn sign_the_head_object(t: &Temp) {
+        let object = t.git_out(&["cat-file", "commit", "HEAD"]);
+        let (headers, message) = object
+            .split_once("\n\n")
+            .expect("a commit object separates headers from its message");
+        let signed = format!(
+            "{headers}\ngpgsig -----BEGIN PGP SIGNATURE-----\n \n \
+             iQIzBAABCgAdFiEEc5pgP7BfnznX0jVUYk/PzBSCVUoFAmAAAAAACgkQYk/PzBSC\n \
+             -----END PGP SIGNATURE-----\n\n{message}\n"
+        );
+        let path = t.0.join("signed-commit-object");
+        std::fs::write(&path, &signed).unwrap();
+        let sha = t.git_out(&["hash-object", "-t", "commit", "-w", path.to_str().unwrap()]);
+        t.git_ok(&["update-ref", "refs/heads/main", &sha]);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    /// A signature this machine cannot check is `Unchecked`, never `Absent`
+    /// (TASK-f4ed2020c964).
+    ///
+    /// Through the OpenPGP path, which is where the ambiguity lives: git answers
+    /// `N` — the same letter it uses for a commit nobody signed — when it cannot
+    /// spawn `gpg.program` at all, and puts the reason on stderr where no
+    /// verdict belongs. Read as `Absent`, that told a contributor on a full
+    /// clone with no GnuPG installed that this repository's constraints are
+    /// ratified by nobody.
+    ///
+    /// No gpg anywhere in the fixture, so this runs the same on a maintainer's
+    /// machine and on a runner that has never held a key: the header is written
+    /// onto the object directly, and `gpg.program` is pointed at a path that
+    /// cannot exist. What is under test is how ank reads git's answer.
+    /// A ratified ADR whose ratification commit carries a signature header or
+    /// does not, in a repository where gpg cannot be reached at all.
+    ///
+    /// Two fixtures rather than one repository asked twice: `ratification_at`
+    /// memoises its answer per repository and id for the life of the process,
+    /// on the sound assumption that git history does not change under a running
+    /// tool. Rewriting the commit after asking would be answered from that
+    /// cache, and the test would measure the memo instead of the verdict.
+    fn ratified_where_gpg_cannot_run(signed: bool) -> Temp {
+        let t = Temp::new();
+        // An OpenPGP declaration: `signature_state` answers `None` without one,
+        // and under SSH git decides the allowlist itself.
+        declare(
+            &t,
+            "sean@example.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A",
+        );
+        t.commit("seed");
+
+        let entity = adr("00000000cccc", AdrStatus::Accepted, &["src/**"]);
+        let Entity::Adr(mut a) = entity else {
+            unreachable!()
+        };
+        let anchor = ratification_anchor(&a.constraint, &a.scope);
+        a.ratified = Some(anchor.clone());
+        t.write(&Entity::Adr(a));
+        t.commit(&format!(
+            "ratify ADR-00000000cccc\n\nconstraint+scope: {anchor}"
+        ));
+        if signed {
+            sign_the_head_object(&t);
+        }
+
+        // The machine without GnuPG, arranged rather than waited for.
+        let nowhere = t.0.join("no-such-gpg");
+        t.git_ok(&["config", "gpg.program", nowhere.to_str().unwrap()]);
+        t
+    }
+
+    #[test]
+    fn a_signature_that_cannot_be_checked_is_unchecked_and_never_absent() {
+        // The control, in the same environment: no header, so `N` means what it
+        // says. Without it the assertion below would pass on a fixture where
+        // the header changed nothing.
+        let unsigned = ratified_where_gpg_cannot_run(false);
+        assert_eq!(
+            signature_state(&unsigned.repo(), &unsigned.adr_at("00000000cccc")),
+            Some(Signature::Absent),
+            "a commit nobody signed stays Absent, unreachable gpg or not"
+        );
+
+        let signed = ratified_where_gpg_cannot_run(true);
+        assert_eq!(
+            signature_state(&signed.repo(), &signed.adr_at("00000000cccc")),
+            Some(Signature::Unchecked),
+            "git answers N because it could not run gpg, not because the commit \
+             is unsigned: reporting that as Absent calls a ratified corpus forged"
+        );
     }
 
     /// A good signature from a key the file does not declare is not a
