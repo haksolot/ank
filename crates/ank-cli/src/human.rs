@@ -2472,6 +2472,11 @@ mod tests {
                 vec!["config", "user.email", "test@ank.local"],
                 vec!["config", "user.name", "Test"],
                 vec!["config", "core.autocrlf", "false"],
+                // Signing off at creation, not at each commit
+                // (TASK-40a972e98a9a). `accept` passes `-S`, which outranks
+                // this, so the fixtures that sign for real still do.
+                vec!["config", "commit.gpgsign", "false"],
+                vec!["config", "tag.gpgsign", "false"],
             ] {
                 assert!(Command::new("git")
                     .current_dir(&t.0)
@@ -2512,10 +2517,7 @@ mod tests {
             .unwrap();
         }
         fn commit(&self, msg: &str) {
-            for args in [
-                vec!["add", "-A"],
-                vec!["-c", "commit.gpgsign=false", "commit", "-qm", msg],
-            ] {
+            for args in [vec!["add", "-A"], vec!["commit", "-qm", msg]] {
                 Command::new("git")
                     .current_dir(&self.0)
                     .args(&args)
@@ -3909,9 +3911,9 @@ mod tests {
         t.write(&Entity::Adr(b));
         for args in [
             vec!["add", "-A"],
+            // Unsigned on purpose: the fixture turns signing off at creation,
+            // and this commit asserting `Absent` is what depends on it.
             vec![
-                "-c",
-                "commit.gpgsign=false",
                 "commit",
                 "-qm",
                 &format!("ratify ADR-00000000bbbb\n\nconstraint+scope: {anchor}"),

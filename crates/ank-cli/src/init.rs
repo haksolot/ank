@@ -187,7 +187,20 @@ mod tests {
                 .expect("git must be installed: it is a hard dependency")
                 .success();
             assert!(ok, "git init failed in {}", p.display());
-            Temp(p)
+            let t = Temp(p);
+            // Signing off at creation, not at each commit (TASK-40a972e98a9a).
+            for args in [
+                ["config", "commit.gpgsign", "false"],
+                ["config", "tag.gpgsign", "false"],
+            ] {
+                let st = Command::new("git")
+                    .current_dir(&t.0)
+                    .args(args)
+                    .status()
+                    .expect("git must be installed: it is a hard dependency");
+                assert!(st.success(), "git {args:?}");
+            }
+            t
         }
     }
 
@@ -306,7 +319,7 @@ blocked_by: []\nschema: 1\nversion: 1\n---\n\nBody.\n";
             assert!(st.success(), "git {args:?}");
         };
         run(&["add", "-A"]);
-        run(&["-c", "commit.gpgsign=false", "commit", "-qm", "init"]);
+        run(&["commit", "-qm", "init"]);
 
         let clone = t.0.with_extension("clone");
         let st = Command::new("git")

@@ -1198,6 +1198,10 @@ After a blank one."
                 vec!["config", "user.email", "test@ank.local"],
                 vec!["config", "user.name", "Test"],
                 vec!["config", "core.autocrlf", "false"],
+                // Signing off at creation, not at each commit
+                // (TASK-40a972e98a9a).
+                vec!["config", "commit.gpgsign", "false"],
+                vec!["config", "tag.gpgsign", "false"],
             ] {
                 let st = Command::new("git")
                     .current_dir(&t.0)
@@ -1239,10 +1243,7 @@ After a blank one."
 
         fn commit(&self) {
             std::fs::write(self.0.join("seed.txt"), "x").unwrap();
-            for args in [
-                vec!["add", "-A"],
-                vec!["-c", "commit.gpgsign=false", "commit", "-qm", "seed"],
-            ] {
+            for args in [vec!["add", "-A"], vec!["commit", "-qm", "seed"]] {
                 let st = Command::new("git")
                     .current_dir(&self.0)
                     .args(&args)

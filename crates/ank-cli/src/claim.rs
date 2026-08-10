@@ -1097,6 +1097,9 @@ mod tests {
             t.porcelain(&["config", "user.email", "test@ank.local"]);
             t.porcelain(&["config", "user.name", "Test"]);
             t.porcelain(&["config", "core.autocrlf", "false"]);
+            // Signing off at creation, not at each commit (TASK-40a972e98a9a).
+            t.porcelain(&["config", "commit.gpgsign", "false"]);
+            t.porcelain(&["config", "tag.gpgsign", "false"]);
             t
         }
 
@@ -1113,7 +1116,7 @@ mod tests {
 
         fn commit_all(&self, message: &str) -> String {
             self.porcelain(&["add", "-A"]);
-            self.porcelain(&["-c", "commit.gpgsign=false", "commit", "-qm", message]);
+            self.porcelain(&["commit", "-qm", message]);
             git::run(&self.0, &["rev-parse", "HEAD"]).unwrap()
         }
 
