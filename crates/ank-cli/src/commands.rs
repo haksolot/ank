@@ -1269,10 +1269,12 @@ fn log_write(
             // The entry is written; only the renewal lost. Saying so is better
             // than letting the agent believe it holds the lock for another half
             // hour.
-            let _ = writeln!(
-                out,
+            // Standard error, for the reason `done`'s progress line is: it is
+            // not the answer, and stdout under `--json` is a parser's input
+            // (§4, TASK-2eefcdd80124).
+            eprintln!(
                 "{} {id} was taken over while logging, the claim was not renewed",
-                inv.style().yellow("warning:")
+                inv.style().on_stderr().yellow("warning:")
             );
         }
     }
