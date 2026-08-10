@@ -1635,8 +1635,20 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
     let out = r.ank("claude-code@ank", &["done"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    assert!(text.contains("running: ok ... ok"), "{text}");
     assert!(text.contains("proof recorded:"), "{text}");
+    // The progress line moved to standard error, where it does not sit ahead
+    // of the JSON document `--json` puts on stdout (TASK-2eefcdd80124). It is
+    // still said, which is asserted here rather than only in the test that owns
+    // the rule -- this is the test that watches a whole `done` from outside.
+    assert!(
+        !text.contains("running:"),
+        "progress reached stdout: {text}"
+    );
+    assert!(
+        stderr(&out).contains("running: ok ... ok"),
+        "the progress line was dropped rather than moved: {}",
+        stderr(&out)
+    );
 
     let record = r
         .claim_ref(ID)
@@ -5035,4 +5047,159 @@ fn done_says_nothing_when_the_constraints_did_not_move() {
         "warned with nothing to warn about: {}",
         stderr(&out)
     );
+}
+
+// ---------------------------------------------------------------------------
+// --json is data, on every verb (TASK-2eefcdd80124)
+// ---------------------------------------------------------------------------
+//
+// §4: `--json` "is data, and it stays byte-for-byte what a caller's parser
+// already reads". Three verbs contradicted it -- `done`'s progress lines, and
+// the takeover warnings of `log` and `amend` -- and `cli.rs` named them in a
+// comment that treated the situation as a given.
+//
+// The tests come in two halves, and the criterion asks for both. The sweep
+// walks every verb the binary offers, so a line added later to a fourth is
+// caught without anybody remembering to name it. The three cases below it reach
+// the states the sweep cannot set up, and assert the information was moved
+// rather than dropped.
+
+/// Standard output holds one JSON document and nothing else, or nothing at all.
+///
+/// Ank emits its JSON on a single line, so this is exact rather than an
+/// approximation of a parser: any second line, and any line not opening a
+/// document, is what a caller would choke on.
+fn assert_json_only(out: &Output, what: &str) {
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    if text.trim().is_empty() {
+        return;
+    }
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "{what} put {} lines on stdout under --json; a parser reads the first \
+         one:\n{text}",
+        lines.len()
+    );
+    let line = lines[0].trim();
+    assert!(
+        line.starts_with('{') && line.ends_with('}'),
+        "{what} put something other than a JSON document on stdout: {line}"
+    );
+    assert!(!line.contains('\u{1b}'), "{what} coloured its JSON: {line}");
+}
+
+/// Every verb, invoked under `--json` in a repository where it has work to do.
+///
+/// The arguments are the smallest that reach past parsing; a verb that refuses
+/// on state still proves the point, because a refusal writes to stderr and must
+/// leave stdout empty rather than half a document.
+///
+/// `$EDITOR` is removed for the sweep. `edit` and the interactive form of `new`
+/// otherwise spawn whatever the machine running the suite has exported and wait
+/// for it — the sweep hung on exactly that. Removed, they refuse with code 9,
+/// which is a state worth sweeping too: a refusal must leave stdout empty
+/// rather than half a document.
+///
+/// **What it catches, measured rather than claimed.** A line printed
+/// unconditionally by a verb is caught: adding one to `find` turns this red
+/// with `` `ank find criterion --json` put 2 lines on stdout ``. A line printed
+/// only on a branch these arguments do not take is not — the same line placed
+/// inside `find`'s `no match` arm passed, because `--json` never reaches it.
+/// That is the honest boundary of a sweep, and it is where the three cases
+/// below take over: they reach the states this one cannot set up. All three
+/// offenders §4 was contradicted by were unconditional, which is what makes the
+/// sweep the right first net.
+#[test]
+fn no_verb_puts_anything_but_json_on_stdout_under_json() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_adr("ADR-0000000000ef", "A binding rule.", "src/**");
+
+    // One invocation per verb the listing offers, so a verb added later is
+    // swept without anybody adding it here. The map supplies only what parsing
+    // demands.
+    for (verb, _usage, _flags) in surface() {
+        let extra: &[&str] = match verb.as_str() {
+            "claim" | "show" | "accept" | "close" | "amend" | "attest" | "edit" => &[ID],
+            "log" => &[ID],
+            "find" => &["criterion"],
+            "scope" => &["src"],
+            "config" => &["claim_ttl_max"],
+            "new" => &["task", "--title", "T", "--scope", "src/**"],
+            "help" => &[],
+            _ => &[],
+        };
+        let mut args: Vec<&str> = vec![verb.as_str()];
+        args.extend_from_slice(extra);
+        args.push("--json");
+        let out = r.ank_edit("claude-code@ank", &args, None);
+        assert_json_only(&out, &format!("`ank {}`", args.join(" ")));
+    }
+}
+
+#[test]
+fn done_reports_its_progress_on_standard_error_and_still_reports_it() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task_with(
+        "TASK-0000000000f1",
+        Some("A verifiable criterion."),
+        &["ok"],
+    );
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["claim", "TASK-0000000000f1"])),
+        0
+    );
+
+    let out = r.ank("claude-code@ank", &["done", "TASK-0000000000f1", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The document a caller parses, alone.
+    assert_json_only(&out, "ank done --json");
+    assert!(
+        stdout(&out).contains("\"status\":\"done\""),
+        "{}",
+        stdout(&out)
+    );
+
+    // Moved, not dropped: progress on a long verifier run is exactly what a
+    // human wants, and it is still there.
+    assert!(
+        stderr(&out).contains("running: ok ... ok"),
+        "the progress line was dropped rather than moved: {}",
+        stderr(&out)
+    );
+}
+
+#[test]
+fn the_takeover_warnings_of_log_and_amend_are_on_standard_error() {
+    // Both fire only while another agent holds the claim, which is a state the
+    // sweep above cannot set up -- so they are reached deliberately here.
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+
+    // `amend`, whose scope change moves what the live claim anchors.
+    let out = r.ank("marie@laptop", &["amend", ID, "--scope", "docs/**"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("codex@host-9"),
+        "silence would be worse, and it must name the holder: {}",
+        stderr(&out)
+    );
+    assert!(
+        !stdout(&out).contains("warning"),
+        "the warning reached stdout: {}",
+        stdout(&out)
+    );
+
+    // And under --json the document stands alone.
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--scope", "src/extra/**", "--json"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_json_only(&out, "ank amend --json");
+    assert!(stderr(&out).contains("codex@host-9"), "{}", stderr(&out));
 }

@@ -2124,11 +2124,12 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             report_amend(inv, &id, &changes, out);
             if touched_scope {
                 if let Some(holder) = holder {
-                    let _ = writeln!(
-                        out,
+                    // Standard error: not the answer, and stdout under `--json`
+                    // is a parser's input (§4, TASK-2eefcdd80124).
+                    eprintln!(
                         "{} {id} is held by {holder}, and the scope change moves \
                          the constraints its claim anchors",
-                        inv.style().yellow("warning:")
+                        inv.style().on_stderr().yellow("warning:")
                     );
                 }
             }
@@ -4167,8 +4168,15 @@ mod tests {
             .unwrap();
         assert_eq!(code, 0, "{out}");
         assert!(out.contains("amended"), "{out}");
-        assert!(out.contains("warning"), "silence would be worse: {out}");
-        assert!(out.contains("codex@host-9"), "it names the holder: {out}");
+        // The warning moved to standard error, which this harness does not
+        // capture (TASK-2eefcdd80124): stdout under `--json` is a parser's
+        // input, and a takeover notice is not the answer. That it is still said,
+        // and that it still names the holder, is asserted through the binary in
+        // `tests/cli.rs` — silence would be worse, and that is what checks it.
+        assert!(
+            !out.contains("warning"),
+            "the warning reached stdout: {out}"
+        );
 
         let Entity::Task(after) = t.store().load(&id).unwrap().entity else {
             panic!()

@@ -1199,11 +1199,18 @@ fn dispatch(
     let spec = spec_of(inv.command).expect("spec resolved during parsing");
 
     // The one gate, and the reason it is one. `--json` is never colored (§4),
-    // and three verbs print an unconditional non-JSON line onto stdout while
-    // it is set — `done`'s `running:`, and the takeover warnings of `log` and
-    // `amend`. Suppressing color at each printing site would be three chances
+    // and suppressing color at each printing site would be one chance per site
     // to forget one; suppressing it here makes "no escape sequence under
     // --json" a property of the invocation rather than of the discipline.
+    //
+    // This comment used to record that three verbs printed an unconditional
+    // non-JSON line onto stdout while `--json` was set — `done`'s `running:`,
+    // and the takeover warnings of `log` and `amend` — and treated it as a
+    // given. It was not: §4 says `--json` stays byte-for-byte what a caller's
+    // parser reads, and `ank done --json` emitted its progress line ahead of
+    // the JSON document. All three now write to standard error
+    // (TASK-2eefcdd80124), and `tests/cli.rs` walks the surface so a fourth
+    // cannot arrive quietly.
     inv.style = if inv.json() {
         crate::style::PLAIN
     } else {

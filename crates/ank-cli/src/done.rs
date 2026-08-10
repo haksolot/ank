@@ -173,7 +173,6 @@ pub fn run(
             &task.scope,
             &criteria,
             &id,
-            out,
             inv.style(),
         )?
     };
@@ -350,6 +349,12 @@ fn check_frozen_criteria(id: &EntityId, criteria: &str, claim: &ClaimRecord) -> 
     Ok(())
 }
 
+/// Runs the declared verifiers and gathers one proof each.
+///
+/// **It takes no writer**, and that is the point rather than an accident: the
+/// progress it reports goes to standard error, so a function with no way to
+/// reach stdout cannot put a line ahead of the JSON document `done` prints
+/// there (§4, TASK-2eefcdd80124).
 #[allow(clippy::too_many_arguments)]
 fn run_verifiers(
     repo: &Repo,
@@ -358,7 +363,6 @@ fn run_verifiers(
     scope: &[String],
     criteria: &str,
     id: &EntityId,
-    out: &mut dyn Write,
     style: crate::style::Style,
 ) -> Result<Vec<Proof>> {
     let head = git::run(&repo.root, &["rev-parse", "HEAD"]).unwrap_or_default();
@@ -377,13 +381,20 @@ fn run_verifiers(
             .with_hint(format!("ank config verifiers.{name}.run \"<command>\"")));
         };
         let outcome = verify::run(&repo.root, name, def)?;
-        let _ = writeln!(
-            out,
+        // Progress, and therefore standard error: it is not part of the answer,
+        // and §4 requires `--json` to leave stdout byte-for-byte what a
+        // caller's parser reads. This line used to precede the JSON document on
+        // stdout, so `ank done --json | <parser>` failed on its first line
+        // (TASK-2eefcdd80124). Unconditional rather than gated on `--json`,
+        // because a gate at each printing site is one more chance to forget
+        // one, and progress belongs on stderr for a human too.
+        let err = style.on_stderr();
+        eprintln!(
             "running: {name} ... {} ({:.1}s)",
             if outcome.ok {
-                style.green("ok")
+                err.green("ok")
             } else {
-                style.red("FAILED")
+                err.red("FAILED")
             },
             outcome.elapsed.as_secs_f64()
         );
@@ -649,8 +660,15 @@ mod tests {
         t.claim(&id, "claude-code@ank");
 
         let out = t.done(&[], "claude-code@ank").unwrap();
-        assert!(out.contains("running: ok-one ... ok"), "{out}");
-        assert!(out.contains("running: ok-two ... ok"), "{out}");
+        // The `running:` lines are no longer here to be asserted: they are
+        // progress, they go to standard error, and stdout under `--json` is a
+        // parser's input (TASK-2eefcdd80124). What proves the verifiers ran is
+        // the proof list below; that they are *reported*, and on which stream,
+        // is asserted through the binary in `tests/cli.rs`.
+        assert!(
+            !out.contains("running:"),
+            "progress reached stdout, where a JSON document also goes: {out}"
+        );
 
         let task = t.task();
         assert_eq!(task.status, TaskStatus::Done);
