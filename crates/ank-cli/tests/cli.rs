@@ -16,11 +16,74 @@
 //! and `ank-cli` has no library target — so there is no unit test that could
 //! spawn the binary even if we wanted one.
 
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 const ANK: &str = env!("CARGO_BIN_EXE_ank");
+
+/// git's global and system configuration, for every process this suite spawns.
+///
+/// `Repo::new` declares `user.email`, `user.name` and `core.autocrlf` on the
+/// repository it makes, and for a long time that was the whole of the fixture's
+/// control over git: everything else came from the `~/.gitconfig` of whoever
+/// happened to run the suite. `commit.gpgsign` is the one that bites. On a
+/// machine that signs by default, nine tests here depended on a gpg agent
+/// staying unlocked, and all nine failed with `gpg: signing failed` the moment
+/// pinentry timed out (TASK-97437c25ddda). On CI, where nothing signs, they
+/// passed forever — so the defect was invisible exactly where it was watched.
+///
+/// This file replaces both levels, so a fixture can no longer inherit what it
+/// did not declare. It writes `commit.gpgsign = false` positively rather than
+/// letting the default speak, because a value written down is a value a test
+/// can assert, and
+/// `every_spawned_process_reads_the_suites_git_config_and_no_other` asserts it.
+///
+/// `enable_signing` is untouched and still works: `accept` commits with `-S`,
+/// which outranks any configuration, so the fixtures that need a real signature
+/// go on making their own.
+fn isolated_git_config() -> &'static Path {
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let p = std::env::temp_dir().join(format!("ank-cli-it-gitconfig-{}", std::process::id()));
+        std::fs::write(&p, "[commit]\n\tgpgsign = false\n").unwrap();
+        p
+    })
+    .as_path()
+}
+
+/// The one door. Every process this suite spawns is built here, so the
+/// isolation above cannot be forgotten at a call site.
+///
+/// A gate repeated at each site is one more chance to miss one, which is what
+/// TASK-97437c25ddda was: twenty-four seed commits carried
+/// `-c commit.gpgsign=false`, two did not, and nothing said so. Those two are
+/// what nine tests reached through, so the flag is now gone from all
+/// twenty-four: the isolation is load-bearing rather than doubled by a habit,
+/// and every test in this file exercises it.
+/// `nothing_spawns_a_process_outside_the_one_door` keeps this the only door.
+fn spawn(program: impl AsRef<OsStr>) -> Command {
+    let mut c = Command::new(program);
+    let config = isolated_git_config();
+    c.env("GIT_CONFIG_GLOBAL", config)
+        .env("GIT_CONFIG_SYSTEM", config);
+    c
+}
+
+/// git, run in `dir`.
+fn git_command(dir: &Path) -> Command {
+    let mut c = spawn("git");
+    c.current_dir(dir);
+    c
+}
+
+/// The binary under test. It shells out to git itself, so it needs the same
+/// environment as the fixture that set the repository up.
+fn ank_command() -> Command {
+    spawn(ANK)
+}
 
 /// A real repository with a real `.ank/`: `startup` resolves the repository,
 /// checks git and loads the config before any verb runs, so a fixture missing
@@ -51,8 +114,7 @@ impl Repo {
     }
 
     fn git(&self, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .current_dir(&self.0)
+        let out = git_command(&self.0)
             .args(args)
             .output()
             .expect("git must be installed: it is a hard dependency");
@@ -74,7 +136,7 @@ impl Repo {
         .unwrap();
         std::fs::write(self.0.join("seed.txt"), "x").unwrap();
         self.git(&["add", "-A"]);
-        self.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+        self.git(&["commit", "-qm", "seed"]);
         self
     }
 
@@ -86,8 +148,7 @@ impl Repo {
     /// true is the state of the repository, not the module's agreement with
     /// itself.
     fn claim_ref(&self, id: &str) -> Option<String> {
-        let out = Command::new("git")
-            .current_dir(&self.0)
+        let out = git_command(&self.0)
             .args(["cat-file", "-p", &format!("refs/ank/claims/{id}")])
             .output()
             .unwrap();
@@ -168,7 +229,7 @@ impl Repo {
     /// needs no agent, no keyring and no passphrase prompt.
     fn enable_signing(&self) {
         let key = self.0.join("signing-key");
-        let out = Command::new("ssh-keygen")
+        let out = spawn("ssh-keygen")
             .args(["-t", "ed25519", "-N", "", "-C", "ank test", "-q", "-f"])
             .arg(&key)
             .output()
@@ -197,7 +258,7 @@ impl Repo {
     /// it, which is why a question about a ref can never be answered from a
     /// working tree.
     fn ank_at(&self, agent: &str, args: &[&str], repo: &Path) -> Output {
-        Command::new(ANK)
+        ank_command()
             .args(args)
             .arg("--repo")
             .arg(repo)
@@ -215,7 +276,7 @@ impl Repo {
     /// with `NO_COLOR` exported would otherwise be testing a different rule
     /// from CI, and both would pass.
     fn ank_env(&self, agent: &str, args: &[&str], env: &[(&str, Option<&str>)]) -> Output {
-        let mut c = Command::new(ANK);
+        let mut c = ank_command();
         c.args(args)
             .arg("--repo")
             .arg(&self.0)
@@ -235,7 +296,7 @@ impl Repo {
     /// it rather than trusting its absence matters, because the developer
     /// running this suite very probably has one exported.
     fn ank_edit(&self, agent: &str, args: &[&str], editor: Option<&str>) -> Output {
-        let mut c = Command::new(ANK);
+        let mut c = ank_command();
         c.args(args)
             .arg("--repo")
             .arg(&self.0)
@@ -322,6 +383,85 @@ fn stdout(out: &Output) -> String {
     String::from_utf8_lossy(&out.stdout).to_string()
 }
 
+// ---------------------------------------------------------------------------
+// The fixture's own environment (TASK-97437c25ddda)
+// ---------------------------------------------------------------------------
+
+/// The isolation, asserted rather than assumed.
+///
+/// Without this test the property is invisible exactly where it is watched: CI
+/// signs nothing, so every fixture here would go on passing if the two
+/// variables stopped being set, and only a maintainer with `commit.gpgsign` in
+/// their own `~/.gitconfig` would ever find out — which is how the defect
+/// survived in the first place.
+///
+/// The assertion is on the origin git reports, not on the value alone. A
+/// `false` read from the developer's own file would satisfy a test that asked
+/// only what `commit.gpgsign` is, and would prove nothing about where it came
+/// from.
+#[test]
+fn every_spawned_process_reads_the_suites_git_config_and_no_other() {
+    let r = Repo::new();
+    let expected = isolated_git_config().to_string_lossy().replace('\\', "/");
+
+    for level in ["--global", "--system"] {
+        let out = git_command(&r.0)
+            .args(["config", "--list", "--show-origin", level])
+            .output()
+            .expect("git must be installed: it is a hard dependency");
+        let text = String::from_utf8_lossy(&out.stdout).to_string();
+        let lines: Vec<&str> = text.lines().collect();
+
+        assert_eq!(
+            lines.len(),
+            1,
+            "git read something other than the one file this suite wrote as {level}: {text}"
+        );
+        let (origin, value) = lines[0]
+            .split_once('\t')
+            .unwrap_or_else(|| panic!("git config --show-origin: {}", lines[0]));
+        // Windows: git quotes an origin holding backslashes, and escapes them.
+        let origin = origin
+            .strip_prefix("file:")
+            .unwrap_or_else(|| panic!("the origin is not a file: {origin}"))
+            .trim_matches('"')
+            .replace("\\\\", "\\")
+            .replace('\\', "/");
+        assert_eq!(
+            origin, expected,
+            "{level} is a file this suite did not write"
+        );
+        assert_eq!(
+            value, "commit.gpgsign=false",
+            "the fixture no longer says what it needs said"
+        );
+    }
+}
+
+/// The next spawn site, caught before it is written.
+///
+/// Nothing in the language stops a test from reaching for `Command` directly:
+/// `spawn` is a convention, and an unenforced convention is the reason this
+/// task exists. So the convention is swept. The needle is assembled rather than
+/// written out, or the sweep would match itself and could never fail.
+///
+/// Its reach is the literal form, and only in this file. A spawn written some
+/// other way — through an alias, or by a helper this file does not hold — is
+/// not caught. The other file in this directory, `skill.rs`, spawns the binary
+/// twice, for `help` and `--version`; both answer before `startup` runs and
+/// neither reads git at all, which is why one file is the whole of it.
+#[test]
+fn nothing_spawns_a_process_outside_the_one_door() {
+    let needle = format!("Command::{}(", "new");
+    let doors = include_str!("cli.rs").matches(needle.as_str()).count();
+    assert_eq!(
+        doors, 1,
+        "a process is spawned outside `spawn`, so it inherits the git \
+         configuration of the machine running the suite: route it through \
+         `git_command`, `ank_command` or `spawn`"
+    );
+}
+
 /// The freeze stops being declared and becomes verifiable. Through the binary
 /// on purpose: "check reports a divergence" is a statement about the process,
 /// and the anchor it compares against lives in git rather than in the corpus.
@@ -337,7 +477,7 @@ fn an_edited_constraint_is_reported_altered_and_stops_being_injected() {
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     let out = r.ank("marie@laptop", &["accept", ADR]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -424,7 +564,7 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     declare_signing_key(&r);
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     let out = r.ank("marie@laptop", &["accept", ADR]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -442,14 +582,7 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
 
     // The rewrite. `--amend` keeps the message and the tree and drops the
     // signature, which is exactly what the merge did to f770c98.
-    r.git(&[
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "--amend",
-        "--no-edit",
-        "-q",
-    ]);
+    r.git(&["commit", "--amend", "--no-edit", "-q"]);
     assert_ne!(
         r.head(),
         ratification,
@@ -499,7 +632,7 @@ fn status_answers_where_am_i_in_every_state() {
     r.seed_adr(ADR, "Do not do X.", "src/**");
     r.seed_task(ID, Some("A verifiable criterion."));
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     // 1. Orientation: no claim, and the whole repository as the perimeter.
     let out = r.ank("claude-code@ank", &["status"]);
@@ -565,7 +698,7 @@ fn status_answers_where_am_i_in_every_state() {
     std::fs::create_dir_all(bare.0.join("src")).unwrap();
     std::fs::write(bare.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     bare.git(&["add", "-A"]);
-    bare.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    bare.git(&["commit", "-qm", "seed"]);
     let out = bare.ank("claude-code@ank", &["status"]);
     assert_eq!(
         code(&out),
@@ -935,7 +1068,7 @@ fn a_directory_resolves_the_same_however_the_path_is_written() {
     // comparison below would be measuring nothing. The assertion caught that too.
     r.seed_adr("ADR-00000000eeee", "Do not do Y.", "docs/missing/**");
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
     // Ratified, or `review` lists no live constraint at all and the two
     // perimeters answer identically for a reason that has nothing to do with
     // the path. The assertion below catches exactly that, and did.
@@ -1136,8 +1269,7 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     .unwrap();
 
     let git = |args: &[&str]| {
-        let out = Command::new("git")
-            .current_dir(&dir)
+        let out = git_command(&dir)
             .args(args)
             .output()
             .expect("git must be installed");
@@ -1152,10 +1284,10 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     git(&["config", "user.email", "test@ank.local"]);
     git(&["config", "user.name", "Test"]);
     git(&["add", "-A"]);
-    git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    git(&["commit", "-qm", "seed"]);
 
     let build_and_read = || {
-        let out = Command::new(&cargo)
+        let out = spawn(&cargo)
             .current_dir(&dir)
             .args(["run", "-q", "--offline"])
             .env("CARGO_TARGET_DIR", dir.join("target"))
@@ -1178,8 +1310,6 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
 
     // The case the old script missed: the commit moves, no file does.
     git(&[
-        "-c",
-        "commit.gpgsign=false",
         "commit",
         "-q",
         "--allow-empty",
@@ -1248,7 +1378,7 @@ fn the_version_answers_before_anything_can_stop_it() {
     // where a stale or unidentified binary is actually met.
     let nowhere = std::env::temp_dir().join("ank-cli-it-nowhere");
     std::fs::create_dir_all(&nowhere).unwrap();
-    let bare = Command::new(ANK)
+    let bare = ank_command()
         .arg("--version")
         .current_dir(&nowhere)
         .output()
@@ -1303,7 +1433,7 @@ fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     declare_signing_key(&r);
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     let out = r.ank("marie@laptop", &["accept", ADR]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -1367,20 +1497,14 @@ fn a_check_from_an_older_checkout_leaves_a_live_claim_alone() {
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
     let before_the_task = r.head();
 
     // The task arrives after that commit, which is the whole point: the older
     // checkout below cannot see it.
     r.seed_task(ID, Some("A verifiable criterion."));
     r.git(&["add", "-A"]);
-    r.git(&[
-        "-c",
-        "commit.gpgsign=false",
-        "commit",
-        "-qm",
-        "add the task",
-    ]);
+    r.git(&["commit", "-qm", "add the task"]);
 
     let out = r.ank("claude-code@ank", &["claim", ID]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
@@ -1420,7 +1544,7 @@ fn a_check_from_an_older_checkout_leaves_a_live_claim_alone() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     std::fs::remove_file(r.0.join(".ank/tasks").join(format!("{gone}.md"))).unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "drop it"]);
+    r.git(&["commit", "-qm", "drop it"]);
 
     let out = r.ank("claude-code@ank", &["check"]);
     assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
@@ -1527,7 +1651,7 @@ fn the_foundation_is_crossed_before_the_verb_and_names_its_own_failures() {
     // A --repo pointing nowhere is named as such, never disguised as a broken
     // environment -- that ordering is why `startup` resolves the repository
     // before checking git.
-    let out = Command::new(ANK)
+    let out = ank_command()
         .args(["claim", ID, "--repo"])
         .arg(std::env::temp_dir().join("ank-does-not-exist"))
         .output()
@@ -1536,7 +1660,7 @@ fn the_foundation_is_crossed_before_the_verb_and_names_its_own_failures() {
     assert!(stderr(&out).contains(".ank"), "{}", stderr(&out));
 
     // And a parse error never reaches the foundation at all.
-    let out = Command::new(ANK)
+    let out = ank_command()
         .args(["claim", "--tll", "30m"])
         .output()
         .unwrap();
@@ -1839,7 +1963,7 @@ fn a_positional_that_starts_with_a_dash_is_refused_by_naming_the_escape() {
     // because `--` terminates everything after it and the harness appends
     // `--repo` last -- which is the terminator behaving exactly as specified,
     // and worth seeing once from the caller's side.
-    let out = Command::new(ANK)
+    let out = ank_command()
         .args(["log", "--repo"])
         .arg(&r.0)
         .args(["--", message])
@@ -1986,7 +2110,7 @@ fn a_blocker_finished_on_another_branch_is_named_with_its_branch_and_commit() {
     r.seed_task(dependent, Some("A criterion."));
     r.blocked(dependent, &[blocker]);
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed tasks"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
 
     // A commit of its own on the branch, so the commit the completion record
     // names is one `main` genuinely does not carry. Branching alone would leave
@@ -1995,14 +2119,14 @@ fn a_blocker_finished_on_another_branch_is_named_with_its_branch_and_commit() {
     r.git(&["checkout", "-q", "-b", "feature"]);
     std::fs::write(r.0.join("work.txt"), "y").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "work"]);
+    r.git(&["commit", "-qm", "work"]);
     let finished_at = r.head();
 
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", blocker])), 0);
     let out = r.ank("claude-code@ank", &["done"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "done"]);
+    r.git(&["commit", "-qm", "done"]);
 
     // Back where the work has not landed: the blocker's file says `open` again,
     // and the ref is the only thing that remembers otherwise.
@@ -2302,14 +2426,13 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
     let dir = std::env::temp_dir().join(format!("ank-cli-init-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    assert!(Command::new("git")
-        .current_dir(&dir)
+    assert!(git_command(&dir)
         .args(["init", "-q"])
         .status()
         .unwrap()
         .success());
 
-    let out = Command::new(ANK)
+    let out = ank_command()
         .arg("init")
         .arg(&dir)
         .current_dir(std::env::temp_dir())
@@ -2337,8 +2460,7 @@ fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
     std::fs::create_dir_all(&dir).unwrap();
 
     let git = |args: &[&str]| -> Output {
-        Command::new("git")
-            .current_dir(&dir)
+        git_command(&dir)
             .args(args)
             .output()
             .expect("git must be installed: it is a hard dependency")
@@ -2350,7 +2472,7 @@ fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
     std::fs::write(dir.join(".gitignore"), "/target\n").unwrap();
 
     let init = || -> Output {
-        Command::new(ANK)
+        ank_command()
             .arg("init")
             .arg(&dir)
             .env("ANK_AGENT", "claude-code@ank")
@@ -2367,7 +2489,7 @@ fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
     );
 
     // A command that builds the index, so the file under test actually exists.
-    let out = Command::new(ANK)
+    let out = ank_command()
         .args(["find", "--status", "open"])
         .arg("--repo")
         .arg(&dir)
@@ -2576,7 +2698,7 @@ fn check_reports_a_done_task_that_was_never_attested_and_spares_one_that_was() {
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     let out = r.ank("claude-code@ank", &["check"]);
     let said = format!("{}{}", stdout(&out), stderr(&out));
@@ -2621,12 +2743,12 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     r.git(&["checkout", "-q", "-b", "feature"]);
     seed_done(&r, UNATTESTED, "  - type: commit\n    ref: abc1234\n");
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "work"]);
+    r.git(&["commit", "-qm", "work"]);
 
     let out = r.ank("claude-code@ank", &["check"]);
     let said = format!("{}{}", stdout(&out), stderr(&out));
@@ -3002,7 +3124,7 @@ fn a_task_in_progress_with_no_claim_ref_is_signalled_and_never_fails_ci() {
 /// and has no `.ank/`, and no `--repo` is passed. Anything that goes through
 /// `startup` answers 9 or 1 from there.
 fn help_from_nowhere(args: &[&str]) -> Output {
-    Command::new(ANK)
+    ank_command()
         .args(args)
         .current_dir(std::env::temp_dir())
         .output()
@@ -3323,7 +3445,7 @@ fn a_ratified_constraint_is_refused_and_names_the_succession() {
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
     let out = r.ank("marie@laptop", &["accept", ADR]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let before = r.adr_text(ADR);
@@ -4438,7 +4560,7 @@ fn the_errors_that_named_the_file_now_name_the_command() {
     r.set_config("schema: 1\nclaim_ttl_max: 2h\n");
     std::fs::write(r.0.join("seed.txt"), "x").unwrap();
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
 
     r.seed_adr("ADR-000000000c02", "A binding rule.", "src/**");
     for args in [
@@ -4477,7 +4599,7 @@ fn the_errors_that_named_the_file_now_name_the_command() {
 /// `tests/skill.rs` reads §4 rather than restating it: a second hand-maintained
 /// copy of the surface is the drift being checked for.
 fn surface() -> Vec<(String, String, Vec<String>)> {
-    let out = Command::new(ANK)
+    let out = ank_command()
         .arg("help")
         .output()
         .expect("the binary must have been built");
@@ -4806,7 +4928,7 @@ fn amend_normalises_both_the_scope_it_adds_and_the_one_it_drops() {
 
 /// Runs `ank` from `dir` with no `--repo`, so resolution is the walk.
 fn ank_walking(dir: &Path, args: &[&str]) -> Output {
-    Command::new(ANK)
+    ank_command()
         .args(args)
         .env("ANK_AGENT", "claude-code@ank")
         .current_dir(dir)
@@ -4826,8 +4948,7 @@ fn nest_a_repository_in(outer: &Repo) -> PathBuf {
         &["config", "user.email", "t@ank.local"][..],
         &["config", "user.name", "T"][..],
     ] {
-        let out = Command::new("git")
-            .current_dir(&inner)
+        let out = git_command(&inner)
             .args(args)
             .output()
             .expect("git is a hard dependency");
@@ -4968,7 +5089,7 @@ fn drift_fixture(task: &str) -> Repo {
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     r.seed_task_with(task, Some("A verifiable criterion."), &["ok"]);
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "seed"]);
+    r.git(&["commit", "-qm", "seed"]);
     r
 }
 
@@ -4988,7 +5109,7 @@ fn done_warns_when_a_constraint_landed_over_the_scope_while_the_claim_was_held()
     // binary that never looked.
     r.seed_adr(ADR, "Every session goes through the store.", "src/**");
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "adr"]);
+    r.git(&["commit", "-qm", "adr"]);
     let out = r.ank("marie@laptop", &["accept", ADR]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
@@ -5036,7 +5157,7 @@ fn done_says_nothing_when_the_constraints_did_not_move() {
     // Accepted *before* the claim, so it is inside the frozen hash.
     r.seed_adr(ADR, "Every session goes through the store.", "src/**");
     r.git(&["add", "-A"]);
-    r.git(&["-c", "commit.gpgsign=false", "commit", "-qm", "adr"]);
+    r.git(&["commit", "-qm", "adr"]);
     assert_eq!(code(&r.ank("marie@laptop", &["accept", ADR])), 0);
 
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", TASK])), 0);
