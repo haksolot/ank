@@ -5,7 +5,7 @@ slug: claims-only-arbitrate-within-one-clone-level-1-i
 title: "Claims only arbitrate within one clone: level 1 is unimplemented"
 created: 2026-08-06T23:24:02Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/**
   - docs/**
@@ -13,8 +13,12 @@ blocked_by: []
 done_criteria: |
   The spec section 7 level-1 description and the code agree: either the push of refs/ank/* on claim, renewal and done exists in crates/ank-cli/, or section 7 states that level 1 is unimplemented and names what a second clone can therefore do.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31360794469"
+    criteria: b396da77f5b7
 schema: 2
-version: 3
+version: 4
 ---
 
 Section 7 describes level 1 as "the same ref, pushed": the claim is pushed on
@@ -68,3 +72,4 @@ Three other places said or implied the opposite and are corrected, because leavi
 A sentence saying 'not implemented' goes stale in silence, so it gets a tripwire. Every git verb the tool may run passes the PLUMBING list, and a remote-aware claim needs push, fetch or ls-remote to appear there first; a negative test in git.rs asserts none of the three is allowed and names section 7 in the failure. Measured: adding push to the list turns it red with the message that names the file and what the same change owes it. It fails the day the feature lands, not while it is absent.
 
 No code behaviour changed. 386 tests green, fmt clean, check exit 0.
+- 2026-08-10T06:15:58Z claude-code@ank — done, proof test:31360794469
