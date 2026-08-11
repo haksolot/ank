@@ -342,7 +342,10 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--body"),
         ],
         refuses: &[refuses(9, "no --title or --scope and $EDITOR is unset, so there is nothing to open")],
-        notes: &["a scope is mandatory: an entity attached to nothing is invisible"],
+        notes: &[
+            "a scope is mandatory: an entity attached to nothing is invisible",
+            "--body - reads the body from stdin, so a long one needs no shell quoting",
+        ],
         owner_task: None,
     },
     CommandSpec {

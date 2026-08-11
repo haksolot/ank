@@ -17,8 +17,9 @@
 //! spawn the binary even if we wanted one.
 
 use std::ffi::OsStr;
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
@@ -274,6 +275,33 @@ impl Repo {
             .current_dir(std::env::temp_dir())
             .output()
             .expect("the binary must have been built")
+    }
+
+    /// The same invocation, with `text` on stdin.
+    ///
+    /// Piped rather than redirected from a file, because a pipe is what the
+    /// caller `--body -` exists for actually has: a heredoc, or the output of
+    /// another command. `Command::output` would close stdin outright, which is
+    /// the empty case and not this one.
+    fn ank_stdin(&self, agent: &str, args: &[&str], text: &str) -> Output {
+        let mut child = ank_command()
+            .args(args)
+            .arg("--repo")
+            .arg(&self.0)
+            .env("ANK_AGENT", agent)
+            .current_dir(std::env::temp_dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("the binary must have been built");
+        child
+            .stdin
+            .take()
+            .expect("stdin was piped")
+            .write_all(text.as_bytes())
+            .expect("the child reads its stdin");
+        child.wait_with_output().expect("the process must exit")
     }
 
     /// The same invocation with extra environment variables set.
@@ -2780,6 +2808,152 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
         said.contains("no test proof") && said.contains(UNATTESTED),
         "the default branch caught up and nothing was reported:\n{said}"
     );
+}
+
+/// The body that is painful to type as a flag arrives on stdin instead.
+///
+/// The prose here is the whole point of the test, so it is the prose that hurts:
+/// six lines, blank lines between them, and quotes of both kinds. Written as a
+/// shell argument this is a fight with escaping — which is the friction
+/// TASK-8e7c8e7724ee measured, not a hypothesis about one.
+///
+/// Asserted through `ank show` and not by reading the file, because `show` is
+/// what an agent receives: what has to survive the pipe is the body a reader
+/// gets back, byte for byte.
+#[test]
+fn a_body_piped_on_stdin_reaches_show_byte_for_byte() {
+    let r = Repo::new();
+
+    // A heredoc's trailing newline is absorbed by the canonical form, so the
+    // text below is what `show` must return verbatim, and the pipe carries one
+    // more newline than that.
+    const BODY: &str = "Observed friction, not speculation: writing a body \
+                        through a shell flag means \"fighting\" quoting.\n\
+                        \n\
+                        The '-' convention is the established Unix answer, and \
+                        it costs nothing on the surface.\n\
+                        \n\
+                        - a bullet, indented\n\
+                        - and a second one, with an apostrophe it doesn't need";
+
+    let out = r.ank_stdin(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "A piped task",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "A verifiable criterion.",
+            "--body",
+            "-",
+        ],
+        &format!("{BODY}\n"),
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    let shown = stdout(&r.ank("claude-code@ank", &["show", &id]));
+    let (_, after) = shown
+        .split_once("\n---\n\n")
+        .expect("show prints the frontmatter, then the body");
+    let body = after
+        .split("BLOCKED BY")
+        .next()
+        .expect("split yields at least one part");
+    assert_eq!(
+        body.trim_end_matches('\n'),
+        BODY,
+        "the piped body reached the entity changed:\n{shown}"
+    );
+
+    // And the two channels write the same file: a body that carried its origin
+    // into the corpus would be a second spelling of the same field.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "A flagged task",
+            "--scope",
+            "src/**",
+            "--body",
+            BODY,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let twin = stdout(&out).split_whitespace().nth(1).unwrap().to_string();
+    assert_eq!(
+        r.task_text(&id).split_once("---\n\n").unwrap().1,
+        r.task_text(&twin).split_once("---\n\n").unwrap().1,
+        "the pipe and the flag must produce the same body"
+    );
+}
+
+/// `--body -` with nothing on stdin refuses, and names the flag it refuses on.
+///
+/// Accepting it would write the one entity `--body` exists to prevent — a task
+/// with no reasoning, created silently by a pipeline that produced nothing. The
+/// hint has to carry the flag, since the flag is what the caller has to fix.
+#[test]
+fn body_from_an_empty_stdin_is_refused_and_names_the_flag() {
+    let r = Repo::new();
+
+    let out = r.ank_stdin(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "An empty task",
+            "--scope",
+            "src/**",
+            "--body",
+            "-",
+        ],
+        "",
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 9, "{said}");
+    assert!(said.contains("--body -"), "the flag is not named:\n{said}");
+    assert!(
+        said.contains("ank new task") && said.contains("| "),
+        "the refusal must name the command to run next:\n{said}"
+    );
+
+    // Nothing was written: a refusal that left a half-made entity behind would
+    // cost more than the one it refused.
+    let out = r.ank("claude-code@ank", &["find", "--status", "open"]);
+    assert!(
+        !stdout(&out).contains("An empty task"),
+        "the refused task was created anyway:\n{}",
+        stdout(&out)
+    );
+
+    // Whitespace alone is the same emptiness, and the one a heredoc actually
+    // produces when the variable it interpolates is unset.
+    let out = r.ank_stdin(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "A blank task",
+            "--scope",
+            "src/**",
+            "--body",
+            "-",
+        ],
+        "\n\n   \n",
+    );
+    assert_eq!(code(&out), 9, "{}{}", stdout(&out), stderr(&out));
 }
 
 /// A task created through the binary needs no hand finishing.

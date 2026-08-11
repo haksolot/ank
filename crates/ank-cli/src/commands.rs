@@ -34,7 +34,7 @@ use ank_core::{
     append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
     EntityKind, LogEntry, Task, TaskStatus, SCHEMA_VERSION,
 };
-use std::io::Write;
+use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
 /// One line per result, as for `context` (§4).
@@ -134,7 +134,7 @@ pub fn new(
                 proof: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: body_of(inv),
+                body: body_of(inv, kind)?,
             })
         }
         EntityKind::Adr => {
@@ -167,7 +167,7 @@ pub fn new(
                 ratified: None,
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: body_of(inv),
+                body: body_of(inv, kind)?,
             })
         }
     };
@@ -309,7 +309,7 @@ fn skeleton(
             proof: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
-            body: body_of(inv),
+            body: body_of(inv, kind)?,
         }),
         EntityKind::Adr => Entity::Adr(Adr {
             id: id.clone(),
@@ -328,7 +328,7 @@ fn skeleton(
             ratified: None,
             schema: SCHEMA_VERSION,
             version: 1,
-            body: body_of(inv),
+            body: body_of(inv, kind)?,
         }),
     })
 }
@@ -732,11 +732,66 @@ fn supersedes_of(inv: &Invocation, store: &Store) -> Result<Option<EntityId>> {
 ///
 /// Absent or blank leaves the body empty, which is a task with no reasoning
 /// attached: allowed, and visible for what it is.
-fn body_of(inv: &Invocation) -> String {
-    match inv.value("--body") {
-        Some(text) if !text.trim().is_empty() => format!("\n{}\n", text.trim()),
-        _ => String::new(),
+///
+/// `--body -` reads the prose from stdin instead, the Unix convention (`cat`,
+/// `diff`, `kubectl apply -f -`). It is the answer to observed friction and not
+/// a convenience: a six-paragraph body typed as a shell argument is a fight with
+/// quoting and escaping, and it was the most painful step of the creation path.
+/// A heredoc has neither problem. The cost is one reserved spelling — a body
+/// that is literally `-` can no longer be written as a flag value, which is a
+/// body nobody wants — and no new flag, so nothing SKILL.md teaches moves.
+///
+/// The trailing newline every heredoc ends with is absorbed by the canonical
+/// form rather than stored: the trim below is what already ran for a flag value,
+/// and the two spellings have to produce the same file or the channel would be
+/// visible in the corpus. Everything inside survives byte for byte — blank
+/// lines, quotes of both kinds, indentation.
+fn body_of(inv: &Invocation, kind: EntityKind) -> Result<String> {
+    let piped;
+    let text = match inv.value("--body") {
+        Some("-") => {
+            piped = read_body_from_stdin(kind)?;
+            piped.as_str()
+        }
+        Some(text) => text,
+        None => "",
+    };
+    Ok(match text.trim() {
+        "" => String::new(),
+        trimmed => format!("\n{trimmed}\n"),
+    })
+}
+
+/// The body, read whole from stdin, for `--body -`.
+///
+/// **Nothing to read is refused, never accepted as an empty body.** The caller
+/// said where the prose is; if it is not there, the entity they get would be the
+/// one thing `--body` exists to prevent — a task with no reasoning, written
+/// silently. A terminal is the same failure one step earlier, and refusing it is
+/// what keeps `--body -` from sitting on a silent `read` waiting for a heredoc
+/// nobody is going to type.
+///
+/// Code 9 for both, as `$EDITOR` unset is (§4): the prose channel the caller
+/// named is unavailable, which is not a fault in the task and not a fault in the
+/// corpus. One code, because there is one fix.
+fn read_body_from_stdin(kind: EntityKind) -> Result<String> {
+    let hint = format!("printf '%s' \"<the body>\" | {} --body -", flag_form(kind));
+    if std::io::stdin().is_terminal() {
+        return Err(CliError::new(
+            9,
+            "--body - reads the body from stdin, and stdin is a terminal: pipe it, \
+             or drop the flag and let $EDITOR open",
+        )
+        .with_hint(hint));
     }
+    let mut text = String::new();
+    std::io::stdin()
+        .read_to_string(&mut text)
+        .map_err(|e| CliError::new(9, format!("--body -: cannot read stdin: {e}")))?;
+    if text.trim().is_empty() {
+        return Err(CliError::new(9, "--body - read nothing on stdin").with_hint(hint));
+    }
+    Ok(text)
 }
 
 /// A short, readable handle. Never an identifier: the id is what references
