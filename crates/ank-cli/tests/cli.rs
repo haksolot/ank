@@ -166,6 +166,22 @@ impl Repo {
             .then(|| String::from_utf8_lossy(&out.stdout).to_string())
     }
 
+    /// The same read, performed from another checkout of this repository.
+    ///
+    /// `refs/ank/` is shared by every worktree, so this is not a different
+    /// answer — it is the same one, asked from where the question actually
+    /// arises: another agent, on another branch, wanting to know what the plane
+    /// says about a task.
+    fn claim_ref_at(&self, at: &Path, id: &str) -> Option<String> {
+        let out = git_command(at)
+            .args(["cat-file", "-p", &format!("refs/ank/claims/{id}")])
+            .output()
+            .unwrap();
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
     /// Pushes a claim's expiry into the past, leaving everything else in the
     /// record untouched.
     fn expire_claim(&self, id: &str) {
@@ -2777,6 +2793,90 @@ fn status_names_every_live_claim_of_this_identity() {
     let said = stdout(&quiet.ank("claude-code@ank", &["status"]));
     assert!(!said.contains("ANK_AGENT"), "{said}");
     assert!(!said.contains("also"), "{said}");
+}
+
+/// `close` leaves nothing on the coordination plane where `done` leaves a
+/// completion record, and that asymmetry is the decision (TASK-78326e2e3e89).
+///
+/// ADR-bcf222a31525 created the completion ref so that a task finished on an
+/// unmerged branch would not look free everywhere else, and named this gap
+/// without settling it -- on the ground that `close` is "a human act and a rare
+/// one", which ADR-e17e1bbd93ff retired by dissolving the human side entirely.
+/// The code has behaved this way throughout; what it lacked was a decision
+/// saying so and a test holding it.
+///
+/// Read **from a second checkout**, because that is where the question arises:
+/// `refs/ank/` is shared by every worktree, and an agent on another branch is
+/// exactly the reader the completion ref exists for. Both halves are asserted
+/// in one test, since either alone would pass for the wrong reason -- an
+/// absence proves nothing without the presence beside it.
+#[test]
+fn close_leaves_no_completion_ref_where_done_leaves_one() {
+    const CLOSED: &str = "TASK-000000000b01";
+    const FINISHED: &str = "TASK-000000000b02";
+    const AGENT: &str = "claude-code@ank";
+
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task_with(CLOSED, Some("A verifiable criterion."), &["ok"]);
+    r.seed_task_with(FINISHED, Some("A verifiable criterion."), &["ok"]);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the two tasks"]);
+
+    // Not the default branch. The whole question is what another checkout can
+    // see before the merge, so a test run on `main` would answer nothing.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    let other = r.0.with_extension("second-checkout");
+    r.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        other.to_str().unwrap(),
+        "HEAD",
+    ]);
+
+    // close: the ref exists, and then it does not.
+    assert_eq!(code(&r.ank(AGENT, &["claim", CLOSED])), 0);
+    assert!(
+        r.claim_ref_at(&other, CLOSED).is_some(),
+        "the claim has to be visible from the other checkout to be worth losing"
+    );
+    let out = r.ank(
+        AGENT,
+        &["close", CLOSED, "--reason", "superseded by the pipeline"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.claim_ref_at(&other, CLOSED).is_none(),
+        "close left a record on the plane:\n{:?}",
+        r.claim_ref_at(&other, CLOSED)
+    );
+
+    // done, on the same branch and read from the same checkout: a completion
+    // record, naming the commit and the branch it was finished on.
+    assert_eq!(code(&r.ank(AGENT, &["claim", FINISHED])), 0);
+    let out = r.ank(AGENT, &["done"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let record = r
+        .claim_ref_at(&other, FINISHED)
+        .expect("done leaves a completion record where close leaves nothing");
+    assert!(
+        record.contains("commit:") && record.contains("feature"),
+        "the completion record names neither the commit nor the branch:\n{record}"
+    );
+
+    // And the price the decision accepts, stated rather than implied: the task
+    // closed on this branch is claimable from a checkout the closure has not
+    // reached. It is not a defect here, it is the thing being agreed to.
+    let out = r.ank_at("codex@host-9", &["claim", CLOSED], &other);
+    assert_eq!(
+        code(&out),
+        0,
+        "a task closed on an unmerged branch is claimable elsewhere, which is \
+         what the decision accepts:\n{}",
+        stderr(&out)
+    );
+
+    r.git(&["worktree", "remove", "--force", other.to_str().unwrap()]);
 }
 
 /// Two clones of one repository arbitrate, which is the whole of level 1
