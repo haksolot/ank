@@ -1387,21 +1387,26 @@ fn log_write(
         ttl: ttl.as_secs(),
         ..record
     });
-    match claim::put(&repo.root, &id, &refreshed, Some(&witness))? {
-        claim::Cas::Won => {}
-        claim::Cas::Lost => {
-            // The entry is written; only the renewal lost. Saying so is better
-            // than letting the agent believe it holds the lock for another half
-            // hour.
-            // Standard error, for the reason `done`'s progress line is: it is
-            // not the answer, and stdout under `--json` is a parser's input
-            // (§4, TASK-2eefcdd80124).
-            eprintln!(
-                "{} {id} was taken over while logging, the claim was not renewed",
-                inv.style().on_stderr().yellow("warning:")
-            );
-        }
+    let renewed = claim::put(&repo.root, &id, &refreshed, Some(&witness))?;
+    // What the write turned up, as opposed to what was known before it. Said
+    // after, because none of it could have been said before.
+    //
+    // Standard error, for the reason `done`'s progress line is: it is not the
+    // answer, and stdout under `--json` is a parser's input (§4,
+    // TASK-2eefcdd80124).
+    let mut after: Vec<String> = Vec::new();
+    if renewed.cas == claim::Cas::Lost {
+        // The entry is written; only the renewal lost. Saying so is better than
+        // letting the agent believe it holds the lock for another half hour.
+        after.push(format!(
+            "{id} was taken over while logging, the claim was not renewed"
+        ));
     }
+    // The renewal is a push too (§7), so a remote that went away between the
+    // claim and this log is reported here rather than discovered at `done`.
+    after.extend(renewed.sync.warning());
+    warn_before_acting(inv, &after);
+    let warnings = [warnings, after].concat();
 
     if inv.json() {
         let _ = writeln!(

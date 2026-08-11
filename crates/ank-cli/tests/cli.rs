@@ -342,6 +342,51 @@ impl Repo {
             .expect("the binary must have been built")
     }
 
+    /// A bare origin and a second clone of this repository, both carrying the
+    /// corpus this one seeded.
+    ///
+    /// Two clones and not two worktrees, because that is the whole distinction
+    /// level 1 exists for: worktrees share `refs/ank/` and were always
+    /// arbitrated, clones do not and are arbitrated only by the push (§7).
+    /// Returned as a plain path rather than a `Repo`, so nothing about it can
+    /// accidentally be seeded twice.
+    fn cloned(&self) -> (PathBuf, PathBuf) {
+        let origin = self.0.with_extension("origin.git");
+        let other = self.0.with_extension("other");
+        for p in [&origin, &other] {
+            let _ = std::fs::remove_dir_all(p);
+        }
+        let out = git_command(&self.0)
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&origin)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "init --bare: {}", stderr(&out));
+
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-qm", "corpus"]);
+        self.git(&["remote", "add", "origin", origin.to_str().unwrap()]);
+        self.git(&["push", "-q", "origin", "main"]);
+
+        let out = git_command(&self.0)
+            .arg("clone")
+            .arg("-q")
+            .arg(&origin)
+            .arg(&other)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "clone: {}", stderr(&out));
+        for args in [
+            ["config", "user.email", "test@ank.local"],
+            ["config", "user.name", "Test"],
+            ["config", "commit.gpgsign", "false"],
+        ] {
+            let out = git_command(&other).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        }
+        (origin, other)
+    }
+
     /// The same invocation, with `text` on stdin.
     ///
     /// Piped rather than redirected from a file, because a pipe is what the
@@ -2732,6 +2777,111 @@ fn status_names_every_live_claim_of_this_identity() {
     let said = stdout(&quiet.ank("claude-code@ank", &["status"]));
     assert!(!said.contains("ANK_AGENT"), "{said}");
     assert!(!said.contains("also"), "{said}");
+}
+
+/// Two clones of one repository arbitrate, which is the whole of level 1
+/// (TASK-82c3341502c1).
+///
+/// Worktrees of one clone share `refs/ank/` and were always settled by the
+/// local compare-and-swap. Clones do not share it: each held its own
+/// `refs/ank/claims/<id>` and neither ever learned of the other, so both agents
+/// claimed the same task, both succeeded, and nothing detected it — not then
+/// and not later, since `check` prunes on the default branch, where two agents
+/// having done the same work looks like two agents having done their work.
+///
+/// What settles it is the push, under `--force-with-lease` with the object the
+/// caller read as the expectation: server-side, atomic, and on every host. The
+/// test drives both clones through the binary because that is what the property
+/// is about — a unit test over the push helper would prove the helper works and
+/// leave two clones untested.
+#[test]
+fn two_clones_of_one_repository_arbitrate_over_a_claim() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let (_origin, other) = r.cloned();
+
+    // The first clone takes it, and the claim reaches the remote.
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !format!("{}{}", stdout(&out), stderr(&out)).contains("not pushed"),
+        "a reachable remote must not report an unsynchronised claim: {}",
+        stderr(&out)
+    );
+
+    // The second clone, which has never seen that ref, is refused -- and told
+    // by whom, which it can only know by having been given the winner's record.
+    let out = r.ank_at("codex@host-9", &["claim", ID], &other);
+    assert_eq!(
+        code(&out),
+        4,
+        "the second clone took a task already held:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("claude-code@ank"),
+        "the refusal names no holder: {}",
+        stderr(&out)
+    );
+
+    // And the loser leaves the durable state alone: a refused claim is not a
+    // task moved to in_progress in a clone that does not hold it.
+    let text = std::fs::read_to_string(other.join(".ank/tasks").join(format!("{ID}.md"))).unwrap();
+    assert!(
+        text.contains("status: open"),
+        "the refused clone moved the task anyway:\n{text}"
+    );
+}
+
+/// A remote that exists and cannot be reached degrades, it does not fail
+/// (TASK-82c3341502c1, §2).
+///
+/// The claim is taken locally and the risk is displayed rather than hidden --
+/// what is at stake is that another clone can take the same task, so that is
+/// what the warning says. Measured against a remote that is configured and
+/// gone, which is the shape a laptop off the network actually has: a URL that
+/// resolves to nothing.
+#[test]
+fn an_unreachable_remote_warns_and_the_claim_still_holds_locally() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&[
+        "remote",
+        "add",
+        "origin",
+        // A path that will never exist: git fails to connect rather than
+        // refusing a swap, which is exactly the distinction under test.
+        &r.0.with_extension("gone.git").to_string_lossy(),
+    ]);
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(
+        code(&out),
+        0,
+        "an unreachable remote must not fail the claim:\n{}",
+        stderr(&out)
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("not pushed") && said.contains("another clone"),
+        "the risk is displayed, not hidden: {said}"
+    );
+    assert!(
+        r.claim_ref(ID).is_some(),
+        "the claim did not hold locally, which is the half that must not degrade"
+    );
+
+    // And a repository with no remote at all says none of it: that is level 0,
+    // the default mode, and a warning there would fire on every solo claim.
+    let solo = Repo::new();
+    solo.seed_task(ID, Some("A verifiable criterion."));
+    let out = solo.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !format!("{}{}", stdout(&out), stderr(&out)).contains("not pushed"),
+        "level 0 is not a degradation and must stay silent"
+    );
 }
 
 /// What a holder of a claim sees of the coordination plane (TASK-dacbcae6134c).
