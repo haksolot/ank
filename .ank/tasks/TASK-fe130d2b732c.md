@@ -5,7 +5,7 @@ slug: the-flat-listing-names-every-verb-and-says-what
 title: The flat listing names every verb and says what none of them does
 created: 2026-08-07T17:02:44Z
 author: seanl@sean-laptop
-status: in_progress
+status: done
 scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/human.rs
@@ -15,8 +15,12 @@ blocked_by: [TASK-84cfad83c308]
 done_criteria: |
   docs/ank-spec-v1.1.md sections 4 and 9 are rewritten first: ank help carries one short description per verb, and each description states what the verb refuses wherever a refusal is what distinguishes it. The listing stays flat, in the order of section 4, with no headings and no grouping: ADR-c656cbcc33a9 and ADR-e17e1bbd93ff are not superseded and the descriptions are not a layering. ank help amend describes the criterion as the verb actually treats it, changed only where no live claim freezes it, and never as an unconditional edit. Each description is the one-line compression of the text ank help <verb> already carries, and a test in crates/ank-cli/tests/cli.rs walks both through the binary and fails when a verb is described in the listing as doing something its own help says it refuses.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31455480061"
+    criteria: d3521eadc0f8
 schema: 2
-version: 8
+version: 9
 ---
 
 Raised from git's own help, which carries a one-line description per verb and
@@ -60,3 +64,4 @@ they are two texts that drift, and the drift is silent.
 - 2026-08-11T03:14:07Z seanl@sean-laptop — amended: +scope crates/ank-cli/src/cli.rs
 - 2026-08-11T03:16:22Z seanl@sean-laptop — Started by correcting the criterion through the route TASK-7c2f built two hours ago, on a real case rather than a fixture: one clause required that ank help amend not describe amend as changing a criterion, and amend now changes one no live claim freezes, so obeying the clause meant writing a description that misdescribes the verb. Released with the reason, amended the clause, re-claimed; criteria_by stayed creator and the whole trail is in the log. Direction settled with the maintainer: in the flat listing the description takes the place of the flag names, git-style, and the flags stay one ank help <verb> away where they carry their placeholders and their refusals. The listing keeps its height and gains its meaning, which is the token-economy objection section 9 line 1083 currently states, answered rather than ignored. The mechanical rule the test needs: a listing description may not name a flag the verb does not offer. That is exactly the amend defect of TASK-84cfad83c308 -- the old --criteria was declared refused, listed:false, so a description naming it would have failed -- and it catches init naming --repo through refuses_globals. It is checkable through help --json, which already carries flags and refuses per verb.
 - 2026-08-11T03:27:37Z seanl@sean-laptop — Implemented with no new field: the listing prints spec.summary, the same string ank help <verb> prints above the flags. One text rather than two is stronger than any test comparing them, and the test asserts the identity anyway so a future renderer cannot paraphrase. Descriptions too long for the column are folded on words and indented under themselves, never truncated -- the clause a verb refuses on is always the tail of the sentence, which is exactly where truncation would drop it. Six summaries gained a refusal clause where the refusal is what distinguishes the verb: claim, log, done, accept, close, init. The mechanical rule is that every --flag a description names is offered by the verb or preceded by the word refuses, checked against the flags and global lines of the verb's own page. Proven to bite before being trusted: rewriting init's description to say '--repo names the target' fails with the verb, the flag and what the verb actually offers. Three existing tests asserted flags in the flat listing and now assert them on the per-verb page, which is where they moved -- help_lists_every_verb_of_the_table, help_answers_outside_a_repository, and the surface() helper two path-classification tests walk.
+- 2026-08-11T03:31:20Z seanl@sean-laptop — done, proof test:31455480061
