@@ -1313,9 +1313,23 @@ fn log_write(
     // Renewed by writing: working is enough to keep the lock, and there is no
     // heartbeat verb to memorise (§3). The compare-and-swap is on the record we
     // read, so a claim taken over in the meantime is not overwritten.
-    let ttl = claim::DEFAULT_TTL.min(cfg.claim_ttl_max);
+    //
+    // **From the lease the claim was granted, not from the default.** `--ttl`
+    // states the rhythm of the work, and that does not change halfway through
+    // it. Recomputing the default here meant an agent that asked for two hours
+    // held them once and fell back to thirty minutes at its first `log` — the
+    // command the loop tells it to run often — so the flag failed at exactly
+    // the case it exists for: a long silent stretch entered just after a log
+    // (TASK-1b45f41e7b99).
+    // The applied lease is written back, not carried over. On a record from
+    // before the field existed that turns a `0` into the default it was just
+    // read as, so the record describes itself from the first renewal and the
+    // unset value leaves the coordination plane instead of being copied
+    // forward for the life of the claim.
+    let ttl = claim::renewal_ttl(&record, cfg.claim_ttl_max);
     let refreshed = Record::Claim(ClaimRecord {
         expires: claim::format_utc(claim::now_secs() + ttl.as_secs() as i64),
+        ttl: ttl.as_secs(),
         ..record
     });
     match claim::put(&repo.root, &id, &refreshed, Some(&witness))? {
@@ -2077,25 +2091,35 @@ mod tests {
         assert_eq!(entries[0].message, "removed jwt.verify");
     }
 
+    /// Writing is the heartbeat: a `log` pushes the expiry out to *now* plus
+    /// the lease the claim was granted.
+    ///
+    /// Stated as a recomputation rather than as `after > before`, which is what
+    /// it used to assert. That comparison passed for the wrong reason — the
+    /// renewal ignored the granted lease and always wrote the thirty-minute
+    /// default, so a claim taken with sixty seconds saw its expiry leap
+    /// (TASK-1b45f41e7b99). Now that the lease is honoured, `before` and
+    /// `after` sit sixty seconds from two instants that are usually the same
+    /// second, and the old assertion would be deciding on clock granularity.
     #[test]
     fn log_renews_the_ttl_because_working_is_what_keeps_the_lock() {
         let t = Temp::new();
         let id = a_task(&t, "A task");
-        // A short TTL, so the renewal is visible.
-        t.claim_it(&id, "claude-code@ank", 60);
+        // A short lease, well under the default, so that a renewal falling
+        // back to the default is visible rather than plausible.
+        const LEASE: i64 = 60;
+        t.claim_it(&id, "claude-code@ank", LEASE as u64);
 
-        let before = match claim::read(&t.0, &id).unwrap().unwrap().record {
-            Record::Claim(c) => claim::parse_utc(&c.expires).unwrap(),
-            other => panic!("{other:?}"),
-        };
         t.call(&["log", "still going"], "claude-code@ank").unwrap();
         let after = match claim::read(&t.0, &id).unwrap().unwrap().record {
             Record::Claim(c) => claim::parse_utc(&c.expires).unwrap(),
             other => panic!("{other:?}"),
         };
+        let from_now = after - claim::now_secs();
         assert!(
-            after > before,
-            "there is no heartbeat verb: writing is the heartbeat ({before} -> {after})"
+            (LEASE - 2..=LEASE + 2).contains(&from_now),
+            "the renewal did not recompute from the granted lease: {from_now}s \
+             from now, where the claim was granted {LEASE}s"
         );
     }
 

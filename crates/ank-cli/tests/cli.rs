@@ -2569,6 +2569,92 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     let _ = std::fs::remove_dir_all(&named);
 }
 
+/// A renewal reuses the lease the claim was granted, and re-caps it.
+///
+/// Through the binary and against the ref itself, because the lease is a fact
+/// about `refs/ank/claims/<id>` and not about a struct: the record is what the
+/// next process reads, and it is what an agent's survival across a silent
+/// stretch actually depends on.
+///
+/// The defect this pins: renewal recomputed `DEFAULT_TTL.min(claim_ttl_max)`
+/// and never read the granted lease, so an agent that asked for two hours held
+/// them once and fell back to thirty minutes at its first `log` -- the command
+/// the loop tells it to run often (TASK-1b45f41e7b99).
+#[test]
+fn a_renewal_keeps_the_lease_the_claim_was_granted() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // Two hours is the default `claim_ttl_max` of the fixture, so this asks
+    // for the most the cap allows and nothing more.
+    let out = r.ank("claude-code@ank", &["claim", ID, "--ttl", "2h"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let granted = expiry_span(&r);
+    assert!(
+        (7000..=7300).contains(&granted),
+        "the claim did not grant the two hours it was asked for: {granted}s"
+    );
+
+    let out = r.ank("claude-code@ank", &["log", ID, "still working"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let renewed = expiry_span(&r);
+    assert!(
+        (7000..=7300).contains(&renewed),
+        "the renewal dropped the granted lease and fell back to the default: \
+         {renewed}s from now, where the claim had {granted}s"
+    );
+
+    // The cap applies at renewal and not only at the claim, so lowering it
+    // takes effect on the next log rather than waiting for the next claim.
+    r.set_config("schema: 1\nclaim_ttl_max: 45m\ndefault_branch: main\n");
+    let out = r.ank("claude-code@ank", &["log", ID, "still working"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let capped = expiry_span(&r);
+    assert!(
+        (2500..=2800).contains(&capped),
+        "a lowered claim_ttl_max did not bind the renewal: {capped}s"
+    );
+}
+
+/// Seconds from now to the expiry the claim ref carries, read with git.
+fn expiry_span(r: &Repo) -> i64 {
+    let record = r.claim_ref(ID).expect("the claim ref must exist");
+    let expires = record
+        .lines()
+        .find_map(|l| l.strip_prefix("expires: "))
+        .unwrap_or_else(|| panic!("no expires in the record: {record}"))
+        .trim()
+        .to_string();
+
+    // The record's own format, parsed here rather than through the crate: what
+    // is under test is the bytes the next process reads.
+    let stamp = |s: &str, at: usize, n: usize| -> i64 { s[at..at + n].parse().unwrap() };
+    let (y, mo, d) = (
+        stamp(&expires, 0, 4),
+        stamp(&expires, 5, 2),
+        stamp(&expires, 8, 2),
+    );
+    let (h, mi, s) = (
+        stamp(&expires, 11, 2),
+        stamp(&expires, 14, 2),
+        stamp(&expires, 17, 2),
+    );
+    // Days since the epoch, by the civil-from-days algorithm the crate uses.
+    let (y, mo) = if mo <= 2 { (y - 1, mo + 12) } else { (y, mo) };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (mo - 3) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let at = days * 86_400 + h * 3600 + mi * 60 + s;
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    at - now
+}
+
 /// The listing describes every verb, and never as doing what it refuses.
 ///
 /// Both surfaces through the binary, because the defect this guards against is
