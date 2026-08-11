@@ -42,6 +42,15 @@ const PLUMBING: &[&str] = &[
     "for-each-ref",
     "config",
     "--version",
+    // The three level 1 needs (§7), each admitted on the criterion rather than
+    // on convenience. `push` signals a refused compare-and-swap by its exit
+    // code, which is the same contract `update-ref` is trusted for, and
+    // `--force-with-lease` is what makes the swap explicit rather than
+    // inferred. `ls-remote` prints `<oid>\t<refname>` per line and has since it
+    // existed. `fetch` is read for its exit code alone, never parsed.
+    "push",
+    "fetch",
+    "ls-remote",
 ];
 
 /// The verb an invocation actually runs, skipping the leading `-c <key>=<value>`
@@ -113,6 +122,122 @@ pub fn run(cwd: &Path, args: &[&str]) -> Result<String> {
         return Err(failed(args, &out));
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim_end().to_string())
+}
+
+// ---------------------------------------------------------------------------
+// The remote, and the compare-and-swap that crosses clones (§7, level 1)
+// ---------------------------------------------------------------------------
+
+/// The remote claims are arbitrated through, or `None` for a repository that
+/// has none.
+///
+/// **Absence is level 0 and not a failure.** A repository with no remote is the
+/// default mode and the only one that ever shipped before this: it must stay
+/// silent, or every solo `claim` would carry a warning about a network nobody
+/// asked for. What warns is a remote that exists and cannot be reached.
+///
+/// `origin` by name rather than by discovery. §7 says "any existing remote",
+/// and picking one out of several would be a rule nobody declared; `origin` is
+/// what `init` writes the `refs/ank/*` refspec for, and it is the name every
+/// clone already has.
+pub fn remote(cwd: &Path) -> Result<Option<String>> {
+    let out = output(cwd, &["config", "--get", "remote.origin.url"])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!url.is_empty()).then_some(url))
+}
+
+/// What a push of a claim ref did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Pushed {
+    /// The remote took it: this clone holds the claim repository-wide.
+    Ok,
+    /// The remote refused the swap — another clone got there first. The object
+    /// it holds instead, when `ls-remote` could name it.
+    Refused { holds: Option<String> },
+    /// The remote exists and could not be reached. Degrade, do not fail (§2):
+    /// the claim stands locally and the caller says so out loud.
+    Unreachable { reason: String },
+}
+
+/// Pushes a claim ref under a lease, which is the compare-and-swap of §7
+/// crossing clones.
+///
+/// `expect` is the object the caller read before writing, exactly as it is for
+/// the local `update-ref`: `None` means the ref must not exist on the remote.
+/// Git spells that as `--force-with-lease=<ref>:<expect>` with an empty
+/// expectation, and the check runs server-side and atomically, so two clones
+/// racing produce one winner without either trusting the other.
+///
+/// `new` of `None` is a deletion, which `release` and `close` need: a ref left
+/// behind on the remote makes a handed-back task unclaimable everywhere else
+/// until its TTL runs out — a state this change would otherwise create.
+///
+/// **A refused push is distinguished from an unreachable remote by asking, not
+/// by reading stderr.** Push says "rejected" in prose written for people, and
+/// parsing it would be the fragility ADR-b8884edcebe3 exists to prevent. So a
+/// failure is followed by one `ls-remote` of the same ref: an answer means the
+/// remote is there and the swap genuinely lost, and no answer at all means the
+/// remote is what failed. It costs a round trip on the failing path only.
+pub fn push_claim(
+    cwd: &Path,
+    refname: &str,
+    new: Option<&str>,
+    expect: Option<&str>,
+) -> Result<Pushed> {
+    let lease = format!("--force-with-lease={refname}:{}", expect.unwrap_or(""));
+    let spec = match new {
+        Some(object) => format!("{object}:{refname}"),
+        None => format!(":{refname}"),
+    };
+    let args = ["push", lease.as_str(), "origin", spec.as_str()];
+    let out = output(cwd, &args)?;
+    if out.status.success() {
+        return Ok(Pushed::Ok);
+    }
+    match ls_remote(cwd, refname) {
+        Ok(holds) => Ok(Pushed::Refused { holds }),
+        // The remote could not be interrogated either, so the push failure was
+        // never about contention.
+        Err(_) => Ok(Pushed::Unreachable {
+            reason: String::from_utf8_lossy(&out.stderr).trim().to_string(),
+        }),
+    }
+}
+
+/// The object the remote holds at `refname`, or `None` when the ref is absent
+/// there. An unreachable remote is an error, which is what tells `push_claim`
+/// which kind of failure it just had.
+///
+/// One line per ref, `<oid>\t<refname>`, which is what makes `ls-remote`
+/// admissible under ADR-b8884edcebe3.
+pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
+    let args = ["ls-remote", "origin", refname];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Err(failed(&args, &out));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .find_map(|l| l.split_whitespace().next().map(str::to_string)))
+}
+
+/// Brings the remote's view of one claim ref into this clone.
+///
+/// `claim` runs it before deciding, so a task held in another clone is refused
+/// with the holder named rather than taken and then rolled back. The push is
+/// still what arbitrates — this only closes the common case politely.
+///
+/// Failure is not an error to the caller: an unreachable remote means the
+/// answer is the local one, and the push that follows is where that gets said.
+/// Read for its exit code alone, never parsed.
+pub fn fetch_claim(cwd: &Path, refname: &str) -> Result<bool> {
+    let spec = format!("+{refname}:{refname}");
+    let out = output(cwd, &["fetch", "--quiet", "origin", spec.as_str()])?;
+    Ok(out.status.success())
 }
 
 /// The installed version, as `(major, minor)`.
@@ -570,27 +695,12 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    /// §7 says level 1 is unimplemented, and this is what keeps that sentence
-    /// from going stale in silence (TASK-83d6eefdb36e).
-    ///
-    /// Every git verb the tool may run passes [`PLUMBING`], so a claim that
-    /// crosses clones needs one of these three to appear here first. A negative
-    /// test: it fails the day the feature lands, not while it is absent, and it
-    /// names what the same change owes the specification. The specification is
-    /// the source of truth, and a source of truth that quietly stops describing
-    /// the binary is worse than one that never described it.
-    #[test]
-    fn no_remote_verb_is_allowed_while_the_spec_says_level_1_is_unimplemented() {
-        for verb in ["push", "fetch", "ls-remote"] {
-            assert!(
-                !PLUMBING.contains(&verb),
-                "`{verb}` is allowed now, so claims can reach another clone: \
-                 section 7 of docs/ank-spec-v1.1.md still says level 1 is \
-                 unimplemented and names what a second clone can do, and it has \
-                 to be rewritten in this change"
-            );
-        }
-    }
+    // `no_remote_verb_is_allowed_while_the_spec_says_level_1_is_unimplemented`
+    // stood here and did its job: it failed the day level 1 landed, naming what
+    // the same change owed the specification (TASK-83d6eefdb36e). §7 no longer
+    // says level 1 is unimplemented, so the sentence it guarded is gone and the
+    // guard goes with it (TASK-82c3341502c1). A negative test kept past the
+    // absence it describes asserts the opposite of what is true.
 
     struct Temp(PathBuf);
 

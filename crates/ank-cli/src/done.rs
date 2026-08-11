@@ -196,7 +196,14 @@ pub fn run(
     task.body = append_log(&task.body, &entry);
     store.write(&Entity::Task(task.clone()), base_version)?;
 
-    let completed = claim::complete(&repo.root, &id, identity)?;
+    let (completed, sync) = claim::complete(&repo.root, &id, identity)?;
+    // A completion that did not reach the remote closes the window it exists
+    // for in this clone only (§7). On standard error, beside the constraint
+    // drift warning and for the same reason: it is not the answer, and `done
+    // --json` is a parser's input.
+    if let Some(w) = sync.warning() {
+        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+    }
 
     if inv.json() {
         let _ = writeln!(
@@ -315,7 +322,7 @@ fn resolve_head(
             head
         }
     };
-    if standing.lapsed && claim::retake(cwd, &standing, cap)? == claim::Cas::Lost {
+    if standing.lapsed && claim::retake(cwd, &standing, cap)?.cas == claim::Cas::Lost {
         // Somebody claimed it between the read and the retake. Naming them is
         // the answer §3 asks for, and it is what tells the agent its work has
         // an owner rather than a problem.

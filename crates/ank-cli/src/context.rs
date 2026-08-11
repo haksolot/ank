@@ -1543,7 +1543,7 @@ After a blank one."
         let id = EntityId::parse("TASK-000000000003").unwrap();
         t.commit();
         t.claim_as(&id, "codex@host-9");
-        let done = claim::complete(&t.0, &id, "codex@host-9").unwrap();
+        let (done, _) = claim::complete(&t.0, &id, "codex@host-9").unwrap();
 
         let view = t.view("claude-code@ank", None);
         let line = view.tasks.iter().find(|t| t.id == id).unwrap();

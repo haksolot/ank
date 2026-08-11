@@ -501,11 +501,132 @@ fn current_object(cwd: &Path, id: &EntityId) -> Result<Option<String>> {
     Ok(if o.is_empty() { None } else { Some(o) })
 }
 
+/// How far a write of the coordination plane got (§7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Sync {
+    /// No remote: level 0, the default mode and the only one that shipped
+    /// before level 1. Silent by construction — a warning here would fire on
+    /// every claim of every solo repository.
+    Local,
+    /// The remote took it, so the claim holds repository-wide and not merely
+    /// in this clone.
+    Pushed,
+    /// A remote exists and could not be reached. The claim stands locally and
+    /// the caller says so: degrade, do not fail (§2), and the risk of a
+    /// concurrent claim is displayed rather than hidden.
+    Unsynchronised(String),
+}
+
+impl Sync {
+    /// The sentence a verb prints when the plane did not reach the remote, or
+    /// `None` when there is nothing to report.
+    ///
+    /// Written once because three verbs say it and a warning restated three
+    /// times is three chances to describe a different state.
+    pub fn warning(&self) -> Option<String> {
+        match self {
+            Sync::Local | Sync::Pushed => None,
+            Sync::Unsynchronised(_) => Some(
+                "claim not pushed: it holds in this clone only, and another clone \
+                 can take the same task"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+/// The outcome of a write: whether it took, and how far it reached.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Written {
+    pub cas: Cas,
+    pub sync: Sync,
+}
+
 /// Puts `record` on the ref. `witness` is the object the caller read: `None`
 /// requires the ref to be absent, `Some` requires it to be exactly there.
-pub fn put(cwd: &Path, id: &EntityId, record: &Record, witness: Option<&str>) -> Result<Cas> {
+///
+/// **The one place the two planes meet** (§7). Every write of a claim goes
+/// through here — acquisition, the renewal `log` performs, the retake of a
+/// lapsed claim, the completion record `done` writes — so pushing here covers
+/// all four without any of them remembering to. The lease handed to the remote
+/// is the same `witness` the local swap used, which is what makes the two
+/// checks one rule rather than two that agree today.
+///
+/// **Local first, then the remote.** The local swap is what this clone's own
+/// verbs read next; a push landing over a local write that lost would leave
+/// this clone believing something the refs deny.
+///
+/// A remote that refuses the swap means another clone holds the task, and the
+/// local ref is then corrected to the winner's record rather than rolled back
+/// to nothing: the caller's next question is *who holds it*, and the answer has
+/// to be readable where it looks.
+pub fn put(cwd: &Path, id: &EntityId, record: &Record, witness: Option<&str>) -> Result<Written> {
     let blob = write_blob(cwd, record)?;
-    update(cwd, id, &blob, witness)
+    if update(cwd, id, &blob, witness)? == Cas::Lost {
+        return Ok(Written {
+            cas: Cas::Lost,
+            sync: Sync::Local,
+        });
+    }
+    push(cwd, id, Some(&blob), witness)
+}
+
+/// The remote half of a write, shared by [`put`] and [`delete`].
+fn push(cwd: &Path, id: &EntityId, new: Option<&str>, witness: Option<&str>) -> Result<Written> {
+    if git::remote(cwd)?.is_none() {
+        return Ok(Written {
+            cas: Cas::Won,
+            sync: Sync::Local,
+        });
+    }
+    let name = ref_name(id);
+    match git::push_claim(cwd, &name, new, witness)? {
+        git::Pushed::Ok => Ok(Written {
+            cas: Cas::Won,
+            sync: Sync::Pushed,
+        }),
+        git::Pushed::Refused { .. } => {
+            // The winner's record, brought here so that whoever asks next reads
+            // the truth rather than this clone's rejected guess. If even that
+            // fails, the local ref keeps what we wrote and the caller still
+            // learns it lost — a wrong holder named is worse than none.
+            let _ = git::fetch_claim(cwd, &name);
+            Ok(Written {
+                cas: Cas::Lost,
+                sync: Sync::Pushed,
+            })
+        }
+        git::Pushed::Unreachable { reason } => Ok(Written {
+            cas: Cas::Won,
+            sync: Sync::Unsynchronised(reason),
+        }),
+    }
+}
+
+/// The remote's view of one claim, brought into this clone before a decision
+/// rests on it (§7).
+///
+/// `claim` runs this first so that a task held in another clone is refused with
+/// its holder named, rather than taken locally and then unwound by a rejected
+/// push. The push remains what arbitrates; this only makes the common case
+/// answer politely.
+///
+/// Silent on every failure. An unreachable remote means the local view is the
+/// only one available, and saying so belongs to the write that follows, which
+/// is where the risk actually lands.
+pub fn sync_from_remote(cwd: &Path, id: &EntityId) -> Result<()> {
+    if git::remote(cwd)?.is_none() {
+        return Ok(());
+    }
+    let name = ref_name(id);
+    let Ok(Some(theirs)) = git::ls_remote(cwd, &name) else {
+        return Ok(());
+    };
+    if current_object(cwd, id)?.as_deref() == Some(theirs.as_str()) {
+        return Ok(());
+    }
+    let _ = git::fetch_claim(cwd, &name);
+    Ok(())
 }
 
 /// Deletes the ref. This is what `release` and `close` do — and only they:
@@ -517,16 +638,23 @@ pub fn put(cwd: &Path, id: &EntityId, record: &Record, witness: Option<&str>) ->
 /// next `log` (§3). `release` therefore has to establish that it holds the
 /// claim before calling this — [`read`] answers that — and the check belongs to
 /// the verb, not here, where it would make `close` impossible to express.
+/// **The deletion travels too** (§7). Level 1 makes a claim visible to every
+/// clone, so a release that stayed local would leave the task looking held
+/// everywhere else until its TTL ran out — a state this change creates and
+/// therefore owes an answer to. The remote failing to take it is not worth
+/// failing the release over: the handback is durable state and already written,
+/// and the stale ref expires on its own.
 pub fn delete(cwd: &Path, id: &EntityId) -> Result<bool> {
     let name = ref_name(id);
-    if current_object(cwd, id)?.is_none() {
+    let Some(witness) = current_object(cwd, id)? else {
         return Ok(false);
-    }
+    };
     let args = ["update-ref", "-d", name.as_str()];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
     }
+    let _ = push(cwd, id, None, Some(&witness));
     Ok(true)
 }
 
@@ -686,7 +814,7 @@ pub fn sharing_warnings(
 ///
 /// The compare-and-swap is on the object the record was read from, so an agent
 /// that took the task over between the read and this write keeps it.
-pub fn retake(cwd: &Path, standing: &Standing, cap: Duration) -> Result<Cas> {
+pub fn retake(cwd: &Path, standing: &Standing, cap: Duration) -> Result<Written> {
     let ttl = renewal_ttl(&standing.record, cap);
     let record = Record::Claim(ClaimRecord {
         expires: format_utc(now_secs() + ttl.as_secs() as i64),
@@ -842,6 +970,8 @@ pub struct Acquired {
     /// True when the ref already carried a claim we replaced — the original
     /// holder returning after expiry, or a takeover from a lapsed one.
     pub taken_over: bool,
+    /// How far the claim reached: this clone, or the whole repository (§7).
+    pub sync: Sync,
 }
 
 /// Takes the ref for `identity`, or says precisely why it cannot be taken.
@@ -893,28 +1023,37 @@ pub fn acquire(
         constraints: constraints_hash.to_string(),
     });
 
-    match put(cwd, id, &record, witness)? {
+    let written = put(cwd, id, &record, witness)?;
+    match written.cas {
         Cas::Won => {}
-        // Somebody landed between our read and our write. Re-read to name
-        // them: the winner is the one whose message the agent needs.
+        // Somebody landed between our read and our write — in this clone, or in
+        // another one whose push got there first (§7). Re-read to name them:
+        // the winner is the one whose message the agent needs, and `put` has
+        // already brought a remote winner's record here for that.
         Cas::Lost => return Err(lost_the_race(cwd, id, now, other_ready)?),
     }
 
-    let Record::Claim(written) = record else {
+    let Record::Claim(taken) = record else {
         unreachable!("just built as a claim")
     };
     Ok(Acquired {
         id: id.clone(),
-        holder: written.holder,
-        expires: written.expires,
+        holder: taken.holder,
+        expires: taken.expires,
         taken_over: witness.is_some(),
+        sync: written.sync,
     })
 }
 
 /// Replaces whatever the ref carries with a completion record, keeping the
 /// address. Called by `done` (TASK-e5f6a7b8c9d0); no TTL is written, because
 /// what ends the completion ref is durable state catching up, not time.
-pub fn complete(cwd: &Path, id: &EntityId, identity: &str) -> Result<CompletedRecord> {
+///
+/// The completion is pushed like every other write of the plane, and that is
+/// what makes it useful across clones (§7): a completion ref that stayed local
+/// would tell the other clones nothing, which is exactly the window it exists
+/// to close.
+pub fn complete(cwd: &Path, id: &EntityId, identity: &str) -> Result<(CompletedRecord, Sync)> {
     let commit = git::run(cwd, &["rev-parse", "HEAD"])?;
     let branch = git::current_branch(cwd)?;
     let witness = current_object(cwd, id)?;
@@ -931,11 +1070,15 @@ pub fn complete(cwd: &Path, id: &EntityId, identity: &str) -> Result<CompletedRe
         &Record::Completed(record.clone()),
         witness.as_deref(),
     )? {
-        Cas::Won => Ok(record),
-        Cas::Lost => Err(
-            CliError::new(4, format!("{id} moved while it was being completed"))
-                .with_hint(format!("ank claim {id}")),
-        ),
+        Written {
+            cas: Cas::Won,
+            sync,
+        } => Ok((record, sync)),
+        Written { cas: Cas::Lost, .. } => Err(CliError::new(
+            4,
+            format!("{id} moved while it was being completed"),
+        )
+        .with_hint(format!("ank claim {id}"))),
     }
 }
 
@@ -1145,6 +1288,12 @@ pub fn run(
             )
         }
     };
+    // The remote's view first, so a task held in another clone is refused with
+    // its holder named rather than taken here and unwound by a rejected push
+    // (§7). Silent when there is no remote, and silent when there is one and it
+    // cannot be reached — that is the write's news to break, not the read's.
+    sync_from_remote(&repo.root, &task.id)?;
+
     check_blockers(&repo.root, &store, &task, ready.as_deref())?;
     task.status
         .check_transition(TaskStatus::InProgress)
@@ -1187,6 +1336,9 @@ pub fn run(
         .iter()
         .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
         .chain((!also_held.is_empty()).then(way_out))
+        // A claim that did not reach the remote holds in this clone alone, and
+        // §7 is explicit that the risk is displayed rather than hidden.
+        .chain(acquired.sync.warning())
         .collect();
 
     if inv.json() {
@@ -1540,7 +1692,7 @@ mod tests {
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
         });
-        assert_eq!(put(&t.0, &id, &record, None).unwrap(), Cas::Won);
+        assert_eq!(put(&t.0, &id, &record, None).unwrap().cas, Cas::Won);
 
         let refs = git::ank_refs(&t.0).unwrap();
         assert_eq!(refs.len(), 1, "{refs:?}");
@@ -1862,7 +2014,7 @@ mod tests {
         let commit = t.commit_all("seed");
         take(&t, &task, "claude-code@ank", DEFAULT_TTL).unwrap();
 
-        let done = complete(&t.0, &task.id, "claude-code@ank").unwrap();
+        let (done, _) = complete(&t.0, &task.id, "claude-code@ank").unwrap();
         assert_eq!(done.commit, commit);
         assert_eq!(done.branch.as_deref(), Some("main"));
 

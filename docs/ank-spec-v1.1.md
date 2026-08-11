@@ -929,7 +929,7 @@ A git-like model: fully functional locally, deployable progressively, never depe
 
 The nominal case is **one working tree per agent**, each on its own branch. That is what local proofs already assume (a `verify` run in a tree other agents are modifying in parallel would prove nothing clean) and it is the effective practice of agent harnesses. Several agents sharing one tree works but is a degraded mode, not a design mode.
 
-**Use `git worktree`, not clones, while level 1 is unimplemented.** The two are not interchangeable here: worktrees of one repository share `refs/ank/`, so claims arbitrate between them; separate clones do not share it, and two agents will hold the same task without either being told. The reasons are below, under what ships.
+**Without a remote, use `git worktree` and not clones.** The two are not interchangeable there: worktrees of one repository share `refs/ank/`, so claims arbitrate between them; separate clones do not share it, and two agents will hold the same task without either being told. With a remote, level 1 arbitrates the clones too and the choice becomes one of convenience. The reasons are below, under what ships.
 
 ### Separation of the two planes
 
@@ -993,30 +993,38 @@ Two uses depend on it, and not in the same way. `accept` **fails** with code 9: 
 
 ### Why `version` coexists with git's CAS
 
-The two cover disjoint ranges. Git's CAS protects **between working trees sharing a `refs/ank/`** — and, once level 1 ships, between clones at push time. The `version` field protects **inside a single working tree**. With one tree per agent that case becomes rare — but not nil: a human and an agent often share the same tree, and the field costs one integer. We keep it for the residual case, without presenting it as the main defence any more.
+The two cover disjoint ranges. Git's CAS protects **between working trees sharing a `refs/ank/`**, and between clones at push time wherever there is a remote. The `version` field protects **inside a single working tree**. With one tree per agent that case becomes rare — but not nil: a human and an agent often share the same tree, and the field costs one integer. We keep it for the residual case, without presenting it as the main defence any more.
 
 ### What ships, and what a second clone can therefore do
 
-**Only level 0 is implemented.** Levels 1 and 2 below describe where this goes; neither exists in the binary today. There is no push, no fetch and no `ls-remote` anywhere in the code: `ank init` adds the `refs/ank/*` **fetch** refspec and nothing more.
+**Levels 0 and 1 are implemented; level 2 is not.** Which one a repository is in is not configured and cannot be chosen: it is whether the repository has a remote named `origin`. Without one, claims are local refs and nothing is pushed — that is level 0, and it stays silent, because a warning about a network nobody asked for would fire on every claim of every solo repository. With one, every write of the coordination plane is pushed, and the arbitration is repository-wide.
 
 The consequence is exact, and it is stated here rather than left to be discovered:
 
-- **Two working trees of one clone are arbitrated.** Every `git worktree` of a repository shares `refs/ank/`, so the compare-and-swap settles them. One agent wins, the other gets code 4.
-- **Two separate clones are not.** Each holds its own `refs/ank/claims/<id>` and neither ever learns of the other. Both agents claim the same task, both succeed, both work. Nothing detects it, and nothing detects it later either: `check` prunes on the default branch, where two agents having done the same work looks like two agents having done their work.
+- **Two working trees of one clone are arbitrated**, remote or no remote. Every `git worktree` of a repository shares `refs/ank/`, so the local compare-and-swap settles them. One agent wins, the other gets code 4.
+- **Two separate clones are arbitrated when there is a remote, and only then.** Each holds its own `refs/ank/claims/<id>`; what makes them agree is the push, which the second clone loses. Without a remote, neither clone ever learns of the other: both agents claim the same task, both succeed, both work, and nothing detects it later either — `check` prunes on the default branch, where two agents having done the same work looks like two agents having done their work.
 
-So "one piece of work, one holder" holds **per clone, not per repository**. Until level 1 ships, an operator running several agents on one repository gets that property from `git worktree` and does not get it from clones.
+So "one piece of work, one holder" holds **per repository with a remote, and per clone without one.** An operator running several agents against a bare repository gets the property from the push; one running them on a single machine with no remote gets it from `git worktree` and does not get it from clones.
 
 ### Level 0 — local
 
-No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 becomes literally "the same ref, pushed" — no migration, no state to convert. There is **no fallback without git**: git is a hard dependency, and an uninitialised repository exits with code 9 and the exact command. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
+No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 is literally "the same ref, pushed" — no migration, no state to convert, and a repository that gains a remote is at level 1 from its next claim. There is **no fallback without git**: git is a hard dependency, and an uninitialised repository exits with code 9 and the exact command. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
 
-### Level 1 — git remote only (not implemented)
+### Level 1 — git remote only
 
-Any existing remote, GitHub included. Zero infrastructure.
+Any existing remote, GitHub included. Zero infrastructure, and no configuration: a repository with an `origin` is at level 1.
 
-The central insight: **a git ref update is already an atomic compare-and-swap**. A non-fast-forward push fails server-side, atomically, on every host. That is exactly the primitive claims need — the CAS is guaranteed by git, not by home-made code.
+The central insight: **a git ref update is already an atomic compare-and-swap**. The push carries the swap explicitly, as `--force-with-lease=<ref>:<expected>`, where the expected value is the object the caller read before writing — the very same witness the local `update-ref` swaps on, so the two checks are one rule rather than two that agree today. An empty expectation means "this ref must not exist", which is what taking a free task is. The check runs server-side and atomically, on every host, so two clones racing produce one winner without either trusting the other.
 
-TTL renewal through `log` updates the local ref then pushes; at one log every few minutes and a push on the order of a second, the cost is marginal. The transition to a completion ref at `done` is pushed the same way, and that is what makes it useful: a completion ref that stayed local would tell other clones nothing, which is exactly the window it exists to close. **Offline at level 1**, the claim is taken locally and marked unsynchronised, with a warning: degrade, do not fail — the risk of a concurrent claim is displayed, not hidden.
+Every write of the plane goes through it, and that is what makes it one mechanism rather than four: acquisition, the TTL renewal `log` performs, the retake of a lapsed claim, and the completion record `done` writes. The completion matters most: one that stayed local would tell the other clones nothing, which is exactly the window it exists to close. **`release` and `close` push the deletion** on the same terms — a claim handed back but left standing on the remote would make the task unclaimable everywhere else until its TTL ran out.
+
+`claim` reads the remote before deciding, so a task held in another clone is refused with its holder named rather than taken locally and unwound by a rejected push. The push is still what arbitrates; the read only makes the ordinary case answer politely. **No other verb pays for the network.** `context`, `status`, `find` and `check` describe the plane they have.
+
+A refused push and an unreachable remote are told apart **by asking, not by reading stderr**: push says "rejected" in prose written for people, and parsing it would be exactly the fragility the plumbing rule exists to prevent (§12). A failed push is followed by one `ls-remote` of the same ref — an answer means the remote is there and the swap genuinely lost; no answer at all means the remote is what failed. That costs a round trip on the failing path only.
+
+**Offline at level 1**, the claim is taken locally and marked unsynchronised, with a warning naming what is at risk: degrade, do not fail (§2). The claim holds in this clone and another clone can take the same task, and that is displayed rather than hidden.
+
+**The cost on the hot path, measured rather than inherited.** `log` renews the TTL and an agent logs often, so every renewal is a round trip. On Windows, twenty `ank log` runs against a local bare origin averaged 668 ms each against 639 ms with no remote at all — about **30 ms** of local overhead, lost in the process spawning that dominates a run there. What is not local is the network: ten `ls-remote` calls against a GitHub origin averaged **515 ms**. So a `log` in the field costs roughly half a second more than it did, which is the "on the order of a second" this section always claimed and now has a number for. At one log every few minutes it is under a percent of the time an agent spends working, and it buys the property the whole level exists for.
 
 The trade-off: latency on the order of a second, no notifications. Comfortable up to two or three agents, saturates beyond.
 
@@ -1170,8 +1178,7 @@ File format · one command surface, refusing on state and never on identity, wit
 | `.ank/` merge driver | The resolution rules are fixed (§7); automating them can wait for the first real conflicts. |
 | `touched` inferred from commits | Scope-drift detection. A git dependency, not blocking to get started. |
 | `enforced_by` (mechanisation) | The underlying mechanism against context inflation (see §11). Useless while the ADR corpus is small. |
-| Level 1 (claims pushed to a remote) | Described in §7 and not implemented. Worktrees of one clone are arbitrated today; separate clones are not. |
-| `ank serve` (level 2) | Level 1 is enough up to three concurrent agents, once level 1 exists. |
+| `ank serve` (level 2) | Level 1 ships and is enough up to three concurrent agents. |
 | `ank review --coherence` (ADR corpus analysis) | Detecting contradictions and duplicates. No value on a small corpus. The ratification queue itself is in v1. |
 | Read-only web view | To reopen only if non-developers must read the board. |
 | Linear/Jira export | Management visibility. Never writing back into Ank. |
