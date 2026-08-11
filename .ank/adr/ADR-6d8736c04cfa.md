@@ -5,7 +5,7 @@ slug: close-leaves-no-completion-ref-and-the-asymmetry
 title: close leaves no completion ref, and the asymmetry with done is the decision
 created: 2026-08-11T18:45:19Z
 author: claude-code@nested-pebble
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
@@ -26,8 +26,9 @@ constraint: |
   repository-wide refusal with a frozen criterion, declared verifiers and a
   proof, and close is gated by a reason alone.
 supersedes: ADR-bcf222a31525
+ratified: 8a9232f4fbf5
 schema: 2
-version: 2
+version: 3
 ---
 
 ## Context
