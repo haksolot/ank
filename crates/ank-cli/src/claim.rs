@@ -162,6 +162,17 @@ pub struct ClaimRecord {
     pub holder: String,
     pub claimed: String,
     pub expires: String,
+    /// The granted lease, in seconds. **Recorded because it cannot be
+    /// derived**: a renewal moves `expires` and leaves `claimed` where it is —
+    /// `check` reads `claimed` to report blockers the holder created after
+    /// taking the task — so `expires - claimed` stops being the lease the
+    /// moment the first renewal lands (§3, §7).
+    ///
+    /// Absent on a record written before it existed, and then read as
+    /// [`DEFAULT_TTL`]: the same promise the entity format makes about fields
+    /// introduced later, and the reason this is `default` rather than required.
+    #[serde(default)]
+    pub ttl: u64,
     /// Hash of the frozen `done_criteria`. `done` compares the current field
     /// against it and fails with code 6 if it diverged — immutability is
     /// verifiable, never defended (ADR-6b3f19e08a24).
@@ -661,6 +672,7 @@ pub fn acquire(
         holder: identity.to_string(),
         claimed: format_utc(now),
         expires: format_utc(now + ttl.as_secs() as i64),
+        ttl: ttl.as_secs(),
         criteria: criteria_hash.to_string(),
         constraints: constraints_hash.to_string(),
     });
@@ -1012,6 +1024,21 @@ fn resolve_ttl(flag: Option<&str>, cfg: &Config) -> Result<Duration> {
     Ok(asked.min(cfg.claim_ttl_max))
 }
 
+/// The lease a renewal recomputes the expiry from (§3).
+///
+/// **Re-capped here and not only at the claim**, so that lowering
+/// `claim_ttl_max` takes effect on the next `log` rather than waiting for the
+/// next claim. A record from before the field existed carries `0`, which is not
+/// a lease anybody granted: it reads as the default, the same way an absent
+/// field does everywhere else in the format.
+pub fn renewal_ttl(record: &ClaimRecord, cap: Duration) -> Duration {
+    let granted = match record.ttl {
+        0 => DEFAULT_TTL,
+        secs => Duration::from_secs(secs),
+    };
+    granted.min(cap)
+}
+
 fn status_map(store: &Store) -> Result<HashMap<EntityId, TaskStatus>> {
     let mut map = HashMap::new();
     for id in store.list_ids()? {
@@ -1290,6 +1317,7 @@ mod tests {
             holder: "claude-code@ank".into(),
             claimed: "2026-07-31T02:00:00Z".into(),
             expires: "2026-07-31T02:30:00Z".into(),
+            ttl: DEFAULT_TTL.as_secs(),
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
         });
@@ -1305,6 +1333,57 @@ mod tests {
     // The record and its two states
     // -----------------------------------------------------------------------
 
+    /// A record written before the lease was recorded still reads, and renews
+    /// at the default.
+    ///
+    /// The promise §7 makes about the coordination plane, and the same one the
+    /// entity format makes about fields introduced later: absence means
+    /// "written before this existed", never "invalid". Written out as bytes
+    /// rather than built from the struct, because what has to keep parsing is
+    /// what is already sitting in somebody's `refs/ank/claims/`.
+    #[test]
+    fn a_record_from_before_the_lease_reads_and_renews_at_the_default() {
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        let text = "state: claim\ntask: TASK-000000000001\nholder: claude-code@ank\n\
+                    claimed: 2026-07-31T02:00:00Z\nexpires: 2026-07-31T02:30:00Z\n\
+                    criteria: '123456789012'\nconstraints: '000000000000'\n";
+        let Record::Claim(c) = parse_record(text, &id).unwrap() else {
+            panic!("a claim record");
+        };
+        assert_eq!(c.ttl, 0, "an absent lease is not a lease anybody granted");
+
+        assert_eq!(renewal_ttl(&c, Duration::from_secs(2 * 3600)), DEFAULT_TTL);
+
+        // And the cap still binds a record that carries no lease of its own.
+        assert_eq!(
+            renewal_ttl(&c, Duration::from_secs(300)),
+            Duration::from_secs(300)
+        );
+    }
+
+    /// The lease is re-capped at renewal, so lowering `claim_ttl_max` takes
+    /// effect on the next `log` rather than waiting for the next claim.
+    #[test]
+    fn a_lowered_cap_binds_the_renewal_and_not_only_the_claim() {
+        let granted = ClaimRecord {
+            task: "TASK-000000000001".into(),
+            holder: "claude-code@ank".into(),
+            claimed: "2026-07-31T02:00:00Z".into(),
+            expires: "2026-07-31T04:00:00Z".into(),
+            ttl: 2 * 3600,
+            criteria: "123456789012".into(),
+            constraints: "000000000000".into(),
+        };
+        assert_eq!(
+            renewal_ttl(&granted, Duration::from_secs(2 * 3600)),
+            Duration::from_secs(2 * 3600)
+        );
+        assert_eq!(
+            renewal_ttl(&granted, Duration::from_secs(45 * 60)),
+            Duration::from_secs(45 * 60)
+        );
+    }
+
     #[test]
     fn an_all_digit_hash_survives_the_round_trip_as_a_string() {
         // A twelve-character hash can come out all decimal digits. Unquoted,
@@ -1316,6 +1395,7 @@ mod tests {
             holder: "claude-code@ank".into(),
             claimed: "2026-07-31T02:00:00Z".into(),
             expires: "2026-07-31T02:30:00Z".into(),
+            ttl: DEFAULT_TTL.as_secs(),
             criteria: "123456789012".into(),
             constraints: "000000000000".into(),
         });

@@ -3453,6 +3453,7 @@ mod tests {
             holder: "codex@host-9".into(),
             claimed: claim::now_utc(),
             expires: claim::now_utc(),
+            ttl: claim::DEFAULT_TTL.as_secs(),
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
         });
