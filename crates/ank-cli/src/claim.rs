@@ -603,6 +603,79 @@ pub fn on_task(cwd: &Path, identity: &str) -> Result<Option<Standing>> {
     Ok(lapsed_one)
 }
 
+/// The standing of one named task, if this identity is the one on it.
+///
+/// [`on_task`] asked at a task instead of at the refs. It is what the explicit
+/// id on `log`, `release` and `done` resolves through: §4 makes that id "a task
+/// this agent holds a live claim on" rather than "HEAD spelled out", so naming
+/// a task and deriving HEAD have to produce the same kind of answer or the two
+/// paths drift (TASK-97d8747416ea).
+///
+/// A lapsed claim answers here exactly as it does in `on_task`, and for the
+/// same reason: it is still this agent's task, and `log` and `done` retake it
+/// (§3).
+pub fn standing_on(cwd: &Path, identity: &str, id: &EntityId) -> Result<Option<Standing>> {
+    let Some(held) = read(cwd, id)? else {
+        return Ok(None);
+    };
+    let Record::Claim(c) = held.record else {
+        return Ok(None);
+    };
+    if c.holder != identity {
+        return Ok(None);
+    }
+    let lapsed = is_expired(&c, now_secs(), id)?;
+    Ok(Some(Standing {
+        id: id.clone(),
+        object: held.object,
+        record: c,
+        lapsed,
+    }))
+}
+
+/// What a verb says when it derived HEAD out of more than one live claim.
+///
+/// The choice itself stays deterministic — the lowest id, because the refs are
+/// enumerated in refname order — and §3 asks that it never be silent. That is
+/// the whole defect this answers: `log` wrote its entry, `release` handed a
+/// task back and `done` verified one, none of them saying which of the two it
+/// had picked or that there had been a choice (TASK-97d8747416ea).
+///
+/// Written once and said by every caller, like [`way_out`] which it ends with:
+/// the sentences name a task id and a variable, and two copies are two chances
+/// to name the wrong one.
+///
+/// Empty when there is nothing to report, so a caller can print it
+/// unconditionally and the nominal case stays silent.
+/// `tail` is what the verb needs after the id to stay a command somebody can
+/// run: a message for `log`, a reason for `release`. §4 makes a hint the exact
+/// command to run next, and `ank log TASK-8f3a` on its own is a different verb
+/// — it reads.
+pub fn sharing_warnings(
+    verb: &str,
+    tail: &str,
+    acting_on: &EntityId,
+    also: &[(EntityId, ClaimRecord)],
+) -> Vec<String> {
+    if also.is_empty() {
+        return Vec::new();
+    }
+    let mut said = vec![format!(
+        "{} live claims on this identity, acting on {acting_on}",
+        also.len() + 1
+    )];
+    said.extend(
+        also.iter()
+            .map(|(id, c)| format!("also holding {id} until {}", c.expires)),
+    );
+    // The command, not the advice: naming another task is what the explicit id
+    // is for, and the agent that meant the other one needs to be able to copy
+    // the line rather than derive it (§4).
+    said.push(format!("ank {verb} {}{tail} acts on that one", also[0].0));
+    said.push(way_out());
+    said
+}
+
 /// Takes a lapsed claim back, in the same agent's name (§3).
 ///
 /// **The anchors are carried over, never recomputed.** Re-freezing the

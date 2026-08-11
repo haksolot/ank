@@ -261,19 +261,60 @@ fn resolve_head(
     identity: &str,
     cap: std::time::Duration,
 ) -> Result<(EntityId, Held)> {
-    let Some(standing) = claim::on_task(cwd, identity)? else {
+    let Some(head) = claim::on_task(cwd, identity)? else {
         return Err(CliError::new(6, "no task in progress for this agent").with_hint("ank context"));
     };
-    if let Some(given) = given {
-        let asked = store.resolve(given)?;
-        if asked != standing.id {
-            return Err(CliError::new(
-                6,
-                format!("{asked} is not the task in progress ({})", standing.id),
-            )
-            .with_hint(format!("ank done {}", standing.id)));
+    let standing = match given {
+        Some(given) => {
+            let asked = store.resolve(given)?;
+            if asked == head.id {
+                head
+            } else {
+                // Not "must equal HEAD" any more, but "a task this agent holds
+                // a live claim on" (§4). The refusal is what it costs, not a
+                // flag, and it is unchanged for an id this agent does not hold.
+                claim::standing_on(cwd, identity, &asked)?.ok_or_else(|| {
+                    CliError::new(
+                        6,
+                        format!("{asked} is not the task in progress ({})", head.id),
+                    )
+                    .with_hint(format!("ank done {}", head.id))
+                })?
+            }
         }
-    }
+        None => {
+            // **The sharp one.** `log` writes an entry another entry corrects
+            // and `release` hands back a task that can be claimed again;
+            // `done` cannot be undone by running it again. An agent that meant
+            // the task it claimed a minute ago and got the one it claimed an
+            // hour ago finds a task marked done, carrying a proof, whose work
+            // was never verified — so where the other two name the choice and
+            // act, this refuses and lets the caller name it (§3).
+            //
+            // Before the retake and before a single verifier: the answer must
+            // not cost ten minutes of test suite, and nothing may move on a
+            // task the caller has not named.
+            let also = claim::live_claims_of(cwd, identity, &head.id, claim::now_secs())?;
+            if !also.is_empty() {
+                let mut all: Vec<String> = vec![head.id.to_string()];
+                all.extend(also.iter().map(|(id, _)| id.to_string()));
+                return Err(CliError::new(
+                    6,
+                    format!(
+                        "{} live claims on this identity, and done takes one: {}",
+                        all.len(),
+                        all.join(", ")
+                    ),
+                )
+                .with_hint(format!(
+                    "ank done {}   ({})",
+                    head.id,
+                    claim::way_out()
+                )));
+            }
+            head
+        }
+    };
     if standing.lapsed && claim::retake(cwd, &standing, cap)? == claim::Cas::Lost {
         // Somebody claimed it between the read and the retake. Naming them is
         // the answer §3 asks for, and it is what tells the agent its work has

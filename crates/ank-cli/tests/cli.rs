@@ -2734,6 +2734,150 @@ fn status_names_every_live_claim_of_this_identity() {
     assert!(!said.contains("also"), "{said}");
 }
 
+/// With two live claims under one identity, no verb acts on one of them without
+/// the caller being able to tell which (TASK-97d8747416ea).
+///
+/// `on_task` returns the first live record and `ank_refs` goes through
+/// `for-each-ref`, which sorts by refname, so HEAD is the lowest task id among
+/// the agent's live claims -- chosen, and until now chosen in silence. `log`
+/// wrote its entry there, `release` handed that one back, and `done` ran the
+/// verifiers of that one and moved it to `done`, none of them saying which of
+/// the two they had picked.
+///
+/// The state is built the way it stays reachable: `claim` refuses to create it
+/// (TASK-a548c95261a5), and a lapse revived produces it. Both claims are taken
+/// by the binary and only the clock between them is forged.
+///
+/// Through the binary because the assertion is on what reaches the caller, and
+/// on a real verifier because the point about `done` is *when* it refuses: a
+/// witness file the verifier writes is how "before a single verifier ran" is
+/// asserted rather than assumed.
+#[test]
+fn with_two_live_claims_no_verb_picks_one_in_silence() {
+    const FIRST: &str = "TASK-000000000e01";
+    const SECOND: &str = "TASK-000000000e02";
+    const THIRD: &str = "TASK-000000000e03";
+    const AGENT: &str = "claude-code@ank";
+
+    let r =
+        Repo::new().with_verifiers("verifiers:\n  witness:\n    run: echo ran > verifier-ran\n");
+    let witness = r.0.join("verifier-ran");
+    for id in [FIRST, SECOND, THIRD] {
+        r.seed_task_with(id, Some("A verifiable criterion."), &["witness"]);
+    }
+
+    // Two live claims, one identity. HEAD is FIRST, being the lower id.
+    assert_eq!(code(&r.ank(AGENT, &["claim", FIRST])), 0);
+    r.expire_claim(FIRST);
+    assert_eq!(code(&r.ank(AGENT, &["claim", SECOND])), 0);
+    r.revive_claim(FIRST);
+
+    // `log` acts, and says so before it writes.
+    let out = r.ank(AGENT, &["log", "one"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST), "the task acted on is named: {said}");
+    assert!(said.contains(SECOND), "and the other live claim: {said}");
+    assert!(
+        said.contains("ank log"),
+        "and the command that names one explicitly: {said}"
+    );
+    assert!(said.contains("ANK_AGENT"), "and the way out: {said}");
+    assert!(
+        stdout(&out).contains(&format!("logged on {FIRST}")),
+        "{}",
+        stdout(&out)
+    );
+    assert!(r.task_text(FIRST).contains("one"), "the entry went to HEAD");
+
+    // Naming a task is what picks the other one, and it costs the refusal
+    // rather than a flag: the id used to have to equal HEAD.
+    let out = r.ank(AGENT, &["log", SECOND, "two"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(SECOND).contains("two"),
+        "the named task got the entry:\n{}",
+        r.task_text(SECOND)
+    );
+    assert!(
+        !stderr(&out).contains("live claims"),
+        "a caller that named its task is told nothing back: {}",
+        stderr(&out)
+    );
+
+    // The same sentences for a parser -- the caller that scripts around these
+    // verbs is exactly the caller running several sessions.
+    let json = stdout(&r.ank(AGENT, &["log", "--json", "three"]));
+    assert!(json.contains("\"warnings\""), "{json}");
+    assert!(json.contains(SECOND), "{json}");
+
+    // `done` refuses instead, being the verb whose effect running it again
+    // cannot undo -- and refuses before a verifier has run.
+    let out = r.ank(AGENT, &["done"]);
+    assert_eq!(code(&out), 6, "{}{}", stdout(&out), stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST) && said.contains(SECOND), "{said}");
+    assert!(
+        said.contains(&format!("ank done {FIRST}")),
+        "the refusal names a command to run: {said}"
+    );
+    assert!(
+        !witness.exists(),
+        "a verifier ran before the caller had answered which task"
+    );
+    assert!(
+        r.task_text(FIRST).contains("status: in_progress")
+            && r.task_text(SECOND).contains("status: in_progress"),
+        "the refusal moved a task anyway"
+    );
+
+    // Named, it goes through, and it is the named one that moves.
+    let out = r.ank(AGENT, &["done", SECOND]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(witness.exists(), "the verifier of the named task never ran");
+    assert!(
+        r.task_text(SECOND).contains("status: done"),
+        "\n{}",
+        r.task_text(SECOND)
+    );
+    assert!(
+        r.task_text(FIRST).contains("status: in_progress"),
+        "done moved a task nobody named:\n{}",
+        r.task_text(FIRST)
+    );
+
+    // And `release`, which needs the state rebuilt: SECOND carries a completion
+    // ref now, so the second live claim is a fresh one.
+    r.expire_claim(FIRST);
+    assert_eq!(code(&r.ank(AGENT, &["claim", THIRD])), 0);
+    r.revive_claim(FIRST);
+
+    let out = r.ank(AGENT, &["release", "--reason", "the criterion is wrong"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST) && said.contains(THIRD), "{said}");
+    assert!(said.contains("ank release"), "{said}");
+    assert!(
+        stdout(&out).contains(&format!("released {FIRST}")),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        r.task_text(THIRD).contains("status: in_progress"),
+        "release handed back a task nobody named:\n{}",
+        r.task_text(THIRD)
+    );
+
+    // One claim, which is the nominal case, says none of it.
+    let out = r.ank(AGENT, &["log", "alone now"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("live claims"),
+        "the nominal case pays for the exceptional one: {}",
+        stderr(&out)
+    );
+}
+
 /// A holder returning to a lapsed claim carries on; one whose task was taken
 /// over is told by whom.
 ///

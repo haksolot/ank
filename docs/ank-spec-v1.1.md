@@ -236,6 +236,15 @@ Two hours granted and then honoured is not hoarding: `claim_ttl_max` is what bou
 
 **Return after expiry.** A 40-minute build with no `log` expires the claim; that is normal, not a fault. On expiry the task stays `in_progress` and becomes claimable again. When the original holder returns: if nobody took the task over, `log` and `done` **re-acquire silently** and carry on; if another agent took it over in the meantime, they fail with code 4 and the name of the new holder. Mechanically, "silently" means checking that no active claim exists for the task — the ref `refs/ank/claims/<id>` — then recreating it in the current agent's name, both steps resting on the atomic primitive of a ref update. No data is lost either way — the log says where each holder stopped.
 
+**Two live claims under one identity.** `claim` refuses to create that state (§4) and the CLI is not a gatekeeper, so it remains reachable: a ref written by hand, a claim taken by an earlier binary, a lapse revived. HEAD is then derived from more than one candidate, and what the verbs owe their caller is that **the choice is never silent** — the whole cost of the state is not that it exists but that `log`, `release` and `done` used to resolve it without a word.
+
+HEAD stays derived and the resolution stays deterministic: the lowest task id among the identity's live claims, because the refs are enumerated in refname order and nothing else would be reproducible. On top of that:
+
+- **`log` and `release` act, and say so first.** Before writing anything they name the task they resolved to, every other live claim of the identity with its expiry, the command that names another one explicitly, and the way out of a shared identity. On standard error, so that stdout stays what a parser already reads (§4); under `--json` the same sentences arrive in a `warnings` array, as `claim` already does — the caller that scripts around these verbs is exactly the caller running several sessions.
+- **`done` refuses**, code 6, and refuses **before running a single verifier**. It is the verb whose effect cannot be undone by running it again: an agent that meant the task it claimed a minute ago and got the one it claimed an hour ago finds a task marked `done`, carrying a proof, whose work was never verified. The refusal names every candidate and gives the command for one of them. Code 6 is what `log`, `release` and `done` already answer when HEAD resolves to no task at all; resolving to several is the same fact from the other side.
+
+**The explicit ID is what disambiguates**, which costs the refusal rather than a new flag. It stops meaning "must equal HEAD" and means "must name a task this agent holds a live claim on" — still never a way to act on somebody else's task, and still code 6 when it names one this agent does not hold. With one claim, which is the nominal case, the two readings are the same sentence.
+
 ### ADR
 
 `.ank/adr/ADR-3c7e0b9142af.md`
@@ -426,7 +435,7 @@ The refusal is on state and not on identity, in the sense of the table above: wh
 
 **It does not make the state unreachable, and nothing here assumes it does.** The CLI is not a gatekeeper (§7, §12): a ref written by hand, a claim taken by an earlier binary, or a claim that lapsed and was revived all produce one identity holding two live claims. What `log`, `release` and `done` do when they meet it is settled in §3, not here.
 
-The optional ID on `log`, `done` and `release` is therefore always redundant: it exists only for explicitness in scripts, and **must match HEAD**, otherwise error 6. It is never a way to act on somebody else's task.
+The optional ID on `log`, `done` and `release` is therefore redundant in the nominal case: it exists for explicitness in scripts, and it **must name a task this agent holds a live claim on**, otherwise error 6. It is never a way to act on somebody else's task. Holding one claim, that is the same rule as "must match HEAD"; holding several — the state §3 describes and this section refuses to create — it is what names which of them a verb acts on.
 
 ### Pickup and abandonment
 
