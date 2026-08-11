@@ -347,6 +347,59 @@ pub fn live_claims_of(
     Ok(held)
 }
 
+/// One live claim at a time per identity, refused rather than warned about
+/// (§4).
+///
+/// §4 said "assumes and **enforces** one active claim at a time per agent" for
+/// as long as this code only warned. The gap is not academic: the default
+/// identity is `<user>@<hostname>` (§8), so two sessions in one working tree
+/// are one agent as far as the refs can tell, and their claims do not
+/// collide — they accumulate. `on_task` then returns the first live record and
+/// `ank_refs` sorts by refname, so HEAD becomes the lowest of the two, picked
+/// in silence by `log`, `release` and `done` (TASK-97d8747416ea). This closes
+/// the door that state comes through, and TASK-a548c95261a5 records why the
+/// previous answer — name it, never refuse (TASK-d79dc424c63d) — was measured
+/// to be not enough: the warning is printed once, at acquisition, and a
+/// convention that announces itself only when it is taken fades exactly as a
+/// session lengthens.
+///
+/// **Code 7, not 4.** 4 means "take something else" (§4), and the task asked
+/// for is available — it is the caller that is not. What is missing is a
+/// prerequisite, and it is exact: finish or hand back what is already held.
+///
+/// **The message names the identity, never the caller.** Under a shared
+/// identity the session being refused may have claimed nothing at all; it is
+/// being answered about somebody else's claim, and "you already hold" would
+/// simply be false. The hint carries both ways through, the second in a
+/// parenthetical, exactly as the "another ready task" hints do — and the
+/// sentence comes from [`way_out`] rather than a second copy of it.
+///
+/// **The task being claimed is excluded.** Re-claiming what one already holds
+/// is a different question, answered by the transition check and by `acquire`,
+/// and this refusal has no business intercepting it.
+///
+/// Refusing on state and never on identity (ADR-c656cbcc33a9): what is read is
+/// the coordination plane — which refs exist and who holds them — and the
+/// answer is the same for every caller. A lapsed claim is not a live one, so
+/// pickup after expiry (§3) passes through untouched.
+fn already_holding(cwd: &Path, identity: &str, target: &EntityId, now: i64) -> Result<()> {
+    let held = live_claims_of(cwd, identity, target, now)?;
+    // The lowest id, which is the one HEAD resolves to and therefore the one
+    // `release` in the hint would hand back. Naming all of them would be a
+    // longer message about a state this refusal exists to prevent.
+    let Some((id, record)) = held.first() else {
+        return Ok(());
+    };
+    Err(CliError::new(
+        7,
+        format!(
+            "{identity} holds a live claim on {id} ({})",
+            remaining_text(record, now)
+        ),
+    )
+    .with_hint(format!("ank release --reason \"<why>\"   ({})", way_out())))
+}
+
 /// The record a task's ref carries, if it carries one. An absent ref is
 /// `None`, never an error: that is the nominal state of a free task.
 pub fn read(cwd: &Path, id: &EntityId) -> Result<Option<Held>> {
@@ -1024,6 +1077,12 @@ pub fn run(
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", task.id)))?;
 
+    // Last of the preconditions, and last on purpose. Everything above refuses
+    // on the task asked for; this one refuses on what the caller already holds,
+    // and an agent told to hand back its work for a task that would have
+    // refused it anyway has paid for nothing.
+    already_holding(&repo.root, identity, &task.id, now_secs())?;
+
     let constraints = constraints_hash(&applicable_constraints(&store, repo, &task)?);
     let acquired = acquire(
         &repo.root,
@@ -1040,10 +1099,16 @@ pub fn run(
     task.status = TaskStatus::InProgress;
     store.write(&Entity::Task(task.clone()), base_version)?;
 
-    // Held after the ref is taken, so nothing is said about a claim that was
-    // refused. One claim at a time is a convention and not a lock, so this
-    // warns and never refuses: parallel agents, each with its own identity, are
-    // the design (§7), and the case worth naming is the one where they are not.
+    // Read a second time, after the ref is taken, and what it can still find is
+    // the race `already_holding` cannot close: two sessions of one identity
+    // that both passed the check before either took its ref. The window is
+    // narrow and it is real, so it is named rather than assumed away — the
+    // refusal above is what makes this the exception it now reads as.
+    //
+    // It still warns and never refuses, and here that is the only option left:
+    // the ref is taken and the transition is written, so a refusal at this
+    // point would refuse a claim the agent holds. `status` says the same thing
+    // for as long as the state lasts (TASK-38b384543551).
     let also_held = live_claims_of(&repo.root, identity, &acquired.id, now_secs())?;
     let warnings: Vec<String> = also_held
         .iter()

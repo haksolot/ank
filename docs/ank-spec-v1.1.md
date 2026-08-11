@@ -365,7 +365,7 @@ The binary refuses, and what it refuses on is always a fact about the corpus or 
 |---|---|
 | frozen field diverged from its anchoring hash, or illegal transition | 6 |
 | claim held by another agent, or task already finished on another branch | 4 |
-| task blocked, no `done_criteria`, or `accept` off the default branch | 7 |
+| task blocked, no `done_criteria`, `accept` off the default branch, or a live claim already held by the calling identity | 7 |
 | proof missing or invalid | 5 |
 
 That list is the guarantee. A state refusal applies to every caller equally and means the same thing to all of them, which is what makes it worth writing an exit code for; a refusal conditioned on identity would mean whatever the caller declared itself to be. `$ANK_AGENT` names who acted — it goes into the log, into the claim ref and into `check`'s signals — and it is never consulted to decide whether a verb runs.
@@ -407,6 +407,24 @@ The agent cannot get the identifier wrong, and every iteration saves a context r
 **HEAD is not stored, it is derived**: it is the task on which the current agent holds an active claim. Nothing to synchronise, nothing to clean up, no state that can become inconsistent with the real claim.
 
 This assumes and enforces **one active claim at a time per agent**. That is a useful constraint in itself: an agent must finish or release before moving on, which prevents task hoarding and keeps work in progress readable by others.
+
+**Enforcing it is what `claim` does**, and for a long time this paragraph said so while the binary only warned. A `claim` made while the calling identity already holds a live claim on another task refuses with **code 7**, naming the task held, its expiry, and both ways through:
+
+```
+$ ank claim 8f3a
+error[7]: claude-code@host-3 holds a live claim on TASK-51c2 (expires in 24m)
+  -> ank release --reason "<why>"   (a second session on this machine sets its own ANK_AGENT)
+```
+
+**Code 7 and not 4.** The task asked for is available; it is the caller that is not. 4 means "take something else" and the reaction called for here is the opposite — finish or hand back what is already held — so the code that carries "missing prerequisite" is the one that says it.
+
+**The second way out is not decoration**, and it is why this hint carries a parenthetical the way the "another ready task" hints do. The default identity is `<user>@<hostname>` (§8), so two sessions in one working tree read as one agent, and the session being refused may never have claimed anything: it is being answered about somebody else's claim, and `ANK_AGENT` is the only thing that separates the two. That is also why the message names the identity rather than addressing the caller as the holder — under a shared identity, telling it "you already hold" would be false.
+
+The refusal comes **after** the refusals about the task itself — no criterion, blocked, already claimed elsewhere, illegal transition. An agent told to release the work it holds, for a task that would have refused it anyway, has been made to pay for nothing.
+
+The refusal is on state and not on identity, in the sense of the table above: what is read is the coordination plane — which refs exist and who holds them — and the answer is the same for every caller. A **lapsed** claim is not a live one, so pickup after expiry (§3) is untouched, and an agent returning to a task whose lease ran out claims it exactly as before.
+
+**It does not make the state unreachable, and nothing here assumes it does.** The CLI is not a gatekeeper (§7, §12): a ref written by hand, a claim taken by an earlier binary, or a claim that lapsed and was revived all produce one identity holding two live claims. What `log`, `release` and `done` do when they meet it is settled in §3, not here.
 
 The optional ID on `log`, `done` and `release` is therefore always redundant: it exists only for explicitness in scripts, and **must match HEAD**, otherwise error 6. It is never a way to act on somebody else's task.
 
@@ -687,7 +705,7 @@ The semantics are carried by the code so that the shell can route without parsin
 | 4 | task unavailable — claim held by another agent, or task already finished on another branch (§7) |
 | 5 | proof missing or invalid |
 | 6 | illegal transition, or frozen field modified (hash diverged) |
-| 7 | missing prerequisite — no criterion, task blocked, or `accept` off the default branch |
+| 7 | missing prerequisite — no criterion, task blocked, `accept` off the default branch, or a live claim already held by the calling identity |
 | 8 | `check`: invariants violated (reserved for `check`, for CI) |
 | 9 | environment unavailable — not a task failure |
 
