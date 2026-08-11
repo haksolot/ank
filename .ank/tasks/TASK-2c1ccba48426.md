@@ -5,7 +5,7 @@ slug: second-pass-coordination-findings
 title: Second-pass coordination findings
 created: 2026-08-06T23:24:57Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/**
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   The four findings appear in the body, each precise enough to act on, and ank check stays green on this repo.
 criteria_by: creator
 schema: 2
-version: 1
+version: 4
 ---
 
 Read-only second pass over the coordination plane - claims, renewal, completion
@@ -57,3 +57,7 @@ being unimplemented, and done not warning on constraint drift.
    execution mode exists to remove choice; but if so it is unrecorded, and
    ank status does not fill the gap either: it reports the agent's own claim, not
    anyone else's.
+
+## Log
+- 2026-08-11T03:41:26Z seanl@sean-laptop — Triage pass, each finding re-measured against the tree rather than trusted from the note. All four are still live. (1) log renewal recomputes DEFAULT_TTL.min(claim_ttl_max) at commands.rs:1316 and never reads the lease back off the record, so --ttl holds for one acquisition and collapses to thirty minutes at the first log; the record carries claimed and expires, so the granted lease is recoverable without a format change. (2) close calls claim::delete at human.rs:1910 where done converts the ref to a completion record, so a task closed on a branch reads open in every other clone until the merge -- the exact window ADR-bcf2 created the completion ref to close. (3) claim::prune at claim.rs:821 has no caller outside its own tests; the live predicate is human::maintain at human.rs:1153-1229. Two copies of the rule that decides when a coordination ref disappears, one unexercised in production. (4) execution mode renders the claimed task alone and drops the [claimed:holder] and [finished:sha] markers, so the agent best placed to notice a collision is the one that cannot see the plane; status reports the caller's own claim and not anyone else's. Filing one task per finding rather than fixing them under this claim: this task's criterion is about recording, and a fix needs a criterion of its own.
+- 2026-08-11T03:42:53Z seanl@sean-laptop — Four tasks filed, one per finding, each with a criterion that measures something the note did not: TASK-1b45f41e7b99 the TTL lease, TASK-78326e2e3e89 the close asymmetry, TASK-4981a1370c0b the duplicated pruning predicate, TASK-dacbcae6134c what a holder sees of the coordination plane. Three of the four are settled in the specification or an ADR before the code moves, because three of the four are questions about what the tool means rather than defects in what it does -- only the TTL one is unambiguously a bug. Noted while filing TASK-dacbcae6134c: the finding may be moot until level 1 ships, since within one clone the refs are shared and claim already refuses, and that is itself an answer worth writing down rather than a reason to drop it.
