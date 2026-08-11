@@ -5,7 +5,7 @@ slug: a-dead-scope-is-reported-with-the-rename-that-ki
 title: A dead scope is reported with the rename that killed it
 created: 2026-08-11T22:19:29Z
 author: claude-code@sean-laptop
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/human.rs
   - docs/**
@@ -27,8 +27,9 @@ constraint: |
   
   What is covered is the scope field. A path, a symbol or a function named in a
   body is prose, and no finding pretends otherwise.
+ratified: bfbdce721d85
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context
