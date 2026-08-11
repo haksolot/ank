@@ -330,6 +330,46 @@ fn the_skill_states_that_what_an_agent_reads_is_never_styled() {
     }
 }
 
+/// **The skill states the execution model the loop it teaches assumes**
+/// (TASK-e3f4b6295b23).
+///
+/// §7 states it, `docs/getting-started.md` repeats it, and the one file every
+/// agent actually loads said none of it: never a working tree of its own, never
+/// a branch of its own, never `ANK_AGENT`. That gap costs more than a
+/// documentation gap normally would, because the coordination the skill *does*
+/// teach is only correct under the model. "It refuses when the task is held" is
+/// true between agents with distinct identities; two sessions sharing the
+/// fallback identity are one agent to the refs, and what they get instead is a
+/// shared claim and a refusal handed to whichever of them asks second
+/// (TASK-a548c95261a5).
+///
+/// Not a superseding ADR, and the reason is measured rather than assumed. What
+/// ADR-e17e1bbd93ff freezes is which *verbs* the file teaches, which
+/// `the_skill_teaches_nothing_beyond_what_is_frozen` enforces, plus the ceiling
+/// below. This adds neither a verb nor a flag: it is a fact about the
+/// arrangement an agent is already working inside, the same register as "the
+/// criterion is frozen at claim". TASK-21031b516bb2 added the styling guarantee
+/// on exactly those terms — ceiling held, revision regenerated, a test to keep
+/// it — and that is the recipe followed here.
+///
+/// Asserted by the three things the sentence has to establish, and by tokens no
+/// other line of the file supplies, so that a correct rewrite passes and a
+/// removal fails. `branch` would have been the natural fourth and is deliberately
+/// not used: the file already says "finished on another branch", so a test
+/// resting on it would stay green over a deleted paragraph.
+#[test]
+fn the_skill_states_the_execution_model_it_assumes() {
+    let text = skill();
+    for token in ["worktree", "ANK_AGENT", "degraded"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?}: an agent that has loaded only this \
+             file knows the loop and not the arrangement the loop assumes, and \
+             the coordination it teaches is only correct under that arrangement"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Which revision is installed (TASK-b495234f192c)
 // ---------------------------------------------------------------------------

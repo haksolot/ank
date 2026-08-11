@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "8295e2081364"
+  revision: "3f350ad26459"
 ---
 
 # ank
@@ -24,7 +24,8 @@ are never truncated; if something is cut, it says so.
 
 **`ank claim <id>`** — takes the task and freezes its `done_criteria` by hash.
 It refuses, with the reason and the next command, when the task is held, blocked,
-finished on another branch, or has no criterion to be measured against.
+finished on another branch, has no criterion to be measured against, or when you
+already hold a live claim on another task.
 
 **`ank show <id>`** — the entity whole, frontmatter and body, byte for byte.
 `context` gives you the criterion and the constraints; the body is where the
@@ -92,6 +93,14 @@ ends is part of planning well.
   directly. `ank show <id>` gives you an entity whole, `ank find` lists,
   `ank context` binds — the CLI knows the budget, the freeze and who holds what;
   the files do not.
+
+- **One agent, one working tree, one identity.** The nominal case is a tree per
+  agent — a clone or a `git worktree` — each on its own branch. `ANK_AGENT`
+  names the session and falls back to `<user>@<hostname>`, so two sessions in
+  one tree are one agent to the refs: they share a claim instead of arbitrating
+  over it, and the second one is refused work it should have been given. Set it
+  per session. Several agents in one tree runs, and is a degraded mode rather
+  than the design.
 
 - **What you read is never styled.** Colour is emitted only when a human is at
   a terminal, never into a pipe, a file or `--json`, so the bytes reaching you
