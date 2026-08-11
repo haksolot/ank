@@ -2483,6 +2483,151 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `init` refuses `--repo` by name, and writes nowhere while doing it.
+///
+/// The shape of the fixture is the defect: the process runs **inside** one
+/// repository with `--repo` naming another. Accepting the flag, `init`
+/// initialised the repository it was standing in and left the named one empty —
+/// the pointer paragraph appended to an `AGENTS.md` nobody was editing, and
+/// `pointer added to AGENTS.md` printed as if it had worked
+/// (TASK-b8a12d60686d). A test that ran from a neutral directory would pass
+/// against that behaviour.
+#[test]
+fn init_refuses_repo_and_writes_into_neither_repository() {
+    let inside = Repo::new();
+    let named = std::env::temp_dir().join(format!("ank-cli-init-named-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&named);
+    std::fs::create_dir_all(&named).unwrap();
+    assert!(git_command(&named)
+        .args(["init", "-q", "-b", "main"])
+        .status()
+        .unwrap()
+        .success());
+
+    // A file worth losing: `init` places its pointer in AGENTS.md, and the
+    // silent write landed in exactly this file.
+    std::fs::write(inside.0.join("AGENTS.md"), "Existing guidance.\n").unwrap();
+
+    let out = ank_command()
+        .arg("init")
+        .arg("--repo")
+        .arg(&named)
+        .current_dir(&inside.0)
+        .output()
+        .expect("the binary must have been built");
+
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 1, "{said}");
+    assert!(said.contains("--repo"), "the flag is not named: {said}");
+    assert!(
+        said.contains("ank init") && said.contains(named.to_str().unwrap()),
+        "the refusal must name the command to run next: {said}"
+    );
+
+    // Neither repository moved. The one it was standing in first, since that is
+    // where the writes actually landed.
+    assert_eq!(
+        std::fs::read_to_string(inside.0.join("AGENTS.md")).unwrap(),
+        "Existing guidance.\n",
+        "init wrote into the repository it was merely standing in"
+    );
+    assert!(
+        !inside.0.join(".gitattributes").exists() && !inside.0.join(".gitignore").exists(),
+        "init wrote git files into the repository it was merely standing in"
+    );
+    let fetch = git_command(&inside.0)
+        .args(["config", "--get-all", "remote.origin.fetch"])
+        .output()
+        .unwrap();
+    assert!(
+        !stdout(&fetch).contains("refs/ank/*"),
+        "init added a refspec to the repository it was merely standing in"
+    );
+
+    // And the named one was not initialised behind the refusal either: a
+    // refusal that half-acted would be worse than the acceptance it replaced.
+    assert!(
+        !named.join(".ank").exists(),
+        "the refused init created the named repository anyway"
+    );
+
+    // The positional is the way, and it still works from inside another
+    // repository -- the refusal is about the flag, not about the situation.
+    let out = ank_command()
+        .arg("init")
+        .arg(&named)
+        .current_dir(&inside.0)
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(named.join(".ank/config.yml").exists());
+    assert!(
+        !inside.0.join(".gitattributes").exists(),
+        "the positional form wrote into the wrong repository too"
+    );
+
+    let _ = std::fs::remove_dir_all(&named);
+}
+
+/// A flag the verb rejects by design is in the refusals and not in the offer
+/// (§9), and being global is not an exemption.
+///
+/// Through the binary, because the rule is about what a caller reads: `ank help
+/// init` offering `--repo` is the offer that let the flag look supported while
+/// the verb wrote somewhere else. Both renderings, since `--json` is how a
+/// script reads the same surface.
+#[test]
+fn help_does_not_offer_init_the_global_it_refuses() {
+    let text = stdout(&ank_command().args(["help", "init"]).output().unwrap());
+    let line = |label: &str| -> String {
+        text.lines()
+            .find(|l| l.trim_start().starts_with(label))
+            .unwrap_or_else(|| panic!("help init prints no {label} line:\n{text}"))
+            .to_string()
+    };
+    // Absent from the offer, present in the refusals: the two halves of the
+    // rule, and asserting only the first would pass on a page that says nothing
+    // about the flag at all.
+    let globals = line("global:");
+    assert!(
+        !globals.contains("--repo"),
+        "help init offers a flag the verb refuses:\n{globals}"
+    );
+    assert!(
+        globals.contains("--json") && globals.contains("--quiet"),
+        "the other two globals are unaffected:\n{globals}"
+    );
+    assert!(
+        line("refuses:").contains("--repo"),
+        "the refusal is not stated where a caller looks for it:\n{text}"
+    );
+
+    let json = stdout(
+        &ank_command()
+            .args(["help", "init", "--json"])
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        !json.contains("\"--repo\""),
+        "--json offers what the human page does not:\n{json}"
+    );
+
+    // Every other verb still carries all three: the exception is one verb wide.
+    for verb in ["context", "claim", "done", "new", "find", "check", "config"] {
+        let text = stdout(&ank_command().args(["help", verb]).output().unwrap());
+        assert!(
+            text.contains("--repo"),
+            "help {verb} lost a global it accepts:\n{text}"
+        );
+    }
+
+    // And the flat listing still states the three globals of §4, unqualified:
+    // the exception belongs on the page of the verb that makes it.
+    let flat = stdout(&ank_command().arg("help").output().unwrap());
+    assert!(flat.contains("global: --json --quiet --repo"), "{flat}");
+}
+
 /// §6 calls the index derived, disposable and gitignored. The first two were
 /// true of what `init` produced; the third was true of no repository it had
 /// ever produced, because it wrote no ignore rule at all. This repository was

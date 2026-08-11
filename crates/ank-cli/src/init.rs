@@ -30,6 +30,28 @@ pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<i32> {
+    // **Refused, and refused before anything is written** (§4, §9). `--repo`
+    // names a repository that already carries a `.ank/`, which is what this verb
+    // is run to produce, so it is the one verb the flag does not apply to — and
+    // the target is positional.
+    //
+    // Not a matter of tidiness: `dispatch` routes `init` ahead of the foundation
+    // that resolves `--repo` for every other verb, and rightly so, since `init`
+    // precedes the existence of the repository. But routing early is not a
+    // reason to drop a global silently, and this one was dropped into a verb
+    // that writes. Measured: `ank init --repo <elsewhere>` initialised the
+    // *current* repository, appended the pointer paragraph to an `AGENTS.md`
+    // nobody was editing, reported `pointer added to AGENTS.md`, and left the
+    // named directory empty — noticed only because the next command there
+    // answered `no .ank/ found` (TASK-b8a12d60686d).
+    if let Some(path) = inv.repo() {
+        return Err(CliError::new(
+            1,
+            "--repo names a repository that exists, and init is what makes one",
+        )
+        .with_hint(format!("ank init {path}")));
+    }
+
     let target = match inv.positionals.first() {
         Some(p) => PathBuf::from(p),
         None => cwd.to_path_buf(),
