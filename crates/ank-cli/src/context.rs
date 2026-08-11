@@ -708,6 +708,19 @@ pub(crate) fn coordination_of<'a>(
 /// HEAD is derived, never stored. Shared so that a listing marking the caller's
 /// own row and `context` switching to execution mode cannot disagree about
 /// whose task it is.
+///
+/// **A second live claim under this identity is deliberately not reported
+/// here** (TASK-38b384543551, decided there rather than left open). `status`
+/// carries it. The relevance argument for putting it in `context` is real —
+/// this is what an agent reads every turn — and it loses to two others.
+///
+/// `context` is loaded on every call and ADR-e17e1bbd93ff treats every word in
+/// it as paid for, so a line covering a state that is rare, already announced
+/// at acquisition, and reported by a verb costing nothing would be paid on
+/// every turn of every session that never hits it. And the place the collision
+/// actually bites is not reading: it is the verbs that resolve HEAD, where two
+/// live claims mean one is picked and the other ignored. Warning where the
+/// agent reads is a worse fit than answering where the agent acts.
 pub(crate) fn held_in(map: &HashMap<EntityId, Coordination>, identity: &str) -> Option<EntityId> {
     map.iter().find_map(|(id, state)| match state {
         Coordination::Claimed { holder, .. } if holder == identity => Some(id.clone()),
