@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "975e5ca25da1"
+  revision: "8295e2081364"
 ---
 
 # ank
@@ -60,10 +60,11 @@ decision, not a task. Write one when you hit something the corpus should be held
 to afterwards, rather than something you merely have to do now. It lands
 `proposed`, which binds nobody until it is ratified.
 
-**`ank amend <id>`** — the two fields a plan actually changes: `blocked_by` and
-`scope`. It adds and removes explicitly and never takes a replacement list, so
-nothing is dropped by being forgotten. It will not touch `done_criteria` — that
-is `release --reason`.
+**`ank amend <id>`** — the fields a plan actually changes: `blocked_by`, `scope`
+and `--criteria`. It adds and removes explicitly and never takes a replacement
+list, so nothing is dropped by being forgotten. It will not touch a
+`done_criteria` a live claim has frozen — under a claim, that is
+`release --reason`.
 
 **`ank review`** — the ratification queue and the health of the corpus: what is
 proposed and waiting, and which scopes have gone dead and want closing.

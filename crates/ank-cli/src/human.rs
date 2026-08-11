@@ -2058,18 +2058,22 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         CliError::new(1, "amend expects an id").with_hint("ank amend <id> --blocked-by <id>")
     })?;
 
-    // Refused by name rather than through the parser's unknown-flag path. The
-    // criterion is frozen by hash at claim, the anchor is held where the file's
-    // editor cannot reach it (ADR-6b3f19e08a24), and a verb that edited it
-    // would offer to do the one thing the freeze exists to make visible. What
-    // a wrong criterion actually calls for is a release.
-    if inv.value("--criteria").is_some() {
-        return Err(CliError::new(
-            6,
-            "done_criteria is frozen at claim and amend will not touch it",
-        )
-        .with_hint("ank release --reason \"<why the criterion is wrong>\""));
-    }
+    // Blank is refused rather than treated as a removal: a task with no
+    // criterion cannot be claimed at all (§3), so emptying the field through a
+    // flag that reads as an edit would be a state nobody asked for.
+    let criteria = match inv.value("--criteria") {
+        Some(c) if c.trim().is_empty() => {
+            return Err(CliError::new(
+                7,
+                "--criteria is empty, and a task with no done_criteria cannot be claimed",
+            )
+            .with_hint(format!(
+                "ank amend {prefix} --criteria \"<verifiable criterion>\""
+            )))
+        }
+        Some(c) => Some(claim::ensure_trailing_newline(c.trim())),
+        None => None,
+    };
 
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
@@ -2098,11 +2102,12 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         && drop_scope.is_empty()
         && add_blocked.is_empty()
         && drop_blocked.is_empty()
+        && criteria.is_none()
     {
         return Err(
             CliError::new(7, format!("nothing to amend on {id}")).with_hint(format!(
                 "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
-                 --scope <glob> | --drop-scope <glob>"
+                 --scope <glob> | --drop-scope <glob> | --criteria \"<c>\""
             )),
         );
     }
@@ -2149,6 +2154,43 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
             amend_scope(&mut task.scope, &add_scope, &drop_scope, &id, &mut changes)?;
 
+            // The criterion, refused while a live claim anchors it and allowed
+            // the rest of the time (§4). A criterion under no claim is anchored
+            // by nothing: there is no freeze to respect, and `check` has nothing
+            // to notice. Under one, the refusal is the freeze doing its work,
+            // and what a criterion discovered wrong mid-work calls for is a
+            // release.
+            //
+            // The case this route exists for is the criterion that turns out
+            // *unmeasurable* rather than wrong (TASK-7c2fa14284ff). Before it,
+            // the correction had two ways in and both were wrong: a hand edit,
+            // which this verb exists to make unnecessary, or `claim --criteria`,
+            // which recorded a creator's correction as the claimer's.
+            if let Some(criteria) = criteria {
+                if let Some(held) = claim::live(&repo.root, &id)? {
+                    return Err(CliError::new(
+                        6,
+                        format!(
+                            "done_criteria is frozen by the claim {} holds on {id}",
+                            held.holder
+                        ),
+                    )
+                    .with_hint("ank release --reason \"<why the criterion is wrong>\""));
+                }
+                if task.done_criteria.as_deref() != Some(criteria.as_str()) {
+                    changes.push("done_criteria".to_string());
+                    task.done_criteria = Some(criteria);
+                    // `criteria_by` is deliberately left where it stands. It
+                    // answers whether the criterion was set at claim time by the
+                    // party the freeze constrains (§3), and an amend is not a
+                    // claim: writing `claimer` would launder a correction into
+                    // the shape the signal exists to expose, and writing
+                    // `creator` would assert something about the caller, which
+                    // nothing else on this surface does. The log entry below is
+                    // what records the amend, as it does for the other fields.
+                }
+            }
+
             if changes.is_empty() {
                 return Err(CliError::new(7, format!("{id} already reads that way"))
                     .with_hint(format!("ank show {id}")));
@@ -2193,6 +2235,17 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 return Err(CliError::new(
                     1,
                     "blocked_by applies to a task: an ADR blocks nothing",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
+            // Refused rather than dropped, for the reason `new` refuses
+            // `--verify` on an ADR: a flag silently ignored teaches the caller
+            // it worked. An ADR is measured by nothing — what it carries is a
+            // constraint, and changing that one is a succession.
+            if criteria.is_some() {
+                return Err(CliError::new(
+                    1,
+                    "done_criteria applies to a task: an ADR declares no criterion",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
             }

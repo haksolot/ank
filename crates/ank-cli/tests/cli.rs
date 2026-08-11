@@ -3194,22 +3194,171 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     assert_eq!(code(&out), 7, "{}", stderr(&out));
     assert!(stderr(&out).contains("no scope"), "{}", stderr(&out));
 
-    // The frozen field is refused by name, with the command that applies.
-    let out = r.ank(
-        "marie@laptop",
-        &["amend", ID, "--criteria", "Anything at all."],
-    );
-    assert_eq!(code(&out), 6, "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.contains("frozen"), "{err}");
-    assert!(
-        err.contains("ank release"),
-        "the command that applies: {err}"
-    );
+    // Blanking the criterion is refused: a task with no done_criteria cannot be
+    // claimed at all, so a flag that reads as an edit will not produce one.
+    let out = r.ank("marie@laptop", &["amend", ID, "--criteria", "   "]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
     assert!(
         r.task_text(ID).contains("A verifiable criterion."),
         "the criterion did not move"
     );
+}
+
+/// A criterion that turns out unmeasurable is corrected, by a caller holding no
+/// claim, without the correction being recorded as the claimer's.
+///
+/// The case is real and is what TASK-7c2fa14284ff was filed for: a criterion
+/// ending on a clause no repository of that shape could ever satisfy. The work
+/// was right and the measurement was not, and the corrected criterion had no way
+/// back in that did not lie about who wrote it.
+#[test]
+fn a_criterion_under_no_claim_is_amended_and_stays_the_creators() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion that cannot be measured."));
+
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--criteria", "A criterion that can."],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = r.task_text(ID);
+    assert!(
+        text.contains("done_criteria: |\n  A criterion that can.\n"),
+        "the criterion moved: {text}"
+    );
+    assert!(
+        !text.contains("cannot be measured"),
+        "the old criterion is gone: {text}"
+    );
+    // The heart of it. `criteria_by` answers whether the criterion was set at
+    // claim time by the party the freeze constrains, and an amend is not a
+    // claim — writing `claimer` here would launder a correction into the shape
+    // the signal exists to expose.
+    assert!(
+        text.contains("criteria_by: creator"),
+        "the correction was recorded as somebody else's: {text}"
+    );
+    assert!(
+        text.contains("amended: done_criteria"),
+        "the log is what records the amend: {text}"
+    );
+
+    // And the corpus is clean afterwards: the point of the route is that it
+    // leaves nothing for `check` to report.
+    let out = r.ank("marie@laptop", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stdout(&out).contains("altered") && !stdout(&out).contains("claimer"),
+        "{}",
+        stdout(&out)
+    );
+
+    // Amending it to what it already says changes nothing, and says so rather
+    // than writing a version nobody asked for.
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--criteria", "A criterion that can."],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("already reads that way"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The freeze still holds where it means something: under a live claim.
+///
+/// Through the binary and against a real claim ref, because "a live claim" is a
+/// fact about `refs/ank/claims/`, not about a struct — and because the refusal
+/// must not consult who is calling. The claimer itself is refused, which is the
+/// whole point: it is the party the freeze constrains.
+#[test]
+fn a_criterion_under_a_live_claim_is_refused_to_everyone_alike() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    for who in ["marie@laptop", "claude-code@ank"] {
+        let out = r.ank(who, &["amend", ID, "--criteria", "Something easier."]);
+        let err = stderr(&out);
+        assert_eq!(code(&out), 6, "{who}: {err}");
+        assert!(err.contains("frozen"), "{who}: {err}");
+        assert!(
+            err.contains("claude-code@ank"),
+            "the refusal names the holder: {who}: {err}"
+        );
+        assert!(
+            err.contains("ank release"),
+            "the command that applies: {who}: {err}"
+        );
+    }
+    assert!(
+        r.task_text(ID).contains("A verifiable criterion."),
+        "the criterion did not move"
+    );
+
+    // Released, the same call goes through: the refusal was on the claim and
+    // never on the caller.
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["release", ID, "--reason", "unmeasurable"]
+        )),
+        0
+    );
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", ID, "--criteria", "Something measurable."],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(r.task_text(ID).contains("Something measurable."));
+}
+
+/// `claim --criteria` sets a criterion, and never replaces one.
+///
+/// The door `amend` used to bolt shut was standing open here, and open to the
+/// claimer -- the one party the freeze constrains. Closing it is what keeps
+/// `criteria_by: claimer` meaning exactly one thing.
+#[test]
+fn claim_criteria_sets_an_absent_criterion_and_refuses_to_replace_one() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("The criterion its creator wrote."));
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["claim", ID, "--criteria", "Something easier."],
+    );
+    let err = stderr(&out);
+    assert_eq!(code(&out), 6, "{err}");
+    assert!(err.contains("already carries a done_criteria"), "{err}");
+    assert!(
+        err.contains("ank amend") && err.contains("--criteria"),
+        "the refusal names the route that applies: {err}"
+    );
+    let text = r.task_text(ID);
+    assert!(text.contains("The criterion its creator wrote."), "{text}");
+    assert!(text.contains("criteria_by: creator"), "{text}");
+    // Refused before any ref was touched: the preconditions of §3 run before
+    // the claim, so nothing is left half-taken.
+    assert!(
+        r.claim_ref(ID).is_none(),
+        "a refused claim took the task anyway"
+    );
+
+    // A task carrying none is still claimed and set in one call, and that is
+    // still recorded as the claimer's.
+    const BARE: &str = "TASK-000000000009";
+    r.seed_task(BARE, None);
+    let out = r.ank(
+        "claude-code@ank",
+        &["claim", BARE, "--criteria", "A verifiable criterion."],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = r.task_text(BARE);
+    assert!(text.contains("A verifiable criterion."), "{text}");
+    assert!(text.contains("criteria_by: claimer"), "{text}");
 }
 
 #[test]

@@ -273,7 +273,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(4, "the task is held by another agent, or finished on another branch"),
             refuses(7, "the task is blocked, or has no done_criteria to freeze"),
         ],
-        notes: &["--criteria on a task that already has one overwrites it and records the criterion as the claimer's"],
+        notes: &["--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one"],
         owner_task: None,
     },
     CommandSpec {
@@ -421,7 +421,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "amend",
-        summary: "changes blocked_by and scope on an entity that already exists",
+        summary: "changes blocked_by, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
@@ -430,17 +430,20 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--drop-blocked-by"),
             multi("--scope"),
             multi("--drop-scope"),
-            // Known to the parser and not offered by `help`: it exists so the
-            // refusal can name it and point at `ank release` (§9). Listing it
-            // was the defect TASK-84cfad83c308 was filed for -- help did not
-            // merely say too little, it made an offer the verb rejects.
-            refused("--criteria"),
+            // Offered now, and it was `refused` here for as long as the verb
+            // rejected it outright (TASK-84cfad83c308: help must not make an
+            // offer the verb turns down). It stops being an offer the verb
+            // rejects the moment the verb accepts it on state (§4).
+            flag("--criteria"),
         ],
         refuses: &[refuses(
             6,
-            "--criteria: done_criteria is frozen at claim; a wrong criterion is a release",
+            "--criteria while a live claim freezes the criterion; that case is a release",
         )],
-        notes: &["adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten"],
+        notes: &[
+            "adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten",
+            "--criteria replaces the criterion outright, and leaves criteria_by where it stands",
+        ],
         owner_task: None,
     },
     CommandSpec {
