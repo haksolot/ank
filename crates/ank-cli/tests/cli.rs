@@ -166,6 +166,51 @@ impl Repo {
             .then(|| String::from_utf8_lossy(&out.stdout).to_string())
     }
 
+    /// Pushes a claim's expiry an hour into the past, leaving everything else
+    /// in the record untouched.
+    ///
+    /// Forged rather than waited for: expiry is judged with a two-minute
+    /// clock-drift tolerance on top of the TTL, so the shortest honest wait for
+    /// a lapsed claim is over two minutes of wall clock in a suite that runs in
+    /// one. The resulting ref is byte-identical to one that lapsed on its own —
+    /// the record carries the expiry, and nothing else records the passage of
+    /// time.
+    fn expire_claim(&self, id: &str) {
+        let record = self.claim_ref(id).expect("there is a claim to expire");
+        // Long past any TTL plus its tolerance, and stable whatever the
+        // machine's clock reads.
+        let past = "2020-01-01T00:00:00Z";
+        let rewritten: String = record
+            .lines()
+            .map(|l| {
+                if l.starts_with("expires: ") {
+                    format!("expires: {past}")
+                } else {
+                    l.to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+
+        let mut child = git_command(&self.0)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(rewritten.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "hash-object: {}", stderr(&out));
+        let blob = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        self.git(&["update-ref", &format!("refs/ank/claims/{id}"), &blob]);
+    }
+
     fn seed_task(&self, id: &str, criteria: Option<&str>) {
         self.seed_task_with(id, criteria, &[]);
     }
@@ -2567,6 +2612,83 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     );
 
     let _ = std::fs::remove_dir_all(&named);
+}
+
+/// A holder returning to a lapsed claim carries on; one whose task was taken
+/// over is told by whom.
+///
+/// Section 3 calls the first case normal and not a fault -- a build longer than
+/// the lease expires the claim -- and both `log` and `done` answered
+/// `no task in progress for this agent` instead, which is neither of the two
+/// answers it specifies. Measured in the nominal flow: the claim lapsed during
+/// a CI wait, and `done` was the next command (TASK-5bd23835d5a0).
+#[test]
+fn a_lapsed_claim_is_retaken_by_its_holder_and_lost_to_whoever_took_it() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task_with(ID, Some("A verifiable criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    r.expire_claim(ID);
+
+    // `status` says so in words before anything retakes it. It used to answer
+    // `no claim`, which is false -- the task is still this agent's -- and an
+    // expiry alone is a past timestamp a reader compares against nothing.
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(said.contains("lapsed"), "{said}");
+    assert!(said.contains(ID), "the task is still the agent's: {said}");
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(json.contains("\"lapsed\":true"), "{json}");
+
+    // `log` first: the renewal it performs is the re-acquisition, and an agent
+    // that comes back to say what it learned must not be turned away.
+    let out = r.ank("claude-code@ank", &["log", ID, "back from a long build"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let record = r.claim_ref(ID).expect("the ref survived");
+    assert!(
+        record.contains("holder: claude-code@ank"),
+        "the ref no longer names the agent that retook it:\n{record}"
+    );
+    assert!(
+        !record.contains("expires: 2020"),
+        "the expiry was not moved:\n{record}"
+    );
+
+    // And `done` on a claim that lapsed again, which is the case that was
+    // measured: the CI wait outlasts the lease, and `done` is what follows it.
+    r.expire_claim(ID);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        r.task_text(ID).contains("status: done"),
+        "{}",
+        r.task_text(ID)
+    );
+}
+
+/// The other half of section 3: taken over in the meantime is code 4, and it
+/// names the new holder.
+#[test]
+fn a_lapsed_claim_taken_over_is_refused_with_the_new_holder_named() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: git --version\n");
+    r.seed_task_with(ID, Some("A verifiable criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    r.expire_claim(ID);
+
+    // A lapsed claim is claimable, which is what makes the expiry useful.
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+
+    for verb in [vec!["done"], vec!["log", ID, "still here"]] {
+        let out = r.ank("claude-code@ank", &verb);
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        assert_eq!(code(&out), 6, "{verb:?}: {said}");
+        assert!(
+            !r.task_text(ID).contains("status: done"),
+            "{verb:?} finished a task it no longer holds"
+        );
+    }
+    assert!(
+        r.claim_ref(ID).unwrap().contains("holder: codex@host-9"),
+        "the takeover did not survive"
+    );
 }
 
 /// The over-constrained signal reports the threshold it actually applied.

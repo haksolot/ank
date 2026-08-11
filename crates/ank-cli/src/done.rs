@@ -122,7 +122,13 @@ pub fn run(
     // HEAD is derived: the task this agent holds a live claim on. An explicit
     // id is allowed but redundant, and must match — it is never a way to act on
     // somebody else's task (§4).
-    let (id, held) = resolve_head(&repo.root, &store, inv.positionals.first(), identity)?;
+    let (id, held) = resolve_head(
+        &repo.root,
+        &store,
+        inv.positionals.first(),
+        identity,
+        cfg.claim_ttl_max,
+    )?;
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
@@ -240,44 +246,48 @@ fn done_message(proofs: &[Proof]) -> String {
 /// The task this agent may finish. An id given explicitly must match HEAD,
 /// otherwise code 6: the optional id exists for explicitness in scripts, never
 /// as a way to act on another agent's task (§4).
+///
+/// **A lapsed claim nobody took over is retaken here, before anything runs**
+/// (§3). A CI wait outlasts a thirty-minute lease more often than not, and
+/// `done` is exactly the command that follows one — refusing there made the
+/// nominal return-after-expiry a dead end (TASK-5bd23835d5a0). Taken back
+/// *first*, rather than relying on the compare-and-swap at completion, so the
+/// verifiers do not run for ten minutes on a task another agent is free to
+/// claim underneath them.
 fn resolve_head(
     cwd: &Path,
     store: &Store,
     given: Option<&String>,
     identity: &str,
+    cap: std::time::Duration,
 ) -> Result<(EntityId, Held)> {
-    let mut mine: Option<(EntityId, Held)> = None;
-    for r in git::ank_refs(cwd)? {
-        let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
-            continue;
-        };
-        let Ok(id) = EntityId::parse(rest) else {
-            continue;
-        };
-        let Some(held) = claim::read(cwd, &id)? else {
-            continue;
-        };
-        if let Record::Claim(c) = &held.record {
-            if c.holder == identity && !claim::is_expired(c, claim::now_secs(), &id)? {
-                mine = Some((id, held));
-                break;
-            }
-        }
-    }
-
-    let Some((id, held)) = mine else {
+    let Some(standing) = claim::on_task(cwd, identity)? else {
         return Err(CliError::new(6, "no task in progress for this agent").with_hint("ank context"));
     };
     if let Some(given) = given {
         let asked = store.resolve(given)?;
-        if asked != id {
-            return Err(
-                CliError::new(6, format!("{asked} is not the task in progress ({id})"))
-                    .with_hint(format!("ank done {id}")),
-            );
+        if asked != standing.id {
+            return Err(CliError::new(
+                6,
+                format!("{asked} is not the task in progress ({})", standing.id),
+            )
+            .with_hint(format!("ank done {}", standing.id)));
         }
     }
-    Ok((id, held))
+    if standing.lapsed && claim::retake(cwd, &standing, cap)? == claim::Cas::Lost {
+        // Somebody claimed it between the read and the retake. Naming them is
+        // the answer §3 asks for, and it is what tells the agent its work has
+        // an owner rather than a problem.
+        return Err(claim::taken_over_since(cwd, &standing.id)?);
+    }
+    let held = claim::read(cwd, &standing.id)?.ok_or_else(|| {
+        CliError::new(
+            9,
+            format!("the claim on {} vanished while being read", standing.id),
+        )
+        .with_hint("ank context")
+    })?;
+    Ok((standing.id, held))
 }
 
 /// The freeze, checked at the point of use. The CLI is not a gatekeeper: the
