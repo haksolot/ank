@@ -236,6 +236,15 @@ Two hours granted and then honoured is not hoarding: `claim_ttl_max` is what bou
 
 **Return after expiry.** A 40-minute build with no `log` expires the claim; that is normal, not a fault. On expiry the task stays `in_progress` and becomes claimable again. When the original holder returns: if nobody took the task over, `log` and `done` **re-acquire silently** and carry on; if another agent took it over in the meantime, they fail with code 4 and the name of the new holder. Mechanically, "silently" means checking that no active claim exists for the task — the ref `refs/ank/claims/<id>` — then recreating it in the current agent's name, both steps resting on the atomic primitive of a ref update. No data is lost either way — the log says where each holder stopped.
 
+**Two live claims under one identity.** `claim` refuses to create that state (§4) and the CLI is not a gatekeeper, so it remains reachable: a ref written by hand, a claim taken by an earlier binary, a lapse revived. HEAD is then derived from more than one candidate, and what the verbs owe their caller is that **the choice is never silent** — the whole cost of the state is not that it exists but that `log`, `release` and `done` used to resolve it without a word.
+
+HEAD stays derived and the resolution stays deterministic: the lowest task id among the identity's live claims, because the refs are enumerated in refname order and nothing else would be reproducible. On top of that:
+
+- **`log` and `release` act, and say so first.** Before writing anything they name the task they resolved to, every other live claim of the identity with its expiry, the command that names another one explicitly, and the way out of a shared identity. On standard error, so that stdout stays what a parser already reads (§4); under `--json` the same sentences arrive in a `warnings` array, as `claim` already does — the caller that scripts around these verbs is exactly the caller running several sessions.
+- **`done` refuses**, code 6, and refuses **before running a single verifier**. It is the verb whose effect cannot be undone by running it again: an agent that meant the task it claimed a minute ago and got the one it claimed an hour ago finds a task marked `done`, carrying a proof, whose work was never verified. The refusal names every candidate and gives the command for one of them. Code 6 is what `log`, `release` and `done` already answer when HEAD resolves to no task at all; resolving to several is the same fact from the other side.
+
+**The explicit ID is what disambiguates**, which costs the refusal rather than a new flag. It stops meaning "must equal HEAD" and means "must name a task this agent holds a live claim on" — still never a way to act on somebody else's task, and still code 6 when it names one this agent does not hold. With one claim, which is the nominal case, the two readings are the same sentence.
+
 ### ADR
 
 `.ank/adr/ADR-3c7e0b9142af.md`
@@ -365,7 +374,7 @@ The binary refuses, and what it refuses on is always a fact about the corpus or 
 |---|---|
 | frozen field diverged from its anchoring hash, or illegal transition | 6 |
 | claim held by another agent, or task already finished on another branch | 4 |
-| task blocked, no `done_criteria`, or `accept` off the default branch | 7 |
+| task blocked, no `done_criteria`, `accept` off the default branch, or a live claim already held by the calling identity | 7 |
 | proof missing or invalid | 5 |
 
 That list is the guarantee. A state refusal applies to every caller equally and means the same thing to all of them, which is what makes it worth writing an exit code for; a refusal conditioned on identity would mean whatever the caller declared itself to be. `$ANK_AGENT` names who acted — it goes into the log, into the claim ref and into `check`'s signals — and it is never consulted to decide whether a verb runs.
@@ -408,7 +417,25 @@ The agent cannot get the identifier wrong, and every iteration saves a context r
 
 This assumes and enforces **one active claim at a time per agent**. That is a useful constraint in itself: an agent must finish or release before moving on, which prevents task hoarding and keeps work in progress readable by others.
 
-The optional ID on `log`, `done` and `release` is therefore always redundant: it exists only for explicitness in scripts, and **must match HEAD**, otherwise error 6. It is never a way to act on somebody else's task.
+**Enforcing it is what `claim` does**, and for a long time this paragraph said so while the binary only warned. A `claim` made while the calling identity already holds a live claim on another task refuses with **code 7**, naming the task held, its expiry, and both ways through:
+
+```
+$ ank claim 8f3a
+error[7]: claude-code@host-3 holds a live claim on TASK-51c2 (expires in 24m)
+  -> ank release --reason "<why>"   (a second session on this machine sets its own ANK_AGENT)
+```
+
+**Code 7 and not 4.** The task asked for is available; it is the caller that is not. 4 means "take something else" and the reaction called for here is the opposite — finish or hand back what is already held — so the code that carries "missing prerequisite" is the one that says it.
+
+**The second way out is not decoration**, and it is why this hint carries a parenthetical the way the "another ready task" hints do. The default identity is `<user>@<hostname>` (§8), so two sessions in one working tree read as one agent, and the session being refused may never have claimed anything: it is being answered about somebody else's claim, and `ANK_AGENT` is the only thing that separates the two. That is also why the message names the identity rather than addressing the caller as the holder — under a shared identity, telling it "you already hold" would be false.
+
+The refusal comes **after** the refusals about the task itself — no criterion, blocked, already claimed elsewhere, illegal transition. An agent told to release the work it holds, for a task that would have refused it anyway, has been made to pay for nothing.
+
+The refusal is on state and not on identity, in the sense of the table above: what is read is the coordination plane — which refs exist and who holds them — and the answer is the same for every caller. A **lapsed** claim is not a live one, so pickup after expiry (§3) is untouched, and an agent returning to a task whose lease ran out claims it exactly as before.
+
+**It does not make the state unreachable, and nothing here assumes it does.** The CLI is not a gatekeeper (§7, §12): a ref written by hand, a claim taken by an earlier binary, or a claim that lapsed and was revived all produce one identity holding two live claims. What `log`, `release` and `done` do when they meet it is settled in §3, not here.
+
+The optional ID on `log`, `done` and `release` is therefore redundant in the nominal case: it exists for explicitness in scripts, and it **must name a task this agent holds a live claim on**, otherwise error 6. It is never a way to act on somebody else's task. Holding one claim, that is the same rule as "must match HEAD"; holding several — the state §3 describes and this section refuses to create — it is what names which of them a verb acts on.
 
 ### Pickup and abandonment
 
@@ -687,7 +714,7 @@ The semantics are carried by the code so that the shell can route without parsin
 | 4 | task unavailable — claim held by another agent, or task already finished on another branch (§7) |
 | 5 | proof missing or invalid |
 | 6 | illegal transition, or frozen field modified (hash diverged) |
-| 7 | missing prerequisite — no criterion, task blocked, or `accept` off the default branch |
+| 7 | missing prerequisite — no criterion, task blocked, `accept` off the default branch, or a live claim already held by the calling identity |
 | 8 | `check`: invariants violated (reserved for `check`, for CI) |
 | 9 | environment unavailable — not a task failure |
 

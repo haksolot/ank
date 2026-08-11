@@ -166,8 +166,31 @@ impl Repo {
             .then(|| String::from_utf8_lossy(&out.stdout).to_string())
     }
 
-    /// Pushes a claim's expiry an hour into the past, leaving everything else
-    /// in the record untouched.
+    /// Pushes a claim's expiry into the past, leaving everything else in the
+    /// record untouched.
+    fn expire_claim(&self, id: &str) {
+        // Long past any TTL plus its tolerance, and stable whatever the
+        // machine's clock reads.
+        self.set_expiry(id, "2020-01-01T00:00:00Z");
+    }
+
+    /// The same surgery the other way: an expiry far enough ahead that the
+    /// claim reads live again.
+    ///
+    /// It exists because `claim` now refuses a second live claim under one
+    /// identity (TASK-a548c95261a5), and one identity holding two live claims
+    /// is still a state the corpus can be in — a ref written by hand, a claim
+    /// taken by an earlier binary, a lapse revived. Ank is not a gatekeeper
+    /// (ADR-6b3fa9ba3a05), so the fixtures that assert what the tool says about
+    /// that state cannot be built by claiming twice any more. Claim, expire,
+    /// claim, revive: both claims are taken by the binary and only the clock is
+    /// forged, which is what `expire_claim` was already doing.
+    fn revive_claim(&self, id: &str) {
+        self.set_expiry(id, "2099-01-01T00:00:00Z");
+    }
+
+    /// Rewrites a claim record's expiry and leaves every other byte of it
+    /// alone.
     ///
     /// Forged rather than waited for: expiry is judged with a two-minute
     /// clock-drift tolerance on top of the TTL, so the shortest honest wait for
@@ -175,16 +198,13 @@ impl Repo {
     /// one. The resulting ref is byte-identical to one that lapsed on its own —
     /// the record carries the expiry, and nothing else records the passage of
     /// time.
-    fn expire_claim(&self, id: &str) {
-        let record = self.claim_ref(id).expect("there is a claim to expire");
-        // Long past any TTL plus its tolerance, and stable whatever the
-        // machine's clock reads.
-        let past = "2020-01-01T00:00:00Z";
+    fn set_expiry(&self, id: &str, when: &str) {
+        let record = self.claim_ref(id).expect("there is a claim to date");
         let rewritten: String = record
             .lines()
             .map(|l| {
                 if l.starts_with("expires: ") {
-                    format!("expires: {past}")
+                    format!("expires: {when}")
                 } else {
                     l.to_string()
                 }
@@ -2075,19 +2095,25 @@ fn a_verb_is_never_abbreviated() {
     assert!(said.contains("unknown command 'cl'"), "{said}");
 }
 
-/// A second claim under one identity is named, never refused (TASK-d79dc424c63d).
+/// A second claim under one identity is refused (TASK-a548c95261a5).
 ///
 /// Observed while dogfooding: a task claimed in one terminal follows you into a
 /// second one, because `ANK_AGENT` unset makes both `<user>@<hostname>`. The
 /// identity is not bound to the session on purpose — a PID or a TTY in it would
-/// break resuming a claim after a restart — so what the fix owes the user is the
-/// warning and the way out.
+/// break resuming a claim after a restart.
 ///
-/// Through the binary, because a warning that never reaches stdout is not a
-/// warning, and because the environment variable under test is read by the
-/// process and not by the function.
+/// TASK-d79dc424c63d answered that with a warning naming the way out, and stays
+/// `done` with its proof intact (§3). The warning was measured to be not
+/// enough: it is printed once, at acquisition, and the claims do not
+/// collide — they accumulate, until `log`, `release` and `done` pick the lowest
+/// task id of the two in silence (TASK-97d8747416ea). §4 had said `claim`
+/// *enforces* one live claim per agent for as long as this only warned.
+///
+/// Through the binary, because the environment variable under test is read by
+/// the process and not by the function, and because a refusal that only exists
+/// in a function is not a refusal.
 #[test]
-fn a_second_claim_under_one_identity_warns_and_names_what_is_already_held() {
+fn a_second_claim_under_one_identity_is_refused_and_names_both_ways_out() {
     let first = "TASK-000000000d01";
     let second = "TASK-000000000d02";
     let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
@@ -2097,47 +2123,74 @@ fn a_second_claim_under_one_identity_warns_and_names_what_is_already_held() {
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", first])), 0);
 
     let out = r.ank("claude-code@ank", &["claim", second]);
-    let said = stdout(&out);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
     assert_eq!(
         code(&out),
-        0,
-        "a convention warns, it does not refuse: {said}"
+        7,
+        "the prerequisite is missing, not the task: {said}"
     );
     assert!(
-        said.contains(&format!("already holds {first}")),
+        said.contains(first),
         "the claim already held is named: {said}"
     );
-    assert!(said.contains("ANK_AGENT"), "and the way out of it: {said}");
     assert!(
-        said.contains(&format!("claimed {second}")),
-        "the claim itself still went through: {said}"
+        said.contains("ank release"),
+        "the first way out is a command: {said}"
+    );
+    assert!(
+        said.contains("ANK_AGENT"),
+        "and the second is the one that fits a session that claimed nothing: {said}"
     );
 
-    // The other identity is the supported case and must stay silent: parallel
-    // agents, one ref per task, is the design and not the anomaly.
+    // Refused before anything was written. A refusal that leaves a ref behind
+    // is a claim with a bad conscience.
+    assert!(
+        r.claim_ref(second).is_none(),
+        "the refused task carries a claim ref"
+    );
+    assert!(
+        r.task_text(second).contains("status: open"),
+        "the refused task was moved anyway:\n{}",
+        r.task_text(second)
+    );
+
+    // The other identity is the supported case and must pass: parallel agents,
+    // one ref per task, is the design and not the anomaly.
     let third = "TASK-000000000d03";
     r.seed_task(third, Some("A criterion."));
     let out = r.ank("codex@ank", &["claim", third]);
-    let said = stdout(&out);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert!(
-        !said.contains("warning:"),
-        "a distinct identity holding its own task is not an anomaly: {said}"
+    assert_eq!(
+        code(&out),
+        0,
+        "a distinct identity holding its own task is not an anomaly: {}",
+        stderr(&out)
     );
 
-    // The lapsed case is a module test: the drift tolerance is two minutes, so
-    // waiting for an expiry here would cost two minutes of wall time.
+    // A lapsed claim is not a live one, so pickup after expiry (§3) passes
+    // through untouched — the same task, refused a moment ago, now claimable.
+    r.expire_claim(first);
+    let out = r.ank("claude-code@ank", &["claim", second]);
+    assert_eq!(
+        code(&out),
+        0,
+        "an expired claim refuses the next one: {}",
+        stderr(&out)
+    );
 }
 
-/// The warning sends the reader to `getting-started`, so `getting-started` has
-/// to be where the answer is (TASK-d79dc424c63d).
+/// The way out sends the reader to `getting-started`, so `getting-started` has
+/// to be where the answer is (TASK-d79dc424c63d, TASK-a548c95261a5).
 ///
 /// Driven by the binary rather than by a hand-copied string: the point is not
 /// that the guide mentions a variable, it is that the exact line the binary
-/// prints has somewhere to land. A warning naming a fix nobody wrote down is
-/// the defect this task is about, one level up.
+/// prints has somewhere to land. Naming a fix nobody wrote down is the defect
+/// this task is about, one level up.
+///
+/// Read off the refusal now that the second claim is one, and off standard
+/// error with it. What is under test is the sentence, not which stream carried
+/// it — `way_out` is written once and both callers read it.
 #[test]
-fn the_guide_documents_the_identity_the_warning_tells_you_to_set() {
+fn the_guide_documents_the_identity_the_way_out_tells_you_to_set() {
     let first = "TASK-000000000d11";
     let second = "TASK-000000000d12";
     let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
@@ -2145,8 +2198,9 @@ fn the_guide_documents_the_identity_the_warning_tells_you_to_set() {
     r.seed_task(second, Some("A criterion."));
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", first])), 0);
 
-    let said = stdout(&r.ank("claude-code@ank", &["claim", second]));
-    let warned: Vec<&str> = said.lines().filter(|l| l.starts_with("warning:")).collect();
+    let out = r.ank("claude-code@ank", &["claim", second]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    let warned: Vec<&str> = said.lines().filter(|l| l.contains("ANK_AGENT")).collect();
     assert!(!warned.is_empty(), "nothing to document: {said}");
 
     let guide = std::fs::read_to_string(
@@ -2156,10 +2210,14 @@ fn the_guide_documents_the_identity_the_warning_tells_you_to_set() {
 
     // The variable the warning names, and the shape of an invocation that sets
     // it: naming it without showing how to use it is half an answer.
+    // Trimmed of what punctuates the sentence rather than names the variable:
+    // the way out reaches the reader inside a hint's parenthetical, and
+    // `ANK_AGENT)` is the same variable as `ANK_AGENT`.
     let named: Vec<&str> = warned
         .iter()
         .flat_map(|l| l.split_whitespace())
         .filter(|w| w.contains("ANK_AGENT"))
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_'))
         .collect();
     assert!(!named.is_empty(), "the warning names no way out: {said}");
     for w in named {
@@ -2632,17 +2690,15 @@ fn status_names_every_live_claim_of_this_identity() {
     r.seed_task(ID, Some("A verifiable criterion."));
     r.seed_task(SECOND, Some("Another verifiable criterion."));
 
-    // One identity, two claims. Not refused, and deliberately so: one claim at
-    // a time is a convention, and parallel agents with distinct identities are
-    // the design.
+    // One identity, two live claims. `claim` refuses to produce that state now
+    // (TASK-a548c95261a5), and the state still exists — ank is not a gatekeeper
+    // (ADR-6b3fa9ba3a05), and a lapse revived is one of the ways in. Both
+    // claims are taken by the binary; only the clock between them is forged.
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    r.expire_claim(ID);
     let out = r.ank("claude-code@ank", &["claim", SECOND]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let said = format!("{}{}", stdout(&out), stderr(&out));
-    assert!(
-        said.contains("already holds"),
-        "the acquisition still says it: {said}"
-    );
+    r.revive_claim(ID);
 
     // The moment passes; the state does not.
     let said = stdout(&r.ank("claude-code@ank", &["status"]));
@@ -2676,6 +2732,150 @@ fn status_names_every_live_claim_of_this_identity() {
     let said = stdout(&quiet.ank("claude-code@ank", &["status"]));
     assert!(!said.contains("ANK_AGENT"), "{said}");
     assert!(!said.contains("also"), "{said}");
+}
+
+/// With two live claims under one identity, no verb acts on one of them without
+/// the caller being able to tell which (TASK-97d8747416ea).
+///
+/// `on_task` returns the first live record and `ank_refs` goes through
+/// `for-each-ref`, which sorts by refname, so HEAD is the lowest task id among
+/// the agent's live claims -- chosen, and until now chosen in silence. `log`
+/// wrote its entry there, `release` handed that one back, and `done` ran the
+/// verifiers of that one and moved it to `done`, none of them saying which of
+/// the two they had picked.
+///
+/// The state is built the way it stays reachable: `claim` refuses to create it
+/// (TASK-a548c95261a5), and a lapse revived produces it. Both claims are taken
+/// by the binary and only the clock between them is forged.
+///
+/// Through the binary because the assertion is on what reaches the caller, and
+/// on a real verifier because the point about `done` is *when* it refuses: a
+/// witness file the verifier writes is how "before a single verifier ran" is
+/// asserted rather than assumed.
+#[test]
+fn with_two_live_claims_no_verb_picks_one_in_silence() {
+    const FIRST: &str = "TASK-000000000e01";
+    const SECOND: &str = "TASK-000000000e02";
+    const THIRD: &str = "TASK-000000000e03";
+    const AGENT: &str = "claude-code@ank";
+
+    let r =
+        Repo::new().with_verifiers("verifiers:\n  witness:\n    run: echo ran > verifier-ran\n");
+    let witness = r.0.join("verifier-ran");
+    for id in [FIRST, SECOND, THIRD] {
+        r.seed_task_with(id, Some("A verifiable criterion."), &["witness"]);
+    }
+
+    // Two live claims, one identity. HEAD is FIRST, being the lower id.
+    assert_eq!(code(&r.ank(AGENT, &["claim", FIRST])), 0);
+    r.expire_claim(FIRST);
+    assert_eq!(code(&r.ank(AGENT, &["claim", SECOND])), 0);
+    r.revive_claim(FIRST);
+
+    // `log` acts, and says so before it writes.
+    let out = r.ank(AGENT, &["log", "one"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST), "the task acted on is named: {said}");
+    assert!(said.contains(SECOND), "and the other live claim: {said}");
+    assert!(
+        said.contains("ank log"),
+        "and the command that names one explicitly: {said}"
+    );
+    assert!(said.contains("ANK_AGENT"), "and the way out: {said}");
+    assert!(
+        stdout(&out).contains(&format!("logged on {FIRST}")),
+        "{}",
+        stdout(&out)
+    );
+    assert!(r.task_text(FIRST).contains("one"), "the entry went to HEAD");
+
+    // Naming a task is what picks the other one, and it costs the refusal
+    // rather than a flag: the id used to have to equal HEAD.
+    let out = r.ank(AGENT, &["log", SECOND, "two"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(SECOND).contains("two"),
+        "the named task got the entry:\n{}",
+        r.task_text(SECOND)
+    );
+    assert!(
+        !stderr(&out).contains("live claims"),
+        "a caller that named its task is told nothing back: {}",
+        stderr(&out)
+    );
+
+    // The same sentences for a parser -- the caller that scripts around these
+    // verbs is exactly the caller running several sessions.
+    let json = stdout(&r.ank(AGENT, &["log", "--json", "three"]));
+    assert!(json.contains("\"warnings\""), "{json}");
+    assert!(json.contains(SECOND), "{json}");
+
+    // `done` refuses instead, being the verb whose effect running it again
+    // cannot undo -- and refuses before a verifier has run.
+    let out = r.ank(AGENT, &["done"]);
+    assert_eq!(code(&out), 6, "{}{}", stdout(&out), stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST) && said.contains(SECOND), "{said}");
+    assert!(
+        said.contains(&format!("ank done {FIRST}")),
+        "the refusal names a command to run: {said}"
+    );
+    assert!(
+        !witness.exists(),
+        "a verifier ran before the caller had answered which task"
+    );
+    assert!(
+        r.task_text(FIRST).contains("status: in_progress")
+            && r.task_text(SECOND).contains("status: in_progress"),
+        "the refusal moved a task anyway"
+    );
+
+    // Named, it goes through, and it is the named one that moves.
+    let out = r.ank(AGENT, &["done", SECOND]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(witness.exists(), "the verifier of the named task never ran");
+    assert!(
+        r.task_text(SECOND).contains("status: done"),
+        "\n{}",
+        r.task_text(SECOND)
+    );
+    assert!(
+        r.task_text(FIRST).contains("status: in_progress"),
+        "done moved a task nobody named:\n{}",
+        r.task_text(FIRST)
+    );
+
+    // And `release`, which needs the state rebuilt: SECOND carries a completion
+    // ref now, so the second live claim is a fresh one.
+    r.expire_claim(FIRST);
+    assert_eq!(code(&r.ank(AGENT, &["claim", THIRD])), 0);
+    r.revive_claim(FIRST);
+
+    let out = r.ank(AGENT, &["release", "--reason", "the criterion is wrong"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(said.contains(FIRST) && said.contains(THIRD), "{said}");
+    assert!(said.contains("ank release"), "{said}");
+    assert!(
+        stdout(&out).contains(&format!("released {FIRST}")),
+        "{}",
+        stdout(&out)
+    );
+    assert!(
+        r.task_text(THIRD).contains("status: in_progress"),
+        "release handed back a task nobody named:\n{}",
+        r.task_text(THIRD)
+    );
+
+    // One claim, which is the nominal case, says none of it.
+    let out = r.ank(AGENT, &["log", "alone now"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("live claims"),
+        "the nominal case pays for the exceptional one: {}",
+        stderr(&out)
+    );
 }
 
 /// A holder returning to a lapsed claim carries on; one whose task was taken

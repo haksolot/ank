@@ -234,26 +234,30 @@ time, per person and per agent.
 
 ### One identity per session
 
-Claiming a second task while you already hold one is allowed, and it says so:
+Claiming a second task while you already hold one is refused:
 
     $ ank claim 51c2
-    warning: marie@laptop already holds TASK-820d259af6a7 until 2026-07-28T12:30:00Z
-    warning: a second session on this machine sets its own ANK_AGENT
-    claimed TASK-51c2a7f0b3d9 add-secret-rotation -> HEAD
+    error[7]: marie@laptop holds a live claim on TASK-820d259af6a7 (expires in 24m)
+      -> ank release --reason "<why>"   (a second session on this machine sets its own ANK_AGENT)
 
-If that is what you meant, ignore it. If it surprises you, it is almost
-certainly two terminals: `$ANK_AGENT` unset resolves to `<user>@<hostname>`, so
-two sessions on one machine are the same agent as far as the refs can tell —
-they see each other's claims, and each renews the other's. Give every
-concurrent session an identity of its own:
+If you meant it, the first way out is the one to take: finish the task you hold
+or hand it back. If the refusal surprises you, it is almost certainly two
+terminals: `$ANK_AGENT` unset resolves to `<user>@<hostname>`, so two sessions
+on one machine are the same agent as far as the refs can tell — they would see
+each other's claims and renew them. Give every concurrent session an identity
+of its own:
 
     $ ANK_AGENT=marie-2@laptop ank claim 51c2
 
-Nothing is broken in the refs when you do not: identity is declared, never
-proved, and it is deliberately not bound to the session — a PID or a TTY in it
-would mean losing your claim to a restarted terminal. Parallel agents, each
-with its own `ANK_AGENT`, are the supported case; one ref per task is what
-arbitrates them.
+That is why the refusal names the identity rather than calling you its holder:
+under a shared identity, the session being refused may have claimed nothing at
+all. Identity is declared, never proved, and it is deliberately not bound to the
+session — a PID or a TTY in it would mean losing your claim to a restarted
+terminal. Parallel agents, each with its own `ANK_AGENT`, are the supported
+case; one ref per task is what arbitrates them.
+
+An expired claim is not a live one, so this never stands between you and a task
+whose lease ran out — yours or anybody's.
 
 Run `ank context` again and the output inverts: no other task, the full
 criterion, and the constraints matching this task's scope.

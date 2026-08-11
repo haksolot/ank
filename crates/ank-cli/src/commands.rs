@@ -1112,17 +1112,7 @@ pub(crate) fn json_string(s: &str) -> String {
 // log and release: both act on the task this agent holds
 // ---------------------------------------------------------------------------
 
-/// The task this agent holds a live claim on, with the record and the object to
-/// compare against. Both verbs need it, and neither may act without it: the log
-/// is the task's anchoring register, and if anyone could write to it, it would
-/// stop being a reliable trace of what the holder did (§4).
-fn head_of(cwd: &Path, identity: &str) -> Result<(EntityId, String, ClaimRecord)> {
-    held_by(cwd, identity)?.ok_or_else(|| {
-        CliError::new(6, "no task in progress for this agent").with_hint("ank context")
-    })
-}
-
-/// The same lookup without the refusal, for the caller that reports rather than
+/// The lookup without the refusal, for the caller that reports rather than
 /// acts. `status` describes a repository that may well have no claim in it, and
 /// a reader must never fail because there is nothing to say.
 /// The two columns a listing spends on its left margin, spent on saying whether
@@ -1154,19 +1144,90 @@ pub(crate) fn held_by(
     Ok(claim::on_task(cwd, identity)?.map(|s| (s.id, s.object, s.record)))
 }
 
-/// The optional id is redundant by construction and must match HEAD (§4). It
-/// exists for explicitness in scripts, never as a way to act on somebody else's
-/// task.
-fn check_matches_head(store: &Store, given: Option<&String>, head: &EntityId) -> Result<()> {
-    let Some(given) = given else { return Ok(()) };
-    let asked = store.resolve(given)?;
-    if &asked != head {
-        return Err(
-            CliError::new(6, format!("{asked} is not the task in progress ({head})"))
-                .with_hint(format!("ank log {head} \"<message>\"")),
-        );
+/// The task a verb acts on, and what it owes the caller before it acts.
+///
+/// Both `log` and `release` need it and neither may act without it: the log is
+/// the task's anchoring register, and if anyone could write to it, it would
+/// stop being a reliable trace of what the holder did (§4).
+///
+/// The optional id is redundant in the nominal case and exists for explicitness
+/// in scripts (§4). What it means changed with TASK-97d8747416ea: not "must
+/// equal HEAD" but "must name a task this agent holds a live claim on". Holding
+/// one claim the two readings are the same sentence; holding several — the
+/// state `claim` refuses to create and the corpus can still be in — it is what
+/// says which of them the verb acts on, and that costs the refusal rather than
+/// a new flag.
+///
+/// HEAD is still resolved first, so an agent holding nothing is answered
+/// `no task in progress for this agent` whether or not it named a task: the
+/// question "do you hold anything" comes before "is this the one".
+///
+/// The warnings are for the derived case alone. A caller that named its task
+/// has already said which one it meant, and telling it back would be noise on
+/// the one path that cannot be ambiguous.
+fn acting_on(
+    cwd: &Path,
+    store: &Store,
+    given: Option<&String>,
+    identity: &str,
+    verb: &str,
+    tail: &str,
+) -> Result<(EntityId, String, ClaimRecord, Vec<String>)> {
+    let head = claim::on_task(cwd, identity)?.ok_or_else(|| {
+        CliError::new(6, "no task in progress for this agent").with_hint("ank context")
+    })?;
+
+    let standing = match given {
+        Some(given) => {
+            let asked = store.resolve(given)?;
+            if asked == head.id {
+                head
+            } else {
+                claim::standing_on(cwd, identity, &asked)?.ok_or_else(|| {
+                    CliError::new(
+                        6,
+                        format!("{asked} is not the task in progress ({})", head.id),
+                    )
+                    .with_hint(format!("ank {verb} {}{tail}", head.id))
+                })?
+            }
+        }
+        None => head,
+    };
+
+    let warnings = match given {
+        Some(_) => Vec::new(),
+        None => claim::sharing_warnings(
+            verb,
+            tail,
+            &standing.id,
+            &claim::live_claims_of(cwd, identity, &standing.id, claim::now_secs())?,
+        ),
+    };
+    Ok((standing.id, standing.object, standing.record, warnings))
+}
+
+/// The sentences of [`claim::sharing_warnings`] on their way out, before the
+/// verb writes anything.
+///
+/// **Standard error, and before the write.** §3 asks that the choice be
+/// visible, and a line printed after the entry landed reports rather than
+/// warns. Standard error for the reason `log`'s takeover warning already uses
+/// it: stdout under `--json` is a parser's input (§4).
+fn warn_before_acting(inv: &Invocation, warnings: &[String]) {
+    if inv.json() {
+        return;
     }
-    Ok(())
+    let style = inv.style().on_stderr();
+    for w in warnings {
+        eprintln!("{} {w}", style.yellow("warning:"));
+    }
+}
+
+/// The same sentences for a parser, as `claim --json` already carries them.
+fn warnings_json(warnings: &[String]) -> String {
+    let items: Vec<String> = warnings.iter().map(|w| json_string(w)).collect();
+    format!(",\"warnings\":[{}]", items.join(","))
 }
 
 /// `log [<id>] [<message>]` (§4). `git log` reads, and so does this one when it
@@ -1285,8 +1346,9 @@ fn log_write(
             .with_hint("ank log \"<what you just did>\""));
     }
 
-    let (id, witness, record) = head_of(&repo.root, identity)?;
-    check_matches_head(store, given, &id)?;
+    let (id, witness, record, warnings) =
+        acting_on(&repo.root, store, given, identity, "log", " \"<message>\"")?;
+    warn_before_acting(inv, &warnings);
 
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
@@ -1342,7 +1404,11 @@ fn log_write(
     }
 
     if inv.json() {
-        let _ = writeln!(out, "{{\"task\":\"{id}\",\"logged\":true}}");
+        let _ = writeln!(
+            out,
+            "{{\"task\":\"{id}\",\"logged\":true{}}}",
+            warnings_json(&warnings)
+        );
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -1369,8 +1435,15 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     };
 
     let store = Store::new(&repo.ank);
-    let (id, _, _) = head_of(&repo.root, identity)?;
-    check_matches_head(&store, inv.positionals.first(), &id)?;
+    let (id, _, _, warnings) = acting_on(
+        &repo.root,
+        &store,
+        inv.positionals.first(),
+        identity,
+        "release",
+        " --reason \"<why>\"",
+    )?;
+    warn_before_acting(inv, &warnings);
 
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
@@ -1399,8 +1472,9 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     if inv.json() {
         let _ = writeln!(
             out,
-            "{{\"task\":\"{id}\",\"status\":\"open\",\"reason\":{}}}",
-            json_string(&reason)
+            "{{\"task\":\"{id}\",\"status\":\"open\",\"reason\":{}{}}}",
+            json_string(&reason),
+            warnings_json(&warnings)
         );
     } else if !inv.quiet() {
         let _ = writeln!(
