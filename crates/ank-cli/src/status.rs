@@ -86,6 +86,32 @@ pub fn run(
         None => Vec::new(),
     };
 
+    // **Every live claim in the repository, the caller's and everybody
+    // else's** (§5, TASK-dacbcae6134c). `context` in execution mode shows none
+    // of it and is right not to: it exists to remove choice, and a list of what
+    // other agents hold is choice-shaped. The information is not withheld, it
+    // is relocated here — `status` is off the loop, costs nothing to skip, and
+    // is the verb an agent runs to learn where things stand rather than what to
+    // do next.
+    //
+    // Read through the same `coordination` map every listing verb uses, not a
+    // second enumeration of the refs: one plane, one reading, and a second one
+    // would be free to disagree with the first.
+    let plane = context::coordination(&repo.root, &mut Vec::new())?;
+    let mut elsewhere: Vec<(ank_core::EntityId, String, String)> = plane
+        .iter()
+        .filter_map(|(id, state)| match state {
+            context::Coordination::Claimed { holder, expires } if holder != identity => {
+                Some((id.clone(), holder.clone(), expires.clone()))
+            }
+            _ => None,
+        })
+        .collect();
+    // By id, as `live_claims_of` orders its own answer: the plane is a map, and
+    // a status whose lines move between two runs that changed nothing is a
+    // status nobody diffs.
+    elsewhere.sort_by(|a, b| a.0.to_string().cmp(&b.0.to_string()));
+
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
     let report = human::inspect(repo, cfg, None, false)?;
@@ -140,15 +166,29 @@ pub fn run(
             .iter()
             .map(|(id, c)| format!("{{\"id\":\"{id}\",\"expires\":\"{}\"}}", c.expires))
             .collect();
+        // The other agents' claims, on the same terms as `also_held`: a caller
+        // that scripts around `status` is the one most likely to be running
+        // several agents at once, and a field the human surface has and this
+        // one lacks hides the case from the reader most likely to meet it.
+        let elsewhere_json: Vec<String> = elsewhere
+            .iter()
+            .map(|(id, holder, expires)| {
+                format!(
+                    "{{\"id\":\"{id}\",\"holder\":{},\"expires\":\"{expires}\"}}",
+                    commands::json_string(holder)
+                )
+            })
+            .collect();
         let _ = writeln!(
             out,
             "{{\"branch\":{},\"default_branch\":{},\"claim\":{claim_json},\
-             \"also_held\":[{}],\
+             \"also_held\":[{}],\"elsewhere\":[{}],\
              \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
              \"faults\":{},\"signals\":{}}}",
             opt_json(branch.as_deref()),
             opt_json(default.as_ref().ok().map(|s| s.as_str())),
             also_json.join(","),
+            elsewhere_json.join(","),
             report.faults(),
             report.signals()
         );
@@ -219,6 +259,29 @@ pub fn run(
                 let _ = writeln!(out, "{}", style.key("no claim"));
             }
         },
+    }
+
+    // Said even when there is nothing to say. Silence and "this verb does not
+    // answer that" read identically, and the whole point of relocating the
+    // question here is that it has an answer (§5).
+    match elsewhere.len() {
+        0 => {
+            let _ = writeln!(out, "{}", style.key("elsewhere no claim by another agent"));
+        }
+        n => {
+            let _ = writeln!(
+                out,
+                "{} {n} claim(s) by other agents",
+                style.key("elsewhere")
+            );
+            for (id, holder, expires) in &elsewhere {
+                let _ = writeln!(
+                    out,
+                    "  {} {holder} until {expires}",
+                    style.id(&id.to_string())
+                );
+            }
+        }
     }
 
     let perimeter = match &claimed {

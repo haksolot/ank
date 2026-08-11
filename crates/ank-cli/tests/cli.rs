@@ -2734,6 +2734,72 @@ fn status_names_every_live_claim_of_this_identity() {
     assert!(!said.contains("also"), "{said}");
 }
 
+/// What a holder of a claim sees of the coordination plane (TASK-dacbcae6134c).
+///
+/// The agent best placed to notice a collision is the one currently working,
+/// and it is the one `context` stops showing the plane to: execution mode drops
+/// every other task, so `[claimed:holder]` has no listing left to sit on. §5
+/// now says that is deliberate -- execution mode exists to remove choice, and a
+/// list of what other agents hold is choice-shaped -- and that the information
+/// is relocated rather than withheld, to `status`, which is off the loop and
+/// costs nothing to skip.
+///
+/// The four assertions are the specification's four halves: orientation shows
+/// it, execution does not, `status` does, and `status` says so even when there
+/// is nothing to say -- silence and "this verb does not answer that" read
+/// identically otherwise.
+#[test]
+fn a_holder_reads_the_plane_through_status_and_execution_context_stays_silent() {
+    const MINE: &str = "TASK-000000000f01";
+    const THEIRS: &str = "TASK-000000000f02";
+    let r = Repo::new();
+    r.seed_task(MINE, Some("A verifiable criterion."));
+    r.seed_task(THEIRS, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", THEIRS])), 0);
+
+    // Orientation, before claiming anything: the marker is here, and this is
+    // the moment it is worth reading -- the agent is choosing.
+    let said = stdout(&r.ank("claude-code@ank", &["context"]));
+    assert!(
+        said.contains("codex@host-9"),
+        "orientation hides who holds what, which is when it matters:\n{said}"
+    );
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+
+    // Execution mode: nothing of the plane, deliberately.
+    let said = stdout(&r.ank("claude-code@ank", &["context"]));
+    assert!(
+        said.contains(MINE),
+        "execution mode lost its own task:\n{said}"
+    );
+    assert!(
+        !said.contains(THEIRS) && !said.contains("codex@host-9"),
+        "execution mode offers a task it exists to keep out of view:\n{said}"
+    );
+
+    // `status` is where the question was relocated to.
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        said.contains(THEIRS) && said.contains("codex@host-9"),
+        "status names no claim but the caller's own:\n{said}"
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(json.contains("\"elsewhere\""), "{json}");
+    assert!(json.contains("codex@host-9"), "{json}");
+
+    // And with nobody else on anything, it answers rather than going quiet.
+    let solo = Repo::new();
+    solo.seed_task(MINE, Some("A verifiable criterion."));
+    assert_eq!(code(&solo.ank("claude-code@ank", &["claim", MINE])), 0);
+    let said = stdout(&solo.ank("claude-code@ank", &["status"]));
+    assert!(
+        said.contains("no claim by another agent"),
+        "an empty plane and an unanswered question read alike:\n{said}"
+    );
+}
+
 /// With two live claims under one identity, no verb acts on one of them without
 /// the caller being able to tell which (TASK-97d8747416ea).
 ///
