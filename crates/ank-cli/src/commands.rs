@@ -1138,27 +1138,20 @@ fn marker_of(held: &Option<EntityId>, id: &EntityId) -> &'static str {
     }
 }
 
+/// The task this agent is on, live claim or lapsed one (§3).
+///
+/// The lapsed case reaches the callers rather than being dropped here: `log`
+/// renews by writing, and that write *is* the re-acquisition — the
+/// compare-and-swap is on the object just read, so an agent that took the task
+/// over in the meantime keeps it and the renewal reports the loss. `release`
+/// hands back a task whose file still reads `in_progress`, which a lapsed claim
+/// does not change. Both were unreachable while this returned `None` for a
+/// claim whose only fault was outliving its lease (TASK-5bd23835d5a0).
 pub(crate) fn held_by(
     cwd: &Path,
     identity: &str,
 ) -> Result<Option<(EntityId, String, ClaimRecord)>> {
-    for r in crate::git::ank_refs(cwd)? {
-        let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
-            continue;
-        };
-        let Ok(id) = EntityId::parse(rest) else {
-            continue;
-        };
-        let Some(held) = claim::read(cwd, &id)? else {
-            continue;
-        };
-        if let Record::Claim(c) = held.record {
-            if c.holder == identity && !claim::is_expired(&c, claim::now_secs(), &id)? {
-                return Ok(Some((id, held.object, c)));
-            }
-        }
-    }
-    Ok(None)
+    Ok(claim::on_task(cwd, identity)?.map(|s| (s.id, s.object, s.record)))
 }
 
 /// The optional id is redundant by construction and must match HEAD (§4). It

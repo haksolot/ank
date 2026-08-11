@@ -43,7 +43,24 @@ pub fn run(
     // (§5): holding one, an agent's question is about its own task. The title
     // and scope come from the index rather than the store, because `status` has
     // already read the index and a second read is a second chance to disagree.
-    let held = commands::held_by(&repo.root, identity)?;
+    //
+    // A lapsed claim is reported as one, not as absent and not as live. It is
+    // still this agent's task — `log` and `done` retake it (§3) — so saying
+    // "no claim" would be false; and the expiry alone is a past timestamp a
+    // reader scans over, so the state is spelled out in words. Nothing here is
+    // carried by a date the reader has to compare against the clock.
+    let standing = crate::claim::on_task(&repo.root, identity)?;
+    let held = standing
+        .as_ref()
+        .map(|s| (s.id.clone(), s.object.clone(), s.record.clone()));
+    let lapsed = standing.as_ref().is_some_and(|s| s.lapsed);
+    let expiry = |raw: &str| -> String {
+        if lapsed {
+            format!("{raw} (lapsed; the next log or done retakes it)")
+        } else {
+            raw.to_string()
+        }
+    };
     let claimed: Option<(&Row, String)> = held.as_ref().and_then(|(id, _, record)| {
         rows.iter()
             .find(|r| &r.id == id)
@@ -86,10 +103,14 @@ pub fn run(
         .count();
 
     if inv.json() {
+        // `lapsed` rather than a date the caller has to compare against its own
+        // clock: the human surface says it in words, and a rendering that knows
+        // something the other two do not is the defect, not the economy.
         let claim_json = match &claimed {
-            Some((task, expires)) => {
-                format!("{{\"id\":\"{}\",\"expires\":\"{expires}\"}}", task.id)
-            }
+            Some((task, expires)) => format!(
+                "{{\"id\":\"{}\",\"expires\":\"{expires}\",\"lapsed\":{lapsed}}}",
+                task.id
+            ),
             None => "null".into(),
         };
         let _ = writeln!(
@@ -144,7 +165,7 @@ pub fn run(
                 style.id(&task.id.to_string()),
                 task.title
             );
-            let _ = writeln!(out, "  {} {expires}", style.key("expires"));
+            let _ = writeln!(out, "  {} {}", style.key("expires"), expiry(expires));
         }
         // A held claim whose task the index has lost would print nothing at
         // all, so the ref is reported on its own rather than dropped.
@@ -156,7 +177,12 @@ pub fn run(
                     style.key("claim"),
                     style.id(&id.to_string())
                 );
-                let _ = writeln!(out, "  {} {}", style.key("expires"), record.expires);
+                let _ = writeln!(
+                    out,
+                    "  {} {}",
+                    style.key("expires"),
+                    expiry(&record.expires)
+                );
             }
             None => {
                 let _ = writeln!(out, "{}", style.key("no claim"));

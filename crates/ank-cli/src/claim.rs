@@ -480,6 +480,86 @@ pub fn is_expired(claim: &ClaimRecord, now: i64, id: &EntityId) -> Result<bool> 
     Ok(now > expires + DRIFT_TOLERANCE.as_secs() as i64)
 }
 
+/// Where an identity stands on the coordination plane: the task whose ref names
+/// it, and whether the claim is still in force.
+#[derive(Debug, Clone)]
+pub struct Standing {
+    pub id: EntityId,
+    /// The object the record was read from, for the compare-and-swap.
+    pub object: String,
+    pub record: ClaimRecord,
+    /// The TTL ran out and nobody took the task over. §3 calls this normal, not
+    /// a fault: a build longer than the lease expires the claim, and the holder
+    /// coming back re-acquires and carries on.
+    pub lapsed: bool,
+}
+
+/// The task this identity is on — a live claim, or a lapsed one nobody has
+/// taken over.
+///
+/// **One lookup for every verb that acts on "my task"** (§3). `done` and `log`
+/// each scanned the refs themselves and each dropped a lapsed claim on the
+/// floor, so the return-after-expiry §3 describes as nominal answered
+/// `no task in progress for this agent` in both — measured on a claim that
+/// lapsed during a CI wait, which is the case the paragraph was written for
+/// (TASK-5bd23835d5a0). Two copies of a rule are two chances to get it wrong,
+/// and this one got it wrong twice.
+///
+/// A live claim wins over a lapsed one. Holding two at once is a convention
+/// nothing enforces, so the tie is broken rather than left to ref order.
+pub fn on_task(cwd: &Path, identity: &str) -> Result<Option<Standing>> {
+    let mut lapsed_one: Option<Standing> = None;
+    for r in git::ank_refs(cwd)? {
+        let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
+            continue;
+        };
+        let Ok(id) = EntityId::parse(rest) else {
+            continue;
+        };
+        let Some(held) = read(cwd, &id)? else {
+            continue;
+        };
+        let Record::Claim(c) = held.record else {
+            continue;
+        };
+        if c.holder != identity {
+            continue;
+        }
+        let lapsed = is_expired(&c, now_secs(), &id)?;
+        let standing = Standing {
+            id,
+            object: held.object,
+            record: c,
+            lapsed,
+        };
+        if !lapsed {
+            return Ok(Some(standing));
+        }
+        lapsed_one.get_or_insert(standing);
+    }
+    Ok(lapsed_one)
+}
+
+/// Takes a lapsed claim back, in the same agent's name (§3).
+///
+/// **The anchors are carried over, never recomputed.** Re-freezing the
+/// criterion here would erase a divergence introduced while the claim was down,
+/// which is the one thing `done` checks the hash to catch — the point of
+/// re-acquisition is to restore the lock, not to re-bless the work. The expiry
+/// moves, and the lease it moves by is the one the claim was granted.
+///
+/// The compare-and-swap is on the object the record was read from, so an agent
+/// that took the task over between the read and this write keeps it.
+pub fn retake(cwd: &Path, standing: &Standing, cap: Duration) -> Result<Cas> {
+    let ttl = renewal_ttl(&standing.record, cap);
+    let record = Record::Claim(ClaimRecord {
+        expires: format_utc(now_secs() + ttl.as_secs() as i64),
+        ttl: ttl.as_secs(),
+        ..standing.record.clone()
+    });
+    put(cwd, &standing.id, &record, Some(&standing.object))
+}
+
 /// The claim in force on a task, if there is one.
 ///
 /// **The one place the question "is this criterion frozen right now" is
@@ -787,6 +867,16 @@ fn blocker_finished_elsewhere(
         format!("{task} is blocked by {blocker}, {where_}, not merged here yet"),
     )
     .with_hint(other_task_hint(other_ready))
+}
+
+/// Who holds it now, for a caller whose compare-and-swap lost.
+///
+/// Shared with `done`'s retake of a lapsed claim (§3): "if another agent took
+/// it over in the meantime, they fail with code 4 and the name of the new
+/// holder" is the same answer this already produces for a lost claim, and
+/// producing it twice would be two chances to word it differently.
+pub fn taken_over_since(cwd: &Path, id: &EntityId) -> Result<CliError> {
+    lost_the_race(cwd, id, now_secs(), None)
 }
 
 fn lost_the_race(
