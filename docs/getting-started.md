@@ -18,32 +18,13 @@ the tool refuses, the refusal is shown as it appears.
 
 ## Install
 
-Every release carries a static binary for three targets —
-`x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and
-`x86_64-pc-windows-msvc` — each with a `.sha256` beside it. Take the archive for
-your platform from the [releases page](https://github.com/haksolot/ank/releases/latest),
-check the hash, unpack it, and put `ank` on your `PATH`.
-
-From npm instead, which is the channel to reach for on a machine whose firewall
-blocks downloading a bare executable but lets the registry through:
-
-    npx @haksolot/ank --version
-    npm install -g @haksolot/ank
-
-The binary is inside the package — one package per platform, installed through
-`optionalDependencies`, and no `postinstall` fetches anything. A `postinstall`
-download would die behind the very firewall this channel exists to cross, and
-would do it after the install looked like it had worked.
-
-To build instead:
-
-    cargo install --git https://github.com/haksolot/ank ank-cli
-
-That puts `ank` in `~/.cargo/bin`. From a clone, `cargo build --release` leaves
-it at `target/release/ank`. Either way, check it answers:
+Put `ank` on your `PATH`. [agents.md](agents.md) carries every route with its
+trade-offs — a release binary and its checksum, npm, or building from source —
+and the shortest of them is one line of npm. Whichever you took, check it
+answers:
 
     $ ank --version
-    ank 0.1.1 (bc59636, skill 605f771e1955)
+    ank 0.1.3 (f573bc3, skill 3f350ad26459)
 
 It prints the version, the commit it was built from, and the revision of the
 skill it was built alongside. The commit matters the first time you suspect the
@@ -373,65 +354,22 @@ that your work is wrong. Fix the machine, not the code.
 
 ## Handing the loop to an agent
 
-Four routes install the same file. Pick the one your agent already understands.
+Four routes install the same file — the `skills` CLI, the Claude Code plugin,
+`pi`, and copying one markdown file by hand — and they are walked with their real
+output in [agents.md](agents.md), along with `$ANK_AGENT` and what changes when
+more than one agent works the same repository.
 
-**The `skills` CLI**, which detects what you run — Claude Code, Codex, Cursor,
-OpenCode and some thirty more — and links each one to a single copy. Ask it what
-it found before you let it install:
+The shortest of them, which detects what you run and links it to a single copy:
 
-    $ npx skills add haksolot/ank --list
-    Source: https://github.com/haksolot/ank.git
-    Repository cloned
-    Found 1 skill
+    npx skills add haksolot/ank
 
-    Available Skills
-    Ank
-      ank
-        Read a repository's tasks and binding constraints, claim work, and
-        finish it with proof. Use when working in a repo that has a .ank/
-        directory.
-
-Drop `--list` to install it.
-
-**Claude Code as a plugin**, this repository serving as its own marketplace:
-
-    /plugin marketplace add haksolot/ank
-    /plugin install ank@ank
-
-`claude plugin details ank` then tells you what it costs you, which is the
-question worth asking of anything loaded on every session:
-
-    Tasks and architecture decisions in your repo, behind one CLI any coding
-    agent can call.
-
-    Component inventory
-      Skills (1)  ank
-
-    Projected token cost
-      Always-on:   ~58 tok   added to every session
-
-**pi**, from the registry or from a clone:
-
-    $ pi install npm:@haksolot/ank
-    $ pi install git:github.com/haksolot/ank
-    Installed git:github.com/haksolot/ank
-
-The git route clones the repository and reads its `pi` manifest; the npm route
-takes the published package, which carries the skill beside the binary.
-
-That installs the skill, not the binary. The skill teaches one page: the loop
-`context → claim → show → log → done`, the three off-loop verbs `new`, `find`
-and `release`, and the rules that are not negotiable. It is loaded on every
-session, which is why its content is deliberately small.
-
-One convention it carries is worth knowing before you see an agent follow it:
-**`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
-`ank show`, `ank find` and `ank context`; writing goes through the verbs. The
-CLI knows what the files do not — the context budget, the frozen criterion, who
-holds which claim. A human with an editor keeps every power they had.
+That installs the skill, not the binary. The skill teaches one page, and it is
+loaded on every session, which is why its content is deliberately small.
 
 ## Where to go next
 
+- [agents.md](agents.md) — the four routes that reach an agent, the binary
+  channels beyond npm, and what running several agents actually requires.
 - [format.md](format.md) — the file format and canonical form, for anyone
   writing a tool that reads or writes `.ank/`.
 - [ank-spec-v1.1.md](ank-spec-v1.1.md) — the specification, and the source of

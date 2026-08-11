@@ -22,6 +22,12 @@ contact_links:
       Install to a first finished task, with real output -- including the two
       refusals a fresh repository will give you.
 
+  - name: Handing ank to an agent
+    url: https://github.com/haksolot/ank/blob/main/docs/agents.md
+    about: >
+      The routes that install the skill, the binary channels beyond npm, and
+      what running several agents against one repository actually requires.
+
   - name: Contributing
     url: https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md
     about: >
