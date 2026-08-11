@@ -5,7 +5,7 @@ slug: entities-live-in-one-flat-directory-and-kinds-ar
 title: Entities live in one flat directory, and kinds are a registry
 created: 2026-08-11T22:16:34Z
 author: claude-code@sean-laptop
-status: proposed
+status: accepted
 scope:
   - crates/ank-core/**
   - crates/ank-cli/src/store.rs
@@ -28,8 +28,9 @@ constraint: |
   A reader accepts the previous layout, .ank/tasks/ and .ank/adr/, and a writer
   never produces it. A corpus still in the old layout is a check finding naming the
   command that moves it.
+ratified: 353381bd34b6
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context
