@@ -233,6 +233,16 @@ pub struct CommandSpec {
     pub flags: &'static [FlagSpec],
     /// The states this verb refuses on, with their codes (§9).
     pub refuses: &'static [Refusal],
+    /// Global flags this verb refuses by name (§4). Empty for every verb but
+    /// `init`, which refuses `--repo`: the flag names a repository that already
+    /// carries a `.ank/`, and `init` is what produces one.
+    ///
+    /// Declared here rather than only in the verb, because §9 forbids offering
+    /// a name the verb rejects by design — so the same list has to reach the
+    /// per-verb page, `--json`, and the parser's own error, and a global hidden
+    /// from one rendering and not the others would be that defect in a quieter
+    /// place.
+    pub refuses_globals: &'static [&'static str],
     /// What the usage line cannot carry and the caller needs before calling: a
     /// value's grammar, or what interprets it. One line each.
     pub notes: &'static [&'static str],
@@ -260,6 +270,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--limit")],
         refuses: &[],
         notes: &["a constraint is never truncated in execution mode; a cut is always announced"],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -274,6 +285,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(7, "the task is blocked, or has no done_criteria to freeze"),
         ],
         notes: &["--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one"],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -285,6 +297,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[refuses(2, "no such entity, or the prefix matches more than one")],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -298,6 +311,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[refuses(6, "writing with no claim held by this agent")],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -312,6 +326,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(6, "no claim held by this agent, or the frozen done_criteria has diverged"),
         ],
         notes: &["--proof is <type>:<ref>; type is commit, human-review, assertion or test"],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -323,6 +338,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--reason")],
         refuses: &[refuses(6, "no claim held by this agent")],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -346,6 +362,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a scope is mandatory: an entity attached to nothing is invisible",
             "--body - reads the body from stdin, so a long one needs no shell quoting",
         ],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -357,6 +374,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--type"), flag("--status"), flag("--scope")],
         refuses: &[],
         notes: &["--status filters on the stored status; a claimed row still displays as [claimed:who]"],
+        refuses_globals: &[],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
@@ -371,6 +389,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -382,6 +401,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -400,6 +420,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             ),
         ],
         notes: &["the one act ank commits for; it is a human act, signed"],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -417,6 +438,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(2, "no such entity, or the prefix matches more than one"),
         ],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -444,6 +466,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten",
             "--criteria replaces the criterion outright, and leaves criteria_by where it stands",
         ],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -455,6 +478,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[flag("--proof")],
         refuses: &[refuses(2, "no such entity, or the prefix matches more than one")],
         notes: &["--proof is <type>:<ref>; type is commit, human-review, assertion or test"],
+        refuses_globals: &[],
         owner_task: None,
     },
     // After `attest` and before `graph`: §4's order, and the last gap in it.
@@ -471,6 +495,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "$EDITOR is a command line run through sh, not a program name",
             "a GUI editor needs its wait flag, or it returns before you have typed and the file is written back unedited",
         ],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -482,6 +507,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -493,6 +519,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -504,6 +531,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[],
         notes: &["exit 8 means findings; a signal alone leaves it 0"],
+        refuses_globals: &[],
         owner_task: None,
     },
     // After `check` and before `init`: §4's order. It sits beside the verb
@@ -528,6 +556,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
         ],
+        refuses_globals: &[],
         owner_task: None,
     },
     CommandSpec {
@@ -537,8 +566,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[],
-        notes: &[],
+        refuses: &[refuses(
+            1,
+            "--repo: it names a repository that exists, and this verb makes one; the target is positional",
+        )],
+        notes: &["a target elsewhere is ank init <path>; with no argument it initialises the current directory"],
+        refuses_globals: &["--repo"],
         owner_task: None,
     },
     CommandSpec {
@@ -550,6 +583,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         flags: &[],
         refuses: &[refuses(2, "no such verb; never a fallback to the general listing")],
         notes: &[],
+        refuses_globals: &[],
         owner_task: None,
     },
 ];
@@ -899,8 +933,27 @@ fn listed_flags(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
     spec.flags.iter().filter(|f| f.listed).collect()
 }
 
-fn globals_line(with_short: bool) -> String {
+/// The globals that apply to a verb, which is all of them but one (§4).
+///
+/// Same filter as [`listed_flags`], for the same reason and read by the same
+/// three renderings: §9 says a flag the verb rejects by design belongs in the
+/// refusals and not in the offer, and being global is not an exemption —
+/// `ank help init` offering `--repo` is precisely the offer that let the flag
+/// look supported while `init` wrote somewhere else (TASK-b8a12d60686d).
+fn globals_of(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
     GLOBAL_FLAGS
+        .iter()
+        .filter(|f| !spec.refuses_globals.contains(&f.name))
+        .collect()
+}
+
+/// **The flat listing passes [`GLOBAL_FLAGS`] whole, and that is deliberate.**
+/// It states what the three globals of §4 are, once, for the surface — the
+/// exception belongs on the page of the verb that makes it, where a reader
+/// asking about `init` is looking. Qualifying it in the flat listing would be a
+/// second structure in an output ADR-c656cbcc33a9 keeps flat.
+fn globals_line(globals: &[&'static FlagSpec], with_short: bool) -> String {
+    globals
         .iter()
         .map(|f| flag_display(f, with_short))
         .collect::<Vec<_>>()
@@ -938,7 +991,7 @@ fn json_of(specs: &[&CommandSpec]) -> String {
             let notes: Vec<String> = spec.notes.iter().map(|n| json_str(n)).collect();
             let flags: Vec<String> = listed_flags(spec)
                 .into_iter()
-                .chain(GLOBAL_FLAGS.iter())
+                .chain(globals_of(spec))
                 .map(|f| {
                     // The short form is here and not only in the human listing:
                     // `--json` is how a script reads the surface, and a mapping
@@ -1005,7 +1058,7 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
             let flags: Vec<String> = listed.iter().map(|f| flag_display(f, true)).collect();
             let _ = writeln!(out, "  flags:    {}", flags.join(" "));
         }
-        let _ = writeln!(out, "  global:   {}", globals_line(true));
+        let _ = writeln!(out, "  global:   {}", globals_line(&globals_of(spec), true));
         for (i, note) in spec.notes.iter().enumerate() {
             let label = if i == 0 { "note:" } else { "" };
             let _ = writeln!(out, "  {label:<9} {note}");
@@ -1039,7 +1092,8 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
             let _ = writeln!(out, "{:width$}  {names}", usage(spec));
         }
     }
-    let _ = writeln!(out, "\nglobal: {}", globals_line(false));
+    let all: Vec<&FlagSpec> = GLOBAL_FLAGS.iter().collect();
+    let _ = writeln!(out, "\nglobal: {}", globals_line(&all, false));
     let _ = writeln!(out, "ank help <verb> for one verb");
     // A trailing pointer, beside the one above it and in the same shape: not a
     // heading and not a grouping, so the flat listing ADR-c656cbcc33a9 requires
