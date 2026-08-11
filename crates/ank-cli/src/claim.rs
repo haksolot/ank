@@ -469,6 +469,27 @@ pub fn is_expired(claim: &ClaimRecord, now: i64, id: &EntityId) -> Result<bool> 
     Ok(now > expires + DRIFT_TOLERANCE.as_secs() as i64)
 }
 
+/// The claim in force on a task, if there is one.
+///
+/// **The one place the question "is this criterion frozen right now" is
+/// answered.** `edit` asked it first, and `amend --criteria` asks exactly the
+/// same thing (§4): the two must agree, and a rule restated in two verbs is a
+/// rule that will eventually be restated differently. A completion ref is not a
+/// claim and neither is a lapsed one — an expired claim is not in force and
+/// freezes nothing, which is the reading `log` and `done` already apply.
+///
+/// Any live claim, not this agent's: refusals are on state and never on identity
+/// (ADR-c656cbcc33a9).
+pub fn live(cwd: &Path, id: &EntityId) -> Result<Option<ClaimRecord>> {
+    let Some(Record::Claim(c)) = read(cwd, id)?.map(|h| h.record) else {
+        return Ok(None);
+    };
+    if is_expired(&c, now_secs(), id)? {
+        return Ok(None);
+    }
+    Ok(Some(c))
+}
+
 fn remaining_text(claim: &ClaimRecord, now: i64) -> String {
     match parse_utc(&claim.expires) {
         Some(e) if e > now => {
@@ -861,8 +882,32 @@ pub fn run(
 
     // Preconditions first, in the order of §3: no ref is touched by a claim
     // that was never going to be legal.
+    //
+    // **`--criteria` sets an absent criterion and never replaces one** (§4).
+    // §3 gives the flag exactly one job: a task cannot be claimed without a
+    // criterion, and the refusal below names the command that sets it and
+    // claims in the same call. Overwriting silently was a second job nobody
+    // specified, and it was the wrong one — it recorded the correction of a
+    // criterion that had turned out unmeasurable as the claimer's, which is the
+    // shape `criteria_by` exists to expose (TASK-7c2fa14284ff). Correcting an
+    // existing criterion is `amend --criteria`, which the freeze governs on
+    // state: refused while a claim is live, allowed the rest of the time.
     if let Some(c) = inv.value("--criteria") {
         if !c.trim().is_empty() {
+            let carried = task
+                .done_criteria
+                .as_deref()
+                .is_some_and(|existing| !existing.trim().is_empty());
+            if carried {
+                return Err(CliError::new(
+                    6,
+                    format!("{} already carries a done_criteria", task.id),
+                )
+                .with_hint(format!(
+                    "ank amend {} --criteria \"<verifiable criterion>\"",
+                    task.id
+                )));
+            }
             task.done_criteria = Some(ensure_trailing_newline(c));
             task.criteria_by = Some(CriteriaBy::Claimer);
         }
@@ -945,7 +990,10 @@ pub fn run(
     Ok(0)
 }
 
-fn ensure_trailing_newline(text: &str) -> String {
+/// A criterion, normalised for storage. Shared with `amend --criteria`: the two
+/// routes write the same field and have to write it identically, or the corpus
+/// would record which command was used.
+pub fn ensure_trailing_newline(text: &str) -> String {
     if text.ends_with('\n') {
         text.to_string()
     } else {

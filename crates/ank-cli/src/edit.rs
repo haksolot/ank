@@ -22,7 +22,7 @@
 //! the scratch file, because the alternative is a verb that answers a typo by
 //! discarding the twenty minutes that surrounded it.
 
-use crate::claim::{self, Record};
+use crate::claim;
 use crate::cli::{CliError, Invocation, Result};
 use crate::commands::json_string;
 use crate::editor;
@@ -267,14 +267,11 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
 }
 
 /// The hash a live claim anchors `done_criteria` at, if one is in force.
+///
+/// The state test itself lives in `claim::live`, because `amend --criteria`
+/// asks the same question and §4 states the answer once for both.
 fn live_claim_anchor(cwd: &Path, id: &EntityId) -> Result<Option<String>> {
-    let Some(Record::Claim(c)) = claim::read(cwd, id)?.map(|h| h.record) else {
-        return Ok(None);
-    };
-    if claim::is_expired(&c, claim::now_secs(), id)? {
-        return Ok(None);
-    }
-    Ok(Some(c.criteria))
+    Ok(claim::live(cwd, id)?.map(|c| c.criteria))
 }
 
 // ---------------------------------------------------------------------------

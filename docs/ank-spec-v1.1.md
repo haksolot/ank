@@ -27,6 +27,8 @@ Settled relative to v1: orientation and constraints reconciled (§5) · immutabi
 
 Every open point of v1 is settled: GPL-3.0 licence, native Windows in v1, merge driver specified but implemented in v1.1 (§13). `attest` was deferred alongside it and ships in v1: the command was written before a CI ever called it, so what remains deferred is the integration and not the verb (§10).
 
+Additions of revision l: **a criterion that turns out unmeasurable has a route back** (§4) — `amend --criteria` is refused only while a live claim freezes the criterion, which is the state test `edit` already applied without either the specification or `amend` saying so, and it leaves `criteria_by` alone, an amend being no claim · in exchange `claim --criteria` sets an absent criterion and never replaces one (§4), closing the door that recorded a creator's correction as the claimer's — the door `amend` bolted shut was standing open on `claim`, and open to the one party the freeze constrains.
+
 Additions of revision k: **`ank help` is one flat listing** (§4, §9, ADR-c656cbcc33a9, superseding ADR-9ede1ffd04e2) — revision i dissolved the split between an agent surface and a human one and left a layered `help` behind it, whose headings were still named after callers; layering is grouping, and a grouping printed by the binary is a claim about who a verb is for. The order of §4 carries the same information without asserting a category, and the loop stays where it is enforced, in the frozen content of SKILL.md.
 
 Additions of revision j: **the ratification signature is verified and not merely read** (§8, §4) — `check` was comparing the anchor in the ratification commit against the file without asking who signed the commit, so an ordinary unsigned commit whose subject read `ratify <id>` was accepted as a ratification; the four outcomes are specified, an unchecked signature is a signal and never a success, and the layout of `allowed_signers` is documented along with the fact that git enforces it only under `gpg.format = ssh`, OpenPGP leaving the match to `check` itself.
@@ -307,7 +309,7 @@ accept    promotes a proposed ADR to accepted (produces the signed commit, §8, 
           requires the default branch)
 check     mechanical invariants, exit code usable in CI
 close     closes a task that will never be done (--reason mandatory)
-amend     changes `blocked_by` and `scope` on an entity that already exists
+amend     changes `blocked_by`, `scope`, and a `done_criteria` no live claim freezes
 attest    appends a proof to a finished task: the one write §3 allows after `done`
 status    where am I: branch, claim, perimeter, queue, findings
 edit      opens an entity in the editor and validates what comes back
@@ -327,11 +329,19 @@ error[7]: accept requires the default branch (current: feat/opaque-sessions, def
   -> git switch main && ank accept 19d0
 ```
 
-**`amend` covers the two fields a plan actually changes on**, `blocked_by` and `scope`, and covers nothing else. A subtask discovered after a task was filed is a `blocked_by` added to something that already exists; a scope found to omit the files the work must touch is a scope corrected before the task can be claimed at all. Both are ordinary, both were done by hand until this verb existed, and an edit done by hand is indistinguishable in the resulting file from any other edit done by hand — which is the argument that put `attest` on this surface too.
+**`amend` covers the three fields a plan actually changes on**, `blocked_by`, `scope` and `done_criteria`, and covers nothing else. A subtask discovered after a task was filed is a `blocked_by` added to something that already exists; a scope found to omit the files the work must touch is a scope corrected before the task can be claimed at all. Both are ordinary, both were done by hand until this verb existed, and an edit done by hand is indistinguishable in the resulting file from any other edit done by hand — which is the argument that put `attest` on this surface too.
 
-It **adds and removes explicitly** and never takes a replacement list: a verb given the whole list silently drops whatever the caller forgot to repeat. It refuses a `done` or `closed` task, since §3 allows exactly one write after completion and that write is `attest`'s. It refuses the `scope` of an accepted ADR, whose `scope` is hashed into the ratification commit (§8) — changing a ratified decision is a succession, and succession has its own verb. And it refuses `done_criteria` by name rather than by omission, because the flag a caller reaches for deserves the command that actually applies: `release --reason`.
+It **adds and removes explicitly** and never takes a replacement list: a verb given the whole list silently drops whatever the caller forgot to repeat. It refuses a `done` or `closed` task, since §3 allows exactly one write after completion and that write is `attest`'s. And it refuses the `scope` of an accepted ADR, whose `scope` is hashed into the ratification commit (§8) — changing a ratified decision is a succession, and succession has its own verb.
 
 Amending the `scope` of a task under a live claim is **allowed and warned about**. The claim record anchors the hash of the constraints that scope selects (§7), so the change moves what binds the work in progress. Refusing would be wrong — a scope discovered false mid-task is exactly the situation the verb exists for — and allowing it silently would be worse.
+
+**`amend --criteria` is refused while a live claim freezes the criterion, and allowed the rest of the time.** That is the same state test `edit` already applies (below), and stating it once for both is the point: a criterion under no claim is anchored by nothing, so there is no freeze to respect and nothing for `check` to notice. Under a live claim the refusal is code 6 and names `release --reason`, which is what a criterion discovered wrong mid-work actually calls for.
+
+The route exists because a criterion can turn out **unmeasurable rather than wrong**, and that case had no continuation. Measured on this corpus: a task whose criterion ended on a clause about `gh api community/profile` reporting `issue_template`, which is `null` for any repository using an `ISSUE_TEMPLATE/` directory — the layout that task existed to produce (TASK-7c2fa14284ff). The work was finished and correct; the measurement never could be. The release was right and happened, and then the corrected criterion had two ways back in and both were wrong: a hand edit, which the tool exists to make unnecessary, or `claim --criteria`, which recorded a creator's correction as the claimer's.
+
+**`amend` does not touch `criteria_by`.** That field answers one question — was this criterion set at claim time, by the party the freeze constrains (§3) — and an amend is not a claim. Writing `claimer` there for a correction made under no claim would launder the correction into exactly the shape the signal exists to expose; writing `creator` would assert something about the caller, which no refusal and no field here does. What records the amend is the log entry, as it does for `scope` and `blocked_by`.
+
+**`claim --criteria` sets a criterion, and never replaces one.** On a task that already carries one it is refused, code 6, naming `ank amend <id> --criteria`. §3 gives the flag one job — a task cannot be claimed without a criterion, and the refusal for the empty case names the command that sets it and claims in the same call — and silently overwriting an existing one is not that job. It also keeps `criteria_by: claimer` meaning exactly one thing: nobody wrote a criterion for this task before the agent that took it.
 
 Everything else (editing fields, reordering, deleting) goes through **`ank edit`**, which is the paved road rather than a gate: it opens the same file in the same editor and validates what comes back. Below it, the direct edit remains possible, since the format is the specification and the CLI is not a gatekeeper. The actor matters there and is not decoration: ADR-01b6dd05f0db closes `.ank/` to direct reads and writes *by an agent*, and leaves **a human** with an editor every power they had. Written without the subject, that sentence reads as a general permission and hands back what the ADR withdrew.
 
@@ -356,7 +366,7 @@ With the surface no longer a boundary, verbs serving human ergonomics enter it w
 
 **`status`** answers *where am I* in one call: the branch, the active claim and its expiry, the constraints on the current perimeter, the ratification queue, completion refs the default branch has not caught up with (§7), and the corpus findings `check` would report. It **degrades with a warning** rather than failing when there is no remote or no determinable default branch — the parts that need neither are still worth printing. Terse `git status` register, and it ends with the next command to run, like every other output here.
 
-**`edit <id>`** opens the entity in the editor named by `$EDITOR`, validates the result on save, and writes it back in canonical form (§3). **A change to a frozen field is refused by naming the command that legally performs it**: `release --reason` for a `done_criteria` frozen at claim, `new adr --supersedes` for the `constraint` of a ratified ADR. An invalid result leaves the entity untouched and says why, so a mistyped frontmatter costs a re-edit and never a corrupt file. This is the argument that put `amend` and `attest` on this surface, generalised: an edit performed by hand is indistinguishable, in the resulting file, from any other edit performed by hand, and chaperoning it through the tool strengthens the invariants instead of relaxing them.
+**`edit <id>`** opens the entity in the editor named by `$EDITOR`, validates the result on save, and writes it back in canonical form (§3). **A change to a frozen field is refused by naming the command that legally performs it**: `release --reason` for a `done_criteria` frozen at claim, `new adr --supersedes` for the `constraint` of a ratified ADR. Frozen means anchored *now*: a `done_criteria` no live claim covers is not refused here, which is the same state test `amend --criteria` applies above and the reason the two agree by construction rather than by restatement. An invalid result leaves the entity untouched and says why, so a mistyped frontmatter costs a re-edit and never a corrupt file. This is the argument that put `amend` and `attest` on this surface, generalised: an edit performed by hand is indistinguishable, in the resulting file, from any other edit performed by hand, and chaperoning it through the tool strengthens the invariants instead of relaxing them.
 
 **`graph [<path>]`** prints the `blocked_by` DAG in readable text, restricted by an optional path the way `context` is, with `--json` for the raw edges. It **names the perimeter it drew** and says so explicitly when that perimeter holds no task. The ordering of §5 already walks these edges to count what a task unblocks, and this makes the same structure visible to a reader. `show` surfaces the narrow case from the same derivation: on a task it lists what that task **directly unblocks** alongside its blockers, one line each with status. Both are computed from the corpus at read time and stored nowhere — a stored reverse edge is a second copy of `blocked_by` that can disagree with the first.
 
@@ -403,7 +413,7 @@ released TASK-8f3a -> open
 
 ```
 ank context [<path>]        [--json] [--limit N]
-ank claim <id>              [--criteria <c>] [--ttl 30m]
+ank claim <id>              [--criteria <c>: sets an absent one, never replaces] [--ttl 30m]
 ank show <id>
 ank log [<id>] [<message>]  (id alone reads; a message writes)
 ank done [<id>]             [--proof <type>:<ref>]
@@ -418,6 +428,7 @@ ank accept <id>
 ank close <id> --reason <r>
 ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
                             [--scope <glob>...] [--drop-scope <glob>...]
+                            [--criteria <c>]
 ank attest <id> --proof <type>:<ref>
 ank edit <id>
 ank graph [<path>]
