@@ -5,7 +5,7 @@ slug: the-over-constrained-signal-reports-a-budget-it
 title: The over-constrained signal reports a budget it does not test against
 created: 2026-08-11T03:47:37Z
 author: seanl@sean-laptop
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/**
@@ -13,8 +13,12 @@ blocked_by: []
 done_criteria: |
   The over-constrained signal names the threshold it actually applies, so that the number a reader compares against is the number that fired. Verified through the binary: an integration test builds a corpus whose constraints exceed half the configured context_budget without reaching it, runs ank check, and asserts the reported figures are consistent -- the quantity shown and the limit shown stand in the relation the signal tested.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31462037023"
+    criteria: c77967b89e0c
 schema: 2
-version: 1
+version: 5
 ---
 
 `check` reports `over-constrained scope: 5527 characters of constraint against
@@ -36,3 +40,7 @@ Worth fixing beyond tidiness because this signal is noise today. It fires on
 seven tasks in this corpus, every reader who checks it concludes it is
 miscounting, and a signal nobody believes is a signal that hides the next real
 one.
+
+## Log
+- 2026-08-11T05:04:22Z seanl@sean-laptop — No specification change: section 5 already states the rule correctly, over-constrained being constraints alone consuming more than half the budget in execution mode. Only the message lied. The fix is one variable for the threshold tested and the threshold reported, not a rewording -- the test was weight*2 > context_budget and the message printed the budget, so the two numbers came from different places and were free to disagree. Now both come from the same binding and cannot. Integer division is exact here in both directions: weight > b/2 floored and weight*2 > b select the same set, so the threshold moved presentation only. The test parses the two numbers back out of the message and asserts the relation rather than the wording -- a test on a fixed string would have passed on the old message, which was well-formed and wrong. Proven to bite: restoring the old format fails with '301 characters of constraint against a budget of 400'. No existing test asserted the old wording, which is why it survived from revision c.
+- 2026-08-11T05:37:47Z seanl@sean-laptop — done, proof test:31462037023

@@ -780,16 +780,25 @@ fn check_task(
 
     // Over-constrained (§5): constraints alone eating more than half the budget
     // in execution mode. A corpus problem, not a display problem.
+    //
+    // **One variable for the threshold tested and the threshold reported.** It
+    // used to test `weight * 2 > context_budget` and report the budget, so the
+    // message read `5527 characters of constraint against a budget of 8000` --
+    // arithmetic no reader can believe. Every reader who checked it concluded
+    // the tool was miscounting, and one went to the source to find out that the
+    // limit is half of that (TASK-9ff86a0950bf). The two numbers cannot
+    // disagree again while they come from the same binding, which is the fix;
+    // rewording alone would have left the next edit free to separate them.
     if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) {
         if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
             let weight: usize = applicable.iter().map(|(_, c)| c.chars().count()).sum();
-            if weight * 2 > cfg.context_budget {
+            let limit = cfg.context_budget / 2;
+            if weight > limit {
                 report.findings.push(Finding::signal(
                     &t.id,
                     format!(
                         "over-constrained scope: {weight} characters of constraint against a \
-                         budget of {}",
-                        cfg.context_budget
+                         limit of {limit}, half of context_budget"
                     ),
                 ));
             }
