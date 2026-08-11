@@ -5,7 +5,7 @@ slug: ank-help-groups-by-the-moment-a-verb-is-used-and
 title: ank help groups by the moment a verb is used, and hides none
 created: 2026-08-11T22:18:51Z
 author: claude-code@sean-laptop
-status: proposed
+status: accepted
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -32,8 +32,9 @@ constraint: |
   that an agent should run it. The size ceiling stays at most 140 lines and 1200
   words, a ceiling to notice drift, not a target to fill.
 supersedes: ADR-e17e1bbd93ff
+ratified: 7e200c3eee7c
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context

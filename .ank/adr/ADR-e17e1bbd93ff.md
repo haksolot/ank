@@ -5,7 +5,7 @@ slug: the-skill-teaches-planning-as-well-as-the-loop
 title: The skill teaches planning as well as the loop
 created: 2026-08-05T04:03:55Z
 author: seanl@sean-laptop
-status: accepted
+status: superseded
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -28,7 +28,7 @@ constraint: |
 supersedes: ADR-c656cbcc33a9
 ratified: ddcb4b4ec828
 schema: 2
-version: 2
+version: 3
 ---
 
 ## Context
