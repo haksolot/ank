@@ -920,35 +920,19 @@ fn lost_the_race(
 /// reader does not sanitise the coordination plane underneath everyone else,
 /// and concentrating maintenance in one command is what makes its timing
 /// predictable.
-pub fn prune(cwd: &Path, tasks_prefix: &str, default_branch: &str) -> Result<Vec<EntityId>> {
-    let mut pruned = Vec::new();
-    for r in git::ank_refs(cwd)? {
-        let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
-            // Another ank namespace, or an orphan ref whose name is not an
-            // identifier. Not ours to judge here.
-            continue;
-        };
-        let Ok(id) = EntityId::parse(rest) else {
-            continue;
-        };
-        let path = format!("{}/{id}.md", tasks_prefix.trim_end_matches('/'));
-        let Some(text) = git::file_at(cwd, default_branch, &path)? else {
-            // Absent from the default branch: this is precisely the unmerged
-            // case the ref exists for.
-            continue;
-        };
-        // A file that does not parse settles nothing, so it prunes nothing;
-        // reporting it is `check`'s job, not maintenance's.
-        let Ok(Entity::Task(t)) = ank_core::parse_entity(&text) else {
-            continue;
-        };
-        if matches!(t.status, TaskStatus::Done | TaskStatus::Closed) {
-            delete(cwd, &id)?;
-            pruned.push(id);
-        }
-    }
-    Ok(pruned)
-}
+// The predicate itself lives in `human::maintain`, which is what `check` runs.
+// A second implementation stood here for a long time, documented as "called by
+// check" and called by nothing outside its own tests (TASK-4981a1370c0b): two
+// copies of the rule that decides when a coordination ref disappears, and the
+// unexercised one free to drift from the one that runs. It was already the
+// weaker copy — it had never learned, as `maintain` did from
+// TASK-52fbffbfdf65, to ask the default branch whether a task exists before
+// treating its ref as an orphan, because a checkout older than a task sees no
+// such task and used to delete a claim another worktree was holding.
+//
+// What a wrong pruning decision costs is a lost claim, which is a task two
+// agents can hold at once. That is why the duplication was worth removing
+// rather than tidying.
 
 // ---------------------------------------------------------------------------
 // The verb
@@ -1232,7 +1216,7 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ank_core::{serialize_entity, Adr, Proof};
+    use ank_core::{serialize_entity, Adr};
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1787,71 +1771,14 @@ mod tests {
     // Pruning
     // -----------------------------------------------------------------------
 
-    #[test]
-    fn pruning_follows_the_default_branch_and_never_the_working_tree() {
-        let t = Temp::new_repo();
-        let mut task = open_task("000000000001");
-        t.seed(&task);
-        t.commit_all("seed");
-        take(&t, &task, "claude-code@ank", DEFAULT_TTL).unwrap();
-        complete(&t.0, &task.id, "claude-code@ank").unwrap();
-
-        // The working tree says done; the branch does not yet. This is the
-        // unmerged case, and pruning here would reopen the window.
-        task.status = TaskStatus::Done;
-        task.proof = vec![Proof {
-            proof_type: ank_core::ProofType::Commit,
-            reference: "0123456".into(),
-            tree: None,
-            criteria: None,
-            verifier: None,
-        }];
-        t.seed(&task);
-        assert_eq!(
-            prune(&t.0, ".ank/tasks", "main").unwrap(),
-            vec![],
-            "the tree is not the branch"
-        );
-        assert!(read(&t.0, &task.id).unwrap().is_some());
-
-        // Once the branch carries it, the ref has no further use.
-        t.commit_all("done");
-        assert_eq!(
-            prune(&t.0, ".ank/tasks", "main").unwrap(),
-            vec![task.id.clone()]
-        );
-        assert!(read(&t.0, &task.id).unwrap().is_none());
-    }
-
-    #[test]
-    fn pruning_covers_closed_and_leaves_everything_else_alone() {
-        let t = Temp::new_repo();
-        let mut closed = open_task("000000000001");
-        let live = open_task("00000000ffff");
-        t.seed(&closed);
-        t.seed(&live);
-        t.commit_all("seed");
-
-        take(&t, &closed, "claude-code@ank", DEFAULT_TTL).unwrap();
-        take(&t, &live, "codex@host-9", DEFAULT_TTL).unwrap();
-
-        closed.status = TaskStatus::Closed;
-        t.seed(&closed);
-        t.commit_all("closed");
-
-        assert_eq!(prune(&t.0, ".ank/tasks", "main").unwrap(), vec![closed.id]);
-        assert!(
-            read(&t.0, &live.id).unwrap().is_some(),
-            "an open task's claim is not maintenance's business"
-        );
-
-        // A task absent from the default branch is exactly the unmerged case.
-        let unmerged = open_task("00000000aaaa");
-        t.seed(&unmerged);
-        take(&t, &unmerged, "claude-code@ank", DEFAULT_TTL).unwrap();
-        assert_eq!(prune(&t.0, ".ank/tasks", "main").unwrap(), vec![]);
-        assert!(read(&t.0, &unmerged.id).unwrap().is_some());
-    }
+    // The two tests that stood here exercised the second copy of the pruning
+    // predicate, and went with it (TASK-4981a1370c0b). Every case they covered
+    // is asserted against the predicate that actually runs, in `human`'s tests:
+    // `the_tree_saying_done_is_not_the_branch_saying_done` for the branch
+    // against the working tree, and
+    // `closed_prunes_like_done_and_the_rest_is_left_alone` for `closed`, for an
+    // open task's live claim, and for a task the default branch has never
+    // carried. The one below stays: it is about `claim`, not about pruning.
 
     #[test]
     fn claiming_never_prunes() {
