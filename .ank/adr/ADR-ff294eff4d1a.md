@@ -5,7 +5,7 @@ slug: the-log-is-a-file-of-its-own-and-a-task-file-cha
 title: The log is a file of its own, and a task file changes only on a transition
 created: 2026-08-11T22:17:16Z
 author: claude-code@sean-laptop
-status: proposed
+status: accepted
 scope:
   - crates/ank-core/**
   - crates/ank-cli/**
@@ -24,8 +24,9 @@ constraint: |
   
   Any entity kind may carry a log. A missing log file means no entry, never an
   error.
+ratified: 79b697b2f062
 schema: 2
-version: 1
+version: 2
 ---
 
 ## Context
