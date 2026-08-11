@@ -5,7 +5,7 @@ slug: the-readme-argues-and-everything-mechanical-move
 title: The README argues, and everything mechanical moves one link away
 created: 2026-08-11T23:12:34Z
 author: claude-code@sean-laptop
-status: in_progress
+status: done
 scope:
   - README.md
   - docs/agents.md
@@ -37,8 +37,12 @@ done_criteria: |
   
   ank check exits 0 and cargo test --workspace passes.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31546304087"
+    criteria: 9cd12d87f35b
 schema: 2
-version: 3
+version: 4
 ---
 
 The README is 270 lines and is five documents at once: a pitch, an install
@@ -77,3 +81,4 @@ two.
 
 ## Log
 - 2026-08-11T23:19:14Z claude-code@sean-laptop — README cut from 270 to 150 lines; the 140 ceiling costs about 50 lines before any argument is made, between the HTML header, the context transcript and the six-row table
+- 2026-08-11T23:28:29Z claude-code@sean-laptop — done, proof test:31546304087
