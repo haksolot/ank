@@ -7,16 +7,14 @@ behind one CLI any coding agent can call.
     npm install -g @haksolot/ank
 
 The binary travels inside the package: nothing is downloaded at install time, so
-this channel works where fetching a bare executable does not. ank needs **git
-2.34 or newer**, and checks at startup.
+this channel works where fetching a bare executable does not. It covers
+`linux x64`, `darwin arm64` and `win32 x64`; on any other platform the wrapper
+exits 9 and names `cargo install`. ank needs **git 2.34 or newer**.
 
-    ank init                      # creates .ank/, once
-    ank context                   # what binds here, and what is free to take
-    ank claim <id>                # takes the task, freezes its criterion by hash
-    ank log "<what you learned>"  # renews the claim; working is what holds it
-    ank done                      # runs the verifiers itself and writes the proof
+This package carries the CLI. The skill an agent loads is a separate install, and
+[the documentation](https://github.com/haksolot/ank) covers both, along with the
+specification and the source.
 
-Documentation, the specification and the source are at
-<https://github.com/haksolot/ank>. GPL-3.0 — the copyleft covers the tool's
-code, not the format: your `.ank/` files, and the third-party tools that read or
-write them, are not derivative works.
+GPL-3.0 — the copyleft covers the tool's code, not the format: your `.ank/`
+files, and the third-party tools that read or write them, are not derivative
+works.
