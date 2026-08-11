@@ -2614,6 +2614,70 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     let _ = std::fs::remove_dir_all(&named);
 }
 
+/// A second live claim on one identity stays visible after the moment it was
+/// taken.
+///
+/// `claim` names it once, at acquisition, and never again. A convention that
+/// announces itself only when it is taken fades exactly as a session lengthens,
+/// and `status` is the verb a session runs when it has lost track — which is
+/// how two sessions in one tree, both with `ANK_AGENT` unset, read as one agent
+/// and produced a release taken on a misread (TASK-38b384543551).
+///
+/// Asserted on what reaches stdout, because a warning that never reaches stdout
+/// is not a warning.
+#[test]
+fn status_names_every_live_claim_of_this_identity() {
+    let r = Repo::new();
+    const SECOND: &str = "TASK-000000000002";
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_task(SECOND, Some("Another verifiable criterion."));
+
+    // One identity, two claims. Not refused, and deliberately so: one claim at
+    // a time is a convention, and parallel agents with distinct identities are
+    // the design.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["claim", SECOND]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("already holds"),
+        "the acquisition still says it: {said}"
+    );
+
+    // The moment passes; the state does not.
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    let other = said
+        .lines()
+        .filter(|l| l.contains(ID) || l.contains(SECOND))
+        .count();
+    assert!(
+        other >= 2,
+        "status names one claim and hides the other:\n{said}"
+    );
+    assert!(
+        said.contains("ANK_AGENT"),
+        "status must repeat the way out claim already names:\n{said}"
+    );
+
+    // The same information for a caller that scripts around it -- which is
+    // exactly the caller running several sessions.
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(json.contains("\"also_held\""), "{json}");
+    assert!(
+        json.contains(SECOND) || json.contains(ID),
+        "the second claim is absent from --json:\n{json}"
+    );
+
+    // And one identity holding one claim says none of it: the line exists to
+    // report a state, not to decorate every status.
+    let quiet = Repo::new();
+    quiet.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&quiet.ank("claude-code@ank", &["claim", ID])), 0);
+    let said = stdout(&quiet.ank("claude-code@ank", &["status"]));
+    assert!(!said.contains("ANK_AGENT"), "{said}");
+    assert!(!said.contains("also"), "{said}");
+}
+
 /// A holder returning to a lapsed claim carries on; one whose task was taken
 /// over is told by whom.
 ///

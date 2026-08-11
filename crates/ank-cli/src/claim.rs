@@ -303,6 +303,16 @@ pub fn parse_record(text: &str, id: &EntityId) -> Result<Record> {
 /// warning, and a reader of other people's refs does not get to fail the write
 /// it accompanies. `acquire` is the one that reads the ref it is about to
 /// touch, and it is right to call the same damage a hard error.
+/// The one sentence that says how to stop sharing an identity.
+///
+/// **Written once and said by both places that raise the case.** `claim` says it
+/// at acquisition and `status` says it whenever the state persists
+/// (TASK-38b384543551); two copies of a way out are two chances to name a
+/// different variable, and the variable is the whole content of the advice.
+pub fn way_out() -> String {
+    format!("a second session on this machine sets its own {ENV_AGENT}")
+}
+
 pub fn live_claims_of(
     cwd: &Path,
     identity: &str,
@@ -1038,10 +1048,7 @@ pub fn run(
     let warnings: Vec<String> = also_held
         .iter()
         .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
-        .chain(
-            (!also_held.is_empty())
-                .then(|| format!("a second session on this machine sets its own {ENV_AGENT}")),
-        )
+        .chain((!also_held.is_empty()).then(way_out))
         .collect();
 
     if inv.json() {

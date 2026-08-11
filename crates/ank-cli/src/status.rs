@@ -67,6 +67,25 @@ pub fn run(
             .map(|r| (r, record.expires.clone()))
     });
 
+    // **Every live claim of this identity, not only the one binding the
+    // perimeter** (TASK-38b384543551). `claim` names a second one at the moment
+    // it is taken and never again, and a convention that announces itself only
+    // when it is taken fades exactly as a session lengthens. `status` is the
+    // verb a session runs when it has lost track, so it is the second occasion
+    // the tool never had — two sessions in one tree, both with ANK_AGENT unset,
+    // read as one agent, and the misread that followed cost a release taken for
+    // no reason on 2026-08-08.
+    //
+    // Still a warning and never a refusal: one claim at a time is a convention,
+    // parallel agents with distinct identities are the design (§7), and the
+    // case worth naming is the one where they are not.
+    let also_held = match &standing {
+        Some(s) => {
+            crate::claim::live_claims_of(&repo.root, identity, &s.id, crate::claim::now_secs())?
+        }
+        None => Vec::new(),
+    };
+
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
     let report = human::inspect(repo, cfg, None, false)?;
@@ -113,13 +132,23 @@ pub fn run(
             ),
             None => "null".into(),
         };
+        // The same information, not a shorter version of it: a caller that
+        // scripts around `status` is exactly the caller running several
+        // sessions, and a field the human surface has and this one lacks would
+        // hide the case from the reader most likely to cause it.
+        let also_json: Vec<String> = also_held
+            .iter()
+            .map(|(id, c)| format!("{{\"id\":\"{id}\",\"expires\":\"{}\"}}", c.expires))
+            .collect();
         let _ = writeln!(
             out,
             "{{\"branch\":{},\"default_branch\":{},\"claim\":{claim_json},\
+             \"also_held\":[{}],\
              \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
              \"faults\":{},\"signals\":{}}}",
             opt_json(branch.as_deref()),
             opt_json(default.as_ref().ok().map(|s| s.as_str())),
+            also_json.join(","),
             report.faults(),
             report.signals()
         );
@@ -166,6 +195,7 @@ pub fn run(
                 task.title
             );
             let _ = writeln!(out, "  {} {}", style.key("expires"), expiry(expires));
+            also_claimed(out, &also_held, &style);
         }
         // A held claim whose task the index has lost would print nothing at
         // all, so the ref is reported on its own rather than dropped.
@@ -183,6 +213,7 @@ pub fn run(
                     style.key("expires"),
                     expiry(&record.expires)
                 );
+                also_claimed(out, &also_held, &style);
             }
             None => {
                 let _ = writeln!(out, "{}", style.key("no claim"));
@@ -227,6 +258,37 @@ pub fn run(
     };
     let _ = writeln!(out, "\n{}", style.next(&format!("> {next}")));
     Ok(0)
+}
+
+/// The other live claims this identity holds, under the one binding the
+/// perimeter.
+///
+/// Indented with the expiry it sits beside, because it qualifies the claim line
+/// above rather than opening a section: `status` has no headings, and a second
+/// column of keys would be one. The way out is `claim`'s own sentence, taken
+/// from `claim::way_out` rather than restated (TASK-38b384543551).
+///
+/// Plain text either way. What is said here is a state a reader must be able to
+/// act on, so none of it is carried by colour (ADR-0c8ab846d262) — the same
+/// bytes reach a terminal and a pipe.
+fn also_claimed(
+    out: &mut dyn Write,
+    also: &[(ank_core::EntityId, crate::claim::ClaimRecord)],
+    style: &crate::style::Style,
+) {
+    if also.is_empty() {
+        return;
+    }
+    for (id, record) in also {
+        let _ = writeln!(
+            out,
+            "  {} {} until {}",
+            style.key("also"),
+            style.id(&id.to_string()),
+            record.expires
+        );
+    }
+    let _ = writeln!(out, "  {}", crate::claim::way_out());
 }
 
 /// The directory a glob is anchored at — `crates/ank-cli/**` gives
