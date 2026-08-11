@@ -275,7 +275,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "claim",
-        summary: "takes the task and freezes its done_criteria by hash",
+        summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
@@ -302,7 +302,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "log",
-        summary: "an id alone reads the log; an id and a message appends one and renews the claim",
+        summary: "an id alone reads the log; an id and a message appends one and renews the claim, which needs holding it",
         subcommands: &[],
         max_positionals: 2,
         // Both optional, and what is given decides which of the two things the
@@ -316,7 +316,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "done",
-        summary: "runs the declared verifiers, records what ran, and moves the task to done",
+        summary: "runs the declared verifiers, records what ran, and moves the task to done; needs the claim, and a proof if nothing is declared",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
@@ -406,7 +406,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "accept",
-        summary: "promotes a proposed ADR to accepted, through a signed ratification commit",
+        summary: "promotes a proposed ADR to accepted, through a signed ratification commit; on the default branch only",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
@@ -425,7 +425,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "close",
-        summary: "closes a task that will never be done",
+        summary: "closes a task that will never be done; --reason is mandatory",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
@@ -561,7 +561,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "init",
-        summary: "creates .ank/, writes config.yml, and adds the refs/ank/* refspec",
+        summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
@@ -898,9 +898,9 @@ pub fn usage(spec: &CommandSpec) -> String {
 ///
 /// `with_short` is what separates the two surfaces of §9. `ank help <verb>`
 /// shows both forms, since that is the call made to learn one verb precisely.
-/// The flat listing does not, and stays byte for byte what it was: it buys its
-/// token economy by being short, and spending it on a second spelling of every
-/// flag would spend exactly what the split saves.
+/// The flat listing shows neither: it carries a description per verb and sends
+/// the flags here, which is the split, and printing a second spelling of every
+/// flag in an overview would spend exactly what the split saves.
 fn flag_display(f: &FlagSpec, with_short: bool) -> String {
     let name = match short_of(f.name) {
         Some(c) if with_short => format!("-{c}, {}", f.name),
@@ -913,15 +913,45 @@ fn flag_display(f: &FlagSpec, with_short: bool) -> String {
     }
 }
 
-/// Bare names, for the general listing. §9 buys its token economy by keeping the
-/// overview short and sending the detail to `ank help <verb>`; spelling out every
-/// value placeholder in the listing would spend exactly what the split saves.
-fn flag_names(spec: &CommandSpec) -> String {
-    listed_flags(spec)
+/// The description, folded to the listing's width and indented under itself.
+///
+/// **One string, printed by both surfaces** (§9). The listing shows
+/// `spec.summary` and so does `ank help <verb>`, which is what makes the
+/// overview a compression rather than a second text: two strings would be two
+/// things to keep true, and the one that drifts is the one nobody reads twice.
+/// That drift is exactly how `amend` came to advertise a criterion edit the
+/// binary refused always (TASK-84cfad83c308).
+///
+/// Folded on words and never mid-word, at a width that leaves the whole line
+/// inside 100 columns. A description too long to fit is folded rather than cut:
+/// truncation would put the clause a verb refuses on — always the tail of the
+/// sentence — exactly where it disappears.
+fn wrapped_summary(summary: &str, indent: usize, width: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in summary.split_whitespace() {
+        if !line.is_empty() && line.len() + 1 + word.len() > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
         .into_iter()
-        .map(|f| f.name)
-        .collect::<Vec<_>>()
-        .join(" ")
+        .enumerate()
+        .map(|(i, l)| {
+            if i == 0 {
+                l
+            } else {
+                format!("{:indent$}{l}", "")
+            }
+        })
+        .collect()
 }
 
 /// The flags `help` offers, which is not every flag the parser accepts (§9).
@@ -1081,20 +1111,40 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
         return Ok(0);
     }
 
-    // One column for the usage, so the flags line up and the shape of the
-    // surface is readable at a glance rather than one verb at a time.
+    // One column for the usage, so the descriptions line up and the shape of
+    // the surface is readable at a glance rather than one verb at a time.
+    //
+    // **The description takes the place of the flag names** (§9). They used to
+    // sit here, which is the shape that says what none of them does: a bare
+    // `--criteria` beside `amend` names a flag without saying what the verb is
+    // for, and a caller choosing between twenty-one verbs was choosing on the
+    // usage line alone. They are one `ank help <verb>` away, with their value
+    // placeholders and the refusals that qualify them, and the trailer below
+    // says so rather than leaving the reader to discover it.
     let width = COMMANDS.iter().map(|c| usage(c).len()).max().unwrap_or(0);
+    let indent = width + 2;
     for spec in COMMANDS {
-        let names = flag_names(spec);
-        if names.is_empty() {
+        if spec.summary.is_empty() {
             let _ = writeln!(out, "{}", usage(spec));
-        } else {
-            let _ = writeln!(out, "{:width$}  {names}", usage(spec));
+            continue;
+        }
+        for (i, line) in wrapped_summary(spec.summary, indent, 98 - indent)
+            .into_iter()
+            .enumerate()
+        {
+            if i == 0 {
+                let _ = writeln!(out, "{:width$}  {line}", usage(spec));
+            } else {
+                let _ = writeln!(out, "{line}");
+            }
         }
     }
     let all: Vec<&FlagSpec> = GLOBAL_FLAGS.iter().collect();
     let _ = writeln!(out, "\nglobal: {}", globals_line(&all, false));
-    let _ = writeln!(out, "ank help <verb> for one verb");
+    let _ = writeln!(
+        out,
+        "ank help <verb> for one verb: its flags, and what it refuses"
+    );
     // A trailing pointer, beside the one above it and in the same shape: not a
     // heading and not a grouping, so the flat listing ADR-c656cbcc33a9 requires
     // is untouched. A flag nobody can discover answers nobody's question.
@@ -1557,17 +1607,39 @@ mod tests {
         // Walks COMMANDS rather than a written-out list: a verb added later
         // that the renderer forgets fails here, which is the whole reason the
         // listing is derived from the table instead of maintained beside it.
+        //
+        // The flags are asserted on the per-verb page and no longer in the
+        // listing, which is where they moved when the description took their
+        // place (§9, TASK-fe130d2b732c). The guarantee is unchanged — a flag
+        // the renderer forgets still fails here — and it now watches the
+        // surface that actually carries them, with their value placeholders.
         let text = help_out(&["help"]);
+        // Whitespace collapsed, because a description too long for the column
+        // is folded across lines: the fold is presentation, and asserting on
+        // the text means asserting on the words rather than on where they broke.
+        let flowed = text.split_whitespace().collect::<Vec<_>>().join(" ");
         for spec in COMMANDS {
             assert!(
                 text.contains(&usage(spec)),
                 "{} missing from the listing:\n{text}",
                 spec.name
             );
-            for f in spec.flags {
+            assert!(
+                flowed.contains(
+                    &spec
+                        .summary
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ),
+                "{} is listed without its description:\n{text}",
+                spec.name
+            );
+            let page = help_out(&["help", spec.name]);
+            for f in listed_flags(spec) {
                 assert!(
-                    text.contains(f.name),
-                    "{} of {} missing:\n{text}",
+                    page.contains(f.name),
+                    "{} of {} missing from its page:\n{page}",
                     f.name,
                     spec.name
                 );

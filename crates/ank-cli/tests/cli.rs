@@ -2569,6 +2569,93 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     let _ = std::fs::remove_dir_all(&named);
 }
 
+/// The listing describes every verb, and never as doing what it refuses.
+///
+/// Both surfaces through the binary, because the defect this guards against is
+/// a disagreement *between* them: the flat listing is read fastest and checked
+/// least, and `amend` advertised a criterion edit the binary refused always
+/// (TASK-84cfad83c308). Two assertions, and the first is what makes the second
+/// hold for good — the description in the listing is the same string the verb's
+/// own page prints, so there is one text to keep true rather than two.
+#[test]
+fn the_listing_describes_each_verb_as_its_own_help_does() {
+    let listing = stdout(&ank_command().arg("help").output().unwrap());
+
+    // The listing's descriptions, folded lines rejoined. A line beginning with
+    // `ank ` opens a verb; an indented one continues the description above it.
+    let mut described: Vec<(String, String)> = Vec::new();
+    for line in listing.lines().take_while(|l| !l.trim().is_empty()) {
+        match line.strip_prefix("ank ") {
+            Some(rest) => {
+                let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
+                let desc = rest
+                    .split_once("  ")
+                    .map(|(_, d)| d.trim().to_string())
+                    .unwrap_or_default();
+                described.push((verb, desc));
+            }
+            None => {
+                let (_, desc) = described
+                    .last_mut()
+                    .expect("a continuation before any verb");
+                desc.push(' ');
+                desc.push_str(line.trim());
+            }
+        }
+    }
+    assert!(
+        described.len() > 15,
+        "the listing was not parsed: {listing}"
+    );
+
+    for (verb, desc) in described {
+        assert!(
+            !desc.is_empty(),
+            "`ank {verb}` is listed with no description: the listing names every \
+             verb and must say what each one does"
+        );
+
+        let page = stdout(&ank_command().args(["help", &verb]).output().unwrap());
+        let mut lines = page.lines();
+        lines.next();
+        let summary = lines.next().unwrap_or("").trim();
+
+        // One string, two surfaces. A listing that paraphrased the page would
+        // be a second text, and the one that drifts is the one nobody rereads.
+        assert_eq!(
+            desc, summary,
+            "the listing and `ank help {verb}` describe the verb differently"
+        );
+
+        // What the page offers, and what it says the verb refuses.
+        let labelled = |label: &str| -> String {
+            page.lines()
+                .skip(2)
+                .filter(|l| l.trim_start().starts_with(label))
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let offered = format!("{} {}", labelled("flags:"), labelled("global:"));
+
+        // Every flag a description names is one the verb offers, or one it
+        // names as refused. `refuses --repo` is honest; naming a flag the verb
+        // rejects as though it were on offer is the defect.
+        for (i, word) in desc.split_whitespace().enumerate() {
+            let name = word.trim_end_matches(|c: char| !c.is_ascii_alphanumeric());
+            if !name.starts_with("--") {
+                continue;
+            }
+            let as_refusal = i > 0 && desc.split_whitespace().nth(i - 1) == Some("refuses");
+            assert!(
+                offered.contains(name) || as_refusal,
+                "`ank {verb}` is described with {name}, which it does not offer:\n\
+                 description: {desc}\n\
+                 offered:     {offered}"
+            );
+        }
+    }
+}
+
 /// A flag the verb rejects by design is in the refusals and not in the offer
 /// (§9), and being global is not an exemption.
 ///
@@ -3661,17 +3748,38 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
         text.starts_with("ank context"),
         "a title or a heading precedes the first verb:\n{text}"
     );
-    // And the flags each verb takes, which is the part §9 keeps out of
-    // SKILL.md.
-    for flag in [
-        "--limit",
-        "--criteria",
-        "--ttl",
-        "--proof",
-        "--reason",
-        "--scope",
+    // And a description beside each verb, which is what the listing says that
+    // a bare flag name never did (§9, TASK-fe130d2b732c).
+    for said in [
+        "what binds this perimeter",
+        "freezes its done_criteria by hash",
+        "runs the declared verifiers",
     ] {
-        assert!(text.contains(flag), "{flag} missing:\n{text}");
+        assert!(text.contains(said), "{said:?} missing:\n{text}");
+    }
+
+    // The flags each verb takes are the part §9 keeps out of SKILL.md, and
+    // they moved to the per-verb page when the description took their place.
+    // Fetched from nowhere too: what is under test is that none of this needs
+    // a repository.
+    let page = |verb: &str| -> String {
+        let out = help_from_nowhere(&["help", verb]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    for (verb, flag) in [
+        ("context", "--limit"),
+        ("claim", "--ttl"),
+        ("claim", "--criteria"),
+        ("done", "--proof"),
+        ("release", "--reason"),
+        ("new", "--scope"),
+    ] {
+        let p = page(verb);
+        assert!(
+            p.contains(flag),
+            "{flag} missing from ank help {verb}:\n{p}"
+        );
     }
     assert!(text.contains("--json"), "{text}");
 }
@@ -5087,25 +5195,34 @@ fn surface() -> Vec<(String, String, Vec<String>)> {
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let mut rows = Vec::new();
     for line in text.lines().take_while(|l| !l.trim().is_empty()) {
-        // The listing is `<usage>` padded, then the flag names. No usage
-        // contains a double dash, so the first `  --` is the boundary.
-        let (usage, flags) = match line.find("  --") {
-            Some(i) => (&line[..i], &line[i..]),
-            None => (line, ""),
+        // The listing is `<usage>` padded, then the description. Its folded
+        // continuation lines are indented and open no verb (TASK-fe130d2b732c).
+        let Some(rest) = line.strip_prefix("ank ") else {
+            continue;
         };
-        let usage = usage.trim().to_string();
-        let verb = usage
-            .strip_prefix("ank ")
-            .unwrap_or_default()
-            .chars()
-            .take_while(char::is_ascii_lowercase)
-            .collect::<String>();
+        let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
         assert!(!verb.is_empty(), "unparseable listing line: {line}");
-        rows.push((
-            verb,
-            usage,
-            flags.split_whitespace().map(|s| s.to_string()).collect(),
-        ));
+        let usage = match rest.find("  ") {
+            Some(i) => format!("ank {}", &rest[..i]),
+            None => format!("ank {rest}"),
+        };
+
+        // The flags come from the verb's own page, which is where they live
+        // now that the description has their place in the listing. The `flags:`
+        // line only: the globals have a line of their own, as they did here.
+        let page = stdout(&ank_command().args(["help", &verb]).output().unwrap());
+        let flags: Vec<String> = page
+            .lines()
+            .find(|l| l.trim_start().starts_with("flags:"))
+            .unwrap_or("")
+            .split_whitespace()
+            .filter(|w| w.starts_with("--"))
+            .map(|w| {
+                w.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+                    .to_string()
+            })
+            .collect();
+        rows.push((verb, usage.trim().to_string(), flags));
     }
     assert!(!rows.is_empty(), "ank help printed no verb");
     rows
