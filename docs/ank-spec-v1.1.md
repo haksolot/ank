@@ -838,6 +838,12 @@ The single most decisive point for real use. A `context` that explodes on a larg
 
 Same command, output driven by HEAD. Nothing more for the agent to memorise, and most of the useless context disappears.
 
+**What a holder sees of the coordination plane: nothing, and `status` is where the question belongs.** The markers `[claimed:holder]` and `[finished:<sha> on <branch>]` are orientation's, and execution mode carries no listing for them to sit on. That is deliberate rather than incidental. Execution mode exists to remove choice — it is why it drops every other task — and a list of what other agents hold is choice-shaped: it invites the one thing the mode is built to prevent, an agent shopping for work it has not finished. The end-of-loop line does name holders (`1 in progress by codex@host-9`), and it belongs to orientation for the same reason: it is what an agent reads when it has nothing to do.
+
+The information is not withheld, it is relocated. **`ank status` names every live claim in the repository, the caller's own and the other agents'**, with the holder and the expiry. `status` is off the loop, costs nothing to skip, and is what an agent runs when it wants to know where things stand rather than what to do next — the same argument that put a second claim of one identity there rather than in `context` (§7, TASK-38b384543551). It says so even when there is nothing to say, because silence and "this verb does not answer that" read identically.
+
+What a holder can do with the answer is smaller than it looks, and that bounds how much either verb owes it. At level 0 the claim refs are shared within the clone, so two agents cannot hold one task: `claim` refuses with code 4 and names the holder. A holder reading that another agent is on another task therefore learns something true and acts on none of it — which is exactly why the reporting verb is the right home and the working verb is not. When claims are pushed (level 1, §7), two clones arbitrate and the answer becomes worth more; nothing here has to change for that, because it is already a question `status` answers.
+
 ```
 $ ank context src/auth/
 
