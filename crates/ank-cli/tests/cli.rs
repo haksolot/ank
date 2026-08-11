@@ -2569,6 +2569,87 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     let _ = std::fs::remove_dir_all(&named);
 }
 
+/// The over-constrained signal reports the threshold it actually applied.
+///
+/// The two numbers are parsed back out of the message and compared, which is
+/// the only assertion that catches the defect: the signal used to report the
+/// budget while testing half of it, so `check` said `5527 characters of
+/// constraint against a budget of 8000` and every reader who checked the
+/// arithmetic concluded the tool was miscounting (TASK-9ff86a0950bf). A test
+/// asserting a fixed wording would have passed on that message.
+///
+/// The corpus is built to land in the gap the defect lived in: over half the
+/// budget, under the budget. Anywhere else the two readings agree.
+#[test]
+fn the_over_constrained_signal_reports_the_limit_it_tested() {
+    let r = Repo::new();
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    // 300 characters: over the 200 that half of 400 allows, and well under 400.
+    let rule = "x".repeat(300);
+    r.seed_adr("ADR-0000000000ab", &rule, "src/**");
+    let accepted = r
+        .adr_text("ADR-0000000000ab")
+        .replace("status: proposed", "status: accepted");
+    std::fs::write(r.0.join(".ank/adr/ADR-0000000000ab.md"), accepted).unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    let line = said
+        .lines()
+        .find(|l| l.contains("over-constrained"))
+        .unwrap_or_else(|| panic!("the signal did not fire on a corpus built to trip it:\n{said}"));
+
+    // From the message alone: the subject is an id, and an id is full of digits.
+    let message = line
+        .split_once("over-constrained scope:")
+        .expect("the line was found by that needle")
+        .1;
+    let numbers: Vec<usize> = message
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|w| !w.is_empty())
+        .map(|w| w.parse().unwrap())
+        .collect();
+    assert_eq!(
+        numbers.len(),
+        2,
+        "the signal must name the quantity and the limit, and nothing else \
+         numeric: {line}"
+    );
+    let (quantity, limit) = (numbers[0], numbers[1]);
+    assert!(
+        quantity > limit,
+        "the signal fired while reporting a limit the quantity does not exceed, \
+         which is arithmetic no reader can believe: {line}"
+    );
+    // The constraint as stored carries its trailing newline, so the count is
+    // the 300 written plus it.
+    assert_eq!(quantity, 301, "{line}");
+    assert_eq!(limit, 200, "half of the configured budget: {line}");
+
+    // And it stays silent just under the threshold, so the assertion above is
+    // about the reported figures and not about a signal that always fires.
+    let quiet = Repo::new();
+    quiet.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n");
+    quiet.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(quiet.0.join("src")).unwrap();
+    std::fs::write(quiet.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    quiet.seed_adr("ADR-0000000000ab", &"x".repeat(150), "src/**");
+    let accepted = quiet
+        .adr_text("ADR-0000000000ab")
+        .replace("status: proposed", "status: accepted");
+    std::fs::write(quiet.0.join(".ank/adr/ADR-0000000000ab.md"), accepted).unwrap();
+    let out = quiet.ank("claude-code@ank", &["check"]);
+    assert!(
+        !stdout(&out).contains("over-constrained"),
+        "{}",
+        stdout(&out)
+    );
+}
+
 /// A renewal reuses the lease the claim was granted, and re-caps it.
 ///
 /// Through the binary and against the ref itself, because the lease is a fact
