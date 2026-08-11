@@ -4,7 +4,7 @@ type: adr
 slug: git-plumbing-by-criterion
 title: git stays a hard dependency, and the allowed plumbing is defined by a criterion
 created: 2026-07-29T10:40:00Z
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
 constraint: |
@@ -19,7 +19,7 @@ constraint: |
 supersedes: ADR-92b9cda9f6a9
 ratified: a62aacef2111
 schema: 1
-version: 3
+version: 4
 ---
 
 Replaces ADR-92b9cda9f6a9 without changing its substance: git stays a hard
