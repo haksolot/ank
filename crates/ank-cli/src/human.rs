@@ -3451,6 +3451,83 @@ mod tests {
         assert!(claim::read(&t.0, &id).unwrap().is_none());
     }
 
+    /// The predicate is the file **as the default branch carries it**, and the
+    /// working tree is not the branch (ADR-bcf222a31525).
+    ///
+    /// The sharp half, and the one that decides whether the mechanism works at
+    /// all: `done` writes to the working tree, so between the work and the
+    /// merge the tree says `done` while the branch does not. Pruning there
+    /// would reopen the exact window the completion ref exists to close, in the
+    /// exact situation it exists for.
+    ///
+    /// Carried over from `claim::prune`'s own tests when that second copy of
+    /// the predicate was deleted (TASK-4981a1370c0b). The rule had two
+    /// implementations and this half was only ever asserted against the one
+    /// nothing called.
+    #[test]
+    fn the_tree_saying_done_is_not_the_branch_saying_done() {
+        let t = Temp::new();
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.write(&task("000000000001", TaskStatus::InProgress, &[]));
+        t.commit("seed");
+        t.claim_as(&id, "codex@host-9", "A verifiable criterion.\n");
+        claim::complete(&t.0, &id, "codex@host-9").unwrap();
+
+        // The tree says done. The branch has not been told.
+        t.write(&task("000000000001", TaskStatus::Done, &[]));
+        let r = inspect(&t.repo(), &t.cfg(), None, true).unwrap();
+        assert!(
+            r.pruned.is_empty(),
+            "the tree is not the branch: {:?}",
+            r.pruned
+        );
+        assert!(claim::read(&t.0, &id).unwrap().is_some());
+
+        // Committing is what makes it true for everybody else.
+        t.commit("done");
+        let r = inspect(&t.repo(), &t.cfg(), None, true).unwrap();
+        assert_eq!(r.pruned.len(), 1, "{:?}", r.pruned);
+        assert!(claim::read(&t.0, &id).unwrap().is_none());
+    }
+
+    /// `closed` settles a ref exactly as `done` does, and everything else is
+    /// left alone.
+    ///
+    /// Three cases in one fixture, all carried over from `claim::prune`'s tests
+    /// (TASK-4981a1370c0b): a closed task prunes, a live claim on an open task
+    /// is not maintenance's business, and a task the default branch has never
+    /// carried is the unmerged case the ref exists for.
+    #[test]
+    fn closed_prunes_like_done_and_the_rest_is_left_alone() {
+        let t = Temp::new();
+        let closed = EntityId::parse("TASK-000000000001").unwrap();
+        let live = EntityId::parse("TASK-00000000ffff").unwrap();
+        t.write(&task("000000000001", TaskStatus::InProgress, &[]));
+        t.write(&task("00000000ffff", TaskStatus::InProgress, &[]));
+        t.commit("seed");
+        t.claim_as(&closed, "codex@host-9", "A verifiable criterion.\n");
+        t.claim_as(&live, "claude-code@ank", "A verifiable criterion.\n");
+
+        t.write(&task("000000000001", TaskStatus::Closed, &[]));
+        t.commit("closed");
+
+        // A task the branch has never seen: present in the tree, absent there.
+        let unmerged = EntityId::parse("TASK-00000000aaaa").unwrap();
+        t.write(&task("00000000aaaa", TaskStatus::InProgress, &[]));
+        t.claim_as(&unmerged, "claude-code@ank", "A verifiable criterion.\n");
+
+        let r = inspect(&t.repo(), &t.cfg(), None, true).unwrap();
+        assert_eq!(r.pruned, vec![claim::ref_name(&closed)], "{:?}", r.pruned);
+        assert!(
+            claim::read(&t.0, &live).unwrap().is_some(),
+            "an open task's claim is not maintenance's business"
+        );
+        assert!(
+            claim::read(&t.0, &unmerged).unwrap().is_some(),
+            "a task the default branch has never carried is the unmerged case"
+        );
+    }
+
     #[test]
     fn an_orphan_ref_is_pruned_and_review_never_prunes_anything() {
         let t = Temp::new();
