@@ -1880,6 +1880,23 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
 ///
 /// Never by deleting the file: that would break other tasks' `blocked_by`
 /// references, where `closed` preserves them.
+///
+/// **It leaves nothing on the coordination plane, and that is the decision**
+/// (TASK-78326e2e3e89). `done` turns the claim ref into a completion record so
+/// that a task finished on an unmerged branch does not look free everywhere
+/// else (ADR-bcf222a31525); `close` deletes the ref, so a task closed on a
+/// branch is claimable elsewhere until the closure lands on the default branch.
+/// The asymmetry is not an omission. A completion record refuses every other
+/// `claim` with code 4, repository-wide once the ref is pushed, and `done`
+/// earns that with a frozen criterion, declared verifiers and a proof where
+/// this verb is gated by a reason alone. `close` also revokes somebody else's
+/// live claim, so the symmetric version would let one agent take a task away
+/// *and* stop anyone picking it up, on a branch nobody has reviewed.
+///
+/// The two errors differ in size the same way: a `done` invisible elsewhere
+/// wastes work already performed, a `close` invisible elsewhere costs work on a
+/// task somebody proposed to abandon — and that work, if it finishes, produces
+/// a proof, which argues against the closure rather than being lost.
 pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
     let prefix = inv.positionals.first().ok_or_else(|| {
         CliError::new(1, "close expects an id").with_hint("ank close <id> --reason \"<r>\"")

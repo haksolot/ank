@@ -638,6 +638,13 @@ pub fn sync_from_remote(cwd: &Path, id: &EntityId) -> Result<()> {
 /// next `log` (§3). `release` therefore has to establish that it holds the
 /// claim before calling this — [`read`] answers that — and the check belongs to
 /// the verb, not here, where it would make `close` impossible to express.
+///
+/// **A deletion and not a completion record, for `close` as much as for
+/// `release`** (TASK-78326e2e3e89). The asymmetry with `done` is decided rather
+/// than inherited: a completion record refuses every other `claim` with code 4,
+/// and `done` earns that with a frozen criterion, its verifiers and a proof
+/// where the other two are gated by a reason. The reasoning is at `close` in
+/// `human.rs`, where the act is.
 /// **The deletion travels too** (§7). Level 1 makes a claim visible to every
 /// clone, so a release that stayed local would leave the task looking held
 /// everywhere else until its TTL ran out — a state this change creates and
