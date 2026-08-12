@@ -30,11 +30,27 @@ pub fn run(
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<i32> {
-    let branch = git::current_branch(&repo.root)?;
-    let default = git::resolve_default_branch(
-        cfg.default_branch.as_deref(),
-        git::origin_head(&repo.root)?.as_deref(),
-    );
+    // git per verb, never at startup (ADR-9307e5d214a7). Outside a repository
+    // `status` still answers on the corpus, and the coordination plane becomes
+    // the one thing it says it cannot see. Both are three-state on purpose:
+    // `None` is the question never asked, and it is not the same answer as a
+    // repository with no commit yet, or one whose default branch is
+    // indeterminable. Collapsing them would print "unborn, no commit yet" at a
+    // caller who has no repository at all.
+    let coordinated = git::usable_here(&repo.root);
+    let branch = if coordinated {
+        Some(git::current_branch(&repo.root)?)
+    } else {
+        None
+    };
+    let default = if coordinated {
+        Some(git::resolve_default_branch(
+            cfg.default_branch.as_deref(),
+            git::origin_head(&repo.root)?.as_deref(),
+        ))
+    } else {
+        None
+    };
 
     let index = Index::open(&repo.ank)?;
     let rows = index.all()?;
@@ -49,7 +65,11 @@ pub fn run(
     // "no claim" would be false; and the expiry alone is a past timestamp a
     // reader scans over, so the state is spelled out in words. Nothing here is
     // carried by a date the reader has to compare against the clock.
-    let standing = crate::claim::on_task(&repo.root, identity)?;
+    let standing = if coordinated {
+        crate::claim::on_task(&repo.root, identity)?
+    } else {
+        None
+    };
     let held = standing
         .as_ref()
         .map(|s| (s.id.clone(), s.object.clone(), s.record.clone()));
@@ -185,8 +205,16 @@ pub fn run(
              \"also_held\":[{}],\"elsewhere\":[{}],\
              \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
              \"faults\":{},\"signals\":{}}}",
-            opt_json(branch.as_deref()),
-            opt_json(default.as_ref().ok().map(|s| s.as_str())),
+            // Both collapse to null, and legitimately: a parser asking for the
+            // branch gets "there is none to report", and the three ways of
+            // having none are a distinction the human surface draws in words.
+            opt_json(branch.as_ref().and_then(|b| b.as_deref())),
+            opt_json(
+                default
+                    .as_ref()
+                    .and_then(|d| d.as_ref().ok())
+                    .map(|s| s.as_str())
+            ),
             also_json.join(","),
             elsewhere_json.join(","),
             report.faults(),
@@ -203,10 +231,10 @@ pub fn run(
     // what a reader skips once they know the shape.
     let style = inv.style();
     match (&branch, &default) {
-        (Some(b), Ok(d)) => {
+        (Some(Some(b)), Some(Ok(d))) => {
             let _ = writeln!(out, "{} {b} (default {d})", style.key("branch"));
         }
-        (Some(b), Err(_)) => {
+        (Some(Some(b)), _) => {
             let _ = writeln!(out, "{} {b}", style.key("branch"));
             // Degraded, and named. Without a default branch nothing can say
             // whether a completion ref has landed, and a silent zero above
@@ -220,8 +248,19 @@ pub fn run(
         }
         // A repository with no commit is the nominal state of one freshly
         // `ank init`-ed, not an error.
-        (None, _) => {
+        (Some(None), _) => {
             let _ = writeln!(out, "{} unborn, no commit yet", style.key("branch"));
+        }
+        // No repository at all, which is a corpus being read rather than
+        // coordinated (ADR-9307e5d214a7). Said as a state and not as a warning:
+        // nothing here is wrong, and the lines below that describe claims are
+        // about a plane that does not exist rather than one that is empty.
+        (None, _) => {
+            let _ = writeln!(
+                out,
+                "{} none, no git repository here (git init to coordinate)",
+                style.key("branch")
+            );
         }
     }
 

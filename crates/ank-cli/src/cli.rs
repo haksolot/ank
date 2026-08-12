@@ -246,6 +246,22 @@ pub struct CommandSpec {
     /// What the usage line cannot carry and the caller needs before calling: a
     /// value's grammar, or what interprets it. One line each.
     pub notes: &'static [&'static str],
+    /// Whether the verb **coordinates**, and so requires git 2.34 or newer
+    /// inside a repository (ADR-9307e5d214a7).
+    ///
+    /// The distinction is not between git and something else, it is between
+    /// coordinating — which needs an arbiter — and reading a corpus, which
+    /// needs a parser. A verb that only reads or writes entities answers on the
+    /// files alone, and `check` runs the half of its invariants that needs no
+    /// arbiter rather than refusing.
+    ///
+    /// Declared here rather than as a list beside the dispatch, for the reason
+    /// that matters more than tidiness: the field makes the compiler ask the
+    /// question of every verb that is ever added. A separate enumeration would
+    /// let a new coordinating verb default to silence, which is the shape of
+    /// the defect this ADR corrects — a property of the verb decided somewhere
+    /// the verb is not.
+    pub coordinates: bool,
     /// The task that carries the implementation, **while it does not exist**.
     /// It is therefore also the marker of an unrouted verb: a command that
     /// [`dispatch`] reaches clears the field, so the two never drift apart the
@@ -263,6 +279,7 @@ pub struct CommandSpec {
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "context",
+        coordinates: false,
         summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
         subcommands: &[],
         max_positionals: 1,
@@ -275,6 +292,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "claim",
+        coordinates: true,
         summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
         subcommands: &[],
         max_positionals: 1,
@@ -290,6 +308,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "show",
+        coordinates: false,
         summary: "the entity whole, frontmatter and body, byte for byte",
         subcommands: &[],
         max_positionals: 1,
@@ -302,6 +321,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "log",
+        coordinates: true,
         summary: "an id alone reads the log; an id and a message appends one and renews the claim, which needs holding it",
         subcommands: &[],
         max_positionals: 2,
@@ -316,6 +336,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "done",
+        coordinates: true,
         summary: "runs the declared verifiers, records what ran, and moves the task to done; needs the claim, and a proof if nothing is declared",
         subcommands: &[],
         max_positionals: 1,
@@ -331,6 +352,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "release",
+        coordinates: true,
         summary: "hands the task back, with the reason recorded in its log",
         subcommands: &[],
         max_positionals: 1,
@@ -343,6 +365,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "new",
+        coordinates: false,
         summary: "writes a task or an ADR that needs no hand finishing",
         subcommands: &["task", "adr"],
         max_positionals: 0,
@@ -367,6 +390,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "find",
+        coordinates: false,
         summary: "searches titles, scopes and criteria; --status open lists what remains, with no query",
         subcommands: &[],
         max_positionals: 1,
@@ -382,6 +406,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // refused the commit until it moved (TASK-15336a0012d5).
     CommandSpec {
         name: "status",
+        coordinates: false,
         summary: "where am I: branch, claim, perimeter, queue, findings",
         subcommands: &[],
         max_positionals: 0,
@@ -394,6 +419,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "review",
+        coordinates: false,
         summary: "the ratification queue and the health of the corpus: what is proposed, and which scopes have gone dead",
         subcommands: &[],
         max_positionals: 1,
@@ -406,6 +432,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "accept",
+        coordinates: true,
         summary: "promotes a proposed ADR to accepted, through a signed ratification commit; on the default branch only",
         subcommands: &[],
         max_positionals: 1,
@@ -425,6 +452,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "close",
+        coordinates: true,
         summary: "closes a task that will never be done; --reason is mandatory",
         subcommands: &[],
         max_positionals: 1,
@@ -443,6 +471,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "amend",
+        coordinates: false,
         summary: "changes blocked_by, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
         max_positionals: 1,
@@ -471,6 +500,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "attest",
+        coordinates: true,
         summary: "appends a proof to a finished task: the one write allowed after done",
         subcommands: &[],
         max_positionals: 1,
@@ -485,6 +515,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // `tests/skill.rs` is what holds this to §4 rather than to memory.
     CommandSpec {
         name: "edit",
+        coordinates: false,
         summary: "opens an entity in $EDITOR and validates what comes back",
         subcommands: &[],
         max_positionals: 1,
@@ -500,6 +531,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "graph",
+        coordinates: false,
         summary: "the blocked_by DAG in readable text, indented under what blocks it",
         subcommands: &[],
         max_positionals: 1,
@@ -512,6 +544,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "scope",
+        coordinates: false,
         summary: "what covers a path: the constraints that bind it and the tasks that touch it",
         subcommands: &[],
         max_positionals: 1,
@@ -524,6 +557,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "check",
+        coordinates: false,
         summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims",
         subcommands: &[],
         max_positionals: 1,
@@ -539,6 +573,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // states -- what `init` writes, `config` maintains.
     CommandSpec {
         name: "config",
+        coordinates: false,
         summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
         subcommands: &[],
         max_positionals: 2,
@@ -561,6 +596,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "init",
+        coordinates: true,
         summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
         subcommands: &[],
         max_positionals: 1,
@@ -576,6 +612,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "help",
+        coordinates: false,
         summary: "every verb in one flat listing, or one verb in full",
         subcommands: &[],
         max_positionals: 1,
@@ -1264,9 +1301,18 @@ fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &
 
 fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     let repo = crate::repo::resolve(inv.repo(), cwd)?;
-    // git is a hard dependency, and its version is checked at startup
-    // (ADR-b8884edcebe3).
-    crate::git::ensure_usable(&repo.root)?;
+    // git is required by the verbs that coordinate, and never at startup
+    // (ADR-9307e5d214a7, superseding ADR-b8884edcebe3). The gate used to stand
+    // in front of the dispatch rather than in front of the operation, so `show`,
+    // `find`, `graph`, `scope`, `new`, `amend` and the whole formal half of
+    // `check` refused outside a repository although none of them touches a ref,
+    // a commit or a branch.
+    //
+    // Repository resolution never needed git and does not gain it here:
+    // `repo::discover` walks up for `.ank/` exactly as it always has.
+    if spec_of(inv.command).is_some_and(|s| s.coordinates) {
+        crate::git::ensure_usable(&repo.root)?;
+    }
     warn_if_outside_repository(inv, &repo, cwd);
     let config = crate::config::load(&repo.config_path())?;
     let identity = crate::identity::resolve();

@@ -95,6 +95,18 @@ pub(crate) fn coordination(
     warnings: &mut Vec<String>,
 ) -> Result<HashMap<EntityId, Coordination>> {
     let mut map = HashMap::new();
+    // No repository, no coordination plane — and that is an answer rather than
+    // a failure (ADR-9307e5d214a7). It is the same reasoning the damaged-ref
+    // case below already applies, one step further out: a reader describes the
+    // corpus it can see, and `check` is what reports the reach it did not have.
+    //
+    // Written here rather than at each caller on purpose. `context`, `find`,
+    // `graph`, `scope`, `show` and `status` all enumerate the plane through
+    // this function, and a degradation repeated six times is six chances to
+    // degrade differently.
+    if !git::usable_here(cwd) {
+        return Ok(map);
+    }
     for r in git::ank_refs(cwd)? {
         let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
             continue;
