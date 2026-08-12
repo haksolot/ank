@@ -954,14 +954,31 @@ fn orientation_lines(
             ));
         }
     }
+    // The header counts what the perimeter holds, not what survived the budget.
+    // This is the one section truncation can empty completely -- the cutting
+    // loop stops at one task and at one constraint, and never at zero proposals
+    // -- so a header counting survivors was free to read `(0, non-binding)`
+    // above a notice saying one had been cut, and a reader had no way to tell
+    // which of the two was lying (TASK-058469991999).
+    //
+    // The counter says `not shown` for the same reason: read against a total,
+    // `+1 more` would name a second proposal that does not exist. The two
+    // neighbouring sections keep `+N` as an addition to their header because
+    // neither of them can reach zero.
     if !proposals.is_empty() || cut_proposals > 0 {
         out.push(String::new());
-        out.push(style.header(&format!("PROPOSED ({}, non-binding)", proposals.len())));
+        out.push(style.header(&format!(
+            "PROPOSED ({}, non-binding)",
+            proposals.len() + cut_proposals
+        )));
         for p in proposals {
             out.push(format!("  {}  {}", style.id(&p.short), p.title));
         }
         if cut_proposals > 0 {
-            out.push(format!("  +{cut_proposals} more"));
+            out.push(format!(
+                "  +{cut_proposals} not shown, \
+                 ank find --type adr --status proposed --scope {scope_arg}"
+            ));
         }
     }
     if !tasks.is_empty() {
