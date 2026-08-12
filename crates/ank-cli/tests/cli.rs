@@ -1913,6 +1913,121 @@ fn context_json_reaches_the_process_intact() {
     assert!(text.contains("\"ready\":1"), "{text}");
 }
 
+/// A perimeter holding one proposal, with a budget as the only variable.
+fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
+    let r = Repo::new();
+    r.set_config(&format!(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: {budget}\n"
+    ));
+    r.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    if with_proposal {
+        r.seed_adr(
+            "ADR-0000000000ab",
+            "Prefer idempotent migrations.",
+            "src/**",
+        );
+    }
+    r
+}
+
+/// The PROPOSED header counts the perimeter, never what survived the budget.
+///
+/// The defect this pins was visible at the root of this repository, on a corpus
+/// holding exactly one proposed ADR:
+///
+///     PROPOSED (0, non-binding)
+///       +1 more
+///
+/// The header asserting there were none, the next line asserting one had been
+/// cut, and nothing telling the reader which of the two to believe
+/// (TASK-058469991999). PROPOSED is the one section truncation can empty: the
+/// cutting order takes proposals down to zero while it stops at one task and at
+/// one constraint, so a header counting survivors read `(0)` there and nowhere
+/// else.
+///
+/// Through the binary, because the number is produced by the render and the
+/// render is only reached by the cutting loop, which is reached by the
+/// configured budget. A unit test on a hand-built view can assert the header
+/// without ever going through the loop that produces the contradiction.
+#[test]
+fn the_proposed_header_counts_the_perimeter_and_never_contradicts_its_notice() {
+    // Room for everything. The header reads 1 and no notice is printed, which
+    // is what makes the tight case below a statement about truncation rather
+    // than about a header that prints a constant.
+    let roomy = proposed_fixture("8000", true);
+    let text = stdout(&roomy.ank("claude-code@ank", &["context"]));
+    assert!(text.contains("PROPOSED (1, non-binding)"), "{text}");
+    assert!(text.contains("ADR-0000"), "{text}");
+    assert!(!text.contains("not shown"), "nothing was cut: {text}");
+
+    // Tight enough that the proposal itself is cut away.
+    let tight = proposed_fixture("100", true);
+    let text = stdout(&tight.ank("claude-code@ank", &["context"]));
+    assert!(
+        !text.contains("ADR-0000"),
+        "the budget was not tight enough to cut the proposal, so this test \
+         asserts nothing: {text}"
+    );
+    assert!(
+        text.contains("PROPOSED (1, non-binding)"),
+        "the header counted the survivors instead of the perimeter: {text}"
+    );
+
+    // The invariant read back out of the output rather than asserted as a
+    // wording: the header equals what was printed plus what was cut. A fix that
+    // changes either number in isolation fails here.
+    let header: usize = text
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("PROPOSED ("))
+        .and_then(|rest| rest.split(',').next())
+        .expect("the section is present")
+        .parse()
+        .expect("the header leads with a count");
+    let notice = text
+        .lines()
+        .find(|l| l.contains("not shown"))
+        .unwrap_or_else(|| panic!("the section was emptied and said nothing: {text}"));
+    let cut: usize = notice
+        .trim()
+        .strip_prefix('+')
+        .and_then(|rest| rest.split_whitespace().next())
+        .expect("the notice leads with a count")
+        .parse()
+        .expect("the notice leads with a count");
+    let printed = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("ADR-"))
+        .count();
+    assert_eq!(
+        header,
+        printed + cut,
+        "the header disagrees with its own notice: {text}"
+    );
+
+    // The command the notice names answers rather than refuses. Naming a
+    // command that fails on the spot is what the error style forbids
+    // everywhere, and a truncation notice is not exempt from it.
+    let named: Vec<&str> = notice
+        .split_once("ank ")
+        .expect("the notice names the command that recovers what it cut")
+        .1
+        .split_whitespace()
+        .collect();
+    let out = tight.ank("claude-code@ank", &named);
+    assert_eq!(code(&out), 0, "ank {}: {}", named.join(" "), stderr(&out));
+    assert!(stdout(&out).contains("ADR-0000"), "{}", stdout(&out));
+
+    // A perimeter holding no proposal prints no section, at either budget, and
+    // in particular no notice counting what was never there.
+    for budget in ["8000", "100"] {
+        let none = proposed_fixture(budget, false);
+        let text = stdout(&none.ank("claude-code@ank", &["context"]));
+        assert!(!text.contains("PROPOSED"), "at budget {budget}: {text}");
+    }
+}
+
 #[test]
 fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() {
     // Read back with git rather than through the module: what has to be true
