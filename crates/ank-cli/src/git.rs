@@ -310,9 +310,28 @@ pub fn toplevel(cwd: &Path) -> Result<PathBuf> {
 }
 
 /// Checks the whole git environment: presence, version, and repository.
+///
+/// This is the gate a **coordinating** verb passes through — `claim`, `log`,
+/// `done`, `release`, `close`, `accept`, `attest`, `init` — and it is called per
+/// verb, never at startup (ADR-9307e5d214a7). It does two things, and both are
+/// load-bearing: a repository alone is not enough, because the 2.34 floor is
+/// what SSH signing needs, so a gate that only resolved the toplevel would let
+/// an old git through to `accept`.
 pub fn ensure_usable(cwd: &Path) -> Result<PathBuf> {
     check_version(version()?)?;
     toplevel(cwd)
+}
+
+/// Whether a coordinating operation could run here: git present, recent enough,
+/// and a repository around `cwd`.
+///
+/// Never an error, and that is the whole difference with [`ensure_usable`]. The
+/// verbs that coordinate call `ensure_usable` and exit 9 naming the command to
+/// run; the readers call this to choose which half of their answer they can
+/// produce. A probe that could refuse would put the startup gate back one level
+/// down, which is the defect ADR-9307e5d214a7 exists to remove.
+pub fn usable_here(cwd: &Path) -> bool {
+    ensure_usable(cwd).is_ok()
 }
 
 /// The **common** git directory of the repository containing `cwd`, absolute,
@@ -369,8 +388,13 @@ pub fn crosses_repository(here: Option<&Path>, root: Option<&Path>) -> bool {
         // No repository here, and one where the corpus was found. Worth saying
         // for the same reason: the refs are somewhere the caller is not.
         (None, Some(_)) => true,
-        // The corpus is not in a repository. `ensure_usable` has already
-        // refused with code 9, and there is no second thing to say about it.
+        // The corpus is in no repository at all. This used to be unreachable —
+        // `ensure_usable` refused at startup before any caller got here — and
+        // git being required per verb makes it ordinary (ADR-9307e5d214a7). It
+        // is still not a crossing: there is no second plane for the refs to
+        // land in, so there is nothing to warn about being on the wrong side
+        // of. `check` is what reports the state, in the one line saying the
+        // coordination half was skipped.
         (_, None) => false,
     }
 }

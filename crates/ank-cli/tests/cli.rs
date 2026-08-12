@@ -1913,6 +1913,213 @@ fn context_json_reaches_the_process_intact() {
     assert!(text.contains("\"ready\":1"), "{text}");
 }
 
+/// A `.ank/` corpus with no repository anywhere above it.
+///
+/// `GIT_CEILING_DIRECTORIES` rather than trusting the machine. Git's walk for
+/// `.git` would otherwise leave the temporary directory and could well reach the
+/// developer's own repository — `TMPDIR` inside a checkout is unusual and not
+/// forbidden — and a test whose entire subject is "there is no repository here"
+/// must not depend on where temp happens to live. The ceiling stops the walk at
+/// the fixture's parent, on every machine, so the state under test is
+/// constructed rather than hoped for.
+///
+/// The `.ank/` walk needs no such treatment: `discover` stops at the first
+/// `.ank/` going up, and the fixture puts one at its own root.
+struct Bare(PathBuf);
+
+impl Bare {
+    fn new() -> Bare {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = std::env::temp_dir().join(format!(
+            "ank-cli-bare-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
+        std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+        std::fs::create_dir_all(p.join("src")).unwrap();
+        std::fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(
+            p.join(".ank/config.yml"),
+            "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+        )
+        .unwrap();
+        std::fs::write(
+            p.join(".ank/tasks").join(format!("{ID}.md")),
+            format!(
+                "---\nid: {ID}\ntype: task\nslug: example\ntitle: Example task\n\
+                 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+                 blocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+                 criteria_by: creator\nschema: 1\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+        Bare(p)
+    }
+
+    /// Run from inside the corpus and without `--repo`, because the criterion is
+    /// about a caller standing in a directory, and `--repo` short-circuits the
+    /// very walk being tested.
+    fn ank(&self, args: &[&str]) -> Output {
+        ank_command()
+            .args(args)
+            .env("ANK_AGENT", "claude-code@ank")
+            .env("GIT_CEILING_DIRECTORIES", self.0.parent().unwrap())
+            .current_dir(&self.0)
+            .output()
+            .expect("the binary must have been built")
+    }
+}
+
+impl Drop for Bare {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Reading a corpus needs a parser; coordinating needs an arbiter.
+///
+/// The gate used to stand in front of the dispatch rather than in front of the
+/// operation: `startup` called `git::ensure_usable` for every verb but `help`,
+/// `config` and `--version`, so `show`, `find`, `graph`, `scope`, `new`, `amend`
+/// and the whole formal half of `check` refused outside a repository although
+/// none of them touches a ref, a commit or a branch (ADR-9307e5d214a7).
+///
+/// Both halves are asserted here, and the second is the one that keeps this
+/// honest: degrading the coordinating verbs too would make the first half pass
+/// while removing the property the coordination plane exists for. A `claim` with
+/// no arbiter would succeed and guarantee nothing.
+#[test]
+fn outside_a_repository_the_readers_answer_and_the_coordinators_refuse() {
+    let b = Bare::new();
+
+    // Code 9 is the environment, and the criterion is that it never appears for
+    // want of a repository. 8 stays legitimate: it means findings.
+    for args in [
+        vec!["show", ID],
+        vec!["find", "--status", "open"],
+        vec!["graph"],
+        vec!["scope", "src/main.rs"],
+        vec!["check"],
+        vec!["context"],
+        vec!["status"],
+        vec![
+            "new", "task", "--title", "T", "--scope", "src/**", "-c", "C.",
+        ],
+        vec!["amend", ID, "--scope", "docs/**"],
+    ] {
+        let out = b.ank(&args);
+        assert!(
+            code(&out) == 0 || code(&out) == 8,
+            "ank {} exited {} outside a repository: {}",
+            args.join(" "),
+            code(&out),
+            stderr(&out)
+        );
+    }
+
+    // And the arbiter is still required where an arbiter is the point. Each one
+    // names the command to run, which is what separates a refusal from a wall.
+    for args in [
+        vec!["claim", ID],
+        vec!["log", "a message"],
+        vec!["done", "--proof", "test:1"],
+        vec!["release", "--reason", "why"],
+        vec!["close", ID, "--reason", "why"],
+        vec!["accept", "ADR-000000000001"],
+        vec!["attest", ID, "--proof", "test:1"],
+        vec!["init"],
+    ] {
+        let out = b.ank(&args);
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        assert_eq!(
+            code(&out),
+            9,
+            "ank {} did not refuse outside a repository: {said}",
+            args.join(" ")
+        );
+        assert!(
+            said.contains("git init"),
+            "ank {} refused without naming the command: {said}",
+            args.join(" ")
+        );
+    }
+}
+
+/// `check` grows two halves, and the absent one says so exactly once.
+///
+/// A check that silently examines less than it did is how a corpus passes a gate
+/// that stopped looking, so the line is not optional. Exactly one, because the
+/// consequences of the missing half are many — no claim refs, no default branch,
+/// no signatures, no pruning — and reporting each would turn one state into a
+/// wall of findings. The maintenance arm distinguishes "never asked" from
+/// "asked and indeterminable" for precisely that reason.
+#[test]
+fn check_outside_a_repository_skips_the_coordination_half_and_says_so_once() {
+    let b = Bare::new();
+    let out = b.ank(&["check"]);
+    let said = stdout(&out);
+
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("coordination"))
+        .collect();
+    assert_eq!(
+        lines.len(),
+        1,
+        "the coordination half must report its absence once and once only: {said}"
+    );
+    assert!(lines[0].contains("skipped"), "{said}");
+    assert!(
+        lines[0].starts_with("signal:"),
+        "a corpus outside a repository is not a sick corpus, so the exit code \
+         must keep meaning what it means: {said}"
+    );
+    // The formal half really ran, rather than the verb having answered nothing
+    // and reported the skip.
+    assert!(said.contains("1 tasks"), "{said}");
+
+    // `--json` carries it too. A pipeline is the caller most likely to be
+    // outside a repository, and the one least able to notice a line it never
+    // sees.
+    let json = stdout(&b.ank(&["check", "--json"]));
+    assert!(json.trim_start().starts_with('{'), "{json}");
+    assert!(json.contains("coordination"), "{json}");
+    assert!(json.contains("skipped"), "{json}");
+}
+
+/// Inside a repository, nothing observable moves.
+///
+/// This is the regression guard, and the task it belongs to is meant to change
+/// what happens outside a repository and nothing whatsoever inside one. The
+/// byte-for-byte comparison against the previous build was made on this
+/// repository's own corpus — `check`, `status`, `review` and `graph`, all
+/// identical, coordination findings included — and what a test can hold from
+/// here is the property that comparison proved: the coordination half runs, and
+/// never announces itself as skipped.
+#[test]
+fn inside_a_repository_the_coordination_half_still_runs() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+
+    let said = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !said.contains("skipped"),
+        "the coordination half announced itself absent inside a repository: {said}"
+    );
+
+    // The plane was read rather than merely not refused: the claim another agent
+    // holds reaches a reader that had to enumerate the refs to know about it.
+    let ctx = stdout(&r.ank("claude-code@ank", &["context"]));
+    assert!(ctx.contains("[claimed:codex@host-9]"), "{ctx}");
+
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(status.contains("branch main"), "{status}");
+    assert!(!status.contains("no git repository"), "{status}");
+}
+
 /// A perimeter holding one proposal, with a budget as the only variable.
 fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
     let r = Repo::new();

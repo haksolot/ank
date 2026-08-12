@@ -247,13 +247,39 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
     let files = tracked_files(&repo.root);
-    let coord = coordination(&repo.root, &mut report)?;
-    let default_branch = git::resolve_default_branch(
-        cfg.default_branch.as_deref(),
-        git::origin_head(&repo.root)?.as_deref(),
-    );
 
-    check_signers(repo, &mut report);
+    // From here the inspection has two halves, and one of them can be absent
+    // (ADR-9307e5d214a7). Everything above is the corpus — parse, canonical
+    // form, filename against id, `blocked_by` references, glob validity — and a
+    // parser answers all of it. Everything below needs an arbiter: claim refs,
+    // the default branch, ratification signatures, completion-ref pruning.
+    //
+    // Where there is no repository to ask, the second half is skipped and said
+    // so, in exactly one line. That line is not optional: a check that silently
+    // examines less than it did is how a corpus passes a gate that stopped
+    // looking. It is a signal rather than a fault, because a corpus outside a
+    // repository is not a sick corpus — it is an inspection with a smaller
+    // reach, and the exit code has to keep meaning what §4 says it means.
+    // `None` is the half never asked for, and it is distinct from `Some(Err)` —
+    // a repository whose default branch cannot be resolved. The two produce one
+    // line each and must not produce two between them.
+    let (coord, default_branch) = if git::usable_here(&repo.root) {
+        let coord = coordination(&repo.root, &mut report)?;
+        let branch = git::resolve_default_branch(
+            cfg.default_branch.as_deref(),
+            git::origin_head(&repo.root)?.as_deref(),
+        );
+        check_signers(repo, &mut report);
+        (coord, Some(branch))
+    } else {
+        report.findings.push(Finding::signal(
+            "coordination",
+            "half skipped: no git repository here, so claim refs, ratification \
+             signatures and completion refs were neither read nor judged \
+             (git init to coordinate)",
+        ));
+        (HashMap::new(), None)
+    };
 
     for (_, entity) in &entities {
         if !in_scope(entity) {
@@ -268,7 +294,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &coord,
                 cfg,
                 &store,
-                default_branch.as_deref().ok(),
+                default_branch.as_ref().and_then(|b| b.as_deref().ok()),
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
@@ -312,12 +338,16 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
     match &default_branch {
-        Ok(branch) => maintain(repo, branch, &coord, &statuses, prune, &mut report)?,
-        Err(_) => report.findings.push(Finding::signal(
+        Some(Ok(branch)) => maintain(repo, branch, &coord, &statuses, prune, &mut report)?,
+        Some(Err(_)) => report.findings.push(Finding::signal(
             "coordination",
             "default branch indeterminable, completion refs neither pruned nor judged \
              (ank config default_branch <name>)",
         )),
+        // The coordination half was skipped, and it has already said so once.
+        // A second line here would report the consequence as if it were a
+        // separate finding.
+        None => {}
     }
 
     report.findings.sort_by(|a, b| {

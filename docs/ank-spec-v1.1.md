@@ -1008,7 +1008,7 @@ So "one piece of work, one holder" holds **per repository with a remote, and per
 
 ### Level 0 — local
 
-No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 is literally "the same ref, pushed" — no migration, no state to convert, and a repository that gains a remote is at level 1 from its next claim. There is **no fallback without git**: git is a hard dependency, and an uninitialised repository exits with code 9 and the exact command. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
+No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 is literally "the same ref, pushed" — no migration, no state to convert, and a repository that gains a remote is at level 1 from its next claim. There is **no fallback without git**: git is the only claim mechanism, and a coordinating verb run in an uninitialised repository exits with code 9 and the exact command (§13). Reading the corpus is not coordinating and needs none of it. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
 
 ### Level 1 — git remote only
 
@@ -1226,7 +1226,11 @@ Three entries are new and serve the ref lifecycle and the default branch (§7). 
 
 The rule that matters is not the enumeration but its criterion: a command enters this list only if its output is stable by contract across git versions. That criterion is what excludes porcelain, and it excludes it by its reason rather than by its name — a closed list goes stale at every new need, as this one just did.
 
-**Minimum version: git 2.34.** That is the version introducing SSH signing and `gpg.ssh.allowedSignersFile`; below it, `accept` and `check` cannot fulfil their contract. The version is checked at startup, and too old a version exits with **code 9** — an environment to repair, not a task failure — with the upgrade link.
+**Minimum version: git 2.34.** That is the version introducing SSH signing and `gpg.ssh.allowedSignersFile`; below it, `accept` and `check` cannot fulfil their contract. Too old a version exits with **code 9** — an environment to repair, not a task failure — with the upgrade link.
+
+**The check is per verb, and never at startup** (ADR-9307e5d214a7). A verb that coordinates — `claim`, `log`, `done`, `release`, `close`, `accept`, `attest`, `init` — requires git 2.34 or newer inside a repository, and exits 9 naming the command when git is missing, too old, or the working directory is outside a repository. A verb that only reads or writes the corpus requires none of it and answers on the files alone: `show`, `find`, `graph`, `scope`, `new`, `amend` and `context` need a parser, not an arbiter. `check` runs the invariants that need no git — parse, round-trip, `blocked_by` references, glob validity, filename against id — and skips the coordination half, saying so in exactly one line rather than refusing.
+
+The distinction is not between git and something else, it is between coordinating and reading. A gate standing in front of the dispatch rather than in front of the operation made a binary that could not validate a corpus unless that corpus sat in a git repository — which is smaller than what §14 claims for the format, and smaller than the golden suite is published as. Repository resolution never depended on git and does not gain it: the walk up for `.ank/` is what §6 describes.
 
 ### Ank and git: who commits
 
