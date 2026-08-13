@@ -90,11 +90,29 @@ impl Coordination {
 /// A listing has no channel for a warning and passes an empty vector — `check`
 /// is what reports a damaged ref, and a reader must not fail for having nothing
 /// to say about one.
+/// Everything `refs/ank/*` says about the corpus, read in one walk.
+///
+/// Two namespaces answering two questions — who holds a task, and what has been
+/// attested against it outside its file (ADR-493471d64ba0) — and one
+/// enumeration, because a second walk would be free to disagree with the first
+/// about a ref they both read.
+#[derive(Debug, Default)]
+pub(crate) struct Plane {
+    pub claims: HashMap<EntityId, Coordination>,
+    /// Empty for a task with no attestation, which is nearly all of them.
+    pub proofs: HashMap<EntityId, Vec<claim::AttestedProof>>,
+}
+
+/// The claim half alone, for the callers that only ask who holds what.
 pub(crate) fn coordination(
     cwd: &std::path::Path,
     warnings: &mut Vec<String>,
 ) -> Result<HashMap<EntityId, Coordination>> {
-    let mut map = HashMap::new();
+    Ok(plane(cwd, warnings)?.claims)
+}
+
+pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result<Plane> {
+    let mut plane = Plane::default();
     // No repository, no coordination plane — and that is an answer rather than
     // a failure (ADR-9307e5d214a7). It is the same reasoning the damaged-ref
     // case below already applies, one step further out: a reader describes the
@@ -105,11 +123,20 @@ pub(crate) fn coordination(
     // this function, and a degradation repeated six times is six chances to
     // degrade differently.
     if !git::usable_here(cwd) {
-        return Ok(map);
+        return Ok(plane);
     }
     for r in git::ank_refs(cwd)? {
-        let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
-            continue;
+        // The address decides which question the record answers, and a record
+        // whose state contradicts its namespace is reported rather than
+        // coerced: a proof blob on a claim ref would read as a free task, which
+        // is the silent fallback this module refuses everywhere else.
+        let (rest, proof_ns) = match (
+            r.name.strip_prefix(claim::CLAIMS_PREFIX),
+            r.name.strip_prefix(claim::PROOF_PREFIX),
+        ) {
+            (Some(rest), _) => (rest, false),
+            (_, Some(rest)) => (rest, true),
+            _ => continue,
         };
         let Ok(id) = EntityId::parse(rest) else {
             continue;
@@ -121,33 +148,51 @@ pub(crate) fn coordination(
             continue;
         }
         let text = String::from_utf8_lossy(&out.stdout);
-        let record = match claim::parse_record(&text, &id) {
+        let record = match claim::parse_record(&text, &r.name) {
             Ok(record) => record,
             Err(e) => {
-                warnings.push(format!("{} ({})", e.message, r.name));
+                // The ref is not appended: `corrupt` already names it, and it
+                // is the one thing the reader acts on.
+                warnings.push(e.message);
                 continue;
             }
         };
-        let state = match record {
-            Record::Completed(c) => Coordination::Finished {
-                commit: c.commit,
-                branch: c.branch,
-            },
-            Record::Claim(c) => match claim::is_expired(&c, claim::now_secs(), &id) {
-                Ok(true) => Coordination::Lapsed { holder: c.holder },
-                Ok(false) => Coordination::Claimed {
-                    holder: c.holder,
-                    expires: c.expires,
-                },
-                Err(e) => {
-                    warnings.push(format!("{} ({})", e.message, r.name));
-                    continue;
-                }
-            },
-        };
-        map.insert(id, state);
+        match (record, proof_ns) {
+            (Record::Proof(p), true) => {
+                plane.proofs.insert(id, p.proofs);
+            }
+            (Record::Completed(c), false) => {
+                plane.claims.insert(
+                    id,
+                    Coordination::Finished {
+                        commit: c.commit,
+                        branch: c.branch,
+                    },
+                );
+            }
+            (Record::Claim(c), false) => {
+                let state = match claim::is_expired(&c, claim::now_secs(), &id) {
+                    Ok(true) => Coordination::Lapsed { holder: c.holder },
+                    Ok(false) => Coordination::Claimed {
+                        holder: c.holder,
+                        expires: c.expires,
+                    },
+                    Err(e) => {
+                        // The ref is not appended: `corrupt` already names it, and it
+                        // is the one thing the reader acts on.
+                        warnings.push(e.message);
+                        continue;
+                    }
+                };
+                plane.claims.insert(id, state);
+            }
+            (_, _) => warnings.push(format!(
+                "{} carries a record of the wrong kind for its namespace",
+                r.name
+            )),
+        }
     }
-    Ok(map)
+    Ok(plane)
 }
 
 // ---------------------------------------------------------------------------
@@ -1822,14 +1867,14 @@ After a blank one."
             let o = c.wait_with_output().unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
-        git::run(&t.0, &["update-ref", &claim::ref_name(&id), &blob]).unwrap();
+        git::run(&t.0, &["update-ref", &claim::claim_ref(&id), &blob]).unwrap();
 
         let view = t.view("claude-code@ank", None);
         assert_eq!(view.tasks.len(), 3, "the corpus is still described");
         assert!(
             view.warnings
                 .iter()
-                .any(|w| w.contains("unreadable claim record")),
+                .any(|w| w.contains("unreadable record on refs/ank/claims/")),
             "{:?}",
             view.warnings
         );

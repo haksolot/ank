@@ -280,22 +280,22 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // a repository whose default branch cannot be resolved. The two produce one
     // line each and must not produce two between them.
     let has_git = git::usable_here(&repo.root);
-    let (coord, default_branch) = if has_git {
-        let coord = coordination(&repo.root, &mut report)?;
+    let (coord, detached, default_branch) = if has_git {
+        let (coord, detached) = coordination(&repo.root, &mut report)?;
         let branch = git::resolve_default_branch(
             cfg.default_branch.as_deref(),
             git::origin_head(&repo.root)?.as_deref(),
         );
         check_signers(repo, &mut report);
-        (coord, Some(branch))
+        (coord, detached, Some(branch))
     } else {
         report.findings.push(Finding::signal(
             "coordination",
             "half skipped: no git repository here, so claim refs, ratification \
-             signatures and completion refs were neither read nor judged \
-             (git init to coordinate)",
+             signatures, completion refs and detached proofs were neither read \
+             nor judged (git init to coordinate)",
         ));
-        (HashMap::new(), None)
+        (HashMap::new(), HashMap::new(), None)
     };
 
     for (_, entity) in &entities {
@@ -314,6 +314,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 repo,
                 &statuses,
                 &coord,
+                detached.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 cfg,
                 &store,
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
@@ -360,7 +361,10 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
     match &default_branch {
-        Some(Ok(branch)) => maintain(repo, branch, &coord, &statuses, prune, &mut report)?,
+        Some(Ok(branch)) => {
+            maintain(repo, branch, &coord, &statuses, prune, &mut report)?;
+            maintain_proofs(repo, branch, &detached, &statuses, prune, &mut report)?;
+        }
         Some(Err(_)) => report.findings.push(Finding::signal(
             "coordination",
             "default branch indeterminable, completion refs neither pruned nor judged \
@@ -381,29 +385,56 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     Ok(report)
 }
 
-fn coordination(cwd: &Path, report: &mut Report) -> Result<HashMap<EntityId, Record>> {
+type Plane = (
+    HashMap<EntityId, Record>,
+    HashMap<EntityId, Vec<claim::AttestedProof>>,
+);
+
+fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
     let mut map = HashMap::new();
+    let mut proofs: HashMap<EntityId, Vec<claim::AttestedProof>> = HashMap::new();
     for r in git::ank_refs(cwd)? {
-        let Some(rest) = r.name.strip_prefix(claim::CLAIMS_PREFIX) else {
-            continue;
+        // One walk over both namespaces. `check` asks the same question of
+        // every ref under `refs/ank/`, and two loops would be free to disagree
+        // about which of them a given ref belongs to.
+        let (rest, proof_ns) = match (
+            r.name.strip_prefix(claim::CLAIMS_PREFIX),
+            r.name.strip_prefix(claim::PROOF_PREFIX),
+        ) {
+            (Some(rest), _) => (rest, false),
+            (_, Some(rest)) => (rest, true),
+            _ => continue,
         };
         let Ok(id) = EntityId::parse(rest) else {
-            // A ref in the claims namespace whose tail is not an identifier is
-            // an orphan by construction: nothing will ever claim it.
+            // A ref in one of these namespaces whose tail is not an identifier
+            // is an orphan by construction: nothing will ever address it.
             report
                 .findings
                 .push(Finding::fault(&r.name, "ref name is not an identifier"));
             continue;
         };
-        match claim::read(cwd, &id) {
-            Ok(Some(held)) => {
-                map.insert(id, held.record);
-            }
+        match claim::read_at(cwd, &r.name) {
+            Ok(Some(held)) => match (held.record, proof_ns) {
+                (Record::Proof(p), true) => {
+                    proofs.insert(id, p.proofs);
+                }
+                (record, false) if !matches!(record, Record::Proof(_)) => {
+                    map.insert(id, record);
+                }
+                // A record whose state contradicts its namespace. Named rather
+                // than coerced: read as the other kind it would either present
+                // a held task as free or lose an attestation, and both are the
+                // silent fallback this file refuses everywhere else.
+                _ => report.findings.push(Finding::fault(
+                    &r.name,
+                    "record of the wrong kind for its namespace",
+                )),
+            },
             Ok(None) => {}
             Err(e) => report.findings.push(Finding::fault(&r.name, e.message)),
         }
     }
-    Ok(map)
+    Ok((map, proofs))
 }
 
 /// One entry of `.ank/allowed_signers`: an identity allowed to ratify (§8).
@@ -736,11 +767,22 @@ fn check_task(
     repo: &Repo,
     statuses: &HashMap<EntityId, TaskStatus>,
     coord: &HashMap<EntityId, Record>,
+    detached: &[claim::AttestedProof],
     cfg: &Config,
     store: &Store,
     default_branch: Option<&str>,
     report: &mut Report,
 ) {
+    // Every proof against this task, from both sources. ADR-493471d64ba0 is
+    // explicit that a signal counting proofs counts both, "or it fires on work
+    // that is anchored" — and it would have: between a `done` landing and its
+    // merge, the ref is the only place a CI reference exists, which is most of
+    // a branch's life.
+    let proofs: Vec<&ank_core::Proof> = t
+        .proof
+        .iter()
+        .chain(detached.iter().map(|a| &a.proof))
+        .collect();
     for b in &t.blocked_by {
         match statuses.get(b) {
             None => report.findings.push(Finding::fault(
@@ -771,7 +813,7 @@ fn check_task(
             .findings
             .push(Finding::fault(&t.id, "in progress with no done_criteria"));
     }
-    if t.status == TaskStatus::Done && t.proof.is_empty() {
+    if t.status == TaskStatus::Done && proofs.is_empty() {
         report
             .findings
             .push(Finding::fault(&t.id, "done with no proof"));
@@ -840,10 +882,10 @@ fn check_task(
     // make history look better, so a task closed before `ank done` existed could
     // never clear it: the assertion has to stay, and the assertion was what
     // fired. A line every reader learns to skip is worse than no line.
-    if !t.proof.is_empty() && t.proof.iter().all(|p| p.proof_type.is_weak()) {
+    if !proofs.is_empty() && proofs.iter().all(|p| p.proof_type.is_weak()) {
         // The first weak entry names the kind, which is what a reader acts on;
         // one finding per task, because the task is what is being judged.
-        let kind = t.proof[0].proof_type.as_str();
+        let kind = proofs[0].proof_type.as_str();
         report.findings.push(Finding::signal(
             &t.id,
             format!("weak proof '{kind}': it anchors nothing"),
@@ -867,8 +909,8 @@ fn check_task(
     // buying that quiet would cost a grace constant §6 only justifies for the
     // flooding thresholds.
     if t.status == TaskStatus::Done
-        && !t.proof.is_empty()
-        && !t.proof.iter().any(|p| p.proof_type == ProofType::Test)
+        && !proofs.is_empty()
+        && !proofs.iter().any(|p| p.proof_type == ProofType::Test)
         && done_on(repo, default_branch, &t.id)
     {
         report.findings.push(Finding::signal(
@@ -881,7 +923,7 @@ fn check_task(
         ));
     }
 
-    for p in &t.proof {
+    for p in &proofs {
         // What ran is anchored in the proof, not in the current state of
         // config.yml. A verifier weakened in any commit shows up here.
         if let Some((name, hash)) = p.verifier.as_ref().and_then(|v| v.split_once('@')) {
@@ -1334,7 +1376,7 @@ fn maintain(
                 Ok(None) => {
                     if prune {
                         claim::delete(&repo.root, id)?;
-                        report.pruned.push(claim::ref_name(id));
+                        report.pruned.push(claim::claim_ref(id));
                     } else {
                         report
                             .findings
@@ -1372,7 +1414,7 @@ fn maintain(
             // The information the ref carried is now where everybody reads it.
             if prune {
                 claim::delete(&repo.root, id)?;
-                report.pruned.push(claim::ref_name(id));
+                report.pruned.push(claim::claim_ref(id));
             }
         } else if matches!(record, Record::Completed(_)) {
             // Not a corpus anomaly: a branch never merged. The answer is human.
@@ -1387,6 +1429,69 @@ fn maintain(
             "coordination",
             format!("{branch} carries no commit yet: nothing pruned, nothing judged"),
         ));
+    }
+    Ok(())
+}
+
+/// The same maintenance for `refs/ank/proof/*` (ADR-493471d64ba0).
+///
+/// **The same predicate, and it has to be**: the ref lives exactly as long as
+/// what it carries is not yet where everyone reads it. A proof ref pruned on
+/// time would delete the record precisely during the window it exists to cover,
+/// which is why it carries no TTL and nothing here consults a clock.
+///
+/// Deleted only when *every* attestation it holds has an equivalent in the file
+/// on the default branch. A record carrying two runs of which one has landed is
+/// left alone: pruning it would lose the other, and rewriting the record to drop
+/// half of it would be this command editing an attestation, which it has no
+/// standing to do.
+fn maintain_proofs(
+    repo: &Repo,
+    default_branch: &str,
+    detached: &HashMap<EntityId, Vec<claim::AttestedProof>>,
+    statuses: &HashMap<EntityId, TaskStatus>,
+    prune: bool,
+    report: &mut Report,
+) -> Result<()> {
+    let rel = ank_relative(repo);
+    let mut ids: Vec<&EntityId> = detached.keys().collect();
+    ids.sort_by_key(|i| i.to_string());
+    for id in ids {
+        let path = format!("{rel}/tasks/{id}.md");
+        let Ok(found) = git::file_at(&repo.root, default_branch, &path) else {
+            // `maintain` has already reported an unreadable default branch
+            // once. A second line about the same cause would report the
+            // consequence as if it were a separate finding.
+            continue;
+        };
+        let Some(text) = found else {
+            // No such task on the default branch. An orphan only if the corpus
+            // does not carry it either — otherwise this is the ordinary case
+            // the ref exists for: a task finished on a branch nobody merged.
+            if !statuses.contains_key(id) {
+                if prune {
+                    claim::delete_at(&repo.root, &claim::proof_ref(id))?;
+                    report.pruned.push(claim::proof_ref(id));
+                } else {
+                    report
+                        .findings
+                        .push(Finding::signal(id, "orphan proof ref: no such task"));
+                }
+            }
+            continue;
+        };
+        let Ok(Entity::Task(landed)) = parse_entity(&text) else {
+            continue;
+        };
+        let settled = detached[id].iter().all(|a| {
+            landed.proof.iter().any(|p| {
+                p.proof_type == a.proof.proof_type && p.reference.trim() == a.proof.reference.trim()
+            })
+        });
+        if settled && prune {
+            claim::delete_at(&repo.root, &claim::proof_ref(id))?;
+            report.pruned.push(claim::proof_ref(id));
+        }
     }
     Ok(())
 }
@@ -2219,6 +2324,10 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     let kind = proof.proof_type.as_str().to_string();
     let reference = proof.reference.clone();
 
+    if inv.has("--detached") {
+        return detached(inv, repo, &id, &proof, identity, out);
+    }
+
     // Appended. The entries already there are not read, rewritten or reordered
     // — they are simply still in the vector.
     task.proof.push(proof);
@@ -2246,6 +2355,65 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
             inv.style().advanced("attested"),
             inv.style().id(&id.to_string())
         );
+    }
+    Ok(0)
+}
+
+/// `--detached`: the attestation goes to `refs/ank/proof/<id>` and no file is
+/// touched (ADR-493471d64ba0).
+///
+/// **The point is what does not happen.** A green pipeline is a statement about
+/// a tree, made by an environment nobody working on a branch controls, and §12
+/// forbids ank from committing. Requiring that statement to arrive as a commit
+/// put the most trustworthy proof behind the least trustworthy delivery, and in
+/// practice meant it never arrived. So nothing here writes to `.ank/`, nothing
+/// bumps a version, and `git status` after this command is what it was before.
+///
+/// No log entry either, for the same reason and not as an omission: the log is
+/// a file. What a log line would have carried — who, when — is in the record.
+fn detached(
+    inv: &Invocation,
+    repo: &Repo,
+    id: &EntityId,
+    proof: &ank_core::Proof,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<i32> {
+    let kind = proof.proof_type.as_str();
+    let reference = proof.reference.clone();
+    let (written, entries) = claim::attach_proof(&repo.root, id, proof, identity)?;
+    if written.cas == claim::Cas::Lost {
+        // Two attestations racing on one task. ADR-493471d64ba0 argues this is
+        // not a case anybody meets — one ref per task, and pipelines attest
+        // different tasks — and "not met" is not "cannot happen", so it is an
+        // ordinary lost swap naming the retry rather than a silent overwrite.
+        return Err(
+            CliError::new(4, format!("another attestation reached {id} first")).with_hint(format!(
+                "ank attest {id} --proof {kind}:{reference} --detached"
+            )),
+        );
+    }
+
+    if inv.json() {
+        let _ = writeln!(
+            out,
+            "{{\"task\":\"{id}\",\"attached\":{{\"type\":\"{kind}\",\"ref\":{}}},\
+             \"detached_proofs\":{entries},\"pushed\":{}}}",
+            json_str(&reference),
+            written.sync == claim::Sync::Pushed
+        );
+    } else if !inv.quiet() {
+        let _ = writeln!(
+            out,
+            "{} {} {kind}:{reference} ({entries} detached)",
+            inv.style().advanced("attested"),
+            inv.style().id(&id.to_string())
+        );
+    }
+    // Standard error, like every other coordination warning: stdout under
+    // `--json` is a parser's input (§4).
+    if let Some(warning) = written.sync.proof_warning() {
+        eprintln!("{} {warning}", inv.style().on_stderr().yellow("warning:"));
     }
     Ok(0)
 }
@@ -2616,6 +2784,14 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         Entity::Task(t) => Some(edges_of(repo, t)?),
         Entity::Adr(_) => None,
     };
+    // The union of §3's proof list with what the proof ref carries
+    // (ADR-493471d64ba0). Empty for an ADR, which is measured by nothing, and
+    // empty for the great majority of tasks — one `rev-parse` that answers
+    // "absent", which is what a task with no attestation costs.
+    let detached = match &loaded.entity {
+        Entity::Task(t) => claim::detached_proofs(&repo.root, &t.id),
+        Entity::Adr(_) => Vec::new(),
+    };
 
     if inv.json() {
         let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
@@ -2623,6 +2799,10 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             Some(Record::Completed(c)) => {
                 format!("\"finished at {}\"", &c.commit[..7.min(c.commit.len())])
             }
+            // Reported and never coerced: the claim namespace carrying an
+            // attestation is a damaged plane, and answering `null` would
+            // present the task as free.
+            Some(Record::Proof(_)) => "\"a proof record on the claim ref\"".to_string(),
             None => "null".to_string(),
         };
         let derived = match &edges {
@@ -2635,8 +2815,9 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         };
         let _ = writeln!(
             out,
-            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"content\":{}}}",
+            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\"content\":{}}}",
             loaded.entity.id(),
+            detached_json(&detached),
             json_str(&text)
         );
     } else if !inv.quiet() {
@@ -2649,8 +2830,80 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             edge_section(out, "BLOCKED BY", blocked_by, inv.style());
             edge_section(out, "UNBLOCKS", unblocks, inv.style());
         }
+        if let Entity::Task(t) = &loaded.entity {
+            proof_section(out, t, &detached, inv.style());
+        }
     }
     Ok(0)
+}
+
+/// Every proof against the task, from both sources, each saying which it is
+/// (ADR-493471d64ba0).
+///
+/// **Printed only when something is detached**, and the asymmetry is about
+/// redundancy rather than about trust. The frontmatter above already lists the
+/// file's proofs byte for byte, so a section repeating them under every `show`
+/// of every finished task would be noise on the common path. What cannot be
+/// seen anywhere else is the union, and the union only exists when a ref
+/// carries something — at which point both halves are listed together, on the
+/// same lines, because a reader comparing them is exactly who this is for.
+fn proof_section(
+    out: &mut dyn Write,
+    task: &Task,
+    detached: &[claim::AttestedProof],
+    style: crate::style::Style,
+) {
+    if detached.is_empty() {
+        return;
+    }
+    let total = task.proof.len() + detached.len();
+    let _ = writeln!(out, "\n{}", style.header(&format!("PROOFS ({total})")));
+    // `file` and `detached` and not a mark on one of them alone: naming only
+    // the unusual case would make the display say which to prefer, and §3's
+    // list is not more authoritative than the ref. Between a `done` landing and
+    // its merge, the ref is the only place the reference exists at all.
+    let rows = task
+        .proof
+        .iter()
+        .map(|p| {
+            (
+                "file".to_string(),
+                p.proof_type.as_str(),
+                p.reference.clone(),
+            )
+        })
+        .chain(detached.iter().map(|a| {
+            (
+                format!("detached, {} {}", a.identity, a.attested),
+                a.proof.proof_type.as_str(),
+                a.proof.reference.clone(),
+            )
+        }))
+        .collect::<Vec<_>>();
+    for (i, (origin, kind, reference)) in rows.iter().enumerate() {
+        let connector = if i + 1 == rows.len() {
+            crate::style::glyph::LAST
+        } else {
+            crate::style::glyph::BRANCH
+        };
+        let _ = writeln!(out, "{connector}{kind}:{reference}  ({origin})");
+    }
+}
+
+fn detached_json(detached: &[claim::AttestedProof]) -> String {
+    let items: Vec<String> = detached
+        .iter()
+        .map(|a| {
+            format!(
+                "{{\"type\":\"{}\",\"ref\":{},\"by\":{},\"at\":\"{}\"}}",
+                a.proof.proof_type.as_str(),
+                json_str(&a.proof.reference),
+                json_str(&a.identity),
+                a.attested
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
 }
 
 /// One end of a `blocked_by` edge, resolved against the corpus.
@@ -3731,7 +3984,7 @@ mod tests {
         t.claim_as(&unmerged, "claude-code@ank", "A verifiable criterion.\n");
 
         let r = inspect(&t.repo(), &t.cfg(), None, true).unwrap();
-        assert_eq!(r.pruned, vec![claim::ref_name(&closed)], "{:?}", r.pruned);
+        assert_eq!(r.pruned, vec![claim::claim_ref(&closed)], "{:?}", r.pruned);
         assert!(
             claim::read(&t.0, &live).unwrap().is_some(),
             "an open task's claim is not maintenance's business"
