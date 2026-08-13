@@ -5,15 +5,16 @@ slug: two-live-claims-whose-scopes-intersect-are-named
 title: Two live claims whose scopes intersect are named at claim time, and never refused
 created: 2026-08-13T16:21:38Z
 author: claude-code/2.1.229
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/context.rs
   - docs/ank-spec-v1.1.md
 constraint: |
   claim names every live claim whose scope intersects the one being taken, with the paths in common, and takes the task regardless. The same computation is what find --free filters on. Scope overlap is a signal and never a refusal: refusing on it would turn a coarse glob into a lock.
+ratified: ac8836322753
 schema: 3
-version: 1
+version: 2
 ---
 
 Claims coordinate tasks, and at that job they are correct and cheap. Three agents
