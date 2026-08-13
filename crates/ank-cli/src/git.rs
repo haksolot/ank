@@ -158,18 +158,23 @@ pub fn remote(cwd: &Path) -> Result<Option<String>> {
 /// What a push of a claim ref did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pushed {
-    /// The remote took it: this clone holds the claim repository-wide.
+    /// The remote took it: what this clone wrote holds repository-wide.
     Ok,
     /// The remote refused the swap — another clone got there first. The object
     /// it holds instead, when `ls-remote` could name it.
     Refused { holds: Option<String> },
     /// The remote exists and could not be reached. Degrade, do not fail (§2):
-    /// the claim stands locally and the caller says so out loud.
+    /// the write stands locally and the caller says so out loud.
     Unreachable { reason: String },
 }
 
-/// Pushes a claim ref under a lease, which is the compare-and-swap of §7
-/// crossing clones.
+/// Pushes a ref under `refs/ank/*` with a lease, which is the compare-and-swap
+/// of §7 crossing clones.
+///
+/// Named for the ref and not for the claim: it carries claim records,
+/// completion records and detached proofs alike (ADR-493471d64ba0), and a
+/// helper called `push_claim` while pushing a proof would be a comment that
+/// lies in the one place a reader checks first.
 ///
 /// `expect` is the object the caller read before writing, exactly as it is for
 /// the local `update-ref`: `None` means the ref must not exist on the remote.
@@ -187,7 +192,7 @@ pub enum Pushed {
 /// failure is followed by one `ls-remote` of the same ref: an answer means the
 /// remote is there and the swap genuinely lost, and no answer at all means the
 /// remote is what failed. It costs a round trip on the failing path only.
-pub fn push_claim(
+pub fn push_ref(
     cwd: &Path,
     refname: &str,
     new: Option<&str>,
@@ -214,7 +219,7 @@ pub fn push_claim(
 }
 
 /// The object the remote holds at `refname`, or `None` when the ref is absent
-/// there. An unreachable remote is an error, which is what tells `push_claim`
+/// there. An unreachable remote is an error, which is what tells `push_ref`
 /// which kind of failure it just had.
 ///
 /// One line per ref, `<oid>\t<refname>`, which is what makes `ls-remote`
@@ -231,16 +236,18 @@ pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
         .find_map(|l| l.split_whitespace().next().map(str::to_string)))
 }
 
-/// Brings the remote's view of one claim ref into this clone.
+/// Brings the remote's view of one `refs/ank/*` ref into this clone.
 ///
 /// `claim` runs it before deciding, so a task held in another clone is refused
 /// with the holder named rather than taken and then rolled back. The push is
-/// still what arbitrates — this only closes the common case politely.
+/// still what arbitrates — this only closes the common case politely. A reader
+/// of a detached proof runs it for the other reason: the record it wants was
+/// written by a pipeline, in no clone at all (ADR-493471d64ba0).
 ///
 /// Failure is not an error to the caller: an unreachable remote means the
 /// answer is the local one, and the push that follows is where that gets said.
 /// Read for its exit code alone, never parsed.
-pub fn fetch_claim(cwd: &Path, refname: &str) -> Result<bool> {
+pub fn fetch_ref(cwd: &Path, refname: &str) -> Result<bool> {
     let spec = format!("+{refname}:{refname}");
     let out = output(cwd, &["fetch", "--quiet", "origin", spec.as_str()])?;
     Ok(out.status.success())

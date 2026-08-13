@@ -5716,18 +5716,32 @@ fn valid_value(flag: &str) -> &'static str {
 }
 
 /// The flags a verb's own help offers, read off the human output because that
-/// is the surface the claim is about.
-fn listed_flags(r: &Repo, verb: &str) -> Vec<String> {
+/// is the surface the claim is about, with whether each takes a value.
+///
+/// The pair matters and is not decoration: help renders a value-taking flag as
+/// `--name <v>` and a switch as `--name` alone, so handing a switch an argument
+/// would push a stray positional at the verb and measure the positional's
+/// refusal instead of the flag's. Read off the same line rather than from the
+/// specs, because the claim under test is about what help offers.
+fn listed_flags(r: &Repo, verb: &str) -> Vec<(String, bool)> {
     let out = stdout(&r.ank("claude-code@ank", &["help", verb]));
-    out.lines()
+    let Some(line) = out
+        .lines()
         .find(|l| l.trim_start().starts_with("flags:"))
-        .map(|l| {
-            l.split_whitespace()
-                .filter(|t| t.starts_with("--"))
-                .map(|t| t.to_string())
-                .collect()
+        .map(str::to_string)
+    else {
+        return Vec::new();
+    };
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| t.starts_with("--"))
+        .map(|(i, t)| {
+            let takes_value = tokens.get(i + 1).is_some_and(|n| n.starts_with('<'));
+            (t.to_string(), takes_value)
         })
-        .unwrap_or_default()
+        .collect()
 }
 
 /// **A flag `ank help` offers is a flag the verb can actually be given** (§9).
@@ -5796,11 +5810,12 @@ fn every_flag_the_help_offers_can_be_given_to_the_verb() {
         base_args.extend_from_slice(positionals);
         let baseline = code(&r.ank_env("claude-code@ank", &base_args, &env));
 
-        for flag in &flags {
-            let value = valid_value(flag);
+        for (flag, takes_value) in &flags {
             let mut args = base_args.clone();
             args.push(flag);
-            args.push(value);
+            if *takes_value {
+                args.push(valid_value(flag));
+            }
             let got = code(&r.ank_env("claude-code@ank", &args, &env));
             assert!(
                 got == baseline || baseline == 7,
@@ -6441,11 +6456,14 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 17] = [
+const NOT_A_PATH: [&str; 18] = [
     "--limit",
     "--criteria",
     "--ttl",
     "--proof",
+    // Carries no value at all, let alone a path: it names where the proof is
+    // written, and that address is a ref (ADR-493471d64ba0).
+    "--detached",
     "--reason",
     "--title",
     "--blocked-by",
@@ -7534,5 +7552,281 @@ fn review_prints_the_ratification_queue_it_is_described_by() {
     assert!(
         json.contains("\"proposed\":[]"),
         "the key stays, so a parser reads one shape rather than two: {json}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A proof that lives in a ref (ADR-493471d64ba0)
+// ---------------------------------------------------------------------------
+
+/// A finished task in a clone, and a second clone that can attest to it.
+///
+/// Three properties the fixture has to have, each of which cost a red run to
+/// discover. `done` happens before `cloned`, so both clones carry the task as
+/// `done` — `attest` applies to a finished task, and a clone reading it as open
+/// would test the refusal instead of the feature. `src/` exists, or the task's
+/// own scope is dead and `check` exits 8 before anything here is reached. And
+/// the completion carries a **commit** proof rather than a verifier's: `done`
+/// with a declared verifier records a `test` proof itself, which would leave
+/// the signal this feature silences unable to fire in the first place.
+fn attestable() -> (Repo, PathBuf) {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let sha = r.head();
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", ID, "--proof", &format!("commit:{sha}")],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let (_origin, other) = r.cloned();
+    // What `ank init` installs, and the reason ADR-493471d64ba0 says an
+    // existing repository needs no configuration change: one refspec already
+    // carries every namespace under refs/ank/, this one included. Both sides
+    // get it, because `cloned` wires the remote on the original too and the
+    // reading clone is the one that needs the fetch to bring anything.
+    for at in [&r.0, &other] {
+        let out = git_command(at)
+            .args(["config", "--add", "remote.origin.fetch", init_refspec()])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", stderr(&out));
+    }
+    (r, other)
+}
+
+/// Read from the binary's own constant through its help of `init`? No — it is
+/// not on any surface. Written here and asserted against `init` by
+/// `init_writes_the_same_refspec_this_suite_assumes`.
+fn init_refspec() -> &'static str {
+    "+refs/ank/*:refs/ank/*"
+}
+
+/// The refspec above is the one `ank init` actually installs.
+///
+/// A constant restated in a test is a constant free to drift; this is the one
+/// assertion that makes the restatement safe, and it fails the day `init`
+/// changes its mind.
+#[test]
+fn init_writes_the_same_refspec_this_suite_assumes() {
+    let dir = std::env::temp_dir().join(format!("ank-cli-refspec-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let out = git_command(&dir)
+        .args(["init", "-q", "-b", "main"])
+        .output();
+    assert!(out.unwrap().status.success());
+    // A positional and not `--repo`, which `init` refuses by name: it is the
+    // verb that makes a repository, so naming an existing one is a
+    // contradiction (TASK-b8a1a3d0d47c).
+    let out = ank_command()
+        .arg("init")
+        .arg(&dir)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let config = std::fs::read_to_string(dir.join(".git/config")).unwrap();
+    assert!(
+        config.contains(init_refspec()),
+        "init no longer writes {}: {config}",
+        init_refspec()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The criterion, end to end: clone B attests, clone A reads it, and neither
+/// repository grows a commit (ADR-493471d64ba0).
+///
+/// **What is being tested is an absence.** A green pipeline is a statement
+/// about a tree made by an environment with no branch, and §12 forbids ank from
+/// committing — so the value of this feature is entirely in what does not
+/// happen. Hence the byte comparison of the task file and the empty
+/// `git status`: an implementation that wrote the file and happened to leave it
+/// looking similar would pass a looser assertion.
+#[test]
+fn a_detached_proof_crosses_two_clones_and_neither_grows_a_commit() {
+    let (r, other) = attestable();
+    let file = other.join(".ank/tasks").join(format!("{ID}.md"));
+    let before = std::fs::read(&file).unwrap();
+    let head_a = r.head();
+    let head_b = git_command(&other)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    let head_b = String::from_utf8_lossy(&head_b.stdout).trim().to_string();
+
+    let out = ank_command()
+        .args(["attest", ID, "--proof", "test:ci-run-4242", "--detached"])
+        .arg("--repo")
+        .arg(&other)
+        .env("ANK_AGENT", "process:github-actions")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stderr(&out).contains("not pushed"),
+        "a reachable remote must take the proof: {}",
+        stderr(&out)
+    );
+
+    // Byte for byte, and no commit: the two halves of "writes no file".
+    assert_eq!(
+        std::fs::read(&file).unwrap(),
+        before,
+        "the task file moved, and a detached proof writes no file"
+    );
+    let status = git_command(&other)
+        .args(["status", "--porcelain"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&status.stdout).trim(),
+        "",
+        "the working tree is not clean after a detached attestation"
+    );
+
+    // Clone A has never seen the ref. One ordinary fetch is what brings it,
+    // through the refspec and not through anything ank had to be told.
+    let out = git_command(&r.0)
+        .args(["fetch", "--quiet", "origin"])
+        .output();
+    assert!(out.unwrap().status.success());
+
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ID]));
+    assert!(shown.contains("test:ci-run-4242"), "{shown}");
+    assert!(
+        shown.contains("detached") && shown.contains("process:github-actions"),
+        "the display must say which source a proof came from, and who stood \
+         behind it: {shown}"
+    );
+    // And the file's own proof is listed beside it, because the union prefers
+    // neither source.
+    assert!(shown.contains("PROOFS (2)"), "{shown}");
+
+    let json = stdout(&r.ank("claude-code@ank", &["show", ID, "--json"]));
+    assert!(
+        json.contains("\"detached_proofs\":[{\"type\":\"test\",\"ref\":\"ci-run-4242\""),
+        "{json}"
+    );
+
+    // Neither repository grew a commit, which is the whole point.
+    assert_eq!(r.head(), head_a, "clone A committed something");
+    let after_b = git_command(&other)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&after_b.stdout).trim(),
+        head_b,
+        "clone B committed something"
+    );
+}
+
+/// A signal that counts proofs counts both, or it fires on work that is
+/// anchored (ADR-493471d64ba0).
+///
+/// The window this covers is most of a branch's life: between a `done` landing
+/// and its merge, the ref is the only place a CI reference exists. A reader
+/// preferring the file would tell somebody to attest work already attested.
+#[test]
+fn a_detached_test_proof_silences_the_signal_that_counts_proofs() {
+    let (r, other) = attestable();
+    // The task is `done` on the default branch here, which is the gate the
+    // signal is behind — so it fires before the attestation and must stop
+    // after it. Without that, this test would pass on a signal that never ran.
+    let before = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        before.contains("done with no test proof"),
+        "the signal must fire first, or its silence proves nothing: {before}"
+    );
+
+    let out = ank_command()
+        .args(["attest", ID, "--proof", "test:ci-run-4242", "--detached"])
+        .arg("--repo")
+        .arg(&other)
+        .env("ANK_AGENT", "process:github-actions")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let out = git_command(&r.0)
+        .args(["fetch", "--quiet", "origin"])
+        .output();
+    assert!(out.unwrap().status.success());
+
+    let after = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !after.contains("done with no test proof"),
+        "the task is anchored by a ref and the signal still fires: {after}"
+    );
+}
+
+/// Pruned when the file catches up, and at no other time.
+///
+/// **No TTL, and the negative half is the one worth testing.** A proof ref
+/// pruned on time would delete the record precisely during the window it exists
+/// to cover, so `check` is run twice against a corpus the default branch has
+/// not caught up with, and the ref has to survive both.
+#[test]
+fn a_detached_proof_outlives_check_until_the_file_carries_it() {
+    let (r, other) = attestable();
+    let out = ank_command()
+        .args(["attest", ID, "--proof", "test:ci-run-4242", "--detached"])
+        .arg("--repo")
+        .arg(&other)
+        .env("ANK_AGENT", "process:github-actions")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let out = git_command(&r.0)
+        .args(["fetch", "--quiet", "origin"])
+        .output();
+    assert!(out.unwrap().status.success());
+
+    let refname = format!("refs/ank/proof/{ID}");
+    let present = |where_: &Path| {
+        git_command(where_)
+            .args(["rev-parse", "--verify", "--quiet", &refname])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    };
+    assert!(present(&r.0), "the fetch brought nothing");
+
+    for _ in 0..2 {
+        assert_eq!(code(&r.ank("claude-code@ank", &["check"])), 0);
+        assert!(
+            present(&r.0),
+            "check pruned a proof the default branch does not carry"
+        );
+    }
+
+    // Now the file catches up on the default branch, which is the one condition
+    // that retires the ref.
+    let out = r.ank(
+        "claude-code@ank",
+        &["attest", ID, "--proof", "test:ci-run-4242"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the proof lands in the file"]);
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["check"])), 0);
+    assert!(
+        !present(&r.0),
+        "the file on the default branch carries the same proof, and the ref \
+         is still there"
     );
 }
