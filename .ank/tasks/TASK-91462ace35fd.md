@@ -5,7 +5,7 @@ slug: the-golden-suite-covers-schema-3-the-flat-layout
 title: The golden suite covers schema 3, the flat layout and the log file
 created: 2026-08-11T22:27:12Z
 author: claude-code@sean-laptop
-status: in_progress
+status: done
 scope:
   - crates/ank-core/tests/golden/**
   - crates/ank-core/tests/golden.rs
@@ -30,8 +30,12 @@ done_criteria: |
   The suite fails against the current parser, which has not been changed yet. That
   failure is the deliverable.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31667147415"
+    criteria: 03029ee8e611
 schema: 2
-version: 3
+version: 5
 ---
 
 Second step, after the specification and before any parser change. The suite is
@@ -64,3 +68,5 @@ turns a signal into a refusal and locks 96 existing files out of their own forma
 
 ## Log
 - 2026-08-13T04:26:19Z claude-code@sean-laptop — Suite written and red against the current parser, which is the deliverable. It names four things ank-core does not have: Error::UnknownKind { kind }, a verified field on Task and Adr (Verified { by, at }), parse_log_file and append_log_file, and Error::MalformedLogLine { line }. Layout chosen: valid/ and invalid/ keep entity files exactly where they were, so the CRLF fixture never moves and its exemption in .gitattributes and the ci.yml line-endings step holds untouched; log fixtures live in valid/log/ and invalid/log/, paired to an entity by id alone, which mirrors .ank/entities and .ank/log. No invalid fixture for a malformed actor: ADR-3877 makes it a check finding and never a parse error, so the guard is a positive assertion that a pre-convention author parses. The body log stays tolerant and the file log is strict, because a file whose whole content is the log leaves a stray line nothing else to be.
+- 2026-08-13T04:30:29Z claude-code@sean-laptop — CI run 31667147415 on f7cc17d is the record of the deliverable: line endings green (LF everywhere, the CRLF fixture keeps its carriage returns), cargo fmt green, cargo test red on all three platforms naming Error::UnknownKind, the verified field on Task and Adr, parse_log_file, append_log_file and Error::MalformedLogLine. A green run here would have falsified the criterion, so this task anchors on the failing one and TASK-7c1f is what turns it green on the same branch.
+- 2026-08-13T04:30:32Z claude-code@sean-laptop — done, proof test:31667147415
