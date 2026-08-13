@@ -1757,17 +1757,17 @@ mod tests {
             }
         }
 
+        /// Through the store's own paths rather than a literal directory: the
+        /// fixture must not be the one place that still knows the layout.
         fn seed(&self, task: &Task) {
             let e = Entity::Task(task.clone());
-            std::fs::write(
-                self.0.join(".ank/tasks").join(format!("{}.md", task.id)),
-                serialize_entity(&e),
-            )
-            .unwrap();
+            let path = self.store().path_of(&task.id);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, serialize_entity(&e)).unwrap();
         }
 
         fn task_text(&self, id: &EntityId) -> String {
-            std::fs::read_to_string(self.0.join(".ank/tasks").join(format!("{id}.md"))).unwrap()
+            std::fs::read_to_string(self.store().read_path_of(id)).unwrap()
         }
     }
 

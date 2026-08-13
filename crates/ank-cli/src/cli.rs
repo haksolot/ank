@@ -1218,7 +1218,7 @@ pub fn version_line() -> String {
 fn not_implemented(spec: &CommandSpec) -> CliError {
     let task = spec.owner_task.unwrap_or("TASK-unknown");
     CliError::new(1, format!("'{}' is not implemented yet", spec.name))
-        .with_hint(format!("see .ank/tasks/{task}.md"))
+        .with_hint(format!("ank show {task}"))
 }
 
 /// Entry point. Returns the exit code; never calls `exit` itself, so that it

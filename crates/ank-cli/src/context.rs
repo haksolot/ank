@@ -1277,8 +1277,7 @@ After a blank one."
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
-            std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+            std::fs::create_dir_all(p.join(".ank/entities")).unwrap();
             let t = Temp(p);
             for args in [
                 vec!["init", "-q", "-b", "main"],
@@ -1317,12 +1316,8 @@ After a blank one."
         }
 
         fn write(&self, e: &Entity) {
-            let sub = match e.id().kind() {
-                EntityKind::Task => "tasks",
-                EntityKind::Adr => "adr",
-            };
             std::fs::write(
-                self.0.join(".ank").join(sub).join(format!("{}.md", e.id())),
+                crate::store::Store::new(self.0.join(".ank")).path_of(e.id()),
                 serialize_entity(e),
             )
             .unwrap();

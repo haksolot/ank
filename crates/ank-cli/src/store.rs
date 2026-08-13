@@ -13,7 +13,10 @@
 //!   alone compares nothing: two writers would read the same base version and
 //!   the second would overwrite the first with nothing to signal it.
 
-use ank_core::{parse_entity, resolve_prefix, serialize_entity, Entity, EntityId, EntityKind};
+use ank_core::{
+    append_log_file, parse_entity, parse_log, parse_log_file, resolve_prefix, serialize_entity,
+    Entity, EntityId, EntityKind, LogEntry,
+};
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -396,54 +399,144 @@ impl Store {
         &self.root
     }
 
-    fn subdir(kind: EntityKind) -> &'static str {
-        match kind {
-            EntityKind::Task => "tasks",
-            EntityKind::Adr => "adr",
-        }
-    }
+    /// The directory every entity is written to, whatever its kind
+    /// (ADR-c9f9d0d6f05d). The kind is already in the id prefix, which is
+    /// already in the file name; a per-kind directory would state it a third
+    /// time, and the only thing a third copy can do is disagree with the first
+    /// two.
+    pub const ENTITIES_DIR: &'static str = "entities";
 
-    /// The canonical path of an entity. The file name always carries the id.
+    /// The directories of the **previous** layout, one per kind.
+    ///
+    /// This is a window, not a feature. It exists for the one release across
+    /// which an existing corpus moves, and for early adopters who have one:
+    /// nobody outside this repository had a corpus when the layout changed,
+    /// which is what made the window short enough to be worth having at all. A
+    /// reader accepts these paths; a writer never lands in them, and `check`
+    /// reports a corpus still holding them with the command that moves it.
+    ///
+    /// Delete this constant and the two functions that read it, and the window
+    /// closes.
+    const LEGACY_DIRS: [(EntityKind, &'static str); 2] =
+        [(EntityKind::Task, "tasks"), (EntityKind::Adr, "adr")];
+
+    /// The canonical path of an entity: where a write lands, always. The file
+    /// name always carries the id.
     pub fn path_of(&self, id: &EntityId) -> PathBuf {
-        self.root
-            .join(Self::subdir(id.kind()))
-            .join(format!("{id}.md"))
+        self.root.join(Self::ENTITIES_DIR).join(format!("{id}.md"))
     }
 
-    /// The identifiers present on disk. A file whose name is not `<ID>.md` is
-    /// not an entity and is ignored here — temporary files, locks and free
-    /// notes therefore pass through listing without polluting it. It is
-    /// `check` that reports a stray `.md`, not the store.
-    pub fn list_ids(&self) -> Result<Vec<EntityId>> {
-        let mut ids = Vec::new();
-        for kind in [EntityKind::Task, EntityKind::Adr] {
-            let dir = self.root.join(Self::subdir(kind));
-            let rd = match fs::read_dir(&dir) {
-                Ok(rd) => rd,
-                Err(e) if e.kind() == ErrorKind::NotFound => continue,
-                Err(source) => return Err(StoreError::Io { path: dir, source }),
-            };
-            for entry in rd {
-                let entry = entry.map_err(|source| StoreError::Io {
-                    path: dir.clone(),
-                    source,
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) != Some("md") {
-                    continue;
-                }
-                let stem = match path.file_stem().and_then(|s| s.to_str()) {
-                    Some(s) => s,
-                    None => continue,
-                };
-                if let Ok(id) = EntityId::parse(stem) {
-                    if id.kind() == kind {
-                        ids.push(id);
-                    }
+    /// The path an entity is **read** from, which is the canonical one unless
+    /// the entity is still where the previous layout put it.
+    ///
+    /// **The flat layout wins**, and that is the decision the both-at-once case
+    /// needs. An id resolving in two directories must not produce two entities
+    /// and must not silently prefer whichever the filesystem enumerated first —
+    /// that is how a corpus grows two versions of a task that disagree. The
+    /// canonical copy is the newer one by construction, since every write lands
+    /// there, so it is the one that counts.
+    pub fn read_path_of(&self, id: &EntityId) -> PathBuf {
+        let canonical = self.path_of(id);
+        if canonical.exists() {
+            return canonical;
+        }
+        if let Some(legacy) = self.legacy_path_of(id) {
+            if legacy.exists() {
+                return legacy;
+            }
+        }
+        canonical
+    }
+
+    /// The previous layout's subdirectory for a kind.
+    ///
+    /// Exposed for the callers that must *name* a path to git rather than open
+    /// a file — `accept` staging a commit, `check` asking what a branch holds.
+    /// Part of the window, and it goes when the window does.
+    pub fn legacy_subdir(kind: EntityKind) -> Option<&'static str> {
+        Self::LEGACY_DIRS
+            .iter()
+            .find(|(k, _)| *k == kind)
+            .map(|(_, dir)| *dir)
+    }
+
+    fn legacy_path_of(&self, id: &EntityId) -> Option<PathBuf> {
+        Self::LEGACY_DIRS
+            .iter()
+            .find(|(kind, _)| *kind == id.kind())
+            .map(|(_, dir)| self.root.join(dir).join(format!("{id}.md")))
+    }
+
+    /// Is any part of this corpus still in the previous layout? Answered as a
+    /// count of entities, so that `check` can report it once for the corpus
+    /// rather than once per file.
+    pub fn legacy_layout_count(&self) -> Result<usize> {
+        let mut n = 0;
+        for (kind, dir) in Self::LEGACY_DIRS {
+            for id in self.ids_in(&self.root.join(dir))? {
+                if id.kind() == kind {
+                    n += 1;
                 }
             }
         }
+        Ok(n)
+    }
+
+    /// The identifiers present on disk, in **both** layouts, each appearing
+    /// once. A file whose name is not `<ID>.md` is not an entity and is ignored
+    /// here — temporary files, locks and free notes therefore pass through
+    /// listing without polluting it. It is `check` that reports a stray `.md`,
+    /// not the store.
+    pub fn list_ids(&self) -> Result<Vec<EntityId>> {
+        let mut ids = self.ids_in(&self.root.join(Self::ENTITIES_DIR))?;
+        for (kind, dir) in Self::LEGACY_DIRS {
+            for id in self.ids_in(&self.root.join(dir))? {
+                // The directory of the previous layout carried the kind, and a
+                // file sitting in the wrong one is not an entity of that kind:
+                // the same strictness the file name already gets.
+                if id.kind() == kind {
+                    ids.push(id);
+                }
+            }
+        }
+        // One corpus, and no entity counted twice: an id present in both
+        // layouts is one entity, read from the canonical copy.
         ids.sort_by_key(|id| id.to_string());
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// The entity ids named by the `<ID>.md` files of one directory. A missing
+    /// directory holds no entity, which is not an error: a corpus that never
+    /// had ADRs has no `adr/`, and one already moved has no `tasks/`.
+    fn ids_in(&self, dir: &Path) -> Result<Vec<EntityId>> {
+        let mut ids = Vec::new();
+        let rd = match fs::read_dir(dir) {
+            Ok(rd) => rd,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(ids),
+            Err(source) => {
+                return Err(StoreError::Io {
+                    path: dir.to_path_buf(),
+                    source,
+                })
+            }
+        };
+        for entry in rd {
+            let entry = entry.map_err(|source| StoreError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                continue;
+            };
+            if let Ok(id) = EntityId::parse(stem) {
+                ids.push(id);
+            }
+        }
         Ok(ids)
     }
 
@@ -494,7 +587,7 @@ impl Store {
     }
 
     pub fn load(&self, id: &EntityId) -> Result<Loaded> {
-        let path = self.path_of(id);
+        let path = self.read_path_of(id);
         match self.load_path(&path) {
             Err(StoreError::NotFound(_)) => Err(StoreError::NotFound(id.to_string())),
             other => other,
@@ -534,13 +627,40 @@ impl Store {
     /// to read again. On success, the version written is exactly
     /// `base_version + 1` — the store increments it, so that the caller cannot
     /// forget to.
+    /// A write **always lands in `entities/`**, and when the entity was still
+    /// in the previous layout it leaves that file behind in the same operation.
+    ///
+    /// Two states are possible if this is interrupted between the two acts, and
+    /// only one of them is reachable: the file exists in both places, which
+    /// [`Store::read_path_of`] already resolves to the canonical copy. So the
+    /// worst case is a leftover `check` already reports, and it heals on the
+    /// next write. The other order — remove then write — would lose the entity,
+    /// which is why it is not the order used.
+    ///
+    /// This moves one file at a time and is not a migration verb: the corpus is
+    /// moved in one reviewable commit, and this only stops a file the tool has
+    /// just rewritten from being written back into a layout no writer produces.
     pub fn write(&self, entity: &Entity, base_version: u64) -> Result<u64> {
         let path = self.path_of(entity.id());
+        // Before the lock, because the lock file is a sibling of the entity:
+        // a corpus still in the previous layout has no `entities/` yet, and
+        // acquiring a lock inside a directory that does not exist fails with an
+        // I/O error naming the lock rather than the cause.
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        // The lock is taken on the canonical path, which is derived from the id
+        // and is therefore the same whichever layout the file is read from.
+        //
         // The lock covers the read, the comparison and the write. Releasing it
         // between the read and the write would reintroduce exactly the race
         // the compare-and-swap exists to close.
         let _lock = Lock::acquire(&path)?;
-        let current = self.load_path(&path)?;
+        let read_from = self.read_path_of(entity.id());
+        let current = self.load_path(&read_from)?;
         let found = version_of(&current.entity);
         if found != base_version {
             return Err(StoreError::VersionConflict {
@@ -553,7 +673,80 @@ impl Store {
         let mut next = entity.clone();
         set_version(&mut next, next_version);
         write_atomic(&path, &serialize_entity(&next))?;
+        if read_from != path {
+            fs::remove_file(&read_from).map_err(|source| StoreError::Io {
+                path: read_from.clone(),
+                source,
+            })?;
+        }
         Ok(next_version)
+    }
+
+    // -----------------------------------------------------------------------
+    // The log, a file of its own since schema 3
+    // -----------------------------------------------------------------------
+
+    /// The path of an entity's log, computed from the same id with no lookup.
+    pub fn log_path_of(&self, id: &EntityId) -> PathBuf {
+        self.root.join("log").join(format!("{id}.md"))
+    }
+
+    /// The log of an entity, from wherever it currently lives.
+    ///
+    /// The file when there is one, the `## Log` section of the body otherwise.
+    /// Never both, and never unioned: an entity carries its log in one place,
+    /// and a reader that added the two would double every entry of a corpus
+    /// caught mid-move. A missing file is an empty log and never an error.
+    pub fn log_of(&self, loaded: &Loaded) -> Result<Vec<LogEntry>> {
+        let path = self.log_path_of(loaded.entity.id());
+        match fs::read_to_string(&path) {
+            Ok(text) => parse_log_file(&text).map_err(|source| StoreError::Parse { path, source }),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(parse_log(body_of(&loaded.entity))),
+            Err(source) => Err(StoreError::Io { path, source }),
+        }
+    }
+
+    /// Appends one entry to an entity's log, **where that log already is**.
+    ///
+    /// An entity whose body still carries a `## Log` section keeps it: writing
+    /// the entry into a new file instead would split one history across two
+    /// places, and since reading prefers the file, the older half would go
+    /// silent — which is the exact failure the schema bump exists to prevent.
+    /// Everything else appends to the file, which is what a schema 3 entity has.
+    ///
+    /// Returns `true` when the entry went to the file, so the caller knows
+    /// whether the entity file itself was touched.
+    pub fn append_to_log(&self, loaded: &Loaded, entry: &LogEntry) -> Result<bool> {
+        if parse_log(body_of(&loaded.entity)).is_empty()
+            && !body_of(&loaded.entity)
+                .lines()
+                .any(|l| l.trim_end() == ank_core::log::LOG_HEADER)
+        {
+            let path = self.log_path_of(loaded.entity.id());
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+            let _lock = Lock::acquire(&path)?;
+            let current = match fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+                Err(source) => return Err(StoreError::Io { path, source }),
+            };
+            write_atomic(&path, &append_log_file(&current, entry))?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+}
+
+/// The body of an entity, whichever kind it is.
+fn body_of(entity: &Entity) -> &str {
+    match entity {
+        Entity::Task(t) => &t.body,
+        Entity::Adr(a) => &a.body,
     }
 }
 
@@ -947,5 +1140,119 @@ mod tests {
             StoreError::LockTimeout { last, .. } => assert_eq!(last, Refusal::Denied),
             other => panic!("expected LockTimeout, got {other:?}"),
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The two layouts, and the log
+    // -----------------------------------------------------------------------
+
+    /// A write lands in `entities/` whatever the entity was read from, and the
+    /// copy it was read from does not survive to disagree with it.
+    #[test]
+    fn a_write_moves_an_entity_out_of_the_previous_layout() {
+        let root = TempRoot::new();
+        let store = Store::new(&root.0);
+        let e = task("000000000001", "Example task");
+        let legacy = root.0.join("tasks").join(format!("{}.md", e.id()));
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, serialize_entity(&e)).unwrap();
+
+        assert_eq!(store.read_path_of(e.id()), legacy);
+        assert_eq!(store.legacy_layout_count().unwrap(), 1);
+        assert_eq!(store.list_ids().unwrap().len(), 1);
+
+        store.write(&e, 1).unwrap();
+
+        assert!(
+            store.path_of(e.id()).exists(),
+            "every write lands in entities/"
+        );
+        assert!(!legacy.exists(), "and nothing is left behind");
+        assert_eq!(store.legacy_layout_count().unwrap(), 0);
+    }
+
+    /// One corpus. An id in both layouts is one entity, read from the canonical
+    /// copy -- decided rather than left to whichever the filesystem enumerates
+    /// first, which is how a corpus grows two versions of a task that disagree.
+    #[test]
+    fn an_id_in_both_layouts_is_one_entity_and_the_flat_copy_wins() {
+        let root = TempRoot::new();
+        let store = Store::new(&root.0);
+        let flat = task("000000000001", "The copy that counts");
+        let stale = task("000000000001", "The copy left behind");
+        store.create(&flat).unwrap();
+        let legacy = root.0.join("tasks").join(format!("{}.md", flat.id()));
+        fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        fs::write(&legacy, serialize_entity(&stale)).unwrap();
+
+        assert_eq!(
+            store.list_ids().unwrap().len(),
+            1,
+            "no entity counted twice"
+        );
+        let Entity::Task(t) = store.load(flat.id()).unwrap().entity else {
+            panic!("not a task")
+        };
+        assert_eq!(t.title, "The copy that counts");
+    }
+
+    /// The log is a file, addressed by the same id, and a missing one is an
+    /// empty log rather than an error.
+    #[test]
+    fn a_log_file_is_appended_to_and_a_missing_one_reads_empty() {
+        let (root, store, e) = seeded();
+        let loaded = store.load(e.id()).unwrap();
+        assert!(store.log_of(&loaded).unwrap().is_empty());
+        assert!(!store.log_path_of(e.id()).exists());
+
+        let entry = LogEntry {
+            timestamp: "2026-08-12T09:14Z".into(),
+            who: "claude-code/1.4.2".into(),
+            message: "learned something".into(),
+        };
+        assert!(store.append_to_log(&loaded, &entry).unwrap());
+        assert_eq!(
+            store.log_path_of(e.id()),
+            root.0.join("log").join(format!("{}.md", e.id()))
+        );
+
+        let entries = store.log_of(&loaded).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].who, "claude-code/1.4.2");
+
+        // The entity file itself is untouched: an append is not a transition.
+        let after = fs::read_to_string(store.path_of(e.id())).unwrap();
+        assert_eq!(after, serialize_entity(&e));
+    }
+
+    /// An entity whose body still carries a `## Log` section keeps it. Writing
+    /// the entry into a new file would split one history across two places, and
+    /// since reading prefers the file the older half would go silent -- which is
+    /// the exact failure the schema bump exists to prevent.
+    #[test]
+    fn an_entity_whose_log_is_still_in_its_body_keeps_it_there() {
+        let root = TempRoot::new();
+        let store = Store::new(&root.0);
+        let Entity::Task(mut t) = task("000000000001", "Example task") else {
+            panic!("not a task")
+        };
+        t.body =
+            "\nFree body.\n\n## Log\n- 2026-07-26T14:02Z marie@laptop \u{2014} an entry\n".into();
+        let e = Entity::Task(t);
+        store.create(&e).unwrap();
+
+        let loaded = store.load(e.id()).unwrap();
+        assert_eq!(store.log_of(&loaded).unwrap().len(), 1, "read where it is");
+
+        let entry = LogEntry {
+            timestamp: "2026-08-12T09:14Z".into(),
+            who: "claude-code/1.4.2".into(),
+            message: "learned something".into(),
+        };
+        assert!(
+            !store.append_to_log(&loaded, &entry).unwrap(),
+            "the file form is not where this entity's log lives"
+        );
+        assert!(!store.log_path_of(e.id()).exists());
     }
 }

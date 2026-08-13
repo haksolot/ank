@@ -5,7 +5,7 @@ slug: the-store-writes-the-flat-layout-reads-both-and
 title: The store writes the flat layout, reads both, and check names the leftover
 created: 2026-08-11T22:28:04Z
 author: claude-code@sean-laptop
-status: open
+status: done
 scope:
   - crates/ank-cli/src/store.rs
   - crates/ank-cli/src/human.rs
@@ -31,8 +31,12 @@ done_criteria: |
   Asserted through the binary in crates/ank-cli/tests/cli.rs on three fixtures: old
   layout, new layout, and both at once.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31671917672"
+    criteria: e412d6d45e2a
 schema: 2
-version: 1
+version: 4
 ---
 
 Fourth step, and the last one before this repository's own corpus moves.
@@ -64,3 +68,7 @@ line for every file written before the rule existed.
 `index.db` is derived and carries the path already. Confirm it rebuilds rather
 than assuming it; a stale index that resolves to a moved file is a bug that will
 look like a parser problem.
+
+## Log
+- 2026-08-13T05:53:23Z claude-code@sean-laptop — Store, index and check read both layouts and write only the flat one. Decisions: the flat copy wins when an id resolves in both, because every write lands there so it is the newer by construction; and a write of an entity still in the previous layout removes that file in the same operation, so the both-at-once state is never something the ordinary loop produces. Interrupted between the two acts leaves the entity in both places, which read_path_of already resolves and which heals on the next write -- the other order would lose the entity. Three defects surfaced that the layout change would have hidden: git::ratification_at memoises by (cwd, id) and not by path, so looping candidate paths at the call site cached the first miss and read every ratification in this repository as unverifiable; maintain() built its own tasks/<id>.md path rather than asking; and git add refuses a pathspec matching neither tree nor index, so accept stages the previous layout's path only when a file is actually there. Two things outside this task's scope and both forced: init created tasks/ and adr/, which is a writer producing the layout no writer produces, and it now creates entities/ and log/; and the not-implemented hint named a .ank path, which ADR-01b6dd05f0db says nothing should. The log wiring is not here: it touches commands.rs, done.rs and context.rs, so it is TASK-e70f3a12185a, and TASK-9bff now waits on it because a corpus whose logs move needs a CLI that reads them.
+- 2026-08-13T05:58:16Z claude-code@sean-laptop — done, proof test:31671917672
