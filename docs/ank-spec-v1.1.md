@@ -546,7 +546,7 @@ ank close <id> --reason <r>
 ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
                             [--scope <glob>...] [--drop-scope <glob>...]
                             [--criteria <c>]
-ank attest <id> --proof <type>:<ref>
+ank attest <id> --proof <type>:<ref>   [--detached]
 ank edit <id>
 ank graph [<path>]
 ank scope <path>
@@ -1055,6 +1055,15 @@ The nominal case is **one working tree per agent**, each on its own branch. That
 
 - **Durable state** (tasks, ADRs, log) — replicated, versioned, offline-first. Pure git.
 - **Ephemeral coordination** (claims) — short TTL, never historised, disposable. The only thing requiring an arbiter.
+- **External attestation** (detached proofs) — durable, and authored by an actor with no branch. Neither of the above, and named here rather than forced into one of them.
+
+**The third category is not a softening of the split, it is what the split did not anticipate** (ADR-493471d64ba0). Durable state is authored by whoever is doing the work, travels with their code and is arbitrated at merge like any file. Coordination is disposable and belongs to nobody. An attestation is neither: a green pipeline is a statement about a tree, produced by an environment that controls no branch, and §12 forbids ank from committing — so it must survive, and it has no tree to travel in. Refs are the right home for exactly that, and the machinery is the one already described below: `refs/ank/proof/<task-id>`, one ref per task, the record written as a blob, the push a `--force-with-lease` compare-and-swap. The refspec `ank init` installs covers `refs/ank/*` and therefore covers this namespace without any repository being reconfigured.
+
+`ank attest <id> --proof <type>:<ref> --detached` writes that record and **writes no file**: no frontmatter moves, no `version` is bumped, and `git status` after it reads exactly as it did before. There is no log entry either, and that is not an omission — the log is a file, and what a log line would have carried is in the record, which names the actor and the instant.
+
+**Every reader unions the two sources and prefers neither.** `show` and `check` read the task's `proof` list and its proof ref together, and say which source each entry came from; a signal that counts proofs counts both, or it fires on work that is already anchored. Preferring the file would be wrong in the direction that matters: between a `done` landing on a branch and its merge, the ref is the only place the reference exists at all, and that window is most of a branch's life.
+
+**A proof ref carries no TTL and is never pruned on time.** It is pruned once an equivalent proof appears in the task file **on the default branch** — the same predicate that governs a completion ref just below, and for the same reason: the ref lives exactly as long as the information it carries is not yet where everyone reads it. Pruning it on a clock would delete the record precisely during the window it exists to cover.
 
 Claims live in dedicated git refs, **one ref per task**: `refs/ank/claims/<task-id>`. A single ref for all claims would put unrelated claims in contention — two agents taking two different tasks would fight over the same non-fast-forward push. Per task, git's CAS arbitrates exactly the conflict that matters and no other. These refs are never merged into the working branch: no noise in diffs, no conflicts on files.
 
@@ -1065,6 +1074,8 @@ Expiry is evaluated on the timestamp the claim carries, with a 2-minute clock-dr
 ### Ref lifecycle: pickup, completion, pruning
 
 A task's ref has **two states**, and the record it points to says which: `claim` (a holder, an expiry) or `completed` (a commit, a branch, an identity, the `done` timestamp). One ref per task in both cases, at the same address `refs/ank/claims/<task-id>`: two distinct namespaces would let a stale claim and a completion coexist for the same task — exactly the ambiguity the ref exists to settle — and would split git's compare-and-swap across two addresses where there is only one conflict.
+
+**A detached proof is a third address and not a third state**, and the two rules do not conflict because they answer different questions. `claim` and `completed` are mutually exclusive answers to *who holds this task*, which is why one address settles them. An attestation answers *what anchors this work*, and a task legitimately carries a completion record and a detached proof at the same time — a `done` waiting for its merge, with the run that proved it already recorded. Collapsing them onto one address would make each erase the other, which is the ambiguity the separation exists to prevent, read from the other side. A record whose state contradicts its namespace is reported by `check` and never coerced into the other reading.
 
 - **`claim`** writes a `claim` record. The primitive is the atomic ref update: two concurrent agents, one winner, code 4 for the other.
 - **`release`, `close`, pickup after expiry** replace or delete the `claim` record, unchanged.
@@ -1296,7 +1307,7 @@ File format · one command surface, refusing on state and never on identity, wit
 | Deferred | Reason |
 |---|---|
 | `--since` (differential context) | Large token saving on long loops, but requires per-agent "seen" state. First candidate for v1.1. |
-| A CI calling `attest` on its own | The verb itself is in v1 (above). What is deferred is a pipeline appending its run reference without being asked — an integration per provider, not a command. |
+| A CI calling `attest` on its own | The verb itself is in v1 (above). What is deferred is a pipeline appending its run reference without being asked — an integration per provider, not a command. **Still deferred, and `--detached` does not lift it** (§7, ADR-493471d64ba0): that flag removes the obstacle a pipeline used to hit, which was having to produce a commit to record anything, and removing an obstacle is not calling the verb. A repository that wires `ank attest --detached` into the end of its workflow has written an integration; the binary calls nothing on its own, and that is the part the deferral was always protecting. |
 | `.ank/` merge driver | The resolution rules are fixed (§7); automating them can wait for the first real conflicts. |
 | `touched` inferred from commits | Scope-drift detection. A git dependency, not blocking to get started. **Still deferred**, and rename detection on a dead scope (§11, ADR-97be6d2bd4f2) does not lift it: that walks the history of a path already matching nothing and reports where it went, on a dead scope and on nothing else. Inferring `touched` means reading every commit against every live scope, continuously, to detect drift *before* death. Strictly narrower is not a first instalment. |
 | `enforced_by` (mechanisation) | The underlying mechanism against context inflation (see §11). Useless while the ADR corpus is small. |
