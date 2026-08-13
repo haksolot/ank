@@ -5,15 +5,16 @@ slug: a-write-whose-only-product-is-a-ref-fails-when-t
 title: A write whose only product is a ref fails when the ref does not reach the remote
 created: 2026-08-13T16:20:32Z
 author: claude-code/2.1.229
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - .github/workflows/ci.yml
   - docs/ank-spec-v1.1.md
 constraint: |
   A verb whose whole product is a ref exits non-zero when the push of that ref is refused. A verb that also wrote to disk degrades, warns and exits zero. Which of the two a verb is, its help says; a caller never has to infer it from what the verb happens to touch.
+ratified: 2840cf51dcd9
 schema: 3
-version: 1
+version: 2
 ---
 
 Section 2 says degrade rather than fail, and that principle is right for a claim:
