@@ -538,7 +538,7 @@ ank release [<id>] --reason <r>
 ank new task --title <t> --scope <glob>... [--criteria <c>] [--blocked-by <id>...]
 ank new adr  --title <t> --scope <glob>... --constraint <c> [--supersedes <id>]
 ank new task|adr            (no flags: pre-filled template in $EDITOR)
-ank find <query>            [--type task|adr] [--status ...] [--scope <path>]
+ank find <query>            [--type task|adr] [--status ...] [--scope <path>] [--free]
 ank status
 ank review [<path>]
 ank accept <id>
@@ -567,6 +567,12 @@ ank --version               (the build itself: version, commit and skill revisio
 `--limit` applies **only to tasks**, never to constraints.
 
 **`find` is subject to the same cap as `context`**, one line per result, and it announces what it cut. A search command without a budget is a context-explosion vector at least as effective as a badly bounded `context`. `--scope <path>` filters by scope match — it is the command the truncation counters point to (§5).
+
+**Scope overlap is reported and never refused** (ADR-052accd6e3b2). `claim` prints one line per live claim held by another identity whose scope meets the scope of the task being taken — the holder, the task, and the ground the two have in common — and then takes the task: the exit code is 0 and the claim stands. The line names paths rather than the fact of an overlap, because `crates/ank-cli/**` against `crates/ank-cli/tests/**` overlaps on everything under the second, and "these overlap" leaves the reader exactly where they started. Where both globs are literal the answer is a path; where one is a pattern the answer is the narrower pattern, written as a glob rather than expanded into a file list that would be wrong the moment a file is added.
+
+Refusing on it is the mistake, not the omission. Scope overlap is coarse: one held task scoped `crates/ank-cli/tests/**` locks every task that touches any test, and refusing would make the glob a mutex — which pushes agents to declare narrower scopes than the truth to get past it, the one failure mode a guard must not have. A **lapsed** claim is not a live one here either, exactly as in the refusals above: the signal would otherwise fire on abandoned work forever.
+
+`find --free` is the same computation for the agent choosing rather than taking: it keeps the open tasks whose scope meets no live claim, and **says how many it hid**. A filter that silently returns two candidates out of seven is a filter that will be trusted for the wrong reason. Without the flag, `find` is unchanged.
 
 **Writing to `log` requires holding the claim**; reading it requires nothing. It is the task's anchoring register: if anyone can write to it, it stops being a reliable trace of what the holder did — that is a state condition on the claim, not a condition on who is calling, and it is why `log <id>` with no message is a read available to everybody. Someone who wants to annotate without holding the task edits the body of the entity, which is already the normal route for anything that is not a state transition.
 

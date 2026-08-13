@@ -34,6 +34,7 @@ use ank_core::{
     append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
     EntityKind, LogEntry, Task, TaskStatus, SCHEMA_VERSION,
 };
+use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
@@ -870,6 +871,15 @@ pub fn find(
     let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
     let shorts = context::short_ids(&ids);
 
+    // One read of the coordination plane for the whole verb: `--free` filters
+    // on it, and the listing below marks its rows from it. Two reads would be
+    // two chances to disagree about which claims were live.
+    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    // The ground every live claim covers, taken while the whole corpus is still
+    // in hand: a claimed task need not match the query, so this cannot be
+    // derived from the hits.
+    let claimed_scopes = live_claim_scopes(&coord, &all);
+
     // The search is the index's, and it arrives ranked. With no query there is
     // nothing to rank, so the corpus comes back in identifier order.
     let ranked = if query.is_empty() {
@@ -897,6 +907,12 @@ pub fn find(
         })
         .collect();
 
+    let (hits, hidden) = if inv.has("--free") {
+        free_of_live_claims(&coord, &claimed_scopes, hits)
+    } else {
+        (hits, 0)
+    };
+
     let total = hits.len();
     let cap = cap_from(cfg);
     let shown = total.min(cap);
@@ -916,7 +932,7 @@ pub fn find(
             .collect();
         let _ = writeln!(
             out,
-            "{{\"total\":{total},\"shown\":{shown},\"results\":[{}]}}",
+            "{{\"total\":{total},\"shown\":{shown},\"hidden\":{hidden},\"results\":[{}]}}",
             items.join(",")
         );
         return Ok(0);
@@ -931,11 +947,8 @@ pub fn find(
     // indistinguishable from any other claimed one — `[claimed:who]` says who,
     // and the reader has to recognise their own identity to answer "is that
     // mine".
-    // One read of the coordination plane, and it answers both questions this
-    // listing has: which row the caller holds, and what every row's marker
-    // says. It replaces the enumeration `held_by` already performed here and
-    // threw all but one answer away, so the listing pays no more than before.
-    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    // The plane was read once, above: it answers which row the caller holds and
+    // what every row's marker says, and it is what `--free` filtered on.
     let held = crate::context::held_in(&coord, identity);
     for r in &hits[..shown] {
         let short = shorts
@@ -966,7 +979,87 @@ pub fn find(
     if total == 0 {
         let _ = writeln!(out, "no match");
     }
+    if hidden > 0 {
+        // Said out loud, because the whole risk of this filter is being trusted
+        // for the wrong reason: one held task whose scope was
+        // `crates/ank-cli/tests/**` made five of seven candidates unworkable,
+        // and a filter that silently returns two out of seven reads as a corpus
+        // with two tasks left in it (ADR-052accd6e3b2).
+        let _ = writeln!(out, "{hidden} hidden, scope overlaps a live claim");
+    }
     Ok(0)
+}
+
+/// The ground each live claim covers, as the index knows it.
+///
+/// A **live** claim only: `Lapsed` and `Finished` are not live, and reading them
+/// as such is what would make the filter fire on abandoned work forever — the
+/// same predicate `claim` applies, and ADR-052accd6e3b2 is explicit that getting
+/// it wrong is the way this signal becomes noise. A claimed id the index does
+/// not carry is a branch that has not arrived here, and it covers nothing this
+/// checkout can name.
+/// Owned rather than borrowed, because the rows it reads are about to be
+/// consumed by the ranking a line below.
+fn live_claim_scopes(
+    coord: &HashMap<EntityId, context::Coordination>,
+    all: &[Row],
+) -> Vec<(EntityId, Vec<String>)> {
+    let mut live: Vec<(EntityId, Vec<String>)> = all
+        .iter()
+        .filter(|r| {
+            matches!(
+                coord.get(&r.id),
+                Some(context::Coordination::Claimed { .. })
+            )
+        })
+        .map(|r| (r.id.clone(), r.scope.clone()))
+        .collect();
+    live.sort_by_key(|(id, _)| id.to_string());
+    live
+}
+
+/// `--free`: the open tasks no live claim already covers, and how many were
+/// dropped for overlapping one.
+///
+/// The same computation `claim` names at pickup, read from the other side: an
+/// agent choosing work wants the candidates that do not collide, where an agent
+/// taking work wants to be told which collision it is walking into. Sharing
+/// [`claim::scope_overlap`] is what makes the two the same question — a filter
+/// that hid a task `claim` would then say nothing about would be worse than no
+/// filter, because it would teach that silence means safety.
+fn free_of_live_claims<'a>(
+    coord: &HashMap<EntityId, context::Coordination>,
+    live: &[(EntityId, Vec<String>)],
+    hits: Vec<&'a Row>,
+) -> (Vec<&'a Row>, usize) {
+    let mut hidden = 0;
+    let free = hits
+        .into_iter()
+        .filter(|r| {
+            // "open tasks": a row that is neither is not hidden, it was never a
+            // candidate, and counting it would inflate the number that exists
+            // to be trusted.
+            if r.kind != EntityKind::Task || r.status != "open" {
+                return false;
+            }
+            // Nor is a task the coordination plane already speaks for. Measured
+            // on this corpus: a task finished on another branch still reads
+            // `open` in the file this branch carries, and `--free` offered it —
+            // an exact command that refuses with code 4 the moment it is run,
+            // which is what `claim`'s own "another ready task" hint learned to
+            // skip (ADR-bcf222a31525). Not counted as hidden: the count answers
+            // "how much did the scope filter cost me", and this is not that.
+            if context::coordination_of(coord, &r.id).blocks_readiness() {
+                return false;
+            }
+            let clashes = live.iter().any(|(id, scope)| {
+                *id != r.id && !claim::scope_overlap(&r.scope, scope).is_empty()
+            });
+            hidden += usize::from(clashes);
+            !clashes
+        })
+        .collect();
+    (free, hidden)
 }
 
 // ---------------------------------------------------------------------------

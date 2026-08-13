@@ -369,6 +369,22 @@ pub fn live_claims_of(
     except: &EntityId,
     now: i64,
 ) -> Result<Vec<(EntityId, ClaimRecord)>> {
+    live_claims_where(cwd, except, now, &|holder| holder == identity)
+}
+
+/// The same walk, with the identity test handed in.
+///
+/// One enumeration and not two, because the two questions asked of it are
+/// mirror images — what this identity also holds, and what everybody else
+/// holds — and a second copy of "a lapsed claim is not a live one" is a second
+/// chance to read expiry differently. That predicate is the whole reason
+/// ADR-052accd6e3b2's signal does not fire on abandoned work forever.
+fn live_claims_where(
+    cwd: &Path,
+    except: &EntityId,
+    now: i64,
+    keep: &dyn Fn(&str) -> bool,
+) -> Result<Vec<(EntityId, ClaimRecord)>> {
     let mut held = Vec::new();
     for r in git::ank_refs(cwd)? {
         let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
@@ -388,7 +404,7 @@ pub fn live_claims_of(
         let Ok(Record::Claim(c)) = parse_record(&text, &r.name) else {
             continue;
         };
-        if c.holder != identity || is_expired(&c, now, &id).unwrap_or(true) {
+        if !keep(&c.holder) || is_expired(&c, now, &id).unwrap_or(true) {
             continue;
         }
         held.push((id, c));
@@ -1112,6 +1128,201 @@ fn scopes_intersect(a: &[String], b: &[String]) -> Result<bool> {
     Ok(a.iter().any(|g| set_b.overlaps_dir(g, b)) || b.iter().any(|g| set_a.overlaps_dir(g, a)))
 }
 
+// ---------------------------------------------------------------------------
+// What two scopes have in common (ADR-052accd6e3b2)
+// ---------------------------------------------------------------------------
+//
+// A different question from `scopes_intersect`, which answers whether a
+// constraint bears on a task and needs nothing but a yes. Here the answer is
+// what a reader acts on: `crates/ank-cli/**` against `crates/ank-cli/tests/**`
+// overlaps on everything under the second, and a line saying only "these
+// overlap" leaves the reader exactly where they started.
+//
+// **Nothing is expanded.** An intersection of globs is not an intersection of
+// sets: two globs overlap when some path *could* match both, and the set of
+// paths that do changes the moment a file is added. Where both sides are
+// literal the answer is a path; where one is a pattern the honest answer is the
+// narrower pattern, written as a glob.
+//
+// Coarse by construction, and ADR-052accd6e3b2 argues that is why it is a
+// signal and never a refusal. A false positive costs one line; making it
+// precise first would cost the change.
+
+/// The characters that make a glob a pattern rather than a path.
+const WILDCARDS: [char; 4] = ['*', '?', '[', '{'];
+
+fn is_pattern(glob: &str) -> bool {
+    glob.contains(WILDCARDS)
+}
+
+/// The deepest directory a glob cannot widen past: everything before the last
+/// `/` preceding the first wildcard. `crates/ank-cli/**` gives
+/// `crates/ank-cli`, `docs/*.md` gives `docs`, and `**/*.rs` gives the root,
+/// which is empty and contains everything.
+fn literal_dir(glob: &str) -> &str {
+    let head = match glob.find(WILDCARDS) {
+        Some(i) => &glob[..i],
+        None => glob,
+    };
+    match head.rfind('/') {
+        Some(i) => &glob[..i],
+        None => "",
+    }
+}
+
+/// Whether `child` names a place inside `parent`, compared on segment
+/// boundaries: `crates/ank-cli` is not inside `crates/ank`.
+fn under(child: &str, parent: &str) -> bool {
+    parent.is_empty() || child == parent || child.starts_with(&format!("{parent}/"))
+}
+
+/// Of two patterns that meet, the one a reader should look at: the deeper
+/// literal directory first, then the one carrying more literal text. The final
+/// tiebreak is lexical so that the same pair always yields the same answer,
+/// whichever order it is asked in.
+fn narrower<'a>(a: &'a str, b: &'a str) -> &'a str {
+    let key = |g: &str| {
+        (
+            literal_dir(g).len(),
+            g.chars().filter(|c| !WILDCARDS.contains(c)).count(),
+        )
+    };
+    match key(a).cmp(&key(b)) {
+        std::cmp::Ordering::Less => b,
+        std::cmp::Ordering::Greater => a,
+        std::cmp::Ordering::Equal => std::cmp::min(a, b),
+    }
+}
+
+/// A literal path against a pattern. Two ways they meet, and they give
+/// different answers: the pattern matches the path, and then the path is what
+/// they have in common; or the pattern lives under the path, and then the
+/// pattern is.
+fn path_against_pattern(path: &str, pattern: &str) -> Option<String> {
+    if ScopeSet::new(&[pattern.to_string()]).is_ok_and(|s| s.matches(path)) {
+        return Some(path.to_string());
+    }
+    under(literal_dir(pattern), path).then(|| pattern.to_string())
+}
+
+/// What two globs have in common, or `None` when no path could match both.
+///
+/// An invalid glob answers `None` rather than raising: this feeds a signal that
+/// accompanies a write, and a scope nobody can compile is `check`'s finding to
+/// report, not a reason to refuse a claim.
+pub fn glob_overlap(a: &str, b: &str) -> Option<String> {
+    let a = a.trim_end_matches('/');
+    let b = b.trim_end_matches('/');
+    if a == b {
+        return Some(a.to_string());
+    }
+    match (is_pattern(a), is_pattern(b)) {
+        // Two paths meet on the deeper of them, which is the one both cover, or
+        // they do not meet at all.
+        (false, false) => {
+            if under(b, a) {
+                Some(b.to_string())
+            } else if under(a, b) {
+                Some(a.to_string())
+            } else {
+                None
+            }
+        }
+        (false, true) => path_against_pattern(a, b),
+        (true, false) => path_against_pattern(b, a),
+        // Two patterns: neither can be expanded honestly, so the answer is the
+        // narrower, and they meet exactly when one's literal directory sits
+        // inside the other's.
+        (true, true) => {
+            let (da, db) = (literal_dir(a), literal_dir(b));
+            match (under(db, da), under(da, db)) {
+                (true, true) => Some(narrower(a, b).to_string()),
+                (true, false) => Some(b.to_string()),
+                (false, true) => Some(a.to_string()),
+                (false, false) => None,
+            }
+        }
+    }
+}
+
+/// Everything two scopes have in common, deduplicated and ordered.
+///
+/// Empty means they do not meet, which is what `find --free` filters on and
+/// what keeps `claim` silent in the ordinary case.
+pub fn scope_overlap(a: &[String], b: &[String]) -> Vec<String> {
+    let mut common: Vec<String> = Vec::new();
+    for ga in a {
+        for gb in b {
+            if let Some(c) = glob_overlap(ga, gb) {
+                if !common.contains(&c) {
+                    common.push(c);
+                }
+            }
+        }
+    }
+    common.sort();
+    common
+}
+
+/// A live claim held by somebody else over ground this task also covers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopeClash {
+    pub id: EntityId,
+    pub holder: String,
+    /// Never empty: a clash with nothing in common is not one.
+    pub common: Vec<String>,
+}
+
+impl ScopeClash {
+    /// The one line `claim` prints, naming the holder, the task and the ground
+    /// (ADR-052accd6e3b2). Written here rather than at the call site because
+    /// `find --free` counts what this describes, and a filter and a warning
+    /// that disagree about what an overlap is would be worse than either alone.
+    pub fn line(&self) -> String {
+        format!(
+            "{} holds {}, overlapping on {}",
+            self.holder,
+            self.id,
+            self.common.join(" ")
+        )
+    }
+}
+
+/// Every live claim held by another identity whose scope meets `task`'s.
+///
+/// **The scope comes from the corpus, never from the ref.** A claim record
+/// carries who and until when and nothing else (ADR-4e7c25b1f639), so the other
+/// task is loaded to be asked what ground it covers. A claimed task this
+/// checkout does not carry is skipped in silence: it is a branch that has not
+/// arrived, which `check` reports and a warning cannot.
+pub fn scope_clashes(
+    cwd: &Path,
+    store: &Store,
+    task: &Task,
+    identity: &str,
+    now: i64,
+) -> Result<Vec<ScopeClash>> {
+    let mut clashes = Vec::new();
+    for (id, record) in live_claims_where(cwd, &task.id, now, &|holder| holder != identity)? {
+        let Ok(loaded) = store.load(&id) else {
+            continue;
+        };
+        let Entity::Task(other) = loaded.entity else {
+            continue;
+        };
+        let common = scope_overlap(&task.scope, &other.scope);
+        if common.is_empty() {
+            continue;
+        }
+        clashes.push(ScopeClash {
+            id,
+            holder: record.holder,
+            common,
+        });
+    }
+    Ok(clashes)
+}
+
 /// Hash of a constraint set. Stable under reordering (the entries are sorted)
 /// and under editing noise (each constraint is normalised the way every other
 /// freeze is), so it moves only when a constraint really enters, leaves or
@@ -1512,10 +1723,19 @@ pub fn run(
     // point would refuse a claim the agent holds. `status` says the same thing
     // for as long as the state lasts (TASK-38b384543551).
     let also_held = live_claims_of(&repo.root, identity, &acquired.id, now_secs())?;
+    // What somebody else is holding that covers the same files
+    // (ADR-052accd6e3b2). Named and never refused: scope overlap is coarse
+    // enough that refusing on it would turn a glob into a mutex, and would push
+    // agents to declare narrower scopes than the truth to get past it. Computed
+    // after the ref is taken because it is a signal about the work, not a
+    // precondition of the claim -- the task is already held by the time this is
+    // read, and the criterion says the exit code is 0.
+    let clashes = scope_clashes(&repo.root, &store, &task, identity, now_secs())?;
     let warnings: Vec<String> = also_held
         .iter()
         .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
         .chain((!also_held.is_empty()).then(way_out))
+        .chain(clashes.iter().map(ScopeClash::line))
         // A claim that did not reach the remote holds in this clone alone, and
         // §7 is explicit that the risk is displayed rather than hidden.
         .chain(acquired.sync.warning())
@@ -2442,6 +2662,73 @@ mod tests {
             }
             other => panic!("expected a claim, got {other:?}"),
         }
+    }
+
+    /// The ground two globs share, named rather than merely detected
+    /// (ADR-052accd6e3b2).
+    ///
+    /// The pairs are the corpus's own shapes, and the answer that matters is
+    /// the second column: a signal saying "these overlap" leaves the reader
+    /// where they started, and one saying `crates/ank-cli/tests/**` tells them
+    /// which file to expect a conflict in. Nothing is expanded into a file
+    /// list, because the list would be wrong the moment a file is added.
+    #[test]
+    fn two_globs_are_answered_with_the_ground_they_share() {
+        let common = |a: &str, b: &str| glob_overlap(a, b);
+        for (a, b, expected) in [
+            // The pair that produced two merge conflicts in one session.
+            (
+                "crates/ank-cli/**",
+                "crates/ank-cli/tests/**",
+                Some("crates/ank-cli/tests/**"),
+            ),
+            // A pattern against a file it matches: the file is the answer, and
+            // it is a path because there is a path to give.
+            (
+                "crates/ank-cli/**",
+                "crates/ank-cli/tests/cli.rs",
+                Some("crates/ank-cli/tests/cli.rs"),
+            ),
+            // A pattern living under a directory named literally.
+            ("crates", "crates/ank-cli/**", Some("crates/ank-cli/**")),
+            // Same prefix, two patterns: the narrower one carries more literal
+            // text, and the answer does not depend on the order asked.
+            ("docs/**", "docs/*.md", Some("docs/*.md")),
+            // Disjoint, and neither a prefix of the other on a segment
+            // boundary -- `crates/ank-core` is not inside `crates/ank`.
+            ("crates/ank-cli/**", "docs/**", None),
+            ("crates/ank/**", "crates/ank-core/**", None),
+            (
+                "crates/ank-cli/src/claim.rs",
+                "crates/ank-cli/src/human.rs",
+                None,
+            ),
+            // A trailing separator is not a different perimeter.
+            ("docs/", "docs", Some("docs")),
+        ] {
+            assert_eq!(common(a, b).as_deref(), expected, "{a} against {b}");
+            assert_eq!(
+                common(b, a).as_deref(),
+                expected,
+                "{b} against {a} answered differently from the other order"
+            );
+        }
+
+        // A scope is a list, and what two lists share is every pair that meets,
+        // deduplicated: the same file reached through two globs is one answer.
+        let mine = vec!["crates/ank-cli/src/claim.rs".to_string(), "docs/**".into()];
+        let theirs = vec![
+            "crates/ank-cli/**".to_string(),
+            "docs/getting-started.md".into(),
+        ];
+        assert_eq!(
+            scope_overlap(&mine, &theirs),
+            vec![
+                "crates/ank-cli/src/claim.rs".to_string(),
+                "docs/getting-started.md".to_string()
+            ]
+        );
+        assert!(scope_overlap(&mine, &["skill/SKILL.md".to_string()]).is_empty());
     }
 
     #[test]
