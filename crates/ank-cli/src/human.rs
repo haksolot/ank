@@ -2954,6 +2954,7 @@ mod tests {
             } else {
                 vec![]
             },
+            verified: Vec::new(),
             schema: 1,
             version: 1,
             body: "\nBody.\n".into(),
@@ -2973,6 +2974,7 @@ mod tests {
             see: None,
             supersedes: None,
             ratified: None,
+            verified: Vec::new(),
             schema: 1,
             version: 1,
             body: "\nWhy.\n".into(),

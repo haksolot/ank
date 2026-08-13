@@ -3,7 +3,16 @@ use crate::id::EntityId;
 use serde::{Deserialize, Serialize};
 
 /// Format version this crate **writes**, and the newest it reads.
-pub const SCHEMA_VERSION: u32 = 2;
+///
+/// 3 carries two changes: the log leaving the entity body, and [`Verified`]
+/// with the typed-actor convention it names (§3). The flat layout of the same
+/// revision carries no bump — it moves files rather than fields, and a reader
+/// that finds the file finds every field it already knew.
+///
+/// The log is what makes the bump necessary, and it is the case this constant
+/// exists for: a reader that does not know the log has left the body shows an
+/// empty history for a task that has one, silently.
+pub const SCHEMA_VERSION: u32 = 3;
 
 /// Oldest format version this crate reads.
 ///
@@ -177,6 +186,30 @@ pub struct Proof {
 }
 
 // ---------------------------------------------------------------------------
+// Readings
+// ---------------------------------------------------------------------------
+
+/// A reading: somebody read this entity and stands behind it (§3).
+///
+/// `proof` anchors that something *ran*; this anchors that somebody *read*, and
+/// a corpus written by agents needs the second more than a corpus written by
+/// people did. Optional on every kind and required by no verb — a trust field
+/// that were required would be filled in to make the tool stop complaining, at
+/// which point it records nothing.
+///
+/// `by` follows the actor convention (`human:<id>`, `<producer>/<version>`,
+/// `process:<id>`) and a value that does not is a `check` finding, **never a
+/// parse error**: the corpus is not migrated by a rule it predates.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Verified {
+    /// A typed actor.
+    pub by: String,
+    /// ISO 8601 instant, in UTC.
+    pub at: String,
+}
+
+// ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
 
@@ -203,9 +236,15 @@ pub struct Task {
     pub criteria_by: Option<CriteriaBy>,
     pub verify: Vec<String>,
     pub proof: Vec<Proof>,
+    /// Readings, optional and empty by default (§3).
+    pub verified: Vec<Verified>,
     pub schema: u32,
     pub version: u64,
-    /// Markdown body, verbatim, `## Log` section included.
+    /// Markdown body, verbatim.
+    ///
+    /// Since schema 3 the log is not in here: it is a file of its own, at
+    /// `.ank/log/<ID>.md`. A schema 1 or schema 2 body may still carry a
+    /// `## Log` section, which is read where it is and never written there.
     pub body: String,
 }
 
@@ -247,6 +286,8 @@ pub struct Adr {
     pub supersedes: Option<EntityId>,
     /// Signed ratification commit (set by `accept`).
     pub ratified: Option<String>,
+    /// Readings, optional and empty by default (§3).
+    pub verified: Vec<Verified>,
     pub schema: u32,
     pub version: u64,
     pub body: String,

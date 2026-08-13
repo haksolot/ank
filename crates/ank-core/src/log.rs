@@ -1,9 +1,24 @@
-//! The `## Log` section of a task file (§3 of the specification).
+//! The log of an entity (§3 of the specification).
 //!
-//! Append-only, one timestamped line per entry:
-//! `- 2026-07-26T14:02Z claude-code@host-3 — message`
-//! Appending at the end of the file produces a one-line git diff, which is
-//! the property the format exists to guarantee (§12).
+//! Append-only, one timestamped line per entry, and **the grammar does not
+//! change**: `- 2026-07-26T14:02Z claude-code/1.4.2 — message`. Appending at
+//! the end produces a one-line git diff, which is the property the format
+//! exists to guarantee (§12).
+//!
+//! Since schema 3 the log is a **file of its own**, `.ank/log/<ID>.md`, read
+//! and written by [`parse_log_file`] and [`append_log_file`]. Nothing about an
+//! entry written before that is reinterpreted — only its address moved.
+//!
+//! The earlier form, a `## Log` section at the end of the entity body, is read
+//! for as long as corpora carry it, by [`parse_log`] and [`append_log`], and is
+//! never written into a schema 3 file.
+//!
+//! **The two forms differ in one thing, deliberately: strictness.** A markdown
+//! body may hold anything, so a line under the heading that is not an entry is
+//! skipped and left to `check`. A file whose entire content is the log leaves a
+//! stray line nothing else it could be, so it is refused, naming the line.
+
+use crate::error::{Error, Result};
 
 pub const LOG_HEADER: &str = "## Log";
 const SEPARATOR: &str = " — ";
@@ -60,9 +75,51 @@ pub fn parse_log(body: &str) -> Vec<LogEntry> {
     entries
 }
 
+/// Reads a log **file**: nothing but entries, one per line.
+///
+/// Strict, and the strictness is the point. There is no heading to skip past
+/// and no prose a line could be, so a line the grammar does not accept is a
+/// defect and is refused with its number — the file grows, and "somewhere in
+/// this log" is not a diagnostic.
+///
+/// An empty file is an empty log. A **missing** file is an empty log too, and
+/// that half belongs to the caller: this crate does no I/O.
+///
+/// CRLF is read here as everywhere: `str::lines` strips the carriage return,
+/// so a log written on Windows parses and is rewritten in LF (§3).
+pub fn parse_log_file(contents: &str) -> Result<Vec<LogEntry>> {
+    let mut entries = Vec::new();
+    for (i, line) in contents.lines().enumerate() {
+        match LogEntry::parse_line(line) {
+            Some(e) => entries.push(e),
+            None => return Err(Error::MalformedLogLine { line: i + 1 }),
+        }
+    }
+    Ok(entries)
+}
+
+/// Appends an entry to a log file.
+///
+/// Invariant: the result differs from the input by exactly one line, with no
+/// header to create the first time — one thing less than the body section
+/// needed, and the reason git's own union of two appends resolves this file
+/// with no merge driver (§7).
+pub fn append_log_file(contents: &str, entry: &LogEntry) -> String {
+    let mut out = contents.to_string();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str(&entry.format_line());
+    out.push('\n');
+    out
+}
+
 /// Appends an entry to the body, creating the section if needed.
 /// Invariant: the result differs from the input by exactly one line (plus the
 /// section header the first time).
+///
+/// The previous layout only: a schema 3 entity's log is a file, and this is
+/// never what writes it.
 pub fn append_log(body: &str, entry: &LogEntry) -> String {
     let mut out = body.to_string();
     if !out.is_empty() && !out.ends_with('\n') {

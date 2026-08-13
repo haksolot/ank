@@ -1,10 +1,14 @@
 use crate::error::{Error, Result};
+use crate::registry;
 use sha2::{Digest, Sha256};
 use std::fmt;
 
 pub const ID_HEX_LEN: usize = 12;
 pub const MIN_PREFIX_LEN: usize = 4;
 
+/// A kind, as an index into the registry rather than as a second declaration
+/// of it. The name and the prefix are read from [`crate::registry::KINDS`] and
+/// are written down nowhere else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EntityKind {
     Task,
@@ -12,18 +16,32 @@ pub enum EntityKind {
 }
 
 impl EntityKind {
+    /// The enum's declaration order **is** the registry's, and that is the one
+    /// coupling between them. It is asserted rather than trusted, in
+    /// `registry_and_enum_agree` below: a row added to the table without a
+    /// variant, or the reverse, fails the suite instead of resolving to the
+    /// wrong kind in silence.
+    fn spec(self) -> &'static registry::KindSpec {
+        &registry::KINDS[self as usize]
+    }
+
     pub fn prefix(self) -> &'static str {
-        match self {
-            EntityKind::Task => "TASK-",
-            EntityKind::Adr => "ADR-",
-        }
+        self.spec().prefix
     }
 
     pub fn as_str(self) -> &'static str {
-        match self {
-            EntityKind::Task => "task",
-            EntityKind::Adr => "adr",
-        }
+        self.spec().name
+    }
+
+    /// The kind whose `type` is this string, or `None` if the registry declares
+    /// none. The caller turns that `None` into [`Error::UnknownKind`], naming
+    /// the kind rather than the first field it happens to carry.
+    pub fn from_type_name(name: &str) -> Option<Self> {
+        Self::all().find(|k| k.as_str() == name)
+    }
+
+    fn all() -> impl Iterator<Item = EntityKind> {
+        [EntityKind::Task, EntityKind::Adr].into_iter()
     }
 }
 
@@ -37,11 +55,9 @@ pub struct EntityId {
 
 impl EntityId {
     pub fn parse(s: &str) -> Result<Self> {
-        let (kind, rest) = if let Some(r) = s.strip_prefix("TASK-") {
-            (EntityKind::Task, r)
-        } else if let Some(r) = s.strip_prefix("ADR-") {
-            (EntityKind::Adr, r)
-        } else {
+        let Some((kind, rest)) =
+            EntityKind::all().find_map(|k| s.strip_prefix(k.prefix()).map(|rest| (k, rest)))
+        else {
             return Err(Error::InvalidId(s.to_string()));
         };
         if rest.len() != ID_HEX_LEN || !rest.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -102,13 +118,9 @@ where
     I: IntoIterator<Item = &'a EntityId>,
 {
     // The type prefix is optional on input ("TASK-8f3a" or "8f3a").
-    let (kind_filter, hex_prefix) = if let Some(r) = prefix.strip_prefix("TASK-") {
-        (Some(EntityKind::Task), r)
-    } else if let Some(r) = prefix.strip_prefix("ADR-") {
-        (Some(EntityKind::Adr), r)
-    } else {
-        (None, prefix)
-    };
+    let (kind_filter, hex_prefix) = EntityKind::all()
+        .find_map(|k| prefix.strip_prefix(k.prefix()).map(|r| (Some(k), r)))
+        .unwrap_or((None, prefix));
 
     let hex_prefix = hex_prefix.to_ascii_lowercase();
     if hex_prefix.len() < MIN_PREFIX_LEN {
@@ -131,5 +143,43 @@ where
             prefix: prefix.to_string(),
             candidates: matches.iter().map(|id| id.to_string()).collect(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The one coupling between the enum and the table, asserted rather than
+    /// trusted. A row added without a variant would make `spec()` index past
+    /// the end; a variant added without a row would resolve to the wrong kind
+    /// in silence, which is the worse of the two.
+    #[test]
+    fn registry_and_enum_agree() {
+        assert_eq!(
+            EntityKind::all().count(),
+            registry::KINDS.len(),
+            "every kind in the registry needs a variant, and the reverse"
+        );
+        for (i, kind) in EntityKind::all().enumerate() {
+            assert_eq!(kind.as_str(), registry::KINDS[i].name);
+            assert_eq!(kind.prefix(), registry::KINDS[i].prefix);
+            assert_eq!(EntityKind::from_type_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(EntityKind::from_type_name("epic"), None);
+    }
+
+    /// The prefix is read from the registry, so an id resolves to a kind
+    /// without any of the three former copies of that fact being consulted.
+    #[test]
+    fn a_prefix_resolves_through_the_registry() {
+        for kind in EntityKind::all() {
+            let id = format!("{}0123456789ab", kind.prefix());
+            assert_eq!(EntityId::parse(&id).unwrap().kind(), kind);
+        }
+        assert!(matches!(
+            EntityId::parse("EPIC-0123456789ab"),
+            Err(Error::InvalidId(_))
+        ));
     }
 }
