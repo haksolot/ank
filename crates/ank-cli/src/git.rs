@@ -664,7 +664,16 @@ pub struct Ratification {
     pub anchor: String,
 }
 
-pub fn ratification_at(cwd: &Path, id: &str, path: &str) -> Result<Option<Ratification>> {
+/// `paths` are the candidate paths of the entity, canonical first. There is
+/// more than one while the previous layout is read (§6), and an ADR ratified
+/// before the move has its commit on the path it had then.
+///
+/// They are tried inside this function rather than by the caller, because the
+/// memo below is keyed on the entity and not on the path: a caller looping over
+/// paths would cache the first miss and never reach the second candidate. That
+/// is not hypothetical — it is what happened the moment the second path
+/// appeared, and every ratification in this repository read as unverifiable.
+pub fn ratification_at(cwd: &Path, id: &str, paths: &[String]) -> Result<Option<Ratification>> {
     let key = (cwd.to_path_buf(), id.to_string());
     let memo = RATIFICATIONS.get_or_init(|| Mutex::new(HashMap::new()));
     if let Ok(seen) = memo.lock() {
@@ -672,7 +681,13 @@ pub fn ratification_at(cwd: &Path, id: &str, path: &str) -> Result<Option<Ratifi
             return Ok(hit.clone());
         }
     }
-    let found = ratification_uncached(cwd, id, path)?;
+    let mut found = None;
+    for path in paths {
+        found = ratification_uncached(cwd, id, path)?;
+        if found.is_some() {
+            break;
+        }
+    }
     if let Ok(mut seen) = memo.lock() {
         seen.insert(key, found.clone());
     }

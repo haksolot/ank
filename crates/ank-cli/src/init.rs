@@ -16,6 +16,7 @@
 //! to write it.
 
 use crate::cli::{CliError, Invocation, Result};
+use crate::store::Store;
 use crate::{config, git, repo};
 use std::fs;
 use std::io::Write;
@@ -83,7 +84,7 @@ impl Report {
     pub fn lines_terse(&self) -> Vec<String> {
         let mut v = Vec::new();
         if self.created_dirs {
-            v.push("created .ank/tasks .ank/adr".to_string());
+            v.push("created .ank/entities .ank/log".to_string());
         }
         if self.wrote_config {
             v.push("wrote .ank/config.yml".to_string());
@@ -118,7 +119,11 @@ pub fn init_at(root: &Path) -> Result<Report> {
     let mut report = Report::default();
     let ank = root.join(repo::ANK_DIR);
 
-    for sub in ["tasks", "adr"] {
+    // One directory for every kind, and one for the logs beside it (§6). The
+    // previous layout's `tasks/` and `adr/` are read where they already exist
+    // and are never created: a writer does not produce a layout it is only
+    // keeping readable.
+    for sub in [Store::ENTITIES_DIR, "log"] {
         let dir = ank.join(sub);
         if !dir.is_dir() {
             fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
@@ -238,8 +243,8 @@ mod tests {
         let r = init_at(&t.0).unwrap();
 
         assert!(r.created_dirs);
-        assert!(t.0.join(".ank/tasks").is_dir());
-        assert!(t.0.join(".ank/adr").is_dir());
+        assert!(t.0.join(".ank/entities").is_dir());
+        assert!(t.0.join(".ank/log").is_dir());
 
         assert!(r.wrote_config);
         let cfg = fs::read_to_string(t.0.join(".ank/config.yml")).unwrap();
@@ -324,7 +329,7 @@ mod tests {
         let task = "---\nid: TASK-000000000001\ntype: task\ntitle: Example\n\
 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
 blocked_by: []\nschema: 1\nversion: 1\n---\n\nBody.\n";
-        fs::write(t.0.join(".ank/tasks/TASK-000000000001.md"), task).unwrap();
+        fs::write(t.0.join(".ank/entities/TASK-000000000001.md"), task).unwrap();
 
         for args in [
             vec!["config", "user.email", "test@ank.local"],
@@ -352,7 +357,7 @@ blocked_by: []\nschema: 1\nversion: 1\n---\n\nBody.\n";
             .unwrap();
         assert!(st.success(), "clone");
 
-        let read_back = fs::read(clone.join(".ank/tasks/TASK-000000000001.md")).unwrap();
+        let read_back = fs::read(clone.join(".ank/entities/TASK-000000000001.md")).unwrap();
         let _ = fs::remove_dir_all(&clone);
 
         assert!(

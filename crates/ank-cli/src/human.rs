@@ -38,9 +38,10 @@ use crate::verify;
 use ank_core::{
     append_log, freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity,
     verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus,
+    Verified,
 };
 use ank_core::{CriteriaBy, ProofType, ScopeSet};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -156,11 +157,19 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     let mut entities: Vec<(PathBuf, Entity)> = Vec::new();
 
     // Parsing and canonical form: the corpus is unreadable before it is wrong.
-    for kind in [EntityKind::Task, EntityKind::Adr] {
-        let dir = repo.ank.join(match kind {
-            EntityKind::Task => "tasks",
-            EntityKind::Adr => "adr",
-        });
+    //
+    // Both layouts are walked, the flat one first, and an entity present in
+    // both is inspected **once** — from the canonical copy, which is the newer
+    // by construction since every write lands there (§6). File-level faults are
+    // still reported for each file, because each file exists.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut still_legacy = 0usize;
+    for (kind_of_dir, dirname) in [
+        (None, Store::ENTITIES_DIR),
+        (Some(EntityKind::Task), "tasks"),
+        (Some(EntityKind::Adr), "adr"),
+    ] {
+        let dir = repo.ank.join(dirname);
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
         };
@@ -220,20 +229,50 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                             format!("file name does not carry {}", entity.id()),
                         ));
                     }
-                    if entity.id().kind() != kind {
-                        report.findings.push(Finding::fault(
-                            &name,
-                            format!(
-                                "a {} filed under {}",
-                                entity.id().kind().as_str(),
-                                kind.as_str()
-                            ),
-                        ));
+                    // The previous layout put the kind in the directory, so a
+                    // file in the wrong one contradicts its own name. The flat
+                    // layout has no directory to disagree with, and the file
+                    // name is the only thing stating the kind — which is what
+                    // makes the name-against-id check above load-bearing.
+                    if let Some(kind) = kind_of_dir {
+                        if entity.id().kind() != kind {
+                            report.findings.push(Finding::fault(
+                                &name,
+                                format!(
+                                    "a {} filed under {}",
+                                    entity.id().kind().as_str(),
+                                    kind.as_str()
+                                ),
+                            ));
+                        }
+                    }
+                    if kind_of_dir.is_some() {
+                        still_legacy += 1;
+                    }
+                    // One corpus, no entity counted twice.
+                    if !seen.insert(entity.id().to_string()) {
+                        continue;
                     }
                     entities.push((p, entity));
                 }
             }
         }
+    }
+
+    // A corpus still in the previous layout is a **signal and never a fault**:
+    // it parses, it round-trips, and it answers every verb. Exiting 8 over a
+    // file location would redden a pipeline for something no reader suffers
+    // from, which is the kind of finding that teaches people to stop reading
+    // `check`. Reported once, with the command that moves it.
+    if still_legacy > 0 {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "{still_legacy} entities are in the previous layout: entities live \
+                 in .ank/entities/ since schema 3 (git mv .ank/tasks/*.md \
+                 .ank/adr/*.md .ank/entities/)"
+            ),
+        ));
     }
 
     let in_scope = |e: &Entity| match path {
@@ -1117,6 +1156,49 @@ fn check_authorship(
         ));
     }
 
+    // The actor convention, reported **once for the corpus and never per file**
+    // — the same choice as the line above and for the same reason: one line per
+    // file adds a line for every entity written before the rule existed, which
+    // is the volume that teaches a reader to stop reading `check`.
+    //
+    // A finding here and never a parse error (ADR-3877fef1d662). The corpus is
+    // not migrated by a rule it predates, and refusing these files would lock
+    // them out of their own format.
+    let untyped = considered
+        .iter()
+        .filter_map(|e| author_of(e))
+        .filter(|a| actor_kind(a).is_none())
+        .count();
+    if untyped > 0 {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "{untyped} authors predate the actor convention: the convention \
+                 binds new writes, and these values mean what they meant"
+            ),
+        ));
+    }
+
+    // An entity an agent wrote and no human has read. Derived from what the
+    // fields state and nothing further: no score, no confidence, no ranking —
+    // the signal is recorded and the reader judges.
+    for e in &considered {
+        let Some(author) = author_of(e) else { continue };
+        if actor_kind(author) != Some(ActorKind::Agent) {
+            continue;
+        }
+        if readings_of(e)
+            .iter()
+            .any(|v| actor_kind(&v.by) == Some(ActorKind::Human))
+        {
+            continue;
+        }
+        report.findings.push(Finding::signal(
+            &e.id().short(),
+            "written by an agent and read by no human",
+        ));
+    }
+
     // Burst creation by a single identity (§3, §4). §3 accepts task flooding
     // without a quota, on the argument that the defence is visibility rather
     // than restriction. This is that visibility, and nothing more: a burst is
@@ -1207,6 +1289,53 @@ fn author_of(e: &Entity) -> Option<&str> {
     }
 }
 
+fn readings_of(e: &Entity) -> &[Verified] {
+    match e {
+        Entity::Task(t) => &t.verified,
+        Entity::Adr(a) => &a.verified,
+    }
+}
+
+/// What kind of actor a written identity claims to be (§3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ActorKind {
+    Human,
+    Agent,
+    Process,
+}
+
+/// Reads the actor convention off a value, and answers `None` when the value
+/// does not follow it.
+///
+/// `None` is not a fault and not a guess. An identity written before the
+/// convention states nothing about what kind of actor produced it, so every
+/// signal that needs the distinction skips it — which is why
+/// `claude-code@sean-laptop` is reported once as pre-convention and never
+/// treated as an agent it never claimed to be.
+///
+/// The convention is a signal and not a wall: an agent can write `human:` in
+/// front of its own name, exactly as it can set `$ANK_AGENT` to anything. What
+/// it buys is that the ordinary case becomes legible.
+fn actor_kind(value: &str) -> Option<ActorKind> {
+    if let Some(rest) = value.strip_prefix("human:") {
+        return (!rest.is_empty()).then_some(ActorKind::Human);
+    }
+    if let Some(rest) = value.strip_prefix("process:") {
+        return (!rest.is_empty()).then_some(ActorKind::Process);
+    }
+    // `<producer>/<version>`: one slash, and neither half empty. An `@` rules
+    // it out, since `agent@host` is exactly the pre-convention shape.
+    if value.contains('@') {
+        return None;
+    }
+    match value.split_once('/') {
+        Some((producer, version)) if !producer.is_empty() && !version.is_empty() => {
+            Some(ActorKind::Agent)
+        }
+        _ => None,
+    }
+}
+
 fn created_of(e: &Entity) -> &str {
     match e {
         Entity::Task(t) => &t.created,
@@ -1288,9 +1417,8 @@ fn done_on(repo: &Repo, default_branch: Option<&str>, id: &EntityId) -> bool {
     let Some(branch) = default_branch else {
         return false;
     };
-    let path = format!("{}/tasks/{id}.md", ank_relative(repo));
     matches!(
-        git::file_at(&repo.root, branch, &path),
+        file_at_branch(repo, branch, id),
         Ok(Some(text))
             if matches!(parse_entity(&text), Ok(Entity::Task(t)) if t.status == TaskStatus::Done)
     )
@@ -1305,7 +1433,6 @@ fn maintain(
     prune: bool,
     report: &mut Report,
 ) -> Result<()> {
-    let rel = ank_relative(repo);
     // Sorted, so that two runs on the same repository report and prune in the
     // same order: a maintenance command whose output shuffles is one nobody
     // diffs.
@@ -1314,7 +1441,6 @@ fn maintain(
     ids.sort_by_key(|i| i.to_string());
     for id in ids {
         let record = &coord[id];
-        let path = format!("{rel}/tasks/{id}.md");
         // An orphan: a ref for a task that no longer exists anywhere.
         //
         // "Anywhere" is the load-bearing word, and asking the working tree
@@ -1325,7 +1451,7 @@ fn maintain(
         // checkout agrees on, and the `settled` test below already reads it —
         // this asks the same question of the same source, one step earlier.
         if !statuses.contains_key(id) {
-            match git::file_at(&repo.root, default_branch, &path) {
+            match file_at_branch(repo, default_branch, id) {
                 // Not an orphan: this checkout is simply older than the task,
                 // or on a branch that never carried it. Silent on purpose. The
                 // ref belongs to whoever holds it now, and a signal here would
@@ -1355,7 +1481,7 @@ fn maintain(
         // freshly `ank init`-ed: it has a default branch and no commit on it.
         // Reporting once and pruning nothing is the reader's behaviour (§2);
         // failing here would make `check` unusable on a new repository.
-        let settled = match git::file_at(&repo.root, default_branch, &path) {
+        let settled = match file_at_branch(repo, default_branch, id) {
             Ok(Some(text)) => matches!(
                 parse_entity(&text),
                 Ok(Entity::Task(t)) if matches!(t.status, TaskStatus::Done | TaskStatus::Closed)
@@ -1398,6 +1524,67 @@ fn ank_relative(repo: &Repo) -> String {
         .strip_prefix(&repo.root)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| ".ank".to_string())
+}
+
+/// Every repository-relative path an entity may occupy, canonical first.
+///
+/// Two, for as long as the previous layout is read (§6). Asking git about a
+/// path is not opening a file: a branch, a commit or an index can hold the
+/// entity where the working tree no longer does, so the caller tries both and
+/// takes the first answer. And when `accept` stages a commit it stages both,
+/// because a write moves the file out of the previous layout and a commit that
+/// staged only the destination would leave the removal uncommitted.
+fn entity_rel_paths(repo: &Repo, id: &EntityId) -> Vec<String> {
+    let rel = ank_relative(repo);
+    let mut paths = vec![format!("{rel}/{}/{id}.md", Store::ENTITIES_DIR)];
+    if let Some(sub) = Store::legacy_subdir(id.kind()) {
+        paths.push(format!("{rel}/{sub}/{id}.md"));
+    }
+    paths
+}
+
+/// The paths to hand `git add` and `git commit` for an entity about to be
+/// written. **Called before the write**, while the file is still where it is.
+///
+/// The canonical path always, since that is where the write lands. The previous
+/// layout's only when a file is actually there, because a pathspec matching
+/// neither the tree nor the index is a fatal error and not a no-op — `git add`
+/// refuses rather than shrugging, and the whole ratification would fail over a
+/// path that was never going to match.
+/// The entity as a branch carries it, from whichever layout holds it **there**.
+///
+/// The working tree and the branch need not agree on the layout: a corpus moved
+/// on a feature branch is still in the previous one on the default branch until
+/// the merge lands, and the pruning predicate reads the default branch (§7). So
+/// the candidates are tried against git and not against the disk.
+///
+/// An error from `file_at` is the revision being unresolvable, which is the same
+/// answer for every path, so it is returned rather than swallowed: unable to ask
+/// is not permission to delete.
+fn file_at_branch(repo: &Repo, branch: &str, id: &EntityId) -> Result<Option<String>> {
+    let mut failure = None;
+    for path in entity_rel_paths(repo, id) {
+        match git::file_at(&repo.root, branch, &path) {
+            Ok(Some(text)) => return Ok(Some(text)),
+            Ok(None) => {}
+            Err(e) => failure = Some(e),
+        }
+    }
+    match failure {
+        Some(e) => Err(e),
+        None => Ok(None),
+    }
+}
+
+fn entity_rel_paths_to_stage(repo: &Repo, id: &EntityId) -> Vec<String> {
+    let rel = ank_relative(repo);
+    let mut paths = vec![format!("{rel}/{}/{id}.md", Store::ENTITIES_DIR)];
+    if let Some(sub) = Store::legacy_subdir(id.kind()) {
+        if repo.ank.join(sub).join(format!("{id}.md")).exists() {
+            paths.push(format!("{rel}/{sub}/{id}.md"));
+        }
+    }
+    paths
 }
 
 fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
@@ -1708,10 +1895,10 @@ pub fn accept(
         let mut target = target.clone();
         let target_base = target.version;
         target.status = AdrStatus::Superseded;
-        paths.push(format!("{}/adr/{}.md", ank_relative(repo), target.id));
+        paths.extend(entity_rel_paths_to_stage(repo, &target.id));
         store.write(&Entity::Adr(target), target_base)?;
     }
-    paths.push(format!("{}/adr/{id}.md", ank_relative(repo)));
+    paths.extend(entity_rel_paths_to_stage(repo, &id));
     store.write(&Entity::Adr(adr), base_version)?;
 
     // One commit for both writes. The succession is a single act, and two
@@ -1891,8 +2078,12 @@ fn ratification_of(repo: &Repo, adr: &Adr) -> Option<git::Ratification> {
     if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
         return None;
     }
-    let path = format!("{}/adr/{}.md", ank_relative(repo), adr.id);
-    git::ratification_at(&repo.root, &adr.id.to_string(), &path).unwrap_or(None)
+    // Whichever layout the ADR sits in, and its own history is what carries the
+    // ratification: an ADR ratified before the move has its commit on the path
+    // it had then. The candidates go in together rather than one call each,
+    // because the memo is keyed on the ADR and a first miss would be cached.
+    let paths = entity_rel_paths(repo, &adr.id);
+    git::ratification_at(&repo.root, &adr.id.to_string(), &paths).unwrap_or(None)
 }
 
 /// The signature on the commit the anchor was read from, or `None` when there
@@ -2010,7 +2201,12 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
     };
     let refs: Vec<&str> = paths.iter().map(|p| p.as_str()).collect();
 
-    let mut add = vec!["add", "--"];
+    // `-A`, and `--ignore-removal` would be exactly wrong: a path in this list
+    // may name a file the write has just moved away from, and staging only what
+    // still exists would commit the new file while leaving its removal behind.
+    // `-A` also makes a path that never existed a no-op rather than a fatal
+    // pathspec error, which is what the second candidate path usually is.
+    let mut add = vec!["add", "-A", "--"];
     add.extend_from_slice(&refs);
     run(&add)?;
 
@@ -2746,8 +2942,7 @@ mod tests {
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
-            std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+            std::fs::create_dir_all(p.join(".ank/entities")).unwrap();
             std::fs::create_dir_all(p.join("src")).unwrap();
             std::fs::write(p.join("src/a.rs"), "fn a() {}\n").unwrap();
             let t = Temp(p);
@@ -2790,15 +2985,7 @@ mod tests {
             Store::new(self.0.join(".ank"))
         }
         fn write(&self, e: &Entity) {
-            let sub = match e.id().kind() {
-                EntityKind::Task => "tasks",
-                EntityKind::Adr => "adr",
-            };
-            std::fs::write(
-                self.0.join(".ank").join(sub).join(format!("{}.md", e.id())),
-                serialize_entity(e),
-            )
-            .unwrap();
+            std::fs::write(self.store().path_of(e.id()), serialize_entity(e)).unwrap();
         }
         fn commit(&self, msg: &str) {
             for args in [vec!["add", "-A"], vec!["commit", "-qm", msg]] {
@@ -3020,7 +3207,7 @@ mod tests {
         assert!(has(&r, Level::Fault, "non-canonical"), "{:?}", r.findings);
 
         std::fs::write(
-            t.0.join(".ank/tasks/TASK-00000000ffff.md"),
+            t.0.join(".ank/entities/TASK-00000000ffff.md"),
             "---\n<<<<<<< HEAD\nid: TASK-00000000ffff\n=======\nid: other\n>>>>>>> branch\n",
         )
         .unwrap();

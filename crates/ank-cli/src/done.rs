@@ -402,7 +402,7 @@ fn check_frozen_criteria(id: &EntityId, criteria: &str, claim: &ClaimRecord) -> 
                 freeze_hash_short(criteria)
             ),
         )
-        .with_hint(format!("git diff -- .ank/tasks/{id}.md")));
+        .with_hint(format!("git diff -- .ank/entities/{id}.md")));
     }
     Ok(())
 }
@@ -576,8 +576,7 @@ mod tests {
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
-            std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+            std::fs::create_dir_all(p.join(".ank/entities")).unwrap();
             let t = Temp(p);
             for args in [
                 vec!["init", "-q", "-b", "main"],
@@ -652,7 +651,7 @@ mod tests {
                 body: "\nBody.\n".into(),
             };
             std::fs::write(
-                self.0.join(".ank/tasks/TASK-000000000001.md"),
+                self.0.join(".ank/entities/TASK-000000000001.md"),
                 serialize_entity(&Entity::Task(task)),
             )
             .unwrap();
@@ -1065,11 +1064,11 @@ mod tests {
 
         // A second task, not the one in progress.
         std::fs::copy(
-            t.0.join(".ank/tasks/TASK-000000000001.md"),
-            t.0.join(".ank/tasks/TASK-00000000ffff.md"),
+            t.0.join(".ank/entities/TASK-000000000001.md"),
+            t.0.join(".ank/entities/TASK-00000000ffff.md"),
         )
         .unwrap();
-        let other = t.0.join(".ank/tasks/TASK-00000000ffff.md");
+        let other = t.0.join(".ank/entities/TASK-00000000ffff.md");
         let text = std::fs::read_to_string(&other)
             .unwrap()
             .replace("TASK-000000000001", "TASK-00000000ffff");

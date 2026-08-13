@@ -99,8 +99,7 @@ impl Repo {
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
-        std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+        std::fs::create_dir_all(p.join(".ank/entities")).unwrap();
         let r = Repo(p);
         r.git(&["init", "-q", "-b", "main"]);
         r.git(&["config", "user.email", "test@ank.local"]);
@@ -262,7 +261,7 @@ impl Repo {
             format!("verify: [{}]\n", verify.join(", "))
         };
         std::fs::write(
-            self.0.join(".ank/tasks").join(format!("{id}.md")),
+            self.0.join(".ank/entities").join(format!("{id}.md")),
             format!(
                 "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
                  created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
@@ -272,6 +271,50 @@ impl Repo {
         .unwrap();
     }
 
+    /// Seeds a task where the **previous** layout put it, `.ank/tasks/<ID>.md`,
+    /// with a title of its own so that a fixture holding both copies can say
+    /// which one answered.
+    ///
+    /// Written by hand and not by the binary, deliberately: no writer produces
+    /// this layout any more, so a corpus in it can only come from before the
+    /// move — which is exactly the corpus under test.
+    fn seed_task_legacy(&self, id: &str, title: &str) {
+        let dir = self.0.join(".ank/tasks");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: task\nslug: example\ntitle: {title}\n\
+                 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+                 blocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+                 criteria_by: creator\nschema: 1\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn seed_adr_legacy(&self, id: &str, constraint: &str) {
+        let dir = self.0.join(".ank/adr");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: adr\nslug: example\ntitle: A decision\n\
+                 created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - src/**\n\
+                 constraint: |\n  {constraint}\nschema: 1\nversion: 1\n---\n\nWhy.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn legacy_task_path(&self, id: &str) -> PathBuf {
+        self.0.join(".ank/tasks").join(format!("{id}.md"))
+    }
+
+    fn flat_task_path(&self, id: &str) -> PathBuf {
+        self.0.join(".ank/entities").join(format!("{id}.md"))
+    }
+
     /// The same seed with a scope of its own, for a fixture that needs an
     /// entity outside the perimeter under test.
     fn seed_task_scoped(&self, id: &str, scope: &str) {
@@ -279,7 +322,7 @@ impl Repo {
         let text = self
             .task_text(id)
             .replace("  - src/**", &format!("  - {scope}"));
-        std::fs::write(self.0.join(".ank/tasks").join(format!("{id}.md")), text).unwrap();
+        std::fs::write(self.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
     }
 
     /// Adds blockers to a seeded task. Written into the file rather than through
@@ -290,20 +333,20 @@ impl Repo {
         let text = self
             .task_text(id)
             .replace("blocked_by: []", &format!("blocked_by: [{list}]"));
-        std::fs::write(self.0.join(".ank/tasks").join(format!("{id}.md")), text).unwrap();
+        std::fs::write(self.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
     }
 
     fn task_text(&self, id: &str) -> String {
-        std::fs::read_to_string(self.0.join(".ank/tasks").join(format!("{id}.md"))).unwrap()
+        std::fs::read_to_string(self.0.join(".ank/entities").join(format!("{id}.md"))).unwrap()
     }
 
     fn adr_text(&self, id: &str) -> String {
-        std::fs::read_to_string(self.0.join(".ank/adr").join(format!("{id}.md"))).unwrap()
+        std::fs::read_to_string(self.0.join(".ank/entities").join(format!("{id}.md"))).unwrap()
     }
 
     fn seed_adr(&self, id: &str, constraint: &str, scope: &str) {
         std::fs::write(
-            self.0.join(".ank/adr").join(format!("{id}.md")),
+            self.0.join(".ank/entities").join(format!("{id}.md")),
             format!(
                 "---\nid: {id}\ntype: adr\nslug: example\ntitle: A decision\n\
                  created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - {scope}\n\
@@ -657,7 +700,7 @@ fn an_edited_constraint_is_reported_altered_and_stops_being_injected() {
     // The constraint moves in the file. The anchor recorded in the signed
     // commit cannot follow it without another signature.
     let edited = r.adr_text(ADR).replace("Do not do X.", "Do not do Y.");
-    std::fs::write(r.0.join(".ank/adr").join(format!("{ADR}.md")), edited).unwrap();
+    std::fs::write(r.0.join(".ank/entities").join(format!("{ADR}.md")), edited).unwrap();
 
     let out = r.ank("claude-code@ank", &["check"]);
     assert_eq!(code(&out), 8, "a divergence is a fault: {}", stderr(&out));
@@ -1103,7 +1146,7 @@ fn show_lists_what_a_task_unblocks_alongside_its_blockers() {
     // which drops what is no longer held up because it is ordering work.
     for id in [root, side] {
         let done = r.task_text(id).replace("status: open", "status: done");
-        std::fs::write(r.0.join(".ank/tasks").join(format!("{id}.md")), done).unwrap();
+        std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), done).unwrap();
     }
     r.blocked(mid, &[root, ghost]);
     r.blocked(leaf, &[mid]);
@@ -1708,7 +1751,7 @@ fn a_check_from_an_older_checkout_leaves_a_live_claim_alone() {
     r.seed_task(gone, Some("A verifiable criterion."));
     let out = r.ank("codex@host-9", &["claim", gone]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    std::fs::remove_file(r.0.join(".ank/tasks").join(format!("{gone}.md"))).unwrap();
+    std::fs::remove_file(r.0.join(".ank/entities").join(format!("{gone}.md"))).unwrap();
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "drop it"]);
 
@@ -1935,8 +1978,7 @@ impl Bare {
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
         ));
-        std::fs::create_dir_all(p.join(".ank/tasks")).unwrap();
-        std::fs::create_dir_all(p.join(".ank/adr")).unwrap();
+        std::fs::create_dir_all(p.join(".ank/entities")).unwrap();
         std::fs::create_dir_all(p.join("src")).unwrap();
         std::fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
         std::fs::write(
@@ -1945,7 +1987,7 @@ impl Bare {
         )
         .unwrap();
         std::fs::write(
-            p.join(".ank/tasks").join(format!("{ID}.md")),
+            p.join(".ank/entities").join(format!("{ID}.md")),
             format!(
                 "---\nid: {ID}\ntype: task\nslug: example\ntitle: Example task\n\
                  created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
@@ -3249,7 +3291,8 @@ fn two_clones_of_one_repository_arbitrate_over_a_claim() {
 
     // And the loser leaves the durable state alone: a refused claim is not a
     // task moved to in_progress in a clone that does not hold it.
-    let text = std::fs::read_to_string(other.join(".ank/tasks").join(format!("{ID}.md"))).unwrap();
+    let text =
+        std::fs::read_to_string(other.join(".ank/entities").join(format!("{ID}.md"))).unwrap();
     assert!(
         text.contains("status: open"),
         "the refused clone moved the task anyway:\n{text}"
@@ -3618,7 +3661,7 @@ fn the_over_constrained_signal_reports_the_limit_it_tested() {
     let accepted = r
         .adr_text("ADR-0000000000ab")
         .replace("status: proposed", "status: accepted");
-    std::fs::write(r.0.join(".ank/adr/ADR-0000000000ab.md"), accepted).unwrap();
+    std::fs::write(r.0.join(".ank/entities/ADR-0000000000ab.md"), accepted).unwrap();
 
     let out = r.ank("claude-code@ank", &["check"]);
     let said = format!("{}{}", stdout(&out), stderr(&out));
@@ -3665,7 +3708,7 @@ fn the_over_constrained_signal_reports_the_limit_it_tested() {
     let accepted = quiet
         .adr_text("ADR-0000000000ab")
         .replace("status: proposed", "status: accepted");
-    std::fs::write(quiet.0.join(".ank/adr/ADR-0000000000ab.md"), accepted).unwrap();
+    std::fs::write(quiet.0.join(".ank/entities/ADR-0000000000ab.md"), accepted).unwrap();
     let out = quiet.ank("claude-code@ank", &["check"]);
     assert!(
         !stdout(&out).contains("over-constrained"),
@@ -4019,7 +4062,7 @@ fn a_crlf_corpus_is_read_signalled_and_exits_zero_through_the_binary() {
     let r = Repo::new();
     r.seed_task(ID, Some("A verifiable criterion."));
 
-    let p = r.0.join(".ank/tasks").join(format!("{ID}.md"));
+    let p = r.0.join(".ank/entities").join(format!("{ID}.md"));
     let lf = std::fs::read_to_string(&p).unwrap();
     std::fs::write(&p, lf.replace('\n', "\r\n")).unwrap();
 
@@ -4125,7 +4168,7 @@ fn attest_refuses_a_task_that_is_not_finished_and_names_the_verb_that_applies() 
 /// proof list is the subject here.
 fn seed_done(r: &Repo, id: &str, proofs: &str) {
     std::fs::write(
-        r.0.join(".ank/tasks").join(format!("{id}.md")),
+        r.0.join(".ank/entities").join(format!("{id}.md")),
         format!(
             "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
              created: 2026-07-28T00:00:00Z\nstatus: done\nscope:\n  - src/**\n\
@@ -5296,13 +5339,21 @@ fn an_editor_that_exits_non_zero_leaves_the_entity_untouched() {
 /// The entities a repository holds, read off the disk rather than through the
 /// tool: what has to be true is the state of the corpus, not `find`'s agreement
 /// with itself.
-fn entity_files(r: &Repo, sub: &str) -> Vec<String> {
-    let dir = r.0.join(".ank").join(sub);
+/// The entity files of the corpus, of one kind. One directory holds every kind
+/// since schema 3, so the kind is read off the file name rather than off the
+/// path (§6).
+fn entity_files(r: &Repo, kind: &str) -> Vec<String> {
+    let prefix = match kind {
+        "tasks" => "TASK-",
+        "adr" => "ADR-",
+        other => panic!("no such kind: {other}"),
+    };
+    let dir = r.0.join(".ank").join("entities");
     let mut v: Vec<String> = std::fs::read_dir(&dir)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().to_string())
-                .filter(|n| n.ends_with(".md"))
+                .filter(|n| n.ends_with(".md") && n.starts_with(prefix))
                 .collect()
         })
         .unwrap_or_default();
@@ -5326,7 +5377,7 @@ fn new_task_without_flags_opens_a_template_and_writes_what_comes_back() {
 
     let files = entity_files(&r, "tasks");
     assert_eq!(files.len(), 1, "exactly one task: {files:?}");
-    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(&files[0])).unwrap();
 
     // The guidance rides in YAML comments and the parser drops them. A template
     // whose help text reached the corpus would put it in every `show` forever.
@@ -5364,7 +5415,7 @@ fn new_adr_without_flags_opens_a_template_and_writes_what_comes_back() {
 
     let files = entity_files(&r, "adr");
     assert_eq!(files.len(), 1, "exactly one adr: {files:?}");
-    let text = std::fs::read_to_string(r.0.join(".ank/adr").join(&files[0])).unwrap();
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(&files[0])).unwrap();
     assert!(text.contains("Do not do X."), "{text}");
     // Never born accepted and never born anchored: ratification is a signed
     // commit produced by `accept`, and an ADR that arrived ratified would bind
@@ -5459,7 +5510,7 @@ fn the_flag_form_is_untouched_by_the_interactive_one() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let files = entity_files(&r, "tasks");
     assert_eq!(files.len(), 1, "{files:?}");
-    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(&files[0])).unwrap();
     assert!(text.contains("title: Scripted"), "{text}");
     assert!(text.contains("  - src/**"), "{text}");
 }
@@ -5508,7 +5559,7 @@ fn the_flags_that_were_given_are_carried_into_the_template() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let files = entity_files(&r, "tasks");
     assert_eq!(files.len(), 1, "{files:?}");
-    let text = std::fs::read_to_string(r.0.join(".ank/tasks").join(&files[0])).unwrap();
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(&files[0])).unwrap();
     assert!(text.contains("The binary answers."), "{text}");
     assert!(text.contains("verify: [unit]"), "{text}");
     // Set by the creator, because that is who typed it — the same thing the flag
@@ -6647,7 +6698,9 @@ fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
 
     // A glob naming nothing in the repository is refused, and nothing is
     // written -- a scope pointing outside the tree is not a scope.
-    let before = std::fs::read_dir(r.0.join(".ank/tasks")).unwrap().count();
+    let before = std::fs::read_dir(r.0.join(".ank/entities"))
+        .unwrap()
+        .count();
     let out = r.ank(
         "claude-code@ank",
         &[
@@ -6661,7 +6714,9 @@ fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
     );
     assert_eq!(out.status.code(), Some(1), "{}", said(&out));
     assert_eq!(
-        std::fs::read_dir(r.0.join(".ank/tasks")).unwrap().count(),
+        std::fs::read_dir(r.0.join(".ank/entities"))
+            .unwrap()
+            .count(),
         before,
         "a refused scope still created the task"
     );
@@ -7337,7 +7392,7 @@ fn a_finished_task_is_told_where_the_file_went_and_offered_no_command() {
         let seeded = r
             .task_text(ID)
             .replace("status: open", &format!("status: {status}"));
-        std::fs::write(r.0.join(".ank/tasks").join(format!("{ID}.md")), seeded).unwrap();
+        std::fs::write(r.0.join(".ank/entities").join(format!("{ID}.md")), seeded).unwrap();
         r.git(&["add", "-A"]);
         r.git(&["commit", "-qm", "seed"]);
         std::fs::rename(r.0.join("src/old.rs"), r.0.join("src/new.rs")).unwrap();
@@ -7374,7 +7429,7 @@ fn a_finished_task_is_told_where_the_file_went_and_offered_no_command() {
 fn outside_a_repository_the_rename_walk_is_skipped_without_a_word() {
     let b = Bare::new();
     std::fs::write(
-        b.0.join(".ank/adr").join(format!("{DEAD_ADR}.md")),
+        b.0.join(".ank/entities").join(format!("{DEAD_ADR}.md")),
         format!(
             "---\nid: {DEAD_ADR}\ntype: adr\nslug: example\ntitle: A decision\n\
              created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - src/old.rs\n\
@@ -7428,4 +7483,221 @@ fn the_note_reaches_json_as_a_list_and_not_as_drawn_text() {
     // A finding with nothing to add carries the key and an empty list, so a
     // parser reads one shape rather than two.
     assert!(text.contains("\"note\":[]"), "{text}");
+}
+
+// ---------------------------------------------------------------------------
+// The previous layout, read for one window (§6, ADR-c9f9d0d6f05d)
+// ---------------------------------------------------------------------------
+//
+// Three fixtures, and the third is the one that bites: a corpus in the previous
+// layout, one in the flat layout, and one holding both at once. Through the
+// binary, because what has to be true is what a reader of a real corpus gets,
+// and every one of these paths is reached by dispatch and not by a function.
+
+const LEGACY_TASK: &str = "TASK-00000000fa01";
+const LEGACY_ADR: &str = "ADR-00000000fa02";
+
+/// A reader accepts the previous layout. Every verb answers, and `check` says
+/// so **once**, as a signal, naming the command that moves it.
+#[test]
+fn a_corpus_in_the_previous_layout_is_read_and_reported_once() {
+    let r = Repo::new();
+    r.seed_task_legacy(LEGACY_TASK, "A task written before the move");
+    r.seed_adr_legacy(LEGACY_ADR, "Do not do the thing.");
+    // A scope that matches something: a dead scope is a fault of its own and
+    // would drown the one thing this fixture is about.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "fn main() {}\n").unwrap();
+
+    let out = r.ank("claude-code@ank", &["show", LEGACY_ADR]);
+    assert_eq!(code(&out), 0, "both kinds are read: {}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Do not do the thing."),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = r.ank("claude-code@ank", &["show", LEGACY_TASK]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("A task written before the move"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = r.ank("claude-code@ank", &["find", "--status", "open"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains(&LEGACY_TASK[..9]), "{}", stdout(&out));
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a corpus that still reads is not broken: {}",
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    let mentions: Vec<&str> = text
+        .lines()
+        .filter(|l| l.contains("previous layout"))
+        .collect();
+    assert_eq!(
+        mentions.len(),
+        1,
+        "once for the corpus, never per file: {text}"
+    );
+    let line = mentions[0];
+    assert!(
+        line.starts_with("signal:"),
+        "a signal and not a fault: {line}"
+    );
+    assert!(line.contains('2'), "it counts what is left: {line}");
+    assert!(
+        line.contains("git mv") && line.contains(".ank/entities/"),
+        "it names the command that moves it: {line}"
+    );
+}
+
+/// The flat layout is what a writer produces, and it earns no finding at all.
+#[test]
+fn a_corpus_in_the_flat_layout_carries_no_leftover_finding() {
+    let r = Repo::new();
+    r.seed_task(LEGACY_TASK, Some("A verifiable criterion."));
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stdout(&out).contains("previous layout"),
+        "{}",
+        stdout(&out)
+    );
+
+    // And a new entity lands there rather than in a directory named after its
+    // kind, whichever kind it is.
+    let out = r.ank(
+        "claude-code@ank",
+        &["new", "task", "--title", "Fresh", "--scope", "src/**"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!r.0.join(".ank/tasks").exists(), "no writer produces it");
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "Fresh",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!r.0.join(".ank/adr").exists(), "nor for the other kind");
+}
+
+/// Both at once: **one corpus, no entity counted twice, and the flat copy
+/// wins.** An id resolving in two directories that produced two entities, or
+/// silently preferred whichever the filesystem enumerated first, is how a corpus
+/// grows two versions of a task that disagree.
+#[test]
+fn a_corpus_holding_both_layouts_is_one_corpus_and_the_flat_copy_wins() {
+    let r = Repo::new();
+    r.seed_task_legacy(LEGACY_TASK, "The copy left behind");
+    r.seed_task(LEGACY_TASK, Some("A verifiable criterion."));
+    assert!(r.legacy_task_path(LEGACY_TASK).exists());
+    assert!(r.flat_task_path(LEGACY_TASK).exists());
+
+    // Listed once.
+    let out = r.ank("claude-code@ank", &["find", "--status", "open"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let hits = stdout(&out)
+        .lines()
+        .filter(|l| l.contains(&LEGACY_TASK[..9]))
+        .count();
+    assert_eq!(hits, 1, "one entity, one line: {}", stdout(&out));
+
+    // And read from the copy that counts.
+    let out = r.ank("claude-code@ank", &["show", LEGACY_TASK]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Example task") && !stdout(&out).contains("The copy left behind"),
+        "the flat copy is the newer one by construction: {}",
+        stdout(&out)
+    );
+
+    // check counts the entity once and still reports the leftover.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("1 tasks"), "one entity, not two: {text}");
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("previous layout"))
+            .count(),
+        1,
+        "{text}"
+    );
+}
+
+/// A write lands in `entities/` **and leaves nothing behind**, which is what
+/// keeps the both-at-once state from being something a normal loop produces.
+#[test]
+fn a_write_moves_an_entity_out_of_the_previous_layout() {
+    let r = Repo::new().with_verifiers("");
+    r.seed_task_legacy(LEGACY_TASK, "A task written before the move");
+    assert!(r.legacy_task_path(LEGACY_TASK).exists());
+
+    let out = r.ank("claude-code@ank", &["claim", LEGACY_TASK]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    assert!(
+        r.flat_task_path(LEGACY_TASK).exists(),
+        "every write lands in .ank/entities/"
+    );
+    assert!(
+        !r.legacy_task_path(LEGACY_TASK).exists(),
+        "and does not leave the old copy to disagree with it"
+    );
+    let text = std::fs::read_to_string(r.flat_task_path(LEGACY_TASK)).unwrap();
+    assert!(text.contains("status: in_progress"), "{text}");
+
+    // The corpus is whole again, so the finding goes with it.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stdout(&out).contains("previous layout"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// `index.db` is derived: it rebuilds from either layout, and deleting it stays
+/// safe. Asserted by deleting it between two reads that must agree.
+#[test]
+fn the_index_rebuilds_from_either_layout_and_deleting_it_stays_safe() {
+    for legacy in [true, false] {
+        let r = Repo::new();
+        if legacy {
+            r.seed_task_legacy(LEGACY_TASK, "A task written before the move");
+        } else {
+            r.seed_task(LEGACY_TASK, Some("A verifiable criterion."));
+        }
+
+        let first = r.ank("claude-code@ank", &["find", "--status", "open"]);
+        assert_eq!(code(&first), 0, "{}", stderr(&first));
+
+        let db = r.0.join(".ank/index.db");
+        assert!(db.exists(), "the read builds one");
+        std::fs::remove_file(&db).unwrap();
+
+        let second = r.ank("claude-code@ank", &["find", "--status", "open"]);
+        assert_eq!(code(&second), 0, "{}", stderr(&second));
+        assert_eq!(
+            stdout(&first),
+            stdout(&second),
+            "the index is a cache and never the source of truth (legacy: {legacy})"
+        );
+    }
 }

@@ -24,10 +24,11 @@
 //! disagree with the table beside it is worse than no search index.
 
 use crate::cli::{CliError, Result};
+use crate::store::Store;
 use ank_core::{parse_entity, Entity, EntityId, EntityKind};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// Bumped whenever the schema changes. An index carrying anything else is
@@ -335,14 +336,29 @@ impl Index {
     /// a `.md` whose stem is an identifier of the kind its directory holds. Any
     /// other rule would let the index and the store disagree about what exists,
     /// and the index would lose that argument every time.
+    /// Scans both layouts, and an entity present in both is scanned **once**,
+    /// from the canonical copy — the same rule the store applies, for the same
+    /// reason: two rows for one id would make the index hold two versions of a
+    /// task that disagree, and the index would lose that argument every time.
+    ///
+    /// Nothing here migrates. The index carries the path already, so it rebuilds
+    /// from whichever layout it finds and deleting it stays safe.
     fn scan(&self) -> Result<BTreeMap<String, ScannedFile>> {
         let mut found = BTreeMap::new();
-        for (kind, dir) in [(EntityKind::Task, "tasks"), (EntityKind::Adr, "adr")] {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        // Canonical first, so that `seen` makes the legacy pass skip what the
+        // flat layout already holds rather than the other way round.
+        let dirs = [
+            (None, Store::ENTITIES_DIR),
+            (Some(EntityKind::Task), "tasks"),
+            (Some(EntityKind::Adr), "adr"),
+        ];
+        for (kind_of_dir, dir) in dirs {
             let full = self.ank.join(dir);
             let entries = match std::fs::read_dir(&full) {
                 Ok(e) => e,
                 // A corpus with no ADR directory yet is a young corpus, not a
-                // broken one.
+                // broken one — and one already moved has no `tasks/` at all.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(e) => return Err(CliError::new(1, format!("{}: {e}", full.display()))),
             };
@@ -359,7 +375,14 @@ impl Index {
                 let Ok(id) = EntityId::parse(stem) else {
                     continue;
                 };
-                if id.kind() != kind {
+                // In the previous layout the directory carried the kind, so a
+                // file in the wrong one is not an entity of that kind. In the
+                // flat layout there is no directory to disagree with, and the
+                // file name is what states it.
+                if kind_of_dir.is_some_and(|k| id.kind() != k) {
+                    continue;
+                }
+                if !seen.insert(id.to_string()) {
                     continue;
                 }
                 let bytes = std::fs::read(&path)
@@ -657,29 +680,20 @@ mod tests {
                 std::process::id(),
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ));
-            std::fs::create_dir_all(p.join("tasks")).unwrap();
-            std::fs::create_dir_all(p.join("adr")).unwrap();
+            std::fs::create_dir_all(p.join(Store::ENTITIES_DIR)).unwrap();
             Temp(p)
         }
 
         fn write(&self, entity: &Entity) {
-            let sub = match entity.id().kind() {
-                EntityKind::Task => "tasks",
-                EntityKind::Adr => "adr",
-            };
             std::fs::write(
-                self.0.join(sub).join(format!("{}.md", entity.id())),
+                Store::new(&self.0).path_of(entity.id()),
                 serialize_entity(entity),
             )
             .unwrap();
         }
 
         fn remove(&self, id: &EntityId) {
-            let sub = match id.kind() {
-                EntityKind::Task => "tasks",
-                EntityKind::Adr => "adr",
-            };
-            std::fs::remove_file(self.0.join(sub).join(format!("{id}.md"))).unwrap();
+            std::fs::remove_file(Store::new(&self.0).read_path_of(id)).unwrap();
         }
 
         fn db(&self) -> PathBuf {
@@ -761,7 +775,7 @@ mod tests {
         assert_eq!(first.status, "open");
         assert_eq!(first.created, "2026-07-28T00:00:00Z");
         assert_eq!(first.scope, vec!["src/**", "docs/**"], "lists survive");
-        assert_eq!(first.path, "tasks/TASK-000000000001.md");
+        assert_eq!(first.path, "entities/TASK-000000000001.md");
         assert_eq!(first.version, 1);
 
         assert_eq!(index.by_kind(EntityKind::Task).unwrap().len(), 2);
@@ -928,7 +942,7 @@ mod tests {
         t.write(&adr("00000000aaaa", "A decision"));
 
         std::fs::write(
-            t.0.join("tasks/TASK-0000000000ff.md"),
+            t.0.join("entities/TASK-0000000000ff.md"),
             "---\nnot: a valid entity\n",
         )
         .unwrap();
@@ -937,7 +951,7 @@ mod tests {
         // not disagree — indexing it would list one id at a path holding
         // another, which is the disagreement it can only lose.
         let ghost = serialize_entity(&task("000000000001", "First", TaskStatus::Open));
-        std::fs::write(t.0.join("tasks/TASK-00000000eeee.md"), &ghost).unwrap();
+        std::fs::write(t.0.join("entities/TASK-00000000eeee.md"), &ghost).unwrap();
 
         let mut index = Index::open_raw(&t.0).unwrap();
         let first = index.refresh().unwrap();
@@ -957,7 +971,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .path,
-            "tasks/TASK-000000000001.md",
+            "entities/TASK-000000000001.md",
             "and it does not steal the real entity's row"
         );
 
@@ -971,10 +985,12 @@ mod tests {
     #[test]
     fn files_that_are_not_entities_are_ignored_the_way_the_store_ignores_them() {
         let t = seeded();
-        std::fs::write(t.0.join("tasks/notes.md"), "free notes, not an entity").unwrap();
-        std::fs::write(t.0.join("tasks/.TASK-000000000001.md.lock"), "").unwrap();
-        // An ADR file sitting in tasks/ is not an ADR: the directory decides
-        // the kind, exactly as it does for the store.
+        std::fs::write(t.0.join("entities/notes.md"), "free notes, not an entity").unwrap();
+        std::fs::write(t.0.join("entities/.TASK-000000000001.md.lock"), "").unwrap();
+        // In the previous layout the directory carried the kind, so an ADR file
+        // sitting in tasks/ is not an ADR — exactly as it is not for the store,
+        // and for as long as that layout is read at all.
+        std::fs::create_dir_all(t.0.join("tasks")).unwrap();
         std::fs::write(t.0.join("tasks/ADR-00000000bbbb.md"), "whatever").unwrap();
 
         let index = Index::open(&t.0).unwrap();
@@ -982,9 +998,9 @@ mod tests {
     }
 
     #[test]
-    fn a_corpus_with_no_adr_directory_yet_is_not_an_error() {
+    fn a_corpus_with_no_directory_of_the_previous_layout_is_not_an_error() {
         let t = Temp::new();
-        std::fs::remove_dir_all(t.0.join("adr")).unwrap();
+        assert!(!t.0.join("adr").exists() && !t.0.join("tasks").exists());
         t.write(&task("000000000001", "Alone", TaskStatus::Open));
         assert_eq!(Index::open(&t.0).unwrap().all().unwrap().len(), 1);
     }
@@ -1020,7 +1036,7 @@ mod tests {
             .by_kind(EntityKind::Adr)
             .unwrap()
             .iter()
-            .all(|r| r.path.starts_with("adr/")));
+            .all(|r| r.id.kind() == EntityKind::Adr));
         // This task indexes itself. Asserted on what cannot drift: the path is
         // derived from the id, so it holds for the life of the corpus. An
         // earlier version of this test pinned the status to `in_progress` and
@@ -1031,7 +1047,13 @@ mod tests {
             .get(&EntityId::parse("TASK-b2c3d4e5f6a7").unwrap())
             .unwrap()
             .expect("this task indexes itself");
-        assert_eq!(mine.path, "tasks/TASK-b2c3d4e5f6a7.md");
+        // Layout-agnostic on purpose: this repository's own corpus is the
+        // fixture, and it moves to the flat layout in its own commit.
+        assert!(
+            mine.path.ends_with("/TASK-b2c3d4e5f6a7.md"),
+            "{}",
+            mine.path
+        );
         assert!(
             ["open", "in_progress", "done", "closed"].contains(&mine.status.as_str()),
             "status read back as '{}'",
@@ -1095,8 +1117,8 @@ mod tests {
         drop(index);
 
         // Take the corpus away entirely.
-        std::fs::remove_dir_all(t.0.join("tasks")).unwrap();
-        assert!(!t.0.join("tasks").exists());
+        std::fs::remove_dir_all(t.0.join(Store::ENTITIES_DIR)).unwrap();
+        assert!(!t.0.join(Store::ENTITIES_DIR).exists());
 
         // `open_raw` deliberately, not `open`: `open` refreshes, and a refresh
         // against a directory that is gone would correctly forget all thousand.
