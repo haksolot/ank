@@ -5,7 +5,7 @@ slug: this-corpus-moves-to-the-flat-layout-and-its-log
 title: This corpus moves to the flat layout and its logs move out of the task files
 created: 2026-08-11T22:28:28Z
 author: claude-code@sean-laptop
-status: in_progress
+status: done
 scope:
   - .ank/**
 blocked_by: [TASK-cd3189ddf61e, TASK-e70f3a12185a, TASK-27cf26cbc414]
@@ -25,8 +25,12 @@ done_criteria: |
   nothing else -- no reflow, no field edit, no version bump beyond what the
   extraction requires.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 77aa58c
+    criteria: 6a7020f9efea
 schema: 3
-version: 6
+version: 7
 ---
 
 Last step of the format change, and the one that is irreversible in practice even
