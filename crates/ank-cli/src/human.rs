@@ -713,25 +713,38 @@ fn check_scope_alive(
         if files.iter().any(|f| one.matches(f)) {
             continue;
         }
+        // The cost clause of ADR-97beaf55e73a, and the reason this sits here
+        // rather than above the loop: two git processes per glob, paid only by a
+        // glob that already matches nothing. A healthy corpus reaches this line
+        // no times.
+        let note = match git_root {
+            Some(root) => scope_moved(entity, glob, root),
+            None => Vec::new(),
+        };
+        // The severity rule, and it only ever lowers. A dead scope git can
+        // explain is not a broken corpus: the reader can see where the path went
+        // and follow it, which is what the walk above was built to show. The
+        // fault is for the death git cannot explain, where the reader has
+        // nothing — and keeping it for the rest would mean any directory rename
+        // reddens a corpus permanently, since `amend` refuses a finished task and
+        // the finding then names no act at all.
+        //
+        // `ahead_of_the_code` is read first and alone, so a signal never becomes
+        // a fault here whatever git says.
+        let explained = !note.is_empty();
         let finding = if ahead_of_the_code {
             Finding::signal(
                 entity.id(),
                 format!("scope '{glob}' matches no file yet: work not started, or a typo"),
             )
         } else {
-            Finding::fault(
-                entity.id(),
-                format!("dead scope '{glob}': no file matches it"),
-            )
+            let message = format!("dead scope '{glob}': no file matches it");
+            match explained {
+                true => Finding::signal(entity.id(), message),
+                false => Finding::fault(entity.id(), message),
+            }
         };
-        // The cost clause of ADR-97beaf55e73a, and the reason this sits here
-        // rather than above the loop: two git processes per glob, paid only by a
-        // glob that already matches nothing. A healthy corpus reaches this line
-        // no times.
-        report.findings.push(match git_root {
-            Some(root) => finding.with_note(scope_moved(entity, glob, root)),
-            None => finding,
-        });
+        report.findings.push(finding.with_note(note));
     }
 }
 
@@ -744,25 +757,53 @@ fn check_scope_alive(
 /// same nothing, so no wording below may suggest which — the reader is left
 /// exactly where they stand today, and the finding above says all that is known.
 fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
-    // A glob is not a path, and git has no answer for "where did `src/**` go".
-    // The single-file entry is what this serves, and it is the common one: 343
-    // of the 462 scope entries in this repository's own corpus name one file
-    // with no wildcard.
-    if glob.contains(['*', '?', '[', ']', '{', '}']) {
-        return Vec::new();
-    }
     // A git failure is not a corpus fault and must never become one: the scope
     // is dead either way, and that is already reported. What is lost is the
     // explanation, which is exactly what `None` means everywhere else here.
-    let Ok(Some(moved)) = git::rename_of(root, glob) else {
-        return Vec::new();
+    let (asked, moved, to) = match literal_prefix(glob) {
+        // A path. The common entry, and the one git answers directly: 343 of the
+        // 462 scope entries in this repository's own corpus name one file with
+        // no wildcard.
+        None => {
+            let Ok(Some(moved)) = git::rename_of(root, glob) else {
+                return Vec::new();
+            };
+            let to = moved.to.clone();
+            (glob.to_string(), moved, to)
+        }
+        // A glob. git has no answer for "where did `src/**` go", so the question
+        // put to it is about the literal prefix, and the wildcard tail is carried
+        // across to the proposal unchanged.
+        Some((prefix, tail)) => {
+            let Ok(Some(moved)) = git::directory_rename_of(root, &prefix) else {
+                return Vec::new();
+            };
+            let to = format!("{}{tail}", moved.to);
+            (prefix, moved, to)
+        }
     };
     let mut note = vec![format!(
-        "git records {glob} renamed to {} in {}",
+        "git records {asked} renamed to {} in {}",
         moved.to, moved.sha
     )];
-    note.extend(repair(entity, glob, &moved.to));
+    note.extend(repair(entity, glob, &to));
     note
+}
+
+/// The part of a glob git can be asked about, and the wildcard tail that is not.
+///
+/// `None` for a glob with no wildcard, which is a path and belongs to
+/// [`git::rename_of`]. `None` too when nothing literal precedes the first
+/// wildcard — `**/foo` names no directory to ask about, and guessing one would
+/// be the invented answer this whole path refuses to give.
+///
+/// The cut is at the last separator before the first wildcard, so `src/*.rs`
+/// asks about `src` and never about `src/`: a partial path component is not a
+/// directory, and `rev-list` would answer about nothing.
+fn literal_prefix(glob: &str) -> Option<(String, String)> {
+    let first = glob.find(['*', '?', '[', ']', '{', '}'])?;
+    let cut = glob[..first].rfind('/')?;
+    Some((glob[..cut].to_string(), glob[cut..].to_string()))
 }
 
 /// The one command that changes the scope of this entity without refusing on

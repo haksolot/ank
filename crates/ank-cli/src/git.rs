@@ -570,6 +570,46 @@ pub struct Rename {
 /// shallow clone, a repository with no `HEAD`. The caller must never render any
 /// of them as a claim about what happened to the file.
 pub fn rename_of(cwd: &Path, path: &str) -> Result<Option<Rename>> {
+    let Some((sha, diff)) = last_change(cwd, path)? else {
+        return Ok(None);
+    };
+    let to = rename_target(&diff, path);
+    Ok(to.map(|to| Rename {
+        to,
+        sha: sha.chars().take(12).collect(),
+    }))
+}
+
+/// Where a *directory* went, when the commit that emptied it recorded its files
+/// as renamed into one other directory.
+///
+/// This is what serves a glob, which [`rename_of`] cannot: `rev-list` answers
+/// about a path and has no answer for `src/**`, so the caller asks about the
+/// literal prefix instead and this reads the answer back as a directory.
+///
+/// The same two plumbing calls, and deliberately the same ones: a second way of
+/// asking git the same question is a second thing to keep in step.
+pub fn directory_rename_of(cwd: &Path, prefix: &str) -> Result<Option<Rename>> {
+    let Some((sha, diff)) = last_change(cwd, prefix)? else {
+        return Ok(None);
+    };
+    let to = moved_prefix(&diff, prefix);
+    Ok(to.map(|to| Rename {
+        to,
+        sha: sha.chars().take(12).collect(),
+    }))
+}
+
+/// The last commit that touched `path`, and what it changed.
+///
+/// `rev-list -1 HEAD -- <path>` is that commit. `diff-tree` on it is what says
+/// whether the touch was a rename.
+///
+/// **No pathspec on `diff-tree`**: it would restrict rename detection to the
+/// paths named, and the destination is precisely the path we do not know yet.
+/// `-r` reaches into subtrees, `-M` detects the rename at all, `--no-commit-id`
+/// makes the first record a change rather than the commit name.
+fn last_change(cwd: &Path, path: &str) -> Result<Option<(String, String)>> {
     let args = ["rev-list", "-1", "HEAD", "--", path];
     let out = output(cwd, &args)?;
     if !out.status.success() {
@@ -580,10 +620,6 @@ pub fn rename_of(cwd: &Path, path: &str) -> Result<Option<Rename>> {
         return Ok(None);
     }
 
-    // `-r` to reach into subtrees, `-M` to detect the rename at all,
-    // `--no-commit-id` so the first record is a change and not the commit name.
-    // No pathspec: it would restrict rename detection to the paths named, and
-    // the destination is precisely the path we do not know yet.
     let args = [
         "diff-tree",
         "-M",
@@ -597,11 +633,10 @@ pub fn rename_of(cwd: &Path, path: &str) -> Result<Option<Rename>> {
     if !out.status.success() {
         return Ok(None);
     }
-    let to = rename_target(&String::from_utf8_lossy(&out.stdout), path);
-    Ok(to.map(|to| Rename {
-        to,
-        sha: sha.chars().take(12).collect(),
-    }))
+    Ok(Some((
+        sha,
+        String::from_utf8_lossy(&out.stdout).to_string(),
+    )))
 }
 
 /// The destination `text` records for `from`, if any.
@@ -630,6 +665,48 @@ fn rename_target(text: &str, from: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The one directory `text` records every file under `prefix` as moving to.
+///
+/// Pure, and split out for the same reason as [`rename_target`]: every branch is
+/// a shape of git's output.
+///
+/// **Three ways to answer nothing, and all three are the same answer.** No
+/// rename under the prefix at all; sources landing in more than one destination;
+/// a rename that also changed a file's name, so the path below the prefix is not
+/// carried across. The last is what keeps this from reporting a directory move
+/// that did not happen — a commit that moves `a/x` to `b/y` moved a file, and
+/// saying `a` became `b` on that evidence would be a claim git did not make.
+fn moved_prefix(text: &str, prefix: &str) -> Option<String> {
+    let under = format!("{prefix}/");
+    let mut found: Option<String> = None;
+    let mut fields = text.split('\0').filter(|f| !f.is_empty());
+    while let Some(status) = fields.next() {
+        let renamed = status.starts_with('R');
+        let Some(src) = fields.next() else {
+            return None;
+        };
+        if !renamed && !status.starts_with('C') {
+            continue;
+        }
+        let Some(dst) = fields.next() else {
+            return None;
+        };
+        if !renamed {
+            continue;
+        }
+        let Some(rel) = src.strip_prefix(under.as_str()) else {
+            continue;
+        };
+        let dest = dst.strip_suffix(rel).and_then(|d| d.strip_suffix('/'))?;
+        match &found {
+            None => found = Some(dest.to_string()),
+            Some(seen) if seen == dest => {}
+            Some(_) => return None,
+        }
+    }
+    found
 }
 
 /// The `constraint`+`scope` hash a ratification commit recorded for `id`, or
