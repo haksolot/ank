@@ -240,6 +240,10 @@ case; one ref per task is what arbitrates them.
 An expired claim is not a live one, so this never stands between you and a task
 whose lease ran out — yours or anybody's.
 
+How parallel sessions assemble into one change — a branch per task, `done` as a
+local proof, integration as a task of its own — is in [agents.md](agents.md),
+under "Parallel work and integration".
+
 Run `ank context` again and the output inverts: no other task, the full
 criterion, and the constraints matching this task's scope.
 

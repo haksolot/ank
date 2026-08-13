@@ -163,6 +163,55 @@ records who was working rather than restricting who may. Nothing in ank refuses
 on identity; the refusals are on state, and the one hard authority line is the
 signed ratification commit `ank accept` produces.
 
+## Parallel work and integration
+
+The section above says who works where. This one assembles the whole run:
+several tasks, several agents, one change landing on the default branch.
+
+**Parallelism is derived, not declared.** `blocked_by` is the only relation
+between tasks, and it is the only thing that serializes work. Tasks whose
+blockers are finished are ready together, and `ank context` computes that
+mechanically: every open task in the perimeter, the ready ones first, ordered by
+how many other tasks each would unblock. Do not serialize independent tasks
+because they belong to the same change. If the order matters, that is a
+`blocked_by`; if there is no `blocked_by`, the order is a fiction. `ank graph`
+prints the DAG when you want the shape rather than the next move.
+
+**One branch per task.** Each agent claims its task, works in its own tree on
+its own branch, and finishes there. `ank done` proves the task in the working
+tree it ran in — the verifiers ran against those files and the proof records
+their hash. It does not prove the change merges, or that the combined system
+works. That gap is held by the refs, not by convention: `done` turns the claim
+ref into a completion record naming the commit and the branch, every other tree
+answers `finished on another branch (commit …, branch …), not merged here yet`
+until the merge lands, and `check` prunes the record only once the default
+branch says the task is done.
+
+**Integration is a task.** When several tasks form one change, the whole is
+verified the way the parts were: an ordinary task, `blocked_by` each part, with
+its own criterion and its own verifiers. This is the spec's model rather than a
+workaround — `blocked_by` is a DAG with no rollup precisely because a parent
+that completes when its children do is completion without proof, and the seam
+between the parts is exactly where integration regressions live. The
+integration task becomes ready when the last part finishes; whoever claims it
+merges the branches, runs the combined verification, and records `done` like
+any other task.
+
+Where the branches meet is git's business, and both shapes are legitimate:
+
+- **Independent tasks merge to the default branch directly.** Two tasks that
+  share nothing need no ceremony between them, and no integration task either.
+- **A multi-task change goes through an integration branch.** Branch it off the
+  default branch, merge each task's branch into it, resolve conflicts there,
+  and point the integration task's verification at the combined result. The
+  default branch receives one verified change instead of three partial ones.
+
+**What ank will not do.** No verb creates a worktree, names a branch, or merges
+one. Tasks, claims, criteria, dependencies and proofs are ank's plane; branches,
+worktrees, merges and history are git's, and git is already good at them. The
+one place the planes touch is `accept`, which runs on the default branch and
+nowhere else.
+
 ## Where to go next
 
 - [getting-started.md](getting-started.md) — install to a first finished task,

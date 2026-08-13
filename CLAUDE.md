@@ -70,12 +70,15 @@ run on all three.
 - The format is the specification: `ank-core` is the reference implementation,
   and the round-trip stays byte-identical on canonical form. Any format change
   goes through the specification first, then the goldens, then the code.
-- The CLI exposes one surface (ADR-c656cbcc33a9): every verb is available to
-  every caller, and it refuses on state, never on identity. What is frozen at 8
-  verbs is not the dispatch table but the content of `skill/SKILL.md` (`context
-  claim show log done new find release`) — it is loaded permanently, so growing
-  what it teaches costs a superseding ADR and a human signature. `ank help` is
-  one flat listing, in the order of §4, with no headings and no grouping.
+- The CLI exposes one surface (ADR-f61e2d2c75e8, carrying ADR-c656cbcc33a9
+  forward): every verb is available to every caller, and it refuses on state,
+  never on identity. What is frozen is not the dispatch table but the content of
+  `skill/SKILL.md` — the loop (`context claim show log done`, with `new find
+  release` off-loop) and the planning verbs (`new adr`, `amend`, `review`,
+  `graph`, `check`) — it is loaded permanently, so growing what it teaches costs
+  a superseding ADR and a human signature. `ank help` lists every verb, grouped
+  by the moment a verb is used, within a group in the order of §4; a group never
+  says who may use a verb.
 - `.ank/` is reached only through the CLI, never by opening the files
   (ADR-01b6dd05f0db). A `PreToolUse` hook in `.claude/` refuses it.
 - Immutability is verifiable, not defended: freezes are anchored by hash, and
