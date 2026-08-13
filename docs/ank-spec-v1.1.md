@@ -913,7 +913,7 @@ The single most decisive point for real use. A `context` that explodes on a larg
 
 `context` serves two situations that used to be treated, wrongly, as one.
 
-**Before claiming — orientation.** The agent does not yet know what to do. Breadth, not depth: the perimeter's active constraints in compact form (id + `constraint` text, never the body), non-binding proposals on one line, and open tasks on one line each. **No `done_criteria`, no log** — it is not writing code yet, and execution detail would be noise. Constraints, on the other hand, are present from orientation onward: choosing a task while knowing the perimeter's rules is exactly what orientation is for.
+**Before claiming — orientation.** The agent does not yet know what to do. Breadth, not depth: the perimeter's active constraints named on one line each (id + title, never the `constraint` text and never the body), non-binding proposals on one line, and open tasks on one line each. **No `done_criteria`, no log** — it is not writing code yet, and execution detail would be noise. Constraints are named from orientation onward, because knowing which rules govern a perimeter is part of choosing within it; what they *say* is one `ank show <id>` away, the same split §9 settles for `help` and its per-verb page.
 
 **After claiming — execution.** HEAD is set. Inversion: no other task at all, but the full `done_criteria`, the constraints matching the scope **of the task**, and the most recent log entries.
 
@@ -929,9 +929,8 @@ What a holder can do with the answer is smaller than it looks, and that bounds h
 $ ank context src/auth/
 
 CONSTRAINTS (2 active)
-  ADR-3c7e  Do not introduce self-contained JWTs for user auth.
-            Every session goes through the Redis store.
-  ADR-8b41  Rate limiting mandatory on every public endpoint.
+  ADR-3c7e  No self-contained JWTs for user auth
+  ADR-8b41  Rate limiting on every public endpoint
 
 PROPOSED (1, non-binding)
   ADR-19d0  [pi@host-2] Prefer idempotent migrations
@@ -945,7 +944,24 @@ TASKS (2)
 
 ### Truncation priority
 
-**In execution mode, a constraint is never truncated.** Cutting a binding constraint means an agent can violate a rule it never saw — a discreet `+12 more` would be the worst possible behaviour. The two-phase design makes the guarantee tenable: after claiming, the perimeter is that of the task alone, so few constraints match. The budget is concrete: `context_budget` in `config.yml`, measured in characters, 8000 by default (roughly 2000 tokens — the character is the only unit measurable without depending on a tokeniser). A scope is **over-constrained** when constraints alone consume more than half of it in execution mode: a mechanical threshold, implementable as stated, and `check` reports it as such — it is a corpus problem, not a display problem.
+The budget is concrete: `context_budget` in `config.yml`, measured in characters, 8000 by default (roughly 2000 tokens — the character is the only unit measurable without depending on a tokeniser). **The two modes divide it by opposite rules, because they are answering opposite questions.**
+
+**In execution mode, a constraint is never truncated.** Cutting a binding constraint means an agent can violate a rule it never saw — a discreet `+12 more` would be the worst possible behaviour. The two-phase design makes the guarantee tenable: after claiming, the perimeter is that of the task alone, so few constraints match. A scope is **over-constrained** when constraints alone consume more than half of it in execution mode: a mechanical threshold, implementable as stated, and `check` reports it as such — it is a corpus problem, not a display problem.
+
+**In orientation mode, constraints take at most a third of the budget and everything they do not use goes to the tasks.** Nothing binds yet, because nothing has been chosen, and orientation exists to choose: a page of rules with no work to apply them to is not a choice. The third is the mirror of the threshold above — execution calls a scope sick when its constraints exceed a half, so the mode where none of them bind yet is held to something stricter. Rendering one line per constraint is what makes the ceiling easy to respect rather than a cliff to fall off; a corpus with more constraints than fit in a third reports the remainder as a counter, and the reader who wants one reads it with `ank show`.
+
+Measured on this repository before the rule existed, at 8000 characters with 18 accepted constraints and 11 open tasks: orientation spent 7357 characters on seven constraints rendered in full and 157 on tasks — one task line printed, eleven cut, and the closing suggestion naming the only candidate it had room for. Giving a perimeter changed nothing, because constraints were charged first and in full either way (TASK-1ead0e19fb73).
+
+Within each half, what survives is decided in this order:
+
+1. Constraints with the most **specific** scope are kept — a narrow glob beats `src/**`, it was written for that precise code
+2. Constraints whose vocabulary overlaps the titles of the perimeter's tasks
+3. The rest as a counter: `+12 broad constraints, ank find --type adr --scope <path>`
+4. Tasks in the order of *Task ordering* below, the rest as a counter
+
+Tasks are cut last, and only once their own share is full. The previous revision cut them **first, before any constraint**, which is what the measurement above records the consequence of.
+
+**One constraint and one task always survive, whatever the budget.** The third is a ceiling on a section and not a licence to empty it: a page naming no rule at all would tell an agent the perimeter is unconstrained, which is a stronger and falser statement than naming one and counting the rest. On a budget too small for even that, the floor wins and the page runs over — the same order of precedence execution mode applies when a single binding constraint exceeds the whole budget.
 
 ### Task ordering
 
@@ -965,13 +981,6 @@ no ready tasks in scope (3 blocked, 1 in progress by codex@host-9)
 ```
 
 An agent in a loop needs a clean stop signal. An empty output reads as a breakdown and triggers pointless retries.
-
-In orientation mode, where the agent is not writing code yet, truncation is acceptable. The cutting order:
-
-1. Tasks first, before any constraint
-2. Constraints with the most **specific** scope are kept — a narrow glob beats `src/**`, it was written for that precise code
-3. Constraints whose vocabulary overlaps the titles of the perimeter's tasks
-4. The rest as a counter: `+12 broad constraints, ank find --type adr --scope <path>`
 
 ---
 

@@ -930,13 +930,35 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
             let mut proposals = view.proposals.clone();
             let mut tasks = view.tasks.clone();
 
-            // The cutting order of §5, applied literally: tasks go first,
-            // before any constraint, then proposals, then the broadest
-            // constraints. What survives is what an agent could not have
-            // guessed.
             let mut cut_tasks = 0usize;
             let mut cut_constraints = 0usize;
             let mut cut_proposals = 0usize;
+
+            // §5, first half: constraints take at most a third, and what they
+            // do not use goes to the tasks. Charged before anything else is
+            // measured, so the tasks are never competing with a section that
+            // has already spent the page.
+            //
+            // Measured before the rule existed, on this repository: 7357
+            // characters of constraints against 157 of tasks, one task line
+            // printed and eleven cut (TASK-1ead0e19fb73). The cut order used to
+            // be tasks first, which is what produced that.
+            let share = budget / 3;
+            while constraints.len() > 1
+                && chars(&constraint_section(
+                    &constraints,
+                    cut_constraints + 1,
+                    &scope_arg,
+                    style,
+                )) > share
+            {
+                constraints.pop();
+                cut_constraints += 1;
+            }
+
+            // Second half: the whole page against the whole budget. Tasks are
+            // cut last and only once their own share is full, which is the
+            // order §5 now states.
             loop {
                 let size = chars(&orientation_lines(
                     &constraints,
@@ -952,12 +974,12 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
                 if size <= budget {
                     break;
                 }
-                if tasks.len() > 1 {
-                    tasks.pop();
-                    cut_tasks += 1;
-                } else if !proposals.is_empty() {
+                if !proposals.is_empty() {
                     proposals.pop();
                     cut_proposals += 1;
+                } else if tasks.len() > 1 {
+                    tasks.pop();
+                    cut_tasks += 1;
                 } else if constraints.len() > 1 {
                     constraints.pop();
                     cut_constraints += 1;
@@ -986,6 +1008,43 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
     text
 }
 
+/// The constraints of an orientation page, **named and not quoted** (§5).
+///
+/// One line per rule, id and title, exactly as the neighbouring PROPOSED
+/// section already lists a proposal. What a constraint *says* is one
+/// `ank show <id>` away — the split §9 settled for `help` and its per-verb page,
+/// applied to the mode where nothing binds yet because nothing has been chosen.
+///
+/// Execution mode is untouched and still renders [`constraint_block`] in full:
+/// there the perimeter is settled, the rules bind the work in hand, and cutting
+/// one would hide a rule the agent is about to break.
+///
+/// Split out because the budget has to price this section on its own before the
+/// page exists, and a second copy of the rendering would be free to disagree
+/// with the one that finally prints.
+fn constraint_section(
+    constraints: &[ConstraintLine],
+    cut_constraints: usize,
+    scope_arg: &str,
+    style: Style,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if constraints.is_empty() && cut_constraints == 0 {
+        return out;
+    }
+    out.push(String::new());
+    out.push(style.header(&format!("CONSTRAINTS ({} active)", constraints.len())));
+    for c in constraints {
+        out.push(format!("  {}  {}", style.id(&c.short), c.title));
+    }
+    if cut_constraints > 0 {
+        out.push(format!(
+            "  +{cut_constraints} broad constraints, ank find --type adr --scope {scope_arg}"
+        ));
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn orientation_lines(
     constraints: &[ConstraintLine],
@@ -998,19 +1057,7 @@ fn orientation_lines(
     view: &View,
     style: Style,
 ) -> Vec<String> {
-    let mut out = Vec::new();
-    if !constraints.is_empty() || cut_constraints > 0 {
-        out.push(String::new());
-        out.push(style.header(&format!("CONSTRAINTS ({} active)", constraints.len())));
-        for c in constraints {
-            out.extend(constraint_block(c, style));
-        }
-        if cut_constraints > 0 {
-            out.push(format!(
-                "  +{cut_constraints} broad constraints, ank find --type adr --scope {scope_arg}"
-            ));
-        }
-    }
+    let mut out = constraint_section(constraints, cut_constraints, scope_arg, style);
     // The header counts what the perimeter holds, not what survived the budget.
     // This is the one section truncation can empty completely -- the cutting
     // loop stops at one task and at one constraint, and never at zero proposals
@@ -1501,9 +1548,13 @@ After a blank one."
         assert!(text.contains("CONSTRAINTS (2 active)"), "{text}");
         assert!(text.contains("PROPOSED (1, non-binding)"), "{text}");
         assert!(text.contains("TASKS (3)"), "{text}");
+        // Named, not quoted (§5). Orientation says which rules govern the
+        // perimeter; what they say is one `ank show` away, and the constraint
+        // is what used to spend the whole page.
+        assert!(text.contains("No self-contained JWTs"), "{text}");
         assert!(
-            text.contains("Every session goes through the Redis store."),
-            "{text}"
+            !text.contains("Every session goes through the Redis store."),
+            "the rule's text belongs to execution mode and to `show`: {text}"
         );
         // No execution detail during orientation.
         assert!(!text.contains("DONE_CRITERIA"), "{text}");
@@ -1748,8 +1799,14 @@ After a blank one."
     // Budget and cutting order
     // -----------------------------------------------------------------------
 
+    /// The constraints take at most a third and the tasks take the rest (§5).
+    ///
+    /// This test used to be called `orientation_cuts_tasks_before_constraints`
+    /// and asserted exactly that, which is the rule the measurement in
+    /// TASK-1ead0e19fb73 retired: on this repository it left one task line
+    /// against seven constraints rendered in full.
     #[test]
-    fn orientation_cuts_tasks_before_constraints_and_says_how_many() {
+    fn orientation_gives_the_tasks_whatever_the_constraints_do_not_use() {
         let t = Temp::new();
         for i in 1..=12 {
             t.write(&task(
@@ -1760,16 +1817,21 @@ After a blank one."
                 TaskStatus::Open,
             ));
         }
+        // Titles long enough that the section would pass its third if nothing
+        // held it there. Measured rather than assumed: with short titles the
+        // two lines fit under the ceiling on their own, and this test passed
+        // whether or not the ceiling existed — which is a test that proves the
+        // rendering and not the rule.
         t.write(&adr(
             "00000000aaaa",
-            "Narrow",
+            "Narrow, and titled at the length a real decision is titled at",
             &["src/auth/session.rs"],
             "Narrow rule.\n",
             AdrStatus::Accepted,
         ));
         t.write(&adr(
             "00000000bbbb",
-            "Broad",
+            "Broad, and titled at the length a real decision is titled at",
             &["src/**"],
             "Broad rule.\n",
             AdrStatus::Accepted,
@@ -1777,13 +1839,37 @@ After a blank one."
 
         let view = t.view("claude-code@ank", None);
         assert_eq!(view.tasks.len(), 12);
-        let text = render(&view, 400, crate::style::PLAIN);
+        const BUDGET: usize = 400;
+        let text = render(&view, BUDGET, crate::style::PLAIN);
 
-        assert!(text.contains("more tasks, ank find --type task"), "{text}");
-        // The narrow constraint outlives the broad one.
-        assert!(text.contains("Narrow rule."), "{text}");
+        // Named and not quoted, which is what makes the ceiling affordable.
+        assert!(text.contains("Narrow, and titled"), "{text}");
+        assert!(!text.contains("Narrow rule."), "{text}");
+        // The ceiling bit: the broad one was counted away and the narrow one
+        // survived, which is the order §5 states.
+        assert!(text.contains("+1 broad constraints"), "{text}");
+        assert!(!text.contains("Broad, and titled"), "{text}");
+
+        // This budget is small enough to reach the floor of §5: the ceiling
+        // cuts until one constraint is left and then stops, because a page
+        // naming no rule would say the perimeter is unconstrained. The
+        // arithmetic ceiling is asserted at a realistic budget through the
+        // binary, in `orientation_spends_at_most_a_third_on_constraints`.
+        assert!(text.contains("CONSTRAINTS (1 active)"), "{text}");
+
+        // And the tasks got the rest: more than one line, which is what the
+        // old cutting order could not deliver.
+        let listed = text
+            .lines()
+            .filter(|l| l.trim_start().starts_with("TASK-"))
+            .count();
         assert!(
-            text.chars().count() < 8000,
+            listed > 1,
+            "orientation is for choosing and offered {listed} candidate: {text}"
+        );
+        assert!(text.contains("more tasks, ank find --type task"), "{text}");
+        assert!(
+            text.chars().count() <= BUDGET,
             "the budget did real work: {}",
             text.chars().count()
         );
