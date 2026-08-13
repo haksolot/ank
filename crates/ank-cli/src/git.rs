@@ -42,6 +42,12 @@ const PLUMBING: &[&str] = &[
     "for-each-ref",
     "config",
     "--version",
+    // `diff-tree` and not `show` or `log --name-status`: the porcelain pair
+    // format their output for a reader, `diff-tree` for a program. Its
+    // `--name-status` records have carried the same shape since rename
+    // detection existed, and `-z` removes the one part that was ever
+    // version-dependent — the C-quoting of an unusual path.
+    "diff-tree",
     // The three level 1 needs (§7), each admitted on the criterion rather than
     // on convenience. `push` signals a refused compare-and-swap by its exit
     // code, which is the same contract `update-ref` is trusted for, and
@@ -526,6 +532,97 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
+}
+
+/// Where a path went, when the commit that removed it recorded a rename.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rename {
+    /// The path the file carries now, repository-relative, `/`-separated.
+    pub to: String,
+    /// The commit that moved it, abbreviated for a reader to paste back.
+    pub sha: String,
+}
+
+/// The rename that killed `path`, or `None` when git cannot name one
+/// (ADR-97beaf55e73a).
+///
+/// Two plumbing calls and no porcelain. `rev-list -1 HEAD -- <path>` is the
+/// last commit that touched the path, and `diff-tree` on that commit is what
+/// says whether the touch was a rename.
+///
+/// **No `--full-history` here, and the difference from [`ratification_at`] is
+/// deliberate.** There the target is one specific commit, identified by its
+/// subject, and simplification dropping it would lose the anchor. Here the
+/// target is the change itself: default simplification walks to the commit that
+/// actually made it, where `--full-history` would keep the merges that merely
+/// carried it — and a merge is a commit `diff-tree` prints nothing for, so
+/// asking for more history would answer less often.
+///
+/// `None` is the honest answer for everything this cannot explain: a deletion,
+/// a move under git's similarity threshold, a path renamed by a merge, a
+/// shallow clone, a repository with no `HEAD`. The caller must never render any
+/// of them as a claim about what happened to the file.
+pub fn rename_of(cwd: &Path, path: &str) -> Result<Option<Rename>> {
+    let args = ["rev-list", "-1", "HEAD", "--", path];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+
+    // `-r` to reach into subtrees, `-M` to detect the rename at all,
+    // `--no-commit-id` so the first record is a change and not the commit name.
+    // No pathspec: it would restrict rename detection to the paths named, and
+    // the destination is precisely the path we do not know yet.
+    let args = [
+        "diff-tree",
+        "-M",
+        "-r",
+        "-z",
+        "--name-status",
+        "--no-commit-id",
+        sha.as_str(),
+    ];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let to = rename_target(&String::from_utf8_lossy(&out.stdout), path);
+    Ok(to.map(|to| Rename {
+        to,
+        sha: sha.chars().take(12).collect(),
+    }))
+}
+
+/// The destination `text` records for `from`, if any.
+///
+/// Split out and pure because every branch of it is a shape of git's output,
+/// and a shape is cheaper to assert on directly than to stage in a repository.
+///
+/// `--name-status -z` emits NUL-terminated fields: a status, then one path, or
+/// two when the status is a rename or a copy. The letter carries a similarity
+/// score (`R100`), which is why the test is on the first byte.
+fn rename_target(text: &str, from: &str) -> Option<String> {
+    let mut fields = text.split('\0').filter(|f| !f.is_empty());
+    while let Some(status) = fields.next() {
+        let renamed = status.starts_with('R');
+        let Some(src) = fields.next() else {
+            return None;
+        };
+        if !renamed && !status.starts_with('C') {
+            continue;
+        }
+        let Some(dst) = fields.next() else {
+            return None;
+        };
+        if renamed && src == from {
+            return Some(dst.to_string());
+        }
+    }
+    None
 }
 
 /// The `constraint`+`scope` hash a ratification commit recorded for `id`, or
@@ -1077,5 +1174,98 @@ mod tests {
         ));
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Rename detection (ADR-97beaf55e73a)
+    // -----------------------------------------------------------------------
+
+    /// The shapes of `--name-status -z`, asserted on the bytes rather than
+    /// staged in a repository.
+    ///
+    /// Every branch here is a way for the parser to lose its place: a rename it
+    /// must skip past to reach the one asked about, a status with one field
+    /// where the record before it had two, and a truncated tail that a
+    /// `next().unwrap()` would have panicked on.
+    #[test]
+    fn a_rename_record_is_read_by_its_source_and_the_others_are_stepped_over() {
+        let two_field = "M\0a.rs\0R100\0old.rs\0new.rs\0A\0z.rs\0";
+        assert_eq!(
+            rename_target(two_field, "old.rs"),
+            Some("new.rs".to_string()),
+            "the rename is found past a status carrying one path"
+        );
+        assert_eq!(
+            rename_target(two_field, "a.rs"),
+            None,
+            "a path that was modified was not renamed, and saying otherwise \
+             would put a file where it never went"
+        );
+        assert_eq!(
+            rename_target("R100\0first.rs\0moved.rs\0R80\0old.rs\0new.rs\0", "old.rs"),
+            Some("new.rs".to_string()),
+            "a rename record must be stepped over as two fields, not one"
+        );
+        // A copy is `C` and carries two paths like a rename does. The source
+        // survives a copy, so it can never be what killed a scope — but a
+        // parser that read it as one field would misalign every record after
+        // it, which is how the answer becomes wrong for a different path.
+        assert_eq!(
+            rename_target("C100\0kept.rs\0copy.rs\0R100\0old.rs\0new.rs\0", "old.rs"),
+            Some("new.rs".to_string())
+        );
+        assert_eq!(rename_target("C100\0kept.rs\0copy.rs\0", "kept.rs"), None);
+        assert_eq!(rename_target("", "old.rs"), None);
+        assert_eq!(
+            rename_target("R100\0old.rs\0", "old.rs"),
+            None,
+            "output cut mid-record answers nothing, and must not panic"
+        );
+    }
+
+    #[test]
+    fn a_renamed_path_names_where_it_went_and_a_deleted_one_names_nothing() {
+        let t = Temp::new_repo();
+        t.commit("src/old.rs", "fn main() {}\n// enough body to be similar\n");
+
+        // Through git's own rename detection and not a hand-written record:
+        // what is under test is whether `-M` fires on a real commit, which is
+        // the one thing a parser test cannot say.
+        std::fs::rename(t.0.join("src/old.rs"), t.0.join("src/new.rs")).unwrap();
+        t.porcelain(&["add", "-A"]);
+        t.porcelain(&["commit", "-qm", "move it"]);
+        let sha = run(&t.0, &["rev-parse", "HEAD"]).unwrap();
+
+        let moved = rename_of(&t.0, "src/old.rs").unwrap().expect("git saw it");
+        assert_eq!(moved.to, "src/new.rs");
+        assert!(
+            sha.starts_with(&moved.sha),
+            "the commit named must be the one that moved it: {} is not a \
+             prefix of {sha}",
+            moved.sha
+        );
+
+        // A deletion is the case the caller must render as nothing at all.
+        t.commit("src/gone.rs", "fn gone() {}\n");
+        std::fs::remove_file(t.0.join("src/gone.rs")).unwrap();
+        t.porcelain(&["add", "-A"]);
+        t.porcelain(&["commit", "-qm", "delete it"]);
+        assert_eq!(
+            rename_of(&t.0, "src/gone.rs").unwrap(),
+            None,
+            "a deleted file went nowhere, and no rename may be invented for it"
+        );
+
+        // A path that never existed is the third silence, and it must not be an
+        // error: a scope can be a typo, and `check` reports that as it is.
+        assert_eq!(rename_of(&t.0, "src/never.rs").unwrap(), None);
+    }
+
+    /// A repository with no commit at all: `rev-list HEAD` fails, and the
+    /// answer is silence rather than the environment error `run` would raise.
+    #[test]
+    fn a_repository_with_no_head_answers_nothing_rather_than_failing() {
+        let t = Temp::new_repo();
+        assert_eq!(rename_of(&t.0, "src/old.rs").unwrap(), None);
     }
 }

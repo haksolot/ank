@@ -33,6 +33,7 @@ use crate::git;
 use crate::index::Index;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
+use crate::style;
 use crate::verify;
 use ank_core::{
     append_log, freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity,
@@ -61,6 +62,15 @@ pub struct Finding {
     pub level: Level,
     pub subject: String,
     pub message: String,
+    /// What the finding does not say and the reader needs anyway, printed
+    /// under it rather than folded into `message`.
+    ///
+    /// Separate from the message for three reasons that all point the same way:
+    /// a note carries no severity of its own and must not count as a second
+    /// finding; `review` filters findings by the opening of `message`, which a
+    /// longer sentence would break; and a caller reading `--json` gets the
+    /// explanation as data instead of as prose it would have to split.
+    pub note: Vec<String>,
 }
 
 impl Finding {
@@ -69,6 +79,7 @@ impl Finding {
             level: Level::Fault,
             subject: subject.to_string(),
             message: message.into(),
+            note: Vec::new(),
         }
     }
     fn signal(subject: impl std::fmt::Display, message: impl Into<String>) -> Finding {
@@ -76,7 +87,12 @@ impl Finding {
             level: Level::Signal,
             subject: subject.to_string(),
             message: message.into(),
+            note: Vec::new(),
         }
+    }
+    fn with_note(mut self, lines: Vec<String>) -> Finding {
+        self.note = lines;
+        self
     }
 }
 
@@ -263,7 +279,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // `None` is the half never asked for, and it is distinct from `Some(Err)` —
     // a repository whose default branch cannot be resolved. The two produce one
     // line each and must not produce two between them.
-    let (coord, default_branch) = if git::usable_here(&repo.root) {
+    let has_git = git::usable_here(&repo.root);
+    let (coord, default_branch) = if has_git {
         let coord = coordination(&repo.root, &mut report)?;
         let branch = git::resolve_default_branch(
             cfg.default_branch.as_deref(),
@@ -285,7 +302,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         if !in_scope(entity) {
             continue;
         }
-        check_scope_alive(entity, &files, &mut report);
+        check_scope_alive(
+            entity,
+            &files,
+            has_git.then_some(repo.root.as_path()),
+            &mut report,
+        );
         match entity {
             Entity::Task(t) => check_task(
                 t,
@@ -579,7 +601,19 @@ fn tracked_files(root: &Path) -> Vec<String> {
 /// Structural death (§11): a scope matching no file. Verifiable, unlike
 /// temporal decay — a three-year-old constraint can be vital. Never acted on
 /// automatically: the code may simply have moved.
-fn check_scope_alive(entity: &Entity, files: &[String], report: &mut Report) {
+///
+/// `git_root` is `Some` only where there is a repository to ask, and it is what
+/// turns "the scope matches nothing" into "the file moved here, and this is the
+/// command that follows it" (ADR-97beaf55e73a). Where it is `None` the walk is
+/// skipped in silence: a corpus outside a repository already says so once, in
+/// the coordination line, and a second sentence about a question nobody could
+/// ask would be noise.
+fn check_scope_alive(
+    entity: &Entity,
+    files: &[String],
+    git_root: Option<&Path>,
+    report: &mut Report,
+) {
     let globs = entity.scope();
     if globs.is_empty() {
         report
@@ -610,7 +644,7 @@ fn check_scope_alive(entity: &Entity, files: &[String], report: &mut Report) {
         if files.iter().any(|f| one.matches(f)) {
             continue;
         }
-        report.findings.push(if ahead_of_the_code {
+        let finding = if ahead_of_the_code {
             Finding::signal(
                 entity.id(),
                 format!("scope '{glob}' matches no file yet: work not started, or a typo"),
@@ -620,7 +654,80 @@ fn check_scope_alive(entity: &Entity, files: &[String], report: &mut Report) {
                 entity.id(),
                 format!("dead scope '{glob}': no file matches it"),
             )
+        };
+        // The cost clause of ADR-97beaf55e73a, and the reason this sits here
+        // rather than above the loop: two git processes per glob, paid only by a
+        // glob that already matches nothing. A healthy corpus reaches this line
+        // no times.
+        report.findings.push(match git_root {
+            Some(root) => finding.with_note(scope_moved(entity, glob, root)),
+            None => finding,
         });
+    }
+}
+
+/// The note under a dead scope: where git says the path went, and what repairs
+/// the entity (ADR-97beaf55e73a).
+///
+/// Empty for everything git cannot explain, which is most of what can go wrong
+/// with a scope. **Silence here is not evidence.** A deletion, a move under the
+/// similarity threshold and a typo that never named a real file all produce the
+/// same nothing, so no wording below may suggest which — the reader is left
+/// exactly where they stand today, and the finding above says all that is known.
+fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
+    // A glob is not a path, and git has no answer for "where did `src/**` go".
+    // The single-file entry is what this serves, and it is the common one: 343
+    // of the 462 scope entries in this repository's own corpus name one file
+    // with no wildcard.
+    if glob.contains(['*', '?', '[', ']', '{', '}']) {
+        return Vec::new();
+    }
+    // A git failure is not a corpus fault and must never become one: the scope
+    // is dead either way, and that is already reported. What is lost is the
+    // explanation, which is exactly what `None` means everywhere else here.
+    let Ok(Some(moved)) = git::rename_of(root, glob) else {
+        return Vec::new();
+    };
+    let mut note = vec![format!(
+        "git records {glob} renamed to {} in {}",
+        moved.to, moved.sha
+    )];
+    note.extend(repair(entity, glob, &moved.to));
+    note
+}
+
+/// The one command that changes the scope of this entity without refusing on
+/// the spot.
+///
+/// Four states and three answers, because `amend` accepts a scope change on
+/// exactly two of them. The refusals it would otherwise raise are what decides
+/// each branch, and each is a refusal this file writes itself.
+fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
+    let id = entity.id();
+    let amend = format!("ank amend {id} --drop-scope \"{from}\" --scope \"{to}\"");
+    match entity {
+        // A plan still in flight: `amend` is the verb, and it is what this
+        // reader wants — the rename is what tells a typo from a file that moved
+        // under the work.
+        Entity::Task(t) if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) => {
+            Some(amend)
+        }
+        // Done or closed, and `amend` refuses it: §3 allows one write to a
+        // finished task and it is a proof. The scope records where the work
+        // happened, which is a fact about the past that a later rename does not
+        // falsify — so the rename is named and nothing is proposed. Naming a
+        // command that exits 7 would be worse than naming none.
+        Entity::Task(_) => None,
+        Entity::Adr(a) if a.status == AdrStatus::Proposed => Some(amend),
+        // Accepted or superseded: `constraint` and `scope` are hashed into the
+        // ratification commit, so `amend` refuses with code 6 and the change is
+        // a succession. Worded as that refusal words it, and deliberately not
+        // shortened — a supersession is a decision, and a one-flag command
+        // would read as a formality.
+        Entity::Adr(_) => Some(format!(
+            "ank new adr --supersedes {id} --title \"<t>\" --scope \"{to}\" \
+             --constraint \"<rule>\""
+        )),
     }
 }
 
@@ -1299,15 +1406,17 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             .findings
             .iter()
             .map(|f| {
+                let note: Vec<String> = f.note.iter().map(|l| json_str(l)).collect();
                 format!(
-                    "{{\"level\":\"{}\",\"subject\":\"{}\",\"message\":{}}}",
+                    "{{\"level\":\"{}\",\"subject\":\"{}\",\"message\":{},\"note\":[{}]}}",
                     if f.level == Level::Fault {
                         "fault"
                     } else {
                         "signal"
                     },
                     f.subject,
-                    json_str(&f.message)
+                    json_str(&f.message),
+                    note.join(",")
                 )
             })
             .collect();
@@ -1335,6 +1444,18 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             style.yellow("signal:")
         };
         let _ = writeln!(out, "{tag} {}: {}", f.subject, f.message);
+        // The structure alphabet of §4 and nothing outside it: a note is the
+        // last child of its finding, so `LAST` opens it and `CLEAR` continues
+        // it. Text and never colour — it carries the command to run next, and a
+        // reader who piped this to a file must read the same bytes (ADR-0c8a).
+        for (i, line) in f.note.iter().enumerate() {
+            let lead = if i == 0 {
+                style::glyph::LAST
+            } else {
+                style::glyph::CLEAR
+            };
+            let _ = writeln!(out, "{lead}{line}");
+        }
     }
     for p in &report.pruned {
         let _ = writeln!(out, "{} {}", style.retracted("pruned"), style.id(p));
