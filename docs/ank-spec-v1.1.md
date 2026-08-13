@@ -817,7 +817,7 @@ $ ank done
 error[5]: proof required to move TASK-8f3a to done
   done_criteria: "Auth integration tests pass, and no reference
                   to jwt.verify remains in src/auth/"
-  -> ank done --proof test:<ci-run-ref>
+  -> ank done --proof commit:<sha>
 ```
 
 ```

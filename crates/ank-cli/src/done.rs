@@ -510,9 +510,15 @@ pub fn submitted_proof(
 ) -> Result<Proof> {
     let ProofUsage { command, purpose } = usage;
 
+    // The hint names a proof the caller already holds. `test:<ci-run-ref>` sent
+    // the reader to push, wait for a pipeline and copy a run id back, which is
+    // two CI waits per task and the practice TASK-2dff950e5d51 ended: the
+    // pipeline attests the run itself. `commit:<sha>` is a proof the caller has
+    // in hand, and the one type Ank checks against git — the same one the other
+    // three hints in this function already name.
     let Some(raw) = inv.value("--proof") else {
         return Err(CliError::new(5, format!("proof required to {purpose}"))
-            .with_hint(format!("{command} --proof test:<ci-run-ref>")));
+            .with_hint(format!("{command} --proof commit:<sha>")));
     };
     let (kind, reference) = raw.split_once(':').ok_or_else(|| {
         CliError::new(

@@ -334,7 +334,7 @@ mandatory:
 
     $ ank done
     error[5]: proof required to move TASK-0ff108d8e2ca to done
-      -> ank done --proof test:<ci-run-ref>
+      -> ank done --proof commit:<sha>
 
 The proof types are `commit`, `test`, `human-review` and `assertion`, and what
 separates them is not local versus hosted but **who controls the environment**.
