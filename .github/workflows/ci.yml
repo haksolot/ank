@@ -70,6 +70,35 @@ jobs:
       # Exit 8 means findings, and that is a failure here. Signals exit 0.
       - run: cargo run -q --bin ank -- check
 
+  # release.yml refuses to build when the tag and the manifests disagree on the
+  # version, and it exercises that check against fixtures before trusting it.
+  # Both run on a tag or a dispatch and nowhere else, which left the check itself
+  # untested between releases: an edit to check-version.sh, or to the shape of
+  # any of the seven manifests it parses, was only discovered by the run it was
+  # supposed to gate — and by then the tag is spent (TASK-adf11c12c480).
+  #
+  # The fixtures alone, never the comparison. A push carries no tag, so there is
+  # no version to hold the manifests to, and a check that invented one would be
+  # red on every branch between releases.
+  #
+  # That is not a gap: the first fixture reads the version out of
+  # crates/ank-cli/Cargo.toml and holds every other literal to it, so a bump that
+  # touched six files out of seven is red here, on the branch that made it.
+  #
+  # One platform, and ubuntu because it is the platform of use: the version job
+  # in release.yml runs there, and a rehearsal on an OS the check never runs on
+  # rehearses nothing. Windows would also need .gitattributes to keep these
+  # scripts in LF, which is a decision about the tree rather than about this job.
+  version-check:
+    name: version check / ubuntu-latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the version check refuses what it should refuse
+        run: bash .github/scripts/check-version-fixtures.sh
+
   # The MSRV declared in the manifests, built on the toolchain it names. The
   # job above runs on whatever the runner image ships, which is what lets an
   # MSRV claim rot in silence: it was wrong by seventeen minor versions before

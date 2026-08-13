@@ -5,15 +5,19 @@ slug: record-multi-repository-federation-as-deferred-i
 title: Record multi-repository federation as deferred in the spec
 created: 2026-08-06T23:25:19Z
 author: seanl@sean-laptop
-status: open
+status: done
 scope:
   - docs/**
 blocked_by: []
 done_criteria: |
   The deferred table in section 10 of the current spec revision contains an entry 'Multi-repository federation' whose Reason column names the retained shape - one .ank/ per repo stays authoritative, aggregation happens above it - and the explicit trigger for pursuing it.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31671320051"
+    criteria: "4e9397760359"
 schema: 2
-version: 1
+version: 4
 ---
 
 Working from a root directory over several linked repositories has no answer in
@@ -64,3 +68,7 @@ Convenience of a single dashboard is not the trigger - ADR-bcb18aecb7e1 already
 places a read-only local viewer over one .ank/, and that is the cheaper answer to
 "I want to see everything at once". Do not implement federation under this task;
 if the trigger fires, that is a new task plus a spec revision.
+
+## Log
+- 2026-08-13T05:43:13Z claude-agent-c — The seven locks were re-measured against the tree before being written into the normative document, and two had moved since the task was written. Scope validation is no longer crates/ank-cli/src/scope.rs but ank-core::scope::normalize_path, and its rule is not 'absolute or climbing is refused outright': an absolute path is refused, including a Windows drive letter, while .. is resolved lexically -- docs/../docs is docs -- and only a climb that pops past the root has no answer. The row says that instead of the older phrasing. The other five hold as stated: three deny_unknown_fields in config.rs, GLOBAL_FLAGS still exactly --json --quiet --repo with --repo single-valued, short_ids computed per corpus, blocked_by resolved through the local store, refs and index per repository. No file path or line number went into the spec: they are what rots.
+- 2026-08-13T05:47:41Z claude-agent-c — done, proof test:31671320051

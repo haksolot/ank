@@ -31,7 +31,7 @@ use crate::identity::ENV_AGENT;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_core::{
-    freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, ScopeSet, Task,
+    freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, Proof, ScopeSet, Task,
     TaskStatus,
 };
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 /// carries.
 pub const CLAIMS_PREFIX: &str = "refs/ank/claims/";
 
+/// Where an attestation lives when it has no tree to travel in
+/// (ADR-493471d64ba0).
+///
+/// A separate namespace and not a third state on the claim ref: the two answer
+/// different questions and have different lifetimes. A task can carry a
+/// completion record and a detached proof at once, and collapsing them would
+/// make one erase the other.
+pub const PROOF_PREFIX: &str = "refs/ank/proof/";
+
 /// Default TTL (§3). Short on purpose: it is renewed implicitly by `log`, so
 /// working is enough to keep the lock.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
@@ -53,8 +62,12 @@ pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
 /// stolen from a machine whose clock runs fast.
 pub const DRIFT_TOLERANCE: Duration = Duration::from_secs(2 * 60);
 
-pub fn ref_name(id: &EntityId) -> String {
+pub fn claim_ref(id: &EntityId) -> String {
     format!("{CLAIMS_PREFIX}{id}")
+}
+
+pub fn proof_ref(id: &EntityId) -> String {
+    format!("{PROOF_PREFIX}{id}")
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +165,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 pub const STATE_CLAIM: &str = "claim";
 pub const STATE_COMPLETED: &str = "completed";
+pub const STATE_PROOF: &str = "proof";
 
 /// A claim in force: who holds the task and until when, plus the two hashes
 /// that anchor what was frozen at pickup (§7).
@@ -197,10 +211,41 @@ pub struct CompletedRecord {
     pub completed: String,
 }
 
+/// One attestation, and who stood behind it when.
+///
+/// The proof itself is [`ank_core::Proof`] verbatim rather than a parallel
+/// shape: a reader unions these with the task file's list, and two structures
+/// for one thing is how the two sources start disagreeing about what a proof
+/// is. What is added is the pair a file cannot carry — a proof in a file is
+/// dated and attributed by the commit that put it there, and a detached one is
+/// authored by an actor with no branch (ADR-493471d64ba0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestedProof {
+    pub identity: String,
+    pub attested: String,
+    pub proof: Proof,
+}
+
+/// Every attestation recorded against one task, outside its file.
+///
+/// A list and not a single entry, so that a second attestation appends where
+/// the file's `proof` list would have appended. One ref holding one record that
+/// carries many is what keeps the append-only rule true on both sides; a record
+/// per attestation would need a ref per attestation, and the address is the
+/// task.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProofRecord {
+    pub task: String,
+    pub proofs: Vec<AttestedProof>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Record {
     Claim(ClaimRecord),
     Completed(CompletedRecord),
+    Proof(ProofRecord),
 }
 
 impl Record {
@@ -208,6 +253,7 @@ impl Record {
         match self {
             Record::Claim(c) => &c.task,
             Record::Completed(c) => &c.task,
+            Record::Proof(p) => &p.task,
         }
     }
 }
@@ -221,15 +267,15 @@ pub struct Held {
     pub record: Record,
 }
 
-fn corrupt(id: &EntityId, detail: impl std::fmt::Display) -> CliError {
+/// `name` is the ref, not the task: the two namespaces are repaired by
+/// different commands, and a hint naming the claim ref for a damaged proof
+/// record would send the reader to delete the wrong thing.
+fn corrupt(name: &str, detail: impl std::fmt::Display) -> CliError {
     // Code 9: a coordination ref nobody can read is an environment to repair,
     // not a failure of the agent's work (§4). Never a silent fallback to the
     // other state — that is what would let a completion read as a free task.
-    CliError::new(
-        9,
-        format!("unreadable claim record on {}: {detail}", ref_name(id)),
-    )
-    .with_hint(format!("git update-ref -d {}", ref_name(id)))
+    CliError::new(9, format!("unreadable record on {name}: {detail}"))
+        .with_hint(format!("git update-ref -d {name}"))
 }
 
 /// Serialises a record. `state` is written first and every value goes through
@@ -241,6 +287,7 @@ pub fn serialize_record(record: &Record) -> String {
     let (state, body) = match record {
         Record::Claim(c) => (STATE_CLAIM, serde_yaml::to_value(c)),
         Record::Completed(c) => (STATE_COMPLETED, serde_yaml::to_value(c)),
+        Record::Proof(p) => (STATE_PROOF, serde_yaml::to_value(p)),
     };
     let mut map = Mapping::new();
     map.insert(Value::from("state"), Value::from(state));
@@ -255,28 +302,31 @@ pub fn serialize_record(record: &Record) -> String {
 /// Reads a record. Two stages on purpose: the discriminator is read first, so
 /// that an unknown state is named as such instead of surfacing as a serde
 /// error about a missing field of whichever variant we tried first.
-pub fn parse_record(text: &str, id: &EntityId) -> Result<Record> {
+pub fn parse_record(text: &str, name: &str) -> Result<Record> {
     use serde_yaml::Value;
-    let value: Value = serde_yaml::from_str(text).map_err(|e| corrupt(id, e))?;
+    let value: Value = serde_yaml::from_str(text).map_err(|e| corrupt(name, e))?;
     let Value::Mapping(mut map) = value else {
-        return Err(corrupt(id, "not a YAML mapping"));
+        return Err(corrupt(name, "not a YAML mapping"));
     };
     let state = map
         .remove(Value::from("state"))
-        .ok_or_else(|| corrupt(id, "no state field"))?;
+        .ok_or_else(|| corrupt(name, "no state field"))?;
     let state = state
         .as_str()
-        .ok_or_else(|| corrupt(id, "state is not a string"))?
+        .ok_or_else(|| corrupt(name, "state is not a string"))?
         .to_string();
     let rest = Value::Mapping(map);
     match state.as_str() {
         STATE_CLAIM => Ok(Record::Claim(
-            serde_yaml::from_value(rest).map_err(|e| corrupt(id, e))?,
+            serde_yaml::from_value(rest).map_err(|e| corrupt(name, e))?,
         )),
         STATE_COMPLETED => Ok(Record::Completed(
-            serde_yaml::from_value(rest).map_err(|e| corrupt(id, e))?,
+            serde_yaml::from_value(rest).map_err(|e| corrupt(name, e))?,
         )),
-        other => Err(corrupt(id, format!("unknown state '{other}'"))),
+        STATE_PROOF => Ok(Record::Proof(
+            serde_yaml::from_value(rest).map_err(|e| corrupt(name, e))?,
+        )),
+        other => Err(corrupt(name, format!("unknown state '{other}'"))),
     }
 }
 
@@ -335,7 +385,7 @@ pub fn live_claims_of(
             continue;
         }
         let text = String::from_utf8_lossy(&out.stdout);
-        let Ok(Record::Claim(c)) = parse_record(&text, &id) else {
+        let Ok(Record::Claim(c)) = parse_record(&text, &r.name) else {
             continue;
         };
         if c.holder != identity || is_expired(&c, now, &id).unwrap_or(true) {
@@ -403,8 +453,13 @@ fn already_holding(cwd: &Path, identity: &str, target: &EntityId, now: i64) -> R
 /// The record a task's ref carries, if it carries one. An absent ref is
 /// `None`, never an error: that is the nominal state of a free task.
 pub fn read(cwd: &Path, id: &EntityId) -> Result<Option<Held>> {
-    let name = ref_name(id);
-    let args = ["rev-parse", "--verify", "--quiet", name.as_str()];
+    read_at(cwd, &claim_ref(id))
+}
+
+/// The same read, addressed by ref rather than by task, so that the proof
+/// namespace goes through this code and not beside it (ADR-493471d64ba0).
+pub fn read_at(cwd: &Path, name: &str) -> Result<Option<Held>> {
+    let args = ["rev-parse", "--verify", "--quiet", name];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Ok(None);
@@ -421,7 +476,7 @@ pub fn read(cwd: &Path, id: &EntityId) -> Result<Option<Held>> {
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     Ok(Some(Held {
         object,
-        record: parse_record(&text, id)?,
+        record: parse_record(&text, name)?,
     }))
 }
 
@@ -474,14 +529,13 @@ pub enum Cas {
 /// exist. A non-zero exit is the CAS saying no; we distinguish it from a
 /// broken git by re-reading the ref, which the caller needs anyway to name the
 /// winner.
-fn update(cwd: &Path, id: &EntityId, new: &str, old: Option<&str>) -> Result<Cas> {
-    let name = ref_name(id);
-    let args = ["update-ref", name.as_str(), new, old.unwrap_or("")];
+fn update(cwd: &Path, name: &str, new: &str, old: Option<&str>) -> Result<Cas> {
+    let args = ["update-ref", name, new, old.unwrap_or("")];
     let out = git::output(cwd, &args)?;
     if out.status.success() {
         return Ok(Cas::Won);
     }
-    match current_object(cwd, id)? {
+    match current_object(cwd, name)? {
         // The ref is where we left it: nothing moved, so the refusal did not
         // come from contention. Reporting a lost race here would send an agent
         // to take another task when the real problem is the environment.
@@ -491,9 +545,8 @@ fn update(cwd: &Path, id: &EntityId, new: &str, old: Option<&str>) -> Result<Cas
     }
 }
 
-fn current_object(cwd: &Path, id: &EntityId) -> Result<Option<String>> {
-    let name = ref_name(id);
-    let out = git::output(cwd, &["rev-parse", "--verify", "--quiet", name.as_str()])?;
+fn current_object(cwd: &Path, name: &str) -> Result<Option<String>> {
+    let out = git::output(cwd, &["rev-parse", "--verify", "--quiet", name])?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -533,6 +586,21 @@ impl Sync {
             ),
         }
     }
+
+    /// The same sentence for an attestation, and it is a different sentence
+    /// because it is a different risk. A claim not pushed can be taken twice;
+    /// a proof not pushed is simply invisible to everyone else, which is the
+    /// whole thing a detached proof exists to avoid (ADR-493471d64ba0).
+    pub fn proof_warning(&self) -> Option<String> {
+        match self {
+            Sync::Local | Sync::Pushed => None,
+            Sync::Unsynchronised(_) => Some(
+                "proof not pushed: it is recorded in this clone only, and no other \
+                 clone can read it"
+                    .to_string(),
+            ),
+        }
+    }
 }
 
 /// The outcome of a write: whether it took, and how far it reached.
@@ -561,26 +629,31 @@ pub struct Written {
 /// to nothing: the caller's next question is *who holds it*, and the answer has
 /// to be readable where it looks.
 pub fn put(cwd: &Path, id: &EntityId, record: &Record, witness: Option<&str>) -> Result<Written> {
+    put_at(cwd, &claim_ref(id), record, witness)
+}
+
+/// The same write, addressed by ref. Every property of [`put`] holds here
+/// because this is where they are implemented; `put` only knows the address.
+pub fn put_at(cwd: &Path, name: &str, record: &Record, witness: Option<&str>) -> Result<Written> {
     let blob = write_blob(cwd, record)?;
-    if update(cwd, id, &blob, witness)? == Cas::Lost {
+    if update(cwd, name, &blob, witness)? == Cas::Lost {
         return Ok(Written {
             cas: Cas::Lost,
             sync: Sync::Local,
         });
     }
-    push(cwd, id, Some(&blob), witness)
+    push(cwd, name, Some(&blob), witness)
 }
 
-/// The remote half of a write, shared by [`put`] and [`delete`].
-fn push(cwd: &Path, id: &EntityId, new: Option<&str>, witness: Option<&str>) -> Result<Written> {
+/// The remote half of a write, shared by [`put_at`] and [`delete_at`].
+fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Result<Written> {
     if git::remote(cwd)?.is_none() {
         return Ok(Written {
             cas: Cas::Won,
             sync: Sync::Local,
         });
     }
-    let name = ref_name(id);
-    match git::push_claim(cwd, &name, new, witness)? {
+    match git::push_ref(cwd, name, new, witness)? {
         git::Pushed::Ok => Ok(Written {
             cas: Cas::Won,
             sync: Sync::Pushed,
@@ -590,7 +663,7 @@ fn push(cwd: &Path, id: &EntityId, new: Option<&str>, witness: Option<&str>) -> 
             // the truth rather than this clone's rejected guess. If even that
             // fails, the local ref keeps what we wrote and the caller still
             // learns it lost — a wrong holder named is worse than none.
-            let _ = git::fetch_claim(cwd, &name);
+            let _ = git::fetch_ref(cwd, name);
             Ok(Written {
                 cas: Cas::Lost,
                 sync: Sync::Pushed,
@@ -615,17 +688,26 @@ fn push(cwd: &Path, id: &EntityId, new: Option<&str>, witness: Option<&str>) -> 
 /// only one available, and saying so belongs to the write that follows, which
 /// is where the risk actually lands.
 pub fn sync_from_remote(cwd: &Path, id: &EntityId) -> Result<()> {
+    sync_ref_from_remote(cwd, &claim_ref(id))
+}
+
+/// The same fetch, addressed by ref.
+///
+/// A detached proof needs it for a reason a claim never has: the record was
+/// written by a pipeline, which is in no clone at all, so a reader that never
+/// fetched would report a task as unanchored while its attestation sits on the
+/// remote (ADR-493471d64ba0).
+pub fn sync_ref_from_remote(cwd: &Path, name: &str) -> Result<()> {
     if git::remote(cwd)?.is_none() {
         return Ok(());
     }
-    let name = ref_name(id);
-    let Ok(Some(theirs)) = git::ls_remote(cwd, &name) else {
+    let Ok(Some(theirs)) = git::ls_remote(cwd, name) else {
         return Ok(());
     };
-    if current_object(cwd, id)?.as_deref() == Some(theirs.as_str()) {
+    if current_object(cwd, name)?.as_deref() == Some(theirs.as_str()) {
         return Ok(());
     }
-    let _ = git::fetch_claim(cwd, &name);
+    let _ = git::fetch_ref(cwd, name);
     Ok(())
 }
 
@@ -652,17 +734,93 @@ pub fn sync_from_remote(cwd: &Path, id: &EntityId) -> Result<()> {
 /// failing the release over: the handback is durable state and already written,
 /// and the stale ref expires on its own.
 pub fn delete(cwd: &Path, id: &EntityId) -> Result<bool> {
-    let name = ref_name(id);
-    let Some(witness) = current_object(cwd, id)? else {
+    delete_at(cwd, &claim_ref(id))
+}
+
+/// The same deletion, addressed by ref. `check` prunes a proof ref through it
+/// once the file on the default branch carries the same attestation.
+pub fn delete_at(cwd: &Path, name: &str) -> Result<bool> {
+    let Some(witness) = current_object(cwd, name)? else {
         return Ok(false);
     };
-    let args = ["update-ref", "-d", name.as_str()];
+    let args = ["update-ref", "-d", name];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
     }
-    let _ = push(cwd, id, None, Some(&witness));
+    let _ = push(cwd, name, None, Some(&witness));
     Ok(true)
+}
+
+// ---------------------------------------------------------------------------
+// Detached proofs (ADR-493471d64ba0)
+// ---------------------------------------------------------------------------
+
+/// Every attestation `refs/ank/proof/<id>` carries, or an empty list.
+///
+/// **An absent ref is an empty list and never an error**, exactly as an absent
+/// claim ref is a free task: most tasks carry no attestation, and a reader that
+/// failed on the ordinary case would be unusable.
+///
+/// **A damaged record is an empty list too, and that is the harder call.** The
+/// alternative is to fail every `show` and every `check` of a corpus one ref of
+/// which is corrupt — and the union is additive, so losing it understates what
+/// is anchored rather than inventing what is not. `check` is where a damaged
+/// coordination ref is reported, and it reports this one through the same walk
+/// as the rest.
+pub fn detached_proofs(cwd: &Path, id: &EntityId) -> Vec<AttestedProof> {
+    match read_at(cwd, &proof_ref(id)) {
+        Ok(Some(Held {
+            record: Record::Proof(p),
+            ..
+        })) => p.proofs,
+        _ => Vec::new(),
+    }
+}
+
+/// Appends one attestation to the task's proof ref.
+///
+/// Read, append, compare-and-swap on the object just read — the same three
+/// steps every other write of this plane takes, and for the same reason: two
+/// pipelines attesting the same task must not silently overwrite each other.
+/// A lost swap is returned as [`Cas::Lost`] and the caller names the retry;
+/// ADR-493471d64ba0 argues it is not a case anybody meets, and "not met" is not
+/// "cannot happen".
+pub fn attach_proof(
+    cwd: &Path,
+    id: &EntityId,
+    proof: &Proof,
+    identity: &str,
+) -> Result<(Written, usize)> {
+    let name = proof_ref(id);
+    // The remote first: a pipeline wrote there, in no clone, so a local-only
+    // read would append to a record that is already out of date and lose the
+    // run before it.
+    let _ = sync_ref_from_remote(cwd, &name);
+    let held = read_at(cwd, &name)?;
+    let (witness, mut proofs) = match held {
+        Some(Held {
+            object,
+            record: Record::Proof(p),
+        }) => (Some(object), p.proofs),
+        // A ref in this namespace carrying another state is not something to
+        // overwrite silently: it is a corrupt plane, and `corrupt` names the
+        // command that clears it.
+        Some(Held { .. }) => return Err(corrupt(&name, "not a proof record")),
+        None => (None, Vec::new()),
+    };
+    proofs.push(AttestedProof {
+        identity: identity.to_string(),
+        attested: now_utc(),
+        proof: proof.clone(),
+    });
+    let count = proofs.len();
+    let record = Record::Proof(ProofRecord {
+        task: id.to_string(),
+        proofs,
+    });
+    let written = put_at(cwd, &name, &record, witness.as_deref())?;
+    Ok((written, count))
 }
 
 // ---------------------------------------------------------------------------
@@ -673,8 +831,12 @@ pub fn delete(cwd: &Path, id: &EntityId) -> Result<bool> {
 /// the drift tolerance (§7). A record whose timestamp does not read back is
 /// corrupt, and saying "expired" about it would be a silent fallback.
 pub fn is_expired(claim: &ClaimRecord, now: i64, id: &EntityId) -> Result<bool> {
-    let expires = parse_utc(&claim.expires)
-        .ok_or_else(|| corrupt(id, format!("unreadable expiry '{}'", claim.expires)))?;
+    let expires = parse_utc(&claim.expires).ok_or_else(|| {
+        corrupt(
+            &claim_ref(id),
+            format!("unreadable expiry '{}'", claim.expires),
+        )
+    })?;
     Ok(now > expires + DRIFT_TOLERANCE.as_secs() as i64)
 }
 
@@ -1008,6 +1170,13 @@ pub fn acquire(
         None => None,
         Some(h) => match &h.record {
             Record::Completed(c) => return Err(finished_elsewhere(id, c, other_ready)),
+            // An attestation on the claim ref is a corrupt plane and never a
+            // free task: overwriting it here would destroy a record while
+            // taking a claim, and reading it as absence would hand out a task
+            // whose real state nobody can see.
+            Record::Proof(_) => {
+                return Err(corrupt(&claim_ref(id), "a proof record on the claim ref"))
+            }
             Record::Claim(c) => {
                 // The holder returning to a claim of its own that is still
                 // live is a renewal, and it is silent: working is what keeps
@@ -1063,7 +1232,7 @@ pub fn acquire(
 pub fn complete(cwd: &Path, id: &EntityId, identity: &str) -> Result<(CompletedRecord, Sync)> {
     let commit = git::run(cwd, &["rev-parse", "HEAD"])?;
     let branch = git::current_branch(cwd)?;
-    let witness = current_object(cwd, id)?;
+    let witness = current_object(cwd, &claim_ref(id))?;
     let record = CompletedRecord {
         task: id.to_string(),
         commit,
@@ -1180,6 +1349,10 @@ fn lost_the_race(
             record: Record::Completed(c),
             ..
         }) => finished_elsewhere(id, &c, other_ready),
+        Some(Held {
+            record: Record::Proof(_),
+            ..
+        }) => corrupt(&claim_ref(id), "a proof record on the claim ref"),
         None => CliError::new(4, format!("{id} was taken and released while claiming"))
             .with_hint(format!("ank claim {id}")),
     })
@@ -1705,7 +1878,7 @@ mod tests {
 
         let refs = git::ank_refs(&t.0).unwrap();
         assert_eq!(refs.len(), 1, "{refs:?}");
-        assert_eq!(refs[0].name, ref_name(&id));
+        assert_eq!(refs[0].name, claim_ref(&id));
         assert_eq!(read(&t.0, &id).unwrap().unwrap().record, record);
     }
 
@@ -1727,7 +1900,7 @@ mod tests {
         let text = "state: claim\ntask: TASK-000000000001\nholder: claude-code@ank\n\
                     claimed: 2026-07-31T02:00:00Z\nexpires: 2026-07-31T02:30:00Z\n\
                     criteria: '123456789012'\nconstraints: '000000000000'\n";
-        let Record::Claim(c) = parse_record(text, &id).unwrap() else {
+        let Record::Claim(c) = parse_record(text, &claim_ref(&id)).unwrap() else {
             panic!("a claim record");
         };
         assert_eq!(c.ttl, 0, "an absent lease is not a lease anybody granted");
@@ -1780,7 +1953,11 @@ mod tests {
             constraints: "000000000000".into(),
         });
         let text = serialize_record(&record);
-        assert_eq!(parse_record(&text, &id).unwrap(), record, "{text}");
+        assert_eq!(
+            parse_record(&text, &claim_ref(&id)).unwrap(),
+            record,
+            "{text}"
+        );
 
         let done = Record::Completed(CompletedRecord {
             task: id.to_string(),
@@ -1790,14 +1967,22 @@ mod tests {
             completed: "2026-07-31T02:30:00Z".into(),
         });
         let text = serialize_record(&done);
-        assert_eq!(parse_record(&text, &id).unwrap(), done, "{text}");
+        assert_eq!(
+            parse_record(&text, &claim_ref(&id)).unwrap(),
+            done,
+            "{text}"
+        );
     }
 
     #[test]
     fn an_unknown_state_is_named_never_read_as_the_other_one() {
         let id = EntityId::parse("TASK-000000000001").unwrap();
 
-        let err = parse_record("state: abandoned\ntask: TASK-000000000001\n", &id).unwrap_err();
+        let err = parse_record(
+            "state: abandoned\ntask: TASK-000000000001\n",
+            &claim_ref(&id),
+        )
+        .unwrap_err();
         assert_eq!(err.code, 9);
         assert!(err.message.contains("abandoned"), "{}", err.message);
         assert!(err.hint.unwrap().contains("update-ref -d"));
@@ -1811,9 +1996,9 @@ mod tests {
             "not a mapping at all\n",
             "state: claim\ntask: TASK-000000000001\n",
         ] {
-            let err = parse_record(text, &id).unwrap_err();
+            let err = parse_record(text, &claim_ref(&id)).unwrap_err();
             assert_eq!(err.code, 9, "{text}");
-            assert!(err.message.contains("unreadable claim record"), "{text}");
+            assert!(err.message.contains("unreadable record"), "{text}");
         }
     }
 
@@ -1840,11 +2025,11 @@ mod tests {
             let o = c.wait_with_output().unwrap();
             String::from_utf8_lossy(&o.stdout).trim().to_string()
         };
-        git::run(&t.0, &["update-ref", &ref_name(&id), &blob]).unwrap();
+        git::run(&t.0, &["update-ref", &claim_ref(&id), &blob]).unwrap();
 
         let err = read(&t.0, &id).unwrap_err();
         assert_eq!(err.code, 9);
-        assert!(err.message.contains(&ref_name(&id)), "{}", err.message);
+        assert!(err.message.contains(&claim_ref(&id)), "{}", err.message);
     }
 
     // -----------------------------------------------------------------------

@@ -20,8 +20,49 @@ permissions:
   contents: read
 
 jobs:
+  # The tag is the only source of the published version: the archive names, the
+  # npm packages and the release title all derive from `$GITHUB_REF_NAME`, and
+  # nothing compares it with the version compiled into the binary. So a tag
+  # pushed without bumping the manifests ships artefacts that agree with each
+  # other and disagree with what they contain, and the npm smoke job cannot see
+  # it -- it compares the artefact with itself, deliberately, which tests the
+  # wrapper and not the version.
+  #
+  # It runs before the build and gates it, because the point is to refuse to
+  # publish: a check at the end has already spent the matrix, and the tag is
+  # the one thing here that is awkward to take back.
+  version:
+    name: version
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # The positive control, first. This job exists to be red on a day nobody
+      # is watching it, and the failure that costs a tag is a check that passes
+      # when it should not -- so the check is exercised against fixtures where
+      # it must refuse before its verdict on the tree is worth anything.
+      - name: the check refuses what it should refuse
+        shell: bash
+        run: bash .github/scripts/check-version-fixtures.sh
+
+      # `GITHUB_REF_TYPE` and not the `v*` pattern the packaging step matches
+      # on: a dispatch runs from a branch, and what makes the comparison
+      # impossible is the absence of a tag rather than the shape of a name.
+      - name: the tag and the manifests agree
+        shell: bash
+        run: |
+          set -e
+          if [ "${GITHUB_REF_TYPE:-branch}" != "tag" ]; then
+            echo "no tag on this run: there is no version to compare the manifests with."
+            echo "skipped, and a dispatch publishes nothing."
+            exit 0
+          fi
+          bash .github/scripts/check-version.sh "${GITHUB_REF_NAME#v}"
+
   build:
     name: ${{ matrix.os }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       # A missing platform is the information we came for. Without fail-fast,
