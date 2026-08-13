@@ -5,15 +5,16 @@ slug: a-claim-is-renewed-by-working-not-by-reporting
 title: A claim is renewed by working, not by reporting
 created: 2026-08-13T16:20:09Z
 author: claude-code/2.1.229
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/commands.rs
   - docs/ank-spec-v1.1.md
 constraint: |
   A verb the holder runs against the task it holds renews that claim's lease, and the repository states its own rhythm through claim_ttl_default in config.yml. Renewal with no change to the scope files stays a check signal, which is what keeps reading from becoming a way to hold.
+ratified: ef81cf6398a3
 schema: 3
-version: 1
+version: 2
 ---
 
 Section 3 renews a claim implicitly on `log`, on the reasoning that working is
