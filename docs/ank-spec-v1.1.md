@@ -1007,6 +1007,23 @@ The dual read is a **window, not a feature**: it exists for the one release acro
 
 **Index lifecycle, fixed** (formerly open point 1): the index stores a content hash per `.ank/` file. Every command compares the files in the perimeter it touches against those hashes and incrementally reindexes what diverged — the index is therefore always up to date *at read time*, with no daemon and no watcher. `check` reindexes fully. An index that is absent or of an unknown schema is rebuilt silently: deleting it is always a safe operation.
 
+### Resolving the repository
+
+Every invocation begins by answering which corpus it is in, and the answer is derived from the working directory rather than configured.
+
+**The walk.** With no `--repo`, resolution starts at the working directory and walks up, parent by parent, to the **first** directory containing a `.ank/`. That directory is the root and the corpus is `<root>/.ank/`. It is git's rule for `.git`, for git's reason: an agent is launched in whatever subdirectory the work happens to be in, and a corpus that had to be named would be a flag on every command.
+
+**What stops it** is the first `.ank/` and nothing else — not a `.git/`, not a workspace manifest, not a mount point. The walk ends at the filesystem root, and ending there is a generic error (code 1) naming `ank init`. Nothing is created implicitly: a corpus that appears because a command ran in the wrong directory is worse than a refusal.
+
+**`--repo <path>` short-circuits the walk** without ever contradicting it. The path given must itself contain a `.ank/`, and resolution stops there with no walk at all. The `.ank/` directory is accepted in place of its parent, since being off by one level is the likely mistake and refusing it would gain nothing. A path holding no corpus is the same code 1 naming the same command.
+
+**A corpus outside the working directory's repository is warned about, not refused.** Because the walk stops at the first `.ank/` and at nothing else, a checkout nested inside another repository silently resolves the outer corpus. That is not merely reading the wrong files: claims are refs (§7), so they land in the resolved root's repository and never in the one holding the code being changed, and the inner repository ends with no ank ref at all. So the walk compares the two and, when they differ, prints a warning naming the resolved root and the two ways out — `ank init` here, or `--repo` to confirm the corpus was meant. Four properties, each load-bearing:
+
+- **Only on the walk.** `--repo` is the caller saying which corpus they mean, and warning about an answer asked for by name would fire forever in the one layout this behaviour makes usable: a single `.ank/` above several checkouts, with scopes written `repoA/src/**`. That layout was never designed for and is not forbidden either; naming `--repo` once is what separates it from the accident.
+- **Compared on the git common directory, not the toplevel.** A linked worktree has a toplevel of its own and shares `refs/` with the checkout that made it, so comparing toplevels would report two worktrees of one repository as two repositories. The question being asked is where a claim ref lands (§7), and that is the common directory. A working directory in no repository at all is a legible answer too, and says so in its own words.
+- **On standard error.** It is no part of any verb's answer, and §4 requires `--json` to stay byte-for-byte what a caller's parser already reads; a line on stdout would break every one of them to say something no parser asked for. `--quiet` silences it.
+- **It degrades and never fails** (§2). The walk succeeded, and the caller may well have meant it.
+
 ### Three levels of search
 
 1. **Scope resolution** — glob matching, deterministic, zero ambiguity. Covers the bulk of cases; this is what `context` does.
