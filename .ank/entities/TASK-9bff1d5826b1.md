@@ -8,7 +8,7 @@ author: claude-code@sean-laptop
 status: open
 scope:
   - .ank/**
-blocked_by: [TASK-cd3189ddf61e, TASK-e70f3a12185a]
+blocked_by: [TASK-cd3189ddf61e, TASK-e70f3a12185a, TASK-27cf26cbc414]
 done_criteria: |
   Every entity of this corpus sits at .ank/entities/<ID>.md, .ank/tasks/ and
   .ank/adr/ no longer exist, and every ## Log section that was in a task body sits
@@ -26,7 +26,7 @@ done_criteria: |
   extraction requires.
 criteria_by: creator
 schema: 2
-version: 2
+version: 5
 ---
 
 Last step of the format change, and the one that is irreversible in practice even
@@ -56,3 +56,6 @@ appear, and knowing which moved is what makes the diff reviewable.
 
 ## Log
 - 2026-08-13T05:53:07Z claude-code@sean-laptop — amended: +blocked_by TASK-e70f3a12185a
+- 2026-08-13T16:14:56Z claude-code@sean-laptop — amended: +blocked_by TASK-208878dc8db1
+- 2026-08-13T16:18:25Z claude-code@sean-laptop — amended: -blocked_by TASK-208878dc8db1
+- 2026-08-13T16:19:12Z claude-code/2.1.229 — amended: +blocked_by TASK-27cf26cbc414
