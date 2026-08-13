@@ -334,6 +334,17 @@ impl Repo {
         self.0.join(".ank/entities").join(format!("{id}.md"))
     }
 
+    /// The same seed with a title of its own, for a fixture that has to say
+    /// which task a line is about. Every seeded task is `Example task`
+    /// otherwise, which is exactly the assertion a title test cannot make.
+    fn seed_task_titled(&self, id: &str, title: &str) {
+        self.seed_task(id, Some("A verifiable criterion."));
+        let text = self
+            .task_text(id)
+            .replace("title: Example task", &format!("title: {title}"));
+        std::fs::write(self.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
+    }
+
     /// The same seed with a scope of its own, for a fixture that needs an
     /// entity outside the perimeter under test.
     fn seed_task_scoped(&self, id: &str, scope: &str) {
@@ -3651,6 +3662,235 @@ fn a_holder_reads_the_plane_through_status_and_execution_context_stays_silent() 
     );
 }
 
+/// An `elsewhere` line names the task, not only its id (TASK-028bcee93801).
+///
+/// The rows are already loaded where the line is built, so the join costs
+/// nothing; without it a reader holds an id and has to run `show` once per claim
+/// to learn what anybody is doing -- which is the question the section was
+/// relocated here to answer.
+///
+/// Two tasks with two titles, because a fixture where every task is `Example
+/// task` cannot tell a title from a coincidence.
+#[test]
+fn a_claim_held_elsewhere_is_named_with_the_title_of_its_task() {
+    const MINE: &str = "TASK-000000000f21";
+    const THEIRS: &str = "TASK-000000000f22";
+    let r = Repo::new();
+    r.seed_task_titled(MINE, "What this session is doing");
+    r.seed_task_titled(THEIRS, "What the other session is doing");
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", THEIRS])), 0);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    let line = said
+        .lines()
+        .find(|l| l.contains(THEIRS))
+        .unwrap_or_else(|| panic!("no line for the claim held elsewhere:\n{said}"));
+    assert!(
+        line.contains("What the other session is doing"),
+        "the line carries an id and nothing a reader can act on: {line}"
+    );
+    // After the id, which is what the criterion says and what a reader scans
+    // by: the id is the handle, the title is what it means.
+    assert!(
+        line.find(THEIRS) < line.find("What the other session"),
+        "the title runs ahead of the id it belongs to: {line}"
+    );
+    assert!(
+        line.contains("codex@host-9"),
+        "the holder was dropped for the title: {line}"
+    );
+
+    // Beside the three fields the entry already had, never instead of one: a
+    // script that reads this surface is the caller most likely to be running
+    // several agents.
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(
+        json.contains(&format!(
+            "{{\"id\":\"{THEIRS}\",\"title\":\"What the other session is doing\",\
+             \"holder\":\"codex@host-9\","
+        )),
+        "{json}"
+    );
+    assert!(json.contains("\"expires\":\""), "{json}");
+}
+
+/// `status --remote` reads the claim refs origin holds, and says which of them
+/// are only there (TASK-028bcee93801, ADR-47e2ac102f58).
+///
+/// Against a bare origin holding a claim this clone has never fetched, which is
+/// the only shape that separates the two planes: a worktree shares `refs/ank/`
+/// and a fetched clone has the record, so neither could tell a remote read from
+/// a local one.
+///
+/// **The default is asserted as an absence.** Without the flag the claim the
+/// other clone pushed is invisible here -- not because a call failed, but
+/// because no call was made. A `status` that consulted origin unasked would find
+/// that ref and print it, so the silence is the measurement rather than an
+/// assumption about it.
+#[test]
+fn status_remote_names_the_claims_origin_holds_and_which_are_only_there() {
+    const MINE: &str = "TASK-000000000f31";
+    const THEIRS: &str = "TASK-000000000f32";
+    let r = Repo::new();
+    r.seed_task_titled(MINE, "Held in this clone");
+    r.seed_task_titled(THEIRS, "Held in the other clone");
+    let (_origin, other) = r.cloned();
+
+    // Taken in the other clone, so the ref reaches origin and never this
+    // checkout: `cloned` wires no `refs/ank/*` refspec, exactly as a clone made
+    // by hand has none.
+    let out = r.ank_at("codex@host-9", &["claim", THEIRS], &other);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        said.contains("elsewhere no claim by another agent"),
+        "status answered about a plane it was not asked to read:\n{said}"
+    );
+    assert!(
+        !said.contains(THEIRS),
+        "status paid for the network with no flag asking it to:\n{said}"
+    );
+
+    // With the flag, and marked: a claim seen only on origin and a claim seen
+    // here are different facts, and a flag that made the output more confident
+    // without making it more informative would be worse than none.
+    let out = r.ank("claude-code@ank", &["status", "--remote"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = stdout(&out);
+    let line = said
+        .lines()
+        .find(|l| l.contains(THEIRS))
+        .unwrap_or_else(|| panic!("--remote read no claim off origin:\n{said}"));
+    assert!(
+        line.contains("Held in the other clone"),
+        "a remote claim loses the title a local one carries: {line}"
+    );
+    assert!(
+        line.contains("on origin only"),
+        "nothing says the record is not in this clone: {line}"
+    );
+    assert!(
+        said.contains("1 on origin only"),
+        "the count says nothing about the plane it mixed in:\n{said}"
+    );
+    // The record is on origin and the objects are not here, so no holder can be
+    // read without the fetch a reader must not perform. Saying one would be an
+    // invention.
+    assert!(
+        !line.contains("codex@host-9"),
+        "a holder was printed for a record this clone cannot read: {line}"
+    );
+    assert!(
+        said.contains("git fetch origin"),
+        "the way to read the record is not named:\n{said}"
+    );
+
+    // And a claim held here as well as there is not marked as either.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+    let said = stdout(&r.ank("someone-else@host-2", &["status", "--remote"]));
+    let line = said
+        .lines()
+        .find(|l| l.contains(MINE))
+        .unwrap_or_else(|| panic!("the local claim vanished under --remote:\n{said}"));
+    assert!(
+        line.contains("Held in this clone") && line.contains("claude-code@ank"),
+        "a claim on both planes lost what the local one said: {line}"
+    );
+    assert!(
+        !line.contains("on origin only"),
+        "a claim this clone holds is reported as somebody else's: {line}"
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--remote", "--json"]));
+    assert!(
+        json.contains("\"remote\":true"),
+        "nothing says the remote plane was read, and --json has no other channel \
+         for it: {json}"
+    );
+    assert!(
+        json.contains(&format!(
+            "{{\"id\":\"{THEIRS}\",\"title\":\"Held in the other clone\",\
+             \"holder\":null,\"expires\":null,\"seen\":\"origin\"}}"
+        )),
+        "{json}"
+    );
+}
+
+/// The flag degrades where there is no remote to read, and never fails
+/// (TASK-028bcee93801, §2).
+///
+/// Both reasons, because the way out of each is a different command: a
+/// repository with no `origin` is level 0 and nominal, and an `origin` that
+/// cannot be reached is a laptop off the network. Both answer on the local plane
+/// with code 0 -- `status` is what an agent runs when it does not know where it
+/// is, which is exactly when a refusal is least useful.
+#[test]
+fn status_remote_warns_once_and_answers_locally_with_no_remote() {
+    const THEIRS: &str = "TASK-000000000f41";
+    let r = Repo::new();
+    r.seed_task_titled(THEIRS, "Held by the other agent");
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", THEIRS])), 0);
+
+    // No remote at all.
+    let out = r.ank("claude-code@ank", &["status", "--remote"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a reader failed for want of a remote:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    assert_eq!(
+        said.matches("warning: no remote named origin").count(),
+        1,
+        "the degradation is said once, or not at all:\n{said}"
+    );
+    assert!(
+        said.contains("git remote add origin"),
+        "a warning with no command to run next:\n{said}"
+    );
+    assert!(
+        said.contains(THEIRS) && said.contains("Held by the other agent"),
+        "the local plane was withheld because the remote one was missing:\n{said}"
+    );
+    assert!(
+        stdout(&r.ank("claude-code@ank", &["status", "--remote", "--json"]))
+            .contains("\"remote\":false"),
+        "--json claimed a plane it never read"
+    );
+
+    // A remote that is configured and gone, which is the same shape the claim
+    // path already degrades against.
+    r.git(&[
+        "remote",
+        "add",
+        "origin",
+        &r.0.with_extension("gone.git").to_string_lossy(),
+    ]);
+    let out = r.ank("claude-code@ank", &["status", "--remote"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = stdout(&out);
+    assert_eq!(
+        said.matches("warning: origin could not be read").count(),
+        1,
+        "{said}"
+    );
+    assert!(said.contains(THEIRS), "{said}");
+
+    // And with no flag, nothing of the remote is attempted: an unreachable
+    // origin is exactly the instrument that would say so if it were.
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = stdout(&out);
+    assert!(
+        !said.contains("origin could not be read"),
+        "status reached for a remote nobody asked it to reach for:\n{said}"
+    );
+}
+
 /// With two live claims under one identity, no verb acts on one of them without
 /// the caller being able to tell which (TASK-97d8747416ea).
 ///
@@ -6960,7 +7200,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 19] = [
+const NOT_A_PATH: [&str; 20] = [
     "--limit",
     "--criteria",
     "--ttl",
@@ -6972,6 +7212,10 @@ const NOT_A_PATH: [&str; 19] = [
     // Carries no value at all, let alone a path: it names where the proof is
     // written, and that address is a ref (ADR-493471d64ba0).
     "--detached",
+    // Carries no value either: the remote it reads is `origin` by name, the
+    // refs it asks for are the claims namespace, and neither comes off the
+    // command line (ADR-47e2ac102f58).
+    "--remote",
     "--reason",
     "--title",
     "--blocked-by",
