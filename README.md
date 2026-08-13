@@ -69,8 +69,11 @@ does not control, and `ank check` compares. Editing a criterion to unblock
 yourself unblocks nothing; it makes the divergence visible.
 
 **Git does the hard parts.** Claims are git refs, so the compare-and-swap that
-arbitrates two agents is the one git already guarantees. Undo, history and
-recovery are git's. There is nothing to run.
+arbitrates two agents is the one git already guarantees. Parallel agents are the
+nominal case, not an extension — a worktree per agent, a branch per task,
+`blocked_by` for what actually waits; the assembled workflow is in
+[handing ank to an agent][agents]. Undo, history and recovery are git's. There
+is nothing to run.
 
 ## Where this sits
 

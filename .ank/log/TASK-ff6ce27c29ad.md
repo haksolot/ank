@@ -1,0 +1,3 @@
+- 2026-08-13T16:41:30Z claude-code/2.1.229 — amended: done_criteria
+- 2026-08-13T16:43:24Z claude-code/2.1.229 — ADR-f61e2d2c75e8 is the live skill-freeze ADR (supersedes e17e, which superseded c656). CLAUDE.md was stale twice over: it cited c656 and still described ank help as one flat listing, which f61e replaced with grouping by moment of use. Fixed both while adding the parallel-workflow docs.
+- 2026-08-13T16:48:32Z claude-code/2.1.229 — done, proof commit:e609493b5afdaf7c1d632812e4ef2f04692daccb
