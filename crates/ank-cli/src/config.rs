@@ -16,6 +16,11 @@ use std::time::Duration;
 pub const SUPPORTED_SCHEMA: u32 = 1;
 pub const DEFAULT_CONTEXT_BUDGET: usize = 8000;
 pub const DEFAULT_CLAIM_TTL_MAX: &str = "2h";
+/// What `claim` grants without `--ttl` (§3). The same thirty minutes
+/// [`crate::claim::DEFAULT_TTL`] has always been, spelled the way the file
+/// spells a duration; a unit test below pins the two to one value, because two
+/// spellings of one number is exactly how they start to disagree.
+pub const DEFAULT_CLAIM_TTL: &str = "30m";
 pub const DEFAULT_VERIFIER_TIMEOUT: &str = "10m";
 
 pub type Result<T> = std::result::Result<T, CliError>;
@@ -28,6 +33,8 @@ struct ConfigFile {
     context_budget: usize,
     #[serde(default = "default_ttl_max")]
     claim_ttl_max: String,
+    #[serde(default = "default_ttl")]
+    claim_ttl_default: String,
     #[serde(default)]
     default_branch: Option<String>,
     #[serde(default)]
@@ -44,6 +51,10 @@ fn default_budget() -> usize {
 
 fn default_ttl_max() -> String {
     DEFAULT_CLAIM_TTL_MAX.to_string()
+}
+
+fn default_ttl() -> String {
+    DEFAULT_CLAIM_TTL.to_string()
 }
 
 fn default_timeout() -> String {
@@ -78,6 +89,11 @@ pub struct Config {
     pub schema: u32,
     pub context_budget: usize,
     pub claim_ttl_max: Duration,
+    /// What a claim is granted when `--ttl` says nothing (§3). Capped by
+    /// [`Config::claim_ttl_max`] at claim time and not here: the file may state
+    /// a default above the cap, and the refusal §3 wants is the cap binding
+    /// what is granted, not a configuration that will not load.
+    pub claim_ttl_default: Duration,
     /// Branch carrying the reference durable state (§7). Optional: absent, the
     /// resolution falls back to `refs/remotes/origin/HEAD`, and fails rather
     /// than guessing if that is absent too — see
@@ -148,6 +164,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
     };
 
     let claim_ttl_max = dur(&raw.claim_ttl_max, "claim_ttl_max")?;
+    let claim_ttl_default = dur(&raw.claim_ttl_default, "claim_ttl_default")?;
     let mut verifiers = BTreeMap::new();
     for (name, v) in raw.verifiers {
         let timeout = dur(&v.timeout, &format!("verifiers.{name}.timeout"))?;
@@ -171,6 +188,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         schema: raw.schema,
         context_budget: raw.context_budget,
         claim_ttl_max,
+        claim_ttl_default,
         default_branch,
         verifiers,
         roles: raw.roles,
@@ -235,6 +253,7 @@ pub const KEYS: &[&str] = &[
     "schema",
     "context_budget",
     "claim_ttl_max",
+    "claim_ttl_default",
     "default_branch",
     "verifiers.<name>.run",
     "verifiers.<name>.timeout",
@@ -331,6 +350,11 @@ fn resolve_key(path: &str) -> Result<Key> {
             name: "claim_ttl_max",
             numeric: false,
             default: Some(DEFAULT_CLAIM_TTL_MAX.to_string()),
+        }),
+        ["claim_ttl_default"] => Ok(Key::Top {
+            name: "claim_ttl_default",
+            numeric: false,
+            default: Some(DEFAULT_CLAIM_TTL.to_string()),
         }),
         // No default: absent, the resolution falls back to
         // refs/remotes/origin/HEAD and fails rather than guessing (§7).
@@ -1261,6 +1285,35 @@ identities:
         );
         assert_eq!(cfg.roles["agent"].cannot, vec!["delete".to_string()]);
         assert_eq!(cfg.identities["marie@laptop"], "human");
+    }
+
+    /// The repository states its own rhythm, and the tool's value is what an
+    /// absent key resolves to (§3, ADR-0bb7ea8991bc).
+    ///
+    /// The last assertion is the one worth having: `claim_ttl_default` and
+    /// [`crate::claim::DEFAULT_TTL`] are thirty minutes written twice, once as
+    /// a duration this file can carry and once as a constant the claim record
+    /// falls back to, and two spellings of one number is how they start to
+    /// disagree. Nothing else pins them together.
+    #[test]
+    fn claim_ttl_default_is_read_and_falls_back_to_the_tools_value() {
+        let cfg = parse("schema: 1\nclaim_ttl_default: 90m\n", p()).unwrap();
+        assert_eq!(cfg.claim_ttl_default, Duration::from_secs(5400));
+
+        let cfg = parse("schema: 1\n", p()).unwrap();
+        assert_eq!(cfg.claim_ttl_default, Duration::from_secs(30 * 60));
+
+        // A value the file cannot mean is named with its key, like every other
+        // duration here.
+        let err = parse("schema: 1\nclaim_ttl_default: 30w\n", p()).unwrap_err();
+        assert!(err.message.contains("claim_ttl_default"), "{}", err.message);
+
+        assert_eq!(
+            parse_duration(DEFAULT_CLAIM_TTL).unwrap(),
+            crate::claim::DEFAULT_TTL,
+            "the file's default and the record's fallback are the same thirty \
+             minutes, and only this assertion says so"
+        );
     }
 
     #[test]

@@ -22,7 +22,7 @@
 //!   wrong, and answers with the matching `context` binds with rather than one
 //!   of its own.
 
-use crate::claim::{self, ClaimRecord, Record};
+use crate::claim::{self, ClaimRecord};
 use crate::cli::{CliError, Invocation, Result};
 use crate::config::Config;
 use crate::context;
@@ -1481,25 +1481,14 @@ fn log_write(
     // heartbeat verb to memorise (§3). The compare-and-swap is on the record we
     // read, so a claim taken over in the meantime is not overwritten.
     //
-    // **From the lease the claim was granted, not from the default.** `--ttl`
-    // states the rhythm of the work, and that does not change halfway through
-    // it. Recomputing the default here meant an agent that asked for two hours
-    // held them once and fell back to thirty minutes at its first `log` — the
-    // command the loop tells it to run often — so the flag failed at exactly
-    // the case it exists for: a long silent stretch entered just after a log
-    // (TASK-1b45f41e7b99).
-    // The applied lease is written back, not carried over. On a record from
-    // before the field existed that turns a `0` into the default it was just
-    // read as, so the record describes itself from the first renewal and the
-    // unset value leaves the coordination plane instead of being copied
-    // forward for the life of the claim.
-    let ttl = claim::renewal_ttl(&record, cfg.claim_ttl_max);
-    let refreshed = Record::Claim(ClaimRecord {
-        expires: claim::format_utc(claim::now_secs() + ttl.as_secs() as i64),
-        ttl: ttl.as_secs(),
-        ..record
-    });
-    let renewed = claim::put(&repo.root, &id, &refreshed, Some(&witness))?;
+    // Through `claim::renew`, which is the one implementation of that write and
+    // is what every other verb of the holder now goes through too
+    // (ADR-0bb7ea8991bc). This used to be a copy of those four lines, and the
+    // copy is what got the lease wrong: recomputing the default here meant an
+    // agent that asked for two hours held them once and fell back to thirty
+    // minutes at its first `log` — the command the loop tells it to run often —
+    // so the flag failed at exactly the case it exists for (TASK-1b45f41e7b99).
+    let renewed = claim::renew(&repo.root, &id, &witness, &record, cfg.claim_ttl_max)?;
     // What the write turned up, as opposed to what was known before it. Said
     // after, because none of it could have been said before.
     //
@@ -1612,6 +1601,7 @@ pub fn preview(entity: &Entity) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::claim::Record;
     use std::path::PathBuf;
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};

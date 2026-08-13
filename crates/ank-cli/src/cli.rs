@@ -28,6 +28,7 @@
 //! look like business bugs once in production: every one of them is therefore
 //! tested, one test per case.
 
+use crate::claim::Renews;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
@@ -262,6 +263,16 @@ pub struct CommandSpec {
     /// the defect this ADR corrects — a property of the verb decided somewhere
     /// the verb is not.
     pub coordinates: bool,
+    /// Whether running this verb is **work on the task the caller holds**, and
+    /// so renews its lease (§3, ADR-0bb7ea8991bc).
+    ///
+    /// Declared here for the reason `coordinates` is, and the reason is the
+    /// stronger of the two: §3 states a rule — the holder's verbs against the
+    /// held task — precisely because a list of verb names is what goes stale
+    /// when a verb is added. A field is how a rule is asked of every verb; a
+    /// list beside the dispatch would let a new one default to renewing nothing,
+    /// which is the failure this ADR corrects wearing a different hat.
+    pub renews: Renews,
     /// The task that carries the implementation, **while it does not exist**.
     /// It is therefore also the marker of an unrouted verb: a command that
     /// [`dispatch`] reaches clears the field, so the two never drift apart the
@@ -279,6 +290,7 @@ pub struct CommandSpec {
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "context",
+        renews: Renews::Held,
         coordinates: false,
         summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
         subcommands: &[],
@@ -292,6 +304,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "claim",
+        renews: Renews::Never,
         coordinates: true,
         summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
         subcommands: &[],
@@ -308,6 +321,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "show",
+        renews: Renews::Named,
         coordinates: false,
         summary: "the entity whole, frontmatter and body, byte for byte",
         subcommands: &[],
@@ -321,6 +335,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "log",
+        renews: Renews::Never,
         coordinates: true,
         summary: "an id alone reads the log; an id and a message appends one and renews the claim, which needs holding it",
         subcommands: &[],
@@ -336,6 +351,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "done",
+        renews: Renews::Never,
         coordinates: true,
         // "the declared verifiers" left out who declares them, and a reader
         // filled the blank with config.yml -- which defines verifiers but never
@@ -360,6 +376,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "release",
+        renews: Renews::Never,
         coordinates: true,
         summary: "hands the task back, with the reason recorded in its log",
         subcommands: &[],
@@ -373,6 +390,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "new",
+        renews: Renews::Never,
         coordinates: false,
         summary: "writes a task or an ADR that needs no hand finishing",
         subcommands: &["task", "adr"],
@@ -398,6 +416,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "find",
+        renews: Renews::Never,
         coordinates: false,
         summary: "searches titles, scopes and criteria; --status open lists what remains, with no query",
         subcommands: &[],
@@ -422,6 +441,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // refused the commit until it moved (TASK-15336a0012d5).
     CommandSpec {
         name: "status",
+        renews: Renews::Never,
         coordinates: false,
         summary: "where am I: branch, claim, perimeter, queue, findings",
         subcommands: &[],
@@ -435,6 +455,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "review",
+        renews: Renews::Never,
         coordinates: false,
         summary: "the ratification queue and the health of the corpus: what is proposed, and which scopes have gone dead",
         subcommands: &[],
@@ -448,6 +469,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "accept",
+        renews: Renews::Never,
         coordinates: true,
         summary: "promotes a proposed ADR to accepted, through a signed ratification commit; on the default branch only",
         subcommands: &[],
@@ -468,6 +490,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "close",
+        renews: Renews::Never,
         coordinates: true,
         summary: "closes a task that will never be done; --reason is mandatory",
         subcommands: &[],
@@ -487,6 +510,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "amend",
+        renews: Renews::Named,
         coordinates: false,
         summary: "changes blocked_by, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
@@ -516,6 +540,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "attest",
+        renews: Renews::Named,
         coordinates: true,
         summary: "appends a proof to a finished task: the one write allowed after done",
         subcommands: &[],
@@ -534,6 +559,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // `tests/skill.rs` is what holds this to §4 rather than to memory.
     CommandSpec {
         name: "edit",
+        renews: Renews::Named,
         coordinates: false,
         summary: "opens an entity in $EDITOR and validates what comes back",
         subcommands: &[],
@@ -550,6 +576,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "graph",
+        renews: Renews::Never,
         coordinates: false,
         summary: "the blocked_by DAG in readable text, indented under what blocks it",
         subcommands: &[],
@@ -563,6 +590,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "scope",
+        renews: Renews::Never,
         coordinates: false,
         summary: "what covers a path: the constraints that bind it and the tasks that touch it",
         subcommands: &[],
@@ -576,6 +604,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "check",
+        renews: Renews::Never,
         coordinates: false,
         // A verb called `check` reads as read-only, and this one writes: it is
         // the only command that prunes (§7). An agent ran it in a loop on that
@@ -599,6 +628,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // states -- what `init` writes, `config` maintains.
     CommandSpec {
         name: "config",
+        renews: Renews::Never,
         coordinates: false,
         summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
         subcommands: &[],
@@ -613,7 +643,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(7, "verifiers.<name>.timeout on a verifier that is not declared"),
         ],
         notes: &[
-            "keys: schema context_budget claim_ttl_max default_branch verifiers.<name>.run verifiers.<name>.timeout",
+            "keys: schema context_budget claim_ttl_max claim_ttl_default default_branch verifiers.<name>.run verifiers.<name>.timeout",
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
         ],
@@ -622,6 +652,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "init",
+        renews: Renews::Never,
         coordinates: true,
         summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
         subcommands: &[],
@@ -638,6 +669,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "help",
+        renews: Renews::Never,
         coordinates: false,
         summary: "every verb in one flat listing, or one verb in full",
         subcommands: &[],
@@ -1466,7 +1498,7 @@ fn dispatch(
     }
 
     let s = startup(&inv, cwd)?;
-    match inv.command {
+    let code = match inv.command {
         "context" => crate::context::run(&inv, &s.repo, &s.config, &s.identity, out),
         "done" => crate::done::run(&inv, &s.repo, &s.config, &s.identity, out),
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
@@ -1493,7 +1525,30 @@ fn dispatch(
         "amend" => crate::human::amend(&inv, &s.repo, &s.identity, out),
         "show" => crate::human::show(&inv, &s.repo, out),
         _ => Err(not_implemented(spec)),
-    }
+    }?;
+
+    // **The one place the renewal rule is applied** (§3, ADR-0bb7ea8991bc).
+    // Working is what keeps the lock, so the lease moves when the verb that just
+    // ran was the holder's work on the task it holds. Here rather than at each
+    // verb's entry point, because a test scattered across nineteen arms is
+    // nineteen chances to answer it differently — what each verb declares is
+    // what it is about, and applying that is one line.
+    //
+    // **After the verb, and only when it succeeded.** A verb that failed did no
+    // work; and running before would mean `done` and `release` unwinding a
+    // renewal a moment old, which is why they declare `Never` besides.
+    //
+    // The id the rule needs is the first positional, which is where every verb
+    // that names an entity carries it. Verbs whose positional is a path declare
+    // `Never`, so no path is ever resolved as an id.
+    crate::claim::renew_by_working(
+        &s.repo,
+        &s.config,
+        &s.identity,
+        spec.renews,
+        inv.positionals.first().map(String::as_str),
+    );
+    Ok(code)
 }
 
 #[cfg(test)]
@@ -1557,6 +1612,30 @@ mod tests {
         // A global flag is not a special case.
         let err = parse(&argv(&["check", "--repo"])).unwrap_err();
         assert!(err.message.contains("--repo"), "{}", err.message);
+    }
+
+    /// `config`'s note lists the key set the verb actually addresses.
+    ///
+    /// §9 forbids the help surface from making an offer the verb turns down,
+    /// and the mirror of that is a key the verb takes and the note never names:
+    /// the note is where a caller looks before typing, and `claim_ttl_default`
+    /// was one edit away from being addressable and undocumented
+    /// (ADR-0bb7ea8991bc). The list is a literal because a note is one, and this
+    /// is what keeps it the same list.
+    #[test]
+    fn the_config_note_names_every_key_the_verb_addresses() {
+        let note = spec_of("config")
+            .unwrap()
+            .notes
+            .iter()
+            .find(|n| n.starts_with("keys: "))
+            .expect("config's first note is the key set");
+        let listed: Vec<&str> = note["keys: ".len()..].split_whitespace().collect();
+        assert_eq!(
+            listed,
+            crate::config::KEYS,
+            "the note and the closed key set have drifted apart"
+        );
     }
 
     #[test]
