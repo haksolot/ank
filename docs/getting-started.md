@@ -352,6 +352,102 @@ anything, and the message always ends with the exact command to run next.
 Code 9 is the one to read carefully: it says the environment is broken, not
 that your work is wrong. Fix the machine, not the code.
 
+## Running ank in a pipeline
+
+Read this part before the recipes, because the recipes are the easy half. The
+whole integration surface is two things: **an exit code, and `--json`**. Learn
+those and you can write the pipeline for a CI system nobody here has heard of.
+
+`ank check` is the verb a pipeline runs. It exits:
+
+- **0** — the corpus is healthy. Signals exit 0 too: they are observations, not
+  faults, and reddening a build over one teaches a team to stop reading `check`.
+- **8** — findings. This is the failure a pipeline exists to catch.
+- **9** — the environment, not the corpus: git too old, `sh` missing, the default
+  branch indeterminable. Nothing is wrong with the files, and a pipeline that
+  collapses 9 into "the check failed" sends somebody to fix sound work.
+
+`--json` is opt-in on every verb and is what you parse. It carries no colour and
+no layout, and it stays byte-for-byte what your parser already reads.
+
+That is the contract. Everything below is the CI system's own syntax around it.
+
+**A bare shell**, which is the recipe the other two wrap:
+
+    #!/bin/sh
+    code=0
+    ank check || code=$?
+    case $code in
+      0) ;;
+      8) echo "ank check: findings, see above" >&2; exit 1 ;;
+      9) echo "ank check: environment unavailable, not a corpus failure" >&2; exit 2 ;;
+      *) echo "ank check: unexpected exit $code" >&2; exit 1 ;;
+    esac
+
+**GitHub Actions:**
+
+    - name: ank check
+      run: |
+        code=0
+        ank check || code=$?
+        case $code in
+          0) ;;
+          8) exit 1 ;;
+          9) echo "::notice::ank could not run: environment"; exit 2 ;;
+          *) exit 1 ;;
+        esac
+
+**GitLab CI:**
+
+    ank:check:
+      script:
+        - |
+          code=0
+          ank check || code=$?
+          case $code in
+            0) ;;
+            8) exit 1 ;;
+            9) echo "ank could not run: environment"; exit 2 ;;
+            *) exit 1 ;;
+          esac
+
+Three vendors, one contract, and the third one is a shell script in a YAML file
+like the other two.
+
+`ank check || code=$?` and never a bare `ank check` followed by `case $?`: a
+GitHub Actions `run:` block is `bash -e`, so the bare form aborts the step on
+exit 8 and the routing you wrote is never reached. The `|| code=$?` form is what
+survives `set -e`, which is why it is in all three rather than in the one that
+needs it.
+
+**There is no `--format github`, and there never will be.** Annotations,
+folding markers and job summaries are one vendor's protocol, and putting them in
+the binary would couple the tool to a company. A pipeline that wants annotations
+pipes `--json` into whatever produces them — which is exactly the arrangement
+that lets the fourth vendor work without anybody shipping a release for it.
+
+### Anchoring a run
+
+`done` records what ran on the machine that ran it. That is a local claim, and a
+pipeline can anchor the same task to a run anybody can re-read:
+
+    ank attest <id> --proof test:<run-id> --detached
+
+`--detached` writes the proof to `refs/ank/proof/<id>` and touches no file, so
+the pipeline produces **no commit** — it needs no write access to the branch and
+cannot race the merge.
+
+One thing to get right, and it is the reason `--json` matters here. The proof is
+a ref, so it has to reach the remote to be worth anything; if the push is
+refused, `attest` still exits 0 and warns on standard error. A pipeline reading
+only the exit code would go green having lost the attestation. Read the flag
+instead:
+
+    ank attest "$id" --proof "test:$RUN_ID" --detached --json | grep -q '"pushed":true'
+
+This repository's own `ci.yml` does exactly that, and fails the run when it is
+false rather than skipping in silence.
+
 ## Handing the loop to an agent
 
 Four routes install the same file — the `skills` CLI, the Claude Code plugin,

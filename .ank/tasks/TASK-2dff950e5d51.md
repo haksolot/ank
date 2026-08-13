@@ -5,7 +5,7 @@ slug: a-ci-recipe-that-names-no-vendor-and-this-reposi
 title: A CI recipe that names no vendor, and this repository adopts it
 created: 2026-08-11T22:26:13Z
 author: claude-code@sean-laptop
-status: open
+status: done
 scope:
   - docs/getting-started.md
   - .github/workflows/ci.yml
@@ -25,8 +25,12 @@ done_criteria: |
   CLAUDE.md stops instructing an agent to carry a CI run id by hand and points at
   what the pipeline now does.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 8debfc8e063934e2c2d92472ff76caf0b9f2d42b
+    criteria: f6678d30ca4a
 schema: 2
-version: 1
+version: 5
 ---
 
 Blocked on `attest --detached`, because the recipe is the reason that verb exists
@@ -52,3 +56,8 @@ green and was never written down.
 Note the ordering constraint in the workflow: the attestation is only meaningful
 after the tests pass, and it must not run on a matrix leg. One attestation per
 run, after the matrix, or the corpus grows three identical proofs per task.
+
+## Log
+- 2026-08-13T06:54:21Z claude-agent-c — Measured, not assumed: ank attest --detached exits 0 whether or not the ref reached the remote. On a scratch corpus with a real file:// remote it prints pushed:true and the ref is there; with the remote pointed at a path that does not exist it prints pushed:false, warns on stderr, and still exits 0. A pipeline reading the exit code would go green having lost the attestation, which is exactly the silence this task says to remove, so the job reads the flag and the docs say why. Two other findings: check gates the 'done with no test proof' signal on the task appearing done on the default branch, so no diff of .ank/ is needed and the job belongs on that branch rather than on every push; and CLAUDE.md never contained an instruction to carry a run id by hand, so half the criterion was already satisfied and only the pointer was added.
+- 2026-08-13T07:05:12Z claude-agent-c — The CLAUDE.md paragraph was written wrong the first time and is corrected: ank done does not fall back on the config's verifiers here, because no task in this corpus declares a verify: list, so done refuses without --proof and names the flag. What the pipeline removes is not the proof but the round trip -- push, wait for green, copy the run id -- so the guidance is to close on commit:<sha>, which is a strong proof already in hand, and let the attest job add the test anchor once the task lands on the default branch. assertion and human-review are the weak types; commit and test are not.
+- 2026-08-13T07:05:27Z claude-agent-c — done, proof commit:8debfc8e063934e2c2d92472ff76caf0b9f2d42b

@@ -43,6 +43,17 @@ project dogfooding ank on itself.
    writes the proof. Never edit `status:` by hand, and never report your own
    result: an agent that grades itself can simply be wrong.
 
+**Do not push, wait for a green run, and copy its id into `done`.** No task in
+this corpus declares a `verify:` list, so `done` does still require a `--proof` —
+but the one to give it is a proof you already hold, `commit:<sha>`, not a number
+you had to wait for. The external anchor is the pipeline's work: once the task
+lands on the default branch, `check` reports `done with no test proof` and the
+`attest` job in `ci.yml` records `test:<run-id>` on `refs/ank/proof/<id>` with
+`ank attest --detached` — a ref, no commit, and a red run rather than a silent
+skip when the proof does not reach the remote. `assertion` and `human-review` are
+weak proofs and `check` says so; `commit` and `test` are not. The recipe, and the
+contract it rests on, are in `docs/getting-started.md`.
+
 **A criterion that talks about the binary is tested through the binary.** When
 a `done_criteria` says "the binary does X", the test must invoke the binary —
 not only the function meant to produce X. Two real defects slipped through
