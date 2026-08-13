@@ -5,7 +5,7 @@ slug: the-pi-gallery-card-carries-the-logo
 title: The pi gallery card carries the logo
 created: 2026-08-08T18:43:03Z
 author: seanl@sean-laptop
-status: open
+status: in_progress
 scope:
   - assets/**
   - npm/ank/package.json
@@ -22,7 +22,7 @@ done_criteria: |
   ank check stay green.
 criteria_by: creator
 schema: 2
-version: 1
+version: 2
 ---
 
 The pi gallery renders a card per package, and ank's is currently text alone.
