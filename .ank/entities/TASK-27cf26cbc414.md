@@ -5,7 +5,7 @@ slug: a-dead-scope-git-can-explain-is-a-signal-and-the
 title: A dead scope git can explain is a signal, and the explanation reaches a glob
 created: 2026-08-13T16:18:58Z
 author: claude-code/2.1.229
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -21,8 +21,12 @@ done_criteria: |
   
   Asserted through the binary in crates/ank-cli/tests/cli.rs, four fixtures: a file named literally in a finished task's scope is renamed and committed, and check exits 0 with a signal naming the new path; the same file is deleted instead, and check exits 8; a directory named by a glob is moved wholesale, and check exits 0 naming the new directory; the files under such a prefix are scattered across two directories, and check exits 8 with no explanation.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 8f7f24e
+    criteria: 93424b06248c
 schema: 3
-version: 2
+version: 3
 ---
 
 Unblocks TASK-9bff1d5826b1. The flat-layout move kills six scopes and `check`
