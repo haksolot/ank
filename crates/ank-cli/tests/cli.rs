@@ -8129,7 +8129,7 @@ fn crowded() -> Repo {
              that rendering it in full costs what a real one costs."
         );
         std::fs::write(
-            r.0.join(".ank/adr").join(format!("{id}.md")),
+            r.0.join(".ank/entities").join(format!("{id}.md")),
             format!(
                 "---\nid: {id}\ntype: adr\nslug: example\n\
                  title: Decision number {i}, phrased as a title of ordinary length\n\
@@ -8141,7 +8141,7 @@ fn crowded() -> Repo {
 
         let tid = format!("TASK-0000000{i:05}");
         std::fs::write(
-            r.0.join(".ank/tasks").join(format!("{tid}.md")),
+            r.0.join(".ank/entities").join(format!("{tid}.md")),
             format!(
                 "---\nid: {tid}\ntype: task\nslug: example\n\
                  title: Task number {i}, with a title of the length titles really have\n\
