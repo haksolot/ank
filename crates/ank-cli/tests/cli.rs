@@ -7292,14 +7292,24 @@ fn a_renamed_file_names_where_it_went_and_the_command_that_repairs_it() {
     let head = r.git(&["rev-parse", "HEAD"]);
 
     let out = r.ank("claude-code@ank", &["check"]);
-    assert_eq!(code(&out), 8, "a dead scope is a fault: {}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "a dead scope git can explain is a signal (TASK-27cf26cbc414): {}",
+        stderr(&out)
+    );
     let text = stdout(&out);
 
-    // Untouched: the task that ordered this says not to move when the finding
-    // fires or what severity it carries.
+    // The wording is untouched, and only the severity moved. TASK-1e79ff3738df
+    // asked that neither change; TASK-27cf26cbc414 changed exactly one of them,
+    // and this assertion is what keeps the other where it was.
     assert!(
         text.contains("dead scope 'src/old.rs': no file matches it"),
         "{text}"
+    );
+    assert!(
+        text.contains("signal: ") && !text.contains("error: "),
+        "the finding is a signal and nothing here is a fault: {text}"
     );
 
     let note = proposal(&text).unwrap_or_else(|| panic!("the rename is named: {text}"));
@@ -7468,6 +7478,131 @@ fn a_finished_task_is_told_where_the_file_went_and_offered_no_command() {
                 1,
                 "{status}: amend refuses a settled plan, so nothing is proposed: {note:?}"
             ),
+        }
+    }
+}
+
+/// Seeds a `done` task scoped to `glob`, which is the state the severity rule
+/// of TASK-27cf26cbc414 decides something about: an open task is a signal
+/// either way, so a fixture built on one would pass whatever the rule does.
+/// The proof is not decoration: a `done` task carrying none is a fault of its
+/// own, and these fixtures assert an exit code. Without it the corpus would exit
+/// 8 for a reason that has nothing to do with the scope, and the renamed half
+/// would fail while the rule it tests worked.
+fn finished_task_scoped(r: &Repo, glob: &str) {
+    r.seed_task_scoped(ID, glob);
+    let seeded = r
+        .task_text(ID)
+        .replace("status: open", "status: done")
+        .replace(
+            "schema:",
+            "proof:\n  - type: assertion\n    ref: seeded\nschema:",
+        );
+    std::fs::write(r.0.join(".ank/entities").join(format!("{ID}.md")), seeded).unwrap();
+}
+
+/// The severity rule, on the state where it decides something.
+///
+/// Two fixtures differing by one act, because a single one proves the exit code
+/// and not the reason for it. **Renamed:** git names the commit, so the corpus
+/// is outdated in a way the reader can follow rather than broken — a signal.
+/// **Deleted:** git explains nothing, the reader has nothing, and the fault is
+/// what says so.
+///
+/// Through the binary because the exit code is the whole claim, and no unit test
+/// of the severity reaches it.
+#[test]
+fn a_finished_tasks_dead_scope_faults_only_when_git_cannot_explain_it() {
+    for (to, expected) in [(Some("src/new.rs"), 0), (None, 8)] {
+        let r = Repo::new();
+        std::fs::create_dir_all(r.0.join("src")).unwrap();
+        std::fs::write(r.0.join("src/old.rs"), SIMILAR).unwrap();
+        finished_task_scoped(&r, "src/old.rs");
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "seed"]);
+        match to {
+            Some(to) => std::fs::rename(r.0.join("src/old.rs"), r.0.join(to)).unwrap(),
+            None => std::fs::remove_file(r.0.join("src/old.rs")).unwrap(),
+        }
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "move it"]);
+
+        let out = r.ank("claude-code@ank", &["check"]);
+        let text = stdout(&out);
+        assert_eq!(code(&out), expected, "to={to:?}: {text}{}", stderr(&out));
+        assert!(
+            text.contains("dead scope 'src/old.rs': no file matches it"),
+            "the wording does not move with the severity: {text}"
+        );
+        assert_eq!(
+            proposal(&text).is_some(),
+            to.is_some(),
+            "to={to:?}: the explanation and the severity are the same fact: {text}"
+        );
+    }
+}
+
+/// A glob is answered through its literal prefix, and only when one directory
+/// answers.
+///
+/// **This is the half that makes the rule real.** `scope_moved` returned nothing
+/// for any glob before this, so the severity change alone would have left four
+/// of the six dead scopes of the flat-layout move — all `.ank/adr/**` — faulting
+/// while the rule looked implemented.
+///
+/// **Scattered is the negative control.** Two destinations is not a directory
+/// that moved, and "the prefix moved mostly there" is not a sentence this is
+/// allowed to print. The files carry distinct bodies so that git pairs each
+/// rename with its own source rather than by coincidence of identical content.
+#[test]
+fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
+    for (scattered, expected) in [(false, 0), (true, 8)] {
+        let r = Repo::new();
+        std::fs::create_dir_all(r.0.join("old")).unwrap();
+        for n in ["a.rs", "b.rs"] {
+            std::fs::write(r.0.join("old").join(n), format!("{SIMILAR}// {n}\n")).unwrap();
+        }
+        finished_task_scoped(&r, "old/**");
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "seed"]);
+
+        let second = if scattered { "elsewhere" } else { "new" };
+        for dir in ["new", second] {
+            std::fs::create_dir_all(r.0.join(dir)).unwrap();
+        }
+        std::fs::rename(r.0.join("old/a.rs"), r.0.join("new/a.rs")).unwrap();
+        std::fs::rename(r.0.join("old/b.rs"), r.0.join(second).join("b.rs")).unwrap();
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "move it"]);
+
+        let out = r.ank("claude-code@ank", &["check"]);
+        let text = stdout(&out);
+        assert_eq!(code(&out), expected, "scattered={scattered}: {text}");
+        assert!(
+            text.contains("dead scope 'old/**': no file matches it"),
+            "scattered={scattered}: {text}"
+        );
+        match scattered {
+            false => {
+                let note = proposal(&text).unwrap_or_else(|| panic!("the prefix is named: {text}"));
+                assert!(
+                    note[0].starts_with("git records old renamed to new in"),
+                    "the note names the directory git recorded, not the glob: {note:?}"
+                );
+            }
+            true => {
+                assert_eq!(
+                    proposal(&text),
+                    None,
+                    "two destinations is not a directory that moved: {text}"
+                );
+                for word in ["renamed", "moved", "elsewhere"] {
+                    assert!(
+                        !text.contains(word),
+                        "'{word}' claims more than git recorded: {text}"
+                    );
+                }
+            }
         }
     }
 }
