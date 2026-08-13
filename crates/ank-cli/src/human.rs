@@ -717,7 +717,7 @@ fn check_scope_alive(
         // rather than above the loop: two git processes per glob, paid only by a
         // glob that already matches nothing. A healthy corpus reaches this line
         // no times.
-        let note = match git_root {
+        let mut note = match git_root {
             Some(root) => scope_moved(entity, glob, root),
             None => Vec::new(),
         };
@@ -732,6 +732,26 @@ fn check_scope_alive(
         // `ahead_of_the_code` is read first and alone, so a signal never becomes
         // a fault here whatever git says.
         let explained = !note.is_empty();
+        // The third state (§4). A shallow clone holds no commit that could
+        // record the rename, so "git recorded none" and "there is no history to
+        // ask" are different answers, and only the first is evidence. Faulting
+        // on the second makes the health of a corpus depend on how it was
+        // cloned — measured on this repository's own pipeline, where a
+        // depth-1 checkout turned six signals into six faults with no note at
+        // all. Same answer §3 gives a ratification anchor a shallow clone
+        // cannot verify, and the same reasoning.
+        //
+        // Asked only here: a corpus with nothing dead never reaches this line,
+        // and the answer is memoised so a corpus with eight dead scopes asks
+        // once.
+        let unverifiable = !explained && git_root.is_some_and(git::is_shallow);
+        if unverifiable {
+            note.push(
+                "the history here is shallow, so where it went cannot be verified \
+                 (git fetch --unshallow)"
+                    .to_string(),
+            );
+        }
         let finding = if ahead_of_the_code {
             Finding::signal(
                 entity.id(),
@@ -739,7 +759,7 @@ fn check_scope_alive(
             )
         } else {
             let message = format!("dead scope '{glob}': no file matches it");
-            match explained {
+            match explained || unverifiable {
                 true => Finding::signal(entity.id(), message),
                 false => Finding::fault(entity.id(), message),
             }

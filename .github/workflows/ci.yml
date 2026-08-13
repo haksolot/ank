@@ -22,7 +22,14 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
     steps:
+      # `ank check` walks history: it asks where a dead scope went, and reads a
+      # ratification commit to verify a frozen constraint. The default depth-1
+      # checkout carries no history to answer either, so the job would report
+      # that it cannot verify and verify nothing -- green and empty, which is a
+      # worse failure than the red it replaces (TASK-2ce5554d6ed0).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       # The Rust toolchain preinstalled on the runners is enough, rustfmt
       # included. A third-party toolchain action would be one more dependency
@@ -109,7 +116,12 @@ jobs:
       contents: write
 
     steps:
+      # History, for the same reason as the test job: this one reads `ank check
+      # --json` to decide what to anchor, and a check that cannot walk history
+      # answers about a corpus it could not fully read.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - name: the tasks this run anchors
         id: unanchored

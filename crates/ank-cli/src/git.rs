@@ -709,6 +709,41 @@ fn moved_prefix(text: &str, prefix: &str) -> Option<String> {
     found
 }
 
+/// Memo for [`is_shallow`], keyed on the working directory.
+///
+/// The depth of a clone cannot change under a running process, so the question
+/// is asked once. Keyed like [`RATIFICATIONS`] and for the same reason: `check`
+/// reaches this once per unexplained dead scope, and a corpus with eight of them
+/// would otherwise spawn eight processes for an answer that cannot differ.
+type ShallowMemo = OnceLock<Mutex<HashMap<PathBuf, bool>>>;
+static SHALLOW: ShallowMemo = OnceLock::new();
+
+/// Whether this clone was truncated, so that no history is there to walk.
+///
+/// **Asked directly, and never inferred from an empty `rev-list`.** An empty
+/// result also means a path git genuinely has nothing to say about, and reading
+/// the two as one is how "the history is not here" would silently become "the
+/// path never moved" — the difference this exists to keep.
+///
+/// A `rev-parse` that fails is not shallow: the caller is already reporting a
+/// dead scope, and inventing a second uncertainty out of a broken git would add
+/// a state nobody can act on.
+pub fn is_shallow(cwd: &Path) -> bool {
+    let memo = SHALLOW.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(cwd) {
+            return *hit;
+        }
+    }
+    let answer = output(cwd, &["rev-parse", "--is-shallow-repository"])
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim() == "true")
+        .unwrap_or(false);
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(cwd.to_path_buf(), answer);
+    }
+    answer
+}
+
 /// The `constraint`+`scope` hash a ratification commit recorded for `id`, or
 /// `None` when no such commit is reachable.
 ///

@@ -7607,6 +7607,94 @@ fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
     }
 }
 
+/// A clone of `r`, truncated to `depth` when one is given.
+///
+/// Through a `file://` URL and not a path, because git ignores `--depth` on a
+/// local path clone: without the URL the shallow fixture would quietly be a
+/// whole one, and the test would pass while testing nothing.
+fn clone_of(r: &Repo, depth: Option<u32>) -> PathBuf {
+    let name = r.0.file_name().unwrap().to_string_lossy().to_string();
+    let dest = r.0.with_file_name(match depth {
+        Some(d) => format!("{name}-clone{d}"),
+        None => format!("{name}-clone"),
+    });
+    let url = format!(
+        "file:///{}",
+        r.0.to_string_lossy()
+            .replace('\\', "/")
+            .trim_start_matches('/')
+    );
+    let dest_s = dest.to_string_lossy().to_string();
+    let d = depth.map(|d| d.to_string());
+    let mut args = vec!["clone", "-q"];
+    if let Some(d) = d.as_deref() {
+        args.extend_from_slice(&["--depth", d]);
+    }
+    args.extend_from_slice(&[url.as_str(), dest_s.as_str()]);
+    r.git(&args);
+    dest
+}
+
+/// The third state (§4): a history that cannot answer.
+///
+/// A shallow clone holds no commit that could record the rename, so "git has the
+/// history and recorded none" and "there is no history to ask" are different
+/// answers, and only the first is evidence. Faulting on the second makes the
+/// health of a corpus depend on how it was cloned -- measured on this project's
+/// own pipeline, where a depth-1 checkout turned six signals into six faults with
+/// no note at all (TASK-2ce5554d6ed0).
+///
+/// Three clones of two histories, because the claim is a *difference* between
+/// clones and no single one can show it.
+#[test]
+fn a_shallow_clone_cannot_explain_a_dead_scope_and_says_so_instead_of_faulting() {
+    let r = moved_fixture("src/old.rs", Some("src/new.rs"));
+
+    // Whole: git has the history, and the answer is the one TASK-27cf26cbc414
+    // established.
+    let whole = clone_of(&r, None);
+    let out = r.ank_at("claude-code@ank", &["check"], &whole);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "{text}{}", stderr(&out));
+    assert!(
+        text.contains("src/new.rs"),
+        "a whole clone names where it went: {text}"
+    );
+
+    // The same history, truncated. The corpus is byte for byte the one above.
+    let shallow = clone_of(&r, Some(1));
+    let out = r.ank_at("claude-code@ank", &["check"], &shallow);
+    let text = stdout(&out);
+    assert_eq!(
+        code(&out),
+        0,
+        "the shape of a clone is not a defect in the corpus: {text}"
+    );
+    let note = proposal(&text).unwrap_or_else(|| panic!("the third state is named: {text}"));
+    assert!(
+        note[0].contains("shallow") && note[0].contains("git fetch --unshallow"),
+        "it says the history cannot answer, and what to run: {note:?}"
+    );
+    for word in ["src/new.rs", "renamed", "delet"] {
+        assert!(
+            !text.contains(word),
+            "'{word}': a clone that cannot see the rename must claim nothing about it: {text}"
+        );
+    }
+
+    // And the fault survives where git does have the history and records
+    // nothing, or this would have bought the green by giving up the check.
+    let deleted = moved_fixture("src/old.rs", None);
+    let whole = clone_of(&deleted, None);
+    let out = deleted.ank_at("claude-code@ank", &["check"], &whole);
+    assert_eq!(
+        code(&out),
+        8,
+        "a deletion git can see is still a fault: {}",
+        stdout(&out)
+    );
+}
+
 /// No repository, no walk, and no line saying so.
 ///
 /// The cost clause of ADR-97beaf55e73a has a silence clause beside it, and the
