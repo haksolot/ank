@@ -7429,3 +7429,110 @@ fn the_note_reaches_json_as_a_list_and_not_as_drawn_text() {
     // parser reads one shape rather than two.
     assert!(text.contains("\"note\":[]"), "{text}");
 }
+
+// ---------------------------------------------------------------------------
+// review, and the ratification queue it exists for (TASK-e3d00a6e62bb)
+// ---------------------------------------------------------------------------
+
+/// `review` is described by `ank help`, by `SKILL.md` and by §4 as the
+/// ratification queue, and it printed no queue at all.
+///
+/// The consequence was not cosmetic. `accept` is the one human authority act in
+/// the system, `review` is the only surface meant to say what is waiting for
+/// it, and a maintainer running `review` before ratifying was told there was
+/// nothing to ratify. The failure was silent in the direction that matters: an
+/// empty queue and an unprinted queue were the same bytes.
+///
+/// Both halves of the criterion are here in one fixture, because the second is
+/// reached by ratifying the first — which is also the transition a reader would
+/// perform, and the one that must move an entry from the queue into the
+/// constraints rather than duplicating it into both.
+#[test]
+fn review_prints_the_ratification_queue_it_is_described_by() {
+    const BOUND: &str = "ADR-00000000b0b0";
+    const WAITING: &str = "ADR-00000000c0c0";
+    const ELSEWHERE: &str = "ADR-00000000d0d0";
+
+    let r = Repo::new();
+    r.enable_signing();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/guide.md"), "# guide\n").unwrap();
+    r.seed_adr(BOUND, "Do not do X.", "src/**");
+    r.seed_adr(WAITING, "Do not do Y.", "src/**");
+    r.seed_adr(ELSEWHERE, "Do not do Z.", "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("marie@laptop", &["accept", BOUND]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(text.contains("PROPOSED (2)"), "{text}");
+    assert!(text.contains(WAITING) && text.contains(ELSEWHERE), "{text}");
+    assert!(
+        text.find("PROPOSED (2)") < text.find("LIVE CONSTRAINTS"),
+        "the queue is what a maintainer opens this for, and §4 opens the \
+         description with it: {text}"
+    );
+    assert!(
+        text.contains("LIVE CONSTRAINTS (1)"),
+        "a proposal binds nobody and must not be counted as a constraint: {text}"
+    );
+
+    // The two surfaces answer one corpus. `status` counted the queue correctly
+    // on the same tree while `review` printed none, and that disagreement is
+    // exactly the shape of the defect.
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        status.contains("queue 2 proposal(s)"),
+        "status and review must agree on the queue: {status}"
+    );
+
+    // The perimeter binds the queue as it binds the constraints, or `review`
+    // would be deciding for itself what a path contains — the disagreement
+    // TASK-df4c39031583 removed from three other places.
+    let narrowed = stdout(&r.ank("claude-code@ank", &["review", "src"]));
+    assert!(narrowed.contains("PROPOSED (1)"), "{narrowed}");
+    assert!(narrowed.contains(WAITING), "{narrowed}");
+    assert!(!narrowed.contains(ELSEWHERE), "{narrowed}");
+
+    let out = r.ank("claude-code@ank", &["review", "--json"]);
+    assert_json_only(&out, "ank review --json");
+    let json = stdout(&out);
+    assert!(
+        json.contains(&format!("\"proposed\":[{{\"id\":\"{WAITING}\"")),
+        "a caller parsing review gets the queue as data: {json}"
+    );
+    assert!(
+        json.contains("\"live\":[") && json.contains("\"dead\":"),
+        "alongside the two keys that were already there: {json}"
+    );
+
+    // The other half of the criterion: a corpus holding no proposal at all.
+    for id in [WAITING, ELSEWHERE] {
+        let out = r.ank("marie@laptop", &["accept", id]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(
+        text.contains("nothing proposed for ratification"),
+        "an empty queue is said in one line rather than vanishing, on the \
+         reasoning status already applies to `elsewhere`: {text}"
+    );
+    assert!(
+        !text.contains("PROPOSED"),
+        "a header over nothing is not the one line asked for: {text}"
+    );
+    assert!(
+        text.contains("LIVE CONSTRAINTS (3)"),
+        "ratifying moves an entry from the queue into the constraints: {text}"
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["review", "--json"]));
+    assert!(
+        json.contains("\"proposed\":[]"),
+        "the key stays, so a parser reads one shape rather than two: {json}"
+    );
+}

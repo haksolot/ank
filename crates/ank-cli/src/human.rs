@@ -1511,8 +1511,9 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         .collect();
 
     let mut live = Vec::new();
+    let mut proposed = Vec::new();
     for row in index.all()? {
-        if row.kind != EntityKind::Adr || row.status != "accepted" {
+        if row.kind != EntityKind::Adr {
             continue;
         }
         // The third copy of this matching, now gone the way of the other two:
@@ -1521,15 +1522,29 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         if !crate::context::in_perimeter(&row.scope, path.as_deref()) {
             continue;
         }
-        if dead.contains(&row.id.to_string()) {
-            continue;
+        match row.status.as_str() {
+            // The queue `accept` draws from, and the question this verb opens
+            // with. Not filtered by `dead`, unlike the constraints below: a
+            // proposal whose scope has died is still waiting for a human, and
+            // dropping it from the queue would hide the one entry most in need
+            // of the answer. Its dead scope is reported in its own section.
+            "proposed" => proposed.push(row),
+            "accepted" => {
+                if dead.contains(&row.id.to_string()) {
+                    continue;
+                }
+                let matched = ScopeSet::new(&row.scope)
+                    .map(|s| files.iter().filter(|f| s.matches(f)).count())
+                    .unwrap_or(0);
+                live.push((row, matched));
+            }
+            // `superseded` binds nobody and is not waiting for anybody: it is
+            // history, and history is not a review of the present.
+            _ => {}
         }
-        let matched = ScopeSet::new(&row.scope)
-            .map(|s| files.iter().filter(|f| s.matches(f)).count())
-            .unwrap_or(0);
-        live.push((row, matched));
     }
     live.sort_by_key(|(r, _)| r.id.to_string());
+    proposed.sort_by_key(|r| r.id.to_string());
 
     let mut dead: Vec<String> = dead.into_iter().collect();
     dead.sort();
@@ -1545,9 +1560,17 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
                 )
             })
             .collect();
+        // `files` is not carried here, and its absence is the point: it counts
+        // what a constraint binds today, and a proposal binds nothing until it
+        // is ratified. The queue's question is which decisions are waiting.
+        let waiting: Vec<String> = proposed
+            .iter()
+            .map(|r| format!("{{\"id\":\"{}\",\"title\":{}}}", r.id, json_str(&r.title)))
+            .collect();
         let _ = writeln!(
             out,
-            "{{\"live\":[{}],\"dead\":{},\"faults\":{},\"signals\":{}}}",
+            "{{\"proposed\":[{}],\"live\":[{}],\"dead\":{},\"faults\":{},\"signals\":{}}}",
+            waiting.join(","),
             items.join(","),
             dead.len(),
             report.faults(),
@@ -1557,6 +1580,27 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
     }
     if !inv.quiet() {
         let style = inv.style();
+        // First, because it is the question `review` exists to answer: §4 opens
+        // its description with "ratification queue", and a maintainer runs this
+        // before ratifying. It used to print nowhere at all, and an empty queue
+        // and an unprinted queue read identically (TASK-e3d00a6e62bb).
+        if proposed.is_empty() {
+            // Said even when there is nothing to say, on the reasoning `status`
+            // already applies to `elsewhere no claim by another agent`: silence
+            // and "this verb does not answer that" are the same bytes, and this
+            // verb is where the question has an answer.
+            let _ = writeln!(out, "{}", style.key("nothing proposed for ratification"));
+        } else {
+            let _ = writeln!(
+                out,
+                "{}",
+                style.header(&format!("PROPOSED ({})", proposed.len()))
+            );
+            for r in &proposed {
+                let _ = writeln!(out, "  {}  {}", style.id(&r.id.to_string()), r.title);
+            }
+        }
+        let _ = writeln!(out);
         let _ = writeln!(
             out,
             "{}",
@@ -4883,5 +4927,47 @@ mod tests {
         assert!(out.contains("ADR-00000000aaaa"), "{out}");
         assert!(out.contains("DEAD SCOPES (1)"), "{out}");
         assert!(out.contains("ADR-00000000bbbb"), "{out}");
+        // The queue is answered even when it is empty, because an empty queue
+        // and an unprinted queue used to be the same bytes.
+        assert!(out.contains("nothing proposed for ratification"), "{out}");
+        assert!(!out.contains("PROPOSED"), "{out}");
+    }
+
+    /// The ratification queue `review` is described by and did not print.
+    ///
+    /// Three properties, and the third is the one the defect turned on: a
+    /// proposal must not be counted as a live constraint, it must come before
+    /// them, and a proposal whose scope has died stays in the queue — it is
+    /// waiting for a human either way, and the reader most in need of the
+    /// answer is the one whose entry would have been dropped.
+    #[test]
+    fn review_opens_with_what_is_waiting_for_ratification() {
+        let t = Temp::new();
+        t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
+        t.write(&adr("00000000cccc", AdrStatus::Proposed, &["src/**"]));
+        t.write(&adr("00000000dddd", AdrStatus::Proposed, &["nowhere/**"]));
+        // History, and history is not a review of the present.
+        t.write(&adr("00000000eeee", AdrStatus::Superseded, &["src/**"]));
+
+        let (_, out) = t.call(&["review"], "marie@laptop").unwrap();
+        assert!(out.contains("PROPOSED (2)"), "{out}");
+        assert!(out.contains("LIVE CONSTRAINTS (1)"), "{out}");
+        assert!(
+            out.find("PROPOSED (2)") < out.find("LIVE CONSTRAINTS (1)"),
+            "the queue is what a maintainer runs this for, and it comes first: {out}"
+        );
+        assert!(out.contains("ADR-00000000dddd"), "{out}");
+        assert!(
+            !out.contains("ADR-00000000eeee"),
+            "a superseded decision is waiting for nobody: {out}"
+        );
+
+        let (_, json) = t.call(&["review", "--json"], "marie@laptop").unwrap();
+        assert!(
+            json.contains("\"proposed\":[{\"id\":\"ADR-00000000cccc\""),
+            "{json}"
+        );
+        assert!(json.contains("\"live\":["), "{json}");
+        assert!(json.contains("\"dead\":1"), "{json}");
     }
 }
