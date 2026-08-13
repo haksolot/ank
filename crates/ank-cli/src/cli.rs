@@ -1314,6 +1314,39 @@ fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &
     );
 }
 
+/// Names a corpus written by a binary newer than this one (TASK-ca7b61b00896).
+///
+/// The one version mismatch the tool can diagnose on its own. A corpus
+/// declaring a schema past `SCHEMA_VERSION` is refused entity by entity, deep
+/// inside a parse, and every verb that lists then answers as if those entities
+/// were not there: `find`, `context`, `graph` print a corpus short of them and
+/// say nothing, and `status` reports a fault count without its cause. The
+/// reader concludes the corpus is what they see. Two sessions lost time to
+/// exactly that, and one nearly filed a regression that did not exist.
+///
+/// **Not conditional on `--repo`**, unlike [`warn_if_outside_repository`]. That
+/// warning is silenced by `--repo` because naming a corpus is the caller saying
+/// they meant this one; naming it says nothing about whether the binary can
+/// read it.
+///
+/// **On stderr**, for the reason its neighbour is: it is not part of any verb's
+/// answer, and §4 requires `--json` to stay byte-for-byte what a caller's
+/// parser reads. It degrades and never fails (§2) — the entities this build
+/// does understand are still worth answering with, and a corpus mid-migration
+/// is a real state rather than a broken one.
+fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
+    if inv.quiet() {
+        return;
+    }
+    let Some(ahead) = crate::repo::schema_ahead(repo) else {
+        return;
+    };
+    let style = inv.style().on_stderr();
+    let (what, next) = ahead.lines();
+    eprintln!("{} {what}", style.yellow("warning:"));
+    eprintln!("  -> {next}");
+}
+
 fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     let repo = crate::repo::resolve(inv.repo(), cwd)?;
     // git is required by the verbs that coordinate, and never at startup
@@ -1329,6 +1362,7 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
         crate::git::ensure_usable(&repo.root)?;
     }
     warn_if_outside_repository(inv, &repo, cwd);
+    warn_if_schema_ahead(inv, &repo);
     let config = crate::config::load(&repo.config_path())?;
     let (identity, identity_source) = crate::identity::resolved();
     Ok(Startup {

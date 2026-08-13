@@ -250,6 +250,25 @@ impl Repo {
         self.seed_task_with(id, criteria, &[]);
     }
 
+    /// Seeds a task declaring `schema`, whatever this binary supports.
+    ///
+    /// Written by hand and not by the binary, necessarily: a schema past
+    /// `SCHEMA_VERSION` is one no build of this tool can write, since a writer
+    /// writes the schema it knows. It is what a corpus touched by a newer
+    /// release looks like from here, and the only way to obtain one is to
+    /// forge it.
+    fn seed_task_at_schema(&self, id: &str, schema: u32) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: task\nslug: newer\ntitle: Written by a newer ank\n\
+                 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+                 blocked_by: []\nschema: {schema}\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+    }
+
     fn seed_task_with(&self, id: &str, criteria: Option<&str>, verify: &[&str]) {
         let criteria = match criteria {
             Some(c) => format!("done_criteria: |\n  {c}\ncriteria_by: creator\n"),
@@ -7248,6 +7267,174 @@ fn an_ordinary_subdirectory_of_the_same_repository_is_not_warned_about() {
         !erred(&out).contains("warning:"),
         "the nominal walk was warned about: {}",
         erred(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A corpus written by a newer binary (TASK-ca7b61b00896)
+// ---------------------------------------------------------------------------
+
+// The second thing `startup` says before a verb runs, and it is asserted here
+// for the reason the boundary warning above is: it exists to reach somebody
+// running an ordinary verb, and no unit test can establish that a verb reaches
+// it. The failure it names is silent by construction -- a listing that came up
+// short says nothing about what it left out -- so the assertions below check
+// both halves at once: that the warning is there, and that the entity really
+// is missing from the answer it accompanies.
+
+/// A corpus one schema past this build, plus one entity this build reads.
+///
+/// Both, deliberately: a corpus made only of unreadable entities would be
+/// indistinguishable from an empty one, and the case that costs a reader time
+/// is precisely the one where the listing answers and looks complete.
+fn a_corpus_one_schema_ahead() -> Repo {
+    let r = Repo::new();
+    r.seed_task_at_schema("TASK-aaaaaaaaaaaa", ank_core::SCHEMA_VERSION + 1);
+    r.seed_task("TASK-bbbbbbbbbbbb", Some("A verifiable criterion."));
+    r
+}
+
+#[test]
+fn a_corpus_one_schema_ahead_is_named_by_every_verb_that_reads_it() {
+    let r = a_corpus_one_schema_ahead();
+    let ahead = (ank_core::SCHEMA_VERSION + 1).to_string();
+    let reads = ank_core::SCHEMA_VERSION.to_string();
+
+    // Verbs that list, and verbs that show -- the two shapes the criterion
+    // names, because they fail differently. A listing drops the entity and
+    // still answers; `show` on the entity itself is the one place the parse
+    // failure was already visible.
+    for args in [
+        &["context"][..],
+        &["find"][..],
+        &["status"][..],
+        &["graph"][..],
+        &["show", "TASK-bbbbbbbbbbbb"][..],
+        &["show", "TASK-aaaaaaaaaaaa"][..],
+    ] {
+        let err = erred(&r.ank("claude-code@ank", args));
+        assert!(err.contains("warning:"), "{args:?} said nothing: {err}");
+        // The schema found and the newest supported, both named: one number
+        // alone tells a reader nothing about which side is behind.
+        assert!(
+            err.contains(&format!("schema {ahead}")) && err.contains(&format!("reads {reads}")),
+            "{args:?} named neither schema: {err}"
+        );
+        // And what to do, which is not a migration: the corpus is fine and the
+        // binary is old.
+        assert!(
+            err.contains("ank --version") && err.contains("npm install -g @haksolot/ank"),
+            "{args:?} left the reader with no next step: {err}"
+        );
+    }
+
+    // The half that makes the warning necessary. `find` answers, exits zero,
+    // and its answer is short by exactly the entity it cannot read -- which is
+    // what "answering as if the file were understood" looks like from the
+    // outside.
+    let out = r.ank("claude-code@ank", &["find"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    let listed = said(&out);
+    assert!(listed.contains("TASK-bbbb"), "{listed}");
+    assert!(
+        !listed.contains("TASK-aaaa"),
+        "the unreadable entity was listed after all, so the premise is wrong: {listed}"
+    );
+}
+
+#[test]
+fn a_corpus_this_binary_reads_is_not_warned_about() {
+    // The guard against a warning that fires when nothing is wrong. Every
+    // other fixture in this file seeds schema 1, which this build reads, so a
+    // false positive here would be a warning printed by the whole suite.
+    let r = Repo::new();
+    r.seed_task("TASK-cccccccccccc", Some("A verifiable criterion."));
+    let err = erred(&r.ank("claude-code@ank", &["context"]));
+    assert!(!err.contains("warning:"), "{err}");
+}
+
+#[test]
+fn the_schema_warning_survives_repo_and_yields_to_quiet() {
+    let r = a_corpus_one_schema_ahead();
+
+    // Unlike the boundary warning, `--repo` does not silence this one. Naming
+    // the corpus is the caller saying they meant this one; it says nothing
+    // about whether the binary can read it. `Repo::ank` passes `--repo`
+    // already, so every assertion above rode that path -- this states it.
+    let err = erred(&r.ank("claude-code@ank", &["status"]));
+    assert!(err.contains("warning:"), "{err}");
+
+    // And --quiet means no chatter, here as everywhere.
+    let err = erred(&r.ank("claude-code@ank", &["status", "--quiet"]));
+    assert!(!err.contains("warning:"), "{err}");
+}
+
+#[test]
+fn the_schema_warning_never_reaches_standard_output() {
+    // §4 requires --json to stay byte-for-byte what a caller's parser already
+    // reads, so the warning goes on stderr and this is what holds it there.
+    let r = a_corpus_one_schema_ahead();
+
+    for args in [&["status", "--json"][..], &["find", "--json"][..]] {
+        let out = r.ank("claude-code@ank", args);
+        let stdout = said(&out);
+        assert!(
+            !stdout.contains("warning"),
+            "{args:?} put the warning on stdout: {stdout}"
+        );
+        assert!(
+            stdout.trim_start().starts_with('{'),
+            "{args:?} left stdout unparseable: {stdout}"
+        );
+        assert!(erred(&out).contains("warning:"), "{args:?} said nothing");
+    }
+}
+
+/// The guide carries the sentence the binary prints, and not a paraphrase of it
+/// (TASK-ca7b61b00896).
+///
+/// Same shape as `the_guide_documents_the_identity_the_way_out_tells_you_to_set`
+/// and for the same reason: the warning tells a reader their binary is behind,
+/// and `getting-started.md` is where they will look for what that means. A
+/// guide that describes a different message is a guide that has drifted.
+///
+/// Compared with the digits removed from both sides. The numbers belong to one
+/// fixture's corpus, and pinning them would turn this red the day
+/// `SCHEMA_VERSION` moves — which is the one day the sentence itself is still
+/// exactly right.
+#[test]
+fn the_guide_carries_the_warning_the_binary_prints_about_a_newer_corpus() {
+    fn skeleton(s: &str) -> String {
+        s.chars().filter(|c| !c.is_ascii_digit()).collect()
+    }
+
+    let r = a_corpus_one_schema_ahead();
+    let err = erred(&r.ank("claude-code@ank", &["find"]));
+    let warned: Vec<&str> = err
+        .lines()
+        .filter(|l| l.contains("warning:") || l.trim_start().starts_with("-> the binary"))
+        .collect();
+    assert_eq!(warned.len(), 2, "the warning is two lines: {err}");
+
+    let guide = skeleton(
+        &std::fs::read_to_string(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/getting-started.md"),
+        )
+        .expect("the guide is in the repository the tests run from"),
+    );
+    for line in warned {
+        assert!(
+            guide.contains(skeleton(line.trim()).trim()),
+            "the binary prints {line:?} and the guide never says it"
+        );
+    }
+
+    // And the half no corpus can announce, which is why it is documented at
+    // all: an old binary reading an old corpus looks exactly like a current
+    // one, so `--version` is the only answer there.
+    assert!(
+        guide.contains("tracks the published release, not the tree"),
+        "the guide never says where the binary a contributor runs comes from"
     );
 }
 

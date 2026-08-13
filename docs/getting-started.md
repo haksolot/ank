@@ -34,6 +34,45 @@ revision answers the same question about the other half: it is the value
 that file can compare two strings it already holds and see that its
 instructions predate its tool.
 
+### Where the binary you run comes from
+
+Worth stating once, because it costs time exactly where nobody expects it: **a
+globally installed `ank` tracks the published release, not the tree you have
+checked out.** The two are the same file only on the day of a release.
+
+For most repositories that is the whole story — you are using Ank, not changing
+it, and the published binary is the one you want. It matters when you are
+working *on* a repository whose corpus is written by a binary newer than yours:
+somebody else's release, or your own tree if you are contributing to Ank
+itself. Then the tool managing the work and the tool being changed are different
+versions, and both print the same `ank 0.2.0`. Only the commit separates them,
+which is why `--version` carries it.
+
+Contributors hit the sharper form of this. Building from source puts a binary in
+`target/`, and running that one is what tests a change — but on Windows a
+running executable cannot be relinked, so a command that rebuilds the tree while
+`target/debug/ank` is the process running it fails on the lock. The habit that
+avoids it is to copy the built binary somewhere outside `target/` and run the
+copy, which means the binary managing the work drifts from the tree the moment
+the tree moves. Rebuild and re-copy it after a merge, or accept that it answers
+about the code it was built from.
+
+One half of this the tool diagnoses on its own. A corpus whose entities declare
+a schema newer than the binary reads is refused entity by entity, so every verb
+that lists would answer short of them without a word; instead each says so
+first:
+
+    $ ank find
+    warning: corpus at schema 4, this binary reads 3: 1 entity left out of every listing
+      -> the binary is older than the corpus: ank --version names the build, npm install -g @haksolot/ank replaces it
+      TASK-0000  [open] Ordinary task
+
+It warns and still answers — the entities this build does understand are worth
+having, and a corpus mid-migration is a real state rather than a broken one.
+The other half, an old binary reading an old corpus, is not detectable: nothing
+in the files says a newer format exists. That one is `--version` and the
+paragraphs above.
+
 ## Initialise a repository
 
 From the root of a git repository:
