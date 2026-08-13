@@ -12,6 +12,7 @@
 use crate::error::{Error, Result};
 use crate::id::{EntityId, EntityKind};
 use crate::model::*;
+use crate::registry::{FieldValue, Fields};
 use crate::scope::validate_globs;
 use serde::Deserialize;
 use std::borrow::Cow;
@@ -43,6 +44,11 @@ struct TaskFm {
     verify: Vec<String>,
     #[serde(default)]
     proof: Vec<Proof>,
+    // Absent before schema 3, and `default` rather than `Option` because an
+    // empty list and an absent one are the same statement: nobody recorded a
+    // reading. The serializer omits it either way.
+    #[serde(default)]
+    verified: Vec<Verified>,
     schema: u32,
     version: u64,
 }
@@ -66,6 +72,8 @@ struct AdrFm {
     see: Option<String>,
     supersedes: Option<String>,
     ratified: Option<String>,
+    #[serde(default)]
+    verified: Vec<Verified>,
     schema: u32,
     version: u64,
 }
@@ -130,13 +138,16 @@ pub fn parse_entity(input: &str) -> Result<Entity> {
 fn parse_entity_lf(input: &str) -> Result<Entity> {
     let (fm, body) = split_frontmatter(input)?;
     let probe: TypeProbe = serde_yaml::from_str(fm)?;
-    match probe.entity_type.as_str() {
-        "task" => Ok(Entity::Task(parse_task_fm(fm, body)?)),
-        "adr" => Ok(Entity::Adr(parse_adr_fm(fm, body)?)),
-        other => Err(Error::TypeMismatch {
-            id: "?".into(),
-            field_type: other.to_string(),
-        }),
+    // The kind is resolved through the registry, and a kind it does not declare
+    // is refused **by name** (§3). Not by the id prefix, which would send the
+    // reader hunting for a typo in the hex, and not by the first field the kind
+    // happens to carry, which would name a symptom.
+    let kind = EntityKind::from_type_name(&probe.entity_type).ok_or(Error::UnknownKind {
+        kind: probe.entity_type.clone(),
+    })?;
+    match kind {
+        EntityKind::Task => Ok(Entity::Task(parse_task_fm(fm, body)?)),
+        EntityKind::Adr => Ok(Entity::Adr(parse_adr_fm(fm, body)?)),
     }
 }
 
@@ -163,7 +174,7 @@ pub fn parse_adr(input: &str) -> Result<Adr> {
 fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
     let raw: TaskFm = serde_yaml::from_str(fm)?;
     let id = EntityId::parse(&raw.id)?;
-    if id.kind() != EntityKind::Task || raw.entity_type != "task" {
+    if id.kind() != EntityKind::Task || raw.entity_type != EntityKind::Task.as_str() {
         return Err(Error::TypeMismatch {
             id: raw.id,
             field_type: raw.entity_type,
@@ -205,6 +216,7 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
         criteria_by: raw.criteria_by,
         verify: raw.verify,
         proof: raw.proof,
+        verified: raw.verified,
         schema: raw.schema,
         version: raw.version,
         body: body.to_string(),
@@ -214,7 +226,7 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
 fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
     let raw: AdrFm = serde_yaml::from_str(fm)?;
     let id = EntityId::parse(&raw.id)?;
-    if id.kind() != EntityKind::Adr || raw.entity_type != "adr" {
+    if id.kind() != EntityKind::Adr || raw.entity_type != EntityKind::Adr.as_str() {
         return Err(Error::TypeMismatch {
             id: raw.id,
             field_type: raw.entity_type,
@@ -248,6 +260,7 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         see: raw.see,
         supersedes,
         ratified: raw.ratified,
+        verified: raw.verified,
         schema: raw.schema,
         version: raw.version,
         body: body.to_string(),
@@ -314,101 +327,88 @@ fn emit_flow_list(items: &[String]) -> String {
     format!("[{inner}]")
 }
 
-fn emit_scope(out: &mut String, scope: &[String]) {
-    out.push_str("scope:\n");
-    for g in scope {
+fn emit_seq(out: &mut String, key: &str, items: &[String]) {
+    out.push_str(key);
+    out.push_str(":\n");
+    for item in items {
         out.push_str("  - ");
-        out.push_str(&emit_scalar(g));
+        out.push_str(&emit_scalar(item));
         out.push('\n');
     }
 }
 
-pub fn serialize_task(t: &Task) -> String {
-    let mut o = String::from("---\n");
-    o.push_str(&format!("id: {}\n", t.id));
-    o.push_str("type: task\n");
-    if let Some(slug) = &t.slug {
-        o.push_str(&format!("slug: {}\n", emit_scalar(slug)));
-    }
-    o.push_str(&format!("title: {}\n", emit_scalar(&t.title)));
-    o.push_str(&format!("created: {}\n", emit_scalar(&t.created)));
-    // Omitted when absent, never emitted empty: that is what lets a schema 1
-    // file round-trip byte for byte through a tool that knows the field.
-    if let Some(author) = &t.author {
-        o.push_str(&format!("author: {}\n", emit_scalar(author)));
-    }
-    o.push_str(&format!("status: {}\n", t.status.as_str()));
-    emit_scope(&mut o, &t.scope);
-    let blocked: Vec<String> = t.blocked_by.iter().map(|b| b.to_string()).collect();
-    o.push_str(&format!("blocked_by: {}\n", emit_flow_list(&blocked)));
-    if let Some(c) = &t.done_criteria {
-        emit_block(&mut o, "done_criteria", c);
-    }
-    if let Some(by) = t.criteria_by {
-        o.push_str(&format!("criteria_by: {}\n", by.as_str()));
-    }
-    if !t.verify.is_empty() {
-        o.push_str(&format!("verify: {}\n", emit_flow_list(&t.verify)));
-    }
-    if !t.proof.is_empty() {
-        o.push_str("proof:\n");
-        for p in &t.proof {
-            o.push_str(&format!("  - type: {}\n", p.proof_type.as_str()));
-            o.push_str(&format!("    ref: {}\n", emit_scalar(&p.reference)));
-            if let Some(tree) = &p.tree {
-                o.push_str(&format!("    tree: {}\n", emit_scalar(tree)));
+/// Writes one field in the form its value declares. Every emission rule of
+/// `docs/format.md` is here and nowhere else.
+fn emit_field(o: &mut String, name: &str, value: &FieldValue<'_>) {
+    match value {
+        FieldValue::Bare(s) => o.push_str(&format!("{name}: {s}\n")),
+        FieldValue::Scalar(s) => o.push_str(&format!("{name}: {}\n", emit_scalar(s))),
+        FieldValue::Block(s) => emit_block(o, name, s),
+        FieldValue::Flow(items) => o.push_str(&format!("{name}: {}\n", emit_flow_list(items))),
+        FieldValue::Seq(items) => emit_seq(o, name, items),
+        FieldValue::Proofs(proofs) => {
+            o.push_str(&format!("{name}:\n"));
+            for p in *proofs {
+                o.push_str(&format!("  - type: {}\n", p.proof_type.as_str()));
+                o.push_str(&format!("    ref: {}\n", emit_scalar(&p.reference)));
+                if let Some(tree) = &p.tree {
+                    o.push_str(&format!("    tree: {}\n", emit_scalar(tree)));
+                }
+                if let Some(c) = &p.criteria {
+                    o.push_str(&format!("    criteria: {}\n", emit_scalar(c)));
+                }
+                if let Some(v) = &p.verifier {
+                    o.push_str(&format!("    verifier: {}\n", emit_scalar(v)));
+                }
             }
-            if let Some(c) = &p.criteria {
-                o.push_str(&format!("    criteria: {}\n", emit_scalar(c)));
-            }
-            if let Some(v) = &p.verifier {
-                o.push_str(&format!("    verifier: {}\n", emit_scalar(v)));
+        }
+        FieldValue::Readings(readings) => {
+            o.push_str(&format!("{name}:\n"));
+            for v in *readings {
+                o.push_str(&format!("  - by: {}\n", emit_scalar(&v.by)));
+                o.push_str(&format!("    at: {}\n", emit_scalar(&v.at)));
             }
         }
     }
-    o.push_str(&format!("schema: {}\n", t.schema));
-    o.push_str(&format!("version: {}\n", t.version));
+}
+
+/// **One** serializer, driven by the registry (ADR-c9f9d0d6f05d). There is no
+/// per-kind emitter, and the field order is not written here at all: it is the
+/// table in [`crate::registry`], which is also the table in `docs/format.md`.
+/// That is what makes adding a kind a row rather than a second straight-line
+/// function that differs from the first only in which fields it emits.
+fn serialize_fields<F: Fields + ?Sized>(e: &F) -> String {
+    let spec = e.kind_spec();
+    let mut o = String::from("---\n");
+    for field in spec.fields {
+        match e.field_value(field.name) {
+            Some(value) => emit_field(&mut o, field.name, &value),
+            // Omitted when absent, never emitted empty — which is what lets a
+            // file written before a field existed round-trip unchanged through
+            // a tool that knows the field. A *required* field with no value is
+            // not that case: it is this crate contradicting its own table.
+            None => assert!(
+                !field.required,
+                "{} is required on {} and the model holds nothing",
+                field.name, spec.name
+            ),
+        }
+    }
     o.push_str("---\n");
-    o.push_str(&t.body);
+    o.push_str(e.body());
     o
+}
+
+pub fn serialize_task(t: &Task) -> String {
+    serialize_fields(t)
 }
 
 pub fn serialize_adr(a: &Adr) -> String {
-    let mut o = String::from("---\n");
-    o.push_str(&format!("id: {}\n", a.id));
-    o.push_str("type: adr\n");
-    if let Some(slug) = &a.slug {
-        o.push_str(&format!("slug: {}\n", emit_scalar(slug)));
-    }
-    o.push_str(&format!("title: {}\n", emit_scalar(&a.title)));
-    o.push_str(&format!("created: {}\n", emit_scalar(&a.created)));
-    if let Some(author) = &a.author {
-        o.push_str(&format!("author: {}\n", emit_scalar(author)));
-    }
-    o.push_str(&format!("status: {}\n", a.status.as_str()));
-    emit_scope(&mut o, &a.scope);
-    emit_block(&mut o, "constraint", &a.constraint);
-    if let Some(see) = &a.see {
-        o.push_str(&format!("see: {}\n", emit_scalar(see)));
-    }
-    if let Some(sup) = &a.supersedes {
-        o.push_str(&format!("supersedes: {}\n", sup));
-    }
-    if let Some(r) = &a.ratified {
-        o.push_str(&format!("ratified: {}\n", emit_scalar(r)));
-    }
-    o.push_str(&format!("schema: {}\n", a.schema));
-    o.push_str(&format!("version: {}\n", a.version));
-    o.push_str("---\n");
-    o.push_str(&a.body);
-    o
+    serialize_fields(a)
 }
 
 pub fn serialize_entity(e: &Entity) -> String {
-    match e {
-        Entity::Task(t) => serialize_task(t),
-        Entity::Adr(a) => serialize_adr(a),
-    }
+    serialize_fields(e)
 }
 
 #[cfg(test)]

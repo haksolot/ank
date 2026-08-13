@@ -132,6 +132,8 @@ pub fn new(
                 done_criteria: criteria,
                 verify: verifiers_of(inv, cfg)?,
                 proof: Vec::new(),
+                // A reading is recorded by whoever reads, never by `new` (§3).
+                verified: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
                 body: body_of(inv, kind)?,
@@ -165,6 +167,8 @@ pub fn new(
                 constraint: ensure_newline(&constraint),
                 see: None,
                 ratified: None,
+                // A reading is recorded by whoever reads, never by `new` (§3).
+                verified: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
                 body: body_of(inv, kind)?,
@@ -307,6 +311,8 @@ fn skeleton(
             criteria_by: inv.value("--criteria").map(|_| CriteriaBy::Creator),
             verify: verifiers_of(inv, cfg)?,
             proof: Vec::new(),
+            // A reading is recorded by whoever reads, never by `new` (§3).
+            verified: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
             body: body_of(inv, kind)?,
@@ -326,6 +332,8 @@ fn skeleton(
             see: None,
             supersedes: None,
             ratified: None,
+            // A reading is recorded by whoever reads, never by `new` (§3).
+            verified: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
             body: body_of(inv, kind)?,
@@ -1765,8 +1773,13 @@ mod tests {
             "the field has to reach the file:\n{on_disk}"
         );
         // Written at the schema this tool writes, which is what tells an older
-        // reader to refuse on the version rather than on the field.
-        assert!(on_disk.contains("schema: 2\n"), "{on_disk}");
+        // reader to refuse on the version rather than on the field. Against the
+        // constant rather than a literal: a bump is a decision taken in
+        // ank-core, and a test that has to be edited for it teaches nothing.
+        assert!(
+            on_disk.contains(&format!("schema: {SCHEMA_VERSION}\n")),
+            "{on_disk}"
+        );
 
         let adr_id = t
             .store()

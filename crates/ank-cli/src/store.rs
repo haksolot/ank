@@ -605,6 +605,7 @@ mod tests {
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],
             proof: vec![],
+            verified: Vec::new(),
             schema: 1,
             version: 1,
             body: "\nFree body.\n".into(),

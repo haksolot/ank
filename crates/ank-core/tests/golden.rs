@@ -198,9 +198,12 @@ fn schema_three_carries_typed_actors_and_a_reading() {
     assert!(t.verified[0].by.starts_with("human:"));
     assert!(t.verified[1].by.starts_with("process:"));
 
-    // No log in the body, and none inferred from its absence.
+    // No log in the body, and none inferred from its absence. The test is on a
+    // *line* being the heading, not on the text appearing anywhere: a body is
+    // free-form markdown and may perfectly well discuss `## Log` in prose, as
+    // this one does.
     assert!(
-        !t.body.contains("## Log"),
+        !t.body.lines().any(|l| l.trim_end() == "## Log"),
         "the log left the body at schema 3"
     );
     assert!(parse_log(&t.body).is_empty());

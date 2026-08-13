@@ -28,6 +28,16 @@ pub enum Error {
     #[error("the 'type' field ({field_type}) does not match the id prefix ({id})")]
     TypeMismatch { id: String, field_type: String },
 
+    /// A kind the registry does not declare (§3). Distinct from
+    /// [`Error::TypeMismatch`], which is a known kind contradicting its own id,
+    /// and from [`Error::InvalidId`], which is a malformed identifier: the
+    /// three answer different questions and a reader sent to the wrong one
+    /// loses an hour. `priorty:` inside a `task` is a typo; `type: epic` is a
+    /// document this tool does not know how to read, and saying so means
+    /// naming the kind rather than the first field it happens to carry.
+    #[error("unknown kind: {kind}")]
+    UnknownKind { kind: String },
+
     #[error("empty scope: an entity without a scope is invisible, refused at creation")]
     EmptyScope,
 
@@ -57,6 +67,16 @@ pub enum Error {
 
     #[error("illegal transition: {from} -> {to}")]
     IllegalTransition { from: String, to: String },
+
+    /// A line of a log **file** that the grammar does not accept (§3).
+    ///
+    /// Strict where the legacy `## Log` section is tolerant, and the asymmetry
+    /// is the decision: a markdown body may hold anything, so a line under the
+    /// heading that is not an entry is skipped and reported by `check`. A file
+    /// whose entire content is the log leaves a stray line nothing else it
+    /// could be. The diagnostic names which line, because the file grows.
+    #[error("malformed log line {line}: expected '- <timestamp> <identity> — <message>'")]
+    MalformedLogLine { line: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

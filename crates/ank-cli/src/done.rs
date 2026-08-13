@@ -646,6 +646,7 @@ mod tests {
                 criteria_by: Some(CriteriaBy::Creator),
                 verify: verify.iter().map(|v| v.to_string()).collect(),
                 proof: vec![],
+                verified: Vec::new(),
                 schema: 1,
                 version: 1,
                 body: "\nBody.\n".into(),
