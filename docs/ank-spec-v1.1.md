@@ -463,7 +463,9 @@ That list is the guarantee. A state refusal applies to every caller equally and 
 
 With the surface no longer a boundary, verbs serving human ergonomics enter it without ceremony. None of them introduces state: each one composes what `context`, `find`, `review` and `check` already derive, or wraps a write that was being done by hand anyway.
 
-**`status`** answers *where am I* in one call: the branch, the active claim and its expiry, the constraints on the current perimeter, the ratification queue, completion refs the default branch has not caught up with (§7), and the corpus findings `check` would report. It **degrades with a warning** rather than failing when there is no remote or no determinable default branch — the parts that need neither are still worth printing. Terse `git status` register, and it ends with the next command to run, like every other output here.
+**`status`** answers *where am I* in one call: the branch, the identity in effect and where it came from, the active claim and its expiry, the constraints on the current perimeter, the ratification queue, completion refs the default branch has not caught up with (§7), and the corpus findings `check` would report. It **degrades with a warning** rather than failing when there is no remote or no determinable default branch — the parts that need neither are still worth printing. Terse `git status` register, and it ends with the next command to run, like every other output here.
+
+The identity line names its **source** and not only its value, for the reason `config` prints `8000 (default)` rather than `8000`: `$ANK_AGENT` names a session, the `<user>@<hostname>` fallback names a machine, and only the second is a trap — two sessions in one checkout that both let it fall back are one agent to every ref the tool writes. Nothing else on that path says so, since a `log` or a `done` from the wrong identity is refused on state, correctly talking about the claim somebody else holds (§8). Under `--json` the two are separate fields, `value` and `source`, on the terms `config` already set.
 
 **`edit <id>`** opens the entity in the editor named by `$EDITOR`, validates the result on save, and writes it back in canonical form (§3). **A change to a frozen field is refused by naming the command that legally performs it**: `release --reason` for a `done_criteria` frozen at claim, `new adr --supersedes` for the `constraint` of a ratified ADR. Frozen means anchored *now*: a `done_criteria` no live claim covers is not refused here, which is the same state test `amend --criteria` applies above and the reason the two agree by construction rather than by restatement. An invalid result leaves the entity untouched and says why, so a mistyped frontmatter costs a re-edit and never a corrupt file. This is the argument that put `amend` and `attest` on this surface, generalised: an edit performed by hand is indistinguishable, in the resulting file, from any other edit performed by hand, and chaperoning it through the tool strengthens the invariants instead of relaxing them.
 
@@ -731,7 +733,7 @@ The palette is small on purpose, and it is bounded here rather than in the code 
 | a transition word that advanced the corpus: `created`, `claimed`, `logged`, `attested`, `amended`, `accepted` | green |
 | a transition word that gave something up: `released`, `closed`, `superseded`, `pruned` | dim |
 | the state a transition landed on: `-> done`, `-> open`, `-> closed` | as its marker above |
-| `status`'s keys: `branch`, `claim`, `perimeter`, `queue`, `corpus` | dim |
+| `status`'s keys: `branch`, `identity`, `claim`, `perimeter`, `queue`, `corpus` | dim |
 | `error[N]:` and `check`'s `error:` tag | red |
 | `warning:` and `check`'s `signal:` tag | yellow |
 | a verifier's `ok` / `FAILED` | green / red |

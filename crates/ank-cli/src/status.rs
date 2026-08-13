@@ -1,10 +1,11 @@
 //! The `status` verb: where am I, in one command (§4).
 //!
 //! It **composes and introduces no state of its own**. The branch comes from
-//! git, the claim from `refs/ank/claims/*`, the perimeter's constraints from the
-//! same matching `context` binds with, and the queue, the unmerged completions
-//! and the findings all come out of the one `inspect` pass `check` and `review`
-//! already share. Anything computed a second way here would be a second answer
+//! git, the claim from `refs/ank/claims/*`, the identity and its source from the
+//! single resolution `startup` performs for every verb, the perimeter's
+//! constraints from the same matching `context` binds with, and the queue, the
+//! unmerged completions and the findings all come out of the one `inspect` pass
+//! `check` and `review` already share. Anything computed a second way here would be a second answer
 //! able to disagree with the first, which is the defect this session spent three
 //! tasks removing.
 //!
@@ -28,6 +29,7 @@ pub fn run(
     repo: &Repo,
     cfg: &Config,
     identity: &str,
+    identity_source: crate::identity::Source,
     out: &mut dyn Write,
 ) -> Result<i32> {
     // git per verb, never at startup (ADR-9307e5d214a7). Outside a repository
@@ -199,9 +201,19 @@ pub fn run(
                 )
             })
             .collect();
+        // Value and source as separate fields, which is the shape `config`
+        // already gives an answer whose provenance is half of it: a script
+        // matching on the token decides, and never on the parenthesis the
+        // human surface writes.
+        let identity_json = format!(
+            "{{\"value\":{},\"source\":{}}}",
+            commands::json_string(identity),
+            commands::json_string(identity_source.word())
+        );
         let _ = writeln!(
             out,
-            "{{\"branch\":{},\"default_branch\":{},\"claim\":{claim_json},\
+            "{{\"branch\":{},\"default_branch\":{},\"identity\":{identity_json},\
+             \"claim\":{claim_json},\
              \"also_held\":[{}],\"elsewhere\":[{}],\
              \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
              \"faults\":{},\"signals\":{}}}",
@@ -263,6 +275,24 @@ pub fn run(
             );
         }
     }
+
+    // Immediately above the claim, because it is the claim lines it explains.
+    // An identity that fell back is the one fact nothing else on this path
+    // names: `log` and `done` from the wrong one are refused on state — the
+    // claim is held by somebody else — and that message talks about claims,
+    // correctly, while the reader's actual mistake was one line higher.
+    //
+    // Plain text, source included, both ways round (ADR-0c8ab846d262). The
+    // source is not decoration on the value: `claude-code/6f4f` names a
+    // session and `seanl@sean-laptop` names a machine, so two sessions in one
+    // checkout that both let it fall back are one agent to every ref the tool
+    // writes.
+    let _ = writeln!(
+        out,
+        "{} {identity} {}",
+        style.key("identity"),
+        identity_source.display()
+    );
 
     match &claimed {
         Some((task, expires)) => {
