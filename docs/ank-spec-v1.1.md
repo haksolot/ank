@@ -541,7 +541,7 @@ ank new task --title <t> --scope <glob>... [--criteria <c>] [--blocked-by <id>..
 ank new adr  --title <t> --scope <glob>... --constraint <c> [--supersedes <id>]
 ank new task|adr            (no flags: pre-filled template in $EDITOR)
 ank find <query>            [--type task|adr] [--status ...] [--scope <path>] [--free]
-ank status
+ank status                  [--remote]
 ank review [<path>]
 ank accept <id>
 ank close <id> --reason <r>
@@ -573,6 +573,10 @@ ank --version               (the build itself: version, commit and skill revisio
 **Scope overlap is reported and never refused** (ADR-052accd6e3b2). `claim` prints one line per live claim held by another identity whose scope meets the scope of the task being taken — the holder, the task, and the ground the two have in common — and then takes the task: the exit code is 0 and the claim stands. The line names paths rather than the fact of an overlap, because `crates/ank-cli/**` against `crates/ank-cli/tests/**` overlaps on everything under the second, and "these overlap" leaves the reader exactly where they started. Where both globs are literal the answer is a path; where one is a pattern the answer is the narrower pattern, written as a glob rather than expanded into a file list that would be wrong the moment a file is added.
 
 Refusing on it is the mistake, not the omission. Scope overlap is coarse: one held task scoped `crates/ank-cli/tests/**` locks every task that touches any test, and refusing would make the glob a mutex — which pushes agents to declare narrower scopes than the truth to get past it, the one failure mode a guard must not have. A **lapsed** claim is not a live one here either, exactly as in the refusals above: the signal would otherwise fire on abandoned work forever.
+
+**Every `elsewhere` line of `status` carries the title of the task it names**, after the id. The rows are already loaded where the line is built, so the join costs nothing, and without it a reader holds an id and has to run `show` once per claim to learn what anybody is doing — which is the question the section exists to answer.
+
+**`status --remote` is the only opt-in to the network outside `claim`** (ADR-47e2ac102f58). Without it, `status` describes the plane this clone has, as §7 says every verb but `claim` does; no network call is made at all. With it, the claims namespace is read off origin with `ls-remote` — read, never fetched, because writing refs into a clone as a side effect of a question would be a reader sanitising the plane underneath everybody else. What that costs is said on the line rather than papered over: `ls-remote` carries ref names and objects, never contents, so a claim seen only on origin is named with its id and the title the corpus already carries, is marked as being only there, and is never given a holder this clone cannot read. With no remote, or one that cannot be reached, the flag **warns once and answers on the local plane** instead of failing (§2).
 
 `find --free` is the same computation for the agent choosing rather than taking: it keeps the open tasks whose scope meets no live claim, and **says how many it hid**. A filter that silently returns two candidates out of seven is a filter that will be trusted for the wrong reason. Without the flag, `find` is unchanged.
 
@@ -1165,7 +1169,7 @@ The central insight: **a git ref update is already an atomic compare-and-swap**.
 
 Every write of the plane goes through it, and that is what makes it one mechanism rather than four: acquisition, the TTL renewal `log` performs, the retake of a lapsed claim, and the completion record `done` writes. The completion matters most: one that stayed local would tell the other clones nothing, which is exactly the window it exists to close. **`release` and `close` push the deletion** on the same terms — a claim handed back but left standing on the remote would make the task unclaimable everywhere else until its TTL ran out.
 
-`claim` reads the remote before deciding, so a task held in another clone is refused with its holder named rather than taken locally and unwound by a rejected push. The push is still what arbitrates; the read only makes the ordinary case answer politely. **No other verb pays for the network.** `context`, `status`, `find` and `check` describe the plane they have.
+`claim` reads the remote before deciding, so a task held in another clone is refused with its holder named rather than taken locally and unwound by a rejected push. The push is still what arbitrates; the read only makes the ordinary case answer politely. **No other verb pays for the network unless it is asked to.** `context`, `find`, `check` and `status` describe the plane they have; `status --remote` is the single opt-in (§4), an `ls-remote` of the claims namespace that fetches nothing, marks what was seen only on origin, and degrades to the local answer with one warning when there is no remote to read.
 
 A refused push and an unreachable remote are told apart **by asking, not by reading stderr**: push says "rejected" in prose written for people, and parsing it would be exactly the fragility the plumbing rule exists to prevent (§12). A failed push is followed by one `ls-remote` of the same ref — an answer means the remote is there and the swap genuinely lost; no answer at all means the remote is what failed. That costs a round trip on the failing path only.
 

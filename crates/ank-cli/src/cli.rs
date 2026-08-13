@@ -427,9 +427,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 0,
         positional_help: "",
-        flags: &[],
+        flags: &[switch("--remote")],
         refuses: &[],
-        notes: &[],
+        // `coordinates` stays false, and the flag does not change that: without
+        // it `status` pays for no network at all, and with it an unreachable
+        // origin is a warning and the local answer rather than a refusal. A
+        // reader never fails for want of something to say (§2).
+        notes: &[
+            "--remote reads the claim refs from origin with ls-remote and never fetches; without it status describes the local plane only",
+        ],
         refuses_globals: &[],
         owner_task: None,
     },

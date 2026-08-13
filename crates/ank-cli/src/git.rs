@@ -236,6 +236,46 @@ pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
         .find_map(|l| l.split_whitespace().next().map(str::to_string)))
 }
 
+/// Every ref the remote holds under `pattern`, with the object each points at.
+///
+/// The plural of [`ls_remote`], and the reading half of `status --remote`
+/// (ADR-47e2ac102f58): a reader that wants the whole claims namespace asks for
+/// it once rather than once per task, and it **never fetches** — writing refs
+/// into this clone as a side effect of a question would be a reader sanitising
+/// the plane underneath everybody else.
+///
+/// What that costs is exact and worth stating here, where the caller reads it:
+/// `ls-remote` carries names and objects, not contents. A claim ref this clone
+/// has never fetched has no object here to `cat-file`, so who holds it and until
+/// when are unknowable without the fetch. The ref's existence is the answer, and
+/// it is the one the question was about.
+///
+/// An unreachable remote, or none at all, is an **error** and not an empty list:
+/// "origin holds no claim" and "origin was not read" are different answers, and
+/// a caller that cannot tell them apart would print the first when it means the
+/// second.
+pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
+    let args = ["ls-remote", "origin", pattern];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Err(failed(&args, &out));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut refs = Vec::new();
+    for line in text.lines() {
+        // `<oid>\t<refname>`, the same two fields `for-each-ref` is asked for
+        // above, and the same tab: it cannot appear in a ref name.
+        let Some((object, name)) = line.trim_end().split_once('\t') else {
+            continue;
+        };
+        refs.push(AnkRef {
+            name: name.to_string(),
+            object: object.to_string(),
+        });
+    }
+    Ok(refs)
+}
+
 /// Brings the remote's view of one `refs/ank/*` ref into this clone.
 ///
 /// `claim` runs it before deciding, so a task held in another clone is refused
