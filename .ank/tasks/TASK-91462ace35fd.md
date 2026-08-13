@@ -5,7 +5,7 @@ slug: the-golden-suite-covers-schema-3-the-flat-layout
 title: The golden suite covers schema 3, the flat layout and the log file
 created: 2026-08-11T22:27:12Z
 author: claude-code@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-core/tests/golden/**
   - crates/ank-core/tests/golden.rs
@@ -31,7 +31,7 @@ done_criteria: |
   failure is the deliverable.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 Second step, after the specification and before any parser change. The suite is
@@ -61,3 +61,6 @@ Be careful about what is actually enforced at parse time. The specification make
 a malformed actor a `check` finding, not a parse error, so the invalid fixture for
 it belongs only where the convention is genuinely enforced. Getting this wrong
 turns a signal into a refusal and locks 96 existing files out of their own format.
+
+## Log
+- 2026-08-13T04:26:19Z claude-code@sean-laptop — Suite written and red against the current parser, which is the deliverable. It names four things ank-core does not have: Error::UnknownKind { kind }, a verified field on Task and Adr (Verified { by, at }), parse_log_file and append_log_file, and Error::MalformedLogLine { line }. Layout chosen: valid/ and invalid/ keep entity files exactly where they were, so the CRLF fixture never moves and its exemption in .gitattributes and the ci.yml line-endings step holds untouched; log fixtures live in valid/log/ and invalid/log/, paired to an entity by id alone, which mirrors .ank/entities and .ank/log. No invalid fixture for a malformed actor: ADR-3877 makes it a check finding and never a parse error, so the guard is a positive assertion that a pre-convention author parses. The body log stays tolerant and the file log is strict, because a file whose whole content is the log leaves a stray line nothing else to be.
