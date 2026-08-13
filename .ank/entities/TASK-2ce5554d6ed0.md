@@ -5,7 +5,7 @@ slug: a-shallow-clone-cannot-explain-a-dead-scope-and
 title: A shallow clone cannot explain a dead scope, and check says so instead of faulting
 created: 2026-08-13T17:28:47Z
 author: claude-code/2.1.229+main-checkout
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -24,8 +24,12 @@ done_criteria: |
   
   Asserted through the binary in crates/ank-cli/tests/cli.rs: a repository whose history holds the rename, cloned to depth 1, exits 0 with the unverifiable wording and no claim about where the path went; the same repository cloned whole exits 0 naming the destination; and a deleted file in a whole clone still exits 8, so the fault is not lost.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 442fd57
+    criteria: 566aa49cd172
 schema: 3
-version: 2
+version: 3
 ---
 
 A defect introduced by TASK-27cf26cbc414, measured on the pipeline within the
