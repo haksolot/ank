@@ -29,8 +29,11 @@ proof:
   - type: commit
     ref: 77aa58c
     criteria: 6a7020f9efea
+  - type: commit
+    ref: e5e0d81
+    criteria: 6a7020f9efea
 schema: 3
-version: 7
+version: 8
 ---
 
 Last step of the format change, and the one that is irreversible in practice even
