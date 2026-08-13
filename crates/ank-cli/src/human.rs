@@ -32,13 +32,12 @@ use crate::config::Config;
 use crate::git;
 use crate::index::Index;
 use crate::repo::Repo;
-use crate::store::{version_of, Store};
+use crate::store::{version_of, LogHome, Store};
 use crate::style;
 use crate::verify;
 use ank_core::{
-    append_log, freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity,
-    verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus,
-    Verified,
+    freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity, verify_frozen, Adr,
+    AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus, Verified,
 };
 use ank_core::{CriteriaBy, ProofType, ScopeSet};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -2409,6 +2408,7 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
+    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{prefix} is not a task")));
     };
@@ -2417,15 +2417,12 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         .check_transition(TaskStatus::Closed)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {id}")))?;
     task.status = TaskStatus::Closed;
-    task.body = append_log(
-        &task.body,
-        &LogEntry {
-            timestamp: claim::now_utc(),
-            who: identity.to_string(),
-            message: format!("closed: {reason}"),
-        },
-    );
-    store.write(&Entity::Task(task), base_version)?;
+    let entry = LogEntry {
+        timestamp: claim::now_utc(),
+        who: identity.to_string(),
+        message: format!("closed: {reason}"),
+    };
+    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
 
     let revoked = claim::delete(&repo.root, &id)?;
     if inv.json() {
@@ -2490,6 +2487,7 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
+    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{prefix} is not a task")));
     };
@@ -2525,16 +2523,13 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     // Appended. The entries already there are not read, rewritten or reordered
     // — they are simply still in the vector.
     task.proof.push(proof);
-    task.body = append_log(
-        &task.body,
-        &LogEntry {
-            timestamp: claim::now_utc(),
-            who: identity.to_string(),
-            message: format!("attested {kind}:{reference}"),
-        },
-    );
+    let entry = LogEntry {
+        timestamp: claim::now_utc(),
+        who: identity.to_string(),
+        message: format!("attested {kind}:{reference}"),
+    };
     let entries = task.proof.len();
-    store.write(&Entity::Task(task), base_version)?;
+    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
 
     if inv.json() {
         let _ = writeln!(
@@ -2661,6 +2656,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
+    let home = store.log_home(&loaded);
     let id = loaded.entity.id().clone();
 
     // Both normalised, and both for the same reason `new --scope` is: one is
@@ -2790,15 +2786,12 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 _ => None,
             };
 
-            task.body = append_log(
-                &task.body,
-                &LogEntry {
-                    timestamp: claim::now_utc(),
-                    who: identity.to_string(),
-                    message: format!("amended: {}", changes.join(", ")),
-                },
-            );
-            store.write(&Entity::Task(task), base_version)?;
+            let entry = LogEntry {
+                timestamp: claim::now_utc(),
+                who: identity.to_string(),
+                message: format!("amended: {}", changes.join(", ")),
+            };
+            store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
 
             report_amend(inv, &id, &changes, out);
             if touched_scope {
@@ -2986,6 +2979,13 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         Entity::Task(t) => claim::detached_proofs(&repo.root, &t.id),
         Entity::Adr(_) => Vec::new(),
     };
+    // Only when the log is a file. A body still carrying its own `## Log`
+    // section prints it above as part of the entity, and a second copy here
+    // would be the same history said twice.
+    let log = match store.log_home(&loaded) {
+        LogHome::File => store.log_of(&loaded)?,
+        LogHome::Body => Vec::new(),
+    };
 
     if inv.json() {
         let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
@@ -3009,9 +3009,10 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         };
         let _ = writeln!(
             out,
-            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\"content\":{}}}",
+            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\"log\":{},\"content\":{}}}",
             loaded.entity.id(),
             detached_json(&detached),
+            log_json(&log),
             json_str(&text)
         );
     } else if !inv.quiet() {
@@ -3020,6 +3021,12 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         // style to PLAIN under `--json`, so this is the second of two
         // independent guards rather than the only one.
         let _ = write!(out, "{}", crate::paint::entity(&text, inv.style()));
+        // The log, from wherever it is. Since schema 3 it is a file of its own,
+        // so an entity printed verbatim no longer carries it and `show` would
+        // display an empty history for a task that has one — silently, which is
+        // the failure the version bump exists to prevent (§3). Under the entity
+        // and not inside it: what is above stays byte for byte the file.
+        log_section(out, &log, inv.style());
         if let Some((blocked_by, unblocks)) = &edges {
             edge_section(out, "BLOCKED BY", blocked_by, inv.style());
             edge_section(out, "UNBLOCKS", unblocks, inv.style());
@@ -3029,6 +3036,49 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         }
     }
     Ok(0)
+}
+
+/// The log as data. A list, empty when there is none, so a parser reads one
+/// shape rather than two.
+fn log_json(entries: &[LogEntry]) -> String {
+    let items: Vec<String> = entries
+        .iter()
+        .map(|e| {
+            format!(
+                "{{\"timestamp\":{},\"who\":{},\"message\":{}}}",
+                json_str(&e.timestamp),
+                json_str(&e.who),
+                json_str(&e.message)
+            )
+        })
+        .collect();
+    format!("[{}]", items.join(","))
+}
+
+/// The entity's log, printed under it and never inside it.
+///
+/// **Silent when there is none**, which keeps `show` on an ADR adding nothing
+/// and keeps a task nobody has logged against from growing an empty heading.
+/// A body that still carries its own `## Log` section prints it above as part
+/// of the entity and gets no second copy here: [`Store::log_of`] answers from
+/// one place, never from both.
+fn log_section(out: &mut dyn Write, entries: &[LogEntry], style: crate::style::Style) {
+    if entries.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "\n{}",
+        style.header(&format!("LOG ({})", entries.len()))
+    );
+    for (i, e) in entries.iter().enumerate() {
+        let connector = if i + 1 == entries.len() {
+            crate::style::glyph::LAST
+        } else {
+            crate::style::glyph::BRANCH
+        };
+        let _ = writeln!(out, "{connector}{} {} — {}", e.timestamp, e.who, e.message);
+    }
 }
 
 /// Every proof against the task, from both sources, each saying which it is
@@ -3276,6 +3326,13 @@ mod tests {
         fn cfg(&self) -> Config {
             crate::config::load(&self.repo().config_path()).unwrap()
         }
+        /// The log as a reader gets it, from wherever this entity keeps it.
+        fn log(&self, id: &EntityId) -> Vec<LogEntry> {
+            let store = self.store();
+            let loaded = store.load(id).unwrap();
+            store.log_of(&loaded).unwrap()
+        }
+
         fn store(&self) -> Store {
             Store::new(self.0.join(".ank"))
         }
@@ -5264,7 +5321,7 @@ mod tests {
             panic!()
         };
         assert_eq!(after.status, TaskStatus::Closed);
-        let entries = ank_core::parse_log(&after.body);
+        let entries = t.log(&id);
         assert!(entries[0]
             .message
             .contains("superseded by the new pipeline"));

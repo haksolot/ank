@@ -34,8 +34,8 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::verify;
 use ank_core::{
-    append_log, freeze_hash_short, verify_frozen, Entity, EntityId, LogEntry, Proof, ProofType,
-    ScopeSet, TaskStatus,
+    freeze_hash_short, verify_frozen, Entity, EntityId, LogEntry, Proof, ProofType, ScopeSet,
+    TaskStatus,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -131,6 +131,7 @@ pub fn run(
     )?;
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
+    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
@@ -193,8 +194,7 @@ pub fn run(
         who: identity.to_string(),
         message: done_message(&proofs),
     };
-    task.body = append_log(&task.body, &entry);
-    store.write(&Entity::Task(task.clone()), base_version)?;
+    store.write_with_log(home, &Entity::Task(task.clone()), &entry, base_version)?;
 
     let (completed, sync) = claim::complete(&repo.root, &id, identity)?;
     // A completion that did not reach the remote closes the window it exists
@@ -696,6 +696,14 @@ mod tests {
             }
         }
 
+        /// The log as a reader gets it, from wherever this entity keeps it.
+        fn log(&self) -> Vec<LogEntry> {
+            let id = EntityId::parse("TASK-000000000001").unwrap();
+            let store = self.store();
+            let loaded = store.load(&id).unwrap();
+            store.log_of(&loaded).unwrap()
+        }
+
         fn record(&self) -> Option<Record> {
             let id = EntityId::parse("TASK-000000000001").unwrap();
             claim::read(&self.0, &id).unwrap().map(|h| h.record)
@@ -1026,7 +1034,7 @@ mod tests {
         t.claim(&id, "claude-code@ank");
         t.done(&[], "claude-code@ank").unwrap();
 
-        let entries = ank_core::parse_log(&t.task().body);
+        let entries = t.log();
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].who, "claude-code@ank");
         assert!(

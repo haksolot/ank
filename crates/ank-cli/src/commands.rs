@@ -29,7 +29,7 @@ use crate::context;
 use crate::editor;
 use crate::index::{Index, Row};
 use crate::repo::Repo;
-use crate::store::{version_of, Store};
+use crate::store::{version_of, LogHome, Store};
 use ank_core::{
     append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
     EntityKind, LogEntry, Task, TaskStatus, SCHEMA_VERSION,
@@ -1288,13 +1288,16 @@ pub fn log(
 /// so the entry a reader came for is the last line of it — reversing is what
 /// makes the answer start with it.
 fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write) -> Result<i32> {
-    let Entity::Task(task) = store.load(id)?.entity else {
+    let loaded = store.load(id)?;
+    let Entity::Task(task) = loaded.entity.clone() else {
         return Err(
             CliError::new(1, format!("{id} is not a task, and only a task has a log"))
                 .with_hint(format!("ank show {id}")),
         );
     };
-    let entries: Vec<LogEntry> = ank_core::parse_log(&task.body).into_iter().rev().collect();
+    // From wherever this entity's log is: the file since schema 3, the body
+    // before it. A missing file is an empty log and never an error.
+    let entries: Vec<LogEntry> = store.log_of(&loaded)?.into_iter().rev().collect();
 
     if inv.json() {
         let items: Vec<String> = entries
@@ -1358,20 +1361,28 @@ fn log_write(
         acting_on(&repo.root, store, given, identity, "log", " \"<message>\"")?;
     warn_before_acting(inv, &warnings);
 
-    let loaded = store.load(&id)?;
-    let base_version = version_of(&loaded.entity);
-    let Entity::Task(mut task) = loaded.entity else {
+    let loaded_for_log = store.load(&id)?;
+    let base_version = version_of(&loaded_for_log.entity);
+    let Entity::Task(mut task) = loaded_for_log.entity.clone() else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
-    task.body = append_log(
-        &task.body,
-        &LogEntry {
-            timestamp: claim::now_utc(),
-            who: identity.to_string(),
-            message: message.trim().to_string(),
-        },
-    );
-    store.write(&Entity::Task(task), base_version)?;
+    let entry = LogEntry {
+        timestamp: claim::now_utc(),
+        who: identity.to_string(),
+        message: message.trim().to_string(),
+    };
+    // **An append is not a transition** (ADR-ff294eff4d1a). Where the log is a
+    // file, the entity file is not opened for writing at all: no frontmatter,
+    // no version bump, and nothing touched that carries a frozen field. Where
+    // the log is still in a body, the body is what changes and the write is the
+    // one that carries it.
+    match store.log_home(&loaded_for_log) {
+        LogHome::File => store.append_to_log_file(&id, &entry)?,
+        LogHome::Body => {
+            task.body = append_log(&task.body, &entry);
+            store.write(&Entity::Task(task), base_version)?;
+        }
+    }
 
     // Renewed by writing: working is enough to keep the lock, and there is no
     // heartbeat verb to memorise (§3). The compare-and-swap is on the record we
@@ -1460,6 +1471,7 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
 
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
+    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
@@ -1467,15 +1479,12 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
         .check_transition(TaskStatus::Open)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint("ank context"))?;
     task.status = TaskStatus::Open;
-    task.body = append_log(
-        &task.body,
-        &LogEntry {
-            timestamp: claim::now_utc(),
-            who: identity.to_string(),
-            message: format!("released: {reason}"),
-        },
-    );
-    store.write(&Entity::Task(task), base_version)?;
+    let entry = LogEntry {
+        timestamp: claim::now_utc(),
+        who: identity.to_string(),
+        message: format!("released: {reason}"),
+    };
+    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
 
     // The file first, the ref second. A ref deleted over a task still marked
     // in_progress would read as claimable and as in progress at the same time;
@@ -1593,6 +1602,13 @@ mod tests {
                 Entity::Task(t) => t,
                 _ => panic!("not a task"),
             }
+        }
+
+        /// The log as a reader gets it, from wherever this entity keeps it.
+        fn log(&self, id: &EntityId) -> Vec<ank_core::LogEntry> {
+            let store = self.store();
+            let loaded = store.load(id).unwrap();
+            store.log_of(&loaded).unwrap()
         }
 
         fn only_task(&self) -> Task {
@@ -2165,12 +2181,12 @@ mod tests {
             .call(&["log", "something"], "claude-code@ank")
             .unwrap_err();
         assert_eq!(err.code, 6, "{}", err.message);
-        assert!(ank_core::parse_log(&t.task(&id).body).is_empty());
+        assert!(t.log(&id).is_empty());
 
         // The holder can.
         t.call(&["log", "removed jwt.verify"], "codex@host-9")
             .unwrap();
-        let entries = ank_core::parse_log(&t.task(&id).body);
+        let entries = t.log(&id);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].who, "codex@host-9");
         assert_eq!(entries[0].message, "removed jwt.verify");
@@ -2216,12 +2232,12 @@ mod tests {
 
         let err = t.call(&["log", "   "], "claude-code@ank").unwrap_err();
         assert_eq!(err.code, 1, "{}", err.message);
-        assert!(ank_core::parse_log(&t.task(&id).body).is_empty());
+        assert!(t.log(&id).is_empty());
 
         // The redundant form works when it matches.
         t.call(&["log", &id.to_string(), "a message"], "claude-code@ank")
             .unwrap();
-        assert_eq!(ank_core::parse_log(&t.task(&id).body).len(), 1);
+        assert_eq!(t.log(&id).len(), 1);
 
         // And is refused when it does not.
         let other = a_task(&t, "Another");
@@ -2265,7 +2281,7 @@ mod tests {
 
         let task = t.task(&id);
         assert_eq!(task.status, TaskStatus::Open);
-        let entries = ank_core::parse_log(&task.body);
+        let entries = t.log(&id);
         assert_eq!(entries.len(), 1);
         assert!(
             entries[0]
