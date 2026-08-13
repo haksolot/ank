@@ -950,6 +950,94 @@ fn status_answers_where_am_i_in_every_state() {
     assert!(j.contains("\"queue\":0"), "{j}");
 }
 
+/// `status` names the identity in effect and where it came from
+/// (TASK-6f4ff66894d2).
+///
+/// Through the binary, and the environment is the whole reason: the subject is
+/// what `$ANK_AGENT` resolved to in the process that ran. The suite runs its
+/// cases in parallel threads of one process, so removing the variable inside the
+/// test would remove it from every other case at once — which is exactly why
+/// `identity.rs`'s own unit test asserts the *shape* of the fallback and cannot
+/// assert that it was taken.
+///
+/// The last block is the defect itself rather than a string: a claim taken under
+/// a declared identity is invisible to the same session with the variable
+/// forgotten, and the refusal that follows talks about claims. The identity line
+/// is the only place the true fact is said.
+#[test]
+fn status_names_the_identity_in_effect_and_its_source() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // Set: the value is the caller's, and the source names the variable it came
+    // from. Above the claim, because it is the claim lines it explains.
+    let said = stdout(&r.ank("claude-code/6f4f", &["status"]));
+    assert!(
+        said.contains("identity claude-code/6f4f (ANK_AGENT)"),
+        "{said}"
+    );
+    assert!(
+        said.find("identity ").unwrap() < said.find("no claim").unwrap(),
+        "the identity introduces the claim it decides: {said}"
+    );
+
+    // Unset: the fallback, said as one. The value cannot be asserted literally —
+    // it is the machine running the suite — so what is asserted is the shape of
+    // the trap, `<user>@<hostname>`, and the fact that it is named as a
+    // fallback rather than printed bare.
+    let out = r.ank_env("claude-code/6f4f", &["status"], &[("ANK_AGENT", None)]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    let line = said
+        .lines()
+        .find(|l| l.starts_with("identity "))
+        .unwrap_or_else(|| panic!("no identity line: {said}"))
+        .to_string();
+    assert!(
+        line.ends_with(" (fallback, ANK_AGENT unset)"),
+        "the fallback is named as one: {line}"
+    );
+    let value = &line["identity ".len()..line.find(" (").unwrap()];
+    assert!(value.contains('@'), "user-at-host shape: {line}");
+    assert!(!value.contains("claude-code/6f4f"), "{line}");
+
+    // A variable set to nothing is a variable unset, and it is the likelier
+    // accident of the two: the prefix was typed and the value was not.
+    let said = stdout(&r.ank_env(
+        "claude-code/6f4f",
+        &["status"],
+        &[("ANK_AGENT", Some("  "))],
+    ));
+    assert!(said.contains("(fallback, ANK_AGENT unset)"), "{said}");
+
+    // `--json` separates the value from its source, as `config` already does:
+    // a script decides on the token and never on the parenthesis.
+    let j = stdout(&r.ank("claude-code/6f4f", &["status", "--json"]));
+    assert!(
+        j.contains("\"identity\":{\"value\":\"claude-code/6f4f\",\"source\":\"env\"}"),
+        "{j}"
+    );
+    let j = stdout(&r.ank_env(
+        "claude-code/6f4f",
+        &["status", "--json"],
+        &[("ANK_AGENT", None)],
+    ));
+    assert!(j.contains("\"source\":\"fallback\""), "{j}");
+
+    // The trap, end to end. The claim is this session's; with the variable
+    // forgotten the same session is another agent, `no claim` is the honest
+    // answer, and nothing but the identity line says why.
+    assert_eq!(code(&r.ank("claude-code/6f4f", &["claim", ID])), 0);
+    let said = stdout(&r.ank_env("claude-code/6f4f", &["status"], &[("ANK_AGENT", None)]));
+    assert!(said.contains("no claim"), "{said}");
+    assert!(said.contains("elsewhere 1 claim(s)"), "{said}");
+    assert!(said.contains("(fallback, ANK_AGENT unset)"), "{said}");
+}
+
 /// `ank graph` draws the `blocked_by` DAG (TASK-253e897d3330).
 ///
 /// §5's ordering already walks these edges to count what a task unblocks; this
@@ -3231,8 +3319,12 @@ fn status_names_every_live_claim_of_this_identity() {
         other >= 2,
         "status names one claim and hides the other:\n{said}"
     );
+    // The way out's own sentence and not the variable it names: `status` prints
+    // the identity in effect on every run (TASK-6f4ff66894d2), so `ANK_AGENT`
+    // alone stopped discriminating between an output that carries this advice
+    // and one that does not.
     assert!(
-        said.contains("ANK_AGENT"),
+        said.contains("sets its own ANK_AGENT"),
         "status must repeat the way out claim already names:\n{said}"
     );
 
@@ -3251,7 +3343,7 @@ fn status_names_every_live_claim_of_this_identity() {
     quiet.seed_task(ID, Some("A verifiable criterion."));
     assert_eq!(code(&quiet.ank("claude-code@ank", &["claim", ID])), 0);
     let said = stdout(&quiet.ank("claude-code@ank", &["status"]));
-    assert!(!said.contains("ANK_AGENT"), "{said}");
+    assert!(!said.contains("sets its own ANK_AGENT"), "{said}");
     assert!(!said.contains("also"), "{said}");
 }
 

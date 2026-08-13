@@ -1259,6 +1259,10 @@ struct Startup {
     repo: crate::repo::Repo,
     config: crate::config::Config,
     identity: String,
+    /// Carried beside the value rather than asked for again where it is
+    /// printed: the identity is resolved once, and a second reading of the
+    /// environment would be a second answer free to disagree with the first.
+    identity_source: crate::identity::Source,
 }
 
 /// Names the corpus when the walk crossed a git repository boundary
@@ -1326,11 +1330,12 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     }
     warn_if_outside_repository(inv, &repo, cwd);
     let config = crate::config::load(&repo.config_path())?;
-    let identity = crate::identity::resolve();
+    let (identity, identity_source) = crate::identity::resolved();
     Ok(Startup {
         repo,
         config,
         identity,
+        identity_source,
     })
 }
 
@@ -1418,7 +1423,14 @@ fn dispatch(
         "claim" => crate::claim::run(&inv, &s.repo, &s.config, &s.identity, out),
         "new" => crate::commands::new(&inv, &s.repo, &s.config, &s.identity, out),
         "find" => crate::commands::find(&inv, &s.repo, &s.config, &s.identity, out),
-        "status" => crate::status::run(&inv, &s.repo, &s.config, &s.identity, out),
+        "status" => crate::status::run(
+            &inv,
+            &s.repo,
+            &s.config,
+            &s.identity,
+            s.identity_source,
+            out,
+        ),
         "graph" => crate::graph::run(&inv, &s.repo, out),
         "scope" => crate::commands::scope(&inv, &s.repo, &s.identity, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
