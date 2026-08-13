@@ -5,7 +5,7 @@ slug: an-entity-path-handed-to-git-comes-from-the-stor
 title: An entity path handed to git comes from the store, never from a literal
 created: 2026-08-13T06:21:55Z
 author: claude-code@sean-laptop
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
@@ -20,8 +20,9 @@ constraint: |
   
   This outlives the dual-read window. What it protects is that the layout is
   stated in one place, and that stays true when there is only one layout again.
+ratified: 739766622c35
 schema: 3
-version: 1
+version: 2
 ---
 
 ## Context
