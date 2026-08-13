@@ -31,7 +31,7 @@ use crate::index::{Index, Row};
 use crate::repo::Repo;
 use crate::store::Store;
 use crate::style::Style;
-use ank_core::{parse_log, Entity, EntityId, EntityKind, ScopeSet};
+use ank_core::{Entity, EntityId, EntityKind, ScopeSet};
 use std::collections::HashMap;
 use std::io::Write;
 
@@ -635,7 +635,9 @@ fn build_execution(
     id: EntityId,
     mut warnings: Vec<String>,
 ) -> Result<View> {
-    let Entity::Task(task) = store.load(&id)?.entity else {
+    let loaded = store.load(&id)?;
+    let log_entries = store.log_of(&loaded)?;
+    let Entity::Task(task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
 
@@ -680,7 +682,9 @@ fn build_execution(
         });
     }
 
-    let log: Vec<String> = parse_log(&task.body)
+    // Read through the store, so the task in hand shows its log whether that
+    // log is a file or still a section of this body.
+    let log: Vec<String> = log_entries
         .iter()
         .map(|e| format!("{} {} — {}", e.timestamp, e.who, e.message))
         .collect();

@@ -336,6 +336,25 @@ impl Repo {
         std::fs::write(self.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
     }
 
+    /// Seeds a task whose log is still a `## Log` section of its body, which is
+    /// what every entity written before schema 3 looks like.
+    fn seed_task_with_body_log(&self, id: &str, entry: &str) {
+        self.seed_task(id, Some("A verifiable criterion."));
+        let text = format!(
+            "{}\n## Log\n- 2026-07-26T14:02Z marie@laptop \u{2014} {entry}\n",
+            self.task_text(id)
+        );
+        std::fs::write(self.flat_task_path(id), text).unwrap();
+    }
+
+    /// The log file of an entity, empty when there is none. Since schema 3 the
+    /// log is not in the entity file, so an assertion about a log line reads
+    /// this and an assertion about a field reads `task_text`.
+    fn log_text(&self, id: &str) -> String {
+        std::fs::read_to_string(self.0.join(".ank/log").join(format!("{id}.md")))
+            .unwrap_or_default()
+    }
+
     fn task_text(&self, id: &str) -> String {
         std::fs::read_to_string(self.0.join(".ank/entities").join(format!("{id}.md"))).unwrap()
     }
@@ -2502,7 +2521,7 @@ fn a_positional_that_starts_with_a_dash_is_refused_by_naming_the_escape() {
         .output()
         .expect("the binary must have been built");
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert!(r.task_text(ID).contains(message), "{}", r.task_text(ID));
+    assert!(r.log_text(ID).contains(message), "{}", r.log_text(ID));
 
     // A value keeps taking its dash verbatim, whichever form the flag took:
     // only a positional ever needs the escape.
@@ -2842,8 +2861,9 @@ fn the_whole_agent_loop_runs_through_the_binary() {
     let file = r.task_text(&id);
     assert!(file.contains("status: open"), "{file}");
     assert!(
-        file.contains("needs staging access"),
-        "the reason is in the log: {file}"
+        r.log_text(&id).contains("needs staging access"),
+        "the reason is in the log: {}",
+        r.log_text(&id)
     );
 
     // And the next agent picks it up where the previous one stopped.
@@ -2941,9 +2961,9 @@ fn log_decides_between_reading_and_writing_by_what_resolves() {
     let out = r.ank("claude-code@ank", &["log", "TASK-000000000009"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
-        r.task_text(ID).contains("TASK-000000000009"),
+        r.log_text(ID).contains("TASK-000000000009"),
         "{}",
-        r.task_text(ID)
+        r.log_text(ID)
     );
 
     // An ambiguous prefix resolves to no single entity, so it is a message too.
@@ -2952,11 +2972,11 @@ fn log_decides_between_reading_and_writing_by_what_resolves() {
     let out = r.ank("claude-code@ank", &["log", "TASK-00000000000"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
-        r.task_text(ID)
+        r.log_text(ID)
             .lines()
             .any(|l| l.ends_with("TASK-00000000000")),
         "{}",
-        r.task_text(ID)
+        r.log_text(ID)
     );
 
     // A message that also resolves: refused, naming both readings, writing
@@ -2972,7 +2992,7 @@ fn log_decides_between_reading_and_writing_by_what_resolves() {
     // The redundant write form is untouched when the message is a message.
     let out = r.ank("claude-code@ank", &["log", ID, "a real message"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert!(r.task_text(ID).contains("a real message"));
+    assert!(r.log_text(ID).contains("a real message"));
 
     // And an id alone reads even for the agent holding it: what decides is the
     // argument, not who is asking.
@@ -3469,16 +3489,16 @@ fn with_two_live_claims_no_verb_picks_one_in_silence() {
         "{}",
         stdout(&out)
     );
-    assert!(r.task_text(FIRST).contains("one"), "the entry went to HEAD");
+    assert!(r.log_text(FIRST).contains("one"), "the entry went to HEAD");
 
     // Naming a task is what picks the other one, and it costs the refusal
     // rather than a flag: the id used to have to equal HEAD.
     let out = r.ank(AGENT, &["log", SECOND, "two"]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
-        r.task_text(SECOND).contains("two"),
+        r.log_text(SECOND).contains("two"),
         "the named task got the entry:\n{}",
-        r.task_text(SECOND)
+        r.log_text(SECOND)
     );
     assert!(
         !stderr(&out).contains("live claims"),
@@ -4126,7 +4146,11 @@ fn attest_appends_a_proof_to_a_finished_task_and_never_substitutes() {
     assert!(after.contains(&head), "{after}");
     // Version increments and the log records what was added.
     assert!(!after.contains("version: 1"), "{after}");
-    assert!(after.contains("attested commit:"), "{after}");
+    assert!(
+        r.log_text(ID).contains("attested commit:"),
+        "{}",
+        r.log_text(ID)
+    );
 
     // A commit that does not exist is refused, exactly as `done` refuses it.
     let out = r.ank(
@@ -4616,10 +4640,16 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     assert!(text.contains("  - src/**\n  - docs/**"), "{text}");
     assert!(text.contains("version: 2"), "the write increments: {text}");
     assert!(
-        text.contains("amended: +blocked_by TASK-000000000002"),
-        "the log says what changed: {text}"
+        r.log_text(ID)
+            .contains("amended: +blocked_by TASK-000000000002"),
+        "the log says what changed: {}",
+        r.log_text(ID)
     );
-    assert!(text.contains("+scope docs/**"), "{text}");
+    assert!(
+        r.log_text(ID).contains("+scope docs/**"),
+        "{}",
+        r.log_text(ID)
+    );
     // Everything it did not name is still there, byte for byte.
     assert!(
         text.contains("done_criteria: |\n  A verifiable criterion."),
@@ -4635,7 +4665,11 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = r.task_text(ID);
     assert!(text.contains("blocked_by: [TASK-000000000002]"), "{text}");
-    assert!(text.contains("-blocked_by TASK-000000000003"), "{text}");
+    assert!(
+        r.log_text(ID).contains("-blocked_by TASK-000000000003"),
+        "{}",
+        r.log_text(ID)
+    );
 
     let out = r.ank("marie@laptop", &["amend", ID, "--drop-scope", "nowhere/**"]);
     assert_eq!(code(&out), 7, "{}", stderr(&out));
@@ -4706,8 +4740,9 @@ fn a_criterion_under_no_claim_is_amended_and_stays_the_creators() {
         "the correction was recorded as somebody else's: {text}"
     );
     assert!(
-        text.contains("amended: done_criteria"),
-        "the log is what records the amend: {text}"
+        r.log_text(ID).contains("amended: done_criteria"),
+        "the log is what records the amend: {}",
+        r.log_text(ID)
     );
 
     // And the corpus is clean afterwards: the point of the route is that it
@@ -8101,6 +8136,218 @@ fn a_detached_proof_outlives_check_until_the_file_carries_it() {
         "the file on the default branch carries the same proof, and the ref \
          is still there"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The log is a file, and an append is not a transition (§3, ADR-ff294eff4d1a)
+// ---------------------------------------------------------------------------
+
+const LOGGED: &str = "TASK-00000000c10a";
+
+/// The property the move was made for: **`ank log` does not touch the entity**.
+///
+/// Not "writes little" -- writes nothing. The entity file carries the frozen
+/// criterion, and it was the file that churned most because the loop tells an
+/// agent to log whenever it learns something. Byte-for-byte equality is the
+/// only assertion that says so; a version check alone would pass on a rewrite
+/// that happened to land the same number.
+#[test]
+fn an_append_leaves_the_entity_file_byte_for_byte() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+
+    let before = r.task_text(LOGGED);
+    let out = r.ank("claude-code@ank", &["log", "learned something"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    assert_eq!(
+        r.task_text(LOGGED),
+        before,
+        "no frontmatter, no version bump, nothing touched that carries a freeze"
+    );
+    let log = r.log_text(LOGGED);
+    assert!(log.contains("learned something"), "{log}");
+    assert!(
+        log.lines().count() == 1 && log.starts_with("- "),
+        "one entry, one line, and the file is nothing but entries: {log:?}"
+    );
+
+    // A second append is a one-line diff over the first.
+    assert_eq!(code(&r.ank("claude-code@ank", &["log", "and again"])), 0);
+    let after = r.log_text(LOGGED);
+    assert!(
+        after.starts_with(&log),
+        "an append rewrites nothing: {after}"
+    );
+    assert_eq!(after.lines().count(), 2, "{after}");
+}
+
+/// Every verb that logs writes to the same place, and none of them puts a log
+/// section back into a body that has none.
+#[test]
+fn every_verb_that_logs_writes_to_the_log_file() {
+    let r = Repo::new().with_verifiers("");
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["release", LOGGED, "--reason", "needs staging access"]
+        )),
+        0
+    );
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["done", "--proof", "assertion:it works"]
+        )),
+        0
+    );
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["attest", LOGGED, "--proof", "test:ci-run-9"]
+        )),
+        0
+    );
+
+    let log = r.log_text(LOGGED);
+    for expected in [
+        "released: needs staging access",
+        "done, proof",
+        "attested test:",
+    ] {
+        assert!(log.contains(expected), "{expected} missing from:\n{log}");
+    }
+    assert!(
+        !r.task_text(LOGGED).contains("## Log"),
+        "no verb puts a log section back into a body: {}",
+        r.task_text(LOGGED)
+    );
+}
+
+/// Read from wherever it is, by every surface that shows it.
+#[test]
+fn show_log_and_context_read_the_log_from_the_file() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["log", "learned something"])),
+        0
+    );
+
+    // `show`: under the entity, which stays byte for byte the file above it.
+    let out = r.ank("claude-code@ank", &["show", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with(&r.task_text(LOGGED)),
+        "the entity is still verbatim: {text}"
+    );
+    assert!(text.contains("LOG (1)"), "{text}");
+    assert!(text.contains("learned something"), "{text}");
+
+    // `ank log <id>` with no message.
+    let out = r.ank("claude-code@ank", &["log", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("learned something"),
+        "{}",
+        stdout(&out)
+    );
+
+    // `context` in execution mode.
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("learned something"),
+        "{}",
+        stdout(&out)
+    );
+
+    // And as data.
+    let out = r.ank("claude-code@ank", &["show", LOGGED, "--json"]);
+    assert_json_only(&out, "ank show --json");
+    assert!(
+        stdout(&out).contains("\"log\":[{\"timestamp\":"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// A missing log file is an empty log and never an error -- the state every
+/// entity is in until somebody logs against it.
+#[test]
+fn an_entity_with_no_log_file_reads_as_an_empty_log() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert!(r.log_text(LOGGED).is_empty(), "the fixture has no log file");
+
+    let out = r.ank("claude-code@ank", &["log", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("no log entry yet"),
+        "{}",
+        stdout(&out)
+    );
+
+    let out = r.ank("claude-code@ank", &["show", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stdout(&out).contains("LOG ("),
+        "no empty heading: {}",
+        stdout(&out)
+    );
+}
+
+/// **One history never splits.** An entity whose body still carries a `## Log`
+/// section keeps it: the entry lands there, no file appears beside it, and the
+/// entries already written stay reachable.
+///
+/// Writing the entry into a new file instead would leave the older half
+/// unreachable, since reading prefers the file -- which is the exact failure
+/// the schema bump exists to prevent, arriving through the tool rather than
+/// through an old reader.
+#[test]
+fn an_entity_whose_log_is_in_its_body_keeps_it_there() {
+    let r = Repo::new();
+    r.seed_task_with_body_log(LOGGED, "an entry written before the move");
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["log", "learned something"])),
+        0
+    );
+
+    assert!(
+        r.log_text(LOGGED).is_empty(),
+        "no file appears beside a body that already holds the log: {}",
+        r.log_text(LOGGED)
+    );
+    let text = r.task_text(LOGGED);
+    assert!(
+        text.contains("an entry written before the move") && text.contains("learned something"),
+        "both halves of one history, in one place: {text}"
+    );
+
+    // And every reader still sees both, exactly once.
+    let out = r.ank("claude-code@ank", &["log", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let listed = stdout(&out);
+    assert_eq!(listed.matches("learned something").count(), 1, "{listed}");
+    assert_eq!(
+        listed.matches("an entry written before the move").count(),
+        1,
+        "{listed}"
+    );
+
+    // `show` prints the body's own section and adds no second copy under it.
+    let out = stdout(&r.ank("claude-code@ank", &["show", LOGGED]));
+    assert_eq!(out.matches("learned something").count(), 1, "{out}");
+    assert!(!out.contains("LOG ("), "the body already carries it: {out}");
 }
 
 // ---------------------------------------------------------------------------
