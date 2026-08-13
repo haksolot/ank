@@ -1811,6 +1811,82 @@ fn claiming_through_the_binary_takes_the_ref_and_moves_the_task() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 }
 
+/// Two live claims whose scopes meet are named at pickup, and the task is taken
+/// anyway (ADR-052accd6e3b2).
+///
+/// Through the binary because the criterion is about the process: what has to
+/// be true is that the lines appear **and** the exit code is 0. A refusal here
+/// would turn a coarse glob into a mutex — one held task scoped
+/// `crates/ank-cli/tests/**` made five of seven candidates unworkable in a real
+/// session — and would push agents to declare narrower scopes than the truth to
+/// get past it.
+///
+/// The defect this exists to have prevented: two agents on two disjoint tasks
+/// each appended a block of tests to the end of `crates/ank-cli/tests/cli.rs`,
+/// twice, and nothing warned either of them. The claims were on disjoint tasks,
+/// correctly; the edits were on one file, and the claim plane has nothing to
+/// say about files.
+#[test]
+fn a_claim_names_the_live_claims_whose_scope_it_overlaps_and_takes_the_task() {
+    let r = Repo::new();
+    let tests = "TASK-a00000000001";
+    let cli = "TASK-b00000000001";
+    let docs = "TASK-c00000000001";
+    let after = "TASK-d00000000001";
+    r.seed_task_scoped(tests, "crates/ank-cli/tests/**");
+    r.seed_task_scoped(cli, "crates/ank-cli/**");
+    r.seed_task_scoped(docs, "docs/**");
+    r.seed_task_scoped(after, "crates/ank-cli/**");
+
+    assert_eq!(code(&r.ank("mia@laptop", &["claim", tests])), 0);
+
+    // Globs that overlap on a file: named, and named with the ground rather
+    // than with the fact of an overlap.
+    let out = r.ank("bob@laptop", &["claim", cli]);
+    assert_eq!(
+        code(&out),
+        0,
+        "an overlap is a signal and never a refusal: {}",
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    assert!(said.contains("mia@laptop"), "the holder is named: {said}");
+    assert!(said.contains(tests), "the task is named: {said}");
+    assert!(
+        said.contains("crates/ank-cli/tests/**"),
+        "a line saying only that two scopes overlap leaves the reader where \
+         they started: {said}"
+    );
+    assert!(
+        r.claim_ref(cli).is_some(),
+        "and the task is taken regardless: {said}"
+    );
+
+    // Globs that do not overlap: nothing at all. A signal that fires on
+    // everything is one agents learn to skip.
+    let out = r.ank("carol@laptop", &["claim", docs]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(
+        !said.contains("mia@laptop") && !said.contains("bob@laptop"),
+        "docs/** meets neither crates glob: {said}"
+    );
+
+    // A lapsed claim is not a live one. Getting this wrong makes the signal
+    // fire on abandoned work forever, which is the same reading `claim`'s own
+    // refusal already applies.
+    r.expire_claim(tests);
+    r.expire_claim(cli);
+    let out = r.ank("dave@laptop", &["claim", after]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    assert!(
+        !said.contains(tests) && !said.contains(cli),
+        "the same overlap, against two lapsed claims, must produce nothing: \
+         {said}"
+    );
+}
+
 #[test]
 fn the_exit_code_of_a_refusal_reaches_the_process() {
     let r = Repo::new();
@@ -6542,11 +6618,15 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 18] = [
+const NOT_A_PATH: [&str; 19] = [
     "--limit",
     "--criteria",
     "--ttl",
     "--proof",
+    // Carries no value either: the perimeters it compares are the scopes the
+    // corpus already holds, and nothing here comes off the command line
+    // (ADR-052accd6e3b2).
+    "--free",
     // Carries no value at all, let alone a path: it names where the proof is
     // written, and that address is a ref (ADR-493471d64ba0).
     "--detached",
@@ -6694,6 +6774,137 @@ fn find_scope_answers_the_same_however_the_directory_is_typed() {
     let out = r.ank("claude-code@ank", &["find", "--scope", "/etc"]);
     assert_eq!(out.status.code(), Some(1));
     assert!(erred(&out).contains("ank find --scope"), "{}", erred(&out));
+}
+
+/// `find --free` is the overlap `claim` names, read from the other side, and it
+/// says how many candidates it withheld (ADR-052accd6e3b2).
+///
+/// The count is not decoration. One session read seven task files by hand to
+/// discover that a single held task, scoped `crates/ank-cli/tests/**`, made
+/// five of the seven unworkable — and a filter that silently returns two
+/// candidates out of seven reads as a corpus with two tasks left in it. It
+/// would be trusted, for the wrong reason.
+#[test]
+fn find_free_lists_what_no_live_claim_covers_and_says_how_many_it_hid() {
+    let r = Repo::new();
+    let held = "TASK-a00000000002";
+    let collides = "TASK-b00000000002";
+    let elsewhere = "TASK-c00000000002";
+    r.seed_task_scoped(held, "crates/ank-cli/tests/**");
+    r.seed_task_scoped(collides, "crates/ank-cli/**");
+    r.seed_task_scoped(elsewhere, "docs/**");
+
+    // Without the flag `find` is unchanged, and this is the baseline the
+    // filtered listing is read against.
+    let all = stdout(&r.ank("claude-code@ank", &["find", "--status", "open"]));
+    for id in [held, collides, elsewhere] {
+        assert!(
+            all.contains(&id[..9]),
+            "{id} is missing from the listing: {all}"
+        );
+    }
+    assert!(
+        !all.contains("hidden"),
+        "an unfiltered find hides nothing: {all}"
+    );
+
+    assert_eq!(code(&r.ank("mia@laptop", &["claim", held])), 0);
+
+    let out = r.ank("claude-code@ank", &["find", "--free"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let free = stdout(&out);
+    assert!(
+        free.contains(&elsewhere[..9]),
+        "a task no live claim covers is listed: {free}"
+    );
+    assert!(
+        !free.contains(&collides[..9]),
+        "a task whose scope meets a live claim is not: {free}"
+    );
+    assert!(
+        !free.contains(&held[..9]),
+        "and neither is the claimed task itself, which is no longer open: {free}"
+    );
+    assert!(
+        free.contains("1 hidden"),
+        "the filter says what it withheld: {free}"
+    );
+
+    // The machine surface carries the same number, so a caller scripting the
+    // choice reads it rather than parsing the sentence.
+    let j = stdout(&r.ank("claude-code@ank", &["find", "--free", "--json"]));
+    assert!(j.contains("\"hidden\":1"), "{j}");
+
+    // A lapsed claim covers nothing: the withheld task comes back, and with it
+    // the claimed one, whose file says open again is not true -- it says
+    // in_progress, so only the collision returns.
+    r.expire_claim(held);
+    let free = stdout(&r.ank("claude-code@ank", &["find", "--free"]));
+    assert!(
+        free.contains(&collides[..9]),
+        "a lapsed claim is not a live one: {free}"
+    );
+    assert!(
+        !free.contains("hidden"),
+        "and nothing is hidden by it: {free}"
+    );
+}
+
+/// A task finished on another branch is not free, whatever its file says here
+/// (ADR-bcf222a31525).
+///
+/// Measured on the real corpus while building `--free`, which is why it is
+/// written down: the listing offered a task carrying a completion ref, because
+/// the file this branch carries still reads `open`. Following the offer is a
+/// code 4 — an exact command that refuses the moment it is run, which is the
+/// generic help by another route, and which `claim`'s own "another ready task"
+/// hint had already learned to skip.
+///
+/// It is not counted as hidden either: the count answers what the scope filter
+/// cost, and this task was never a candidate.
+#[test]
+fn find_free_does_not_offer_a_task_finished_on_another_branch() {
+    let finished = "TASK-a00000000003";
+    let candidate = "TASK-b00000000003";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(finished, Some("A criterion."), &["ok"]);
+    r.seed_task_scoped(candidate, "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
+
+    // A commit of its own on the branch, so the completion record names one
+    // `main` genuinely does not carry.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("work.txt"), "y").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "work"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", finished])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "done"]);
+
+    r.git(&["checkout", "-q", "main"]);
+    assert!(
+        r.task_text(finished).contains("status: open"),
+        "the fixture is wrong if main already carries the done"
+    );
+
+    let listed = stdout(&r.ank("someone@ank", &["find", "--free"]));
+    assert!(
+        listed.contains(&candidate[..9]),
+        "the ordinary candidate is offered: {listed}"
+    );
+    assert!(
+        !listed.contains(&finished[..9]),
+        "a task the refs say is finished is not claimable, so it is not free: \
+         {listed}"
+    );
+    assert!(
+        !listed.contains("hidden"),
+        "and it was never a candidate, so the scope filter is not charged for \
+         it: {listed}"
+    );
 }
 
 #[test]
