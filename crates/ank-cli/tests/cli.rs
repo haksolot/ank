@@ -7112,3 +7112,320 @@ fn the_takeover_warnings_of_log_and_amend_are_on_standard_error() {
     assert_json_only(&out, "ank amend --json");
     assert!(stderr(&out).contains("codex@host-9"), "{}", stderr(&out));
 }
+
+// ---------------------------------------------------------------------------
+// A dead scope, and where git says the file went (ADR-97beaf55e73a)
+// ---------------------------------------------------------------------------
+
+const DEAD_ADR: &str = "ADR-00000000aaaa";
+
+/// A body long enough for git's rename detection to fire on it.
+///
+/// `-M` is a similarity heuristic: a one-line file renamed and a one-line file
+/// deleted beside a new one-line file are the same event to it. A fixture
+/// sitting under the threshold would exercise the fallback while claiming to
+/// exercise the detection, and would pass for the wrong reason.
+const SIMILAR: &str = "fn main() {\n    let a = 1;\n    let b = 2;\n    println!(\"{a}{b}\");\n}\n";
+
+/// A repository whose history holds one commit that moved `from` — or deleted
+/// it, when `to` is `None` — with `from` named literally in a proposed ADR.
+fn moved_fixture(from: &str, to: Option<&str>) -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join(from), SIMILAR).unwrap();
+    r.seed_adr(DEAD_ADR, "Do not do X.", from);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    match to {
+        Some(to) => std::fs::rename(r.0.join(from), r.0.join(to)).unwrap(),
+        None => std::fs::remove_file(r.0.join(from)).unwrap(),
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "move it"]);
+    r
+}
+
+/// The note lines of the one finding that has any, connector stripped.
+///
+/// Reads the drawn output rather than `--json`, because what these tests are
+/// about is what a reader is shown, and the structure layer is part of that.
+/// §4's alphabet is closed, so the two leads below are the two that exist and a
+/// third would fail here rather than pass unnoticed.
+fn proposal(text: &str) -> Option<Vec<String>> {
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("└── ") {
+            assert!(lines.is_empty(), "two notes in one output: {text}");
+            lines.push(rest.to_string());
+        } else if !lines.is_empty() {
+            match line.strip_prefix("    ") {
+                Some(rest) => lines.push(rest.to_string()),
+                None => break,
+            }
+        }
+    }
+    (!lines.is_empty()).then_some(lines)
+}
+
+/// The finding keeps its wording, and the note under it answers the question
+/// the reader has at that moment.
+///
+/// Through the binary because the walk is two `git` processes and a parser
+/// agreeing with each other, and neither half proves the answer reached
+/// standard output carrying the other.
+///
+/// **The proposed command is run, not merely matched.** ADR-97beaf55e73a
+/// requires a command that will not refuse on the spot, and the only way to
+/// assert that is to spend it: the text is split back into arguments and handed
+/// to the binary, which must exit 0 and leave the scope alive.
+#[test]
+fn a_renamed_file_names_where_it_went_and_the_command_that_repairs_it() {
+    let r = moved_fixture("src/old.rs", Some("src/new.rs"));
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "a dead scope is a fault: {}", stderr(&out));
+    let text = stdout(&out);
+
+    // Untouched: the task that ordered this says not to move when the finding
+    // fires or what severity it carries.
+    assert!(
+        text.contains("dead scope 'src/old.rs': no file matches it"),
+        "{text}"
+    );
+
+    let note = proposal(&text).unwrap_or_else(|| panic!("the rename is named: {text}"));
+    let named = note[0].rsplit(' ').next().unwrap();
+    assert!(
+        note[0].contains("src/new.rs") && head.starts_with(named),
+        "the note must name the new path and the commit that moved it, and \
+         the commit is {head}: {note:?}"
+    );
+
+    let command = note[1].clone();
+    assert!(
+        command.starts_with("ank amend ") && command.contains(DEAD_ADR),
+        "a proposed ADR is repaired by amend: {command}"
+    );
+
+    // Spent rather than read. A command that refuses here is the exact defect
+    // ADR-97beaf55e73a names, and no amount of matching on the string sees it.
+    let args: Vec<String> = command
+        .split_whitespace()
+        .skip(1)
+        .map(|a| a.trim_matches('"').to_string())
+        .collect();
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    let repaired = r.ank("claude-code@ank", &argv);
+    assert_eq!(
+        code(&repaired),
+        0,
+        "the proposal must not refuse on the spot: `{command}` exited {} — {}",
+        code(&repaired),
+        stderr(&repaired)
+    );
+
+    // And it repaired what it was proposed for.
+    let after = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !after.contains("dead scope"),
+        "the proposed command must leave the scope alive: {after}"
+    );
+}
+
+/// The other half of the criterion, and the one that must add nothing.
+///
+/// A deletion, a move under the similarity threshold and a scope that never
+/// named a real file are one silence to git. The reader is left exactly where
+/// they stand today — no proposal, and above all no sentence asserting the file
+/// was deleted, because this code cannot know that.
+#[test]
+fn a_deleted_file_leaves_the_finding_exactly_as_it_was() {
+    let deleted = moved_fixture("src/old.rs", None);
+    let out = deleted.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 8, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'src/old.rs': no file matches it"),
+        "{text}"
+    );
+    assert_eq!(
+        proposal(&text),
+        None,
+        "git cannot explain a deletion, and nothing may be proposed: {text}"
+    );
+    for word in ["renamed", "delet", "removed"] {
+        assert!(
+            !text.contains(word),
+            "'{word}' claims to know what became of the file: {text}"
+        );
+    }
+
+    // What makes the silence mean something: the same corpus and the same
+    // finding, differing by the rename and by nothing else.
+    let renamed = moved_fixture("src/old.rs", Some("src/new.rs"));
+    assert!(
+        proposal(&stdout(&renamed.ank("claude-code@ank", &["check"]))).is_some(),
+        "the renamed fixture must be explained, or the deleted one proves \
+         nothing about the walk"
+    );
+}
+
+/// `amend` refuses the scope of an accepted ADR with code 6, so proposing it
+/// there would name a command that fails on the spot. The proposal is a
+/// supersession, and the refusal it avoids is asserted rather than assumed.
+#[test]
+fn an_accepted_adr_is_offered_a_supersession_and_never_an_amend() {
+    let r = Repo::new();
+    r.enable_signing();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/old.rs"), SIMILAR).unwrap();
+    r.seed_adr(DEAD_ADR, "Do not do X.", "src/old.rs");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("marie@laptop", &["accept", DEAD_ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    std::fs::rename(r.0.join("src/old.rs"), r.0.join("src/new.rs")).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "move it"]);
+
+    let text = stdout(&r.ank("claude-code@ank", &["check"]));
+    let note = proposal(&text).unwrap_or_else(|| panic!("the rename is named: {text}"));
+    assert!(
+        note[1].starts_with("ank new adr --supersedes ") && note[1].contains("src/new.rs"),
+        "an accepted ADR is changed by a succession: {note:?}"
+    );
+    assert!(
+        !note[1].contains("ank amend"),
+        "amend refuses this with code 6, and naming it would be the defect: {note:?}"
+    );
+
+    let refused = r.ank(
+        "claude-code@ank",
+        &[
+            "amend",
+            DEAD_ADR,
+            "--drop-scope",
+            "src/old.rs",
+            "--scope",
+            "src/new.rs",
+        ],
+    );
+    assert_eq!(
+        code(&refused),
+        6,
+        "the branch exists because amend refuses here: {}",
+        stderr(&refused)
+    );
+}
+
+/// The two task states, which `amend` treats as opposites.
+///
+/// An open task is amended, and the rename is what tells a typo from a file
+/// that moved under the work. A finished one is not: §3 allows a single write
+/// to it and that write is a proof, so `amend` exits 7 — and a proposal naming
+/// it would be the refusal this feature exists to avoid. The rename is named
+/// either way, because where the file went is the answer in both states.
+#[test]
+fn a_finished_task_is_told_where_the_file_went_and_offered_no_command() {
+    for (status, expected) in [("open", Some("ank amend ")), ("done", None)] {
+        let r = Repo::new();
+        std::fs::create_dir_all(r.0.join("src")).unwrap();
+        std::fs::write(r.0.join("src/old.rs"), SIMILAR).unwrap();
+        r.seed_task_scoped(ID, "src/old.rs");
+        let seeded = r
+            .task_text(ID)
+            .replace("status: open", &format!("status: {status}"));
+        std::fs::write(r.0.join(".ank/tasks").join(format!("{ID}.md")), seeded).unwrap();
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "seed"]);
+        std::fs::rename(r.0.join("src/old.rs"), r.0.join("src/new.rs")).unwrap();
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "move it"]);
+
+        let text = stdout(&r.ank("claude-code@ank", &["check"]));
+        let note = proposal(&text).unwrap_or_else(|| panic!("{status}: no note in {text}"));
+        assert!(
+            note[0].contains("src/new.rs"),
+            "{status}: the rename is named whatever the state: {note:?}"
+        );
+        match expected {
+            Some(verb) => assert!(
+                note.get(1).is_some_and(|c| c.starts_with(verb)),
+                "{status}: {note:?}"
+            ),
+            None => assert_eq!(
+                note.len(),
+                1,
+                "{status}: amend refuses a settled plan, so nothing is proposed: {note:?}"
+            ),
+        }
+    }
+}
+
+/// No repository, no walk, and no line saying so.
+///
+/// The cost clause of ADR-97beaf55e73a has a silence clause beside it, and the
+/// silence is the part a test has to hold: `check` already says once that the
+/// coordination half was skipped, and a second sentence about a question that
+/// could not be asked is noise in the one output an agent reads whole.
+#[test]
+fn outside_a_repository_the_rename_walk_is_skipped_without_a_word() {
+    let b = Bare::new();
+    std::fs::write(
+        b.0.join(".ank/adr").join(format!("{DEAD_ADR}.md")),
+        format!(
+            "---\nid: {DEAD_ADR}\ntype: adr\nslug: example\ntitle: A decision\n\
+             created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - src/old.rs\n\
+             constraint: |\n  Do not do X.\nschema: 1\nversion: 1\n---\n\nWhy.\n"
+        ),
+    )
+    .unwrap();
+
+    let out = b.ank(&["check"]);
+    assert_eq!(
+        code(&out),
+        8,
+        "the dead scope is still a fault: {}",
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'src/old.rs': no file matches it"),
+        "{text}"
+    );
+    assert_eq!(proposal(&text), None, "{text}");
+    for word in ["rename", "git records"] {
+        assert!(
+            !text.contains(word),
+            "'{word}' is a word about a walk that never ran: {text}"
+        );
+    }
+}
+
+/// `--json` carries the note as data, and no structure character with it.
+#[test]
+fn the_note_reaches_json_as_a_list_and_not_as_drawn_text() {
+    let r = moved_fixture("src/old.rs", Some("src/new.rs"));
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert_json_only(&out, "ank check --json");
+    let text = stdout(&out);
+    assert!(
+        text.contains("\"note\":[\"git records src/old.rs renamed to src/new.rs in "),
+        "{text}"
+    );
+    assert!(
+        text.contains("ank amend "),
+        "the command a caller would run is data too: {text}"
+    );
+    for glyph in ["└", "├", "│"] {
+        assert!(
+            !text.contains(glyph),
+            "--json carries no structure layer (ADR-0c8ab846d262): {text}"
+        );
+    }
+    // A finding with nothing to add carries the key and an empty list, so a
+    // parser reads one shape rather than two.
+    assert!(text.contains("\"note\":[]"), "{text}");
+}
