@@ -3953,6 +3953,160 @@ fn the_over_constrained_signal_reports_the_limit_it_tested() {
     );
 }
 
+/// The over-constrained finding says which constraint is expensive, and what
+/// the reader can do about it.
+///
+/// The total was the whole of the old message, and a total names a problem with
+/// no path out of it: nothing in `14737 characters` says which of two dozen
+/// constraints to stop matching, and a finding that names a number and no act
+/// trains readers to skip it (TASK-19d82da76c78). Three assertions, and each is
+/// a different half of that.
+///
+/// **Order, not merely presence.** The list is the treatment, so a breakdown in
+/// id order would be a list the reader has to sort by hand — the charges are
+/// parsed back out and checked descending, which a listing in the order
+/// `applicable_constraints` happens to return would fail.
+///
+/// **Data, not prose, under `--json`.** A caller ranking constraints by cost
+/// must not have to parse "charges 211 characters" back into an integer, so the
+/// array is asserted whole and in order rather than by substring.
+///
+/// **An act, never a refusal.** Every constraint charged against a perimeter is
+/// an accepted ADR, and `amend` exits 6 on one — so the finding says the
+/// constraint is anchored and points the amend at the perimeter instead. The
+/// test asserts the refusing command is absent, which is the assertion that
+/// catches a future edit reaching for the obvious wording.
+#[test]
+fn the_over_constrained_signal_charges_each_constraint_and_names_an_act() {
+    let r = Repo::new();
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    // Two globs, so the perimeter can lose one: the note branches on that, and
+    // a one-glob fixture would exercise the other branch only.
+    let text = r
+        .task_text(ID)
+        .replace("  - src/**", "  - docs/**\n  - src/**");
+    std::fs::write(r.flat_task_path(ID), text).unwrap();
+    for (dir, file) in [("src", "src/main.rs"), ("docs", "docs/guide.md")] {
+        std::fs::create_dir_all(r.0.join(dir)).unwrap();
+        std::fs::write(r.0.join(file), "content\n").unwrap();
+    }
+
+    // 211, 151 and 91 characters once the stored trailing newline is counted:
+    // 453 against the 200 that half of 400 allows. Seeded in an order that is
+    // neither the id order nor the charge order, so neither can pass by luck.
+    let sizes = [
+        ("ADR-0000000000ab", 150usize),
+        ("ADR-0000000000cd", 90),
+        ("ADR-0000000000ef", 210),
+    ];
+    for (id, size) in sizes {
+        r.seed_adr(id, &"x".repeat(size), "src/**");
+        let accepted = r
+            .adr_text(id)
+            .replace("status: proposed", "status: accepted");
+        std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), accepted).unwrap();
+    }
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+    let charged: Vec<(String, usize)> = said
+        .lines()
+        .filter_map(|l| l.split_once(" charges "))
+        .map(|(head, tail)| {
+            let id = head.rsplit(' ').next().unwrap_or_default().to_string();
+            let n = tail.trim_end_matches(" characters").parse().unwrap();
+            (id, n)
+        })
+        .collect();
+    assert_eq!(
+        charged,
+        vec![
+            ("ADR-0000000000ef".to_string(), 211),
+            ("ADR-0000000000ab".to_string(), 151),
+            ("ADR-0000000000cd".to_string(), 91),
+        ],
+        "the breakdown must name every constraint and its cost, largest first:\n{said}"
+    );
+
+    // The act, on the entity that is still open to an edit.
+    assert!(
+        said.contains(&format!("ank amend {ID} --drop-scope \"<glob>\"")),
+        "the finding names no act the reader can perform:\n{said}"
+    );
+    // And never on the one that is not. `amend` exits 6 on an accepted ADR, so
+    // naming it would teach the reader the tool is wrong rather than that the
+    // decision is settled.
+    assert!(
+        !said.contains("ank amend ADR-"),
+        "the finding names a command that would refuse:\n{said}"
+    );
+    assert!(
+        said.contains("ADR-0000000000ef costs the most, and is accepted"),
+        "the heaviest constraint is not named as the one that cannot be amended:\n{said}"
+    );
+
+    // The same fact as data. Asserted as one substring so the order is part of
+    // the assertion and the counts stay bare numbers.
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert!(
+        stdout(&out).contains(
+            "\"charge\":[{\"id\":\"ADR-0000000000ef\",\"characters\":211},\
+             {\"id\":\"ADR-0000000000ab\",\"characters\":151},\
+             {\"id\":\"ADR-0000000000cd\",\"characters\":91}]"
+        ),
+        "the per-constraint charge is not structured data:\n{}",
+        stdout(&out)
+    );
+
+    // A perimeter of one glob cannot be narrowed by dropping it — the entity
+    // would attach to nothing and `amend` refuses — so the note offers the
+    // replacement, and names the glob because there is only one it could be.
+    let one = Repo::new();
+    one.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n");
+    one.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(one.0.join("src")).unwrap();
+    std::fs::write(one.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    one.seed_adr("ADR-0000000000ab", &"x".repeat(300), "src/**");
+    let accepted = one
+        .adr_text("ADR-0000000000ab")
+        .replace("status: proposed", "status: accepted");
+    std::fs::write(one.0.join(".ank/entities/ADR-0000000000ab.md"), accepted).unwrap();
+    let out = one.ank("claude-code@ank", &["check"]);
+    assert!(
+        stdout(&out).contains(&format!(
+            "ank amend {ID} --scope \"<narrower>\" --drop-scope \"src/**\""
+        )),
+        "a one-glob perimeter was offered a drop that would refuse:\n{}",
+        stdout(&out)
+    );
+
+    // Silent under the limit, breakdown included: a per-constraint listing on a
+    // healthy perimeter is volume nobody asked for.
+    let quiet = Repo::new();
+    quiet.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n");
+    quiet.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(quiet.0.join("src")).unwrap();
+    std::fs::write(quiet.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    quiet.seed_adr("ADR-0000000000ab", &"x".repeat(150), "src/**");
+    let accepted = quiet
+        .adr_text("ADR-0000000000ab")
+        .replace("status: proposed", "status: accepted");
+    std::fs::write(quiet.0.join(".ank/entities/ADR-0000000000ab.md"), accepted).unwrap();
+    let out = quiet.ank("claude-code@ank", &["check"]);
+    assert!(
+        !stdout(&out).contains(" charges "),
+        "a perimeter under the limit reported a breakdown:\n{}",
+        stdout(&out)
+    );
+    let out = quiet.ank("claude-code@ank", &["check", "--json"]);
+    assert!(
+        stdout(&out).contains("\"charge\":[]") || !stdout(&out).contains("over-constrained"),
+        "{}",
+        stdout(&out)
+    );
+}
+
 /// A renewal reuses the lease the claim was granted, and re-caps it.
 ///
 /// Through the binary and against the ref itself, because the lease is a fact
