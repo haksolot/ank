@@ -26,7 +26,8 @@
   "pi": {
     "skills": [
       "./skills"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/haksolot/ank/main/assets/ank-card.png"
   },
   "files": [
     "bin/ank",
