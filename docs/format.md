@@ -22,15 +22,40 @@ run against.
 ## Layout
 
     .ank/
-      config.yml          repository settings and named verifiers
-      allowed_signers     public keys allowed to ratify (§8), versioned
-      tasks/TASK-<hex>.md
-      adr/ADR-<hex>.md
-      index.db            derived, disposable, belongs in .gitignore — never a source of truth
+      config.yml             repository settings and named verifiers
+      allowed_signers        public keys allowed to ratify (§8), versioned
+      entities/TASK-<hex>.md
+      entities/ADR-<hex>.md
+      log/<ID>.md            append-only work trace, one file per entity
+      index.db               derived, disposable, belongs in .gitignore — never a source of truth
 
 Flat, deliberately: attachment happens through the `scope` field, not through
 location (§3). A file's name is its id; nothing resolves through the directory
 tree.
+
+**One directory for every kind.** The kind is already in the id prefix, which is
+already in the file name, so a per-kind subdirectory would state it a third time
+and the only thing a third copy can do is disagree with the first two (§6). Both
+paths are computed from the id with no lookup: the entity is at
+`.ank/entities/<ID>.md` and its log, if it has one, at `.ank/log/<ID>.md`.
+
+The layout is **fixed, not configured**. A layout read from `config.yml` would
+mean your tool has to parse the configuration before it can find a file, and the
+conformance suite at the end of this page would stop being something anybody can
+run against a directory.
+
+**The previous layout, and the window for it.** Corpora written before this
+revision are at `tasks/TASK-<hex>.md` and `adr/ADR-<hex>.md`, with the log inside
+the task body. A reader **must accept them**; a writer **must never produce
+them**. A corpus holding both layouts is one corpus, and no entity in it is
+counted twice — if an id resolves in both, decide and document which wins rather
+than silently preferring one. `ank check` reports a corpus still in the previous
+layout as a signal, not a fault, naming the command that moves it: such a corpus
+parses, round-trips and answers every verb.
+
+This dual read is a **window, not a feature**. It exists for the release across
+which an existing corpus moves, and a new tool has no reason to write anything
+but the flat layout.
 
 **Identifiers** are `TASK-` or `ADR-` followed by exactly 12 hexadecimal
 characters, lowercase on output and accepted in either case on input. They hash
@@ -50,8 +75,9 @@ Markdown with YAML frontmatter, UTF-8 without BOM, LF line endings:
 
 The delimiters are exact: the file begins with `---\n`, and the frontmatter ends
 at the first `\n---\n`. Everything after that separator is the body, kept
-verbatim, byte for byte. The body is free-form markdown, with one convention
-carved out below.
+verbatim, byte for byte. The body is free-form markdown and carries no
+convention at all: the one that used to live there, the log, is a file of its
+own now.
 
 **Unknown fields are rejected**, not ignored. That is what turns a typo like
 `priorty:` into an error instead of a silent loss, and it is the reason the
@@ -62,6 +88,18 @@ carved out below.
 Canonical form is a **fixed field order**, and a serializer that emits the right
 fields in the wrong order produces a non-canonical file. The order is not
 alphabetical and not negotiable; it is this.
+
+A kind is declared **once**, as a row of a registry: the name written in `type`,
+the id prefix, the status values, which fields are required and which optional,
+and the canonical order (§3). The two tables below are that registry written out.
+Reproduce them as data — a table your serializer walks — rather than as one
+emitter per kind; the order is the single thing most easily lost by rewriting two
+straight-line emitters as a generic loop, and it is what the round-trip rests on.
+
+An **unknown kind is rejected naming the kind**, not naming the first field it
+happens to carry. Inside a known kind, an unknown field is still rejected. The two
+refusals answer different questions: `priorty:` in a `task` is a typo, and
+`type: epic` is a document your tool does not know how to read.
 
 ### Task
 
@@ -80,12 +118,17 @@ alphabetical and not negotiable; it is this.
 | 11 | `criteria_by` | bare | `creator` \| `claimer`; invalid without `done_criteria` |
 | 12 | `verify` | flow list | omitted when empty |
 | 13 | `proof` | block sequence of maps | omitted when empty |
-| 14 | `schema` | integer | |
-| 15 | `version` | integer | |
+| 14 | `verified` | block sequence of maps | optional, omitted when empty |
+| 15 | `schema` | integer | |
+| 16 | `version` | integer | |
 
 A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
 `criteria` and `verifier`, each omitted when absent. `type` is one of `test`,
 `commit`, `human-review`, `assertion`.
+
+A `verified` entry emits `by`, then `at`. Both are required in an entry that
+exists at all — an entry missing either is rejected — while the list itself is
+optional on every kind.
 
 ### ADR
 
@@ -103,13 +146,28 @@ A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
 | 10 | `see` | scalar | optional |
 | 11 | `supersedes` | bare | optional, an entity id |
 | 12 | `ratified` | scalar | optional; set by `accept` (see below) |
-| 13 | `schema` | integer | |
-| 14 | `version` | integer | |
+| 13 | `verified` | block sequence of maps | optional, omitted when empty |
+| 14 | `schema` | integer | |
+| 15 | `version` | integer | |
 
 **Optional fields are omitted, never emitted empty.** An entity with no author
 serialises without the key at all. Writing `author:` with nothing after it would
 change every older file on its first rewrite, and the round-trip guarantee below
 forbids that.
+
+### Actors
+
+Every field naming an actor — `author`, and the `by` of a `verified` entry — is
+typed: `human:<id>` is a person, `<producer>/<version>` is an agent,
+`process:<id>` is an automated process (§3).
+
+**A value that does not match the convention is not a parse error.** Your parser
+must accept it; reporting it belongs to a linter, and `ank check` reports the
+whole pre-convention set once for the corpus rather than once per file. This is
+the one place where being strict would be wrong: the convention postdates most
+of the `author` values in an existing corpus, and a parser that refused them
+would lock those files out of their own format. Write typed actors; read
+anything.
 
 ## Emission rules
 
@@ -124,11 +182,15 @@ the value ends in a newline: `|` when it does, `|-` when it does not.
 **Flow lists** carry references: `blocked_by: [TASK-51c2a7f0b3d9]`,
 `verify: [auth-tests, no-jwt]`.
 
-**Block sequences** carry `scope` and `proof`, two spaces of indent:
+**Block sequences** carry `scope`, `proof` and `verified`, two spaces of indent:
 
     scope:
       - src/auth/**
       - src/middleware/session.ts
+
+    verified:
+      - by: human:marie
+        at: 2026-07-27T09:40:00Z
 
 **Scalars are emitted bare when that is unambiguous and quoted otherwise**,
 conservatively — when in doubt, quote. The reference implementation emits a
@@ -164,6 +226,18 @@ every checkout what the tool has just normalised.
 `schema` is the format version, and a tool declares **a range of versions it
 reads**, not a single one.
 
+The current version is **3**, and the reference implementation reads **1 to 3**.
+Version 3 carries the log leaving the entity body and the `verified` list with
+its typed actors. The flat layout arrived in the same revision and carries no
+bump of its own: it moves files, not fields, so a reader that finds the file
+finds every field it already knew.
+
+The log is what makes that bump necessary, and it is the case the field exists
+for. A reader that does not know the log has left the body opens a task file,
+finds no `## Log` section, and shows an empty history for a task that has one —
+silently, with nothing reading anywhere as an error. Refusing on the version says
+the one true thing before any of that happens.
+
 Older is a promise the format keeps: every field introduced after version 1 is
 optional at parse time, and its absence means "written before this existed"
 rather than "invalid". A corpus is never migrated by a tool that refuses to read
@@ -177,16 +251,36 @@ the one true thing: this file is newer than this tool. The argument is in §3.
 
 ## The log
 
-One convention inside the body, and the only one: a `## Log` section at the end
-of a task file, append-only, one line per entry.
+**The log is a file, not a section of the body.** For the entity at
+`.ank/entities/<ID>.md`, it is `.ank/log/<ID>.md`, append-only, one line per
+entry:
 
-    ## Log
-    - 2026-07-26T14:02Z claude-code@host-3 — jwt.verify removed from session.ts
+    - 2026-07-26T14:02Z claude-code/1.4.2 — jwt.verify removed from session.ts
 
-Appending at the end is what makes a log entry a one-line git diff. The log is a
-**work trace, not proof**: nothing authoritative is anchored in it, which is why
-there is no chained hash over it (§3). A tool may parse it, and may append to
-it; it should not reorder or rewrite it.
+The line grammar: a dash and a space, the timestamp, a space, the identity, a
+space, an em dash, a space, the message. It has not changed, so a log written
+before this revision is copied across verbatim and nothing about an existing
+entry is reinterpreted — only its address moved.
+
+Any kind may have a log, and **a log file that does not exist is an empty log,
+never an error**. Do not create one to record that there is nothing to record.
+
+Appending is what makes a log entry a one-line git diff, and it is now a diff
+against a file that only ever grows — which is also why the merge rule that used
+to union log sections by timestamp is gone: git already unions two appends (§7).
+
+**Appending to the log is not a write to the entity.** It writes no frontmatter,
+bumps no `version`, and touches no file carrying a frozen field. An entity file
+changes only on a real transition. That property is the reason the log moved, and
+a tool that appends a log line *and* rewrites the entity has given it up.
+
+The log is a **work trace, not proof**: nothing authoritative is anchored in it,
+which is why there is no chained hash over it (§3), and which is what makes an
+append by a second party harmless. A tool may parse it, and may append to it; it
+should not reorder or rewrite it.
+
+In a corpus still in the previous layout, the log is a `## Log` section at the end
+of the task body, with the same line grammar. Read it there; never write it there.
 
 ## What is derived, and must never be stored
 
@@ -257,11 +351,22 @@ port in an afternoon:
   input byte for byte **once line endings are normalised**. One file,
   `TASK-c71f0e5a9b23.md`, is in CRLF on purpose and must come back in LF; that
   is the only file for which the assertion is against the normalised input
-  rather than the bytes on disk.
+  rather than the bytes on disk. Fixtures at schema 1 and schema 2 are there to
+  stay: a file written before a field existed must survive a rewrite unchanged,
+  and if one of them moves, the version bump has silently become a migration.
+  A log fixture is a second file keyed by the same id as the entity it belongs
+  to.
 - `invalid/` — every file must be **rejected with the right error**, not merely
-  rejected. The nine cases each name a distinct failure: no frontmatter, a bad
-  id, an unknown schema, an unknown field, a bad status, a type mismatch, an
-  empty scope, an invalid glob, and `criteria_by` without a criterion.
+  rejected. Each case names a distinct failure: no frontmatter, a bad id, an
+  unknown schema, an unknown kind, an unknown field inside a known kind, a bad
+  status, a type mismatch, an empty scope, an invalid glob, `criteria_by`
+  without a criterion, a `verified` entry missing `by` or `at`, and a log line
+  the grammar does not accept. The list grows with the format; what does not
+  change is that a test asserting only that parsing returned *an* error passes
+  for the wrong reason forever.
+
+There is no invalid fixture for a malformed actor. That is deliberate and is the
+one place strictness is wrong: the convention is checked, never parsed (above).
 
 The second half is where a permissive implementation is caught. Accepting a file
 the format rejects is the failure mode that spreads, because the corpus it
