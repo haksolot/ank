@@ -5,7 +5,7 @@ slug: the-specification-carries-the-flat-layout-the-ki
 title: The specification carries the flat layout, the kind registry, the log file and typed actors
 created: 2026-08-11T22:26:44Z
 author: claude-code@sean-laptop
-status: in_progress
+status: done
 scope:
   - docs/ank-spec-v1.1.md
   - docs/format.md
@@ -30,8 +30,12 @@ done_criteria: |
   No source file changes in this task. ank check exits 0 on the corpus, which is
   still in the old layout and must stay readable.
 criteria_by: creator
+proof:
+  - type: test
+    ref: "31666088871"
+    criteria: 7d1fd3289b07
 schema: 2
-version: 3
+version: 4
 ---
 
 First step of the format change, and the order is not negotiable:
@@ -67,3 +71,4 @@ serializer is a defect even though the specification is what settles it.
 
 ## Log
 - 2026-08-13T04:04:01Z claude-code@sean-laptop — Spec revision p written: flat entities/ layout and kind registry (sections 3 and 6), the log as its own file replacing the body section, typed actors and the optional verified list, schema 3 with the reader range 1 to 3 and the lower bound held. Section 7 loses the log-union merge rule, which existed only because the log shared a file with unmergeable fields. Section 10 keeps both deferred rows and now says why the registry and rename detection do not lift them. format.md updated: field order tables carry verified, the log section is rewritten as a file, and the dual-read window is stated. The conformance list names the new invalid cases, which TASK-9146 makes real.
+- 2026-08-13T04:13:03Z claude-code@sean-laptop — done, proof test:31666088871
