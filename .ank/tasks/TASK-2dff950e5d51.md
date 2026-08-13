@@ -5,7 +5,7 @@ slug: a-ci-recipe-that-names-no-vendor-and-this-reposi
 title: A CI recipe that names no vendor, and this repository adopts it
 created: 2026-08-11T22:26:13Z
 author: claude-code@sean-laptop
-status: open
+status: in_progress
 scope:
   - docs/getting-started.md
   - .github/workflows/ci.yml
@@ -26,7 +26,7 @@ done_criteria: |
   what the pipeline now does.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 Blocked on `attest --detached`, because the recipe is the reason that verb exists
@@ -52,3 +52,6 @@ green and was never written down.
 Note the ordering constraint in the workflow: the attestation is only meaningful
 after the tests pass, and it must not run on a matrix leg. One attestation per
 run, after the matrix, or the corpus grows three identical proofs per task.
+
+## Log
+- 2026-08-13T06:54:21Z claude-agent-c — Measured, not assumed: ank attest --detached exits 0 whether or not the ref reached the remote. On a scratch corpus with a real file:// remote it prints pushed:true and the ref is there; with the remote pointed at a path that does not exist it prints pushed:false, warns on stderr, and still exits 0. A pipeline reading the exit code would go green having lost the attestation, which is exactly the silence this task says to remove, so the job reads the flag and the docs say why. Two other findings: check gates the 'done with no test proof' signal on the task appearing done on the default branch, so no diff of .ank/ is needed and the job belongs on that branch rather than on every push; and CLAUDE.md never contained an instruction to carry a run id by hand, so half the criterion was already satisfied and only the pointer was added.

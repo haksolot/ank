@@ -70,6 +70,114 @@ jobs:
       # Exit 8 means findings, and that is a failure here. Signals exit 0.
       - run: cargo run -q --bin ank -- check
 
+  # `done` records what ran on the machine that ran it. That is a local claim,
+  # and `check` says so on the default branch: "done with no test proof: nothing
+  # external anchors it". Ten tasks in this corpus carried that signal, each one
+  # a run that went green and was never written down, and the answer is not for
+  # an agent to copy a run id by hand into `done` -- it is for the run itself to
+  # say what it proved (TASK-2dff950e5d51).
+  #
+  # `check` is the work list, and no diff of `.ank/` is computed here. The signal
+  # is gated on the task appearing done on the default branch, deliberately: on a
+  # feature branch straight after `done` no run has happened yet, so there is
+  # nothing to anchor and this job finds nothing to do. On the push that merges
+  # it, the same signal names exactly what landed.
+  #
+  # After the matrix and never inside it: an attestation is only meaningful once
+  # the tests pass, and one per leg would grow three identical proofs per task.
+  #
+  # `push`, and on the default branch. A pull_request event runs on a merge
+  # commit that no branch carries, and a fork's token cannot push a ref -- which
+  # would fail this job for a reason about the event rather than about the
+  # corpus.
+  #
+  # The branch condition restates a gate that already lives in `check`, and that
+  # is worth naming rather than hiding: on a feature branch the signal does not
+  # fire, so this job would build the binary for two minutes to be told there is
+  # nothing to do, on every push. If ank ever reports unanchored tasks off the
+  # default branch, this line is what stops the pipeline from noticing.
+  attest:
+    name: attest / ubuntu-latest
+    needs: [test, version-check, msrv, msrv-tight]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    # The one job here that writes, and it writes refs/ank/proof/* and nothing
+    # else: `--detached` produces no commit, so the branch is never touched.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the tasks this run anchors
+        id: unanchored
+        run: |
+          code=0
+          out=$(cargo run -q --bin ank -- check --json) || code=$?
+          # The contract, and the whole of it: 8 is findings, 9 is the
+          # environment. Both are red here, and 9 says which so nobody goes
+          # looking for a broken corpus.
+          case $code in
+            0) ;;
+            8) echo "ank check: findings, see the test job"; exit 1 ;;
+            9) echo "ank check: environment unavailable, not a corpus failure"; exit 2 ;;
+            *) echo "ank check: unexpected exit $code"; exit 1 ;;
+          esac
+          ids=$(printf '%s' "$out" | jq -r '
+            .findings[]
+            | select(.message | startswith("done with no test proof"))
+            | .subject')
+          echo "$ids"
+          {
+            echo "ids<<EOF"
+            echo "$ids"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      # Read the flag, not the exit code. A proof is a ref, so it is worth
+      # something only once it reaches the remote -- and when the push is
+      # refused, `attest` still exits 0 and warns on standard error. Trusting
+      # the code would go green having lost the attestation, which is the exact
+      # silence this job was written to remove.
+      - name: anchor them on this run
+        env:
+          IDS: ${{ steps.unanchored.outputs.ids }}
+          ANK_AGENT: process:github-actions
+        run: |
+          if [ -z "$(printf '%s' "$IDS" | tr -d '[:space:]')" ]; then
+            echo "nothing to anchor: every finished task already carries a test proof"
+            exit 0
+          fi
+          failed=0
+          for id in $IDS; do
+            out=$(cargo run -q --bin ank -- attest "$id" \
+              --proof "test:$GITHUB_RUN_ID" --detached --json) || {
+              echo "attest failed for $id"
+              failed=1
+              continue
+            }
+            echo "$out"
+            if ! printf '%s' "$out" | jq -e '.pushed' > /dev/null; then
+              echo "attested $id but the proof never reached the remote"
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ]
+
+      # `--detached` writes a ref and no file. A working tree that moved would
+      # mean the proof landed in the corpus instead, which is a commit this job
+      # must never need.
+      - name: the working tree did not move
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "attest wrote to the working tree; --detached must not:"
+            git status --porcelain
+            exit 1
+          fi
+          echo "clean: the attestation is a ref, not a commit"
+
   # release.yml refuses to build when the tag and the manifests disagree on the
   # version, and it exercises that check against fixtures before trusting it.
   # Both run on a tag or a dispatch and nowhere else, which left the check itself
