@@ -1,0 +1,3 @@
+- 2026-08-08T17:49:40Z seanl@sean-laptop — released: Releasing to measure, not because the approach is wrong: ank context <path> ignores the path while a claim is held, so whether a proposed ADR's constraint is served cannot be observed from inside the claim.
+- 2026-08-08T18:06:52Z seanl@sean-laptop — Ratified as db7cfd0300f6, and the criterion's clause is now observable: ank context package.json and ank context .claude-plugin/plugin.json both print CONSTRAINTS (1 active) with the full constraint text, where an hour ago the same commands printed PROPOSED (1, non-binding) and the title alone. That difference is the whole reason this task waited on a signature rather than on work.
+- 2026-08-08T18:12:14Z seanl@sean-laptop — done, proof test:31271211833

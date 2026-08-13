@@ -1,0 +1,2 @@
+- 2026-08-03T22:28:46Z seanl@sean-laptop — The disambiguation of the read form: only a successful resolve is a read, so an ambiguous prefix is a message like any other string. One question, one answer, predictable without running it -- the alternative (ambiguous is an error) adds a second question an agent cannot answer from the argument alone. Read prints through LogEntry::format_line so the printed line and the stored line stay one shape.
+- 2026-08-03T22:32:45Z seanl@sean-laptop — done, proof test:30858885207

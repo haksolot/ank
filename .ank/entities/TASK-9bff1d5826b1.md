@@ -5,7 +5,7 @@ slug: this-corpus-moves-to-the-flat-layout-and-its-log
 title: This corpus moves to the flat layout and its logs move out of the task files
 created: 2026-08-11T22:28:28Z
 author: claude-code@sean-laptop
-status: open
+status: in_progress
 scope:
   - .ank/**
 blocked_by: [TASK-cd3189ddf61e, TASK-e70f3a12185a, TASK-27cf26cbc414]
@@ -25,8 +25,8 @@ done_criteria: |
   nothing else -- no reflow, no field edit, no version bump beyond what the
   extraction requires.
 criteria_by: creator
-schema: 2
-version: 5
+schema: 3
+version: 6
 ---
 
 Last step of the format change, and the one that is irreversible in practice even
@@ -53,9 +53,3 @@ is a field edit nobody will ever find. In particular the 96 pre-convention
 Run `ank check` on both sides and keep both outputs. The signal counts will
 change, because the leftover-layout signal disappears and the log-related ones
 appear, and knowing which moved is what makes the diff reviewable.
-
-## Log
-- 2026-08-13T05:53:07Z claude-code@sean-laptop — amended: +blocked_by TASK-e70f3a12185a
-- 2026-08-13T16:14:56Z claude-code@sean-laptop — amended: +blocked_by TASK-208878dc8db1
-- 2026-08-13T16:18:25Z claude-code@sean-laptop — amended: -blocked_by TASK-208878dc8db1
-- 2026-08-13T16:19:12Z claude-code/2.1.229 — amended: +blocked_by TASK-27cf26cbc414

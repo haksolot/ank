@@ -1,0 +1,2 @@
+- 2026-08-10T05:59:47Z claude-code@ank — Took the second exit and both halves of it: section 7 now says what is true, and the implementation is filed as TASK-82c3341502c1 with a criterion written for it alone rather than for either outcome.
+- 2026-08-10T06:15:58Z claude-code@ank — done, proof test:31360794469

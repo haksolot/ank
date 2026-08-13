@@ -1,0 +1,4 @@
+- 2026-07-28T00:25Z claude-code@ankor — manual claim (the CLI does not exist); criterion set by the claimer, an assumed signal
+- 2026-07-28T00:34Z claude-code@ankor — store.rs: lock through create_new, write-then-rename, CAS on version; 9 tests
+- 2026-07-28T00:36Z claude-code@ankor — the 16-thread test surfaced a Windows bug: a lock in delete-pending state returns ERROR_ACCESS_DENIED and not ERROR_FILE_EXISTS, so it was fatal instead of retried
+- 2026-07-28T00:38Z claude-code@ankor — done: cargo-test green, proof commit 8b5f26e
