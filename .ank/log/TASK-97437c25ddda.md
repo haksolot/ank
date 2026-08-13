@@ -1,0 +1,2 @@
+- 2026-08-10T04:27:11Z claude-code@ank — Neutralised the environment once rather than adding the flag to the two seed commits that lacked it. Every process the suite spawns is now built by one function, spawn, which points GIT_CONFIG_GLOBAL and GIT_CONFIG_SYSTEM at a file the suite writes itself; git_command and nk_command are its two faces. The binary gets it too, not only git: ank shells out to git on its own account.
+- 2026-08-10T04:31:51Z claude-code@ank — done, proof test:31355601158

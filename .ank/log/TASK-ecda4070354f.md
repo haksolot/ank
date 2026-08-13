@@ -1,0 +1,3 @@
+- 2026-08-04T21:42:22Z seanl@sean-laptop — Decided where the value belongs: the existing single line of `ank --version`, extended to `ank <ver> (<commit>, skill <rev>)`. `ank status` was the other candidate and is out on the criterion itself -- it runs after startup, so it needs a resolved repository, and the reader this exists for holds a binary and a SKILL.md and nothing else. Keeping one line also leaves section 4's shape untouched: the specification edit says what the line contains, not that it grew a second line.
+- 2026-08-04T21:54:37Z seanl@sean-laptop — done, proof commit:1b655c2
+- 2026-08-04T22:54:31Z seanl@sean-laptop — attested test:30954352678

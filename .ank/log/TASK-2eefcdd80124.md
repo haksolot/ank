@@ -1,0 +1,2 @@
+- 2026-08-09T17:52:26Z claude-code@ank — Moved all three sites to stderr unconditionally rather than gating them on --json: a gate at each printing site is one more chance to forget one, which is the argument cli.rs already makes about colour, and progress belongs on stderr for a human too. run_verifiers lost its writer parameter entirely, so the function that reports progress now has no way to reach stdout at all -- structural rather than conventional.
+- 2026-08-10T03:54:24Z claude-code@ank — done, proof test:31353485327
