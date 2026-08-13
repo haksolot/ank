@@ -337,16 +337,24 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "done",
         coordinates: true,
-        summary: "runs the declared verifiers, records what ran, and moves the task to done; needs the claim, and a proof if nothing is declared",
+        // "the declared verifiers" left out who declares them, and a reader
+        // filled the blank with config.yml -- which defines verifiers but never
+        // selects any. One agent wrote that reading into the project guide and
+        // found out only by running the verb. The task's `verify:` list is what
+        // decides, so the page names it (TASK-ca784c5feda4).
+        summary: "runs the verifiers the task's verify: list names, records what ran, and moves the task to done; needs the claim, and a proof when that list is empty",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--proof")],
         refuses: &[
-            refuses(5, "no proof, and no verifier declared to produce one"),
+            refuses(5, "no proof, and the task's verify: list names no verifier to produce one"),
             refuses(6, "no claim held by this agent, or the frozen done_criteria has diverged"),
         ],
-        notes: &["--proof is <type>:<ref>; type is commit, human-review, assertion or test"],
+        notes: &[
+            "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
+            "config.yml defines the verifiers; the task's verify: list decides which of them run",
+        ],
         refuses_globals: &[],
         owner_task: None,
     },
@@ -569,13 +577,20 @@ pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "check",
         coordinates: false,
-        summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims",
+        // A verb called `check` reads as read-only, and this one writes: it is
+        // the only command that prunes (§7). An agent ran it in a loop on that
+        // assumption and read `pruned refs/ank/claims/...` back. The page is
+        // where a caller finds out, before scripting around it.
+        summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
         refuses: &[],
-        notes: &["exit 8 means findings; a signal alone leaves it 0"],
+        notes: &[
+            "exit 8 means findings; a signal alone leaves it 0",
+            "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
+        ],
         refuses_globals: &[],
         owner_task: None,
     },

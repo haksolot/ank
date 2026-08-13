@@ -5,7 +5,7 @@ slug: the-help-surface-says-what-the-verb-does-done-s
 title: "The help surface says what the verb does: done's hint, its verifier wording, and check's writes"
 created: 2026-08-13T16:24:22Z
 author: claude-code/2.1.229
-status: open
+status: done
 scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/cli.rs
@@ -16,8 +16,12 @@ done_criteria: |
   
   Asserted through the binary in crates/ank-cli/tests/cli.rs: the text of the refusal, and the two help pages.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 5788ab6
+    criteria: 2509cd7934e6
 schema: 3
-version: 1
+version: 3
 ---
 
 Three small wrongs on the surface agents read first, and each one measurably

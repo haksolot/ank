@@ -2979,6 +2979,35 @@ fn done_refuses_proof_when_the_task_declares_verifiers() {
     assert!(r.task_text(ID).contains("status: in_progress"));
 }
 
+/// The other branch of the same refusal: a task declaring no verifier demands a
+/// `--proof`, and the hint is what the reader will type next.
+///
+/// It must name `commit:<sha>`, a proof the caller already holds. It named
+/// `test:<ci-run-ref>` — push, wait for a pipeline, copy a run id back — which
+/// is the workflow TASK-2dff950e5d51 replaced with a pipeline that attests the
+/// run itself, and the rhythm an agent reconstructs from habit whenever the tool
+/// suggests it. Through the binary, because the defect was never in the parser:
+/// it was in the sentence a caller reads and obeys.
+#[test]
+fn done_with_no_verifier_asks_for_a_proof_the_caller_already_holds() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let out = r.ank("claude-code@ank", &["done"]);
+    let said = stderr(&out);
+    assert_eq!(code(&out), 5, "{said}");
+    assert!(
+        said.contains("ank done --proof commit:<sha>"),
+        "the hint must name a proof already in hand: {said}"
+    );
+    assert!(
+        !said.contains("ci-run-ref"),
+        "still sending the caller to wait for a run id: {said}"
+    );
+    assert!(r.task_text(ID).contains("status: in_progress"));
+}
+
 #[test]
 fn the_whole_agent_loop_runs_through_the_binary() {
     // context -> new -> claim -> log -> release -> claim -> done, as an agent
@@ -5209,7 +5238,7 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
     for said in [
         "what binds this perimeter",
         "freezes its done_criteria by hash",
-        "runs the declared verifiers",
+        "runs the verifiers the task's verify: list names",
     ] {
         assert!(text.contains(said), "{said:?} missing:\n{text}");
     }
@@ -5278,6 +5307,54 @@ fn help_for_one_verb_answers_and_an_unknown_one_is_a_two() {
         "a silent fallback to the general listing: {}",
         String::from_utf8_lossy(&out.stdout)
     );
+}
+
+/// `ank help done` says where a verifier comes from.
+///
+/// It said the verb "runs the declared verifiers" and refuses when "no verifier
+/// [is] declared to produce one", leaving out who declares. `config.yml` is
+/// where verifiers are defined, so a reader filled the blank with it and
+/// concluded `check-repo` and `cargo-test` would run; no task in this corpus
+/// names them in a `verify:` list, so `done` always demands `--proof`. That
+/// agent wrote the wrong reading into the project guide and found out by running
+/// the command. Selection is the task's, and the page has to say so.
+#[test]
+fn help_done_says_a_verifier_comes_from_the_tasks_verify_list() {
+    let page = String::from_utf8_lossy(&help_from_nowhere(&["help", "done"]).stdout).to_string();
+    assert!(page.contains("verify:"), "{page}");
+    assert!(
+        page.contains("config.yml defines the verifiers"),
+        "the page must name what config.yml does and does not decide:\n{page}"
+    );
+    assert!(
+        !page.contains("the declared verifiers"),
+        "'declared' with no declarer is the reading that misled:\n{page}"
+    );
+}
+
+/// `ank help check` says the verb writes.
+///
+/// A verb called `check` reads as read-only, and this one prunes — it is the
+/// only command that does (§7). An agent ran it freely in a loop on that
+/// assumption and read `pruned refs/ank/claims/...` back mid-output. The
+/// behaviour is correct and stays; the page is where a caller finds out before
+/// scripting around it.
+#[test]
+fn help_check_says_the_verb_prunes_refs() {
+    let page = String::from_utf8_lossy(&help_from_nowhere(&["help", "check"]).stdout).to_string();
+    assert!(
+        page.contains("prunes"),
+        "a caller must not have to run it to learn it writes:\n{page}"
+    );
+    assert!(
+        page.contains("refs/ank/claims"),
+        "and which refs it prunes:\n{page}"
+    );
+
+    // The listing carries it too: an agent that scripts `check` reads the flat
+    // page far more often than the per-verb one.
+    let listing = String::from_utf8_lossy(&help_from_nowhere(&["help"]).stdout).to_string();
+    assert!(listing.contains("prunes"), "{listing}");
 }
 
 #[test]
