@@ -5,7 +5,7 @@ slug: the-version-check-is-exercised-on-every-push-not
 title: The version check is exercised on every push, not only on a tag
 created: 2026-08-13T04:32:59Z
 author: claude-agent-c
-status: open
+status: in_progress
 scope:
   - .github/workflows/ci.yml
 blocked_by: [TASK-91462ace35fd]
@@ -13,7 +13,7 @@ done_criteria: |
   ci.yml runs .github/scripts/check-version-fixtures.sh on every push and pull request, so a change that breaks check-version.sh is red on the branch that made it rather than on the next tag. It runs the fixtures alone and never compares the tree against a version: there is no tag on a push, and a check that invented one would fail every branch between releases.
 criteria_by: creator
 schema: 2
-version: 1
+version: 3
 ---
 
 Discovered while implementing TASK-d33024e7b98a.
@@ -34,3 +34,6 @@ What ci.yml must not do is compare the tree against a version. A push carries
 no tag, so there is nothing to compare with, and the tree's own agreement is
 already asserted by the first fixture -- which reads the version out of
 `crates/ank-cli/Cargo.toml` and holds every other literal to it.
+
+## Log
+- 2026-08-13T05:01:34Z claude-agent-c — The fixtures run on ubuntu alone, not on the test matrix. Two reasons, and the second is the one that decided it: ubuntu is the platform of use, since the version job in release.yml runs there; and on windows-latest git checks out with autocrlf, so a .sh under .github/scripts/ arrives in CRLF and bash refuses it. Keeping these scripts in LF is a .gitattributes decision about the tree, outside this task's scope. Falsified in both directions before committing: a check-version.sh that always exits 0 turns four fixtures red, and a JSON parser anchored on the wrong indentation turns all five red with 'the file's shape moved' rather than passing on an empty read.
