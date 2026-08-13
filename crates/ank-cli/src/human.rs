@@ -57,6 +57,21 @@ pub enum Level {
     Signal,
 }
 
+/// One constraint's share of what a perimeter charges, kept as a number rather
+/// than as a rendered line.
+///
+/// A total says the perimeter is expensive; the charge per constraint says
+/// *which* constraint is expensive, and that is the only form of the fact
+/// anybody can act on (§11). It is a pair and not a sentence because `--json`
+/// has to hand it over as data: a caller ranking constraints by cost must not
+/// have to parse prose back into integers, which is the same reason `note` was
+/// split out of `message`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Charge {
+    pub id: String,
+    pub characters: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub level: Level,
@@ -71,6 +86,13 @@ pub struct Finding {
     /// longer sentence would break; and a caller reading `--json` gets the
     /// explanation as data instead of as prose it would have to split.
     pub note: Vec<String>,
+    /// The breakdown behind a quantity the message states as a total, largest
+    /// first. Empty on every finding that reports no quantity.
+    ///
+    /// Rendered as lines above the note for a human and as an array for a
+    /// caller, so neither reader gets the other one's format: the lines are
+    /// derived from these numbers, never the other way round.
+    pub charge: Vec<Charge>,
 }
 
 impl Finding {
@@ -80,6 +102,7 @@ impl Finding {
             subject: subject.to_string(),
             message: message.into(),
             note: Vec::new(),
+            charge: Vec::new(),
         }
     }
     fn signal(subject: impl std::fmt::Display, message: impl Into<String>) -> Finding {
@@ -88,10 +111,15 @@ impl Finding {
             subject: subject.to_string(),
             message: message.into(),
             note: Vec::new(),
+            charge: Vec::new(),
         }
     }
     fn with_note(mut self, lines: Vec<String>) -> Finding {
         self.note = lines;
+        self
+    }
+    fn with_charge(mut self, charge: Vec<Charge>) -> Finding {
+        self.charge = charge;
         self
     }
 }
@@ -1067,21 +1095,106 @@ fn check_task(
     // limit is half of that (TASK-9ff86a0950bf). The two numbers cannot
     // disagree again while they come from the same binding, which is the fix;
     // rewording alone would have left the next edit free to separate them.
+    //
+    // **The total is the diagnosis and the breakdown is the treatment.** A
+    // number alone names a problem with no path out of it: there is no verb
+    // that splits a scope, and nothing in `14737 characters` says which of the
+    // constraints to stop matching. The charge per constraint is the missing
+    // fact, and it is also what turns §11 from an argument into a measurement —
+    // "mechanise this one first" is a reading of the list, not a preference.
+    //
+    // Silent under the limit, breakdown and all. A per-constraint listing
+    // printed on a healthy perimeter is the volume problem this project keeps
+    // refusing, and the reader who wants it on a healthy scope has `ank
+    // context`.
     if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) {
         if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
             let weight: usize = applicable.iter().map(|(_, c)| c.chars().count()).sum();
             let limit = cfg.context_budget / 2;
             if weight > limit {
-                report.findings.push(Finding::signal(
-                    &t.id,
-                    format!(
-                        "over-constrained scope: {weight} characters of constraint against a \
-                         limit of {limit}, half of context_budget"
-                    ),
-                ));
+                let mut charge: Vec<Charge> = applicable
+                    .iter()
+                    .map(|(id, c)| Charge {
+                        id: id.clone(),
+                        characters: c.chars().count(),
+                    })
+                    .collect();
+                // Descending by cost, and by id under a tie so two runs on one
+                // corpus print one order. `applicable_constraints` already
+                // sorted by id, and a stable sort on the cost alone would have
+                // kept that — but "already sorted upstream" is not a property
+                // to depend on from here.
+                charge.sort_by(|a, b| b.characters.cmp(&a.characters).then(a.id.cmp(&b.id)));
+                report.findings.push(
+                    Finding::signal(
+                        &t.id,
+                        format!(
+                            "over-constrained scope: {weight} characters of constraint against a \
+                             limit of {limit}, half of context_budget"
+                        ),
+                    )
+                    .with_note(relief(store, t, charge.first()))
+                    .with_charge(charge),
+                );
             }
         }
     }
+}
+
+/// What the reader of an over-constrained scope can actually do, and what they
+/// cannot.
+///
+/// Two lines at most, and the split matters: the first names an act on the
+/// perimeter, which is the entity this finding is about and the only one still
+/// open to an edit; the second names the heaviest constraint and says plainly
+/// that it is not amendable, rather than printing a command that would exit 6.
+/// Same doctrine as [`repair`] — naming a refusal is worse than naming nothing,
+/// because a reader who runs it learns the tool is wrong rather than that the
+/// entity is settled.
+///
+/// The constraint is accepted in every case that reaches here: `context` binds
+/// accepted ADRs and nothing else, so a proposed one is charged against no
+/// perimeter and cannot appear in the breakdown. The status is read back from
+/// the store anyway rather than assumed, because the day that filter changes is
+/// the day this would start naming a refusal in silence.
+fn relief(store: &Store, t: &Task, heaviest: Option<&Charge>) -> Vec<String> {
+    // Dropping the last glob is refused: an entity with no scope attaches to
+    // nothing and nobody finds it again. So a one-glob perimeter is narrowed by
+    // replacement, and the glob to replace is named because there is only one
+    // it could be.
+    let mut note = vec![match t.scope.as_slice() {
+        [only] => format!(
+            "narrow the perimeter, which is one glob and cannot empty: \
+             ank amend {} --scope \"<narrower>\" --drop-scope \"{only}\"",
+            t.id
+        ),
+        _ => format!(
+            "narrow the perimeter: ank amend {} --drop-scope \"<glob>\"",
+            t.id
+        ),
+    }];
+    let Some(top) = heaviest else {
+        return note;
+    };
+    let accepted = EntityId::parse(&top.id)
+        .ok()
+        .and_then(|id| store.load(&id).ok())
+        .is_some_and(
+            |loaded| matches!(loaded.entity, Entity::Adr(a) if a.status == AdrStatus::Accepted),
+        );
+    note.push(match accepted {
+        true => format!(
+            "{} costs the most, and is accepted: its constraint is anchored in the \
+             ratification commit, so no amend reaches it — what lowers its charge is \
+             mechanising it out of injected context",
+            top.id
+        ),
+        false => format!(
+            "{} costs the most: ank amend {} --drop-scope \"<glob>\" narrows what it binds",
+            top.id, top.id
+        ),
+    });
+    note
 }
 
 fn check_adr(
@@ -1757,8 +1870,18 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             .iter()
             .map(|f| {
                 let note: Vec<String> = f.note.iter().map(|l| json_str(l)).collect();
+                // Numbers, not the lines a human is shown. A caller sorting
+                // constraints by cost or summing them gets arithmetic it can do
+                // directly; re-parsing "charges 2431 characters" would be the
+                // sentence this field exists to avoid.
+                let charge: Vec<String> = f
+                    .charge
+                    .iter()
+                    .map(|c| format!("{{\"id\":\"{}\",\"characters\":{}}}", c.id, c.characters))
+                    .collect();
                 format!(
-                    "{{\"level\":\"{}\",\"subject\":\"{}\",\"message\":{},\"note\":[{}]}}",
+                    "{{\"level\":\"{}\",\"subject\":\"{}\",\"message\":{},\"note\":[{}],\
+                     \"charge\":[{}]}}",
                     if f.level == Level::Fault {
                         "fault"
                     } else {
@@ -1766,7 +1889,8 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
                     },
                     f.subject,
                     json_str(&f.message),
-                    note.join(",")
+                    note.join(","),
+                    charge.join(",")
                 )
             })
             .collect();
@@ -1798,7 +1922,15 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
         // last child of its finding, so `LAST` opens it and `CLEAR` continues
         // it. Text and never colour — it carries the command to run next, and a
         // reader who piped this to a file must read the same bytes (ADR-0c8a).
-        for (i, line) in f.note.iter().enumerate() {
+        //
+        // The breakdown comes first and the note after it, in one run of
+        // children: the numbers are what the note's advice is about, and a
+        // reader who met the advice first would have nothing to apply it to.
+        let breakdown = f
+            .charge
+            .iter()
+            .map(|c| format!("{} charges {} characters", c.id, c.characters));
+        for (i, line) in breakdown.chain(f.note.iter().cloned()).enumerate() {
             let lead = if i == 0 {
                 style::glyph::LAST
             } else {
