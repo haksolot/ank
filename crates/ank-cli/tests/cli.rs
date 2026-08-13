@@ -8349,3 +8349,161 @@ fn an_entity_whose_log_is_in_its_body_keeps_it_there() {
     assert_eq!(out.matches("learned something").count(), 1, "{out}");
     assert!(!out.contains("LOG ("), "the body already carries it: {out}");
 }
+
+// ---------------------------------------------------------------------------
+// The orientation budget (§5, TASK-1ead0e19fb73)
+// ---------------------------------------------------------------------------
+
+/// The default of §5, restated here because the fixture writes no
+/// `context_budget` and the assertions are arithmetic on it.
+const BUDGET: usize = 8000;
+
+/// A corpus whose constraints alone would swallow the page.
+///
+/// Forty accepted ADRs with multi-sentence rules and forty open tasks. Rendered
+/// the old way — every rule in full, tasks cut first — this is far past 8000
+/// characters, which is what makes the allocation observable rather than
+/// hypothetical.
+fn crowded() -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    for i in 0..40 {
+        let id = format!("ADR-0000000{i:05}");
+        let rule = format!(
+            "Rule number {i} is stated at length, because a real constraint is \
+             a paragraph and not a slogan. It goes on for a second sentence so \
+             that rendering it in full costs what a real one costs."
+        );
+        std::fs::write(
+            r.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: adr\nslug: example\n\
+                 title: Decision number {i}, phrased as a title of ordinary length\n\
+                 created: 2026-07-20T00:00:00Z\nstatus: accepted\nscope:\n  - src/**\n\
+                 constraint: |\n  {rule}\nschema: 1\nversion: 1\n---\n\nWhy.\n"
+            ),
+        )
+        .unwrap();
+
+        let tid = format!("TASK-0000000{i:05}");
+        std::fs::write(
+            r.0.join(".ank/entities").join(format!("{tid}.md")),
+            format!(
+                "---\nid: {tid}\ntype: task\nslug: example\n\
+                 title: Task number {i}, with a title of the length titles really have\n\
+                 created: 2026-07-28T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+                 blocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+                 criteria_by: creator\nschema: 1\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a crowded corpus"]);
+    r
+}
+
+/// The characters a named section spends, counted as the renderer counts them.
+fn section_chars(text: &str, header: &str) -> usize {
+    text.lines()
+        .skip_while(|l| !l.starts_with(header))
+        .take_while(|l| {
+            l.starts_with(header)
+                || !(l.starts_with("CONSTRAINTS")
+                    || l.starts_with("PROPOSED")
+                    || l.starts_with("TASKS"))
+        })
+        .map(|l| l.chars().count() + 1)
+        .sum()
+}
+
+/// Orientation allocates the budget the way §5 now promises, through the
+/// binary and on a corpus large enough to exceed it.
+///
+/// **The measurement this replaces is in the task's log.** On this repository,
+/// at the same 8000 characters, orientation spent 7357 on seven constraints
+/// rendered in full and 157 on tasks — one task line printed and eleven cut,
+/// with the closing suggestion naming the only candidate it had room for. The
+/// mode whose purpose is choosing offered one option out of twelve.
+///
+/// Asserted through the binary rather than on `render`, because the allocation
+/// is only worth anything if it survives the whole path an agent actually
+/// takes: config, perimeter, index, and the writer that prints it.
+#[test]
+fn orientation_spends_at_most_a_third_on_constraints_and_the_rest_on_tasks() {
+    let r = crowded();
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+
+    // The control, and it is the assertion that catches a missing ceiling.
+    // Forty constraints named on one line each are past a third of 8000, so
+    // some of them must have been counted away; if they all fit, the rule was
+    // never under load and every assertion below would pass on a page that
+    // never had to choose anything.
+    assert!(
+        text.contains("broad constraints, ank find --type adr"),
+        "the constraints all fit, so the third was never enforced: {text}"
+    );
+
+    let constraints = section_chars(&text, "CONSTRAINTS");
+    let tasks = section_chars(&text, "TASKS");
+    assert!(
+        constraints <= BUDGET / 3,
+        "constraints took {constraints} characters of {BUDGET}, over the \
+         third §5 allows them"
+    );
+    assert!(
+        tasks > constraints,
+        "the tasks got {tasks} characters against {constraints} for the \
+         constraints, and orientation is for choosing"
+    );
+
+    // Named, never quoted: the rule's text is one `ank show` away.
+    assert!(
+        text.contains("Decision number 0, phrased as a title"),
+        "a constraint must be named: {text}"
+    );
+    assert!(
+        !text.contains("because a real constraint is"),
+        "orientation quoted a rule instead of naming it: {text}"
+    );
+
+    // And the page offers a choice rather than a single candidate.
+    let listed = text
+        .lines()
+        .filter(|l| l.trim_start().starts_with("TASK-"))
+        .count();
+    assert!(
+        listed > 10,
+        "orientation offered {listed} candidates out of 40: {text}"
+    );
+    assert!(
+        text.chars().count() <= BUDGET,
+        "the page is {} characters, over budget",
+        text.chars().count()
+    );
+}
+
+/// Execution mode keeps the opposite rule, on the same corpus.
+///
+/// The two halves of §5 are one decision, and a change to the orientation half
+/// that quietly truncated a binding constraint would be the failure the whole
+/// design exists to prevent. Same fixture, one claim, opposite guarantee.
+#[test]
+fn execution_still_renders_a_binding_constraint_in_full() {
+    let r = crowded();
+    let out = r.ank("claude-code@ank", &["claim", "TASK-000000000000"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = stdout(&r.ank("claude-code@ank", &["context"]));
+    assert!(
+        text.contains("because a real constraint is a paragraph and not a slogan"),
+        "a binding constraint was truncated in execution mode: {text}"
+    );
+    assert!(
+        !text.contains("broad constraints, ank find"),
+        "execution mode counted constraints away instead of printing them: {text}"
+    );
+}
