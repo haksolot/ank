@@ -88,24 +88,43 @@ fn section_4_order() -> Vec<String> {
     verbs
 }
 
-/// The verbs `ank help` prints, in the order it prints them.
+/// The listing, as the headings `ank help` prints and the verbs under each of
+/// them (ADR-f61e2d2c75e8).
 ///
-/// Through the binary, because ADR-c656cbcc33a9 is a statement about what the
-/// process prints, not about the table it is derived from. The listing ends at
-/// the blank line before `global:`.
-fn help_order() -> Vec<String> {
+/// Through the binary, because the ADR is a statement about what the process
+/// prints, not about the table it is derived from. The listing is everything
+/// above the trailer, which opens with `global:` at column 0: a blank line is a
+/// boundary *between* groups now, so a parser that stopped at the first one
+/// would read six verbs and call that the whole surface. A folded description is
+/// indented, and so opens neither a verb nor a group.
+fn help_groups() -> Vec<(String, Vec<String>)> {
     let out = Command::new(env!("CARGO_BIN_EXE_ank"))
         .arg("help")
         .output()
         .expect("the binary must have been built");
     assert!(out.status.success(), "ank help must succeed");
     let text = String::from_utf8_lossy(&out.stdout).to_string();
-    let mut verbs = Vec::new();
-    for line in text.lines().take_while(|l| !l.trim().is_empty()) {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for line in text.lines().take_while(|l| !l.starts_with("global:")) {
         if let Some(v) = leading_verb(line) {
-            push_once(&mut verbs, v);
+            let group = groups
+                .last_mut()
+                .unwrap_or_else(|| panic!("a verb stands above every heading:\n{text}"));
+            push_once(&mut group.1, v);
+        } else if !line.trim().is_empty() && !line.starts_with(' ') {
+            groups.push((line.to_string(), Vec::new()));
         }
     }
+    assert!(!groups.is_empty(), "ank help printed no group");
+    groups
+}
+
+/// The verbs `ank help` prints, in the order it prints them.
+fn help_order() -> Vec<String> {
+    let verbs: Vec<String> = help_groups()
+        .into_iter()
+        .flat_map(|(_, verbs)| verbs)
+        .collect();
     assert!(!verbs.is_empty(), "ank help printed no verb");
     verbs
 }
@@ -163,22 +182,38 @@ fn every_verb_section_4_lists_ships_or_is_declared_unimplemented() {
     }
 }
 
-/// **One flat listing, in the order of §4** (ADR-c656cbcc33a9). Until this
-/// test the ADR described the output rather than constraining it, and the two
-/// orders agreed only while somebody remembered. Fixing the drift of
+/// **Grouped by the moment a verb is used, and §4's order inside every group**
+/// (ADR-f61e2d2c75e8, superseding ADR-c656cbcc33a9 on this clause alone). Until
+/// this test the ADR described the output rather than constraining it, and the
+/// two orders agreed only while somebody remembered. Fixing the drift of
 /// TASK-5c868c20472f introduced a fresh one in the same edit -- `attest` placed
 /// after `check` where the binary prints it before -- and only a diff caught it.
+///
+/// The assertion moved from the listing as a whole to each of its sections, and
+/// that is the whole of what the grouping changed: it is a second axis laid over
+/// §4's order, not a re-sort, so a verb still never moves relative to its
+/// neighbours. Asserting the old global order would now be asserting the clause
+/// that was superseded.
 #[test]
-fn help_prints_section_4s_order() {
-    let dispatched = help_order();
-    let expected: Vec<String> = section_4_order()
-        .into_iter()
-        .filter(|v| dispatched.contains(v))
-        .collect();
-    assert_eq!(
-        expected, dispatched,
-        "`ank help` must print §4's order, minus what it does not dispatch"
+fn help_prints_section_4s_order_inside_every_group() {
+    let spec = section_4_order();
+    let groups = help_groups();
+    assert!(
+        groups.len() > 1,
+        "the listing prints one section, so nothing groups it"
     );
+    for (heading, printed) in &groups {
+        assert!(!printed.is_empty(), "'{heading}' has no verb under it");
+        let expected: Vec<String> = spec
+            .iter()
+            .filter(|v| printed.contains(v))
+            .cloned()
+            .collect();
+        assert_eq!(
+            expected, *printed,
+            "'{heading}' must print §4's order, minus what it does not hold"
+        );
+    }
 }
 
 /// The loop and what is off it: how work gets done (ADR-e17e1bbd93ff).

@@ -5,7 +5,7 @@ slug: ank-help-groups-its-listing-by-the-moment-a-verb
 title: ank help groups its listing by the moment a verb is used
 created: 2026-08-11T22:22:32Z
 author: claude-code@sean-laptop
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-cli/tests/cli.rs
@@ -22,7 +22,7 @@ done_criteria: |
   added later cannot fall off the end unnoticed.
 criteria_by: creator
 schema: 2
-version: 1
+version: 2
 ---
 
 Implements ADR-f61e2d2c75e8, which supersedes ADR-e17e1bbd93ff on this clause
