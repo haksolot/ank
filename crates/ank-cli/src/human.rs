@@ -399,6 +399,17 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         (HashMap::new(), HashMap::new(), None)
     };
 
+    // The commit proofs this corpus rests on, asked of the clone rather than of
+    // the entry (§4). Once for the whole corpus and before the loop below,
+    // because the answer costs a git process and a per-task question would cost
+    // one each.
+    let detached_commits = detached_commit_proofs(
+        has_git.then_some(repo.root.as_path()),
+        &entities,
+        &in_scope,
+        &detached,
+    );
+
     for (_, entity) in &entities {
         if !in_scope(entity) {
             continue;
@@ -419,6 +430,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 cfg,
                 &store,
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
+                &detached_commits,
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
@@ -937,6 +949,7 @@ fn check_task(
     cfg: &Config,
     store: &Store,
     default_branch: Option<&str>,
+    detached_commits: &BTreeSet<String>,
     report: &mut Report,
 ) {
     // Every proof against this task, from both sources. ADR-493471d64ba0 is
@@ -1161,6 +1174,38 @@ fn check_task(
             &t.id,
             format!(
                 "{head} (ank attest {} --proof test:<run-id> --detached)",
+                t.id
+            ),
+        ));
+    }
+
+    // A `commit:` reference is validated once, when `done` writes it, and never
+    // again — so the strongest proof this tool checks itself comes undone in
+    // silence under the routine this project prescribes (§4). A branch rebased
+    // onto a newer default branch has its commits replaced, and the recorded
+    // sha then resolves only on the stale branch, or nowhere at all once that
+    // branch is force-pushed.
+    //
+    // **Reported and never repaired.** Which commit carries the work now is a
+    // judgement — the rebase may have split it, or dropped it — and appending a
+    // proof is the only legal post-`done` write (§3). So the finding names the
+    // command a reader would run and runs nothing itself, and the dead entry
+    // stays: removing it would be the rewrite append-only exists to prevent.
+    //
+    // One line per detached reference, deduplicated: a task carrying the same
+    // dead sha twice is one fact about one proof, not two findings.
+    let dead: BTreeSet<&str> = proofs
+        .iter()
+        .filter(|p| p.proof_type == ProofType::Commit)
+        .map(|p| p.reference.trim())
+        .filter(|r| detached_commits.contains(&r.to_lowercase()))
+        .collect();
+    for reference in dead {
+        report.findings.push(Finding::signal(
+            &t.id,
+            format!(
+                "proof commit:{reference} names no commit reachable here: rebased away, \
+                 or a branch never fetched (ank attest {} --proof commit:<sha>)",
                 t.id
             ),
         ));
@@ -1761,6 +1806,95 @@ fn check_cycles(entities: &[(PathBuf, Entity)], report: &mut Report) {
             report,
         );
     }
+}
+
+/// The `commit:` references this corpus records that name no commit this clone
+/// can reach (§4).
+///
+/// **One git process for the corpus, never one per proof.** The references are
+/// collected first and tested against a single listing of what is reachable,
+/// which is also what makes the answer cheap to hand to every task at once. A
+/// `rev-parse` per entry would be one process per proof for a question git
+/// answers about all of them in one walk.
+///
+/// **Reachable, and not merely resolvable.** The commit a rebase replaced
+/// survives in the object database of the machine that rebased, so asking
+/// whether the object exists would answer yes there and no everywhere else —
+/// the reference is detached in both cases, and the reading must not depend on
+/// which clone asks. `--all` is every ref plus `HEAD`, which is what "reachable"
+/// means to git and to anyone re-reading the proof.
+///
+/// **A clone that cannot see is not asked.** A shallow clone reaches almost no
+/// history, so every commit proof in the corpus would be reported at once — the
+/// volume failure §4 legislates against, and the same answer this tool already
+/// gives for a dead scope a truncated history cannot explain. A listing with no
+/// commit in it at all is the same state read from the other side, and covers
+/// the repository that carries no commit yet.
+///
+/// **Only references in the shape of an object name.** `done` validates a
+/// `commit:` with `git rev-parse`, which accepts far more than a sha; a
+/// reference this cannot read as an object name is one it has no question to
+/// ask about, and silence is never evidence.
+///
+/// Infallible on purpose: every way of failing to ask is a state to stay silent
+/// about rather than a run to abort. Unable to ask is not permission to accuse.
+fn detached_commit_proofs(
+    root: Option<&Path>,
+    entities: &[(PathBuf, Entity)],
+    in_scope: &impl Fn(&Entity) -> bool,
+    detached: &HashMap<EntityId, Vec<claim::AttestedProof>>,
+) -> BTreeSet<String> {
+    let empty = BTreeSet::new();
+    let mut asked: BTreeSet<String> = BTreeSet::new();
+    for (_, entity) in entities {
+        let Entity::Task(t) = entity else { continue };
+        if !in_scope(entity) {
+            continue;
+        }
+        // Both sources, exactly as `check_task` reads them: between a `done`
+        // landing and its merge the ref is the only place an entry exists, and
+        // a question asked of the file alone would skip most of a branch's life.
+        let from_refs = detached.get(&t.id).into_iter().flatten().map(|a| &a.proof);
+        for p in t.proof.iter().chain(from_refs) {
+            if p.proof_type == ProofType::Commit && is_object_name(&p.reference) {
+                asked.insert(p.reference.trim().to_lowercase());
+            }
+        }
+    }
+    let Some(root) = root else { return empty };
+    if asked.is_empty() || git::is_shallow(root) {
+        return empty;
+    }
+    let Ok(reachable) = git::run(root, &["rev-list", "--all"]) else {
+        return empty;
+    };
+    // Indexed by the lengths actually asked about — one in practice, since a
+    // corpus records its proofs the way its writer abbreviates. A short
+    // reference is a prefix of the object name git prints, which is how git
+    // resolves it too.
+    let lengths: BTreeSet<usize> = asked.iter().map(|r| r.len()).collect();
+    let mut prefixes: HashSet<&str> = HashSet::new();
+    for sha in reachable.lines() {
+        for len in &lengths {
+            if let Some(prefix) = sha.get(..*len) {
+                prefixes.insert(prefix);
+            }
+        }
+    }
+    if prefixes.is_empty() {
+        return empty;
+    }
+    asked
+        .into_iter()
+        .filter(|r| !prefixes.contains(r.as_str()))
+        .collect()
+}
+
+/// Whether a proof reference is in the shape of a commit object name: hex, and
+/// no shorter than the four characters git itself will resolve.
+fn is_object_name(reference: &str) -> bool {
+    let r = reference.trim();
+    (4..=40).contains(&r.len()) && r.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 /// Whether `default_branch` carries this task as `done`.
