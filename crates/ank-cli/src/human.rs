@@ -2811,7 +2811,7 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
 /// **It leaves nothing on the coordination plane, and that is the decision**
 /// (TASK-78326e2e3e89). `done` turns the claim ref into a completion record so
 /// that a task finished on an unmerged branch does not look free everywhere
-/// else (ADR-bcf222a31525); `close` deletes the ref, so a task closed on a
+/// else (ADR-6d8736c04cfa); `close` deletes the ref, so a task closed on a
 /// branch is claimable elsewhere until the closure lands on the default branch.
 /// The asymmetry is not an omission. A completion record refuses every other
 /// `claim` with code 4, repository-wide once the ref is pushed, and `done`
@@ -4612,7 +4612,7 @@ mod tests {
     }
 
     /// The predicate is the file **as the default branch carries it**, and the
-    /// working tree is not the branch (ADR-bcf222a31525).
+    /// working tree is not the branch (ADR-6d8736c04cfa).
     ///
     /// The sharp half, and the one that decides whether the mechanism works at
     /// all: `done` writes to the working tree, so between the work and the

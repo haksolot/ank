@@ -540,7 +540,7 @@ pub fn origin_head(cwd: &Path) -> Result<Option<String>> {
 /// Serves the diagnostic and never the pruning decision: a completion ref is
 /// pruned on what the task file says on the default branch, because `done`
 /// writes to the working tree and the commit it records is frequently already
-/// an ancestor (ADR-bcf222a31525).
+/// an ancestor (ADR-6d8736c04cfa).
 pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool> {
     let args = ["merge-base", "--is-ancestor", ancestor, descendant];
     let out = output(cwd, &args)?;

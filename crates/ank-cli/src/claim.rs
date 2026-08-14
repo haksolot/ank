@@ -7,7 +7,7 @@
 //! two different tasks in contention over one address.
 //!
 //! **The ref has two states at one address**, and it is the record that says
-//! which — never the address (ADR-bcf222a31525). `claim` writes a `claim`
+//! which — never the address (ADR-6d8736c04cfa). `claim` writes a `claim`
 //! record; `done` does not delete the ref, it replaces the record with
 //! `completed`, with no TTL. That closes a real window: `status: done` lives on
 //! the branch that produced it, so between the end of the work and the merge
@@ -747,7 +747,7 @@ pub fn sync_ref_from_remote(cwd: &Path, name: &str) -> Result<()> {
 }
 
 /// Deletes the ref. This is what `release` and `close` do — and only they:
-/// `done` replaces the record, it does not delete (ADR-bcf222a31525). Returns
+/// `done` replaces the record, it does not delete (ADR-6d8736c04cfa). Returns
 /// whether there was anything to delete.
 ///
 /// Unconditional, with no witness, because `close` is defined that way: it
@@ -1720,7 +1720,7 @@ fn lost_the_race(
 /// reads it, and the ref has no further use.
 ///
 /// The predicate is the file as the branch carries it, never the reachability
-/// of the recorded commit (ADR-bcf222a31525): `done` writes to the working
+/// of the recorded commit (ADR-6d8736c04cfa): `done` writes to the working
 /// tree, so the commit it records is frequently already an ancestor, and an
 /// agent that branched and finished before its first commit would see its ref
 /// vanish within the second — reopening the exact window the mechanism closes.
@@ -1977,7 +1977,7 @@ fn status_map(store: &Store) -> Result<HashMap<EntityId, TaskStatus>> {
 /// A blocker finished on another branch reads, in the working tree, exactly
 /// like one nobody has started: `status_map` sees the file this branch carries
 /// and nothing else. The completion ref is the only witness of that window
-/// (ADR-bcf222a31525), so it is consulted here. The refusal itself does not
+/// (ADR-6d8736c04cfa), so it is consulted here. The refusal itself does not
 /// move — claiming on top of unmerged work is the real risk — only what the
 /// agent is told about it, which is the answer `acquire` already gives for the
 /// claimed task itself.
@@ -2056,7 +2056,7 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
 
 /// Anchors the ADRs whose constraint applies here, so that a reader of this
 /// module lands on them: claims in refs (ADR-4e7c25b1f639), the ref's second
-/// state (ADR-bcf222a31525), plumbing by criterion (ADR-b8884edcebe3), freeze
+/// state (ADR-6d8736c04cfa), plumbing by criterion (ADR-b8884edcebe3), freeze
 /// by hash (ADR-6b3f19e08a24), one surface (ADR-c656cbcc33a9).
 #[cfg(test)]
 mod tests {
