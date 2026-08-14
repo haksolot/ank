@@ -2,3 +2,4 @@
 - 2026-08-14T20:28:30Z claude-code/f6b8 — amended: +scope crates/ank-core/src/log.rs, +scope crates/ank-core/tests/golden.rs, +scope crates/ank-cli/tests/cli.rs, +scope docs/format.md, +scope CLAUDE.md
 - 2026-08-14T20:28:56Z claude-code/f6b8 — amended: +scope crates/ank-core/tests/golden/**, -scope crates/ank-core/src/model.rs
 - 2026-08-14T20:29:17Z claude-code/f6b8 — Scope corrected to where the work landed. model.rs was the perimeter of a first-class field, and the design settled against one: the recognition is a message convention and lives in log.rs beside the grammar it does not change, the reporting lives in check. Nothing in the entity model moves, which is the answer rather than an omission.
+- 2026-08-14T20:50:48Z claude-code/f6b8 — done, proof commit:4c31f803c759fcd861f6c49c02d561c892e68731

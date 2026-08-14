@@ -5,7 +5,7 @@ slug: a-criterion-proved-partly-wrong-is-recorded-on-t
 title: A criterion proved partly wrong is recorded on the task without releasing it
 created: 2026-08-13T16:25:08Z
 author: claude-code/2.1.229
-status: in_progress
+status: done
 scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/human.rs
@@ -25,8 +25,13 @@ done_criteria: |
   
   Asserted through the binary: a task carrying the record still freezes and verifies its criterion by the same hash, and check names it.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 4c31f803c759fcd861f6c49c02d561c892e68731
+    criteria: ce3aa0e23860
+    via: submitted
 schema: 3
-version: 4
+version: 5
 ---
 
 Two of the three parallel sessions met this and neither had a tool for it.
