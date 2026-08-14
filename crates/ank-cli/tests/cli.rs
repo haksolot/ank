@@ -8755,18 +8755,26 @@ fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
 /// Through a `file://` URL and not a path, because git ignores `--depth` on a
 /// local path clone: without the URL the shallow fixture would quietly be a
 /// whole one, and the test would pass while testing nothing.
+///
+/// The URL is the path with `file://` in front and nothing else done to it. On
+/// Unix the path opens with a slash and the result is the ordinary three-slash
+/// form; on Windows it opens with a drive letter and the result is
+/// `file://C:/...`, two slashes. The three-slash form is what a reader expects
+/// there and it is the one that fails: git-for-Windows rewrites it, unless
+/// `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL` is set -- either alone is enough
+/// -- and then git reads the literal `/C:/...` as a path and refuses. Measured
+/// both ways on git 2.54.0.windows.1: the two-slash form clones, and stays
+/// shallow, in all four combinations of those two variables. So the form below
+/// is not a Windows workaround but the one that does not depend on the
+/// environment an agent's shell happens to export, which is how two sessions
+/// reported this test red while a third watched it pass (TASK-143a310de8b6).
 fn clone_of(r: &Repo, depth: Option<u32>) -> PathBuf {
     let name = r.0.file_name().unwrap().to_string_lossy().to_string();
     let dest = r.0.with_file_name(match depth {
         Some(d) => format!("{name}-clone{d}"),
         None => format!("{name}-clone"),
     });
-    let url = format!(
-        "file:///{}",
-        r.0.to_string_lossy()
-            .replace('\\', "/")
-            .trim_start_matches('/')
-    );
+    let url = format!("file://{}", r.0.to_string_lossy().replace('\\', "/"));
     let dest_s = dest.to_string_lossy().to_string();
     let d = depth.map(|d| d.to_string());
     let mut args = vec!["clone", "-q"];
@@ -8775,6 +8783,14 @@ fn clone_of(r: &Repo, depth: Option<u32>) -> PathBuf {
     }
     args.extend_from_slice(&[url.as_str(), dest_s.as_str()]);
     r.git(&args);
+    // The truncation is the fixture, so it is asserted and not assumed: a clone
+    // that succeeded whole would leave every assertion below still passing for
+    // the wrong reason, which is the failure the URL exists to prevent.
+    assert_eq!(
+        dest.join(".git/shallow").exists(),
+        depth.is_some(),
+        "clone of {url} at depth {depth:?}: .git/shallow is what makes it the third state"
+    );
     dest
 }
 
