@@ -5,7 +5,7 @@ slug: a-rebase-detaches-a-commit-proof-and-nothing-say
 title: A rebase detaches a commit proof, and nothing says so
 created: 2026-08-13T17:46:15Z
 author: claude-code/2.1.229+main-checkout
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
@@ -20,8 +20,13 @@ done_criteria: |
   
   Asserted through the binary in crates/ank-cli/tests/cli.rs: a task anchored on a commit that is then rebased away reports the signal, one anchored on a live commit reports nothing, and a shallow clone reports nothing rather than accusing every proof it cannot see.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 0a536dd
+    criteria: 9f7fc939ef42
+    via: submitted
 schema: 3
-version: 1
+version: 3
 ---
 
 Found while landing TASK-9bff1d5826b1. It was anchored with

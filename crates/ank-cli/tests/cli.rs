@@ -5072,6 +5072,177 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
     );
 }
 
+const DETACHED: &str = "TASK-00000000d1ed";
+const LIVE_ANCHOR: &str = "TASK-00000000a11e";
+
+/// A `commit:` proof is validated once, when `done` writes it, and the routine
+/// this project prescribes detaches it in silence (§4).
+///
+/// The fixture is that routine run for real: work on a branch, the default
+/// branch moves, rebase. The sha `done` checked against git is replaced, the
+/// recorded reference names a commit no ref reaches any more, and nothing in
+/// the corpus says so.
+///
+/// The negative half carries the weight. A signal that fired on the live
+/// anchor too would be reporting every finished task in the corpus, which is a
+/// line readers learn to skip rather than a finding.
+#[test]
+fn check_reports_a_commit_proof_a_rebase_detached_and_spares_a_live_one() {
+    let r = Repo::new();
+    // The seeded scope has to match something tracked, or a dead-scope fault
+    // fires and the exit code under test stops being about the proof.
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("src/work.rs"), "// work\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "work"]);
+    let anchored_on = r.head();
+    r.git(&["checkout", "-q", "main"]);
+    std::fs::write(r.0.join("src/other.rs"), "// other\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "other"]);
+    let live = r.head();
+    r.git(&["checkout", "-q", "feature"]);
+    r.git(&["rebase", "-q", "main"]);
+    // The rebase is the fixture, so it is asserted and not assumed: a rebase
+    // that replayed nothing would leave every assertion below passing for the
+    // wrong reason.
+    assert_ne!(
+        r.head(),
+        anchored_on,
+        "the rebase must have replaced the commit the proof names"
+    );
+
+    seed_done(
+        &r,
+        DETACHED,
+        &format!("  - type: commit\n    ref: {anchored_on}\n"),
+    );
+    seed_done(
+        &r,
+        LIVE_ANCHOR,
+        &format!("  - type: commit\n    ref: {live}\n"),
+    );
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+
+    // A signal and never a fault: an unreachable commit here is a shallow
+    // clone, a branch never fetched or a rebase on somebody else's machine.
+    assert_eq!(
+        code(&out),
+        0,
+        "the shape of a clone is not a defect in the corpus: {said}"
+    );
+
+    let reported: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("no commit reachable"))
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "exactly the detached proof should be named:\n{said}"
+    );
+    assert!(reported[0].contains(DETACHED), "it names the task: {said}");
+    assert!(
+        reported[0].contains(&anchored_on),
+        "it names the reference: {said}"
+    );
+    assert!(
+        reported[0].contains(&format!("ank attest {DETACHED}")),
+        "a finding names the exact command that clears it: {said}"
+    );
+    assert!(
+        !said.contains(&live),
+        "a proof git still reaches is anchored, and nothing is owed about it: {said}"
+    );
+    // Reported and never repaired: which commit carries the work now is a
+    // judgement, and appending a proof is the only legal post-`done` write.
+    assert!(
+        r.task_text(DETACHED).contains(&anchored_on),
+        "the dead entry stays: a proof list is append-only"
+    );
+}
+
+/// A clone that cannot see is not a corpus that is wrong (§4).
+///
+/// A depth-1 clone reaches almost no history, so a check that asked the
+/// question there would report every commit proof in the corpus at once — the
+/// volume failure §4 keeps legislating against, and the reading this project
+/// has already settled twice for a dead scope a truncated history cannot
+/// explain (TASK-03eaa26bddd1, TASK-2ce5554d6ed0).
+///
+/// Two clones of one history, because the claim is a *difference* between
+/// clones and no single one can show it.
+#[test]
+fn a_shallow_clone_reports_no_detached_commit_proof() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let early = r.head();
+
+    // The corpus anchors on that first commit and then main moves past it, so
+    // a truncated clone carries the proof and not the commit it names.
+    seed_done(
+        &r,
+        DETACHED,
+        &format!("  - type: commit\n    ref: {early}\n"),
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "corpus"]);
+    std::fs::write(r.0.join("src/other.rs"), "// other\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "other"]);
+
+    // Whole: git has the commit, the proof is anchored, and there is nothing
+    // to say. Without this half, the silence below would prove only that the
+    // signal never fires.
+    let whole = clone_of(&r, None);
+    let out = r.ank_at("claude-code@ank", &["check"], &whole);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{said}");
+    assert!(
+        !said.contains("no commit reachable"),
+        "a whole clone reaches the commit the proof names:\n{said}"
+    );
+
+    let shallow = clone_of(&r, Some(1));
+    // The truncation is only a fixture if the clone genuinely cannot see it:
+    // the object is absent there, so a check that asked would have this proof
+    // — and every other commit proof in the corpus — to report at once.
+    let seen = git_command(&shallow)
+        .args(["cat-file", "-e", &format!("{early}^{{commit}}")])
+        .output()
+        .unwrap();
+    assert!(
+        !seen.status.success(),
+        "a depth-1 clone must not carry {early}, or this fixture asks nothing"
+    );
+
+    let out = r.ank_at("claude-code@ank", &["check"], &shallow);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "the shape of a clone is not a defect in the corpus: {said}"
+    );
+    assert!(
+        !said.contains("no commit reachable"),
+        "a clone that cannot see must accuse nothing:\n{said}"
+    );
+    assert!(
+        !said.contains(&early),
+        "a proof it cannot see is not a proof it may name:\n{said}"
+    );
+}
+
 /// The body that is painful to type as a flag arrives on stdin instead.
 ///
 /// The prose here is the whole point of the test, so it is the prose that hurts:
