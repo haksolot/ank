@@ -9889,3 +9889,218 @@ fn execution_still_renders_a_binding_constraint_in_full() {
         "execution mode counted constraints away instead of printing them: {text}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Corpus drift from the default branch (ADR-47e2ac102f58)
+// ---------------------------------------------------------------------------
+
+/// A repository whose corpus is committed on `main`, with `feature` branched off
+/// the same commit: the two carry the same corpus until a test moves one of
+/// them.
+///
+/// Committed on purpose. The question is what this checkout carries against what
+/// the default branch carries, and a fixture that never committed would compare
+/// a corpus against a branch that has none — which is the third state, not the
+/// one under test.
+fn drifting_repo() -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task("TASK-aaaaaaaaaaaa", Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "corpus"]);
+    r.git(&["branch", "feature"]);
+    r
+}
+
+/// The finding that caused a failure rather than friction: a checkout whose
+/// corpus is not the one the default branch carries, and nothing saying so.
+///
+/// Two ways of differing in one corpus, because they are one question: an entity
+/// the default branch has and this checkout does not, and an entity both carry
+/// with different content. One line either way, and the count is what makes it
+/// actionable.
+#[test]
+fn check_names_a_corpus_behind_the_default_branch_and_status_says_how_far() {
+    let r = drifting_repo();
+    r.seed_task("TASK-bbbbbbbbbbbb", Some("A criterion only main carries."));
+    r.seed_task_titled("TASK-aaaaaaaaaaaa", "Retitled on the default branch");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "main moves"]);
+    r.git(&["checkout", "-q", "feature"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "drift is a signal, never a fault: {text}");
+    assert!(
+        text.contains("2 entity file(s) differ from main"),
+        "check said nothing about a corpus two entities behind main: {text}"
+    );
+    assert!(
+        text.contains("git merge main"),
+        "the signal must name the command that closes the gap: {text}"
+    );
+    // Once for the corpus. Two entities differ, and two lines saying one thing
+    // is the volume that teaches a reader to stop reading `check`.
+    assert_eq!(
+        text.lines()
+            .filter(|l| l.contains("differ from main"))
+            .count(),
+        1,
+        "the drift is reported once for the corpus, never per entity: {text}"
+    );
+
+    let text = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        text.contains("2 entity file(s) differ from main"),
+        "status carries the same fact on one line: {text}"
+    );
+}
+
+/// Ahead is drift too, and level is silence in `check` and a line in `status`.
+///
+/// The corpus is a comparison and not an ordering: a checkout carrying an entity
+/// the default branch has never seen is as far from it as one missing an entity,
+/// and a reader told about only one of the two learns to trust neither.
+#[test]
+fn a_corpus_ahead_of_the_default_branch_is_named_and_a_level_one_says_so() {
+    let r = drifting_repo();
+    r.git(&["checkout", "-q", "feature"]);
+    r.seed_task(
+        "TASK-cccccccccccc",
+        Some("A criterion only this branch has."),
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "feature moves"]);
+
+    let text = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        text.contains("1 entity file(s) differ from main"),
+        "a corpus ahead of the default branch is drift as well: {text}"
+    );
+
+    // Level, on the default branch itself and with nothing uncommitted.
+    r.git(&["checkout", "-q", "main"]);
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(
+        !text.contains("differ from main"),
+        "a level corpus must produce no drift signal at all: {text}"
+    );
+
+    // `status` says it either way. An absent line is what "not asked" looks
+    // like, so a level corpus cannot be reported by silence.
+    let text = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        text.contains("level with main"),
+        "status must say the corpus is level rather than say nothing: {text}"
+    );
+}
+
+/// No default branch to compare against: the question is skipped in silence, on
+/// the rule the rename walk already follows.
+///
+/// Silence and not a warning. A corpus with no resolvable default branch already
+/// gets one line saying what that costs the coordination plane; a second about
+/// the corpus would report a consequence as though it were a separate finding.
+#[test]
+fn corpus_drift_is_skipped_in_silence_with_no_resolvable_default_branch() {
+    let r = drifting_repo();
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\n");
+    r.git(&["checkout", "-q", "feature"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(
+        !text.contains("entity file(s) differ"),
+        "nothing can be compared without a default branch: {text}"
+    );
+    let text = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        !text.contains("entity file(s) differ") && !text.contains("level with"),
+        "status has no drift to report either: {text}"
+    );
+}
+
+/// A `default_branch` that names no commit in this clone is said out loud, and
+/// never rendered as a corpus that has not moved.
+///
+/// That distinction is the whole reason the comparison goes through `file_at`,
+/// which tells an absent path from an unresolvable revision. A mistyped branch
+/// answering "level" is a reader told the corpus agrees with something that was
+/// never read.
+#[test]
+fn a_default_branch_naming_no_commit_is_named_rather_than_read_as_level() {
+    let r = drifting_repo();
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: mian\n");
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert_eq!(code(&out), 0, "{text}");
+    assert!(
+        text.contains("mian") && text.contains("not compared"),
+        "a branch naming no commit must be reported, not passed over: {text}"
+    );
+    assert!(
+        !text.contains("level with"),
+        "unable to compare is never 'nothing has moved': {text}"
+    );
+}
+
+/// Neither verb fetches to answer, and the assertion is on the absence of the
+/// network call rather than on the output.
+///
+/// A verb that fetched would rewrite the coordination plane underneath every
+/// other agent in the clone, which is the argument that made `status --remote`
+/// read with `ls-remote`. Origin is moved ahead first, so a fetch introduced
+/// here would visibly succeed: it would write `FETCH_HEAD` and advance
+/// `refs/remotes/origin/main`, and this test fails on either.
+#[test]
+fn neither_check_nor_status_fetches_to_compare_the_corpus() {
+    // `cloned` is what commits and pushes this corpus, so the fixture seeds and
+    // leaves the committing to it.
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task("TASK-aaaaaaaaaaaa", Some("A verifiable criterion."));
+    let (_origin, other) = r.cloned();
+
+    // Origin moves, and the clone is told nothing about it.
+    r.seed_task(
+        "TASK-dddddddddddd",
+        Some("A criterion pushed after the clone."),
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "origin moves"]);
+    r.git(&["push", "-q", "origin", "main"]);
+
+    let tracking = |at: &Path| -> String {
+        let out = git_command(at)
+            .args(["rev-parse", "refs/remotes/origin/main"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "rev-parse: {}", stderr(&out));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    let before = tracking(&other);
+    assert!(
+        !other.join(".git/FETCH_HEAD").exists(),
+        "the fixture must start with no FETCH_HEAD, or the assertion is empty"
+    );
+
+    for args in [["check"], ["status"]] {
+        let out = r.ank_at("claude-code@ank", &args, &other);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+        assert!(
+            !other.join(".git/FETCH_HEAD").exists(),
+            "{args:?} fetched: FETCH_HEAD appeared"
+        );
+        assert_eq!(
+            tracking(&other),
+            before,
+            "{args:?} fetched: refs/remotes/origin/main advanced"
+        );
+    }
+}

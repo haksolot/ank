@@ -279,10 +279,21 @@ pub fn run(
             commands::json_string(identity),
             commands::json_string(identity_source.word())
         );
+        // Null is the question never answered, and it is not zero: a caller
+        // that reads zero has been told the corpus is level, which is exactly
+        // the answer no verb may give without having compared (§4).
+        let drift_json = match &report.drift {
+            Some(d) => format!(
+                "{{\"branch\":{},\"entities\":{}}}",
+                commands::json_string(&d.branch),
+                d.entities
+            ),
+            None => "null".into(),
+        };
         let _ = writeln!(
             out,
             "{{\"branch\":{},\"default_branch\":{},\"identity\":{identity_json},\
-             \"claim\":{claim_json},\
+             \"claim\":{claim_json},\"drift\":{drift_json},\
              \"also_held\":[{}],\"remote\":{},\"elsewhere\":[{}],\
              \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
              \"faults\":{},\"signals\":{}}}",
@@ -349,6 +360,29 @@ pub fn run(
                 style.key("branch")
             );
         }
+    }
+
+    // Immediately under the branch lines, because it is the branch pair it
+    // qualifies (§4, ADR-47e2ac102f58): the two names above say where this
+    // checkout is, and this says whether the corpus under them is the one
+    // everybody else reads.
+    //
+    // Out of `inspect` and not computed here, on the rule this module opens
+    // with: `check` renders the same count from the same pass, and a second
+    // computation would be a second answer able to disagree.
+    //
+    // **Printed when there is no drift as well.** A reader who has to tell
+    // "level" from "never asked" by the absence of a line is reading silence,
+    // and the absence is what the unaskable cases already mean here.
+    if let Some(drift) = &report.drift {
+        let line = match drift.entities {
+            0 => format!("none, level with {}", drift.branch),
+            n => format!(
+                "{n} entity file(s) differ from {} (git merge {})",
+                drift.branch, drift.branch
+            ),
+        };
+        let _ = writeln!(out, "{} {line}", style.key("drift"));
     }
 
     // Immediately above the claim, because it is the claim lines it explains.
