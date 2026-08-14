@@ -864,12 +864,12 @@ pub fn find(
         None => None,
     };
 
-    // Short identifiers are computed over the whole corpus, never over the
-    // hits: a prefix that is unique among four results and ambiguous in the
-    // repository would be a prefix that stops working when the query changes.
+    // Short identifiers come from the corpus and never from the hits: a prefix
+    // unique among four results and ambiguous in the repository is a prefix
+    // that stops working when the query changes. Which corpus exactly is
+    // `shorts_of`'s answer, and it is not this verb's business to know.
     let all = index.all()?;
-    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
-    let shorts = context::short_ids(&ids);
+    let shorts = context::shorts_of(repo)?;
 
     // One read of the coordination plane for the whole verb: `--free` filters
     // on it, and the listing below marks its rows from it. Two reads would be
@@ -1094,8 +1094,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
     let index = Index::open(&repo.ank)?;
     let all = index.all()?;
-    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
-    let shorts = context::short_ids(&ids);
+    let shorts = context::shorts_of(repo)?;
 
     // `all()` arrives in identifier order, so the answer is a function of the
     // corpus and the path and of nothing else — the filesystem is never

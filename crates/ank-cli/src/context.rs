@@ -267,12 +267,30 @@ impl View {
 // Building it
 // ---------------------------------------------------------------------------
 
+/// The short forms this repository prints, over the identifier set §3 requires
+/// them to be measured against.
+///
+/// **That set is the store's and never the index's.** Prefix resolution lists
+/// the `<ID>.md` file names on disk (§6); the index holds the entities that
+/// parsed. The two differ on exactly one corpus — one written by a newer
+/// binary, whose entities every listing leaves out and prefix resolution walks
+/// all the same (TASK-ca7b61b00896) — and there the index's answer is a short
+/// form the same process refuses one command later. Measured here so that no
+/// verb has to remember which of the two it is holding.
+pub fn shorts_of(repo: &Repo) -> Result<HashMap<EntityId, String>> {
+    Ok(short_ids(&Store::new(&repo.ank).list_ids()?))
+}
+
 /// Shortest prefix that stays unambiguous, per kind, never below four.
 ///
 /// A fixed four would eventually print an id that `claim` refuses as ambiguous
 /// — the tool telling the agent to run a command it has already ruled out.
 /// Kinds are computed apart because the displayed form carries the `TASK-` or
 /// `ADR-` prefix, and prefix resolution filters on it.
+///
+/// Pure, and called through [`shorts_of`] everywhere a verb prints: what it is
+/// handed decides whether the answer is right, and the choice of corpus is the
+/// half worth stating once rather than at five call sites.
 pub fn short_ids(ids: &[EntityId]) -> HashMap<EntityId, String> {
     let mut out = HashMap::new();
     for kind in [EntityKind::Task, EntityKind::Adr] {
@@ -447,8 +465,7 @@ pub fn build(
     }
 
     let rows = index.all()?;
-    let ids: Vec<EntityId> = rows.iter().map(|r| r.id.clone()).collect();
-    let shorts = short_ids(&ids);
+    let shorts = shorts_of(repo)?;
 
     // HEAD is derived, never stored: the task on which this agent holds a
     // claim that has not lapsed.

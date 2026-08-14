@@ -1446,8 +1446,13 @@ fn check_authorship(
         {
             continue;
         }
+        // The full id, like every other finding in this report. It used to be
+        // a four-character prefix, which was the one subject in `check` a
+        // reader could not paste back into `ank show`: four characters is not
+        // a length §3 lets anything print, and this line had no corpus in hand
+        // to measure a length against (TASK-c1f01f301d63).
         report.findings.push(Finding::signal(
-            &e.id().short(),
+            e.id(),
             "written by an agent and read by no human",
         ));
     }
@@ -3630,8 +3635,7 @@ struct Edge {
 fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let index = Index::open(&repo.ank)?;
     let all = index.all()?;
-    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
-    let shorts = crate::context::short_ids(&ids);
+    let shorts = crate::context::shorts_of(repo)?;
     let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
     // The same coordination every other listing reads, so a blocker that is
     // claimed says so here too instead of reading `[in_progress]` at a reader
