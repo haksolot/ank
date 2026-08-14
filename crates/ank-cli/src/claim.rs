@@ -53,8 +53,14 @@ pub const CLAIMS_PREFIX: &str = "refs/ank/claims/";
 /// make one erase the other.
 pub const PROOF_PREFIX: &str = "refs/ank/proof/";
 
-/// Default TTL (§3). Short on purpose: it is renewed implicitly by `log`, so
-/// working is enough to keep the lock.
+/// Default TTL (§3). Short on purpose: it is renewed implicitly by the holder's
+/// work, so working is enough to keep the lock.
+///
+/// The tool's value, and what a repository states for itself is
+/// `claim_ttl_default` (ADR-0bb7ea8991bc). This is still the number a record
+/// written before the lease was recorded reads as, which is why it stays a
+/// constant rather than becoming a configuration lookup: an absent field is
+/// read as the tool's default everywhere else in the format too.
 pub const DEFAULT_TTL: Duration = Duration::from_secs(30 * 60);
 
 /// Clock-drift tolerance on expiry (§7). At the scale of a 30-minute TTL, NTP
@@ -991,22 +997,145 @@ pub fn sharing_warnings(
 
 /// Takes a lapsed claim back, in the same agent's name (§3).
 ///
-/// **The anchors are carried over, never recomputed.** Re-freezing the
-/// criterion here would erase a divergence introduced while the claim was down,
-/// which is the one thing `done` checks the hash to catch — the point of
-/// re-acquisition is to restore the lock, not to re-bless the work. The expiry
-/// moves, and the lease it moves by is the one the claim was granted.
-///
-/// The compare-and-swap is on the object the record was read from, so an agent
-/// that took the task over between the read and this write keeps it.
+/// [`renew`] and not a variant of it: re-acquisition restores the lock, it does
+/// not re-bless the work, so it wants exactly the write that carries the anchors
+/// over and moves nothing but the expiry. The name survives because the caller's
+/// situation is what differs — the lease ran out — and not the write.
 pub fn retake(cwd: &Path, standing: &Standing, cap: Duration) -> Result<Written> {
-    let ttl = renewal_ttl(&standing.record, cap);
-    let record = Record::Claim(ClaimRecord {
+    renew(cwd, &standing.id, &standing.object, &standing.record, cap)
+}
+
+/// One renewal of a claim: the expiry recomputed from the lease the record
+/// carries, re-capped by `claim_ttl_max`, swapped on the object the record was
+/// read from (§3, §7).
+///
+/// **The one implementation, and that is the whole point of it.** The renewal
+/// `log` performs, the re-acquisition of a lapsed claim and the renewal every
+/// other verb of the holder performs (ADR-0bb7ea8991bc) are the same write on
+/// the same terms; the first two were two copies of these four lines, and
+/// TASK-1b45f41e7b99 is what one of them getting the lease wrong costs — a
+/// second reading of the expiry is a second chance to read it differently.
+///
+/// **The anchors are carried over, never recomputed.** Re-freezing the criterion
+/// here would erase a divergence introduced while the claim stood, which is the
+/// one thing `done` checks the hash to catch.
+///
+/// The applied lease is written back rather than carried over. On a record from
+/// before the field existed that turns a `0` into the default it was just read
+/// as, so the record describes itself from the first renewal and the unset value
+/// leaves the coordination plane instead of being copied forward for the life of
+/// the claim.
+pub fn renew(
+    cwd: &Path,
+    id: &EntityId,
+    object: &str,
+    record: &ClaimRecord,
+    cap: Duration,
+) -> Result<Written> {
+    let ttl = renewal_ttl(record, cap);
+    let refreshed = Record::Claim(ClaimRecord {
         expires: format_utc(now_secs() + ttl.as_secs() as i64),
         ttl: ttl.as_secs(),
-        ..standing.record.clone()
+        ..record.clone()
     });
-    put(cwd, &standing.id, &record, Some(&standing.object))
+    put(cwd, id, &refreshed, Some(object))
+}
+
+// ---------------------------------------------------------------------------
+// Renewal by working (§3, ADR-0bb7ea8991bc)
+// ---------------------------------------------------------------------------
+
+/// What a verb is about, as far as the lease is concerned (§3).
+///
+/// §3 renewed the lease on `log` alone, and `log` is *reporting* rather than
+/// working: after the design is settled there is often an hour of mechanical
+/// fixing with nothing worth logging, so the lease lapsed precisely during the
+/// stretch where the work was least interruptible. Renewal follows **the
+/// holder's verbs against the task it holds** instead.
+///
+/// **Declared per verb on [`crate::cli::CommandSpec`] and read here.** The rule
+/// is "the holder's verbs against the held task" and not a list of verb names,
+/// because a list beside the dispatch is what goes stale when a verb is added —
+/// the same argument `coordinates` makes on the same table, and for the same
+/// reason: a field makes the compiler ask the question of every verb that is
+/// ever added, where a separate enumeration lets a new one default to silence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Renews {
+    /// Nothing. The verb is about the repository or the corpus rather than about
+    /// a task — `status`, `find`, `check` — or it is one of the verbs that
+    /// settles the lease itself: `claim` grants one rather than extending it,
+    /// `log` renews as part of its own write and reports what the write turned
+    /// up, and `done` and `release` end the claim.
+    Never,
+    /// The task its `<id>` names, and only when that is the one the caller
+    /// holds. `ank show` on another task renews nothing.
+    Named,
+    /// The task the caller holds, which is the only one the verb is ever about:
+    /// `context` in execution mode.
+    Held,
+}
+
+/// Renews the caller's lease when the verb that just ran was work on the task it
+/// holds (§3, ADR-0bb7ea8991bc).
+///
+/// **Silent, errors included**, which is why the caller gets no `Result`.
+/// Renewal is a side effect of working and never the answer to the question
+/// asked: `show` and `edit` do not coordinate and must keep answering outside a
+/// usable git (ADR-9307e5d214a7), and a verb that failed to renew has still done
+/// what it was called for. `log` reports because reporting is that verb's job.
+///
+/// **A lapsed claim is not renewed.** Taking one back stays the re-acquisition
+/// `log` and `done` perform (§3) — extending it from a read would let a passive
+/// verb silently retake a claim §3 hands to the two verbs that write.
+pub fn renew_by_working(
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    renews: Renews,
+    named: Option<&str>,
+) {
+    let _ = renewed_by_working(repo, cfg, identity, renews, named);
+}
+
+/// The body of [`renew_by_working`], with the errors it swallows still visible
+/// to a reader and to a test.
+fn renewed_by_working(
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    renews: Renews,
+    named: Option<&str>,
+) -> Result<bool> {
+    if renews == Renews::Never {
+        return Ok(false);
+    }
+    let Some(standing) = on_task(&repo.root, identity)? else {
+        return Ok(false);
+    };
+    if standing.lapsed {
+        return Ok(false);
+    }
+    if renews == Renews::Named {
+        // No id given is no task named, and this verb names one: `ank show`
+        // with nothing to show never reached a task, so it worked on none.
+        let Some(given) = named else {
+            return Ok(false);
+        };
+        // Resolved through the store, because the caller types a prefix and the
+        // held id is whole. A prefix that resolves to nothing, or to two
+        // entities, is a verb that already failed; it renews nothing either way.
+        if Store::new(&repo.ank).resolve(given).ok().as_ref() != Some(&standing.id) {
+            return Ok(false);
+        }
+    }
+    renew(
+        &repo.root,
+        &standing.id,
+        &standing.object,
+        &standing.record,
+        cfg.claim_ttl_max,
+    )?;
+    Ok(true)
 }
 
 /// The claim in force on a task, if there is one.
@@ -1786,11 +1915,17 @@ pub fn ensure_trailing_newline(text: &str) -> String {
 
 /// `--ttl`, defaulted and then capped by `claim_ttl_max`: an agent cannot grant
 /// itself twenty-four hours and hoard (§3).
+///
+/// **The default the flag falls back to is the repository's**,
+/// `claim_ttl_default`, and the cap binds it exactly as it binds a value the
+/// caller typed (ADR-0bb7ea8991bc). A repository whose default sits above its
+/// own cap is not a configuration that fails to load — it is a claim granted
+/// the cap, which is the same answer `--ttl 24h` gets.
 fn resolve_ttl(flag: Option<&str>, cfg: &Config) -> Result<Duration> {
     let asked = match flag {
         Some(v) => config::parse_duration(v)
             .map_err(|e| CliError::new(1, e).with_hint("ank claim <id> --ttl 30m"))?,
-        None => DEFAULT_TTL,
+        None => cfg.claim_ttl_default,
     };
     Ok(asked.min(cfg.claim_ttl_max))
 }

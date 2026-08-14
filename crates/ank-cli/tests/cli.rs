@@ -4394,9 +4394,164 @@ fn a_renewal_keeps_the_lease_the_claim_was_granted() {
     );
 }
 
+/// A verb the holder runs against the task it holds renews that lease, and one
+/// about anything else renews nothing (§3, ADR-0bb7ea8991bc).
+///
+/// Through the binary and against the ref, for the reason its neighbour above
+/// is: what an agent's survival across a silent stretch depends on is the
+/// record the next process reads.
+///
+/// **The expiry is forged far ahead and the renewal is what brings it back.**
+/// A renewal that landed a second after the claim would be invisible against a
+/// lease still running, and the honest wait is the lease itself; 2099 cannot be
+/// confused with two hours from now, so nothing here has to be timed.
+///
+/// The defect this pins: the lease was renewed by `log` alone, and `log` is
+/// reporting rather than working — so it lapsed precisely during the stretch
+/// with nothing worth logging, which is also the stretch where the work is
+/// least interruptible. Three parallel sessions hit it independently.
+#[test]
+fn a_verb_of_the_holder_on_the_task_it_holds_renews_the_lease() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let out = r.ank("claude-code@ank", &["claim", ID, "--ttl", "2h"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // `show` on the held task: a read, and the holder's work on it.
+    r.revive_claim(ID);
+    let out = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let renewed = expiry_span_of(&r, ID);
+    assert!(
+        (7000..=7300).contains(&renewed),
+        "ank show on the held task did not renew the lease: {renewed}s from now"
+    );
+
+    // `context` with a claim in hand is about that task and nothing else, and
+    // it names no id: the rule is not "a verb carrying the right id".
+    r.revive_claim(ID);
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let renewed = expiry_span_of(&r, ID);
+    assert!(
+        (7000..=7300).contains(&renewed),
+        "ank context in execution mode did not renew the lease: {renewed}s"
+    );
+
+    // The cap binds this renewal as it binds `log`'s, so a lowered
+    // `claim_ttl_max` takes effect on the next verb rather than the next claim.
+    r.revive_claim(ID);
+    r.set_config("schema: 1\nclaim_ttl_max: 45m\ndefault_branch: main\n");
+    let out = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let capped = expiry_span_of(&r, ID);
+    assert!(
+        (2500..=2800).contains(&capped),
+        "a lowered claim_ttl_max did not bind the renewal a read performed: \
+         {capped}s"
+    );
+}
+
+/// The other half of the rule, and the half that keeps it a rule: a verb that
+/// is not about the held task moves nothing (§3).
+///
+/// The record is compared byte for byte rather than by its expiry, because what
+/// must be true is that the ref was not written at all — an expiry rewritten to
+/// the same second would pass a comparison on seconds and would still be a
+/// claim renewed by a verb that renews nothing.
+#[test]
+fn a_verb_about_another_task_or_the_repository_renews_nothing() {
+    const OTHER: &str = "TASK-000000000002";
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_task(OTHER, Some("Another verifiable criterion."));
+
+    let out = r.ank("claude-code@ank", &["claim", ID, "--ttl", "2h"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.revive_claim(ID);
+    let before = r.claim_ref(ID).expect("the claim ref must exist");
+
+    for args in [
+        // Named, and naming another one.
+        vec!["show", OTHER],
+        // Off the loop and about the repository, which is the case §3 spells
+        // out: `status` does not renew.
+        vec!["status"],
+        vec!["find", "--status", "open"],
+        vec!["check"],
+    ] {
+        let out = r.ank("claude-code@ank", &args);
+        assert!(
+            code(&out) == 0 || code(&out) == 8,
+            "{args:?}: {}",
+            stderr(&out)
+        );
+        assert_eq!(
+            r.claim_ref(ID).as_deref(),
+            Some(before.as_str()),
+            "ank {args:?} renewed a lease it is not about"
+        );
+    }
+}
+
+/// `claim` with no `--ttl` grants what the repository states, capped (§3, §4).
+///
+/// Thirty minutes stays the shipped default. What changes is that a repository
+/// can say its own number once, instead of every agent rediscovering `--ttl` by
+/// losing a claim first.
+#[test]
+fn claim_without_a_ttl_takes_claim_ttl_default() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // Unset, so the tool's value: the file the fixture carries names no
+    // `claim_ttl_default` at all.
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let granted = expiry_span_of(&r, ID);
+    assert!(
+        (1700..=1900).contains(&granted),
+        "an unset claim_ttl_default did not resolve to the tool's thirty \
+         minutes: {granted}s"
+    );
+
+    let out = r.ank("claude-code@ank", &["release", ID, "--reason", "again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\nclaim_ttl_default: 90m\ndefault_branch: main\n");
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let stated = expiry_span_of(&r, ID);
+    assert!(
+        (5300..=5500).contains(&stated),
+        "the repository's claim_ttl_default was not what the claim granted: \
+         {stated}s"
+    );
+
+    let out = r.ank("claude-code@ank", &["release", ID, "--reason", "again"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // A default above the cap is not a configuration that fails to load: the
+    // cap binds it exactly as it binds a value the caller typed.
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\nclaim_ttl_default: 4h\ndefault_branch: main\n");
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let capped = expiry_span_of(&r, ID);
+    assert!(
+        (7000..=7300).contains(&capped),
+        "claim_ttl_max did not cap a claim_ttl_default above it: {capped}s"
+    );
+}
+
 /// Seconds from now to the expiry the claim ref carries, read with git.
 fn expiry_span(r: &Repo) -> i64 {
-    let record = r.claim_ref(ID).expect("the claim ref must exist");
+    expiry_span_of(r, ID)
+}
+
+/// The same reading, of a named task's claim.
+fn expiry_span_of(r: &Repo, id: &str) -> i64 {
+    let record = r.claim_ref(id).expect("the claim ref must exist");
     let expires = record
         .lines()
         .find_map(|l| l.strip_prefix("expires: "))
@@ -6831,6 +6986,10 @@ fn config_reads_the_value_in_effect_and_marks_a_resolved_default() {
         say(&["config", "verifiers.fmt-check.timeout"]),
         "10m (default)"
     );
+    // The key a repository states its own rhythm through, and the fixture
+    // states nothing: the thirty minutes it reads as are the tool's
+    // (ADR-0bb7ea8991bc).
+    assert_eq!(say(&["config", "claim_ttl_default"]), "30m (default)");
 
     // Absent with nothing to resolve.
     r.set_config("schema: 1\n");
@@ -6872,8 +7031,26 @@ fn config_writes_the_key_and_no_byte_beside_it() {
     );
     assert_eq!(AWKWARD.lines().count(), after.lines().count());
 
+    // A key the file does not carry is written where the surgery appends, and
+    // reads back as this repository's value rather than the tool's.
+    let out = r.ank("claude-code@ank", &["config", "claim_ttl_default", "90m"]);
+    assert!(out.status.success(), "{}", erred(&out));
+    assert_eq!(said(&out), "claim_ttl_default 30m (default) -> 90m");
+    assert!(r.config_text().contains("claim_ttl_default: 90m"));
+    assert_eq!(
+        said(&r.ank("claude-code@ank", &["config", "claim_ttl_default"])),
+        "90m"
+    );
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "claim_ttl_default"],
+    );
+    assert!(out.status.success(), "{}", erred(&out));
+    assert!(!r.config_text().contains("claim_ttl_default"));
+
     // No default was materialised on the way: context_budget was absent and
     // stays absent, and fmt-check still declares no timeout.
+    let after = r.config_text();
     assert!(!after.contains("context_budget"), "{after}");
     let fmt = after.split("fmt-check:").nth(1).unwrap();
     assert!(!fmt.split("cargo-test:").next().unwrap().contains("timeout"));
@@ -6953,6 +7130,7 @@ fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
         "schema",
         "context_budget",
         "claim_ttl_max",
+        "claim_ttl_default",
         "default_branch",
         "verifiers.<name>.run",
         "verifiers.<name>.timeout",
