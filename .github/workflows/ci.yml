@@ -148,11 +148,14 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-      # Read the flag, not the exit code. A proof is a ref, so it is worth
-      # something only once it reaches the remote -- and when the push is
-      # refused, `attest` still exits 0 and warns on standard error. Trusting
-      # the code would go green having lost the attestation, which is the exact
-      # silence this job was written to remove.
+      # The exit code, like every other step here. `attest --detached` produces
+      # a ref and nothing else, so a push that did not land leaves nothing worth
+      # having and the verb says so with code 9 (ADR-af533e7a3e03). The loop
+      # runs every id before failing: one unreachable push is not a reason to
+      # leave the rest of the run unanchored.
+      #
+      # `--json` stays because the run log is where a human reads what was
+      # anchored to what. Nothing parses it any more.
       - name: anchor them on this run
         env:
           IDS: ${{ steps.unanchored.outputs.ids }}
@@ -164,17 +167,8 @@ jobs:
           fi
           failed=0
           for id in $IDS; do
-            out=$(cargo run -q --bin ank -- attest "$id" \
-              --proof "test:$GITHUB_RUN_ID" --detached --json) || {
-              echo "attest failed for $id"
-              failed=1
-              continue
-            }
-            echo "$out"
-            if ! printf '%s' "$out" | jq -e '.pushed' > /dev/null; then
-              echo "attested $id but the proof never reached the remote"
-              failed=1
-            fi
+            cargo run -q --bin ank -- attest "$id" \
+              --proof "test:$GITHUB_RUN_ID" --detached --json || failed=1
           done
           [ "$failed" -eq 0 ]
 

@@ -8750,11 +8750,7 @@ fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
     }
 }
 
-/// A clone of `r`, truncated to `depth` when one is given.
-///
-/// Through a `file://` URL and not a path, because git ignores `--depth` on a
-/// local path clone: without the URL the shallow fixture would quietly be a
-/// whole one, and the test would pass while testing nothing.
+/// A `file://` URL for a local path, and the one form of it this suite uses.
 ///
 /// The URL is the path with `file://` in front and nothing else done to it. On
 /// Unix the path opens with a slash and the result is the ordinary three-slash
@@ -8768,13 +8764,26 @@ fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
 /// is not a Windows workaround but the one that does not depend on the
 /// environment an agent's shell happens to export, which is how two sessions
 /// reported this test red while a third watched it pass (TASK-143a310de8b6).
+///
+/// **One function and not one expression per caller**, because that measurement
+/// is the whole of what makes it right: a second site deriving the URL again is
+/// a second chance to write the three-slash form back in.
+fn file_url(path: &Path) -> String {
+    format!("file://{}", path.to_string_lossy().replace('\\', "/"))
+}
+
+/// A clone of `r`, truncated to `depth` when one is given.
+///
+/// Through a `file://` URL and not a path, because git ignores `--depth` on a
+/// local path clone: without the URL the shallow fixture would quietly be a
+/// whole one, and the test would pass while testing nothing.
 fn clone_of(r: &Repo, depth: Option<u32>) -> PathBuf {
     let name = r.0.file_name().unwrap().to_string_lossy().to_string();
     let dest = r.0.with_file_name(match depth {
         Some(d) => format!("{name}-clone{d}"),
         None => format!("{name}-clone"),
     });
-    let url = format!("file://{}", r.0.to_string_lossy().replace('\\', "/"));
+    let url = file_url(&r.0);
     let dest_s = dest.to_string_lossy().to_string();
     let d = depth.map(|d| d.to_string());
     let mut args = vec!["clone", "-q"];
@@ -9517,6 +9526,142 @@ fn a_detached_proof_outlives_check_until_the_file_carries_it() {
         !present(&r.0),
         "the file on the default branch carries the same proof, and the ref \
          is still there"
+    );
+}
+
+/// A detached proof that never reached the remote **fails**, and a claim
+/// against the same remote does not (ADR-af533e7a3e03).
+///
+/// **The two halves are one test because the decision is the difference between
+/// them.** A change that failed both would satisfy the first assertion alone
+/// and would be exactly the generalisation the ADR refuses: `claim` leaves a
+/// record that still governs this clone, so it degrades and displays the risk,
+/// while `--detached` produces a ref and nothing else, and a ref no other clone
+/// can read is not an attestation.
+///
+/// Against a `file://` remote that is configured and gone, which is the shape a
+/// pipeline off the network actually has: a URL that resolves to nothing, so
+/// git fails to connect rather than refusing a swap.
+#[test]
+fn a_detached_proof_that_missed_the_remote_fails_where_a_claim_degrades() {
+    const FINISHED: &str = "TASK-000000000e01";
+    const FREE: &str = "TASK-000000000e02";
+    let refname = format!("refs/ank/proof/{FINISHED}");
+
+    let r = Repo::new();
+    r.seed_task(FINISHED, Some("A verifiable criterion."));
+    r.seed_task(FREE, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let sha = r.head();
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", FINISHED])), 0);
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", FINISHED, "--proof", &format!("commit:{sha}")],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    // The remote is added after `done`, so nothing before this point had one to
+    // reach and the failure below is about the attestation alone.
+    r.git(&[
+        "remote",
+        "add",
+        "origin",
+        &file_url(&r.0.with_extension("gone.git")),
+    ]);
+
+    let out = r.ank(
+        "process:github-actions",
+        &[
+            "attest",
+            FINISHED,
+            "--proof",
+            "test:ci-run-4242",
+            "--detached",
+        ],
+    );
+    assert_eq!(
+        code(&out),
+        9,
+        "a proof no other clone can read reported success:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = stderr(&out);
+    assert!(
+        said.contains("proof not pushed") && said.contains("no other clone can read it"),
+        "the failure dropped the sentence naming what went wrong: {said}"
+    );
+    // The hint, and it is the exact command rather than advice: the record is
+    // in this clone already, so what is missing is one push and not a re-run.
+    assert!(
+        said.contains(&format!("git push origin {refname}")),
+        "the failure names no command to run next: {said}"
+    );
+
+    // And that hint is only right if the record really is local. It is: the
+    // local swap is what the push failed to carry, not what it undid.
+    assert!(
+        git_command(&r.0)
+            .args(["rev-parse", "--verify", "--quiet", &refname])
+            .output()
+            .unwrap()
+            .status
+            .success(),
+        "the local ref went missing, and the hint would send the caller to \
+         push nothing"
+    );
+
+    // `--json` says the same thing the exit code does. An integration reading
+    // the flag and one reading the code must not be able to disagree.
+    let out = r.ank(
+        "process:github-actions",
+        &[
+            "attest",
+            FINISHED,
+            "--proof",
+            "test:ci-run-4242",
+            "--detached",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 9, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("\"pushed\":false"),
+        "the flag and the exit code disagree: {}",
+        stdout(&out)
+    );
+
+    // The other half, and the one that keeps the change from spreading: the
+    // same unreachable remote, a verb whose write also landed on disk.
+    let out = r.ank("claude-code@ank", &["claim", FREE]);
+    assert_eq!(
+        code(&out),
+        0,
+        "an unreachable remote must not fail a claim:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains("claim not pushed") && said.contains("another clone"),
+        "the claim degraded in silence: {said}"
+    );
+    assert!(
+        r.claim_ref(FREE).is_some(),
+        "the claim did not hold locally, which is the half that must not degrade"
+    );
+}
+
+/// The help says which side of that rule the verb is on, so a caller never has
+/// to infer it from what the verb happens to touch (ADR-af533e7a3e03).
+#[test]
+fn the_help_of_attest_says_a_detached_proof_fails_on_an_unreachable_remote() {
+    let r = Repo::new();
+    let page = stdout(&r.ank("claude-code@ank", &["help", "attest"]));
+    assert!(
+        page.contains("--detached") && page.contains("unreachable") && page.contains("(9)"),
+        "the page does not say the verb fails on an unreachable remote: {page}"
     );
 }
 
