@@ -5,7 +5,7 @@ slug: re-point-the-citations-of-the-superseded-complet
 title: Re-point the citations of the superseded completion-ref ADR
 created: 2026-08-11T18:51:09Z
 author: claude-code@nested-pebble
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/**
   - crates/ank-cli/tests/**
@@ -14,7 +14,7 @@ done_criteria: |
   Once ADR-6d8736c04cfa is accepted and ADR-bcf222a31525 is marked superseded, no source file of the crate cites the superseded id as the reason for a design: the nine citations in claim.rs, context.rs, done.rs, git.rs and human.rs name the ADR that binds, or drop the citation where history is what they were recording. The id joins the DEAD list of no_superseded_adr_is_cited_in_the_crate, which is what makes the property hold afterwards rather than being restored by hand. cargo test and ank check stay green.
 criteria_by: creator
 schema: 2
-version: 1
+version: 2
 ---
 
 Deliberately not folded into TASK-78326e2e3e89, which created the succession.

@@ -66,7 +66,7 @@ pub enum Coordination {
 
 impl Coordination {
     /// A task carrying a completion ref is never presented as ready, whatever
-    /// the file says — that is the whole point of the ref (ADR-bcf222a31525).
+    /// the file says — that is the whole point of the ref (ADR-6d8736c04cfa).
     pub fn blocks_readiness(&self) -> bool {
         matches!(
             self,

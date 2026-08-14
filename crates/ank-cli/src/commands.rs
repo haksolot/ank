@@ -1047,7 +1047,7 @@ fn free_of_live_claims<'a>(
             // `open` in the file this branch carries, and `--free` offered it —
             // an exact command that refuses with code 4 the moment it is run,
             // which is what `claim`'s own "another ready task" hint learned to
-            // skip (ADR-bcf222a31525). Not counted as hidden: the count answers
+            // skip (ADR-6d8736c04cfa). Not counted as hidden: the count answers
             // "how much did the scope filter cost me", and this is not that.
             if context::coordination_of(coord, &r.id).blocks_readiness() {
                 return false;

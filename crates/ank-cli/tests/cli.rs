@@ -3408,14 +3408,15 @@ fn status_names_every_live_claim_of_this_identity() {
 }
 
 /// `close` leaves nothing on the coordination plane where `done` leaves a
-/// completion record, and that asymmetry is the decision (TASK-78326e2e3e89).
+/// completion record, and that asymmetry is the decision (ADR-6d8736c04cfa).
 ///
-/// ADR-bcf222a31525 created the completion ref so that a task finished on an
-/// unmerged branch would not look free everywhere else, and named this gap
+/// The ADR it supersedes created the completion ref so that a task finished on
+/// an unmerged branch would not look free everywhere else, and named this gap
 /// without settling it -- on the ground that `close` is "a human act and a rare
 /// one", which ADR-e17e1bbd93ff retired by dissolving the human side entirely.
-/// The code has behaved this way throughout; what it lacked was a decision
-/// saying so and a test holding it.
+/// That is history, and `.ank/` carries it (TASK-78326e2e3e89). The code has
+/// behaved this way throughout; what it lacked was a decision saying so and a
+/// test holding it.
 ///
 /// Read **from a second checkout**, because that is where the question arises:
 /// `refs/ank/` is shared by every worktree, and an agent on another branch is
@@ -6145,14 +6146,23 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
 /// own assertion by containing what it forbids. It reads as an affectation
 /// until you picture the test failing on itself.
 ///
+/// The third arrived the same way and is the reason the list is worth keeping:
+/// thirteen comments, across six modules and this file, explained the
+/// completion ref by the ADR that created it, and a human ratified its
+/// successor on the default branch. The citations were right until that
+/// signature and wrong the instant after, which is why re-pointing them is a
+/// task of its own (TASK-d9d364bad929) and why the list holds the result rather
+/// than a reader's memory.
+///
 /// This is not a general ban on naming a superseded ADR: history is worth
-/// writing down, and `.ank/` is where it is written. It is a ban on these two,
+/// writing down, and `.ank/` is where it is written. It is a ban on these three,
 /// which have no live claim left to make anywhere in this crate.
 #[test]
 fn no_superseded_adr_is_cited_in_the_crate() {
-    const DEAD: [&str; 2] = [
+    const DEAD: [&str; 3] = [
         concat!("ADR-", "2f8a61c04b7d"),
         concat!("ADR-", "3859eb46bdc3"),
+        concat!("ADR-", "bcf222a31525"),
     ];
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -7826,7 +7836,7 @@ fn find_free_lists_what_no_live_claim_covers_and_says_how_many_it_hid() {
 }
 
 /// A task finished on another branch is not free, whatever its file says here
-/// (ADR-bcf222a31525).
+/// (ADR-6d8736c04cfa).
 ///
 /// Measured on the real corpus while building `--free`, which is why it is
 /// written down: the listing offered a task carrying a completion ref, because

@@ -16,7 +16,7 @@
 //! divergence visible, and it surfaces here as a code 6 before a single
 //! verifier starts.
 //!
-//! **The ref is not deleted, it is transformed** (ADR-bcf222a31525). A `done`
+//! **The ref is not deleted, it is transformed** (ADR-6d8736c04cfa). A `done`
 //! lives on the branch that produced it, so between the work and the merge the
 //! task would look free to every other agent. The claim record becomes a
 //! completion record pointing at the commit, with no TTL, and only `check`
