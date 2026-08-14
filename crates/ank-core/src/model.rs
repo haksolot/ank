@@ -165,6 +165,44 @@ impl ProofType {
     }
 }
 
+/// The route by which a proof arrived (§4, ADR-b6b69053a47b).
+///
+/// The type says what the reference points at; this says who put it there, and
+/// the second is what the trust rests on. A run reference is the strongest
+/// thing in the hierarchy when a pipeline wrote it and the weakest when
+/// somebody typed it — before this existed the file said the same thing in both
+/// cases, so `--proof test:<anything>` was recorded as strong, unchecked, and
+/// silenced the one finding designed to catch a completion nothing external
+/// anchors.
+///
+/// **A closed set, and the absent field is not a member of it.** `None` means
+/// the entry was written before the distinction existed and is read exactly as
+/// it was read then; a spelling outside the set is a parse error, because a
+/// writer inventing a fourth route would be inventing one the trust hierarchy
+/// has no rule for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProofVia {
+    /// Ank ran a verifier `config.yml` declares, and this is its own statement.
+    Verifier,
+    /// The entry reached the task on `refs/ank/proof/<id>`, written by whoever
+    /// held the pipeline (§7). A third-party statement.
+    Attested,
+    /// A caller passed it to `done --proof` or `attest --proof`. Recorded as
+    /// given, and never refused: the CLI is not a gatekeeper.
+    Submitted,
+}
+
+impl ProofVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProofVia::Verifier => "verifier",
+            ProofVia::Attested => "attested",
+            ProofVia::Submitted => "submitted",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Proof {
@@ -183,6 +221,31 @@ pub struct Proof {
     /// actually ran, independently of the current state of config.yml.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verifier: Option<String>,
+    /// How the entry arrived. `None` means it predates the field (§3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<ProofVia>,
+}
+
+impl Proof {
+    /// Whether this entry anchors the completion in something outside the
+    /// agent's reach — the question `check` asks before reporting `done with no
+    /// test proof` (§4, ADR-b6b69053a47b).
+    ///
+    /// **Read on the route and never on the type alone.** That is the whole
+    /// change: a `test` reference somebody typed at a keyboard used to answer
+    /// yes here, which made the finding silenceable by the very act it exists
+    /// to catch.
+    ///
+    /// **`None` answers yes**, and that is a decision rather than an oversight.
+    /// An entry written before the field cannot say which route it took, and a
+    /// rule that read the silence as `submitted` would redden every completion
+    /// recorded before it landed — twenty-one of them in this repository's own
+    /// corpus, ten typed by hand and eleven attested by the pipeline, with
+    /// nothing in the files to tell them apart. A rule that fires on a corpus
+    /// that did nothing is a rule everybody turns off.
+    pub fn anchors_externally(&self) -> bool {
+        self.proof_type == ProofType::Test && self.via != Some(ProofVia::Submitted)
+    }
 }
 
 // ---------------------------------------------------------------------------

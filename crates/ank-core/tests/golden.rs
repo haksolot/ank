@@ -169,6 +169,10 @@ fn invalid_files_are_rejected_with_the_right_error() {
             // kind happens to carry. A reader told "invalid identifier" goes
             // hunting for a typo in the hex.
             "unknown-kind" => matches!(&err, Error::UnknownKind { kind } if kind == "epic"),
+            // `via` is a closed set. The absent field is the only way to say
+            // "no route recorded", so a value outside the set is a defect and
+            // never a route this reader has not heard of.
+            "bad-proof-via" => matches!(&err, Error::Yaml(_)) && err.to_string().contains("via"),
             // A `verified` list is optional; an entry in it is not partial.
             "verified-without-at" => {
                 matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `at`")
@@ -221,6 +225,39 @@ fn an_adr_carries_a_reading_too() {
     // `verified` sits between `ratified` and `schema`, and the round-trip test
     // is what proves the position rather than this one.
     assert_eq!(a.ratified.as_deref(), Some("9f2b41c70de8"));
+}
+
+/// A proof entry says which route it arrived by, and the entries that predate
+/// the field say nothing rather than something wrong (ADR-b6b69053a47b).
+///
+/// The negative half is the one that matters, and it is asserted on the schema
+/// 2 fixture: its proof entries were written before `via` existed, they hold
+/// `None`, and the round-trip test above is what proves they do not acquire one
+/// on a rewrite. A reader that filled the absence in with a default would be
+/// reinterpreting a corpus it postdates — which is the same reading §3 gives to
+/// pre-convention actors and to entities predating `author`.
+#[test]
+fn a_proof_records_its_route_and_an_older_one_records_none() {
+    let input = fs::read_to_string(golden_dir("valid").join("TASK-2f8c41ba07d3.md")).unwrap();
+    let t = parse_task(&input).unwrap();
+    assert_eq!(t.proof.len(), 2);
+    assert_eq!(t.proof[0].via, Some(ProofVia::Verifier));
+    assert_eq!(t.proof[1].via, Some(ProofVia::Submitted));
+    // Route and type are orthogonal: the verifier entry is what anchors, the
+    // submitted `commit` is not a `test` at all.
+    assert!(t.proof[0].anchors_externally());
+    assert!(!t.proof[1].anchors_externally());
+
+    let older = fs::read_to_string(golden_dir("valid").join("TASK-8f3a91c2d4e7.md")).unwrap();
+    let older = parse_task(&older).unwrap();
+    assert_eq!(older.schema, 2);
+    assert!(
+        older.proof.iter().all(|p| p.via.is_none()),
+        "an entry written before the field must carry no route"
+    );
+    // And it counts as it always counted. Absent is not `submitted`.
+    assert!(older.proof.iter().all(|p| p.anchors_externally()));
+    assert!(!serialize_entity(&Entity::Task(older)).contains("via:"));
 }
 
 /// `verified` is optional on every kind and its absence is never a fault. The

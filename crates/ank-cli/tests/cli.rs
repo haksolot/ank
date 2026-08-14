@@ -9681,6 +9681,213 @@ fn a_detached_test_proof_silences_the_signal_that_counts_proofs() {
     );
 }
 
+/// A test reference a caller typed is not the proof a pipeline attested
+/// (ADR-b6b69053a47b), and the binary is where that has to be true.
+///
+/// **The two halves are one test because the route is the only difference
+/// between them.** The same verb, the same proof type, the same task: what
+/// changes is `--detached`, and therefore where the entry goes and what it
+/// records about how it got there. A test asserting only the silence would
+/// pass on a rule that had stopped firing altogether, and a test asserting
+/// only the firing would pass on one that never stops.
+///
+/// The wording is asserted too, and not as decoration. A task carrying
+/// `test:<something>` that is told it has no test proof is told something
+/// false, and the hint has to name a command that actually clears the finding
+/// — a plain `ank attest` records `via: submitted` and would leave the reader
+/// running it twice.
+#[test]
+fn a_submitted_test_reference_leaves_the_signal_firing_and_an_attested_one_clears_it() {
+    let (r, other) = attestable();
+    let before = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        before.contains("done with no test proof"),
+        "the signal must fire first, or the rest proves nothing: {before}"
+    );
+
+    // A caller types a run reference into the file. Accepted, recorded, and
+    // still not an anchor: this changes what is reported, never what is
+    // refused.
+    let out = r.ank(
+        "claude-code@ank",
+        &["attest", ID, "--proof", "test:31666088871"],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a typed reference"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "still a signal, never a fault: {said}");
+    let reported: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("test proof") && l.contains(ID))
+        .collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "a typed reference silenced the signal it exists to leave standing:\n{said}"
+    );
+    assert!(
+        reported[0].contains("no attested test proof") && reported[0].contains("test:31666088871"),
+        "the finding must say what it declined to count, and why: {}",
+        reported[0]
+    );
+    assert!(
+        reported[0].contains(&format!("ank attest {ID} --proof test:<run-id> --detached")),
+        "the hint must name the command that clears it: {}",
+        reported[0]
+    );
+
+    // And the file says so, which is where the distinction lives: it is a
+    // field and not a guess made at read time from a ref that gets pruned.
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ID]));
+    assert!(shown.contains("via: submitted"), "{shown}");
+
+    // The same reference, the same verb, arriving by the other route.
+    let out = ank_command()
+        .args(["attest", ID, "--proof", "test:31666088871", "--detached"])
+        .arg("--repo")
+        .arg(&other)
+        .env("ANK_AGENT", "process:github-actions")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let out = git_command(&r.0)
+        .args(["fetch", "--quiet", "origin"])
+        .output();
+    assert!(out.unwrap().status.success());
+
+    let after = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !after.contains("test proof"),
+        "a pipeline attested it and the signal still fires: {after}"
+    );
+
+    // Twice, because `check` is the command that prunes and the answer must
+    // not depend on how often it has run. A ref retired in favour of a file
+    // entry that anchors nothing would bring the finding back on a task
+    // nobody touched.
+    let again = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !again.contains("test proof"),
+        "the second run of check disagreed with the first: {again}"
+    );
+}
+
+/// The attestation copied out of the ref into the file keeps its route, and
+/// that is what makes the ref safe to retire.
+///
+/// A proof ref lives exactly as long as what it carries is not yet where
+/// everyone reads it, and the file catching up is the one thing that retires
+/// it. Ank can see that the entry being appended is the one the ref already
+/// holds — the same check it already performs on a `commit:` against git — so
+/// it records the route it verified rather than the route it was handed.
+/// Without that, the prune would delete the only place the attestation was
+/// written down and the signal would come back on a finished task.
+#[test]
+fn copying_a_detached_attestation_into_the_file_keeps_it_an_attestation() {
+    let (r, other) = attestable();
+    let out = ank_command()
+        .args(["attest", ID, "--proof", "test:ci-run-4242", "--detached"])
+        .arg("--repo")
+        .arg(&other)
+        .env("ANK_AGENT", "process:github-actions")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let out = git_command(&r.0)
+        .args(["fetch", "--quiet", "origin"])
+        .output();
+    assert!(out.unwrap().status.success());
+
+    // The same reference, now written into the file by a caller who did not
+    // run it. Ank checks the ref before believing the flag.
+    let out = r.ank(
+        "claude-code@ank",
+        &["attest", ID, "--proof", "test:ci-run-4242"],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ID]));
+    assert!(
+        shown.contains("via: attested"),
+        "the ref carries this exact entry and the file called it submitted: {shown}"
+    );
+
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the proof lands in the file"]);
+    // The ref retires here, and the finding must not come back with it.
+    assert_eq!(code(&r.ank("claude-code@ank", &["check"])), 0);
+    let after = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        !after.contains("test proof"),
+        "the prune took the attestation with it: {after}"
+    );
+}
+
+/// A corpus written before the distinction existed is left exactly as it was.
+///
+/// **This is the failure mode the task was written about.** This repository's
+/// own corpus carries twenty-one completions anchored by `test:` references,
+/// ten typed by hand and eleven written by the pipeline, and nothing in those
+/// files tells the two apart. A rule reading the absent field as `submitted`
+/// would redden every one of them on the day it landed, which is a rule
+/// everybody turns off. So absent is not `submitted`, and it counts as it
+/// always counted.
+///
+/// Asserted on both halves of "unchanged": the signal that does not fire, and
+/// the bytes that do not move. A reader that filled the absence in with a
+/// default would be migrating a corpus by reading it.
+#[test]
+fn a_corpus_written_before_the_route_existed_is_neither_reinterpreted_nor_rewritten() {
+    let r = Repo::new();
+    // Typed by hand at a keyboard, before `via` existed. Under the new rule it
+    // would not anchor; under the reading its own schema earns, it does.
+    seed_done(&r, ATTESTED, "  - type: test\n    ref: \"991\"\n");
+    seed_done(&r, UNATTESTED, "  - type: commit\n    ref: abc1234\n");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let older = r.0.join(".ank/entities").join(format!("{ATTESTED}.md"));
+    let bytes = std::fs::read(&older).unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{said}");
+
+    let reported: Vec<&str> = said.lines().filter(|l| l.contains("test proof")).collect();
+    assert_eq!(
+        reported.len(),
+        1,
+        "the signal started firing on a corpus that did nothing:\n{said}"
+    );
+    assert!(
+        reported[0].contains(UNATTESTED),
+        "the task named is the one with no test proof at all: {}",
+        reported[0]
+    );
+    assert!(
+        !said.contains(ATTESTED),
+        "an entry predating the field was reinterpreted:\n{said}"
+    );
+
+    // Read whole, and byte for byte where it was. The field is optional and
+    // its absence means the entry predates it — never a default written in on
+    // the first rewrite.
+    let shown = stdout(&r.ank("claude-code@ank", &["show", ATTESTED]));
+    assert!(shown.contains("type: test"), "{shown}");
+    assert!(!shown.contains("via:"), "a route was invented: {shown}");
+    assert_eq!(
+        std::fs::read(&older).unwrap(),
+        bytes,
+        "reading the corpus rewrote it"
+    );
+}
+
 /// Pruned when the file catches up, and at no other time.
 ///
 /// **No TTL, and the negative half is the one worth testing.** A proof ref

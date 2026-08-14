@@ -360,6 +360,9 @@ fn emit_field(o: &mut String, name: &str, value: &FieldValue<'_>) {
                 if let Some(v) = &p.verifier {
                     o.push_str(&format!("    verifier: {}\n", emit_scalar(v)));
                 }
+                if let Some(via) = p.via {
+                    o.push_str(&format!("    via: {}\n", via.as_str()));
+                }
             }
         }
         FieldValue::Readings(readings) => {

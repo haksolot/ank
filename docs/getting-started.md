@@ -343,6 +343,16 @@ A CI reference is out of the agent's reach and guarantees the most;
 agent could have altered; `assertion:"..."` guarantees nothing and is marked
 weak, which is what keeps it from quietly becoming the default path.
 
+**The type is half the answer, and the entry records the other half.** Every
+proof carries `via` — `verifier` when Ank ran the verifier itself, `attested`
+when it arrived on `refs/ank/proof/<id>`, `submitted` when a caller typed it —
+because a run reference is the strongest thing in that list when a pipeline
+wrote it and the weakest when somebody typed it. Typing `--proof
+test:<run-id>` is still accepted and still recorded; what it does not do is
+clear the `done with no test proof` signal, which stays until a pipeline
+anchors the run below. Entries written before the field carry no `via` and are
+read exactly as they were.
+
 If a verifier fails or times out, the transition is refused and the task stays
 where it is.
 

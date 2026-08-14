@@ -39,7 +39,7 @@ use ank_core::{
     freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity, verify_frozen, Adr,
     AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus, Verified,
 };
-use ank_core::{CriteriaBy, ProofType, ScopeSet};
+use ank_core::{CriteriaBy, ProofType, ProofVia, ScopeSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1064,6 +1064,14 @@ fn check_task(
     // task reads `done`, the proof list is non-empty, and no existing finding
     // fires — `commit` is not weak, so the check above stays silent by design.
     //
+    // **Read on the route and not on the type** (ADR-b6b69053a47b). A `test`
+    // reference somebody typed at a keyboard is unchecked rather than weak, so
+    // it used to answer this question yes and silence the one finding designed
+    // to catch a completion nothing external anchors. `anchors_externally`
+    // asks who put the entry there instead, and an entry that predates the
+    // field answers as it always did — the corpus is not reinterpreted by a
+    // rule it postdates.
+    //
     // Gated on the default branch, and that gate is load-bearing rather than
     // decoration. On a feature branch straight after `done` the attestation
     // cannot exist yet — no merge run has happened — so reporting there would
@@ -1075,14 +1083,32 @@ fn check_task(
     // flooding thresholds.
     if t.status == TaskStatus::Done
         && !proofs.is_empty()
-        && !proofs.iter().any(|p| p.proof_type == ProofType::Test)
+        && !proofs.iter().any(|p| p.anchors_externally())
         && done_on(repo, default_branch, &t.id)
     {
+        // Two wordings for one finding, because the first one stopped being
+        // true. A task carrying `test:<something a caller typed>` has a test
+        // proof, and telling its reader it has none sends them to look for a
+        // field that is right there — the same substitution §4 forbids
+        // everywhere else. So the reference that was declined is named, and
+        // the reader can see what the tool made of it.
+        //
+        // The hint carries `--detached` in both, and that is the correction
+        // this rule owes: a plain `ank attest` records `via: submitted`, so
+        // the command the finding used to name no longer clears the finding.
+        // A self-correcting error that does not correct is worse than none.
+        let submitted = proofs
+            .iter()
+            .find(|p| p.proof_type == ProofType::Test)
+            .map(|p| format!("'test:{}' was submitted, not attested", p.reference));
+        let head = match &submitted {
+            Some(what) => format!("done with no attested test proof: {what}"),
+            None => "done with no test proof: nothing external anchors it".to_string(),
+        };
         report.findings.push(Finding::signal(
             &t.id,
             format!(
-                "done with no test proof: nothing external anchors it \
-                 (ank attest {} --proof test:<run-id>)",
+                "{head} (ank attest {} --proof test:<run-id> --detached)",
                 t.id
             ),
         ));
@@ -2021,9 +2047,19 @@ fn maintain_proofs(
         let Ok(Entity::Task(landed)) = parse_entity(&text) else {
             continue;
         };
+        // **And the file must not have lost what the ref anchored.** Since a
+        // proof records its route (ADR-b6b69053a47b), two entries agreeing on
+        // type and reference can still say different things about who put them
+        // there — and deleting a ref that anchors the completion in favour of a
+        // file entry that does not would make `check` change its answer about a
+        // task nobody touched. `attest` records the route it can verify, so the
+        // ordinary copy satisfies this; what it holds back is the ref whose
+        // attestation the file genuinely does not carry.
         let settled = detached[id].iter().all(|a| {
             landed.proof.iter().any(|p| {
-                p.proof_type == a.proof.proof_type && p.reference.trim() == a.proof.reference.trim()
+                p.proof_type == a.proof.proof_type
+                    && p.reference.trim() == a.proof.reference.trim()
+                    && (p.anchors_externally() || !a.proof.anchors_externally())
             })
         });
         if settled && prune {
@@ -2945,13 +2981,44 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
         command: format!("ank attest {id}"),
         purpose: format!("attest {id}"),
     };
-    let proof =
+    let mut proof =
         crate::done::submitted_proof(inv, &repo.root, &usage, task.done_criteria.as_deref())?;
     let kind = proof.proof_type.as_str().to_string();
     let reference = proof.reference.clone();
 
     if inv.has("--detached") {
+        // The route the entry takes is what the entry records
+        // (ADR-b6b69053a47b). `submitted_proof` sets `submitted` because that
+        // is true of both its callers up to here; what makes this one
+        // different is the destination — a ref anybody fetches, written under
+        // the caller's own identity and outside any branch — and that is the
+        // third-party statement the trust hierarchy ranks above `commit:`.
+        //
+        // Set here rather than passed into the parser: the grammar of
+        // `--proof` is one thing and where the result is going is another, and
+        // the parser is shared with `done`, which has no such destination.
+        proof.via = Some(ProofVia::Attested);
         return detached(inv, repo, &id, &proof, identity, out);
+    }
+
+    // **Ank validates what it can**, and here it can. An entry the task's proof
+    // ref already carries is not a reference this caller invented: it is that
+    // attestation being copied into the file, which is the one act that retires
+    // the ref (`maintain_proofs`). Recording it as `submitted` would mean the
+    // prune deleted the only place the route was written down, and the signal
+    // would start firing again on a task nobody touched — the corpus changing
+    // its answer by itself, which is what the stored field exists to prevent.
+    //
+    // Matched on type and reference, deliberately the same predicate the prune
+    // uses, because it is the same question asked from the other side. Read
+    // locally and never fetched: `check` reads this plane the same way, and a
+    // verb that reached for the network to decide what to write would be
+    // deciding on whether the caller happened to be online.
+    if claim::detached_proofs(&repo.root, &id)
+        .iter()
+        .any(|a| a.proof.proof_type == proof.proof_type && a.proof.reference == proof.reference)
+    {
+        proof.via = Some(ProofVia::Attested);
     }
 
     // Appended. The entries already there are not read, rewritten or reordered
@@ -3940,6 +4007,7 @@ mod tests {
                     tree: None,
                     criteria: None,
                     verifier: None,
+                    via: Some(ProofVia::Submitted),
                 }]
             } else {
                 vec![]
@@ -4435,6 +4503,7 @@ mod tests {
                 tree: None,
                 criteria: None,
                 verifier: None,
+                via: Some(ProofVia::Submitted),
             }];
         }
         t.write(&weak);
@@ -4455,6 +4524,9 @@ mod tests {
     /// task closed before `ank done` can ever reach.
     #[test]
     fn a_weak_proof_signals_only_while_nothing_strong_sits_beside_it() {
+        // No route, because the subject here is `is_weak` and the route is a
+        // different question: an entry predating the field is the one shape
+        // that leaves both signals reading exactly as they read before.
         fn proof(proof_type: ProofType, reference: &str) -> Proof {
             Proof {
                 proof_type,
@@ -4462,6 +4534,7 @@ mod tests {
                 tree: None,
                 criteria: None,
                 verifier: None,
+                via: None,
             }
         }
         fn with_proofs(id: &str, proofs: Vec<Proof>) -> Entity {
@@ -4568,6 +4641,7 @@ mod tests {
                 tree: None,
                 criteria: None,
                 verifier: Some("cargo-test@000000000000".into()),
+                via: Some(ProofVia::Verifier),
             }];
         }
         t.write(&done);
