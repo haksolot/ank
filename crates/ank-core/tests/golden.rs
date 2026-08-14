@@ -321,7 +321,7 @@ fn a_log_file_is_paired_with_its_entity_by_id_alone() {
 fn the_log_line_grammar_is_unchanged() {
     let path = golden_dir("valid").join("log").join("TASK-2f8c41ba07d3.md");
     let entries = parse_log_file(&fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(entries.len(), 3);
+    assert_eq!(entries.len(), 4);
 
     assert_eq!(entries[0].timestamp, "2026-08-12T09:14Z");
     assert_eq!(entries[0].who, "claude-code/1.4.2");
@@ -338,6 +338,69 @@ fn the_log_line_grammar_is_unchanged() {
         entries[0].format_line(),
         "- 2026-08-12T09:14Z claude-code/1.4.2 — rotation job scheduled, previous key retained"
     );
+}
+
+/// A discrepancy recorded against a frozen criterion is a log entry and nothing
+/// else (§3): the record is the opening of the message, the line grammar does
+/// not move, and the file carrying the frozen field is never opened to write it.
+#[test]
+fn a_discrepancy_is_a_log_message_and_never_a_field() {
+    let entity_path = golden_dir("valid").join("TASK-2f8c41ba07d3.md");
+    let entity_before = fs::read_to_string(&entity_path).unwrap();
+    let t = parse_task(&entity_before).unwrap();
+    let criteria = t.done_criteria.clone().unwrap();
+    let anchor = freeze_hash_short(&criteria);
+
+    let log_path = golden_dir("valid").join("log").join("TASK-2f8c41ba07d3.md");
+    let log = fs::read_to_string(&log_path).unwrap();
+    let entries = parse_log_file(&log).unwrap();
+
+    // The opening is the whole of the recognition, and it recognises one entry
+    // of the four: an ordinary line is an ordinary line.
+    let recorded: Vec<&str> = entries.iter().filter_map(|e| e.discrepancy()).collect();
+    assert_eq!(recorded.len(), 1, "one record among ordinary entries");
+    assert!(
+        recorded[0].starts_with("the criterion assumes"),
+        "what follows the opening is returned verbatim: {}",
+        recorded[0]
+    );
+    assert!(entries[..3].iter().all(|e| e.discrepancy().is_none()));
+
+    // Nothing about the line moved. The convention lives in the message,
+    // exactly where `released:` lives, so the entry round-trips as any other.
+    assert!(entries[3].message.starts_with(ank_core::log::DISCREPANCY));
+    assert_eq!(entries[3].who, "claude-code/1.4.2");
+    assert_eq!(entries[3].format_line(), log.lines().last().unwrap());
+
+    // And the freeze is untouched by it. Recording another one is one more line
+    // in the log file; the entity carrying `done_criteria` is not written at
+    // all, so the hash a claim anchored still verifies the criterion it froze.
+    let after = append_log_file(
+        &log,
+        &LogEntry {
+            timestamp: "2026-08-12T09:50Z".into(),
+            who: "human:marie".into(),
+            message: format!(
+                "{} the incident runbook says the same thing",
+                ank_core::log::DISCREPANCY
+            ),
+        },
+    );
+    assert_eq!(after.lines().count(), log.lines().count() + 1);
+    assert_eq!(
+        parse_log_file(&after)
+            .unwrap()
+            .iter()
+            .filter(|e| e.discrepancy().is_some())
+            .count(),
+        2
+    );
+    assert_eq!(fs::read_to_string(&entity_path).unwrap(), entity_before);
+    assert!(verify_frozen(&criteria, &anchor));
+
+    // The other design, stated as the absence it is: the entity the record is
+    // about carries no trace of it, because the format has no field to carry.
+    assert!(!entity_before.contains("discrepancy"));
 }
 
 /// A missing log file is an empty log, never an error. The store answers the
@@ -395,7 +458,7 @@ fn appending_to_a_log_file_is_a_one_line_diff() {
         before.lines().count() + 1,
         "one log entry, one added line"
     );
-    assert_eq!(parse_log_file(&after).unwrap().len(), 4);
+    assert_eq!(parse_log_file(&after).unwrap().len(), 5);
 
     // On an empty file the entry is the whole content: there is no header to
     // create, which is one thing less than the body section needed.

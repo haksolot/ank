@@ -35,8 +35,12 @@ project dogfooding ank on itself.
 2. `ank claim <id>` — takes the task and freezes its `done_criteria` by hash.
 3. Work. The criterion is frozen: never edit it to unblock yourself. A
    discovered subtask is a new task with a `blocked_by` (`ank new task
-   --blocked-by <id>`), not a weakened criterion. If the criterion itself is
-   wrong, `ank release --reason "<why>"` and say so.
+   --blocked-by <id>`), not a weakened criterion. If one part of the criterion
+   rests on a false premise, record it — `ank log "discrepancy: <what it
+   assumes, what you measured>"` — and finish the rest: the criterion stays
+   frozen, `done` still verifies it whole, and `check` names the record.
+   `ank release --reason "<why>"` is for a criterion wrong entire, never for one
+   clause of four.
 4. `ank log "<what you learned>"` when you discover something, not when you
    finish. It renews the claim; working is what keeps the lock.
 5. `ank done` — it runs the verifiers declared in `.ank/config.yml` itself and

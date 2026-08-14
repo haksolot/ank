@@ -276,6 +276,20 @@ bumps no `version`, and touches no file carrying a frozen field. An entity file
 changes only on a real transition. That property is the reason the log moved, and
 a tool that appends a log line *and* rewrites the entity has given it up.
 
+**One convention lives in the message, and it is where a disproved criterion is
+recorded.** A message opening with `discrepancy:` says that the frozen
+`done_criteria` of that task rests in part on a false premise, and states what
+was measured instead (§3):
+
+    - 2026-08-14T18:16Z claude-code/03fd — discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help`
+
+It is a convention on the message and never on the grammar — `released: <reason>`
+is the same kind and older — so it costs no field, no schema bump and no
+migration, and every log a corpus already holds stays valid. It changes nothing
+mechanically: the criterion is untouched, its hash still anchors it, and `done`
+still verifies against that hash. A tool that reads the log should surface such
+an entry; none should ever read it as permission to accept less.
+
 The log is a **work trace, not proof**: nothing authoritative is anchored in it,
 which is why there is no chained hash over it (§3), and which is what makes an
 append by a second party harmless. A tool may parse it, and may append to it; it

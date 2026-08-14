@@ -1,3 +1,4 @@
 - 2026-08-12T09:14Z claude-code/1.4.2 — rotation job scheduled, previous key retained
 - 2026-08-12T09:30Z human:marie — reviewed the retention window against the incident runbook
 - 2026-08-12T09:41Z process:ci — run 31666088871 green on all three platforms
+- 2026-08-12T09:44Z claude-code/1.4.2 — discrepancy: the criterion assumes the previous key stays valid for one rotation period, and the provider expires it after 24 hours; the job was written against the shorter of the two, and the criterion is unchanged
