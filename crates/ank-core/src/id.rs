@@ -47,6 +47,14 @@ impl EntityKind {
 
 /// Canonical identifier: `TASK-<12 hex>` or `ADR-<12 hex>`.
 /// Immutable, derived from the act of creation, never from the content.
+///
+/// **There is no short form here, and that absence is the decision.** §3 makes
+/// the displayed length a function of the corpus — the shortest prefix naming
+/// exactly one entity in it — and an identifier does not know the corpus it is
+/// about to be printed beside. A `short()` on this type could only ever return
+/// a constant, and a constant is precisely the value [`resolve_prefix`] below
+/// refuses once two ids share it (TASK-c1f01f301d63). Callers that print ask
+/// the corpus instead, through `ank_cli::context::shorts_of`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EntityId {
     kind: EntityKind,
@@ -99,10 +107,6 @@ impl EntityId {
 
     pub fn hex(&self) -> &str {
         &self.hex
-    }
-
-    pub fn short(&self) -> String {
-        format!("{}{}", self.kind.prefix(), &self.hex[..4])
     }
 }
 

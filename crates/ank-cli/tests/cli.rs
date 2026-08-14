@@ -10678,3 +10678,163 @@ fn neither_check_nor_status_fetches_to_compare_the_corpus() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// A short id the binary prints is one the binary resolves (§3, TASK-c1f01f301d63)
+// ---------------------------------------------------------------------------
+
+// Through the binary, and it could not be anywhere else: the property is about
+// what one process writes and another process reads back, over a corpus neither
+// of them chose. `short_ids` had unit tests and they were green throughout —
+// what a unit test cannot see is a verb that never called it, which is exactly
+// the two defects measured here: `check` printing a fixed four-character
+// subject, and every listing measuring its short forms against the entities
+// that parsed rather than against the ones prefix resolution walks.
+//
+// The sweep is deliberately blind. It does not name the ids it expects; it
+// takes every `TASK-`/`ADR-` token out of what a verb wrote and hands each one
+// back to `show`. A test naming the expected short forms would keep passing the
+// day a verb starts printing something else, which is the shape both defects
+// had.
+
+/// Every identifier-shaped token in a verb's output.
+///
+/// Deliberately generous: it catches a short form, a full id, and an id inside
+/// a `-> ank show <id>` hint alike, because all three are things the tool told
+/// the caller they could type. A trailing `.md` is not part of the token, which
+/// is what stops the run at the dot.
+fn ids_printed(text: &str) -> Vec<String> {
+    let mut found = Vec::new();
+    for word in text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-')) {
+        for kind in ["TASK-", "ADR-"] {
+            let Some(hex) = word.strip_prefix(kind) else {
+                continue;
+            };
+            let run: String = hex.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+            let id = format!("{kind}{run}");
+            if run.len() >= 4 && !found.contains(&id) {
+                found.push(id);
+            }
+        }
+    }
+    found
+}
+
+/// Runs each invocation and hands every identifier it printed back to `show`.
+///
+/// The assertion is **code 2** rather than a byte comparison, because code 2 is
+/// what §4 gives to both halves of the failure — not found and ambiguous prefix
+/// — and it is the code an agent branches on. Any other code is a verb
+/// answering about a real entity, which is all this asks.
+fn every_printed_id_resolves(r: &Repo, verbs: &[&[&str]]) {
+    for args in verbs {
+        let out = r.ank("claude-code@ank", args);
+        let text = format!("{}{}", stdout(&out), stderr(&out));
+        let printed = ids_printed(&text);
+        assert!(
+            !printed.is_empty(),
+            "{args:?} printed no identifier at all, so the sweep asserts nothing: {text}"
+        );
+        for id in printed {
+            let shown = r.ank("claude-code@ank", &["show", &id]);
+            assert_ne!(
+                code(&shown),
+                2,
+                "{args:?} printed {id}, which ank show refuses: {}",
+                stderr(&shown)
+            );
+        }
+    }
+}
+
+/// A corpus that collides on purpose, over every verb that prints an id.
+///
+/// Two tasks sharing their first four hex characters and two ADRs sharing four
+/// of their own, so both halves of the per-kind rule are exercised: the tasks
+/// have to lengthen, and the ADRs have to lengthen without the tasks' collision
+/// dragging them along.
+///
+/// `claim` sits **inside** the sweep rather than beside it. Its confirmation
+/// line names an identifier too, and the two rows after it — `status`, and
+/// `context` in execution mode — are renderers a claimless corpus never
+/// reaches.
+#[test]
+fn every_short_id_the_binary_prints_resolves_to_one_entity() {
+    let r = Repo::new();
+    r.seed_task_titled("TASK-abcd10000000", "One task");
+    r.seed_task_titled("TASK-abcd20000000", "Another task");
+    r.seed_adr("ADR-beef10000000", "Do the thing.", "src/**");
+    r.seed_adr("ADR-beef20000000", "Do the other thing.", "src/**");
+    // An entity written by an agent and read by no human: the one `check`
+    // finding whose subject was a fixed four characters where every other
+    // finding in the report carries the full id.
+    let text = r
+        .task_text("TASK-abcd10000000")
+        .replace("created: ", "author: claude-code/1\ncreated: ");
+    std::fs::write(r.flat_task_path("TASK-abcd10000000"), text).unwrap();
+
+    let taken = r.ank("claude-code@ank", &["claim", "TASK-abcd10000000"]);
+    assert_eq!(
+        code(&taken),
+        0,
+        "the fixture's claim must be taken, or status and execution mode are \
+         never reached: {}",
+        stderr(&taken)
+    );
+
+    every_printed_id_resolves(
+        &r,
+        &[
+            &["find"],
+            &["graph"],
+            &["scope", "src"],
+            &["show", "TASK-abcd10000000"],
+            &["check"],
+            &["status"],
+            &["context"],
+        ],
+    );
+}
+
+/// The corpus a short form is measured against is the one **resolution**
+/// walks, not the one the index answered with.
+///
+/// A third task at schema 99: no build of this binary can read it, so every
+/// listing leaves it out (TASK-ca7b61b00896) while `store::resolve` walks it
+/// anyway — resolution lists `<ID>.md` file names and never asks the index.
+/// Measured against the rows a verb returned, `TASK-abcd1` is unambiguous in
+/// that answer and ambiguous in the repository, and the process printing it
+/// refuses it one command later.
+///
+/// Kept apart from the sweep above because `claim` refuses a corpus it cannot
+/// read whole, which is behaviour of its own and not this rule: putting the
+/// unreadable entity in that fixture would have tested a refusal instead.
+#[test]
+fn a_short_id_is_measured_against_the_entities_this_build_cannot_read() {
+    let r = Repo::new();
+    r.seed_task_titled("TASK-abcd10000000", "One task");
+    r.seed_task_titled("TASK-abcd20000000", "Another task");
+    r.seed_task_at_schema("TASK-abcd1fffffff", 99);
+
+    every_printed_id_resolves(
+        &r,
+        &[
+            &["find"],
+            &["graph"],
+            &["scope", "src"],
+            &["show", "TASK-abcd10000000"],
+            &["context"],
+        ],
+    );
+
+    // And the shortening is real rather than a retreat to the full id. Six hex
+    // characters is exactly what this corpus forces — `abcd` and `abcd1` both
+    // collide, `abcd10`/`abcd1f`/`abcd20` do not — so a seventh would mean the
+    // rule stopped measuring, and twelve would mean it gave up measuring.
+    let out = r.ank("claude-code@ank", &["find"]);
+    assert!(
+        stdout(&out).contains("TASK-abcd10  ") && stdout(&out).contains("TASK-abcd20  "),
+        "six hex characters is what this corpus forces, no more: {}",
+        stdout(&out)
+    );
+}

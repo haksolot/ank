@@ -149,8 +149,13 @@ Borrowed directly from git, with one adaptation.
 Git derives the ID from content, which presupposes immutability. A task mutates (status, log, title): an ID derived from content would change on every edit and break every reference already written. Ank therefore hashes **the act of creation** — timestamp, agent identity, initial title, randomness — which is immutable. The ID is stable for life and generated without coordination, which is indispensable offline-first.
 
 - **12 hexadecimal characters** stored. Below 8, birthday collisions arrive within the first thousand entities.
-- **Short prefixes accepted** on input and shown on output (`TASK-8f3a`).
+- **Short prefixes accepted** on input, four characters minimum (`TASK-8f3a`).
 - **Ambiguity is an error.** A prefix matching two entities fails with the list of candidates. The tool never guesses.
+- **A short form the tool prints is unambiguous in the corpus it was printed from**, and its length is therefore computed rather than fixed. It is the shortest prefix naming exactly one entity: four characters where four suffice, one more for each collision, never past the twelve stored.
+
+**The displayed length is measured, not declared** — git's answer, and for git's reason. Four characters is 65536 values, so a corpus of a few hundred entities already collides with double-digit probability, and the probability grows with the square of the corpus. A fixed four therefore prints, eventually and without warning, an identifier the tool itself refuses one command later: the rule above says ambiguity is an error, and the caller has no way to know the id they were handed is unusable until they use it. Reporting the collision afterwards — a `check` finding over a fixed four — was rejected: it names after the fact something the display could have avoided, and leaves every printed id unusable meanwhile. The cost of measuring is that the displayed length is no longer constant, which is a column-alignment question in §4 and nothing more.
+
+**Measured against the set resolution searches, and never against the rows a verb returned.** That set is every `<ID>.md` present on disk, which is what prefix resolution walks (§6) — including the entities a listing left out because this binary could not read them (§4). A prefix unique among four search results and ambiguous in the repository is a prefix that stops working when the query changes, and a prefix unique among the entities that parsed is one that stops working when a corpus is written by a newer release. Kinds are measured apart, since the printed form carries `TASK-` or `ADR-` and prefix resolution filters on it: two entities of different kinds sharing four hex characters lengthen neither.
 
 ### Entity kinds are a registry
 
@@ -738,6 +743,8 @@ The alphabet is bounded here, before any code uses it, for the reason the palett
 **The prefix of a row is derived from its parent's connector, never from a depth.** A node under `├── ` continues as `│   ` because its parent still has siblings below; a node under `└── ` continues as four spaces because nothing follows. A depth counter cannot tell the two apart, and the difference is exactly what makes a diamond legible.
 
 **Two of these replace indentation instead of adding to it**, and that is load-bearing rather than tidy: the constraint gutter occupies the columns the alignment already spent, and the held marker takes the two leading spaces of a listing row. So the attention budget of §5 measures what it measured before, and truncation does not become a function of the drawing.
+
+**A listing row starts at its identifier and never at a padded column**, which is what makes the computed short form of §3 cost nothing here. Rows are not aligned on what follows the id: `ADR-` is one character shorter than `TASK-`, so a listing carrying both kinds has been ragged since the first one was printed, and a short form that lengthens under collision only widens a raggedness already there. Nothing pads to a fixed id width, and nothing may start: padding would state a length the corpus is free to change, and a listing whose columns move when an entity is created is worse than one that never claimed to have them. The one place a width is derived is the gutter under a wrapped constraint, and it is derived from **that row's own identifier** rather than from a constant — the continuation lines of a rule sit under its text whatever the id measured.
 
 Ank already writes non-ASCII to standard output — the em-dash separating a log entry's author from its message — so the alphabet introduces no new encoding question on any platform.
 

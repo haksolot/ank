@@ -25,8 +25,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 
     let index = Index::open(&repo.ank)?;
     let all = index.all()?;
-    let ids: Vec<EntityId> = all.iter().map(|r| r.id.clone()).collect();
-    let shorts = context::short_ids(&ids);
+    let shorts = context::shorts_of(repo)?;
 
     // Sorted by identifier, like every other listing: a graph whose rows shuffle
     // between two runs is one nobody diffs.
