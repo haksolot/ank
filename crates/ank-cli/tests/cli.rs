@@ -10838,3 +10838,141 @@ fn a_short_id_is_measured_against_the_entities_this_build_cannot_read() {
         stdout(&out)
     );
 }
+
+// ---------------------------------------------------------------------------
+// A criterion proved wrong in part, recorded and never edited (§3)
+// ---------------------------------------------------------------------------
+
+/// The record is a log entry, and it changes nothing the freeze verifies.
+///
+/// Through the binary because that is what the rule is about: `claim` freezes
+/// by hash, `log` appends the record, `done` verifies against the very same
+/// hash and succeeds, and `check` names the record on the finished task. A unit
+/// test on the recognition alone would prove the opening parses and leave every
+/// one of those four joins untested.
+///
+/// The assertion that carries the design is the one in the middle: the entity
+/// file is byte for byte what it was before the record was written. The record
+/// lives in `.ank/log/<ID>.md`, so the file the freeze exists to make
+/// observable is never opened to write it — which is why a field was refused
+/// and the log kept.
+#[test]
+fn a_discrepancy_is_recorded_without_touching_the_frozen_criterion() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let sha = r.head();
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let frozen = r.task_text(ID);
+
+    let record = "discrepancy: the criterion assumes src/main.rs is generated, \
+                  and it is written by hand";
+    let out = r.ank("claude-code@ank", &["log", ID, record]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    assert!(
+        r.log_text(ID).contains(record),
+        "the record is a line of the log: {}",
+        r.log_text(ID)
+    );
+    assert_eq!(
+        r.task_text(ID),
+        frozen,
+        "recording it writes no byte of the file carrying done_criteria"
+    );
+
+    // The criterion still verifies by the hash the claim froze, so the record
+    // weakens nothing `done` checks.
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", ID, "--proof", &format!("commit:{sha}")],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+    assert_eq!(
+        code(&out),
+        0,
+        "a judgement somebody wrote down is not a corpus fault: {said}"
+    );
+    assert!(
+        said.contains(&format!("signal: {ID}: discrepancy recorded")),
+        "check names the record on the task: {said}"
+    );
+    assert!(
+        said.contains("the criterion assumes src/main.rs is generated"),
+        "and lists the entry under the finding: {said}"
+    );
+}
+
+/// The same record, read by a caller rather than by a reader, and the entry it
+/// carries arrives as data rather than as a sentence to split.
+#[test]
+fn a_recorded_discrepancy_reaches_json_as_a_signal_with_its_entries() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &[
+                "log",
+                ID,
+                "discrepancy: one clause of four is unsatisfiable"
+            ]
+        )),
+        0
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["check", "--json"]));
+    assert!(
+        json.contains("\"level\":\"signal\"") && json.contains("discrepancy recorded"),
+        "{json}"
+    );
+    assert!(
+        json.contains("one clause of four is unsatisfiable"),
+        "the entry is a note line and not prose folded into the message: {json}"
+    );
+}
+
+/// A log the reading cannot parse is said out loud, never counted as no record.
+///
+/// The failure this guards is the quiet one: a malformed line would make the
+/// parse return nothing, and a check reporting no discrepancy because it read
+/// no log is a check that stopped looking without saying so.
+#[test]
+fn a_log_check_cannot_read_is_reported_rather_than_read_as_empty() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{ID}.md")),
+        "- 2026-07-28T00:00Z claude-code@ank \u{2014} an entry\nnot an entry at all\n",
+    )
+    .unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+    assert_eq!(
+        code(&out),
+        0,
+        "an unreadable log is not a corpus fault: {said}"
+    );
+    assert!(
+        said.contains(&format!("signal: {ID}: log unreadable")) && said.contains("line 2"),
+        "the line is named, because the file grows: {said}"
+    );
+}

@@ -5,11 +5,16 @@ slug: a-criterion-proved-partly-wrong-is-recorded-on-t
 title: A criterion proved partly wrong is recorded on the task without releasing it
 created: 2026-08-13T16:25:08Z
 author: claude-code/2.1.229
-status: open
+status: in_progress
 scope:
   - docs/ank-spec-v1.1.md
-  - crates/ank-core/src/model.rs
   - crates/ank-cli/src/human.rs
+  - crates/ank-core/src/log.rs
+  - crates/ank-core/tests/golden.rs
+  - crates/ank-cli/tests/cli.rs
+  - docs/format.md
+  - CLAUDE.md
+  - crates/ank-core/tests/golden/**
 blocked_by: []
 done_criteria: |
   Section 3 of docs/ank-spec-v1.1.md states how a holder records that a frozen criterion rests on a false premise, what that record does and does not change, and why it is neither an edit to the criterion nor a release. The frozen hash is untouched by it, and the specification says so.
@@ -21,7 +26,7 @@ done_criteria: |
   Asserted through the binary: a task carrying the record still freezes and verifies its criterion by the same hash, and check names it.
 criteria_by: creator
 schema: 3
-version: 1
+version: 4
 ---
 
 Two of the three parallel sessions met this and neither had a tool for it.

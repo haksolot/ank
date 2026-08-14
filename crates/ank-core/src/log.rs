@@ -23,6 +23,15 @@ use crate::error::{Error, Result};
 pub const LOG_HEADER: &str = "## Log";
 const SEPARATOR: &str = " — ";
 
+/// The opening a message carries when the entry records that a frozen
+/// `done_criteria` rests on a false premise (§3).
+///
+/// **A convention on the message, never on the grammar.** The line stays an
+/// ordinary log line — `released: <reason>` is the same kind of convention and
+/// older than this one — which is what makes the record cost no schema bump and
+/// no migration: every log a corpus already holds is valid under this rule.
+pub const DISCREPANCY: &str = "discrepancy:";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEntry {
     /// ISO 8601 timestamp, kept as-is (this crate never reformats it).
@@ -38,6 +47,22 @@ impl LogEntry {
             "- {} {}{}{}",
             self.timestamp, self.who, SEPARATOR, self.message
         )
+    }
+
+    /// What this entry records against the frozen criterion, or `None` for an
+    /// ordinary entry (§3).
+    ///
+    /// The opening is the whole of the recognition and what follows it is
+    /// returned verbatim. There is nothing further to resolve: `done_criteria`
+    /// is one block of prose with no addressable clauses, so the record is a
+    /// quotation and a measurement rather than a pointer into a structure.
+    ///
+    /// It answers about the entry and never about the task. Whether a task
+    /// carries such an entry is `check`'s question (§4); whether the criterion
+    /// still matches its anchor is [`crate::verify_frozen`]'s, and the two stay
+    /// independent — the record changes nothing the freeze verifies.
+    pub fn discrepancy(&self) -> Option<&str> {
+        self.message.strip_prefix(DISCREPANCY).map(str::trim_start)
     }
 
     pub fn parse_line(line: &str) -> Option<LogEntry> {

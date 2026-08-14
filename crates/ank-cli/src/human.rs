@@ -36,8 +36,9 @@ use crate::store::{version_of, LogHome, Store};
 use crate::style;
 use crate::verify;
 use ank_core::{
-    freeze, has_crlf, normalise_line_endings, parse_entity, serialize_entity, verify_frozen, Adr,
-    AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus, Verified,
+    freeze, has_crlf, normalise_line_endings, parse_entity, parse_log, parse_log_file,
+    serialize_entity, verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task,
+    TaskStatus, Verified,
 };
 use ank_core::{CriteriaBy, ProofType, ProofVia, ScopeSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -1037,6 +1038,57 @@ fn check_task(
         }
     }
 
+    // A criterion proved wrong in part, recorded and never edited (§3). The
+    // record is a log entry, and it changes nothing mechanically: the hash
+    // above still anchors, `done` still verifies against it, and the file
+    // carrying the frozen field was never opened to write the record. What
+    // `check` owes it is visibility — a disagreement nobody reads is a
+    // disagreement that stayed in a pull request comment.
+    //
+    // **A signal at any status, and never a fault.** It is somebody's
+    // judgement rather than a corpus defect, and the criterion that actually
+    // moved is the divergence fault above. Conflating the two would make the
+    // exit code fire on the very act §3 asks for instead of an edit.
+    match log_entries(store, t) {
+        Ok(entries) => {
+            let recorded: Vec<String> = entries
+                .iter()
+                .filter_map(|e| {
+                    e.discrepancy()
+                        .map(|what| format!("{} {} — {what}", e.timestamp, e.who))
+                })
+                .collect();
+            if !recorded.is_empty() {
+                // One finding per task with the entries under it: the task is
+                // what is being judged, and the message opens on the same words
+                // however many there are — a caller filtering on the opening
+                // reads one shape, which a leading count would have broken.
+                report.findings.push(
+                    Finding::signal(
+                        &t.id,
+                        format!(
+                            "discrepancy recorded against the frozen criterion: the freeze is \
+                             untouched and done verifies it unchanged (ank show {})",
+                            t.id
+                        ),
+                    )
+                    .with_note(recorded),
+                );
+            }
+        }
+        // Reading nothing and reporting nothing would be the quiet failure §4
+        // refuses everywhere else: the record would disappear along with the
+        // line that broke the parse, and no line anywhere would say so.
+        Err(why) => report.findings.push(Finding::signal(
+            &t.id,
+            format!(
+                "log unreadable, so a discrepancy it records is not reported: {why} \
+                 (.ank/log/{}.md)",
+                t.id
+            ),
+        )),
+    }
+
     // The statement this signal makes is about the task, not about the entry:
     // *its completion rests on nothing verifiable*. That is false the moment a
     // strong proof sits beside the weak one, so the condition belongs here and
@@ -1202,6 +1254,30 @@ fn check_task(
                 );
             }
         }
+    }
+}
+
+/// A task's log, from wherever it currently lives, for the one signal that
+/// reads it (§3).
+///
+/// The same rule as [`Store::log_of`] — the file when there is one, the body's
+/// `## Log` section otherwise, never both — restated here because `check` holds
+/// a parsed [`Task`] and not a `Loaded`, and re-loading the entity from disk to
+/// reach a method would be reading the corpus twice per task.
+///
+/// **The error is returned rather than swallowed**, and that is the whole
+/// reason this is not a plain `Vec`. A malformed line makes the parse yield
+/// nothing, and a caller that read `unwrap_or_default` would report "no
+/// discrepancy" about a log it never read — the record gone along with the line
+/// that broke it, and no line anywhere saying so.
+fn log_entries(store: &Store, t: &Task) -> std::result::Result<Vec<LogEntry>, String> {
+    match std::fs::read_to_string(store.log_path_of(&t.id)) {
+        Ok(text) => parse_log_file(&text).map_err(|e| e.to_string()),
+        // A missing file is an empty log and never an error (§3); an entity
+        // whose log is still a body section is read there, tolerantly, as that
+        // form requires.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(parse_log(&t.body)),
+        Err(e) => Err(e.to_string()),
     }
 }
 
@@ -4610,6 +4686,123 @@ mod tests {
                 .count(),
             1,
             "the task is what is being judged, not the entry: {:?}",
+            r.findings
+        );
+    }
+
+    /// A criterion proved wrong in part is one signal on the task, with the
+    /// entries under it — and an ordinary log says nothing (§3).
+    #[test]
+    fn a_recorded_discrepancy_is_one_signal_per_task_with_its_entries() {
+        let t = Temp::new();
+        let one = task("000000000001", TaskStatus::InProgress, &[]);
+        let two = task("000000000002", TaskStatus::Done, &[]);
+        t.write(&one);
+        t.write(&two);
+        for (id, message) in [
+            (one.id(), "ordinary progress, nothing measured"),
+            (
+                one.id(),
+                "discrepancy: the criterion assumes src/a.rs is generated",
+            ),
+            (
+                one.id(),
+                "discrepancy: and its second clause names a file that never existed",
+            ),
+            // Another convention on the same grammar, and not this one.
+            (two.id(), "released: unrelated"),
+        ] {
+            t.store()
+                .append_to_log_file(
+                    id,
+                    &LogEntry {
+                        timestamp: "2026-07-28T01:00Z".into(),
+                        who: "claude-code/1.4.2".into(),
+                        message: message.into(),
+                    },
+                )
+                .unwrap();
+        }
+
+        let r = t.report();
+        assert_eq!(
+            r.faults(),
+            0,
+            "a judgement somebody wrote down is not a defect: {:?}",
+            r.findings
+        );
+        let recorded: Vec<&Finding> = r
+            .findings
+            .iter()
+            .filter(|f| f.message.starts_with("discrepancy recorded"))
+            .collect();
+        assert_eq!(
+            recorded.len(),
+            1,
+            "one finding per task, whatever the number of entries: {:?}",
+            r.findings
+        );
+        assert_eq!(recorded[0].level, Level::Signal);
+        assert!(recorded[0].subject.contains("000000000001"));
+        assert_eq!(recorded[0].note.len(), 2, "both entries, under the one");
+        assert!(recorded[0]
+            .note
+            .iter()
+            .any(|n| n.contains("the criterion assumes src/a.rs is generated")));
+        assert!(
+            recorded[0].note.iter().all(|n| !n.contains("discrepancy:")),
+            "the opening is the recognition, and the message already carries it: {:?}",
+            recorded[0].note
+        );
+    }
+
+    /// The record is read wherever the log lives, so an entity written before
+    /// the log left the body is not silently recordless.
+    #[test]
+    fn a_discrepancy_in_a_body_log_is_read_where_it_is() {
+        let t = Temp::new();
+        let mut e = task("000000000001", TaskStatus::Done, &[]);
+        if let Entity::Task(x) = &mut e {
+            x.body = "\nBody.\n\n## Log\n- 2026-07-28T01:00Z marie@laptop \u{2014} \
+                      discrepancy: the third clause was met before the task existed\n"
+                .into();
+        }
+        t.write(&e);
+
+        let r = t.report();
+        assert!(
+            has(&r, Level::Signal, "discrepancy recorded"),
+            "{:?}",
+            r.findings
+        );
+    }
+
+    /// A log line the grammar refuses is said out loud rather than read as an
+    /// empty log. A check reporting nothing because it read nothing is the
+    /// quiet failure §4 refuses everywhere else.
+    #[test]
+    fn a_log_that_does_not_parse_is_reported_and_never_read_as_empty() {
+        let t = Temp::new();
+        let e = task("000000000001", TaskStatus::InProgress, &[]);
+        t.write(&e);
+        let path = t.store().log_path_of(e.id());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "- 2026-07-28T01:00Z marie@laptop \u{2014} discrepancy: measured\nnot an entry\n",
+        )
+        .unwrap();
+
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+        assert!(
+            has(&r, Level::Signal, "log unreadable") && has(&r, Level::Signal, "line 2"),
+            "the line is named, because the file grows: {:?}",
+            r.findings
+        );
+        assert!(
+            !has(&r, Level::Signal, "discrepancy recorded"),
+            "nothing was read, so nothing is claimed about what it records: {:?}",
             r.findings
         );
     }
