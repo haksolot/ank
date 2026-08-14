@@ -5,7 +5,7 @@ slug: a-detached-proof-that-misses-the-remote-exits-no
 title: A detached proof that misses the remote exits non-zero, and ci.yml stops reading the flag
 created: 2026-08-13T16:23:46Z
 author: claude-code/2.1.229
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
@@ -22,7 +22,7 @@ done_criteria: |
   Asserted through the binary in crates/ank-cli/tests/cli.rs against a file:// remote made unreachable: attest --detached exits non-zero, claim on the same remote exits 0 and warns.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Implements ADR-af533e7a3e03. The measurement, on a scratch corpus with a real

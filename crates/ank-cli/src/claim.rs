@@ -586,9 +586,13 @@ pub enum Sync {
     /// The remote took it, so the claim holds repository-wide and not merely
     /// in this clone.
     Pushed,
-    /// A remote exists and could not be reached. The claim stands locally and
-    /// the caller says so: degrade, do not fail (§2), and the risk of a
-    /// concurrent claim is displayed rather than hidden.
+    /// A remote exists and could not be reached. The write stands locally, and
+    /// what the caller does with that depends on whether anything survives the
+    /// failed push that is worth having (ADR-af533e7a3e03): a claim degrades,
+    /// warns and exits 0 — §2, with the risk of a concurrent claim displayed
+    /// rather than hidden — while a verb whose whole product is the ref fails.
+    /// The value is the same either way; the two sentences below are what
+    /// separate the readings.
     Unsynchronised(String),
 }
 
@@ -613,7 +617,16 @@ impl Sync {
     /// because it is a different risk. A claim not pushed can be taken twice;
     /// a proof not pushed is simply invisible to everyone else, which is the
     /// whole thing a detached proof exists to avoid (ADR-493471d64ba0).
-    pub fn proof_warning(&self) -> Option<String> {
+    ///
+    /// **It is a failure and not a warning, and the name says so**
+    /// (ADR-af533e7a3e03). The two sentences sit side by side because the two
+    /// risks are different, and the difference goes further than the wording:
+    /// a claim that did not travel still governs this clone, so its verb
+    /// degrades, while a detached proof's whole product is the ref, so there is
+    /// no degraded mode left to fall back to and `attest --detached` exits 9.
+    /// A method named `warning` returning the text of an error would be a
+    /// comment that lies in the one place a reader checks first.
+    pub fn proof_failure(&self) -> Option<String> {
         match self {
             Sync::Local | Sync::Pushed => None,
             Sync::Unsynchronised(_) => Some(

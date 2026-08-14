@@ -2753,6 +2753,13 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
 ///
 /// No log entry either, for the same reason and not as an omission: the log is
 /// a file. What a log line would have carried — who, when — is in the record.
+///
+/// **And that is why this is the one verb that fails when the push does not
+/// land** (ADR-af533e7a3e03). Everything above is an argument that the ref is
+/// the whole product: nothing was written to disk that still means something,
+/// so a proof that reached no remote is readable by nobody and the attestation
+/// did not happen. `claim` writes a ref too and stays on the degrade side, and
+/// the difference is not what the verb touches but what survives the failure.
 fn detached(
     inv: &Invocation,
     repo: &Repo,
@@ -2792,10 +2799,20 @@ fn detached(
             inv.style().id(&id.to_string())
         );
     }
-    // Standard error, like every other coordination warning: stdout under
-    // `--json` is a parser's input (§4).
-    if let Some(warning) = written.sync.proof_warning() {
-        eprintln!("{} {warning}", inv.style().on_stderr().yellow("warning:"));
+    // **The report is printed first, and then the verb fails**
+    // (ADR-af533e7a3e03). A proof is a ref, so a push that never landed leaves
+    // it readable by nobody and there is no degraded mode to fall back to: code
+    // 9, an environment to repair rather than a failure of the work. What is
+    // printed above is still true and still owed — `--json` carries
+    // `"pushed":false`, which is the same fact the exit code carries, and an
+    // integration reading the flag must not be able to disagree with one
+    // reading the code.
+    //
+    // The hint is a push and not a re-run: the local swap succeeded, so the
+    // record is already in this clone and one command finishes the job.
+    if let Some(failure) = written.sync.proof_failure() {
+        return Err(CliError::new(9, failure)
+            .with_hint(format!("git push origin {}", claim::proof_ref(id))));
     }
     Ok(0)
 }

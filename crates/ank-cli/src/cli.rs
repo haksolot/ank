@@ -553,7 +553,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--proof"), switch("--detached")],
-        refuses: &[refuses(2, "no such entity, or the prefix matches more than one")],
+        refuses: &[
+            refuses(2, "no such entity, or the prefix matches more than one"),
+            // Which side of ADR-af533e7a3e03 this verb is on, said here so that
+            // no caller has to infer it from what the verb happens to touch.
+            // `claim` writes a ref too and degrades; this one has nothing left
+            // over when the push fails, so it fails.
+            refuses(
+                9,
+                "--detached and the remote unreachable: the ref is the whole product, and a proof no other clone can read is no proof",
+            ),
+        ],
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
             "--detached records the proof in refs/ank/proof/<id> and writes no file, so a pipeline anchors a run without a commit",

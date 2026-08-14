@@ -480,16 +480,17 @@ pipeline can anchor the same task to a run anybody can re-read:
 the pipeline produces **no commit** — it needs no write access to the branch and
 cannot race the merge.
 
-One thing to get right, and it is the reason `--json` matters here. The proof is
-a ref, so it has to reach the remote to be worth anything; if the push is
-refused, `attest` still exits 0 and warns on standard error. A pipeline reading
-only the exit code would go green having lost the attestation. Read the flag
-instead:
+The proof is a ref, so it has to reach the remote to be worth anything — and
+because the ref is the whole of what this verb produces, a push that did not
+land is a failure and not a warning: `attest --detached` exits **9** and names
+the push to run. Nothing special is needed to notice it, which is the point:
 
-    ank attest "$id" --proof "test:$RUN_ID" --detached --json | grep -q '"pushed":true'
+    ank attest "$id" --proof "test:$RUN_ID" --detached
 
-This repository's own `ci.yml` does exactly that, and fails the run when it is
-false rather than skipping in silence.
+`--json` still reports `"pushed"`, so an integration that prefers to read the
+flag reads the same fact. What it must not do is read the flag *instead* of the
+code, because the two now say the same thing. This repository's own `ci.yml`
+reads the code.
 
 ## Handing the loop to an agent
 
