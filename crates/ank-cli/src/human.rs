@@ -40,7 +40,7 @@ use ank_core::{
     AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task, TaskStatus, Verified,
 };
 use ank_core::{CriteriaBy, ProofType, ScopeSet};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -140,6 +140,28 @@ pub struct Report {
     /// What git said the first time it refused, so the one corpus line can name
     /// the cause instead of only reporting that there was one.
     pub signature_failure: Option<String>,
+    /// How far this checkout's corpus is from the corpus the default branch
+    /// carries (§4, ADR-47e2ac102f58).
+    ///
+    /// `None` is the question never answered, and it is not "nothing has
+    /// moved": no repository, no resolvable default branch, a default branch
+    /// naming no commit. The cases that deserve a line get one from `inspect`
+    /// itself; the field exists so `status` says the same thing out of the same
+    /// pass rather than computing a second answer able to disagree.
+    pub drift: Option<Drift>,
+}
+
+/// The corpus of this checkout against the corpus of the default branch, once
+/// the two have actually been compared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drift {
+    /// The branch compared against, so a reader is never left guessing which
+    /// one answered.
+    pub branch: String,
+    /// Entity files held here and not there, there and not here, or held on
+    /// both sides with different content. Zero is level, and is a fact worth
+    /// printing.
+    pub entities: usize,
 }
 
 impl Report {
@@ -191,6 +213,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // still reported for each file, because each file exists.
     let mut seen: BTreeSet<String> = BTreeSet::new();
     let mut still_legacy = 0usize;
+    // Every entity file the working tree holds, keyed by the id its name
+    // carries, canonical copy first. Collected from the name rather than from
+    // the parse, because the drift comparison below is about files: a file that
+    // does not parse is already a fault, and dropping it from the comparison
+    // would report it as absent from a corpus that holds it.
+    let mut here: BTreeMap<String, PathBuf> = BTreeMap::new();
     for (kind_of_dir, dirname) in [
         (None, Store::ENTITIES_DIR),
         (Some(EntityKind::Task), "tasks"),
@@ -210,6 +238,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 .unwrap_or_default()
                 .to_string_lossy()
                 .to_string();
+            if let Some(id) = name
+                .strip_suffix(".md")
+                .filter(|stem| EntityId::parse(stem).is_ok())
+            {
+                here.entry(id.to_string()).or_insert_with(|| p.clone());
+            }
             let Ok(text) = std::fs::read_to_string(&p) else {
                 report
                     .findings
@@ -428,6 +462,10 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // run for want of a default branch.
     match &default_branch {
         Some(Ok(branch)) => {
+            // The corpus before the plane: the question a reader asks first is
+            // whether the corpus they are looking at is the one everybody else
+            // reads (ADR-47e2ac102f58).
+            corpus_drift(repo, branch, &here, &mut report);
             maintain(repo, branch, &coord, &statuses, prune, &mut report)?;
             maintain_proofs(repo, branch, &detached, &statuses, prune, &mut report)?;
         }
@@ -1637,6 +1675,209 @@ fn done_on(repo: &Repo, default_branch: Option<&str>, id: &EntityId) -> bool {
         Ok(Some(text))
             if matches!(parse_entity(&text), Ok(Entity::Task(t)) if t.status == TaskStatus::Done)
     )
+}
+
+/// How far this checkout's corpus is from the corpus the default branch carries
+/// (§4, ADR-47e2ac102f58).
+///
+/// **Named, and never repaired.** Nothing here fetches and nothing merges: both
+/// revisions are already in this clone, and a reader that rewrote the plane
+/// underneath every other agent to answer a question has stopped being a reader.
+///
+/// **Once for the corpus, never per entity.** A corpus six entities behind would
+/// otherwise print six lines saying one thing, which is the volume that teaches
+/// a reader to stop reading `check`.
+///
+/// **The count is a comparison and not a history walk.** `rev-list` would answer
+/// how many commits the branches differ by, which is a different question: a
+/// branch can move ten times without touching `.ank/`, and a count in commits
+/// would fire on every merge and mean nothing.
+///
+/// Infallible on purpose. Every way of failing to compare is a state to report
+/// rather than a run to abort — `check` still owes its corpus findings when git
+/// cannot answer this one.
+fn corpus_drift(repo: &Repo, branch: &str, here: &BTreeMap<String, PathBuf>, report: &mut Report) {
+    let there = match corpus_at(repo, branch) {
+        Ok(map) => map,
+        // The revision does not resolve here, which [`git::file_at`] tells apart
+        // from an absent path — the distinction this whole comparison rests on.
+        //
+        // Silent only where there was never anything to compare against: a
+        // repository with no commit at all is the nominal state of one freshly
+        // `ank init`-ed. A `default_branch` naming no commit in a repository
+        // that has some is a mistyped branch or one never fetched, and
+        // rendering that as a corpus that has not moved is the single answer
+        // this signal must never give.
+        Err(_) => {
+            if has_commit(&repo.root) {
+                report.findings.push(Finding::signal(
+                    "corpus",
+                    format!(
+                        "{branch} names no commit here, so this corpus was not compared \
+                         against the default branch (git fetch origin {branch})"
+                    ),
+                ));
+            }
+            return;
+        }
+    };
+    let mine = match blobs_here(repo, here) {
+        Ok(map) => map,
+        Err(e) => {
+            report.findings.push(Finding::signal(
+                "corpus",
+                format!(
+                    "this corpus was not compared against {branch}: {} \
+                     (git status --short {})",
+                    e.message,
+                    ank_relative(repo)
+                ),
+            ));
+            return;
+        }
+    };
+    let ids: BTreeSet<&String> = mine.keys().chain(there.keys()).collect();
+    let entities = ids
+        .iter()
+        .filter(|id| mine.get(**id) != there.get(**id))
+        .count();
+    report.drift = Some(Drift {
+        branch: branch.to_string(),
+        entities,
+    });
+    if entities > 0 {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "{entities} entity file(s) differ from {branch}: this checkout does not \
+                 carry the corpus the default branch does (git merge {branch})"
+            ),
+        ));
+    }
+}
+
+/// The entity files `branch` carries, keyed by id, with the blob each name
+/// points at.
+///
+/// One `cat-file` per layout directory and never one per entity: `file_at` on a
+/// directory reads the tree at that revision, which already carries the content
+/// hash of every file in it. Asking per entity would be one process per entity
+/// on a corpus of two hundred, for an answer the tree states in one line each.
+///
+/// The canonical layout wins over the previous one, exactly as [`file_at_branch`]
+/// resolves a single entity: the branch and the working tree need not agree on
+/// where entities live (§6).
+fn corpus_at(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
+    let rel = ank_relative(repo);
+    let mut dirs = vec![format!("{rel}/{}", Store::ENTITIES_DIR)];
+    for kind in [EntityKind::Task, EntityKind::Adr] {
+        if let Some(sub) = Store::legacy_subdir(kind) {
+            dirs.push(format!("{rel}/{sub}"));
+        }
+    }
+    let mut found: BTreeMap<String, String> = BTreeMap::new();
+    for dir in dirs {
+        let Some(listing) = git::file_at(&repo.root, branch, &dir)? else {
+            continue;
+        };
+        // `<mode> SP <type> SP <object>TAB<name>`, git's tree format, which has
+        // carried that shape since `cat-file -p` printed trees.
+        for line in listing.lines() {
+            let Some((meta, name)) = line.split_once('\t') else {
+                continue;
+            };
+            let mut fields = meta.split_whitespace().skip(1);
+            if fields.next() != Some("blob") {
+                continue;
+            }
+            let Some(object) = fields.next() else {
+                continue;
+            };
+            let Some(id) = name
+                .strip_suffix(".md")
+                .filter(|stem| EntityId::parse(stem).is_ok())
+            else {
+                continue;
+            };
+            found
+                .entry(id.to_string())
+                .or_insert_with(|| object.to_string());
+        }
+    }
+    Ok(found)
+}
+
+/// The same hashes for the working tree, so the two sides are compared on git's
+/// own terms.
+///
+/// `hash-object` and not a byte comparison of the two texts, for a reason that
+/// only shows on one platform: a checkout with `core.autocrlf` on holds CRLF
+/// where the blob holds LF, and a corpus read literally would differ from the
+/// default branch in every single file on Windows and in none of them
+/// elsewhere. `hash-object` applies the same conversion the commit did, which
+/// makes the comparison mean what it says.
+///
+/// Batched, and bounded. One process for the whole corpus where the command line
+/// allows it, chunked below a length every platform accepts — a corpus is not
+/// bounded, and a command line is.
+fn blobs_here(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<String, String>> {
+    /// Well under the shortest limit of the three platforms, and far above what
+    /// a corpus of a few hundred entities needs.
+    const BUDGET: usize = 6000;
+
+    let ids: Vec<&String> = here.keys().collect();
+    let paths: Vec<String> = here
+        .values()
+        .map(|p| {
+            p.strip_prefix(&repo.root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .replace('\\', "/")
+        })
+        .collect();
+    let mut out = BTreeMap::new();
+    let mut i = 0;
+    while i < paths.len() {
+        let start = i;
+        let mut args: Vec<&str> = vec!["hash-object", "--"];
+        let mut budget = 0usize;
+        while i < paths.len() && (i == start || budget + paths[i].len() < BUDGET) {
+            budget += paths[i].len() + 1;
+            args.push(&paths[i]);
+            i += 1;
+        }
+        let text = git::run(&repo.root, &args)?;
+        let objects: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
+        if objects.len() != i - start {
+            return Err(CliError::new(
+                9,
+                format!(
+                    "git hash-object answered {} object(s) for {} file(s)",
+                    objects.len(),
+                    i - start
+                ),
+            ));
+        }
+        for (n, object) in objects.into_iter().enumerate() {
+            out.insert(ids[start + n].to_string(), object.to_string());
+        }
+    }
+    Ok(out)
+}
+
+/// Whether this repository carries any commit at all.
+///
+/// The one thing that separates a freshly `ank init`-ed repository, where there
+/// is nothing to compare a corpus against and silence is correct, from a
+/// `default_branch` that names nothing in a repository full of history.
+fn has_commit(root: &Path) -> bool {
+    git::output(root, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Maintenance of the coordination plane (§7). The only place that prunes.

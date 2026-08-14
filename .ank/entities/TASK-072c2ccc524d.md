@@ -5,7 +5,7 @@ slug: check-names-a-corpus-behind-the-default-branch-a
 title: check names a corpus behind the default branch, and status says how far
 created: 2026-08-13T16:22:26Z
 author: claude-code/2.1.229
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/status.rs
@@ -21,8 +21,12 @@ done_criteria: |
   
   Asserted through the binary in crates/ank-cli/tests/cli.rs: a clone whose corpus is behind its default branch, one that is ahead, one that is level, and one with no resolvable default branch.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 5ae180f46367b9aea065846de0e25a7fdcd65996
+    criteria: 5b709261f76a
 schema: 3
-version: 1
+version: 3
 ---
 
 Implements ADR-47e2ac102f58. This is the finding that caused a failure rather
