@@ -4593,7 +4593,7 @@ fn expiry_span_of(r: &Repo, id: &str) -> i64 {
 /// The listing describes every verb, and never as doing what it refuses.
 ///
 /// Both surfaces through the binary, because the defect this guards against is
-/// a disagreement *between* them: the flat listing is read fastest and checked
+/// a disagreement *between* them: the listing is read fastest and checked
 /// least, and `amend` advertised a criterion edit the binary refused always
 /// (TASK-84cfad83c308). Two assertions, and the first is what makes the second
 /// hold for good — the description in the listing is the same string the verb's
@@ -4732,10 +4732,13 @@ fn help_does_not_offer_init_the_global_it_refuses() {
         );
     }
 
-    // And the flat listing still states the three globals of §4, unqualified:
-    // the exception belongs on the page of the verb that makes it.
-    let flat = stdout(&ank_command().arg("help").output().unwrap());
-    assert!(flat.contains("global: --json --quiet --repo"), "{flat}");
+    // And the listing still states the three globals of §4, unqualified: the
+    // exception belongs on the page of the verb that makes it.
+    let listing = stdout(&ank_command().arg("help").output().unwrap());
+    assert!(
+        listing.contains("global: --json --quiet --repo"),
+        "{listing}"
+    );
 }
 
 /// §6 calls the index derived, disposable and gitignored. The first two were

@@ -746,7 +746,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         coordinates: false,
-        summary: "every verb in one flat listing, or one verb in full",
+        summary: "every verb grouped by the moment it is used, or one verb in full",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<verb>]",
@@ -1068,7 +1068,7 @@ pub fn usage(spec: &CommandSpec) -> String {
 ///
 /// `with_short` is what separates the two surfaces of §9. `ank help <verb>`
 /// shows both forms, since that is the call made to learn one verb precisely.
-/// The flat listing shows neither: it carries a description per verb and sends
+/// The listing shows neither: it carries a description per verb and sends
 /// the flags here, which is the split, and printing a second spelling of every
 /// flag in an overview would spend exactly what the split saves.
 fn flag_display(f: &FlagSpec, with_short: bool) -> String {
@@ -1126,7 +1126,7 @@ fn wrapped_summary(summary: &str, indent: usize, width: usize) -> Vec<String> {
 
 /// The flags `help` offers, which is not every flag the parser accepts (§9).
 ///
-/// One filter, read by the flat listing, the per-verb page and `--json` alike:
+/// One filter, read by the listing, the per-verb page and `--json` alike:
 /// three renderings of one surface, and a name hidden from one of them and not
 /// the others would be the same defect in a quieter place.
 fn listed_flags(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
@@ -1147,11 +1147,12 @@ fn globals_of(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
         .collect()
 }
 
-/// **The flat listing passes [`GLOBAL_FLAGS`] whole, and that is deliberate.**
+/// **The listing passes [`GLOBAL_FLAGS`] whole, and that is deliberate.**
 /// It states what the three globals of §4 are, once, for the surface — the
 /// exception belongs on the page of the verb that makes it, where a reader
-/// asking about `init` is looking. Qualifying it in the flat listing would be a
-/// second structure in an output ADR-c656cbcc33a9 keeps flat.
+/// asking about `init` is looking. Qualifying it in the listing would put a
+/// second structure under headings that already carry one (ADR-f61e2d2c75e8),
+/// on the three lines the whole surface shares.
 fn globals_line(globals: &[&'static FlagSpec], with_short: bool) -> String {
     globals
         .iter()
