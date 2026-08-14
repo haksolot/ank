@@ -2644,11 +2644,12 @@ fn a_short_flag_the_verb_does_not_take_names_the_flag_it_stands_for() {
 
 /// `ank help <verb>` shows both forms; `ank help` shows what it always did.
 ///
-/// The second half is the one worth a test. ADR-c656cbcc33a9 froze the flat
-/// listing, and a second spelling of every flag is exactly the kind of addition
-/// that arrives looking like an improvement.
+/// The second half is the one worth a test. The listing carries one line per
+/// verb, and a second spelling of every flag is exactly the kind of addition
+/// that arrives looking like an improvement. Grouping it (ADR-f61e2d2c75e8)
+/// changed what stands between the lines and nothing on them.
 #[test]
-fn help_shows_both_forms_for_one_verb_and_leaves_the_flat_listing_alone() {
+fn help_shows_both_forms_for_one_verb_and_leaves_the_listing_lines_alone() {
     let r = Repo::new();
 
     let one = stdout(&r.ank("claude-code@ank", &["help", "find"]));
@@ -2669,7 +2670,7 @@ fn help_shows_both_forms_for_one_verb_and_leaves_the_flat_listing_alone() {
     );
     assert!(
         !all.contains("-s, ") && !all.contains("-j, "),
-        "the flat listing is unchanged: {all}"
+        "the listing's lines are unchanged: {all}"
     );
 
     // A script reads the mapping from --json, or it cannot use it at all.
@@ -4601,9 +4602,10 @@ fn the_listing_describes_each_verb_as_its_own_help_does() {
     let listing = stdout(&ank_command().arg("help").output().unwrap());
 
     // The listing's descriptions, folded lines rejoined. A line beginning with
-    // `ank ` opens a verb; an indented one continues the description above it.
+    // `ank ` opens a verb; an indented one continues the description above it;
+    // any other line at column 0 is a group heading and describes no verb.
     let mut described: Vec<(String, String)> = Vec::new();
-    for line in listing.lines().take_while(|l| !l.trim().is_empty()) {
+    for line in listing_body(&listing) {
         match line.strip_prefix("ank ") {
             Some(rest) => {
                 let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
@@ -4613,6 +4615,7 @@ fn the_listing_describes_each_verb_as_its_own_help_does() {
                     .unwrap_or_default();
                 described.push((verb, desc));
             }
+            None if !line.starts_with(' ') => continue,
             None => {
                 let (_, desc) = described
                     .last_mut()
@@ -5732,6 +5735,74 @@ fn help_from_nowhere(args: &[&str]) -> Output {
         .expect("the binary must have been built")
 }
 
+/// The body of `ank help`: every non-empty line above the trailer, headings
+/// included.
+///
+/// The trailer is the block opening with `global:` at column 0, and it is what
+/// bounds the listing now that a blank line no longer does. The listing is
+/// grouped (ADR-f61e2d2c75e8), so an empty line is a boundary *between* groups
+/// -- a parser that stopped at the first one would read `run the loop`, find six
+/// verbs, and call that the whole surface. A folded description is indented and
+/// so can never be mistaken for the trailer.
+fn listing_body(text: &str) -> impl Iterator<Item = &str> {
+    text.lines()
+        .take_while(|l| !l.starts_with("global:"))
+        .filter(|l| !l.trim().is_empty())
+}
+
+/// The verbs `ank help --json` carries: name, usage and group, in table order.
+///
+/// Scanned rather than parsed, since the suite carries no JSON dependency, and
+/// read back from the binary rather than restated here for the reason
+/// `tests/skill.rs` reads §4 rather than restating it — `ank-cli` has no library
+/// target, so `COMMANDS` is unreachable from an integration test, and a second
+/// hand-maintained copy of the surface is the drift being checked for.
+///
+/// Splitting on `{"name":"` bounds each object at the next one, so a flag —
+/// which carries a `name` too — becomes a chunk of its own, and is told apart by
+/// carrying no `usage`.
+fn json_verbs(text: &str) -> Vec<(String, String, String)> {
+    let mut verbs = Vec::new();
+    for chunk in text.split("{\"name\":\"").skip(1) {
+        let Some((name, tail)) = chunk.split_once('"') else {
+            continue;
+        };
+        let quoted = |key: &str| -> Option<String> {
+            let head = format!(",\"{key}\":\"");
+            let at = tail.find(&head)? + head.len();
+            tail[at..].find('"').map(|e| tail[at..at + e].to_string())
+        };
+        let (Some(usage), Some(group)) = (quoted("usage"), quoted("group")) else {
+            continue;
+        };
+        verbs.push((name.to_string(), usage, group));
+    }
+    verbs
+}
+
+/// The listing parsed into its headings, each with the verbs printed under it.
+fn listing_groups(listing: &str) -> Vec<(String, Vec<String>)> {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for line in listing_body(listing) {
+        match line.strip_prefix("ank ") {
+            Some(rest) => {
+                let verb: String = rest.chars().take_while(char::is_ascii_lowercase).collect();
+                assert!(!verb.is_empty(), "unparseable listing line: {line}");
+                groups
+                    .last_mut()
+                    .unwrap_or_else(|| panic!("a verb stands above every heading:\n{listing}"))
+                    .1
+                    .push(verb);
+            }
+            // A line at column 0 that opens no verb is a heading; an indented
+            // one continues the description above it.
+            None if !line.starts_with(' ') => groups.push((line.to_string(), Vec::new())),
+            None => {}
+        }
+    }
+    groups
+}
+
 #[test]
 fn help_answers_outside_a_repository_and_lists_every_verb() {
     let out = help_from_nowhere(&["help"]);
@@ -5756,19 +5827,21 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
         );
     }
 
-    // One flat listing (ADR-c656cbcc33a9). The headings were named after
-    // callers -- agent loop, agent off-loop, human -- which is the two-surface
-    // model speaking through the output an agent reads, and a CLI that refuses
-    // on state and never on identity has no such grouping to print.
+    // Grouped by the moment a verb is used, and never by who uses it
+    // (ADR-f61e2d2c75e8). These four headings sorted callers -- agent loop,
+    // agent off-loop, human -- which is the two-surface model speaking through
+    // the output an agent reads, and a CLI that refuses on state and never on
+    // identity has no such grouping to print. That refusal is untouched: what
+    // came back is a map, not a gate.
     for heading in ["agent loop", "off-loop", "human", "setup"] {
         assert!(
             !text.contains(heading),
-            "'{heading}' still groups the listing:\n{text}"
+            "'{heading}' groups the listing by caller:\n{text}"
         );
     }
 
-    // Flat is not sorted: §4 puts the loop first, and that order is the only
-    // structure left. Alphabetical would bury `context` between `close` and
+    // Grouped is not sorted: §4 puts the loop first, and its order survives
+    // inside every group. Alphabetical would bury `context` between `close` and
     // `done`, so the order is asserted through the binary rather than trusted.
     let at = |needle: &str| {
         text.find(needle)
@@ -5779,8 +5852,9 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
     assert!(at("ank release") < at("ank review"), "{text}");
     assert!(at("ank review") < at("ank check"), "{text}");
     assert!(
-        text.starts_with("ank context"),
-        "a title or a heading precedes the first verb:\n{text}"
+        text.starts_with("run the loop\nank context"),
+        "the listing opens on something other than the first moment and the \
+         first verb of it:\n{text}"
     );
     // And a description beside each verb, which is what the listing says that
     // a bare flag name never did (§9, TASK-fe130d2b732c).
@@ -5916,8 +5990,144 @@ fn help_json_reaches_the_process_intact() {
     assert!(text.contains("\"name\":\"claim\""), "{text}");
     assert!(
         !text.contains("audience"),
-        "the grouping survived into the scripted output:\n{text}"
+        "a grouping by caller survived into the scripted output:\n{text}"
     );
+}
+
+/// Every verb of the table appears exactly once in the grouped listing, under a
+/// heading, and in the table's order inside it (ADR-f61e2d2c75e8).
+///
+/// Through the binary, against `ank help --json`: the same table read out of the
+/// same process, so the assertion is that the two renderings agree rather than
+/// that either agrees with a list written here. A renderer that walks the groups
+/// instead of the table is a renderer that can drop a verb — one whose group is
+/// not a heading is printed by nothing, and `--json` goes on carrying it while
+/// the surface an agent reads has quietly lost it. Exactly once, because the
+/// other way for a group to be wrong is a verb filed under two moments.
+#[test]
+fn the_grouped_listing_prints_every_verb_exactly_once() {
+    let listing = String::from_utf8_lossy(&help_from_nowhere(&["help"]).stdout).to_string();
+    let json = String::from_utf8_lossy(&help_from_nowhere(&["help", "--json"]).stdout).to_string();
+
+    let verbs = json_verbs(&json);
+    assert!(verbs.len() > 15, "the table was not read back:\n{json}");
+
+    let groups = listing_groups(&listing);
+    assert!(!groups.is_empty(), "the listing has no heading:\n{listing}");
+    let listed: Vec<&String> = groups.iter().flat_map(|(_, v)| v).collect();
+
+    for (name, usage, _) in &verbs {
+        assert_eq!(
+            listed.iter().filter(|v| **v == name).count(),
+            1,
+            "`ank {name}` is not printed exactly once in the grouped listing:\n{listing}"
+        );
+        // The usage line and not only the name: a verb reduced to a heading
+        // entry would satisfy the count and teach nothing.
+        assert_eq!(
+            listing.matches(usage.as_str()).count(),
+            1,
+            "`{usage}` is not printed exactly once:\n{listing}"
+        );
+    }
+    assert_eq!(
+        listed.len(),
+        verbs.len(),
+        "the listing prints something the table does not hold:\n{listing}"
+    );
+
+    // Inside a group the order is the table's: grouping is a second axis laid
+    // over §4's order, never a re-sort, so a verb does not move relative to its
+    // neighbours. Asserted per group, since the listing as a whole no longer
+    // follows the table and a global check would have to be dropped rather than
+    // weakened.
+    for (heading, printed) in &groups {
+        assert!(!printed.is_empty(), "'{heading}' has no verb under it");
+        let expected: Vec<&String> = verbs
+            .iter()
+            .filter(|(_, _, g)| g == heading)
+            .map(|(n, _, _)| n)
+            .collect();
+        let printed: Vec<&String> = printed.iter().collect();
+        assert_eq!(
+            printed, expected,
+            "'{heading}' does not keep the order of the table:\n{listing}"
+        );
+    }
+
+    // A blank line between groups, and a heading opening each one. The first
+    // heading opens the listing: nothing is titled above the loop.
+    assert!(
+        listing.starts_with(&format!("{}\n", groups[0].0)),
+        "something stands above the first heading:\n{listing}"
+    );
+    for (heading, _) in groups.iter().skip(1) {
+        assert!(
+            listing.contains(&format!("\n\n{heading}\n")),
+            "'{heading}' does not open a group of its own:\n{listing}"
+        );
+    }
+}
+
+/// Every verb carries a non-empty group, and every group is a heading the
+/// listing prints (ADR-f61e2d2c75e8).
+///
+/// This is what stops a twenty-second verb from being added with no home and
+/// disappearing off the end unnoticed. The test above would pass on such a verb
+/// only if the renderer happened to print it anyway; this one fails on the
+/// table, which is where the omission is made, and it reads the table through
+/// `--json` because that is where the field has to reach a caller.
+#[test]
+fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
+    let listing = String::from_utf8_lossy(&help_from_nowhere(&["help"]).stdout).to_string();
+    let json = String::from_utf8_lossy(&help_from_nowhere(&["help", "--json"]).stdout).to_string();
+
+    let verbs = json_verbs(&json);
+    assert!(verbs.len() > 15, "the table was not read back:\n{json}");
+
+    let headings: Vec<String> = listing_groups(&listing)
+        .into_iter()
+        .map(|(h, _)| h)
+        .collect();
+    assert!(
+        !headings.is_empty(),
+        "the listing has no heading:\n{listing}"
+    );
+
+    for (name, _, group) in &verbs {
+        assert!(
+            !group.trim().is_empty(),
+            "`ank {name}` carries no group, so nothing prints it:\n{json}"
+        );
+        assert_eq!(
+            *group,
+            group.to_lowercase(),
+            "'{group}' is titled rather than signposted: the headings are lowercase"
+        );
+        assert!(
+            headings.contains(group),
+            "`ank {name}` carries the group '{group}', which the listing gives no \
+             heading:\n{listing}"
+        );
+        // And a group says when a verb is used, never who may use it: the wall
+        // ADR-c656cbcc33a9 pulled down was built out of exactly these words.
+        for who in ["agent", "human", "caller", "you"] {
+            assert!(
+                !group.split_whitespace().any(|w| w == who),
+                "'{group}' sorts callers, which is the one thing a heading here \
+                 must never do"
+            );
+        }
+    }
+
+    // The other half: a heading with nothing under it is a group that has lost
+    // its verbs, which is the same defect seen from the listing's side.
+    for heading in &headings {
+        assert!(
+            verbs.iter().any(|(_, _, g)| g == heading),
+            "'{heading}' is printed with no verb of the table under it:\n{listing}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -7322,9 +7532,10 @@ fn surface() -> Vec<(String, String, Vec<String>)> {
     assert!(out.status.success(), "ank help must succeed");
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     let mut rows = Vec::new();
-    for line in text.lines().take_while(|l| !l.trim().is_empty()) {
+    for line in listing_body(&text) {
         // The listing is `<usage>` padded, then the description. Its folded
-        // continuation lines are indented and open no verb (TASK-fe130d2b732c).
+        // continuation lines are indented and open no verb (TASK-fe130d2b732c),
+        // and a group heading opens none either (ADR-f61e2d2c75e8).
         let Some(rest) = line.strip_prefix("ank ") else {
             continue;
         };
@@ -8103,7 +8314,8 @@ fn help_answers_about_config_the_way_it_answers_about_every_verb() {
     // The key set, which is the one thing a caller cannot guess.
     assert!(text.contains("verifiers.<name>.run"), "{text}");
 
-    // And the flat listing stays flat: one line for the verb, no heading.
+    // And the listing keeps one line for the verb: the heading names the moment
+    // a group of verbs belongs to, never a verb of its own.
     let listing = said(&r.ank("claude-code@ank", &["help"]));
     assert!(listing.contains("ank config <key> [<value>]"), "{listing}");
     assert!(listing.contains("--unset"), "{listing}");

@@ -14,15 +14,21 @@
 //! which are all in this file. A second, hand-maintained list of the verbs is
 //! exactly the drift the `owner_task` field was added to prevent.
 //!
-//! **The listing is flat, and the order of [`COMMANDS`] is the whole of its
-//! structure** (ADR-c656cbcc33a9). It used to group verbs under headings named
-//! after callers, which was the two-surface model still speaking through the
-//! output an agent reads; a heading printed by the binary is a claim about who
-//! a verb is for, and there is no such claim left to make. §4 already orders
-//! the table with the loop first, so the order says what the headings said,
-//! without asserting a category. What the loop *is* stays in SKILL.md, whose
-//! content is frozen and loaded permanently — that is where the token budget
-//! is spent, and `help` is loaded on demand precisely so it does not compete.
+//! **The listing is grouped by the moment a verb is reached for, and inside a
+//! group the order of [`COMMANDS`] survives untouched** (ADR-f61e2d2c75e8). It
+//! once grouped verbs under headings named after callers, which was the
+//! two-surface model still speaking through the output an agent reads; a
+//! heading that sorts callers is a claim about who a verb is for, and there is
+//! no such claim left to make. ADR-c656cbcc33a9 removed those headings and left
+//! §4's order to carry the structure alone, which works for five verbs and not
+//! for twenty-one: the order only says something to a reader who already knows
+//! it is meaningful, which is precisely what a first reader does not know. So
+//! the headings are back as a second axis laid over that order rather than a
+//! replacement for it, saying *when* a verb is used and never *who* may use it.
+//! Nothing is trimmed either — every verb stays in the one surface that claims
+//! to be complete. What the loop *is* stays in SKILL.md, whose content is
+//! frozen and loaded permanently — that is where the token budget is spent, and
+//! `help` is loaded on demand precisely so it does not compete.
 //!
 //! The edge cases of parsing are where hand-written code goes wrong, and they
 //! look like business bugs once in production: every one of them is therefore
@@ -224,8 +230,19 @@ fn long_of(c: char) -> Option<&'static str> {
 #[derive(Debug, Clone, Copy)]
 pub struct CommandSpec {
     pub name: &'static str,
-    /// What the verb does, in one line, for `ank help <verb>` (§9). Not for the
-    /// flat listing, which stays what it was.
+    /// **When** the verb is reached for, which is the heading `ank help` prints
+    /// it under (ADR-f61e2d2c75e8). One of [`GROUPS`], and never a claim about
+    /// who may run it: `check` sits under keeping the corpus honest whether a
+    /// human or an agent types it, and the refusal machinery consults no caller.
+    ///
+    /// Declared here for the reason `coordinates` and `renews` are: a field is
+    /// how the compiler asks the question of every verb that is ever added. A
+    /// list beside the renderer would let a twenty-second verb arrive with no
+    /// home and drop off the end of the listing, which is the failure the
+    /// grouping exists to make impossible rather than to create.
+    pub group: &'static str,
+    /// What the verb does, in one line, printed by both surfaces of §9: the
+    /// listing shows it beside the verb, and `ank help <verb>` above the flags.
     pub summary: &'static str,
     /// Mandatory subcommands, as in `new task` / `new adr`.
     pub subcommands: &'static [&'static str],
@@ -280,16 +297,38 @@ pub struct CommandSpec {
     pub owner_task: Option<&'static str>,
 }
 
+/// The moments a verb is reached for, in the order `ank help` prints them
+/// (ADR-f61e2d2c75e8).
+///
+/// A group says **when** a verb is used and never **who** may use it. The
+/// layering ADR-c656cbcc33a9 removed was the residue of an agent surface and a
+/// human surface — headings that told a caller which verbs were theirs, behind
+/// a wall built from `$ANK_AGENT`, which the caller sets itself. Nothing here
+/// reopens that: the distinction is the one between a map and a gate.
+///
+/// Lowercase, because a heading here is a signpost and not a title. The order
+/// is the reader's path through the tool, so `run the loop` comes first for the
+/// same reason §4 does.
+pub const GROUPS: &[&str] = &[
+    "run the loop",
+    "shape the work",
+    "look around",
+    "keep the corpus honest",
+    "set up a repository",
+];
+
 /// The twelve verbs of §4, plus `init` and `help` (§9).
 ///
-/// **The order is the specification's, and it is load-bearing**: `help` prints
-/// this table in this order and adds nothing to it (ADR-c656cbcc33a9). §4 puts
-/// the loop first — `context claim show log done`, then `release new find` —
-/// and the rest after it, so sorting this list would erase the only structure
-/// the listing has.
+/// **The order is the specification's, and it is load-bearing**: §4 puts the
+/// loop first — `context claim show log done`, then `release new find` — and
+/// the rest after it. `help` groups this table by [`GROUPS`] and keeps this
+/// order inside each group (ADR-f61e2d2c75e8): the grouping is a second axis
+/// laid over §4's order, not a re-sort, so a verb never moves relative to its
+/// neighbours and sorting this list would still erase what §4 says.
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
         name: "context",
+        group: "run the loop",
         renews: Renews::Held,
         coordinates: false,
         summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
@@ -304,6 +343,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "claim",
+        group: "run the loop",
         renews: Renews::Never,
         coordinates: true,
         summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
@@ -321,6 +361,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "show",
+        group: "run the loop",
         renews: Renews::Named,
         coordinates: false,
         summary: "the entity whole, frontmatter and body, byte for byte",
@@ -335,6 +376,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "log",
+        group: "run the loop",
         renews: Renews::Never,
         coordinates: true,
         summary: "an id alone reads the log; an id and a message appends one and renews the claim, which needs holding it",
@@ -351,6 +393,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "done",
+        group: "run the loop",
         renews: Renews::Never,
         coordinates: true,
         // "the declared verifiers" left out who declares them, and a reader
@@ -376,6 +419,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "release",
+        group: "run the loop",
         renews: Renews::Never,
         coordinates: true,
         summary: "hands the task back, with the reason recorded in its log",
@@ -390,6 +434,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "new",
+        group: "shape the work",
         renews: Renews::Never,
         coordinates: false,
         summary: "writes a task or an ADR that needs no hand finishing",
@@ -416,6 +461,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "find",
+        group: "look around",
         renews: Renews::Never,
         coordinates: false,
         summary: "searches titles, scopes and criteria; --status open lists what remains, with no query",
@@ -441,6 +487,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // refused the commit until it moved (TASK-15336a0012d5).
     CommandSpec {
         name: "status",
+        group: "look around",
         renews: Renews::Never,
         coordinates: false,
         summary: "where am I: branch, claim, perimeter, queue, findings",
@@ -461,6 +508,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "review",
+        group: "shape the work",
         renews: Renews::Never,
         coordinates: false,
         summary: "the ratification queue and the health of the corpus: what is proposed, and which scopes have gone dead",
@@ -475,6 +523,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "accept",
+        group: "shape the work",
         renews: Renews::Never,
         coordinates: true,
         summary: "promotes a proposed ADR to accepted, through a signed ratification commit; on the default branch only",
@@ -496,6 +545,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "close",
+        group: "shape the work",
         renews: Renews::Never,
         coordinates: true,
         summary: "closes a task that will never be done; --reason is mandatory",
@@ -516,6 +566,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "amend",
+        group: "shape the work",
         renews: Renews::Named,
         coordinates: false,
         summary: "changes blocked_by, scope, and a done_criteria no live claim freezes",
@@ -546,6 +597,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "attest",
+        group: "shape the work",
         renews: Renews::Named,
         coordinates: true,
         summary: "appends a proof to a finished task: the one write allowed after done",
@@ -575,6 +627,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // `tests/skill.rs` is what holds this to §4 rather than to memory.
     CommandSpec {
         name: "edit",
+        group: "keep the corpus honest",
         renews: Renews::Named,
         coordinates: false,
         summary: "opens an entity in $EDITOR and validates what comes back",
@@ -592,6 +645,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "graph",
+        group: "look around",
         renews: Renews::Never,
         coordinates: false,
         summary: "the blocked_by DAG in readable text, indented under what blocks it",
@@ -606,6 +660,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "scope",
+        group: "look around",
         renews: Renews::Never,
         coordinates: false,
         summary: "what covers a path: the constraints that bind it and the tasks that touch it",
@@ -620,6 +675,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "check",
+        group: "keep the corpus honest",
         renews: Renews::Never,
         coordinates: false,
         // A verb called `check` reads as read-only, and this one writes: it is
@@ -644,6 +700,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // states -- what `init` writes, `config` maintains.
     CommandSpec {
         name: "config",
+        group: "set up a repository",
         renews: Renews::Never,
         coordinates: false,
         summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
@@ -668,6 +725,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "init",
+        group: "set up a repository",
         renews: Renews::Never,
         coordinates: true,
         summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
@@ -685,6 +743,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "help",
+        group: "set up a repository",
         renews: Renews::Never,
         coordinates: false,
         summary: "every verb in one flat listing, or one verb in full",
@@ -1150,11 +1209,17 @@ fn json_of(specs: &[&CommandSpec]) -> String {
                     )
                 })
                 .collect();
+            // `group` is here and not only in the human listing: §4 emits the
+            // same structure to everyone and lets only colour depend on the
+            // reader, so giving a machine the grouping and withholding it from
+            // the caller who scripts against it would be the split this ADR
+            // rejected, the other way round (ADR-f61e2d2c75e8).
             format!(
-                "{{\"name\":{},\"usage\":{},\"summary\":{},\"flags\":[{}],\"notes\":[{}],\"refuses\":[{}]}}",
+                "{{\"name\":{},\"usage\":{},\"summary\":{},\"group\":{},\"flags\":[{}],\"notes\":[{}],\"refuses\":[{}]}}",
                 json_str(spec.name),
                 json_str(&usage(spec)),
                 json_str(spec.summary),
+                json_str(spec.group),
                 flags.join(","),
                 notes.join(","),
                 refusals.join(",")
@@ -1174,8 +1239,14 @@ fn json_of(specs: &[&CommandSpec]) -> String {
 /// work out that its question went unanswered, and answering the wrong question
 /// silently is worse than refusing the wrong one loudly.
 ///
-/// One pass, no grouping, no heading (ADR-c656cbcc33a9). The order is
-/// [`COMMANDS`]', which is §4's, and it is the only structure the output has.
+/// The listing is grouped by [`GROUPS`], and inside a group the order is
+/// [`COMMANDS`]', which is §4's (ADR-f61e2d2c75e8). No verb is hidden and there
+/// is no second listing to ask for: git shows the common commands and sends the
+/// rest to `git help -a`, and hiding a verb from the one surface claiming to be
+/// complete is worse than never teaching it.
+///
+/// `ank help <verb>` gains nothing from any of this. It never had headings and
+/// answers about one verb, which is a moment of its own.
 pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
     let asked = inv.positionals.first();
 
@@ -1232,21 +1303,35 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
     // usage line alone. They are one `ank help <verb>` away, with their value
     // placeholders and the refusals that qualify them, and the trailer below
     // says so rather than leaving the reader to discover it.
+    //
+    // **The width is computed across all of [`COMMANDS`] and never per group**
+    // (ADR-f61e2d2c75e8). Five widths would stop the columns lining up between
+    // sections, and the listing would read as five tables rather than one thing
+    // with five parts — which is the opposite of what the grouping is for.
     let width = COMMANDS.iter().map(|c| usage(c).len()).max().unwrap_or(0);
     let indent = width + 2;
-    for spec in COMMANDS {
-        if spec.summary.is_empty() {
-            let _ = writeln!(out, "{}", usage(spec));
-            continue;
+    for (n, group) in GROUPS.iter().enumerate() {
+        // A blank line between groups, and none before the first: the heading
+        // is what opens the listing, so nothing sits above the first verb but
+        // the name of the moment it belongs to.
+        if n > 0 {
+            let _ = writeln!(out);
         }
-        for (i, line) in wrapped_summary(spec.summary, indent, 98 - indent)
-            .into_iter()
-            .enumerate()
-        {
-            if i == 0 {
-                let _ = writeln!(out, "{:width$}  {line}", usage(spec));
-            } else {
-                let _ = writeln!(out, "{line}");
+        let _ = writeln!(out, "{group}");
+        for spec in COMMANDS.iter().filter(|c| c.group == *group) {
+            if spec.summary.is_empty() {
+                let _ = writeln!(out, "{}", usage(spec));
+                continue;
+            }
+            for (i, line) in wrapped_summary(spec.summary, indent, 98 - indent)
+                .into_iter()
+                .enumerate()
+            {
+                if i == 0 {
+                    let _ = writeln!(out, "{:width$}  {line}", usage(spec));
+                } else {
+                    let _ = writeln!(out, "{line}");
+                }
             }
         }
     }
@@ -1256,9 +1341,10 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<i32> {
         out,
         "ank help <verb> for one verb: its flags, and what it refuses"
     );
-    // A trailing pointer, beside the one above it and in the same shape: not a
-    // heading and not a grouping, so the flat listing ADR-c656cbcc33a9 requires
-    // is untouched. A flag nobody can discover answers nobody's question.
+    // A trailing pointer, beside the one above it and in the same shape. The
+    // three trailer lines are not a group and take no heading: they say where
+    // to look next rather than when a verb is used (ADR-f61e2d2c75e8). A flag
+    // nobody can discover answers nobody's question.
     let _ = writeln!(out, "ank --version for the build");
     Ok(0)
 }
@@ -1861,25 +1947,60 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_follows_the_table_and_puts_nothing_above_it() {
-        // With the headings gone, the order of COMMANDS is the only structure
-        // the listing has (ADR-c656cbcc33a9) -- so it is asserted rather than
-        // assumed. The test above passes just as well on a renderer that sorts
-        // alphabetically, which would bury the loop in the middle.
+    fn the_listing_keeps_the_table_order_inside_every_group() {
+        // The grouping is a second axis laid over COMMANDS, not a re-sort
+        // (ADR-f61e2d2c75e8) -- so it is asserted rather than assumed. The test
+        // above passes just as well on a renderer that sorts alphabetically,
+        // which would bury the loop in the middle of its own group.
         let text = help_out(&["help"]);
-        let mut at = 0usize;
-        for spec in COMMANDS {
-            let u = usage(spec);
-            let found = text[at..]
-                .find(&u)
-                .unwrap_or_else(|| panic!("{} out of order or missing:\n{text}", spec.name));
-            at += found + u.len();
+        for group in GROUPS {
+            let mut at = 0usize;
+            for spec in COMMANDS.iter().filter(|c| c.group == *group) {
+                let u = usage(spec);
+                let found = text[at..].find(&u).unwrap_or_else(|| {
+                    panic!(
+                        "{} out of order or missing under '{group}':\n{text}",
+                        spec.name
+                    )
+                });
+                at += found + u.len();
+            }
         }
+        // Nothing above the first heading, and the first heading is the moment
+        // the tool is entered at: a title would put something between a reader
+        // and the loop.
         assert!(
-            text.starts_with(&usage(&COMMANDS[0])),
-            "the first line is not the first verb, so something groups or \
-             titles the listing:\n{text}"
+            text.starts_with(&format!("{}\n{}", GROUPS[0], usage(&COMMANDS[0]))),
+            "the listing does not open on the first group and its first verb:\n{text}"
         );
+    }
+
+    #[test]
+    fn every_verb_has_a_group_and_every_group_has_verbs() {
+        // The two halves of what stops a twenty-second verb from being added
+        // with no home and disappearing off the end of a listing that renders
+        // by group (ADR-f61e2d2c75e8). The integration suite asserts the same
+        // property through the binary, which is where a caller reads it; this
+        // one fails at the table, which is where the mistake is made.
+        for spec in COMMANDS {
+            assert!(
+                GROUPS.contains(&spec.group),
+                "{} carries the group {:?}, which nothing prints",
+                spec.name,
+                spec.group
+            );
+        }
+        for group in GROUPS {
+            assert!(
+                COMMANDS.iter().any(|c| c.group == *group),
+                "'{group}' is a heading with no verb under it"
+            );
+            assert_eq!(
+                *group,
+                group.to_lowercase(),
+                "a heading is a signpost, not a title"
+            );
+        }
     }
 
     #[test]
@@ -1929,10 +2050,21 @@ mod tests {
         }
         assert!(
             !all.contains("audience"),
-            "the audience key carried the grouping into the scripted \
-             output:\n{all}"
+            "the audience key carried a grouping by caller into the scripted \
+             output, which is the one grouping there is no claim left to \
+             make:\n{all}"
         );
         assert!(all.contains("\"takes_value\":false"), "{all}");
+        // The moment a verb belongs to reaches a script too: structure is
+        // emitted identically to everyone (§4), and only colour depends on the
+        // reader.
+        for spec in COMMANDS {
+            assert!(
+                all.contains(&format!("\"group\":\"{}\"", spec.group)),
+                "{} is listed without its group:\n{all}",
+                spec.name
+            );
+        }
 
         let one = help_out(&["help", "claim", "--json"]);
         assert!(one.contains("\"name\":\"claim\""), "{one}");
