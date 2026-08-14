@@ -34,8 +34,8 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::verify;
 use ank_core::{
-    freeze_hash_short, verify_frozen, Entity, EntityId, LogEntry, Proof, ProofType, ScopeSet,
-    TaskStatus,
+    freeze_hash_short, verify_frozen, Entity, EntityId, LogEntry, Proof, ProofType, ProofVia,
+    ScopeSet, TaskStatus,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -467,6 +467,12 @@ fn run_verifiers(
             tree: tree.clone(),
             criteria: Some(criteria_hash.clone()),
             verifier: Some(verify::definition_ref(name, def)),
+            // Ank ran this one itself, which is the whole claim the entry
+            // makes (ADR-b6b69053a47b). Recorded as data rather than left to
+            // be inferred from `verifier` being set: a reader deriving the
+            // route from another field is a second rule free to disagree with
+            // this one.
+            via: Some(ProofVia::Verifier),
         });
     }
     Ok(proofs)
@@ -560,6 +566,12 @@ pub fn submitted_proof(
         tree: None,
         criteria: criteria.map(freeze_hash_short),
         verifier: None,
+        // A caller typed this, whatever its type, and the entry says so
+        // (ADR-b6b69053a47b). `attest --detached` is the one path that
+        // overwrites it, because there the entry leaves for a ref instead of a
+        // file and the route it takes is what makes it a third-party
+        // statement. Nothing here is refused: the record is what changes.
+        via: Some(ProofVia::Submitted),
     })
 }
 

@@ -123,8 +123,10 @@ refusals answer different questions: `priorty:` in a `task` is a typo, and
 | 16 | `version` | integer | |
 
 A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
-`criteria` and `verifier`, each omitted when absent. `type` is one of `test`,
-`commit`, `human-review`, `assertion`.
+`criteria`, `verifier` and `via`, each omitted when absent. `type` is one of
+`test`, `commit`, `human-review`, `assertion`. `via` is one of `verifier`,
+`attested`, `submitted` — the route by which the entry arrived — and its absence
+means the entry was written before the field existed, never a fourth route.
 
 A `verified` entry emits `by`, then `at`. Both are required in an entry that
 exists at all — an entry missing either is rejected — while the list itself is

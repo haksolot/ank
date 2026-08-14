@@ -200,10 +200,12 @@ proof:                       # append-only list, required for done
     tree: scope/4be2d10c     # hash of the scope files' content at execution time
     criteria: 7d1e2a90b4c3   # hash of the frozen done_criteria, recorded by done
     verifier: auth-tests@1f2e3d4c   # hash of the definition that ran (§4)
+    via: verifier            # the route: verifier | attested | submitted (§4)
   - type: test
     ref: local/e51b22@a3f9c21
     tree: scope/4be2d10c
     verifier: no-jwt@9ab0c1d2
+    via: verifier
 verified:                    # optional; a reading, not a run
   - by: human:marie
     at: 2026-07-27T09:40:00Z
@@ -213,6 +215,8 @@ version: 7
 
 Free-form context, notes, links.
 ```
+
+**A proof records the route by which it arrived** (ADR-b6b69053a47b). `via` is `verifier` when Ank ran a declared verifier itself, `attested` when the entry reached the task on `refs/ank/proof/<id>` (§7), and `submitted` when a caller passed it to `done --proof` or `attest --proof`. The field is optional and its absence is not a fourth value: it means the entry was written before the distinction existed, and §4 reads such an entry exactly as it was read then. What the route is *for* is the trust hierarchy, and it lives there.
 
 **The log is a file of its own**, `.ank/log/TASK-8f3a91c2d4e7.md`, and no longer a section of the entity body (ADR-ff294eff4d1a). It is append-only, one timestamped line per entry, and **the line grammar does not change**: a dash, the timestamp, the identity, an em dash, the message.
 
@@ -246,6 +250,10 @@ The rule is asymmetric on purpose. Reading **older** versions is a promise the f
 Version 3 carries two changes: the **log leaving the entity body**, and the **`verified` list** with the typed-actor convention it names. The layout change of the same revision — entities in one flat directory (§6) — carries no bump, because it moves files rather than fields, and a reader that finds the file finds every field it knew before.
 
 The log is what makes the bump necessary, and the case is the one the version field exists for. A reader that does not know the log has left the body opens a task file, finds no `## Log` section, and shows an **empty history for a task that has one** — silently, and nothing anywhere reads as an error. Refusing on the version says the one true thing before any of that happens. `verified` on its own would not have earned a bump; it is an optional field whose absence already means "nobody recorded a reading", which is exactly what an older reader would conclude. It ships in the same version because splitting the two would move the corpus twice.
+
+**`via` does not earn one either, and the second reason is the decisive one.** The first is `verified`'s: an older reader that does not know the field reads a proof entry as it always read one — a type and a reference — and concludes nothing false from its absence, because before the field there was nothing to conclude. What it loses is a distinction it never drew, which is not the log's case, where the older reader showed an empty history for a task that had one.
+
+The second is what a bump would actually do to a live corpus. `attest` appends to a task that already exists, and every task in an existing corpus declares the version it was written at. A bump would leave that verb two choices: write `via` into a file still declaring the older version, which is a file contradicting its own header, or raise the header on append, which is a migration performed by a write — and the conformance suite holds older fixtures precisely to catch a rewrite that moves one. Neither is acceptable, and the way out is the rule this document already states: **every field introduced after version 1 is optional at parse time**, so a proof entry carrying `via` is readable at any version in the range and one without it means the entry predates the distinction. A bump is for a reader that would be *wrong*, never for a field that is merely new.
 
 **Lifecycle.** `open` → `in_progress` (via `claim`) → `done` (via `done`, proof mandatory). There is no separate `claimed` status: a successful claim puts the task directly into work. **`claim` on an `in_progress` task with no active claim is a legal transition** — that is pickup after expiry, not an anomaly. The single exception is a task carrying a **completion ref**: it was finished on another branch, and `claim` refuses with code 4, naming the commit and the branch (§7). That is precisely the case the file's status cannot express, since a `done` lives in the durable state of the branch that produced it and exists nowhere else before the merge. After `done`, the only legal write is **appending** a proof to the `proof` list; any other modification is reported by `check`.
 
@@ -862,7 +870,7 @@ proof recorded: auth-tests -> local/9c1f4a@a3f9c21
 proof recorded: no-jwt -> local/e51b22@a3f9c21  (tree:scope/4be2d10c)
 ```
 
-**Two modes, never ambiguous.** If the task declares a `verify`, `ank done` runs **all** the verifiers in the list — a composite `done_criteria` ("the tests pass *and* no more jwt.verify") is mechanised by several verifiers, not by one that covers only part of it — and `--proof` is refused: the agent cannot short-circuit. Every verifier that runs produces **its own proof entry**, with its output hash and its definition anchored. Without `verify` — field absent or empty list, the two forms are equivalent and the canonical form omits the empty field — `--proof` is mandatory and Ank validates what it can: `commit:` is checked with git, `human-review:` and `assertion:` are recorded as they are and marked unverified.
+**Two modes, never ambiguous.** If the task declares a `verify`, `ank done` runs **all** the verifiers in the list — a composite `done_criteria` ("the tests pass *and* no more jwt.verify") is mechanised by several verifiers, not by one that covers only part of it — and `--proof` is refused: the agent cannot short-circuit. Every verifier that runs produces **its own proof entry**, with its output hash and its definition anchored. Without `verify` — field absent or empty list, the two forms are equivalent and the canonical form omits the empty field — `--proof` is mandatory and Ank validates what it can: `commit:` is checked with git, `human-review:` and `assertion:` are recorded as they are and marked unverified. Every entry recorded on that path carries `via: submitted`, whatever its type, because that is what happened — the entries produced by a verifier above carry `via: verifier`, and an attestation reaching the task on a ref carries `via: attested` (§3).
 
 If a verifier fails or times out, the transition is refused. No dependency on any service: this is usable **inside** the loop, not only at the end.
 
@@ -887,14 +895,22 @@ The reason: a task may arrive through a PR from a fork. An inline command would 
 
 ### Trust hierarchy
 
-| Type | What is guaranteed |
-|---|---|
-| `assertion:"..."` | Nothing. The agent asserts. **Marked weak** in `check`. |
-| `test:local/<hash>@<sha>` | Ank executed it, in an environment the agent controls |
-| `commit:<sha>` | Verifiable by anyone with `git` |
-| `test:ci://<ref>` | Third-party environment, out of the agent's reach |
+| Type | `via` | What is guaranteed | What validated it |
+|---|---|---|---|
+| `assertion:"..."` | `submitted` | Nothing. The agent asserts. **Marked weak** in `check`. | Nobody. Recorded as given. |
+| `test:<ref>` | `submitted` | Nothing. A reference typed at a keyboard, in the shape of the strongest proof this table has. | Nobody. Recorded as given. |
+| `human-review:<ref>` | `submitted` | A person says they read it. **Marked weak** in `check`. | Nobody. Recorded as given. |
+| `test:local/<hash>@<sha>` | `verifier` | Ank executed it, in an environment the agent controls | Ank, running a verifier `config.yml` declares, its definition hashed into the entry |
+| `commit:<sha>` | `submitted` | Verifiable by anyone with `git` | Ank, against `git rev-parse` at the moment it was recorded |
+| `test:ci://<ref>` | `attested` | Third-party environment, out of the agent's reach | The pipeline that wrote it to `refs/ank/proof/<id>`, under its own identity (§7) |
 
 The dividing line is not local versus hosted, it is **who controls the environment**. Locally, an agent can weaken a test to make it pass — the same class of problem as an ADR edited to unblock oneself.
+
+**The type says what the reference points at; `via` says who put it there, and the second is what the trust rests on** (ADR-b6b69053a47b). The two rows for `test:` are the whole reason the column exists. A run reference is the strongest thing in this table when a pipeline wrote it and the weakest when somebody typed it, and until `via` existed the file said the same thing in both cases — so `--proof test:<anything>` was recorded as strong, unchecked, and silenced the one finding designed to catch a completion nothing external anchors. The fix is not to demote `test:`, which would punish the anchor `attest --detached` and §7 exist to build. It is to record the route and let the signal read it.
+
+**So the `done with no test proof` signal below is derived from the route and never from the type alone.** A `test` entry whose `via` is `verifier` or `attested` silences it; one whose `via` is `submitted` does not, and the finding names the reference it declined to count. **An entry carrying no `via` at all silences it, exactly as it always did**: the field is optional, its absence means the entry predates the distinction, and a rule that reinterpreted the corpus it postdates would redden every completion recorded before it landed. That is the same reading §3 gives to pre-convention actors and to entities predating `author` — the entities mean what they meant.
+
+**This changes what is reported and never what is refused.** A typed reference is still accepted by `done` and by `attest`, still recorded, still part of the proof list. The CLI is not a gatekeeper (§2), and a proof somebody typed in good faith is worth having in the record — it is worth having as what it is.
 
 **What local proof anchors.** An agent's nominal case is an uncommitted working tree: anchoring proof on the HEAD SHA alone would almost always point at a stale state. The proof therefore records three things: the HEAD SHA, a dirty-tree indicator, and **a hash of the scope files' content at execution time** (`tree:scope/<hash>`, git hash-object style). That last one is what actually captures what was tested. `check` additionally reports the case where the task itself modified the test files it invokes.
 
@@ -916,7 +932,7 @@ Summary of the invariants and signals, all mechanical:
 - frozen fields diverging from their anchoring hash — `done_criteria` against the claim, `constraint`/`scope` against the ratification commit, and the signature on that commit against `allowed_signers` (§8): an anchor read from a commit nobody signed anchors nothing;
 - weak proofs (`assertion`, unverified), `done` tasks modified beyond appending a proof;
 - behavioural signals, reported without being faults: blockers created by the holder after claiming (`author` of the blocker is the current holder and its `created` is later than the claim), criterion set by the claimer, verifier modified inside the task's activity window or proof hash diverging from its definition, scope test files modified by the task that invokes them, burst creation by a single identity (**more than 10 entities by one `author` within an hour**, through `created`), implausible `created` (in the future, or well before the commit that introduces the file — the field is declarative, git is the anchor), repeated claim renewals with no modification to the scope files (possible hoarding; a best-effort signal, since another agent's tree is not observable), constraint accepted after the claim of a task in progress, tasks blocked by a `closed` task;
-- a `done` task carrying no `test` proof, once the **default branch** carries it as `done`: the completion rests on a local run and nothing external anchors it. A signal and never a fault — the corpus is intact, the record is thin, and exiting 8 would redden CI on the very merge that introduces the task. The gate on the default branch is what makes it actionable: before the merge there is no run to cite, and reporting there would name work the reader cannot do. The window between the merge landing and its run going green is left to fire, since the statement is true when printed and clears when someone attests; buying that quiet would cost a grace constant, and the constants below are justified for flooding alone;
+- a `done` task carrying no `test` proof **that anything validated** — none at all, or only ones a caller submitted — once the **default branch** carries it as `done`: the completion rests on a local run and nothing external anchors it. Read on `via` and not on the type (see the trust hierarchy above), so a submitted reference is named in the finding rather than counted by it, and an entry predating `via` counts as it always did. A signal and never a fault — the corpus is intact, the record is thin, and exiting 8 would redden CI on the very merge that introduces the task. The gate on the default branch is what makes it actionable: before the merge there is no run to cite, and reporting there would name work the reader cannot do. The window between the merge landing and its run going green is left to fire, since the statement is true when printed and clears when someone attests; buying that quiet would cost a grace constant, and the constants below are justified for flooding alone;
 - entities predating `author`, **reported once for the corpus and never per file**: they are skipped by the two signals above, and saying so once is what keeps that fact visible. One line per file would add a line for every entity written before the field existed — the volume that teaches a reader to stop reading `check`;
 - actor values not matching the typed convention of §3, **reported once for the corpus and never per file**, on the same reasoning and for the same volume as the line above: the convention binds new writes, and the entities that predate it mean what they meant. A malformed actor is a finding here and never a parse error, or a rule would lock out the files it postdates;
 - an entity whose `author` is an agent and which carries **no reading by a `human:`** in `verified` (§3): a signal, one per entity, and never a fault. Nothing requires `verified`, and `check` derives what the fields state and nothing further — no score, no confidence, no ranking;
