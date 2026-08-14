@@ -5,7 +5,7 @@ slug: the-prose-that-calls-ank-help-a-flat-listing-cat
 title: The prose that calls ank help a flat listing catches up with the binary
 created: 2026-08-14T18:17:54Z
 author: claude-code/03fd
-status: open
+status: in_progress
 scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/cli.rs
@@ -15,7 +15,7 @@ done_criteria: |
   docs/ank-spec-v1.1.md no longer describes ank help as one flat listing with no headings and no grouping, and cites ADR-f61e2d2c75e8 where it cited the superseded clause. The summary of the help verb no longer says 'in one flat listing'. cargo test --workspace is green, which means the test asserting the listing and the per-verb page print one string has been carried across the change.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 TASK-03fd4b2c27bc grouped the listing and stopped inside its own perimeter, which is crates/ank-cli. Two pieces of prose outside it now describe a binary that no longer exists.
