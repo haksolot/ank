@@ -2,18 +2,68 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "3f350ad26459"
+  revision: "6ddced7793f9"
 ---
 
 # ank
 
 Tasks and architecture decisions live as files in `.ank/`, attached to the code
-they constrain. Two modes: executing work, and shaping the work that exists.
-`context` starts both.
+they constrain and reached through one CLI. Three modes: understanding what
+governs a perimeter, executing work, and shaping the work that exists. `context`
+starts all three.
 
-    Loop:      ank context -> ank claim <id> -> ank show <id> -> ank log "<msg>" -> ank done
-    Off-loop:  ank new, ank find, ank release --reason "<r>"
-    Planning:  ank new adr, ank amend, ank review, ank graph, ank check
+    Loop:          ank context -> ank claim <id> -> ank show <id> -> ank log "<msg>" -> ank done
+    Off-loop:      ank new, ank find, ank release --reason "<r>"
+    Investigation: ank scope <path>, ank status, ank log <id>, ank find --type spec
+    Planning:      ank new adr, ank amend, ank review, ank graph, ank check
+
+## Why it is shaped this way
+
+**Constraints and work are two planes, joined only by scope.** A decision is not
+the parent of a task; it is a rule with a glob, and it binds work that did not
+exist when it was written. So there is no hierarchy to traverse and no label to
+keep tidy — and a glob is confronted with the filesystem, where a label is only
+ever confronted with somebody remembering it.
+
+**Nothing is trusted, everything is anchored.** The criterion you have to meet is
+frozen by hash the moment you claim it, `done` runs the declared verifiers itself
+instead of believing a report, and a proof records the route by which it arrived.
+None of that is a wall: you can edit any file. It is that every freeze is
+anchored where the editor cannot reach, so an edit becomes *visible* rather than
+effective.
+
+**Which is why the tool is not a gatekeeper and never pretends to be one.** It
+refuses on state — a task already held, a criterion that moved, a proof missing —
+and never on who is asking. What it owes you in exchange is that every refusal
+names the exact command that resolves it.
+
+## Investigation
+
+Before choosing work, and often instead of choosing it: what governs this file,
+and where am I.
+
+**`ank context <path>`** — what binds a perimeter and what is claimable inside
+it. The loop's first verb, given a path rather than a claim.
+
+**`ank scope <path>`** — every entity whose scope matches that path, whatever its
+kind, with its status. This is *why is this file constrained, and by what*,
+answered before you write anything rather than after `check` complains.
+
+**`ank find <query>`** — titles, scopes and criteria. `ank find --type spec`
+reaches the specification, which is an entity of this corpus like any other, so
+the normative answer is one `ank show` away instead of a document to go hunting
+for.
+
+**`ank log <id>`** — an entity's entries, newest first. No claim needed and no
+message to pass: this is the read form. It is where the last holder wrote what
+they tried and why they handed it back, and reading it is how you avoid
+repeating them.
+
+**`ank status`** — where you are: the branch, the identity in effect and where it
+came from, the claim you hold, the perimeter, what is waiting for ratification,
+and how far this checkout has drifted from the default branch.
+
+**`ank check [path]`** — what is already known to be wrong, before you add to it.
 
 ## The loop
 
@@ -44,8 +94,8 @@ agent that grades itself can simply be wrong.
 entity attached to nothing is invisible. A subtask you discover is a new task
 with a `blocked_by`, never a softened criterion.
 
-**`ank find <query>`** — search titles, scopes and criteria. `ank find --status
-open` lists what remains, with no query to invent.
+**`ank find <query>`** — `ank find --status open` lists what remains, with no
+query to invent.
 
 **`ank release --reason "<why>"`** — stuck, or wrong about the approach. Say so
 and hand the task back rather than letting the claim lapse in silence.
@@ -77,10 +127,10 @@ What is genuinely a root, and what only looked like one in a flat list.
 frozen fields, orphaned claims. Exit `8` means findings, and findings are for
 reading, not for silencing.
 
-**`accept` is not yours to run.** It is what turns a proposed ADR into a binding
-one, and it is a human act: signed, on the default branch, with no way around
-it. Propose the decision, then say it is waiting. Knowing where your authority
-ends is part of planning well.
+**`accept` is not yours to run.** It is what turns a proposed ADR or spec into a
+binding one, and it is a human act: signed, on the default branch, with no way
+around it. Propose the decision, then say it is waiting. Knowing where your
+authority ends is part of planning well.
 
 ## Rules that are not negotiable
 
@@ -93,7 +143,6 @@ ends is part of planning well.
   directly. `ank show <id>` gives you an entity whole, `ank find` lists,
   `ank context` binds — the CLI knows the budget, the freeze and who holds what;
   the files do not.
-
 - **One agent, one working tree, one identity.** The nominal case is a tree per
   agent — a clone or a `git worktree` — each on its own branch. `ANK_AGENT`
   names the session and falls back to `<user>@<hostname>`, so two sessions in
@@ -101,7 +150,6 @@ ends is part of planning well.
   over it, and the second one is refused work it should have been given. Set it
   per session. Several agents in one tree runs, and is a degraded mode rather
   than the design.
-
 - **What you read is never styled.** Colour is emitted only when a human is at
   a terminal, never into a pipe, a file or `--json`, so the bytes reaching you
   are plain: there is nothing to configure and no second surface to prefer.
