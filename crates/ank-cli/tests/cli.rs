@@ -2705,6 +2705,76 @@ fn a_reference_names_a_document_or_a_decision_and_no_other_kind() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Concurrent readers of one corpus (TASK-e9dfaf187a1b)
+// ---------------------------------------------------------------------------
+
+/// **Two agents reading one corpus at the same time both get an answer.**
+///
+/// The nominal execution model is one working tree per agent (§7), and
+/// worktrees of a repository share its `.ank/` — so two agents running
+/// `ank context` inside the same second is the ordinary shape of a parallel
+/// session, not an exotic one. It did not work: measured in CI on all three
+/// platforms at once, two of three concurrent readers came back
+/// `error[1]: index: attempt to write a readonly database` and
+/// `error[1]: index: disk I/O error`.
+///
+/// The symptom names the cause. `attempt to write a readonly database` is what
+/// SQLite reports when the file underneath an open connection has been unlinked,
+/// and `open_raw` deletes the index whenever opening it fails — so one reader
+/// losing a lock race deleted the database the others were using, and the
+/// disposability rule of §6 turned a moment of contention into an error for
+/// everybody else.
+///
+/// Through the binary and with real processes, because that is the only place
+/// the defect exists: every in-process test opened one connection at a time and
+/// passed throughout.
+#[test]
+fn concurrent_readers_of_one_corpus_all_answer() {
+    let r = Repo::new();
+    for i in 0..12 {
+        r.seed_task_titled(&format!("TASK-00000000{i:04x}"), &format!("Task {i}"));
+    }
+
+    // Every verb here opens the index, and each of them refreshes it while
+    // reading (§6), so all three are writers whatever their names suggest.
+    let verbs: [&[&str]; 3] = [&["find", "Task"], &["context"], &["scope", "src"]];
+    let mut running = Vec::new();
+    for i in 0..12 {
+        running.push(
+            ank_command()
+                .args(verbs[i % verbs.len()])
+                .arg("--repo")
+                .arg(&r.0)
+                .env("ANK_AGENT", format!("agent-{i}@host"))
+                .current_dir(std::env::temp_dir())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("the binary must have been built"),
+        );
+    }
+
+    let mut refused = Vec::new();
+    for (i, child) in running.into_iter().enumerate() {
+        let out = child.wait_with_output().expect("a spawned ank must finish");
+        if !out.status.success() {
+            refused.push(format!(
+                "#{i} exited {:?}: {}",
+                code(&out),
+                stderr(&out).trim()
+            ));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "readers of one corpus refused each other. The index is derived, \
+         disposable and rebuildable (§6), so contention on it is never a reason \
+         to fail a reader:\n{}",
+        refused.join("\n")
+    );
+}
+
 /// A perimeter holding one proposal, with a budget as the only variable.
 fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
     let r = Repo::new();

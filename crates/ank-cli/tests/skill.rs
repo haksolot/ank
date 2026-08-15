@@ -63,14 +63,14 @@ fn push_once(verbs: &mut Vec<String>, verb: String) {
 /// have to be re-typed on every revision, and the revision that forgot would
 /// look like a passing suite.
 ///
-/// **Read once for the whole binary, and that is not an optimisation.** Three
-/// tests want this document, `cargo test` runs them on three threads, and the
-/// verbs that answer open the derived SQLite index — which today carries no
-/// busy timeout, so two of them racing on one corpus is `attempt to write a
-/// readonly database` (TASK-e9dfaf187a1b). It passed here and failed on all
-/// three platforms in CI, which is the shape of a concurrency defect and not of
-/// a flake. Reading once removes this suite from the race; the defect itself is
-/// ank's and has its own task.
+/// **Read once for the whole binary.** Three tests want this document and
+/// `cargo test` runs them on three threads, so this used to put three
+/// concurrent readers on one corpus — which is how TASK-e9dfaf187a1b was found:
+/// green here, red on all three platforms in CI, the shape of a concurrency
+/// defect rather than of a flake. That defect is fixed in the index itself and
+/// has its own test, so this is now what it looks like: eleven process spawns
+/// instead of thirty-three, for a document that does not change between three
+/// reads of it.
 fn section_4_document() -> String {
     static DOC: OnceLock<String> = OnceLock::new();
     DOC.get_or_init(read_section_4_document).clone()
