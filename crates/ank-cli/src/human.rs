@@ -32,7 +32,7 @@ use crate::config::Config;
 use crate::git;
 use crate::index::Index;
 use crate::repo::Repo;
-use crate::store::{version_of, LogHome, Store};
+use crate::store::{version_of, Store};
 use crate::style;
 use crate::verify;
 use ank_core::{
@@ -40,7 +40,7 @@ use ank_core::{
     serialize_entity, verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Spec,
     SpecStatus, Task, TaskStatus, Verified,
 };
-use ank_core::{CriteriaBy, ProofType, ProofVia, ScopeSet};
+use ank_core::{log::ELLIPSIS, CriteriaBy, ProofType, ProofVia, ScopeSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -331,6 +331,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // Walked from the directory rather than from the tasks, because a log file
     // whose entity is absent is still a file this corpus carries, and the
     // per-task read below has no way to reach one.
+    //
+    // The directory is the **previous** layout since ADR-25f977377fa0, read for
+    // one window and never written. A corpus still holding one is a signal a
+    // few lines below; what is a fault here is the same thing it always was — a
+    // merge left half done in a file this corpus carries.
+    let mut previous_log_files = 0usize;
     if let Ok(rd) = std::fs::read_dir(repo.ank.join(Store::LOG_DIR)) {
         let mut logs: Vec<PathBuf> = rd
             .flatten()
@@ -341,6 +347,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         // order, the same guarantee every other listing in this file gives.
         logs.sort();
         for p in logs {
+            previous_log_files += 1;
             let stem = p
                 .file_stem()
                 .unwrap_or_default()
@@ -376,6 +383,21 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         ));
     }
 
+    // The same courtesy, on the same terms, for the log directory the entry
+    // kind replaced. It is read, so nothing is lost while it is there — and the
+    // command that moves it is a verb rather than a `git mv`, because a line
+    // becoming an entity is a rewrite and not a rename.
+    if previous_log_files > 0 {
+        report.findings.push(Finding::signal(
+            "corpus",
+            format!(
+                "{previous_log_files} entities keep their log in .ank/{}/: an entry is an \
+                 entity since schema 3 (ank migrate)",
+                Store::LOG_DIR
+            ),
+        ));
+    }
+
     let in_scope = |e: &Entity| match path {
         None => true,
         Some(p) => ScopeSet::new(e.scope())
@@ -403,6 +425,31 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         .filter(|(_, e)| e.id().kind() == EntityKind::Spec)
         .map(|(_, e)| e.id().clone())
         .collect();
+
+    // The entries of each entity, from the corpus already parsed rather than
+    // from the index: `check` has every file in hand, and opening a second
+    // reader over the same directory is a second chance to disagree about what
+    // is there. Ordered as every reader orders them — the timestamp, then the
+    // identifier — so a note listing several prints one order on every machine.
+    let mut entries_of: HashMap<EntityId, Vec<LogEntry>> = HashMap::new();
+    {
+        let mut rows: Vec<&ank_core::Log> = entities
+            .iter()
+            .filter_map(|(_, e)| match e {
+                Entity::Log(l) => Some(l),
+                _ => None,
+            })
+            .collect();
+        // The order of §3, stated once in `ank_core` and read here rather than
+        // rebuilt: `created`, then `seq`, then the identifier.
+        rows.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+        for l in rows {
+            entries_of
+                .entry(l.about.clone())
+                .or_default()
+                .push(LogEntry::of(l));
+        }
+    }
 
     report.tasks = statuses.len();
     report.adrs = adr_ids.len();
@@ -461,12 +508,22 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         if !in_scope(entity) {
             continue;
         }
-        check_scope_alive(
-            entity,
-            &files,
-            has_git.then_some(repo.root.as_path()),
-            &mut report,
-        );
+        // **A log entry's scope is not confronted with the filesystem.** Every
+        // other kind chooses its perimeter and is answerable for it; an entry
+        // copies its subject's at the moment it is written and never tracks it
+        // (§3), so a scope that has since died is the subject's problem and is
+        // already reported once, against the subject. Walking it here would
+        // report the same death once per entry — the volume that teaches a
+        // reader to stop reading `check`, and against an entity nothing can
+        // repair, since an entry is written once.
+        if entity.id().kind() != EntityKind::Log {
+            check_scope_alive(
+                entity,
+                &files,
+                has_git.then_some(repo.root.as_path()),
+                &mut report,
+            );
+        }
         match entity {
             Entity::Task(t) => check_task(
                 t,
@@ -476,19 +533,23 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 detached.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 cfg,
                 &store,
+                entries_of.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
                 &detached_commits,
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
             Entity::Spec(s) => check_spec(s, repo, &spec_ids, &entities, &mut report),
-            // A log entry's kind-specific signals are not written yet, and they
-            // arrive with TASK-df9c6d46e8ef. What is checked here is what every
-            // kind owes — the scope above, authorship and readings below — and
-            // that already runs for it.
+            // A log entry's are checked where they can be: `about` is validated
+            // against the corpus below, once, with a count rather than one line
+            // per entry — there are five hundred of them. What is checked here
+            // is what every kind owes, authorship and readings below, and that
+            // already runs for it; the scope above is the one exception, for
+            // the reason stated there.
             Entity::Log(_) => {}
         }
     }
+    check_entries(&entities, &in_scope, &mut report);
 
     check_cycles(&entities, &mut report);
     check_authorship(&entities, &coord, &in_scope, &mut report);
@@ -1025,6 +1086,7 @@ fn check_task(
     detached: &[claim::AttestedProof],
     cfg: &Config,
     store: &Store,
+    entries: &[LogEntry],
     default_branch: Option<&str>,
     detached_commits: &BTreeSet<String>,
     report: &mut Report,
@@ -1139,7 +1201,7 @@ fn check_task(
     // judgement rather than a corpus defect, and the criterion that actually
     // moved is the divergence fault above. Conflating the two would make the
     // exit code fire on the very act §3 asks for instead of an edit.
-    match log_entries(store, t) {
+    match log_entries(store, t, entries) {
         Ok(entries) => {
             let recorded: Vec<String> = entries
                 .iter()
@@ -1397,7 +1459,18 @@ fn check_task(
 /// nothing, and a caller that read `unwrap_or_default` would report "no
 /// discrepancy" about a log it never read — the record gone along with the line
 /// that broke it, and no line anywhere saying so.
-fn log_entries(store: &Store, t: &Task) -> std::result::Result<Vec<LogEntry>, LogUnread> {
+fn log_entries(
+    store: &Store,
+    t: &Task,
+    from_corpus: &[LogEntry],
+) -> std::result::Result<Vec<LogEntry>, LogUnread> {
+    // The entries of the corpus, where there are any. The previous layout is
+    // read only for a task that has none — the same rule
+    // [`crate::entries::about`] applies, and for the same reason: a reader that
+    // added the two would double every entry of a corpus caught mid-move.
+    if !from_corpus.is_empty() {
+        return Ok(from_corpus.to_vec());
+    }
     match std::fs::read_to_string(store.log_path_of(&t.id)) {
         // The markers are looked for before the parse and not after it,
         // because the parse cannot tell them from any other refused line and
@@ -1410,6 +1483,32 @@ fn log_entries(store: &Store, t: &Task) -> std::result::Result<Vec<LogEntry>, Lo
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(parse_log(&t.body)),
         Err(e) => Err(LogUnread::Why(e.to_string())),
     }
+}
+
+/// One entry about an entity a verb has just written, at the instant it wrote
+/// it.
+///
+/// The three verbs of this module that record one — `close`, `attest`, `amend`
+/// — differ in their message and in nothing else, so the shape they share is
+/// one line rather than three copies of it. Called **after** the write it
+/// records: an entry is a trace of something that happened, and a transition
+/// the compare-and-swap refused must not leave one behind.
+fn record_entry(
+    store: &Store,
+    repo: &Repo,
+    subject: &Entity,
+    identity: &str,
+    message: String,
+) -> Result<EntityId> {
+    let index = Index::open(&repo.ank)?;
+    crate::entries::record(
+        store,
+        &index,
+        subject,
+        identity,
+        &claim::now_utc(),
+        &message,
+    )
 }
 
 /// Why a task's log yielded nothing, and at what severity `check` says so.
@@ -1677,6 +1776,79 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
 const BURST_COUNT: usize = 10;
 const BURST_WINDOW: i64 = 3600;
 
+/// What a log entry owes: `about` names an entity this corpus holds, and the
+/// entry has not been rewritten (§3, ADR-25f977377fa0).
+///
+/// The previous layout computed the association from the id, so it could not be
+/// wrong; the trade the ADR accepted is that it is now a reference, and a
+/// reference can dangle. An entry whose subject is absent is unreachable by
+/// every reader — `log`, `show` and `context` all ask the question the other
+/// way round — and would be invisible without this.
+///
+/// **A fault, and counted once for the corpus.** A fault because it is the same
+/// defect `blocked_by` naming nothing already is: a reference to an entity that
+/// is not there. Once because entries are the most numerous kind by far, and a
+/// deletion that took a subject away takes every entry about it at the same
+/// time — one line per orphan would be the volume that teaches a reader to stop
+/// reading `check`, so the first few are named and the count carries the rest.
+fn check_entries(
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    report: &mut Report,
+) {
+    // An entry above version 1 has been rewritten, and the format says it
+    // should not have been. **A signal and never a fault**, on the doctrine of
+    // ADR-6b3f: immutability is verifiable by hash and never defended by the
+    // CLI, so what `check` owes is the observation — the rewrite is already in
+    // the git history, and a reader is who judges whether it was a correction
+    // or a falsification.
+    let mut rewritten: Vec<String> = entities
+        .iter()
+        .filter(|(_, e)| in_scope(e))
+        .filter_map(|(_, e)| match e {
+            Entity::Log(l) if l.version > 1 => Some(format!("{} at version {}", l.id, l.version)),
+            _ => None,
+        })
+        .collect();
+    if !rewritten.is_empty() {
+        rewritten.sort();
+        let total = rewritten.len();
+        rewritten.truncate(5);
+        report.findings.push(
+            Finding::signal(
+                "corpus",
+                format!("{total} log entries have been rewritten: an entry is written once"),
+            )
+            .with_note(rewritten),
+        );
+    }
+
+    let present: HashSet<&EntityId> = entities.iter().map(|(_, e)| e.id()).collect();
+    let mut orphans: Vec<String> = entities
+        .iter()
+        .filter(|(_, e)| in_scope(e))
+        .filter_map(|(_, e)| match e {
+            Entity::Log(l) if !present.contains(&l.about) => {
+                Some(format!("{} is about {}", l.id, l.about))
+            }
+            _ => None,
+        })
+        .collect();
+    if orphans.is_empty() {
+        return;
+    }
+    orphans.sort();
+    let total = orphans.len();
+    orphans.truncate(5);
+    report.findings.push(
+        Finding::fault(
+            "corpus",
+            format!("{total} log entries are about an entity this corpus does not hold"),
+        )
+        .with_note(orphans),
+    );
+}
+
 /// The three signals that need `author` (§4).
 ///
 /// Two of them were unreachable for want of the field, and the third is what
@@ -1736,10 +1908,22 @@ fn check_authorship(
         ));
     }
 
+    // **The two signals below count acts of creation, and an entry is not
+    // one.** A log entry is a trace of work that happened, written once and
+    // never ratified: there is nothing for a human to stand behind and nothing
+    // a quota would restrain. Counting them would put one unread-by-a-human
+    // line under every entry in the corpus — five hundred of them here — and
+    // would report a burst every time an agent worked for an hour, which is the
+    // signal firing on exactly the behaviour the loop asks for.
+    let created_deliberately: Vec<&&Entity> = considered
+        .iter()
+        .filter(|e| e.id().kind() != EntityKind::Log)
+        .collect();
+
     // An entity an agent wrote and no human has read. Derived from what the
     // fields state and nothing further: no score, no confidence, no ranking —
     // the signal is recorded and the reader judges.
-    for e in &considered {
+    for e in &created_deliberately {
         let Some(author) = author_of(e) else { continue };
         if actor_kind(author) != Some(ActorKind::Agent) {
             continue;
@@ -1766,7 +1950,7 @@ fn check_authorship(
     // than restriction. This is that visibility, and nothing more: a burst is
     // reported, never refused.
     let mut by_author: HashMap<&str, Vec<i64>> = HashMap::new();
-    for e in &considered {
+    for e in &created_deliberately {
         if let (Some(author), Some(at)) = (author_of(e), claim::parse_utc(created_of(e))) {
             by_author.entry(author).or_default().push(at);
         }
@@ -3414,7 +3598,6 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
-    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{prefix} is not a task")));
     };
@@ -3423,12 +3606,9 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         .check_transition(TaskStatus::Closed)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {id}")))?;
     task.status = TaskStatus::Closed;
-    let entry = LogEntry {
-        timestamp: claim::now_utc(),
-        who: identity.to_string(),
-        message: format!("closed: {reason}"),
-    };
-    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
+    let closed = Entity::Task(task);
+    store.write(&closed, base_version)?;
+    record_entry(&store, repo, &closed, identity, format!("closed: {reason}"))?;
 
     let revoked = claim::delete(&repo.root, &id)?;
     if inv.json() {
@@ -3493,7 +3673,6 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
-    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{prefix} is not a task")));
     };
@@ -3560,13 +3739,16 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     // Appended. The entries already there are not read, rewritten or reordered
     // — they are simply still in the vector.
     task.proof.push(proof);
-    let entry = LogEntry {
-        timestamp: claim::now_utc(),
-        who: identity.to_string(),
-        message: format!("attested {kind}:{reference}"),
-    };
     let entries = task.proof.len();
-    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
+    let attested = Entity::Task(task);
+    store.write(&attested, base_version)?;
+    record_entry(
+        &store,
+        repo,
+        &attested,
+        identity,
+        format!("attested {kind}:{reference}"),
+    )?;
 
     if inv.json() {
         let _ = writeln!(
@@ -3710,7 +3892,6 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
-    let home = store.log_home(&loaded);
     let id = loaded.entity.id().clone();
 
     // Both normalised, and both for the same reason `new --scope` is: one is
@@ -3840,12 +4021,15 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 _ => None,
             };
 
-            let entry = LogEntry {
-                timestamp: claim::now_utc(),
-                who: identity.to_string(),
-                message: format!("amended: {}", changes.join(", ")),
-            };
-            store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
+            let amended = Entity::Task(task);
+            store.write(&amended, base_version)?;
+            record_entry(
+                &store,
+                repo,
+                &amended,
+                identity,
+                format!("amended: {}", changes.join(", ")),
+            )?;
 
             report_amend(inv, &id, &changes, out);
             if touched_scope {
@@ -4101,13 +4285,17 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         // A proof anchors a completion, and only a task completes.
         _ => Vec::new(),
     };
-    // Only when the log is a file. A body still carrying its own `## Log`
-    // section prints it above as part of the entity, and a second copy here
-    // would be the same history said twice.
-    let log = match store.log_home(&loaded) {
-        LogHome::File => store.log_of(&loaded)?,
-        LogHome::Body => Vec::new(),
-    };
+    // The entries about this entity, of whatever kind it is: an ADR carries
+    // them too (ADR-25f977377fa0).
+    let mut log = crate::entries::about(&store, &Index::open(&repo.ank)?, &loaded.entity)?;
+    // A body still carrying its own `## Log` section has just been printed
+    // above, byte for byte, as part of the entity — so those lines get no
+    // second copy under it. They are exactly the ones with no identifier: an
+    // entry has one, a line the previous layout holds does not. What stays is
+    // everything written since, which is the half `show` would otherwise hide.
+    if body_carries_its_own_log(&loaded.entity) {
+        log.retain(|e| e.id.is_some());
+    }
     // What the budget has left once the entity is paid for, which is the whole
     // point of charging the entity first: it is never cut, so it is never the
     // section competing for room.
@@ -4170,17 +4358,35 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     Ok(0)
 }
 
+/// Does this entity still carry a `## Log` section in its body?
+///
+/// The oldest of the three layouts, read where it is and never written. It
+/// matters to `show` alone: this verb prints the entity byte for byte, so a
+/// body carrying its own section has already printed it, and the section below
+/// would repeat it.
+fn body_carries_its_own_log(entity: &Entity) -> bool {
+    ank_core::Fields::body(entity)
+        .lines()
+        .any(|l| l.trim_end() == ank_core::log::LOG_HEADER)
+}
+
 /// The log as data. A list, empty when there is none, so a parser reads one
 /// shape rather than two.
-fn log_json(entries: &[LogEntry]) -> String {
+fn log_json(entries: &[crate::entries::Entry]) -> String {
     let items: Vec<String> = entries
         .iter()
         .map(|e| {
+            // The message **whole**, and the entry's own id beside it. A parser
+            // is not reading a page: what the listing elides for width, this
+            // carries in full, and the id is what makes one addressable.
             format!(
-                "{{\"timestamp\":{},\"who\":{},\"message\":{}}}",
-                json_str(&e.timestamp),
-                json_str(&e.who),
-                json_str(&e.message)
+                "{{\"id\":{},\"timestamp\":{},\"who\":{},\"message\":{}}}",
+                e.id.as_ref()
+                    .map(|i| json_str(&i.to_string()))
+                    .unwrap_or_else(|| "null".to_string()),
+                json_str(&e.line.timestamp),
+                json_str(&e.line.who),
+                json_str(&e.line.message)
             )
         })
         .collect();
@@ -4202,7 +4408,7 @@ fn log_json(entries: &[LogEntry]) -> String {
 fn log_section(
     out: &mut dyn Write,
     id: &EntityId,
-    entries: &[LogEntry],
+    entries: &[crate::entries::Entry],
     cut: usize,
     style: crate::style::Style,
 ) {
@@ -4224,7 +4430,16 @@ fn log_section(
         } else {
             crate::style::glyph::BRANCH
         };
-        let _ = writeln!(out, "{connector}{} {} — {}", e.timestamp, e.who, e.message);
+        // The head of the message, with an ellipsis when there is more: the
+        // section is bounded by the budget, and one entry of a few thousand
+        // characters would otherwise be the whole of it (§5).
+        let _ = writeln!(
+            out,
+            "{connector}{} {} — {}",
+            e.line.timestamp,
+            e.line.who,
+            e.line.shown_message()
+        );
     }
     if cut > 0 {
         // The command that actually answers, and not a flag that does not
@@ -4233,6 +4448,17 @@ fn log_section(
         // command that would refuse is the failure ADR-97beaf55e73a and §5 both
         // single out.
         let _ = writeln!(out, "+{cut} earlier entries, ank log {id}");
+    } else if entries
+        .iter()
+        .any(|e| e.line.shown_message().ends_with(ELLIPSIS))
+    {
+        // Nothing was cut and something is still not shown whole. The ellipsis
+        // says a line was elided and says nothing about where the rest is; this
+        // is the same courtesy the cut already gets, for the same reason —
+        // a reader told only that something is missing learns that the tool
+        // hides things. `log` is where the entries carry their identifiers, and
+        // `ank show <LOG-id>` is one step past it.
+        let _ = writeln!(out, "an elided message reads whole from ank log {id}");
     }
 }
 
@@ -4484,7 +4710,12 @@ mod tests {
         fn log(&self, id: &EntityId) -> Vec<LogEntry> {
             let store = self.store();
             let loaded = store.load(id).unwrap();
-            store.log_of(&loaded).unwrap()
+            let index = Index::in_memory(store.root()).unwrap();
+            crate::entries::about(&store, &index, &loaded.entity)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.line)
+                .collect()
         }
 
         fn store(&self) -> Store {
@@ -5268,16 +5499,16 @@ mod tests {
             // Another convention on the same grammar, and not this one.
             (two.id(), "released: unrelated"),
         ] {
-            t.store()
-                .append_to_log_file(
-                    id,
-                    &LogEntry {
-                        timestamp: "2026-07-28T01:00Z".into(),
-                        who: "claude-code/1.4.2".into(),
-                        message: message.into(),
-                    },
-                )
-                .unwrap();
+            let subject = t.store().load(id).unwrap().entity;
+            crate::entries::record(
+                &t.store(),
+                &Index::in_memory(t.store().root()).unwrap(),
+                &subject,
+                "claude-code/1.4.2",
+                "2026-07-28T01:00Z",
+                message,
+            )
+            .unwrap();
         }
 
         let r = t.report();

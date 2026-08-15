@@ -430,6 +430,20 @@ pub struct Log {
     /// shape computed from the id instead: an address became a query, and in
     /// exchange an entry is indexed and reachable like anything else.
     pub about: EntityId,
+    /// The rank of this entry among the entries about [`Log::about`], from 0.
+    ///
+    /// **A timestamp is not an order.** `created` has one-second resolution and
+    /// writing an entry costs a few hundred milliseconds, so several entries
+    /// inside one second is the ordinary case; with no other key the order
+    /// falls to the identifier, which is a hash of the act of creation and
+    /// carries none. An append-only file gave insertion order for free and a
+    /// set of files does not, so the rank is a field (§3).
+    ///
+    /// **Not a clock and not a lock.** Two writers who cannot see each other
+    /// produce the same value, which is the honest answer rather than a defect:
+    /// they were concurrent. `created` separates them when their instants
+    /// differ and the identifier settles what is left.
+    pub seq: u64,
     /// Readings, optional and empty by default (§3).
     pub verified: Vec<Verified>,
     pub schema: u32,

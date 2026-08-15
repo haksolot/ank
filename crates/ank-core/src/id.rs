@@ -9,7 +9,7 @@ pub const MIN_PREFIX_LEN: usize = 4;
 /// A kind, as an index into the registry rather than as a second declaration
 /// of it. The name and the prefix are read from [`crate::registry::KINDS`] and
 /// are written down nowhere else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum EntityKind {
     Task,
     Adr,
@@ -65,7 +65,12 @@ impl EntityKind {
 /// a constant, and a constant is precisely the value [`resolve_prefix`] below
 /// refuses once two ids share it (TASK-c1f01f301d63). Callers that print ask
 /// the corpus instead, through `ank_cli::context::shorts_of`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// `Ord` is the tiebreaker of the entry order (§3) and nothing more. It sorts by
+/// kind and then by hex, which is arbitrary — an id is a hash of the act of
+/// creation and carries no order — and that is exactly what it is for: the last
+/// resort under `created` and `seq`, where two entries are genuinely concurrent
+/// and any stable answer is the right one.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EntityId {
     kind: EntityKind,
     hex: String, // 12 characters, lowercase

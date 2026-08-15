@@ -302,7 +302,7 @@ is where the reasoning behind a task lives.
 ## Work, and log what you learn
 
     $ ank log "jwt.verify removed from session.ts"
-    logged on TASK-820d259af6a7
+    logged LOG-6b0f39d7a4c1 on TASK-820d259af6a7
 
 The log is a work trace, not proof. Write to it when you discover something,
 not when you finish: it renews the claim, so working is what keeps the lock and
@@ -310,8 +310,15 @@ there is no heartbeat command to remember. A claim lasts 30 minutes by default;
 if it expires because a build ran long, the task stays `in_progress` and you
 re-acquire silently, provided nobody took it over.
 
-`ank log 820d` with no message reads the log back instead of writing, and needs
-no claim.
+**Each entry is an entity of its own**, which is why the line names one. The
+task's own file is not touched at all — no frontmatter, no version bump — and two
+agents writing at once write two files, so there is nothing for a merge to
+resolve. Any kind may be logged against, an ADR included, and writing about
+something that is not a task asks for no claim: there is none to hold.
+
+`ank log 820d` with no message reads the entries back, newest first, and needs
+no claim. A message too long for a line is printed elided there; `ank show`
+on the entry's own id prints it whole, and `--json` always carries it whole.
 
 ## Finish
 

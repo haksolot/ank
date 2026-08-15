@@ -1,0 +1,17 @@
+---
+id: LOG-e1c816df31e4
+type: log
+title: "done: da7f2b4 (index in 2512c29), 82 + 6 + 11 tests, fmt and check_repo green. Content hash per"
+created: 2026-07-31T03:33Z
+author: claude-code@ank
+scope:
+  - crates/ank-cli/src/index.rs
+  - crates/ank-cli/Cargo.toml
+  - Cargo.lock
+about: TASK-b2c3d4e5f6a7
+seq: 1
+schema: 3
+version: 1
+---
+
+ file, refresh on open, absent or unusable index rebuilt silently. One defect the tests found: meta survives a DROP TABLE entities, so a version check alone called a gutted index healthy and the refresh failed later on a missing table; the check now verifies the tables too. rusqlite default features drag a wasm stack into the lockfile, 28 new packages down to 11 with default-features = false. The proof points at da7f2b4 and not at the index commit: the dogfooding test there pinned this task's own status to in_progress, so the criterion held at 2512c29 and would have broken at the transition. The claim ref was deleted by hand at the close: `ank done` does not exist to turn it into a completion record, and a claim record on a finished task asserts something false.

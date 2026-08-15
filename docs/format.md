@@ -196,14 +196,15 @@ has no field carrying its authority, so `ratified` is taken over the body and
 | 1 | `id` | bare | `LOG-<12 hex>` |
 | 2 | `type` | bare | always `log` |
 | 3 | `slug` | scalar | optional |
-| 4 | `title` | scalar | the message |
+| 4 | `title` | scalar | the message, or its head (below) |
 | 5 | `created` | scalar | ISO 8601, UTC; the instant of the entry |
 | 6 | `author` | scalar | optional; who wrote the entry |
 | 7 | `scope` | block sequence | mandatory; the subject's scope as it stood |
 | 8 | `about` | bare | mandatory, an entity id of any kind |
-| 9 | `verified` | block sequence of maps | optional, omitted when empty |
-| 10 | `schema` | integer | |
-| 11 | `version` | integer | |
+| 9 | `seq` | integer | mandatory; rank among that entity's entries, from 0 |
+| 10 | `verified` | block sequence of maps | optional, omitted when empty |
+| 11 | `schema` | integer | |
+| 12 | `version` | integer | |
 
 **No `status`, and that is not an omission**: an entry is written once and has
 nothing to transition to, so the registry declares the kind without one and your
@@ -334,9 +335,68 @@ identity, a space, an em dash, a space, the message:
 So an entry written under either previous shape reads across unchanged and
 nothing about it is reinterpreted: only where it lives has moved, twice.
 
+**A message longer than a line is split across `title` and the body, and the
+split is lossless.** One line of at most **100 characters** is the whole of the
+`title`, and the body is empty. Longer, the title runs to the last space at or
+before character 100 and at or after character 50 — the limit itself where there
+is no such space, and the first newline where one comes earlier — and the body is
+a newline, the remainder verbatim, a newline.
+
+**The message is the exact concatenation of the two.** The separating space
+belongs to the remainder, so joining inserts nothing; recovering the remainder
+removes exactly one newline at each end and never trims. Given the message
+
+    discrepancy: the criterion assumes merge=union and .gitattributes declares none, which is measurable
+
+a writer stores
+
+```yaml
+title: "discrepancy: the criterion assumes merge=union and .gitattributes declares"
+```
+
+with the body `"
+ none, which is measurable
+"`, and a reader that concatenates
+the title with the remainder gets the message back byte for byte. A body that is
+not of that shape carries no remainder, and the message is the title alone.
+
+The rule exists because the title is what every lister prints, on every kind: a
+2000-character title is one enormous quoted scalar and it is printed in full
+wherever entities are listed. **So print the head of the message with a trailing
+`…` when there is more**, and let a reader ask for the entry itself to see the
+whole. Machine output carries the whole message: a parser reads no page.
+
 Any kind may be logged against — a task, an ADR, a spec — and **an entity with no
 entries has an empty log, never an error**. Do not write one to record that there
 is nothing to record.
+
+**Order an entity's entries by `created`, then `seq`, then the identifier.** All
+three are read off the entity; none of them is the file name, the directory
+order or anything else outside it.
+
+`seq` exists because a timestamp is not an order. `created` has one-second
+resolution, and writing an entry costs a few hundred milliseconds, so several
+entries inside one second is the ordinary case: measured on four entries written
+about one task, 12 runs of 12 put all four in the same second, and 10 of those
+12 came back in the wrong order when the identifier was the only tiebreak — a
+hash of the act of creation, which carries no order at all. An append-only file
+carried insertion order for free; a set of files does not.
+
+**When you write an entry, set `seq` to one more than the highest `seq` you can
+see on the entries already about that subject, or 0 if there are none.** That
+requires reading them first, which is a bounded read and the same query you need
+to display them. Two writers who cannot see each other will produce the same
+value; that is correct rather than broken — they were concurrent, `created`
+separates them when their instants differ, and the identifier settles the rest.
+Never treat equal `seq` as a conflict, and never rewrite an entry to renumber
+it.
+
+**An entry read out of one of the previous layouts takes the 0-based index of
+its line in the file**, which is the order that file recorded. Since `created`
+is read first, a file whose lines contradict their own timestamps is reordered
+by the timestamps — measured on the reference corpus, one file of 178 stores its
+lines newest-first. The guarantee is therefore exact: across distinct instants
+the timestamps order the entries, and within one instant the line order does.
 
 **Writing an entry is not a write to the entity it is about.** It writes no
 frontmatter there, bumps no `version` there, and touches no file carrying a

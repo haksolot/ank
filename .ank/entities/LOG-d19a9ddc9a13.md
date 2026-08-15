@@ -1,0 +1,16 @@
+---
+id: LOG-d19a9ddc9a13
+type: log
+title: Short-form table written into specification section 4 before any parser change, ADR-962c25797569.
+created: 2026-08-05T05:48:55Z
+author: seanl@sean-laptop
+scope:
+  - crates/ank-cli/src/cli.rs
+  - docs/ank-spec-v1.1.md
+about: TASK-f3e92656b5df
+seq: 1
+schema: 3
+version: 1
+---
+
+ The rule is mechanical rather than negotiated: the letter is the first letter of the long flag, without exception, and where several long flags share one, exactly one takes it and the others keep only their long form. Ten letters: -j -q -r globally, then -b -c -l -p -s -t -v. That is what leaves --scope, --title, --ttl, --reason, --constraint, --supersedes and --body long-only, and section 4 names each one with the letter that would have been its. A -s meaning --status under find and --scope under new would be a silent wrong answer, not a saving: ank find -s open would filter on a scope named open and return nothing. One table in cli.rs rather than a letter beside each declaration, since --scope and --criteria are each declared in three CommandSpecs. Two consequences handled: a short flag that names a real flag the verb does not take gets its own message rather than unknown flag, and a single-dash argument containing whitespace is refused as the positional it is, naming the -- escape, because ank log '-1 rebuilt' used to be a message and is now a flag. Tested through the binary, six tests, with the negative control run: the branch disabled, three of them fail.

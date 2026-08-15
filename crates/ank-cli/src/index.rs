@@ -34,8 +34,9 @@ use std::path::{Path, PathBuf};
 /// Bumped whenever the schema changes. An index carrying anything else is
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
-/// Moved to 2 by the FTS5 table: nothing migrated, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 2;
+/// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`: nothing
+/// migrated any of those times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 4;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -57,10 +58,13 @@ CREATE TABLE entities (
     created    TEXT NOT NULL,
     scope      TEXT NOT NULL,
     blocked_by TEXT NOT NULL,
+    about      TEXT NOT NULL,
+    seq        INTEGER NOT NULL,
     version    INTEGER NOT NULL
 );
 CREATE INDEX entities_by_path ON entities (path);
 CREATE INDEX entities_by_kind ON entities (kind, status);
+CREATE INDEX entities_by_about ON entities (about, created, seq, id);
 CREATE VIRTUAL TABLE entities_fts USING fts5(
     id,
     title,
@@ -105,6 +109,13 @@ pub struct Row {
     pub created: String,
     pub scope: Vec<String>,
     pub blocked_by: Vec<EntityId>,
+    /// The entity a log entry is about, and `None` on every other kind — which
+    /// is what makes the entries of an entity a query rather than an address
+    /// (ADR-25f977377fa0).
+    pub about: Option<EntityId>,
+    /// The rank of a log entry among the entries about the same entity, and 0
+    /// on every other kind, where it means nothing and is never read.
+    pub seq: u64,
     pub version: u64,
 }
 
@@ -435,6 +446,26 @@ impl Index {
         )
     }
 
+    /// The log entries about an entity, **oldest first**.
+    ///
+    /// This is the query the previous layout computed as an address, and the
+    /// trade ADR-25f977377fa0 accepted: an entry is reachable like anything
+    /// else, at the cost of a lookup. Any kind may be the subject — a task, an
+    /// ADR, a spec — because `about` names an entity and not a task.
+    ///
+    /// **Ordered by the timestamp, and never by a directory listing**, with the
+    /// identifier breaking ties: two entries written in the same second are
+    /// possible — six pairs of them in this repository's own corpus — and the
+    /// order between them has to be the same on every machine and every run.
+    /// Chronological here because that is the direction `show` prints and the
+    /// direction the cap of §5 consumes; `log` reverses it.
+    pub fn entries_about(&self, about: &EntityId) -> Result<Vec<Row>> {
+        self.query(
+            &format!("{SELECT_ROW} WHERE about = ?1 ORDER BY created, seq, id"),
+            params![about.to_string()],
+        )
+    }
+
     /// Lexical search, best match first. Never opens an entity file: everything
     /// the query reads was written into the index by the refresh that put the
     /// entity rows there, which is what makes a thousand-entity corpus answer
@@ -510,7 +541,7 @@ struct ScannedFile {
 }
 
 const SELECT_ROW: &str = "SELECT id, kind, path, title, status, created, scope, blocked_by, \
-                          version FROM entities";
+                          about, seq, version FROM entities";
 
 /// Reads one row, keeping the two failure kinds apart: a SQLite error is
 /// rusqlite's, an identifier the index cannot parse back is ours, and the outer
@@ -520,7 +551,9 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
     let kind: String = r.get(1)?;
     let scope: String = r.get(6)?;
     let blocked: String = r.get(7)?;
-    let version: i64 = r.get(8)?;
+    let about: String = r.get(8)?;
+    let seq: i64 = r.get(9)?;
+    let version: i64 = r.get(10)?;
     let built = (|| -> Result<Row> {
         let bad = |what: &str, v: &str| CliError::new(1, format!("index: bad {what} '{v}'"));
         Ok(Row {
@@ -538,6 +571,12 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
                 .iter()
                 .filter_map(|s| EntityId::parse(s).ok())
                 .collect(),
+            // Empty on every kind but a log entry, which is the column's whole
+            // population. A value that will not parse is read as absent rather
+            // than as a broken row: the files are the corpus, and `check` is
+            // what reports one that disagrees with itself.
+            about: EntityId::parse(&about).ok(),
+            seq: seq.max(0) as u64,
             version: version.max(0) as u64,
         })
     })();
@@ -605,16 +644,20 @@ fn upsert(
     let created = entity.created().to_string();
     let version = entity.version();
     let slug = entity.slug().unwrap_or_default().to_string();
-    let (status, blocked_by, criteria) = match entity {
+    let (status, blocked_by, criteria, about, seq) = match entity {
         Entity::Task(t) => (
             t.status.as_str().to_string(),
             join_list(t.blocked_by.iter().map(|b| b.to_string())),
             t.done_criteria.clone().unwrap_or_default(),
+            String::new(),
+            0,
         ),
         Entity::Adr(a) => (
             a.status.as_str().to_string(),
             String::new(),
             a.constraint.clone(),
+            String::new(),
+            0,
         ),
         // A spec has the lifecycle and no sentence of that sort to carry, and
         // **its body is deliberately not indexed**: the document is measured in
@@ -623,10 +666,27 @@ fn upsert(
         // `context` answers under (§5). A spec is found by its title, its slug
         // and its scope, like every other entity; what it says is one
         // `ank show` away.
-        Entity::Spec(s) => (s.status.as_str().to_string(), String::new(), String::new()),
+        Entity::Spec(s) => (
+            s.status.as_str().to_string(),
+            String::new(),
+            String::new(),
+            String::new(),
+            0,
+        ),
         // A log entry has no status at all, and its message is the `title`
-        // above. TASK-df9c6d46e8ef is what makes entries reachable by query.
-        Entity::Log(_) => (String::new(), String::new(), String::new()),
+        // above. What goes in the searchable column is the **remainder** of
+        // that message, so a query reaches the whole of what somebody wrote and
+        // not only its first hundred characters — the two halves are one
+        // sentence, and `find` would otherwise answer about half of it.
+        Entity::Log(l) => (
+            String::new(),
+            String::new(),
+            ank_core::body_remainder(&l.body)
+                .unwrap_or_default()
+                .to_string(),
+            l.about.to_string(),
+            l.seq,
+        ),
     };
     // The path is not the key: an entity that moved file must not survive
     // twice, so the old row goes first. Same for its searchable twin, and by
@@ -639,13 +699,13 @@ fn upsert(
     tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
     tx.execute(
         "INSERT INTO entities \
-           (id, kind, path, title, status, created, scope, blocked_by, version) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+           (id, kind, path, title, status, created, scope, blocked_by, about, seq, version) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
          ON CONFLICT(id) DO UPDATE SET \
            kind = excluded.kind, path = excluded.path, title = excluded.title, \
            status = excluded.status, created = excluded.created, \
            scope = excluded.scope, blocked_by = excluded.blocked_by, \
-           version = excluded.version",
+           about = excluded.about, seq = excluded.seq, version = excluded.version",
         params![
             entity.id().to_string(),
             kind,
@@ -655,6 +715,8 @@ fn upsert(
             created,
             join_list(entity.scope().iter().cloned()),
             blocked_by,
+            about,
+            seq as i64,
             version as i64,
         ],
     )?;

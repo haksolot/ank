@@ -10,7 +10,9 @@
 //! 2. The model invariants: identifiers ([`id`]), status transitions
 //!    ([`model`]), a mandatory and valid scope ([`scope`]), derived blocking;
 //! 3. The hash freeze of immutable fields ([`freeze`]);
-//! 4. The append-only log ([`log`]), a file of its own since schema 3.
+//! 4. The log ([`log`]): the line a reader sees, the rule that splits a
+//!    message between the two fields an entry stores it in, and the two
+//!    previous layouts, read for one window and never written.
 //!
 //! What this crate deliberately does not do: no disk I/O, no git, no index,
 //! no permissions — the caller (CLI, `check`, third-party tool) composes
@@ -28,7 +30,9 @@ pub mod scope;
 pub use error::{Error, Result};
 pub use freeze::{freeze_hash, freeze_hash_short, verify_frozen};
 pub use id::{resolve_prefix, EntityId, EntityKind};
-pub use log::{append_log, append_log_file, parse_log, parse_log_file, LogEntry};
+pub use log::{
+    body_remainder, message_fields, message_of, parse_log, parse_log_file, split_message, LogEntry,
+};
 pub use model::{
     Adr, AdrStatus, CriteriaBy, Entity, Log, Proof, ProofType, ProofVia, Spec, SpecStatus, Task,
     TaskStatus, Verified, MIN_SCHEMA, SCHEMA_VERSION,

@@ -118,6 +118,13 @@ impl Repo {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
+        // What `ank init` writes, and the fixture was unrepresentative without
+        // it: the index is derived, disposable and **gitignored** (§6). Any verb
+        // that opens one leaves `.ank/index.db` behind, and a fixture that
+        // tracks it turns an ordinary `git merge` into a refusal about an
+        // untracked file the tool owns. `init` has its own tests for the
+        // appending behaviour; this is only the line those tests are about.
+        std::fs::write(r.0.join(".gitignore"), ".ank/index.db\n").unwrap();
         r
     }
 
@@ -377,12 +384,84 @@ impl Repo {
         std::fs::write(self.flat_task_path(id), text).unwrap();
     }
 
-    /// The log file of an entity, empty when there is none. Since schema 3 the
-    /// log is not in the entity file, so an assertion about a log line reads
-    /// this and an assertion about a field reads `task_text`.
+    /// The entries about an entity, rendered as the lines a reader sees, oldest
+    /// first — empty when there are none.
+    ///
+    /// Since ADR-25f977377fa0 an entry is an entity of its own, so this walks
+    /// the corpus for the entries naming this id rather than opening one file.
+    /// It renders rather than returning the entities, because the assertions
+    /// below are about **what somebody wrote**, and the line is where that has
+    /// always been legible. The message is whole here: what a lister elides for
+    /// width, an assertion must still see.
+    ///
+    /// The previous log directory answers for an entity that has no entries,
+    /// which is the same rule the CLI applies (§3) and what keeps the fixtures
+    /// seeding one meaningful.
     fn log_text(&self, id: &str) -> String {
-        std::fs::read_to_string(self.0.join(".ank/log").join(format!("{id}.md")))
-            .unwrap_or_default()
+        let mut rows: Vec<((String, u64, String), String)> = Vec::new();
+        for entry in std::fs::read_dir(self.0.join(".ank/entities"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) else {
+                continue;
+            };
+            if l.about.to_string() != id {
+                continue;
+            }
+            rows.push((
+                // The order of §3, and the same key the tool uses: `created`,
+                // then `seq`, then the identifier. **A helper that sorted on
+                // the timestamp alone reproduced, inside the thing doing the
+                // catching, the very defect these tests exist to catch** — two
+                // entries of one second came out in identifier order, and it
+                // failed 1 run in 10 until this line named `seq`.
+                (l.created.clone(), l.seq, l.id.to_string()),
+                format!(
+                    "- {} {} \u{2014} {}\n",
+                    l.created,
+                    l.author.clone().unwrap_or_default(),
+                    l.message()
+                ),
+            ));
+        }
+        if rows.is_empty() {
+            return std::fs::read_to_string(self.0.join(".ank/log").join(format!("{id}.md")))
+                .unwrap_or_default();
+        }
+        rows.sort();
+        rows.into_iter().map(|(_, line)| line).collect()
+    }
+
+    /// The entries about an entity, as entities: the identifiers of the files
+    /// the corpus actually holds. What `log_text` renders, this counts.
+    fn entry_ids(&self, id: &str) -> Vec<String> {
+        let mut ids: Vec<String> = Vec::new();
+        for entry in std::fs::read_dir(self.0.join(".ank/entities"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let path = entry.path();
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+                if l.about.to_string() == id {
+                    ids.push(l.id.to_string());
+                }
+            }
+        }
+        ids.sort();
+        ids
     }
 
     fn task_text(&self, id: &str) -> String {
@@ -3120,6 +3199,11 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
 
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
     assert_eq!(code(&r.ank("claude-code@ank", &["log", "first thing"])), 0);
+    // A second apart, because `created` is what orders the two and it has
+    // one-second resolution (§3). Two entries inside one second are a real
+    // case and have a test of their own below; here the question is the
+    // direction, which needs two instants to have one.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
     assert_eq!(code(&r.ank("claude-code@ank", &["log", "second thing"])), 0);
 
     // Still `marie@laptop`, who holds no claim on anything: the claim is what
@@ -3151,7 +3235,7 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
     let j = stdout(&out);
     assert!(
         j.starts_with(&format!(
-            "{{\"task\":\"{ID}\",\"total\":2,\"shown\":2,\"entries\":["
+            "{{\"about\":\"{ID}\",\"total\":2,\"shown\":2,\"entries\":["
         )),
         "{j}"
     );
@@ -3160,15 +3244,33 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
         "{j}"
     );
 
-    // Only a task has a log, and the refusal names the verb that does answer.
+    // **Any kind carries entries, an ADR included** (ADR-25f977377fa0). The
+    // refusal that named a task by name went with the per-entity file it
+    // guarded: `about` names an entity, so there is no kind that cannot be one.
+    // Writing one asks for no claim either -- an ADR has none to hold, and
+    // refusing there would be refusing on the absence of a state.
     const ADR: &str = "ADR-0000000000ab";
     r.seed_adr(ADR, "Do not do X.", "src/**");
     let out = r.ank("marie@laptop", &["log", ADR]);
-    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
-        stderr(&out).contains(&format!("ank show {ADR}")),
+        stdout(&out).contains("no log entry yet"),
         "{}",
-        stderr(&out)
+        stdout(&out)
+    );
+
+    let out = r.ank("marie@laptop", &["log", ADR, "the constraint bit here"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).starts_with("logged LOG-") && stdout(&out).contains(&format!("on {ADR}")),
+        "{}",
+        stdout(&out)
+    );
+    let out = r.ank("marie@laptop", &["show", ADR]);
+    assert!(
+        stdout(&out).contains("the constraint bit here"),
+        "an ADR shows its entries like anything else: {}",
+        stdout(&out)
     );
 }
 
@@ -3306,8 +3408,16 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
         "init wrote into the repository it was merely standing in"
     );
     assert!(
-        !inside.0.join(".gitattributes").exists() && !inside.0.join(".gitignore").exists(),
+        !inside.0.join(".gitattributes").exists(),
         "init wrote git files into the repository it was merely standing in"
+    );
+    // The fixture writes this one, so the question is whether `init` touched
+    // it, not whether it is there: `init` appends its own lines to a
+    // `.gitignore` it finds, and this one is exactly as the fixture left it.
+    assert_eq!(
+        std::fs::read_to_string(inside.0.join(".gitignore")).unwrap(),
+        ".ank/index.db\n",
+        "init appended to the .gitignore of the repository it was merely standing in"
     );
     let fetch = git_command(&inside.0)
         .args(["config", "--get-all", "remote.origin.fetch"])
@@ -3945,7 +4055,7 @@ fn with_two_live_claims_no_verb_picks_one_in_silence() {
     );
     assert!(said.contains("ANK_AGENT"), "and the way out: {said}");
     assert!(
-        stdout(&out).contains(&format!("logged on {FIRST}")),
+        stdout(&out).contains(&format!("on {FIRST}")),
         "{}",
         stdout(&out)
     );
@@ -7721,7 +7831,10 @@ fn every_transition_line_reads_one_grammar_and_stays_plain_in_a_pipe() {
     assert!(claimed.starts_with("claimed TASK-"), "{claimed:?}");
 
     let logged = run(&["log", &second, "something learned"]);
-    assert!(logged.starts_with("logged on TASK-"), "{logged:?}");
+    assert!(
+        logged.starts_with("logged LOG-") && logged.contains(" on TASK-"),
+        "an entry is an entity, and the line names the one it wrote: {logged:?}"
+    );
 
     let released = run(&["release", &second, "--reason", "the criterion is wrong"]);
     assert!(
@@ -11314,9 +11427,13 @@ fn every_verb_that_logs_writes_to_the_log_file() {
 /// This repository's own `.gitattributes`, so a fixture merges under the rules
 /// the corpus actually ships with.
 ///
-/// Copied rather than written: a test that declares `merge=union` itself proves
-/// that git has a union driver, which nobody doubted, and would go on passing
-/// for years after somebody deleted the line from the file that matters.
+/// Copied rather than written, and the reason has outlived the rule it was
+/// written for: a test that declared `merge=union` itself proved that git has a
+/// union driver, which nobody doubted, and would have gone on passing for years
+/// after somebody deleted the line from the file that matters. There is no such
+/// line any more -- two entries are two files -- so what this now guards is the
+/// opposite claim: the merge below succeeds under whatever the corpus actually
+/// ships, and it ships no merge rule for the log at all.
 fn repository_gitattributes() -> String {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -11326,21 +11443,24 @@ fn repository_gitattributes() -> String {
         .expect("the repository declares its attributes")
 }
 
-/// Two branches append to one task's log, and the merge keeps both entries.
+/// Two branches record an entry about one task, and the merge keeps both.
 ///
 /// **The claim under test is about git, so git is what is made to behave.**
 /// Three texts said git's own union resolves two appends with no merge driver;
 /// nothing in the repository configured one, and git's three-way merge
 /// conflicts on two lines added at the end of one file — the textbook
-/// adjacent-change case. An assertion about the contents of `.gitattributes`
-/// would have proved none of that, in either direction (TASK-6c0463fb4319).
+/// adjacent-change case (TASK-6c0463fb4319). An assertion about the contents of
+/// `.gitattributes` would have proved none of that, in either direction.
 ///
-/// The case is the one ADR-ff294eff4d1a celebrated most: a second party
-/// appending to a task's log while the holder appends to it too. One file per
-/// entity keeps two agents on two *tasks* apart whatever git does; it is
-/// exactly this case it does not cover.
+/// That is the case ADR-ff294eff4d1a celebrated most and the one it did not
+/// cover: a second party writing to a task's log while the holder writes to it
+/// too. ADR-25f977377fa0 removes it rather than resolving it — an entry is an
+/// entity, so two concurrent entries are **two new files** and there is nothing
+/// for a three-way merge to be three-way about. The test is kept, and it is
+/// kept because the failure it caught was a text everybody believed: what makes
+/// it evidence is that git actually runs.
 #[test]
-fn two_branches_appending_to_one_log_merge_with_no_conflict() {
+fn two_branches_recording_an_entry_merge_with_no_conflict() {
     let r = Repo::new();
     std::fs::write(r.0.join(".gitattributes"), repository_gitattributes()).unwrap();
     r.seed_task(LOGGED, Some("A verifiable criterion."));
@@ -11368,7 +11488,10 @@ fn two_branches_appending_to_one_log_merge_with_no_conflict() {
         )),
         0
     );
-    r.git(&["commit", "-qam", "the reviewer's entry"]);
+    // `add -A` and not `commit -a`: an entry is a **new file**, which is the
+    // whole of why the two sides no longer meet, and `-a` stages no such thing.
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the reviewer's entry"]);
 
     r.git(&["checkout", "-q", "main"]);
     r.git(&["checkout", "-q", "-b", "holder"]);
@@ -11376,7 +11499,8 @@ fn two_branches_appending_to_one_log_merge_with_no_conflict() {
         code(&r.ank("claude-code@ank", &["log", "written on the holder branch"])),
         0
     );
-    r.git(&["commit", "-qam", "the holder's entry"]);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the holder's entry"]);
 
     // The merge itself, allowed to fail: `Repo::git` would panic with git's
     // words, and what this test is about is the exit code.
@@ -11392,7 +11516,9 @@ fn two_branches_appending_to_one_log_merge_with_no_conflict() {
         r.log_text(LOGGED)
     );
 
-    // Both entries survived, and the third that was there before them.
+    // Both entries survived, and the third that was there before them -- as
+    // three separate entities, which is what the merge had to keep.
+    assert_eq!(r.entry_ids(LOGGED).len(), 3, "one file per entry");
     let log = r.log_text(LOGGED);
     for entry in [
         "the entry both sides start from",
@@ -11408,8 +11534,8 @@ fn two_branches_appending_to_one_log_merge_with_no_conflict() {
         );
     }
 
-    // And the corpus reads: the file parses, so the verbs answer from it and
-    // `check` finds nothing.
+    // And the corpus reads: the entries parse, so the verbs answer from them
+    // and `check` finds nothing.
     let out = r.ank("claude-code@ank", &["log", LOGGED]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let printed = stdout(&out);
@@ -11433,17 +11559,17 @@ fn two_branches_appending_to_one_log_merge_with_no_conflict() {
 fn a_conflict_marker_in_a_log_is_a_fault_like_one_in_an_entity() {
     let r = Repo::new();
     r.seed_task(LOGGED, Some("A verifiable criterion."));
-    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
-    assert_eq!(code(&r.ank("claude-code@ank", &["log", "an entry"])), 0);
 
+    // Seeded in the previous layout, which is what a corpus written by an older
+    // build carries and what `check` still reads for one window (§3). No verb
+    // writes one any more, so a fixture is the only way to produce the case.
     let path = r.0.join(".ank/log").join(format!("{LOGGED}.md"));
-    let intact = std::fs::read_to_string(&path).unwrap();
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(
         &path,
-        format!(
-            "{intact}<<<<<<< HEAD\n- 2026-08-15T09:00Z claude-code@ank — mine\n\
-             =======\n- 2026-08-15T09:01Z marie@laptop — theirs\n>>>>>>> reviewer\n"
-        ),
+        "- 2026-08-15T08:00Z claude-code@ank — an entry\n\
+         <<<<<<< HEAD\n- 2026-08-15T09:00Z claude-code@ank — mine\n\
+         =======\n- 2026-08-15T09:01Z marie@laptop — theirs\n>>>>>>> reviewer\n",
     )
     .unwrap();
 
@@ -11466,10 +11592,17 @@ fn a_conflict_marker_in_a_log_is_a_fault_like_one_in_an_entity() {
     );
 
     // Restored, and `check` is green again -- so the finding is about the
-    // markers and not about the fixture.
-    std::fs::write(&path, &intact).unwrap();
+    // markers and not about the fixture. A corpus still holding the previous
+    // log directory is a signal, which leaves the code 0 and names the verb
+    // that moves it.
+    std::fs::write(&path, "- 2026-08-15T08:00Z claude-code@ank — an entry\n").unwrap();
     let out = r.ank("claude-code@ank", &["check"]);
     assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("ank migrate"),
+        "the signal names the command that moves it: {}",
+        stdout(&out)
+    );
 }
 
 /// `log` and `show` answer under `context_budget` and say what they cut.
@@ -11507,7 +11640,7 @@ fn log_and_show_cap_the_log_and_announce_what_they_cut() {
     let out = r.ank("claude-code@ank", &["log", LOGGED]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let text = stdout(&out);
-    let listed = text.lines().filter(|l| l.starts_with("- ")).count();
+    let listed = text.lines().filter(|l| l.contains("entry number")).count();
     assert!(
         (1..12).contains(&listed),
         "the cap follows context_budget, and never empties the section:\n{text}"
@@ -11571,7 +11704,7 @@ fn log_and_show_cap_the_log_and_announce_what_they_cut() {
 
 /// Read from wherever it is, by every surface that shows it.
 #[test]
-fn show_log_and_context_read_the_log_from_the_file() {
+fn show_log_and_context_read_the_entries_of_an_entity() {
     let r = Repo::new();
     r.seed_task(LOGGED, Some("A verifiable criterion."));
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
@@ -11620,7 +11753,7 @@ fn show_log_and_context_read_the_log_from_the_file() {
     let out = r.ank("claude-code@ank", &["show", LOGGED, "--json"]);
     assert_json_only(&out, "ank show --json");
     assert!(
-        stdout(&out).contains("\"log\":[{\"timestamp\":"),
+        stdout(&out).contains("\"log\":[{\"id\":\"LOG-"),
         "{}",
         stdout(&out)
     );
@@ -11659,35 +11792,40 @@ fn an_entity_with_no_log_file_reads_as_an_empty_log() {
 }
 
 /// **One history never splits.** An entity whose body still carries a `## Log`
-/// section keeps it: the entry lands there, no file appears beside it, and the
-/// entries already written stay reachable.
+/// section keeps it exactly as it is, the new entry becomes an entity beside
+/// it, and every reader sees both — each exactly once.
 ///
-/// Writing the entry into a new file instead would leave the older half
-/// unreachable, since reading prefers the file -- which is the exact failure
-/// the schema bump exists to prevent, arriving through the tool rather than
-/// through an old reader.
+/// The two sources add up rather than one winning, and that is what the entry
+/// kind made correct: nothing appends to the previous layout any more, so the
+/// body holds what was written before the move and the corpus holds what came
+/// after. Preferring either would leave one half unreachable — the exact
+/// failure the schema bump exists to prevent, arriving through the tool rather
+/// than through an old reader.
 #[test]
-fn an_entity_whose_log_is_in_its_body_keeps_it_there() {
+fn an_entity_whose_log_is_in_its_body_gains_entries_beside_it() {
     let r = Repo::new();
     r.seed_task_with_body_log(LOGGED, "an entry written before the move");
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    // After the claim, which is a transition and does write the entity. What
+    // is under test is the entry below, which must not.
+    let before = r.task_text(LOGGED);
     assert_eq!(
         code(&r.ank("claude-code@ank", &["log", "learned something"])),
         0
     );
 
-    assert!(
-        r.log_text(LOGGED).is_empty(),
-        "no file appears beside a body that already holds the log: {}",
-        r.log_text(LOGGED)
+    assert_eq!(
+        r.entry_ids(LOGGED).len(),
+        1,
+        "the entry is one new entity and nothing else"
     );
-    let text = r.task_text(LOGGED);
-    assert!(
-        text.contains("an entry written before the move") && text.contains("learned something"),
-        "both halves of one history, in one place: {text}"
+    assert_eq!(
+        r.task_text(LOGGED),
+        before,
+        "the entity the entry is about is not opened for writing at all"
     );
 
-    // And every reader still sees both, exactly once.
+    // Every reader sees both, exactly once.
     let out = r.ank("claude-code@ank", &["log", LOGGED]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let listed = stdout(&out);
@@ -11698,10 +11836,522 @@ fn an_entity_whose_log_is_in_its_body_keeps_it_there() {
         "{listed}"
     );
 
-    // `show` prints the body's own section and adds no second copy under it.
+    // `show` prints the body's own section as part of the entity and adds no
+    // second copy of it under the fold -- what it adds there is the half the
+    // body cannot hold.
     let out = stdout(&r.ank("claude-code@ank", &["show", LOGGED]));
     assert_eq!(out.matches("learned something").count(), 1, "{out}");
-    assert!(!out.contains("LOG ("), "the body already carries it: {out}");
+    assert_eq!(
+        out.matches("an entry written before the move").count(),
+        1,
+        "the body already carries it: {out}"
+    );
+    assert!(out.contains("LOG (1 of 1)"), "{out}");
+}
+
+// ---------------------------------------------------------------------------
+// An entry is an entity (§3, ADR-25f977377fa0, TASK-df9c6d46e8ef)
+// ---------------------------------------------------------------------------
+
+/// An entry is a file of its own, and `find` reaches it like anything else.
+///
+/// **The gap this closes was measured, not supposed**: the previous shape was
+/// indexed by nothing, so no question about the log had an answer inside the
+/// tool. Through the binary, because what has to be true is a property of the
+/// corpus on disk and of the index built from it.
+#[test]
+fn an_entry_is_an_entity_and_find_reaches_it() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["log", "the quicksilver invariant holds"]
+        )),
+        0
+    );
+
+    // One file, in the flat directory, of kind log and naming its subject.
+    let ids = r.entry_ids(LOGGED);
+    assert_eq!(ids.len(), 1, "one entry, one file: {ids:?}");
+    let entry = &ids[0];
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(format!("{entry}.md")))
+        .expect("an entry lives where every entity lives");
+    assert!(text.contains("type: log"), "{text}");
+    assert!(text.contains(&format!("about: {LOGGED}")), "{text}");
+    assert!(
+        !text.contains("status:"),
+        "an entry has nothing to transition to: {text}"
+    );
+
+    // `find` reaches it by its message, and `--type log` narrows to entries.
+    let out = r.ank("marie@laptop", &["find", "quicksilver"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("the quicksilver invariant holds"),
+        "an entry is reachable by what it says: {}",
+        stdout(&out)
+    );
+    let out = r.ank("marie@laptop", &["find", "quicksilver", "--type", "log"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    // The short form, measured against the corpus like every printed id (§3).
+    assert!(stdout(&out).contains(&entry[..8]), "{}", stdout(&out));
+    assert!(
+        !stdout(&out).contains("[]"),
+        "a kind with no lifecycle carries no marker: {}",
+        stdout(&out)
+    );
+    let out = r.ank("marie@laptop", &["find", "quicksilver", "--type", "task"]);
+    assert!(
+        !stdout(&out).contains(&entry[..8]),
+        "the filter is the registry's, not a guess: {}",
+        stdout(&out)
+    );
+
+    // And `show` prints the entry itself, byte for byte like any other entity.
+    let out = r.ank("marie@laptop", &["show", entry]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).starts_with(&text), "{}", stdout(&out));
+}
+
+/// A message no line can hold survives whole, and no lister prints it whole.
+///
+/// The corpus this task migrates averages 453 characters an entry and its
+/// longest is 2105. Both halves matter and neither implies the other: the
+/// listing has to stay bounded, and the message has to come back byte for byte.
+#[test]
+fn a_long_message_is_elided_in_a_listing_and_whole_in_the_entry() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+
+    // One long message with a distinctive head and a distinctive tail, so that
+    // "whole" and "elided" are each assertable rather than inferred.
+    let long = format!(
+        "opening clause of a message far too long for any line, {} and the closing clause",
+        "measured and recorded ".repeat(90)
+    );
+    assert!(long.len() > 2000, "{}", long.len());
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["log", &long])),
+        0,
+        "a long message is not refused"
+    );
+
+    // Whole in the corpus: the two fields concatenate back to what went in.
+    assert!(
+        r.log_text(LOGGED).contains(&long),
+        "a message was altered on the way into an entity:\n{}",
+        r.log_text(LOGGED)
+    );
+
+    // Elided in every listing, and the listing says where the rest is.
+    let listed = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
+    assert!(listed.contains("opening clause"), "{listed}");
+    assert!(
+        !listed.contains("and the closing clause"),
+        "the line is bounded whatever the message:\n{listed}"
+    );
+    assert!(listed.contains('\u{2026}'), "and it says so:\n{listed}");
+    let widest = listed.lines().map(|l| l.chars().count()).max().unwrap();
+    assert!(widest < 200, "{widest} characters on one line:\n{listed}");
+
+    // The entry's own id is on the row, which is what makes the elision
+    // recoverable: a command nobody can run is not a way out.
+    let entry = &r.entry_ids(LOGGED)[0];
+    assert!(
+        listed.contains(&entry[..8]),
+        "the row names the entry it prints:\n{listed}"
+    );
+    let shown = stdout(&r.ank("marie@laptop", &["show", entry]));
+    assert!(
+        shown.contains("and the closing clause"),
+        "show prints it whole:\n{shown}"
+    );
+
+    // And a parser gets the whole message, because it reads no page.
+    let out = r.ank("marie@laptop", &["log", LOGGED, "--json"]);
+    assert_json_only(&out, "ank log --json");
+    assert!(
+        stdout(&out).contains("and the closing clause"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// The numbers the messages carry, oldest first, out of `ank log`'s newest-first
+/// page.
+fn logged_order(text: &str) -> Vec<String> {
+    let mut n: Vec<String> = text
+        .lines()
+        .filter_map(|l| l.split(" — entry ").nth(1).map(str::to_string))
+        .collect();
+    n.reverse();
+    n
+}
+
+/// **Entries written in one second come back in the order they were written.**
+///
+/// This is the defect CI caught and the reason the kind carries `seq` at all.
+/// `created` has one-second resolution and one `ank log` costs a few hundred
+/// milliseconds, so several entries inside one second is the ordinary case;
+/// with the identifier as the only tiebreak the order was a hash, and a
+/// measured 10 runs in 12 printed four entries wrong. It passed on Windows in
+/// CI because that job is four times slower and its writes straddled a second
+/// more often, which is luck and not a platform property.
+///
+/// **Two assertions, and the second is what makes this test worth having on a
+/// machine whose clock happens to cooperate.** The order is asserted end to end
+/// through the binary; and `seq` is asserted to run 0, 1, 2 … which holds
+/// whether or not the writes shared a second, so a slow runner gets a real test
+/// rather than a vacuous pass. The timestamps observed are printed on failure,
+/// so a red build says which of the two situations it was in.
+#[test]
+fn entries_written_in_one_second_come_back_in_write_order() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    const N: usize = 8;
+    for i in 0..N {
+        assert_eq!(
+            code(&r.ank("claude-code@ank", &["log", &format!("entry {i}")])),
+            0
+        );
+    }
+
+    let out = r.ank("marie@laptop", &["log", LOGGED, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    let stamps: Vec<&str> = json
+        .match_indices("\"timestamp\":\"")
+        .map(|(i, m)| {
+            let rest = &json[i + m.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect();
+    let distinct: std::collections::BTreeSet<&&str> = stamps.iter().collect();
+
+    let page = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
+    let expected: Vec<String> = (0..N).map(|i| i.to_string()).collect();
+    assert_eq!(
+        logged_order(&page),
+        expected,
+        "{N} entries came back out of the order they were written; \
+         {} distinct instants among {}:\n{page}",
+        distinct.len(),
+        stamps.len()
+    );
+
+    // The mechanism, and it holds whatever the clock did: the rank of an entry
+    // is one more than the highest its writer could see, so a run of writes is
+    // a run of ranks. A machine slow enough to put every write in its own
+    // second still tests this.
+    let ranks: Vec<String> = r
+        .entry_ids(LOGGED)
+        .iter()
+        .map(|id| {
+            let text = std::fs::read_to_string(r.0.join(".ank/entities").join(format!("{id}.md")))
+                .unwrap();
+            let line = text.lines().find(|l| l.starts_with("seq: ")).expect("seq");
+            line["seq: ".len()..].to_string()
+        })
+        .collect();
+    let mut ranks: Vec<u64> = ranks.iter().map(|s| s.parse().unwrap()).collect();
+    ranks.sort_unstable();
+    assert_eq!(
+        ranks,
+        (0..N as u64).collect::<Vec<_>>(),
+        "the ranks of {N} consecutive writes are 0..{N}"
+    );
+
+    // And the answer does not move between two reads of one corpus.
+    for _ in 0..3 {
+        assert_eq!(stdout(&r.ank("marie@laptop", &["log", LOGGED])), page);
+    }
+}
+
+/// A corpus migrated from the previous layout keeps the line order of the file
+/// it came from, and that is the only order those entries ever had.
+///
+/// The instants are chosen here, which is the one thing a test writing through
+/// `ank log` cannot do: `created` comes from the clock. Two of the four lines
+/// share a second, so the file's order is load-bearing for exactly the pair
+/// that has no other order — 6 such groups covering 12 entries in this
+/// repository's own corpus.
+///
+/// **Across distinct instants the timestamps decide**, which is why the file is
+/// written out of chronological order: one file of the 178 this corpus migrated
+/// stores its lines newest-first, and its own timestamps are the better
+/// evidence of what happened when (§3).
+#[test]
+fn a_migrated_log_keeps_its_line_order_inside_one_second() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{LOGGED}.md")),
+        "- 2026-08-01T09:00:02Z claude-code/1.4.2 — entry 2\n\
+         - 2026-08-01T09:00:00Z claude-code/1.4.2 — entry 0\n\
+         - 2026-08-01T09:00:03Z claude-code/1.4.2 — entry 3\n\
+         - 2026-08-01T09:00:00Z claude-code/1.4.2 — entry 1\n",
+    )
+    .unwrap();
+    assert_eq!(code(&r.ank("marie@laptop", &["migrate"])), 0);
+
+    let page = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
+    assert_eq!(
+        logged_order(&page),
+        vec!["0", "1", "2", "3"],
+        "the tied pair keeps the file's order and the rest is chronological:\n{page}"
+    );
+
+    // Two reads of one corpus never differ.
+    for _ in 0..3 {
+        assert_eq!(stdout(&r.ank("marie@laptop", &["log", LOGGED])), page);
+    }
+
+    // `show` prints the same set in the opposite direction, and reversing one
+    // gives the other -- so both orders come from the entries and not from two
+    // independent walks that agree today.
+    let mut oldest_first: Vec<String> = stdout(&r.ank("marie@laptop", &["show", LOGGED]))
+        .lines()
+        .filter_map(|l| l.split(" — entry ").nth(1).map(str::to_string))
+        .collect();
+    assert_eq!(
+        oldest_first,
+        vec!["0", "1", "2", "3"],
+        "show is oldest first"
+    );
+    oldest_first.reverse();
+    let mut newest_first = logged_order(&page);
+    newest_first.reverse();
+    assert_eq!(newest_first, oldest_first);
+}
+
+/// The migration: every entry moves, the count is equal, and no message
+/// changes.
+///
+/// **Asserted against the corpus and not against a counter the verb kept.** A
+/// migration that dropped one entry would be invisible and the loss permanent,
+/// which is why the criterion asks for the count and for the messages, and why
+/// both are read back out of the files afterwards.
+#[test]
+fn migrate_moves_every_entry_and_alters_no_message() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    const OTHER: &str = "TASK-000000000002";
+    r.seed_task(OTHER, Some("Another verifiable criterion."));
+
+    // Seeded in the previous layout: no verb writes one, so a fixture is what
+    // produces a corpus that has not moved yet. Two entries share a second,
+    // which is the case the ordering has to survive; one message is far longer
+    // than a line, which is the case the split has to survive.
+    let long = format!("a message {}", "long enough to be split ".repeat(80));
+    let messages = [
+        (
+            LOGGED,
+            "2026-08-01T09:00:00Z",
+            "the first thing that happened",
+        ),
+        (
+            LOGGED,
+            "2026-08-01T09:00:00Z",
+            "and the second, in the same second",
+        ),
+        (LOGGED, "2026-08-01T10:00:00Z", long.as_str()),
+        (
+            OTHER,
+            "2026-08-02T11:00:00Z",
+            "released: the criterion was wrong",
+        ),
+    ];
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    for id in [LOGGED, OTHER] {
+        let body: String = messages
+            .iter()
+            .filter(|(subject, _, _)| *subject == id)
+            .map(|(_, at, m)| format!("- {at} claude-code/1.4.2 \u{2014} {m}\n"))
+            .collect();
+        std::fs::write(r.0.join(".ank/log").join(format!("{id}.md")), body).unwrap();
+    }
+
+    // `check` names the verb before it is run, which is how a corpus finds out.
+    let out = r.ank("marie@laptop", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a previous layout is a signal: {}",
+        stdout(&out)
+    );
+    assert!(stdout(&out).contains("ank migrate"), "{}", stdout(&out));
+
+    let out = r.ank("marie@laptop", &["migrate"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("migrated 4 entries from 2 log files"),
+        "{}",
+        stdout(&out)
+    );
+
+    // The count, before and after, from the corpus itself.
+    assert_eq!(r.entry_ids(LOGGED).len(), 3);
+    assert_eq!(r.entry_ids(OTHER).len(), 1);
+    // And no message altered, byte for byte, the long one included.
+    for (id, at, message) in messages {
+        let rendered = r.log_text(id);
+        assert!(
+            rendered.contains(&format!("- {at} claude-code/1.4.2 \u{2014} {message}\n")),
+            "a message was altered:\n{rendered}"
+        );
+    }
+
+    // The previous layout is gone, so nothing writes to it and `check` stops
+    // naming it -- and the corpus is still sound.
+    assert!(
+        !r.0.join(".ank/log").exists(),
+        "the directory it read is removed"
+    );
+    let out = r.ank("marie@laptop", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(!stdout(&out).contains("ank migrate"), "{}", stdout(&out));
+
+    // Running it again on a corpus that has moved is not an error.
+    let out = r.ank("marie@laptop", &["migrate"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("nothing to migrate"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// A subject that **already carries entries** when the migration runs, which is
+/// the normal case on a repository that logged before it moved.
+///
+/// Measured on this repository and not imagined: the first run over its own
+/// corpus read 512 lines, found 514 entries afterwards, and reported a failure
+/// on a migration that had worked — because the two entries written minutes
+/// earlier by a current build were counted against a total that knew nothing
+/// about them. The count is per subject and relative to what was there.
+#[test]
+fn migrate_adds_to_the_entries_a_subject_already_has() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["log", "written by a build that had already moved"]
+        )),
+        0
+    );
+    assert_eq!(r.entry_ids(LOGGED).len(), 1);
+
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{LOGGED}.md")),
+        "- 2026-08-01T09:00:00Z claude-code/1.4.2 — written before the move\n",
+    )
+    .unwrap();
+
+    let out = r.ank("marie@laptop", &["migrate"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("migrated 1 entries"),
+        "the report counts what it read: {}",
+        stdout(&out)
+    );
+
+    // Both halves of the history, and neither replaced the other.
+    assert_eq!(r.entry_ids(LOGGED).len(), 2);
+    let rendered = r.log_text(LOGGED);
+    assert!(rendered.contains("written before the move"), "{rendered}");
+    assert!(
+        rendered.contains("written by a build that had already moved"),
+        "{rendered}"
+    );
+}
+
+/// A run interrupted between writing the entries and removing the file it read
+/// is recovered by running it again.
+///
+/// The identifiers are derived from the line, so the second run recognises what
+/// the first wrote rather than refusing it as an existing entity or writing a
+/// second copy of every entry.
+#[test]
+fn migrate_run_twice_recognises_what_the_first_run_wrote() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    let file = r.0.join(".ank/log").join(format!("{LOGGED}.md"));
+    let body = "- 2026-08-01T09:00:00Z claude-code/1.4.2 — the first\n\
+                - 2026-08-01T09:00:01Z claude-code/1.4.2 — the second\n";
+    std::fs::write(&file, body).unwrap();
+
+    assert_eq!(code(&r.ank("marie@laptop", &["migrate"])), 0);
+    let after_first = r.entry_ids(LOGGED);
+    assert_eq!(after_first.len(), 2);
+
+    // The interruption: the file is back, the entries are still there.
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(&file, body).unwrap();
+
+    let out = r.ank("marie@laptop", &["migrate"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("2 of them already existed"),
+        "the recovery is said out loud: {}",
+        stdout(&out)
+    );
+    assert_eq!(
+        r.entry_ids(LOGGED),
+        after_first,
+        "the same identifiers, and no second copy of anything"
+    );
+    assert!(!file.exists());
+}
+
+/// A log file the grammar refuses **stops the migration naming it**, and
+/// nothing is written.
+///
+/// The parser refuses a whole file on its first malformed line, so skipping the
+/// file would silently drop every sound entry beside the bad one — which is the
+/// invisible, permanent loss the criterion is written around.
+#[test]
+fn migrate_stops_on_a_log_file_it_cannot_read_and_names_it() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    const OTHER: &str = "TASK-000000000002";
+    r.seed_task(OTHER, Some("Another verifiable criterion."));
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{LOGGED}.md")),
+        "- 2026-08-01T09:00:00Z claude-code/1.4.2 \u{2014} a sound entry\n\
+         a line the grammar does not accept\n\
+         - 2026-08-01T09:01:00Z claude-code/1.4.2 \u{2014} another sound entry\n",
+    )
+    .unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{OTHER}.md")),
+        "- 2026-08-02T11:00:00Z claude-code/1.4.2 \u{2014} entirely sound\n",
+    )
+    .unwrap();
+
+    let out = r.ank("marie@laptop", &["migrate"]);
+    assert_eq!(code(&out), 1, "{}{}", stdout(&out), stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains(&format!("log/{LOGGED}.md")),
+        "the file is named: {said}"
+    );
+    assert!(said.contains("line 2"), "and the line in it: {said}");
+
+    // Nothing was written, on either subject: the whole plan is read before the
+    // first entity is created, so a corpus is never left half moved.
+    assert!(r.entry_ids(LOGGED).is_empty(), "{:?}", r.entry_ids(LOGGED));
+    assert!(r.entry_ids(OTHER).is_empty(), "{:?}", r.entry_ids(OTHER));
+    assert!(r.0.join(".ank/log").join(format!("{OTHER}.md")).exists());
 }
 
 // ---------------------------------------------------------------------------

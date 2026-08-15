@@ -175,7 +175,7 @@ A kind is **declared once, in a table**, and never restated per layer (ADR-c9f9d
 | Task | `id`, `type`, `title`, `created`, `status`, `scope`, `blocked_by`, `schema`, `version` | `slug`, `author`, `done_criteria`, `criteria_by`, `verify`, `proof`, `verified` |
 | ADR | `id`, `type`, `title`, `created`, `status`, `scope`, `constraint`, `schema`, `version` | `slug`, `author`, `see`, `supersedes`, `ratified`, `verified` |
 | Spec | `id`, `type`, `title`, `created`, `status`, `scope`, `schema`, `version` | `slug`, `author`, `supersedes`, `ratified`, `verified` |
-| Log entry | `id`, `type`, `title`, `created`, `scope`, `about`, `schema`, `version` | `slug`, `author`, `verified` |
+| Log entry | `id`, `type`, `title`, `created`, `scope`, `about`, `seq`, `schema`, `version` | `slug`, `author`, `verified` |
 
 The canonical order interleaves the two lists and is fixed; it is written out per kind in the sections that follow, and reproduced as a numbered table in [format.md](format.md). `blocked_by` is required in the sense that matters to a serializer: it is always emitted, as `[]` when empty. Every optional field is **omitted when absent, never emitted empty** — that is what lets a file written before a field existed survive a rewrite unchanged.
 
@@ -445,6 +445,7 @@ author: claude-code/1.4.2
 scope:
   - src/auth/**
 about: TASK-8f3a91c2d4e7    # the entity the entry is about
+seq: 0                      # its rank among that entity's entries
 schema: 3
 version: 1
 ---
@@ -456,9 +457,27 @@ Anything the line cannot hold.
 
 **`about` names the entity the entry is about**, and any kind may be named: a task, an ADR, a spec. This is what the previous shape computed from the id instead, and the trade is stated above — an address becomes a query, and in exchange an entry is indexed and reachable like anything else.
 
+**`seq` is the rank of this entry among the entries about the same entity**, counting from 0: one more than the highest `seq` on any entry its writer could already see about that subject. **The order of an entity's entries is `created`, then `seq`, then the identifier**, and every part of that key is read off the entity itself.
+
+**A timestamp is not an order, and the corpus proves it.** `created` has one-second resolution, and one `ank log` costs a few hundred milliseconds, so several entries inside one second is the ordinary case and not the exotic one: measured on a harness writing four entries about one task, 12 runs of 12 put all four in the same second. With no other key the order between them falls to the identifier, which is a hash of the act of creation and carries no order whatever — 10 of those 12 runs printed the four in the wrong order, in exactly descending identifier. The previous shape never had to answer this: an append-only file carried insertion order for free. **A set of files does not, so the order has to be a field.**
+
+Two alternatives were considered and both are worse. **A finer `created`** would fix new writes and could not recover the past: a corpus migrated from the previous layout carries second-resolution instants, and the only order that ever existed there is the line order of the file — refining those timestamps would be inventing precision that was never recorded, which this section forbids in as many words. `seq` carries the line index instead, which is a fact the file actually holds. And **grinding the entropy of an identifier until the hash sorts in line order** works, costs no field, and makes the identifier carry meaning §3 says it does not: the next reader would have to be told that ids sort, and the first id allocated any other way would break the order in silence.
+
+**What `seq` does not promise is as important as what it does.** It is not a clock and not a lock. Two writers who cannot see each other — two branches, two worktrees — produce the same value, and that is the honest answer rather than a defect: they were concurrent, and there is no order between them to record. `created` separates them when their instants differ, the identifier settles what is left, and the merge is still two new files and still conflict-free, which is the property the kind exists for. A reader must therefore treat the key as a total order and never as a claim that one entry caused another.
+
+**A migrated entry takes the line index of the file it came from**, counting from 0. That is the order the append-only file recorded, and it is what makes the previous layout's history survive the move.
+
+**Where a file's line order contradicts its own timestamps, the timestamps win**, because `created` is read before `seq`. That is a decision and not an oversight. A line order is only evidence of insertion order while every writer appended, and the reference corpus shows that did not hold: of 178 log files, **one** stores its two lines newest-first, so its own order disagrees with the instants each line records. Each entry states its instant; the file states a sequence somebody could get wrong, and did. So the guarantee is exact rather than sweeping — **across distinct instants the timestamps order the entries, and within one instant the file's line order does** — and the second half is the load-bearing one: 6 groups covering 12 entries in that corpus share a second, and for those the line order is the only order there has ever been.
+
 **The message is the `title`, and no field is added for it.** Every entity already carries the field a lister prints, and the message is exactly what a lister must print; a second field would be the same sentence in two places, which is how two fields come to disagree. What will not fit on a line goes in the body, where prose lives on every kind.
 
+**The split is fixed, and it is lossless.** A message of one line and at most **100 characters** is the whole of the `title` and the body is empty. Longer, the title is the message up to the last space at or before character 100 and at or after character 50 — the limit itself where there is no such space, and the first newline where one comes earlier — and the body is `"\n"`, the remainder verbatim, `"\n"`. **The message is the exact concatenation of the two**: the separating space belongs to the remainder, nothing is inserted on the way out and exactly one newline is removed at each end on the way back, never a trim. A reader recovers the message it was given, byte for byte, whatever it contained.
+
+The rule exists because a title is what *every* lister prints, on every kind. Measured on the reference corpus, an entry averages 453 characters and the longest is 2105; a title of that length is emitted as one enormous quoted scalar and printed in full by `find`, `context` and `scope`, wrecking them for kinds that have nothing to do with the log. So **a listing prints the head of the message with a trailing `…` when there is more**, which bounds the line whatever the message is, and `ank show <LOG-id>` prints it whole. `--json` always carries the whole message, because a parser reads no page and spends no budget. The alternative — the message whole in the `title`, elided at each lister — is lossless too and was rejected: it moves one storage rule into five printers, and it leaves the file itself unreadable in a diff.
+
 **The `scope` is the subject's, written when the entry is written.** An entry appears wherever what it is about appears, which is the only placement that makes a trace findable by perimeter, and it records the scope as it stood rather than tracking it — a trace of work is a statement about a moment.
+
+What that costs is stated here rather than discovered later: **the copy does not track.** When a task's scope is amended, or when the code under it moves, every entry already written keeps the perimeter as it stood — so the entries of one task can name several perimeters, and an old entry can name a dead one. Accepted, on two grounds. Tracking would mean rewriting an entity that is written once, which is the property the kind exists for; and the dead-scope machinery of §4 already makes a stale perimeter visible without a rule of its own. **An entry's scope is therefore not confronted with the filesystem by `check`**: every other kind chooses its perimeter and answers for it, an entry copies one it did not choose, and reporting a subject's dead scope once per entry about it is the volume that teaches a reader to stop reading `check`.
 
 **No `status`, and `version` stays**, which is not an inconsistency but the difference between what each would record. An entry has nothing to transition to, so a status would have one legal value and would only ever be copied. `version` is the compare-and-swap counter of §7, and on a kind written once it earns its place by the falsification it makes visible: an entry whose `version` is above 1 has been rewritten, and the format says it should not have been.
 
@@ -678,6 +697,7 @@ ank edit <id>
 ank graph [<path>]
 ank scope <path>
 ank check [<path>]
+ank migrate                 (the previous log directory becomes entries; the command `check` names)
 ank config <key> [<value>]  [--unset]   (a value writes; the key alone reads)
 ank init [<path>]           (§9)
 ank help [<verb>]           (§9)
@@ -1180,9 +1200,11 @@ An agent in a loop needs a clean stop signal. An empty output reads as a breakdo
 
 **One directory, and no per-kind subdirectory** (ADR-c9f9d0d6f05d). The kind is in the id prefix, which is in the file name, which the store already cross-checks against the id inside the file; a directory would be a third statement of the same fact, and the only thing a third copy can do is disagree with the first two. Every entity therefore lives at `.ank/entities/<ID>.md`, whatever its kind, and the file name is the id. Since the directory no longer states the kind, the file-name / id cross-check is the only thing left doing it, and it stays exactly as strict: a file whose name does not match the id inside it is refused.
 
-**An entity's entries are a query, not a path.** They are the entities of kind `log` whose `about` names it (§3), which is the one place this layout gives up an address computed from an id: the previous shape put a whole log at `.ank/log/<ID>.md`, arithmetic on the entity's own id and no lookup. What the index answers cheaply, a reader without one answers by reading the directory, which is what it does for every other question about a set of entities.
+**An entity's entries are a query, not a path.** They are the entities of kind `log` whose `about` names it, ordered by `created`, then `seq`, then the identifier (§3), which is the one place this layout gives up an address computed from an id: the previous shape put a whole log at `.ank/log/<ID>.md`, arithmetic on the entity's own id and no lookup. What the index answers cheaply, a reader without one answers by reading the directory, which is what it does for every other question about a set of entities.
 
 **The previous shape is read for one window**, on the same terms and for the same reason as the previous layout below: a reader accepts a `.ank/log/` a former release wrote, a writer never produces one, and an entity's entries are the union of the two sources with none counted twice. A corpus still holding one is a `check` finding naming the command that moves it, a signal and not a fault.
+
+**The command it names is `ank migrate`, and that is the one place a verb is warranted where the entity layout needed none.** The layout below moves with `git mv`: the same file, a different directory, and the reader accepting both does the rest. A line becoming an entity is a rewrite — an id allocated per entry, a message split across `title` and the body, a scope copied from the subject — and no shell command performs it. The verb is bounded by that: it reads `.ank/log/<ID>.md`, writes one entity per line, removes the file it read, and asserts the entry count equal before and after with every message compared byte for byte to the line it came from. A log file the grammar refuses **stops the migration naming it** rather than being skipped, because the parser refuses a whole file on its first malformed line and a file quietly dropped would take every sound entry beside it. It writes files and never commits (§12), so what it leaves is a working tree the caller reviews in one go.
 
 **The layout is fixed, not configured.** A layout read from `config.yml` was asked for and is the one thing to refuse: every third-party reader would have to parse the configuration before it could find a file, which is the exact coupling the format exists to avoid, and the conformance suite would stop being something anybody can run against a directory. Flat and fixed, or the format is not a format.
 

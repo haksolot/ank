@@ -6,6 +6,7 @@ created: 2026-07-26T14:02:00Z
 author: claude-code/1.4.2
 scope:
   - src/auth/**
+seq: 0
 schema: 3
 version: 1
 ---

@@ -114,10 +114,12 @@ static SPEC_FIELDS: &[FieldSpec] = &[
     req("version"),
 ];
 
-/// A log entry carries `about` and **no `status`**: an entry is written once
-/// and has nothing to transition to, so a status would have one legal value and
-/// would only ever be copied (§3). `about` takes the position `status` and
-/// `scope` leave, immediately after the scope it is a statement about.
+/// A log entry carries `about` and `seq` and **no `status`**: an entry is
+/// written once and has nothing to transition to, so a status would have one
+/// legal value and would only ever be copied (§3). `about` takes the position
+/// `status` and `scope` leave, immediately after the scope it is a statement
+/// about, and `seq` follows it because it ranks the entry among *that* entity's
+/// entries and means nothing without it.
 static LOG_FIELDS: &[FieldSpec] = &[
     req("id"),
     req("type"),
@@ -127,6 +129,7 @@ static LOG_FIELDS: &[FieldSpec] = &[
     opt("author"),
     req("scope"),
     req("about"),
+    req("seq"),
     opt("verified"),
     req("schema"),
     req("version"),
@@ -353,6 +356,10 @@ impl Fields for Log {
             // can hold: it is what turns the address the previous shape
             // computed into something a reader can look up.
             "about" => Bare(self.about.to_string()),
+            // Required, and never inferred from a file name or a directory
+            // order: a timestamp alone is not a total order over entries, so
+            // the rank is a field or it does not exist (§3).
+            "seq" => Bare(self.seq.to_string()),
             "verified" => {
                 if self.verified.is_empty() {
                     return None;

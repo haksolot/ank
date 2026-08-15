@@ -27,12 +27,13 @@ use crate::cli::{CliError, Invocation, Result};
 use crate::config::Config;
 use crate::context;
 use crate::editor;
+use crate::entries::{self, Entry};
 use crate::index::{Index, Row};
 use crate::repo::Repo;
-use crate::store::{version_of, LogHome, Store};
+use crate::store::{version_of, Store};
 use ank_core::{
-    append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
-    EntityKind, LogEntry, Spec, SpecStatus, Task, TaskStatus, SCHEMA_VERSION,
+    parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId, EntityKind,
+    LogEntry, Spec, SpecStatus, Task, TaskStatus, SCHEMA_VERSION,
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
@@ -49,7 +50,7 @@ const FIND_MAX_RESULTS: usize = 40;
 /// hashes the *act* of creation — timestamp, identity, title — and this only
 /// separates two acts identical in all three, which is one agent creating the
 /// same task twice in the same second.
-fn entropy() -> Vec<u8> {
+pub(crate) fn entropy() -> Vec<u8> {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
@@ -1320,6 +1321,14 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     // consulted, and a path that does not exist yet resolves like any other.
     let hits: Vec<&Row> = all
         .iter()
+        // **Entries are left out, and the count leaves them out with them.**
+        // This verb answers *what covers this path* — the constraints that bind
+        // it and the work that touches it — and a log entry is neither: it
+        // carries a copy of its subject's perimeter (§3), so every entry about
+        // a task would repeat that task's row without adding a fact. `ank find
+        // --type log --scope <path>` is the query that does ask for them, and
+        // it is the verb built for querying.
+        .filter(|r| r.kind != EntityKind::Log)
         .filter(|r| context::in_perimeter(&r.scope, perimeter.as_deref()))
         .collect();
     // Three buckets and no longer two. The partition used to keep the ADRs and
@@ -1441,14 +1450,11 @@ fn cap_from(cfg: &Config) -> usize {
 ///
 /// Chronological in, chronological out — the slice is a suffix of `entries`,
 /// and a caller printing newest first reverses it as it did before.
-pub(crate) fn newest_that_fit(entries: &[LogEntry], room: usize) -> (&[LogEntry], usize) {
+pub(crate) fn newest_that_fit(entries: &[Entry], room: usize) -> (&[Entry], usize) {
     let mut kept = 0usize;
     let mut left = room;
     for e in entries.iter().rev() {
-        // The rendered line and the newline after it, plus the two columns the
-        // connector of `show` occupies -- the wider of the two renderings, so
-        // the cap never depends on which verb is asking.
-        let cost = e.format_line().chars().count() + 3;
+        let cost = entry_cost(&e.line);
         if cost > left && kept > 0 {
             break;
         }
@@ -1456,6 +1462,19 @@ pub(crate) fn newest_that_fit(entries: &[LogEntry], room: usize) -> (&[LogEntry]
         kept += 1;
     }
     (&entries[entries.len() - kept..], entries.len() - kept)
+}
+
+/// What one entry costs the budget: the line a reader is shown and the newline
+/// after it, plus the two columns the connector of `show` occupies — the wider
+/// of the two renderings, so the cap never depends on which verb is asking.
+///
+/// **The displayed line and not the stored message.** Since an entry is an
+/// entity its message can run to thousands of characters, and charging the
+/// whole of one would let a single entry consume the page. What is printed is
+/// bounded by `MESSAGE_LINE_MAX`, so what is charged is too, and `ank show
+/// <LOG-id>` is where the rest is (§5).
+pub(crate) fn entry_cost(e: &LogEntry) -> usize {
+    e.display_line().chars().count() + 3
 }
 
 fn scope_touches(scope: &[String], path: &str) -> bool {
@@ -1621,7 +1640,7 @@ pub fn log(
     let store = Store::new(&repo.ank);
     match inv.positionals.as_slice() {
         [one] => match store.resolve(one) {
-            Ok(id) => log_read(inv, cfg, &store, &id, out),
+            Ok(id) => log_read(inv, repo, cfg, &store, &id, out),
             Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
         },
         [given, message] => {
@@ -1647,10 +1666,14 @@ pub fn log(
     }
 }
 
-/// The task's log section, newest first, and no claim asked for: printing what
-/// somebody else recorded takes nothing from them (§4). The file is append-only,
-/// so the entry a reader came for is the last line of it — reversing is what
-/// makes the answer start with it.
+/// The entries about an entity, newest first, and no claim asked for: printing
+/// what somebody else recorded takes nothing from them (§4). Entries are
+/// written once and never modified, so the one a reader came for is the newest
+/// — reversing the chronological order is what makes the answer start with it.
+///
+/// **Any kind, an ADR included** (ADR-25f977377fa0). The refusal that named a
+/// task by name is gone with the storage that made it necessary: `about` names
+/// an entity, and there is no per-entity file for a kind to fail to have.
 ///
 /// **Bounded by `context_budget`, like every other reader**, and it says what
 /// it cut. This page is nothing but the log, so the whole budget less the title
@@ -1658,38 +1681,41 @@ pub fn log(
 /// when its own, smaller share of the same budget runs out.
 fn log_read(
     inv: &Invocation,
+    repo: &Repo,
     cfg: &Config,
     store: &Store,
     id: &EntityId,
     out: &mut dyn Write,
 ) -> Result<i32> {
     let loaded = store.load(id)?;
-    let Entity::Task(task) = loaded.entity.clone() else {
-        return Err(
-            CliError::new(1, format!("{id} is not a task, and only a task has a log"))
-                .with_hint(format!("ank show {id}")),
-        );
-    };
-    // From wherever this entity's log is: the file since schema 3, the body
-    // before it. A missing file is an empty log and never an error.
-    let all = store.log_of(&loaded)?;
+    let title = loaded.entity.title().to_string();
+    // The entries of the corpus, and the previous log directory only where a
+    // corpus has not been migrated yet (§3).
+    let all = entries::about(store, &Index::open(&repo.ank)?, &loaded.entity)?;
     let total = all.len();
     // The title line and the blank line under it are all this page spends
     // before the log, so the rest of the budget is the log's.
-    let spent = id.to_string().chars().count() + task.title.chars().count() + 4;
+    let spent = id.to_string().chars().count() + title.chars().count() + 4;
     let (kept, cut) = newest_that_fit(&all, cfg.context_budget.saturating_sub(spent));
     let shown = kept.len();
-    let entries: Vec<LogEntry> = kept.iter().rev().cloned().collect();
+    let entries: Vec<Entry> = kept.iter().rev().cloned().collect();
 
     if inv.json() {
         let items: Vec<String> = entries
             .iter()
             .map(|e| {
+                // The message **whole**, never the elided line: a parser is not
+                // reading a page and has no budget to spend. The listing above
+                // is where the cut happens, and this is what `ank show <entry>`
+                // would print.
                 format!(
-                    "{{\"timestamp\":{},\"who\":{},\"message\":{}}}",
-                    json_string(&e.timestamp),
-                    json_string(&e.who),
-                    json_string(&e.message)
+                    "{{\"id\":{},\"timestamp\":{},\"who\":{},\"message\":{}}}",
+                    e.id.as_ref()
+                        .map(|i| json_string(&i.to_string()))
+                        .unwrap_or_else(|| "null".to_string()),
+                    json_string(&e.line.timestamp),
+                    json_string(&e.line.who),
+                    json_string(&e.line.message)
                 )
             })
             .collect();
@@ -1698,7 +1724,7 @@ fn log_read(
         // tell a short log from a cut one.
         let _ = writeln!(
             out,
-            "{{\"task\":\"{id}\",\"total\":{total},\"shown\":{shown},\"entries\":[{}]}}",
+            "{{\"about\":\"{id}\",\"total\":{total},\"shown\":{shown},\"entries\":[{}]}}",
             items.join(",")
         );
         return Ok(0);
@@ -1707,21 +1733,43 @@ fn log_read(
         return Ok(0);
     }
 
-    let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), task.title);
+    let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), title);
     if entries.is_empty() {
         // Named rather than left blank: an empty answer and an answer about the
-        // wrong task look identical otherwise.
+        // wrong entity look identical otherwise.
         let _ = writeln!(out, "\nno log entry yet");
         return Ok(0);
     }
     let _ = writeln!(out);
+    // **This verb is the index of an entity's entries, so its rows are
+    // addressable.** A message longer than a line is printed elided, and `ank
+    // show <LOG-id>` is what prints it whole — a command nobody can run without
+    // the id. `show`'s own section stays compact and sends its reader here,
+    // which is the route it already names when the budget cuts.
+    let shorts = context::shorts_of(repo)?;
     for e in &entries {
+        let addressed = match &e.id {
+            Some(entry_id) => format!(
+                "{}  ",
+                inv.style().id(shorts
+                    .get(entry_id)
+                    .map(String::as_str)
+                    .unwrap_or(&entry_id.to_string()))
+            ),
+            // A line out of the previous log directory, which had no id to
+            // give. Nothing is printed rather than something unusable.
+            None => String::new(),
+        };
         // The section's own formatter, so the printed line and the stored line
         // cannot drift into two shapes for one thing — and painted through the
         // same function `show` uses, for the same reason applied to the two
         // verbs: `show` prints this line too, and one line must not read one
         // way here and another there.
-        let _ = writeln!(out, "{}", crate::paint::log_line(e, inv.style()));
+        let _ = writeln!(
+            out,
+            "{addressed}{}",
+            crate::paint::log_line(&e.line, inv.style())
+        );
     }
     if cut > 0 {
         // Announced, never silent, and with the command that would print them:
@@ -1742,11 +1790,8 @@ fn log_read(
 /// The exact number and not a suggestion to raise it: §4 asks a message to name
 /// the command to run next, and "raise the budget" is the generic help that
 /// rule exists to forbid.
-fn budget_for_whole_log(entries: &[LogEntry], spent: usize) -> usize {
-    let cost: usize = entries
-        .iter()
-        .map(|e| e.format_line().chars().count() + 3)
-        .sum();
+fn budget_for_whole_log(entries: &[Entry], spent: usize) -> usize {
+    let cost: usize = entries.iter().map(|e| entry_cost(&e.line)).sum();
     spent + cost
 }
 
@@ -1765,33 +1810,49 @@ fn log_write(
         return Err(CliError::new(1, "an empty log entry records nothing")
             .with_hint("ank log \"<what you just did>\""));
     }
+    let message = message.trim();
+
+    // **A subject that is not a task asks for no claim** (ADR-25f977377fa0).
+    // §4 makes writing to a task's log a condition on the claim, because the
+    // log is that task's anchoring register; an ADR or a spec has no claim to
+    // hold and no register to protect, and refusing there would be refusing on
+    // the absence of a state rather than on a state. Resolved before
+    // `acting_on`, which answers about the task in progress and would report
+    // "no task in progress" to somebody annotating a decision.
+    if let Some(given) = given {
+        if let Ok(id) = store.resolve(given) {
+            if id.kind() != EntityKind::Task {
+                let subject = store.load(&id)?;
+                let entry = entries::record(
+                    store,
+                    &Index::open(&repo.ank)?,
+                    &subject.entity,
+                    identity,
+                    &claim::now_utc(),
+                    message,
+                )?;
+                return report_logged(inv, &id, &entry, &[], out);
+            }
+        }
+    }
 
     let (id, witness, record, warnings) =
         acting_on(&repo.root, store, given, identity, "log", " \"<message>\"")?;
     warn_before_acting(inv, &warnings);
 
     let loaded_for_log = store.load(&id)?;
-    let base_version = version_of(&loaded_for_log.entity);
-    let Entity::Task(mut task) = loaded_for_log.entity.clone() else {
-        return Err(CliError::new(1, format!("{id} is not a task")));
-    };
-    let entry = LogEntry {
-        timestamp: claim::now_utc(),
-        who: identity.to_string(),
-        message: message.trim().to_string(),
-    };
-    // **An append is not a transition** (ADR-ff294eff4d1a). Where the log is a
-    // file, the entity file is not opened for writing at all: no frontmatter,
-    // no version bump, and nothing touched that carries a frozen field. Where
-    // the log is still in a body, the body is what changes and the write is the
-    // one that carries it.
-    match store.log_home(&loaded_for_log) {
-        LogHome::File => store.append_to_log_file(&id, &entry)?,
-        LogHome::Body => {
-            task.body = append_log(&task.body, &entry);
-            store.write(&Entity::Task(task), base_version)?;
-        }
-    }
+    // **An entry is not a transition** (ADR-ff294eff4d1a, carried forward by
+    // ADR-25f977377fa0). The entity the entry is about is not opened for
+    // writing at all: no frontmatter, no version bump, and nothing touched that
+    // carries a frozen field. What lands is one new file.
+    let entry = entries::record(
+        store,
+        &Index::open(&repo.ank)?,
+        &loaded_for_log.entity,
+        identity,
+        &claim::now_utc(),
+        message,
+    )?;
 
     // Renewed by writing: working is enough to keep the lock, and there is no
     // heartbeat verb to memorise (§3). The compare-and-swap is on the record we
@@ -1825,18 +1886,35 @@ fn log_write(
     warn_before_acting(inv, &after);
     let warnings = [warnings, after].concat();
 
+    report_logged(inv, &id, &entry, &warnings, out)
+}
+
+/// What `log` says once the entry exists.
+///
+/// **The entry's own identifier is on the line**, which the previous layout had
+/// nothing to print: an entry is an entity now, so `ank show <LOG-id>` is what
+/// prints a message the listing elides, and a caller that cannot see the id
+/// cannot run it.
+fn report_logged(
+    inv: &Invocation,
+    subject: &EntityId,
+    entry: &EntityId,
+    warnings: &[String],
+    out: &mut dyn Write,
+) -> Result<i32> {
     if inv.json() {
         let _ = writeln!(
             out,
-            "{{\"task\":\"{id}\",\"logged\":true{}}}",
-            warnings_json(&warnings)
+            "{{\"about\":\"{subject}\",\"entry\":\"{entry}\",\"logged\":true{}}}",
+            warnings_json(warnings)
         );
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
-            "{} on {}",
+            "{} {} on {}",
             inv.style().advanced("logged"),
-            inv.style().id(&id.to_string())
+            inv.style().id(&entry.to_string()),
+            inv.style().id(&subject.to_string())
         );
     }
     Ok(0)
@@ -1869,7 +1947,6 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
 
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
-    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
@@ -1877,12 +1954,19 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
         .check_transition(TaskStatus::Open)
         .map_err(|e| CliError::new(6, e.to_string()).with_hint("ank context"))?;
     task.status = TaskStatus::Open;
-    let entry = LogEntry {
-        timestamp: claim::now_utc(),
-        who: identity.to_string(),
-        message: format!("released: {reason}"),
-    };
-    store.write_with_log(home, &Entity::Task(task), &entry, base_version)?;
+    let released = Entity::Task(task);
+    // The transition first and the entry after it, which is the order every
+    // verb that records one keeps: a write that lost the compare-and-swap
+    // leaves no entry claiming a transition that never happened.
+    store.write(&released, base_version)?;
+    entries::record(
+        &store,
+        &Index::open(&repo.ank)?,
+        &released,
+        identity,
+        &claim::now_utc(),
+        &format!("released: {reason}"),
+    )?;
 
     // The file first, the ref second. A ref deleted over a task still marked
     // in_progress would read as claimable and as in progress at the same time;
@@ -2007,7 +2091,12 @@ mod tests {
         fn log(&self, id: &EntityId) -> Vec<ank_core::LogEntry> {
             let store = self.store();
             let loaded = store.load(id).unwrap();
-            store.log_of(&loaded).unwrap()
+            let index = Index::in_memory(store.root()).unwrap();
+            crate::entries::about(&store, &index, &loaded.entity)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.line)
+                .collect()
         }
 
         fn only_task(&self) -> Task {

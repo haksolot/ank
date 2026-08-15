@@ -36,9 +36,11 @@ mod context;
 mod done;
 mod edit;
 mod editor;
+mod entries;
 mod graph;
 mod human;
 mod index;
+mod migrate;
 mod status;
 mod verify;
 

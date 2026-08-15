@@ -34,8 +34,8 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::verify;
 use ank_core::{
-    freeze_hash_short, verify_frozen, Entity, EntityId, LogEntry, Proof, ProofType, ProofVia,
-    ScopeSet, TaskStatus,
+    freeze_hash_short, verify_frozen, Entity, EntityId, Proof, ProofType, ProofVia, ScopeSet,
+    TaskStatus,
 };
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -131,7 +131,6 @@ pub fn run(
     )?;
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
-    let home = store.log_home(&loaded);
     let Entity::Task(mut task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
@@ -189,12 +188,19 @@ pub fn run(
     // never took would hide a task nobody can pick up again.
     task.status = TaskStatus::Done;
     task.proof.extend(proofs.iter().cloned());
-    let entry = LogEntry {
-        timestamp: claim::now_utc(),
-        who: identity.to_string(),
-        message: done_message(&proofs),
-    };
-    store.write_with_log(home, &Entity::Task(task.clone()), &entry, base_version)?;
+    let finished = Entity::Task(task.clone());
+    store.write(&finished, base_version)?;
+    // The entry after the transition, never before it: an entry claiming a
+    // completion that the compare-and-swap refused would be a trace of
+    // something that did not happen (ADR-25f977377fa0).
+    crate::entries::record(
+        &store,
+        &crate::index::Index::open(&repo.ank)?,
+        &finished,
+        identity,
+        &claim::now_utc(),
+        &done_message(&proofs),
+    )?;
 
     let (completed, sync) = claim::complete(&repo.root, &id, identity)?;
     // A completion that did not reach the remote closes the window it exists
@@ -715,11 +721,16 @@ mod tests {
         }
 
         /// The log as a reader gets it, from wherever this entity keeps it.
-        fn log(&self) -> Vec<LogEntry> {
+        fn log(&self) -> Vec<ank_core::LogEntry> {
             let id = EntityId::parse("TASK-000000000001").unwrap();
             let store = self.store();
             let loaded = store.load(&id).unwrap();
-            store.log_of(&loaded).unwrap()
+            let index = crate::index::Index::in_memory(store.root()).unwrap();
+            crate::entries::about(&store, &index, &loaded.entity)
+                .unwrap()
+                .into_iter()
+                .map(|e| e.line)
+                .collect()
         }
 
         fn record(&self) -> Option<Record> {

@@ -28,6 +28,7 @@
 //! here would lock every file written before it out of its own format. What
 //! guards that decision is a positive assertion instead, below.
 
+use ank_core::log::MESSAGE_LINE_MAX;
 use ank_core::*;
 use std::fs;
 use std::path::PathBuf;
@@ -188,6 +189,14 @@ fn invalid_files_are_rejected_with_the_right_error() {
             // than defaulted to the entity that happens to be nearby.
             "log-without-about" => {
                 matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `about`")
+            }
+            // A log entry with no rank. The order of an entity's entries is
+            // `created`, then `seq`, then the identifier, and a timestamp alone
+            // is not an order -- several entries in one second is the ordinary
+            // case. An absent `seq` is therefore the order missing, not a
+            // default to invent, and it is refused by name.
+            "log-without-seq" => {
+                matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `seq`")
             }
             other => panic!("invalid file not covered: {other}"),
         };
@@ -470,28 +479,24 @@ fn a_discrepancy_is_a_log_message_and_never_a_field() {
     assert_eq!(entries[3].who, "claude-code/1.4.2");
     assert_eq!(entries[3].format_line(), log.lines().last().unwrap());
 
-    // And the freeze is untouched by it. Recording another one is one more line
-    // in the log file; the entity carrying `done_criteria` is not written at
-    // all, so the hash a claim anchored still verifies the criterion it froze.
-    let after = append_log_file(
-        &log,
-        &LogEntry {
-            timestamp: "2026-08-12T09:50Z".into(),
-            who: "human:marie".into(),
-            message: format!(
-                "{} the incident runbook says the same thing",
-                ank_core::log::DISCREPANCY
-            ),
-        },
+    // And the freeze is untouched by it. Recording another one is one more
+    // entity; the file carrying `done_criteria` is not written at all, so the
+    // hash a claim anchored still verifies the criterion it froze. The
+    // convention survives the move because it lives in the message, and the
+    // message is the title of the entry that carries it.
+    let recorded = format!(
+        "{} the incident runbook says the same thing",
+        ank_core::log::DISCREPANCY
     );
-    assert_eq!(after.lines().count(), log.lines().count() + 1);
+    let (title, body) = message_fields(&recorded);
+    let entry = LogEntry {
+        timestamp: "2026-08-12T09:50Z".into(),
+        who: "human:marie".into(),
+        message: message_of(&title, &body),
+    };
     assert_eq!(
-        parse_log_file(&after)
-            .unwrap()
-            .iter()
-            .filter(|e| e.discrepancy().is_some())
-            .count(),
-        2
+        entry.discrepancy(),
+        Some("the incident runbook says the same thing")
     );
     assert_eq!(fs::read_to_string(&entity_path).unwrap(), entity_before);
     assert!(verify_frozen(&criteria, &anchor));
@@ -534,35 +539,68 @@ fn invalid_log_files_are_rejected_with_the_right_error() {
     }
 }
 
-/// The property the move was made to protect, asserted on the file it moved to.
+/// The property the move was made to protect, asserted on what replaced the
+/// append: **the message survives the two fields it is stored in**, whatever
+/// its length, and comes back byte for byte (ADR-25f977377fa0).
+///
+/// Read off the previous layout's own fixture, so the corpus under test is the
+/// one the migration has to move rather than a message invented here.
 #[test]
-fn appending_to_a_log_file_is_a_one_line_diff() {
-    let path = golden_dir("valid").join("log").join("TASK-2f8c41ba07d3.md");
-    let before = fs::read_to_string(&path).unwrap();
+fn every_message_of_the_previous_layout_survives_becoming_an_entity() {
+    for path in log_fixtures("valid") {
+        let text = fs::read_to_string(&path).unwrap();
+        for entry in parse_log_file(&text).unwrap() {
+            let (title, body) = message_fields(&entry.message);
+            assert_eq!(
+                message_of(&title, &body),
+                entry.message,
+                "{}: a message altered on the way into an entity",
+                path.display()
+            );
+            assert!(!title.contains('\n'), "{}: a title is one line", title);
+        }
+    }
 
-    let entry = LogEntry {
-        timestamp: "2026-08-12T10:00Z".into(),
-        who: "codex@host-9".into(),
-        message: "picked up after expiry".into(),
-    };
-    let after = append_log_file(&before, &entry);
-
-    assert!(
-        after.starts_with(&before),
-        "an append rewrites nothing that was already there"
+    // The fixture that carries a split message reads it back whole, and the
+    // two halves are the two fields rather than a rule stated only in prose.
+    let split = parse_log_entity(
+        &fs::read_to_string(golden_dir("valid").join("LOG-04c8e2f1a7b3.md")).unwrap(),
+    )
+    .unwrap();
+    let whole = split.message();
+    assert!(whole.chars().count() > MESSAGE_LINE_MAX, "{whole}");
+    assert_eq!(
+        message_fields(&whole),
+        (split.title.clone(), split.body.clone())
     );
     assert_eq!(
-        after.lines().count(),
-        before.lines().count() + 1,
-        "one log entry, one added line"
+        split.title.chars().count() <= MESSAGE_LINE_MAX,
+        true,
+        "the title is bounded: {}",
+        split.title
     );
-    assert_eq!(parse_log_file(&after).unwrap().len(), 5);
+    let rendered = LogEntry::of(&split);
+    let recorded = rendered
+        .discrepancy()
+        .expect("a convention on the message survives the split, because it is one message");
+    assert_eq!(
+        recorded,
+        &whole["discrepancy: ".len()..],
+        "the opening is the whole of the recognition, and it spans both fields"
+    );
 
-    // On an empty file the entry is the whole content: there is no header to
-    // create, which is one thing less than the body section needed.
-    let created = append_log_file("", &entry);
-    assert_eq!(created, format!("{}\n", entry.format_line()));
-    assert_eq!(parse_log_file(&created).unwrap().len(), 1);
+    // And a message built here, longer still, reads back whole through the
+    // model rather than through the two halves.
+    let long = format!("discrepancy: {}", "measured and recorded ".repeat(40));
+    let (title, body) = message_fields(&long);
+    let mut l = parse_log_entity(
+        &fs::read_to_string(golden_dir("valid").join("LOG-6b0f39d7a4c1.md")).unwrap(),
+    )
+    .unwrap();
+    l.title = title;
+    l.body = body;
+    assert_eq!(l.message(), long);
+    assert_eq!(parse_log_entity(&serialize_log_entity(&l)).unwrap(), l);
 }
 
 // ---------------------------------------------------------------------------
@@ -606,36 +644,34 @@ fn the_body_log_stays_tolerant_where_the_file_log_is_strict() {
     assert!(parse_log_file(body).is_err());
 }
 
+/// Both previous layouts are read and **neither is written**: the crate
+/// exposes no way to append to either, which is what makes append-only a
+/// property of the storage rather than a convention the format asks for
+/// (ADR-25f977377fa0).
+///
+/// Asserted on the surface, because that is where the guarantee lives. The two
+/// functions that used to do it are gone, and a reader of this suite should be
+/// told so here rather than discover it from a compile error.
 #[test]
-fn log_append_is_a_one_line_diff() {
+fn the_previous_layouts_are_read_and_never_written() {
     let input = fs::read_to_string(golden_dir("valid").join("TASK-8f3a91c2d4e7.md")).unwrap();
     let t = parse_task(&input).unwrap();
+    assert_eq!(parse_log(&t.body).len(), 2, "the body section still reads");
 
-    let entry = LogEntry {
-        timestamp: "2026-07-27T09:00Z".into(),
-        who: "codex@host-9".into(),
-        message: "picked up after expiry".into(),
-    };
-    let new_body = append_log(&t.body, &entry);
+    let path = golden_dir("valid").join("log").join("TASK-2f8c41ba07d3.md");
+    let text = fs::read_to_string(&path).unwrap();
+    assert_eq!(parse_log_file(&text).unwrap().len(), 4, "so does the file");
 
-    let before: Vec<&str> = t.body.lines().collect();
-    let after: Vec<&str> = new_body.lines().collect();
-    assert_eq!(
-        after.len(),
-        before.len() + 1,
-        "one log entry, one added line"
-    );
-    assert_eq!(
-        &after[..before.len()],
-        &before[..],
-        "nothing existing moves"
-    );
-    assert_eq!(parse_log(&new_body).len(), 3);
-
-    // On an empty body, the section is created.
-    let created = append_log("", &entry);
-    assert!(created.starts_with("## Log\n- "));
-    assert_eq!(parse_log(&created).len(), 1);
+    // Every entry either layout holds becomes an entity of its own, and the
+    // rendering is a projection of that entity's fields.
+    let l = parse_log_entity(
+        &fs::read_to_string(golden_dir("valid").join("LOG-6b0f39d7a4c1.md")).unwrap(),
+    )
+    .unwrap();
+    let rendered = LogEntry::of(&l);
+    assert_eq!(rendered.timestamp, l.created);
+    assert_eq!(rendered.who, l.author.clone().unwrap());
+    assert_eq!(rendered.message, l.message());
 }
 
 // ---------------------------------------------------------------------------
