@@ -640,6 +640,52 @@ pub fn directory_rename_of(cwd: &Path, prefix: &str) -> Result<Option<Rename>> {
     }))
 }
 
+/// The commit that removed `path`, when the last change git records to it is a
+/// deletion.
+///
+/// The other half of the question [`rename_of`] asks, put to the same two
+/// plumbing calls and read out of the same record. A deletion is as plainly
+/// recorded as a rename — the reader can see the commit, date it and read its
+/// message — so it is an answer git gives, and it is not the silence
+/// [`rename_of`] returns for a move under the similarity threshold, a shallow
+/// clone or a path git never knew.
+///
+/// Asked after `rename_of` and never instead of it: a commit that removes a file
+/// and adds a similar one is recorded as a rename, and the rename is the better
+/// answer. `None` here keeps its meaning — git has nothing to say — which is
+/// what the caller must go on reporting as a fault.
+pub fn deletion_of(cwd: &Path, path: &str) -> Result<Option<String>> {
+    let Some((sha, diff)) = last_change(cwd, path)? else {
+        return Ok(None);
+    };
+    Ok(deletes(&diff, path).then(|| sha.chars().take(12).collect()))
+}
+
+/// The last commit to touch `prefix`, and the paths under it that commit
+/// deleted.
+///
+/// What serves a glob, exactly as [`directory_rename_of`] does and for the same
+/// reason: `rev-list` answers about a path and has no answer for `src/**`, so
+/// the caller asks about the literal prefix instead.
+///
+/// The paths are returned rather than reduced to a yes, and that is the whole
+/// difference from [`deletion_of`]. A prefix is not the scope: `src/**/*.rs` asks
+/// about `src`, and a commit that deleted `src/notes.md` there says nothing about
+/// the scope that died. Only the caller holds the glob, so only the caller can
+/// say whether a deleted path is one this scope covered — and reporting on the
+/// prefix alone would be a claim git did not make.
+pub fn deletions_under(cwd: &Path, prefix: &str) -> Result<Option<(String, Vec<String>)>> {
+    let Some((sha, diff)) = last_change(cwd, prefix)? else {
+        return Ok(None);
+    };
+    let under = format!("{prefix}/");
+    let deleted: Vec<String> = records(&diff)
+        .filter(|(status, src, _)| status.starts_with('D') && src.starts_with(under.as_str()))
+        .map(|(_, src, _)| src.to_string())
+        .collect();
+    Ok(Some((sha.chars().take(12).collect(), deleted)))
+}
+
 /// The last commit that touched `path`, and what it changed.
 ///
 /// `rev-list -1 HEAD -- <path>` is that commit. `diff-tree` on it is what says
@@ -688,23 +734,46 @@ fn last_change(cwd: &Path, path: &str) -> Result<Option<(String, String)>> {
 /// two when the status is a rename or a copy. The letter carries a similarity
 /// score (`R100`), which is why the test is on the first byte.
 fn rename_target(text: &str, from: &str) -> Option<String> {
-    let mut fields = text.split('\0').filter(|f| !f.is_empty());
-    while let Some(status) = fields.next() {
-        let renamed = status.starts_with('R');
-        let Some(src) = fields.next() else {
-            return None;
-        };
-        if !renamed && !status.starts_with('C') {
-            continue;
-        }
-        let Some(dst) = fields.next() else {
-            return None;
-        };
-        if renamed && src == from {
-            return Some(dst.to_string());
+    for (status, src, dst) in records(text) {
+        if status.starts_with('R') && src == from {
+            return dst.map(str::to_string);
         }
     }
     None
+}
+
+/// The records `--name-status -z` emitted, as a status, a source and the
+/// destination a rename or a copy carries.
+///
+/// One walk for every question asked of a commit, because the alignment is the
+/// only difficulty here: a status carries one path, or two when it is `R` or
+/// `C`, and a reader that miscounts one record misaligns every record after it —
+/// which is how the answer becomes wrong for a path nobody asked about. Output
+/// cut mid-record ends the walk, and never panics: git truncated by a broken
+/// pipe answers nothing, which is what every caller here already means by
+/// `None`.
+fn records(text: &str) -> impl Iterator<Item = (&str, &str, Option<&str>)> {
+    let mut fields = text.split('\0').filter(|f| !f.is_empty());
+    std::iter::from_fn(move || {
+        let status = fields.next()?;
+        let src = fields.next()?;
+        let pair = status.starts_with('R') || status.starts_with('C');
+        let dst = match pair {
+            true => Some(fields.next()?),
+            false => None,
+        };
+        Some((status, src, dst))
+    })
+}
+
+/// Whether `text` records `path` as deleted.
+///
+/// Pure, and split out for the same reason as [`rename_target`]: it is a shape
+/// of git's output. `D` is the whole test — a deletion carries one path, and a
+/// removal git paired with an addition is an `R` this never sees, because
+/// [`rename_of`] is asked first and answers it.
+fn deletes(text: &str, path: &str) -> bool {
+    records(text).any(|(status, src, _)| status.starts_with('D') && src == path)
 }
 
 /// The one directory `text` records every file under `prefix` as moving to.
@@ -721,25 +790,16 @@ fn rename_target(text: &str, from: &str) -> Option<String> {
 fn moved_prefix(text: &str, prefix: &str) -> Option<String> {
     let under = format!("{prefix}/");
     let mut found: Option<String> = None;
-    let mut fields = text.split('\0').filter(|f| !f.is_empty());
-    while let Some(status) = fields.next() {
-        let renamed = status.starts_with('R');
-        let Some(src) = fields.next() else {
-            return None;
-        };
-        if !renamed && !status.starts_with('C') {
-            continue;
-        }
-        let Some(dst) = fields.next() else {
-            return None;
-        };
-        if !renamed {
+    for (status, src, dst) in records(text) {
+        if !status.starts_with('R') {
             continue;
         }
         let Some(rel) = src.strip_prefix(under.as_str()) else {
             continue;
         };
-        let dest = dst.strip_suffix(rel).and_then(|d| d.strip_suffix('/'))?;
+        let dest = dst
+            .and_then(|d| d.strip_suffix(rel))
+            .and_then(|d| d.strip_suffix('/'))?;
         match &found {
             None => found = Some(dest.to_string()),
             Some(seen) if seen == dest => {}
@@ -1458,5 +1518,106 @@ mod tests {
     fn a_repository_with_no_head_answers_nothing_rather_than_failing() {
         let t = Temp::new_repo();
         assert_eq!(rename_of(&t.0, "src/old.rs").unwrap(), None);
+        assert_eq!(deletion_of(&t.0, "src/old.rs").unwrap(), None);
+        assert_eq!(deletions_under(&t.0, "src").unwrap(), None);
+    }
+
+    /// The record a deletion is read out of, and the two it must not be read out
+    /// of: a modification and the source of a rename both name a path that is
+    /// still somewhere.
+    #[test]
+    fn a_deletion_is_read_by_its_path_and_a_path_still_somewhere_is_not_one() {
+        let text = "M\0a.rs\0D\0gone.rs\0R100\0old.rs\0new.rs\0D\0also.rs\0";
+        assert!(deletes(text, "gone.rs"));
+        assert!(
+            deletes(text, "also.rs"),
+            "a deletion past a rename must be found, so the two-path record is \
+             stepped over as two"
+        );
+        assert!(!deletes(text, "a.rs"), "a modified file was not deleted");
+        assert!(
+            !deletes(text, "old.rs"),
+            "the source of a rename is somewhere, and calling it deleted would \
+             lose the place the reader can follow"
+        );
+        assert!(!deletes("", "gone.rs"));
+        assert!(
+            !deletes("D\0", "gone.rs"),
+            "output cut mid-record answers nothing, and must not panic"
+        );
+    }
+
+    /// The commit that removed a path, on a real deletion and on the two
+    /// silences: a path git never knew, and a path that moved.
+    #[test]
+    fn a_deleted_path_names_the_commit_that_removed_it_and_a_moved_one_does_not() {
+        let t = Temp::new_repo();
+        t.commit("src/gone.rs", "fn gone() {}\n");
+        t.commit("src/kept.rs", "fn kept() {}\n");
+        std::fs::remove_file(t.0.join("src/gone.rs")).unwrap();
+        t.porcelain(&["add", "-A"]);
+        t.porcelain(&["commit", "-qm", "delete it"]);
+        let sha = run(&t.0, &["rev-parse", "HEAD"]).unwrap();
+
+        let removed = deletion_of(&t.0, "src/gone.rs")
+            .unwrap()
+            .expect("git records the deletion");
+        assert!(
+            sha.starts_with(&removed),
+            "the commit named must be the one that removed it: {removed} is not \
+             a prefix of {sha}"
+        );
+        assert_eq!(
+            deletion_of(&t.0, "src/kept.rs").unwrap(),
+            None,
+            "a file that is still there was not deleted"
+        );
+        assert_eq!(
+            deletion_of(&t.0, "src/never.rs").unwrap(),
+            None,
+            "a path git never knew is the silence the caller reports as a fault"
+        );
+
+        // A rename is recorded as one record and never as a deletion, so the
+        // caller that asks for the rename first is never contradicted here.
+        std::fs::rename(t.0.join("src/kept.rs"), t.0.join("src/moved.rs")).unwrap();
+        t.porcelain(&["add", "-A"]);
+        t.porcelain(&["commit", "-qm", "move it"]);
+        assert_eq!(deletion_of(&t.0, "src/kept.rs").unwrap(), None);
+    }
+
+    /// The directory question, which serves a glob: the paths a commit deleted
+    /// under a prefix, for the caller to confront with the glob it holds.
+    #[test]
+    fn the_paths_a_commit_deleted_under_a_prefix_are_returned_for_the_caller_to_filter() {
+        let t = Temp::new_repo();
+        t.commit("tools/hook.sh", "#!/bin/sh\n");
+        t.commit("tools/notes.md", "# notes\n");
+        std::fs::remove_dir_all(t.0.join("tools")).unwrap();
+        t.porcelain(&["add", "-A"]);
+        t.porcelain(&["commit", "-qm", "remove the directory"]);
+        let sha = run(&t.0, &["rev-parse", "HEAD"]).unwrap();
+
+        let (named, deleted) = deletions_under(&t.0, "tools")
+            .unwrap()
+            .expect("git records the commit that touched the prefix");
+        assert!(sha.starts_with(&named), "{named} is not a prefix of {sha}");
+        assert_eq!(
+            deleted,
+            vec!["tools/hook.sh".to_string(), "tools/notes.md".to_string()],
+            "every path deleted under the prefix is returned, because only the \
+             caller knows which of them the glob matched"
+        );
+
+        // A prefix git never knew, and one whose last commit deleted nothing:
+        // the second is the case that would let a claim be made about a
+        // directory that is still there.
+        assert_eq!(deletions_under(&t.0, "absent").unwrap(), None);
+        t.commit("src/lib.rs", "// x\n");
+        let (_, none) = deletions_under(&t.0, "src").unwrap().expect("a commit");
+        assert!(
+            none.is_empty(),
+            "a commit that added a file under the prefix deleted nothing: {none:?}"
+        );
     }
 }

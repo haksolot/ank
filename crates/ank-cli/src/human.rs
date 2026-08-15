@@ -972,46 +972,90 @@ fn check_scope_alive(
     }
 }
 
-/// The note under a dead scope: where git says the path went, and what repairs
-/// the entity (ADR-97beaf55e73a).
+/// The note under a dead scope: what git says happened to the path, and what
+/// repairs the entity (ADR-97beaf55e73a).
 ///
-/// Empty for everything git cannot explain, which is most of what can go wrong
-/// with a scope. **Silence here is not evidence.** A deletion, a move under the
-/// similarity threshold and a typo that never named a real file all produce the
+/// Two deaths git records, and it is asked about both: a rename, which names
+/// where the path went and what moves the scope after it, and a deletion, which
+/// names the commit that removed it and proposes nothing.
+///
+/// Empty for everything git still cannot explain. **Silence here is not
+/// evidence.** A move under the similarity threshold, a rename made by a merge,
+/// a truncated history and a typo that never named a real file all produce the
 /// same nothing, so no wording below may suggest which — the reader is left
 /// exactly where they stand today, and the finding above says all that is known.
 fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
     // A git failure is not a corpus fault and must never become one: the scope
     // is dead either way, and that is already reported. What is lost is the
     // explanation, which is exactly what `None` means everywhere else here.
-    let (asked, moved, to) = match literal_prefix(glob) {
-        // A path. The common entry, and the one git answers directly: 343 of the
-        // 462 scope entries in this repository's own corpus name one file with
-        // no wildcard.
-        None => {
-            let Ok(Some(moved)) = git::rename_of(root, glob) else {
-                return Vec::new();
-            };
-            let to = moved.to.clone();
-            (glob.to_string(), moved, to)
-        }
-        // A glob. git has no answer for "where did `src/**` go", so the question
-        // put to it is about the literal prefix, and the wildcard tail is carried
-        // across to the proposal unchanged.
-        Some((prefix, tail)) => {
-            let Ok(Some(moved)) = git::directory_rename_of(root, &prefix) else {
-                return Vec::new();
-            };
-            let to = format!("{}{tail}", moved.to);
-            (prefix, moved, to)
-        }
+    //
+    // A path is the common entry, and the one git answers directly: 343 of the
+    // 462 scope entries in this repository's own corpus name one file with no
+    // wildcard. A glob has no answer of its own — git has none for "where did
+    // `src/**` go" — so the question put to it is about the literal prefix, and
+    // the wildcard tail is carried across to the proposal unchanged.
+    let (asked, tail) = match literal_prefix(glob) {
+        None => (glob.to_string(), String::new()),
+        Some((prefix, tail)) => (prefix, tail),
     };
-    let mut note = vec![format!(
-        "git records {asked} renamed to {} in {}",
-        moved.to, moved.sha
-    )];
-    note.extend(repair(entity, glob, &to));
-    note
+    let directory = !tail.is_empty();
+    let moved = match directory {
+        false => git::rename_of(root, &asked),
+        true => git::directory_rename_of(root, &asked),
+    };
+    // The rename is asked first, and a deletion is only ever the answer git gave
+    // when it recorded no rename: a commit that removed a file and added a
+    // similar one is a rename, and the rename is the more useful of the two —
+    // it names a place the reader can follow.
+    if let Ok(Some(moved)) = moved {
+        let to = format!("{}{tail}", moved.to);
+        let mut note = vec![format!(
+            "git records {asked} renamed to {} in {}",
+            moved.to, moved.sha
+        )];
+        note.extend(repair(entity, glob, &to));
+        return note;
+    }
+    scope_deleted(glob, &asked, directory, root)
+}
+
+/// The same note for the other death git records: the commit that deleted the
+/// path.
+///
+/// **It proposes nothing, and the asymmetry with a rename is the point.** A
+/// rename names a place, so there is a scope to move to and a command that moves
+/// it. A deletion names none: the files are gone, no scope would match them
+/// again, and the entity that scoped them recorded where work happened, which a
+/// later deletion does not falsify. So the note names the commit and stops.
+///
+/// Empty for everything git still cannot explain — a path that never existed, a
+/// move under the similarity threshold, a shallow clone — and the caller goes on
+/// reporting those as a fault. **Silence here is still not evidence.**
+fn scope_deleted(glob: &str, asked: &str, directory: bool, root: &Path) -> Vec<String> {
+    if !directory {
+        let Ok(Some(sha)) = git::deletion_of(root, asked) else {
+            return Vec::new();
+        };
+        return vec![format!("git records {asked} deleted in {sha}")];
+    }
+    // A prefix is not the scope. `src/**/*.rs` asks git about `src`, and a commit
+    // that deleted `src/notes.md` there killed nothing this scope covered — so
+    // the deleted paths are confronted with the glob itself, and a commit that
+    // touched the prefix without removing anything the scope matched explains
+    // nothing.
+    let Ok(Some((sha, deleted))) = git::deletions_under(root, asked) else {
+        return Vec::new();
+    };
+    let one = [glob.to_string()];
+    let Ok(one) = ScopeSet::new(&one) else {
+        return Vec::new();
+    };
+    match deleted.iter().any(|p| one.matches(p)) {
+        true => vec![format!(
+            "git records the files {glob} matched deleted in {sha}"
+        )],
+        false => Vec::new(),
+    }
 }
 
 /// The part of a glob git can be asked about, and the wildcard tail that is not.

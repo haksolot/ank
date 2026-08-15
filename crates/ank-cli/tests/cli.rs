@@ -5735,6 +5735,125 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
     );
 }
 
+const REMOVED_SCOPE: &str = "TASK-00000000de1e";
+const REMOVED_TREE: &str = "TASK-00000000d132";
+const NEVER_SCOPE: &str = "TASK-00000000f00d";
+
+/// The same `done` seed with a scope of its own, which is the only field a
+/// dead-scope fixture varies.
+fn seed_done_scoped(r: &Repo, id: &str, scope: &str) {
+    seed_done(r, id, "  - type: commit\n    ref: abc1234\n");
+    let text = r
+        .task_text(id)
+        .replace("  - src/**", &format!("  - {scope}"));
+    std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), text).unwrap();
+}
+
+/// A dead scope whose path git records as deleted is a signal naming the commit
+/// that removed it; a death git cannot name at all stays a fault
+/// (TASK-ec579d3a566e).
+///
+/// Both halves, because only the pair says anything. A check that stopped
+/// checking would pass the first assertion and fail the second, and the corpus
+/// this exists for is one where the second case is the whole point: a path git
+/// never knew leaves the reader with nothing, which is what the fault is for.
+///
+/// Through the binary, because the criterion is about what the process prints
+/// and what it exits with, and because the exit code is the thing a pipeline
+/// reads.
+#[test]
+fn a_scope_deleted_by_a_commit_is_a_signal_and_a_scope_git_never_knew_is_a_fault() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    std::fs::write(r.0.join("src/gone.rs"), "pub fn gone() {}\n").unwrap();
+    seed_done_scoped(&r, REMOVED_SCOPE, "src/gone.rs");
+    // And the glob, which is the shape the real instance has: a task that put a
+    // directory there, and a later commit that removed the directory. git has no
+    // answer for "where did `tools/**` go", so this is asked about the literal
+    // prefix and is a different path through the code, not a second spelling of
+    // the same one.
+    std::fs::create_dir_all(r.0.join("tools")).unwrap();
+    std::fs::write(r.0.join("tools/hook.sh"), "#!/bin/sh\n").unwrap();
+    seed_done_scoped(&r, REMOVED_TREE, "tools/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // The commit that kills both scopes, and it deletes and nothing else: an
+    // addition alongside it could be paired by rename detection, and the finding
+    // under test would be the rename one.
+    std::fs::remove_file(r.0.join("src/gone.rs")).unwrap();
+    std::fs::remove_dir_all(r.0.join("tools")).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "remove the file"]);
+    let sha: String = r.head().chars().take(12).collect();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "a death git can name is a signal, and exit 8 here is a fault no verb \
+         clears: {said}"
+    );
+    let reported: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("dead scope 'src/gone.rs'"))
+        .collect();
+    assert_eq!(reported.len(), 1, "exactly one finding names it:\n{said}");
+    assert!(
+        reported[0].starts_with(&format!("signal: {REMOVED_SCOPE}:")),
+        "a deletion git records lowers the severity: {said}"
+    );
+    assert!(
+        said.contains(&format!("git records src/gone.rs deleted in {sha}")),
+        "the note names the commit that removed it, or the reader still has \
+         nothing: {said}"
+    );
+    let tree: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("dead scope 'tools/**'"))
+        .collect();
+    assert_eq!(tree.len(), 1, "exactly one finding names it:\n{said}");
+    assert!(
+        tree[0].starts_with(&format!("signal: {REMOVED_TREE}:")),
+        "a glob whose files git records as deleted is lowered too: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "git records the files tools/** matched deleted in {sha}"
+        )),
+        "and its note names the same commit: {said}"
+    );
+
+    // The half that must not move. A path git has nothing to say about is where
+    // the reader is left with nothing, and lowering that too would be a check
+    // that stopped checking.
+    seed_done_scoped(&r, NEVER_SCOPE, "src/never_written.rs");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a scope naming a path that never existed"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        8,
+        "a death git cannot name is still a fault: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "error: {NEVER_SCOPE}: dead scope 'src/never_written.rs'"
+        )),
+        "the unexplained death is the fault: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "signal: {REMOVED_SCOPE}: dead scope 'src/gone.rs'"
+        )),
+        "and the explained one is still a signal: {said}"
+    );
+}
+
 const DETACHED: &str = "TASK-00000000d1ed";
 const LIVE_ANCHOR: &str = "TASK-00000000a11e";
 
@@ -10439,42 +10558,79 @@ fn a_renamed_file_names_where_it_went_and_the_command_that_repairs_it() {
     );
 }
 
-/// The other half of the criterion, and the one that must add nothing.
+/// The other death git records, and the note it earns (TASK-ec579d3a566e).
 ///
-/// A deletion, a move under the similarity threshold and a scope that never
-/// named a real file are one silence to git. The reader is left exactly where
-/// they stand today — no proposal, and above all no sentence asserting the file
-/// was deleted, because this code cannot know that.
+/// A deletion is not the silence a move under the similarity threshold is: git
+/// names the commit that removed the path as plainly as it names a rename, and
+/// the reader can date it and read its message. So the note says so — and
+/// proposes nothing, because a deletion names no place a scope could be moved to
+/// and a command that fails on the spot is the one thing the error style
+/// forbids.
+///
+/// **The silence still has to exist**, so the second half is the death git
+/// cannot name at all: a scope that never named a real file, where the reader
+/// really does have nothing.
 #[test]
-fn a_deleted_file_leaves_the_finding_exactly_as_it_was() {
+fn a_deleted_file_names_the_commit_that_removed_it_and_proposes_nothing() {
     let deleted = moved_fixture("src/old.rs", None);
+    let head = deleted.git(&["rev-parse", "HEAD"]);
     let out = deleted.ank("claude-code@ank", &["check"]);
-    assert_eq!(code(&out), 8, "{}", stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "a death git records is a signal, and the fault it used to be is one no \
+         verb clears: {}",
+        stderr(&out)
+    );
     let text = stdout(&out);
     assert!(
         text.contains("dead scope 'src/old.rs': no file matches it"),
-        "{text}"
+        "the wording does not move with the severity: {text}"
+    );
+    let note = proposal(&text).unwrap_or_else(|| panic!("the deletion is named: {text}"));
+    assert_eq!(
+        note.len(),
+        1,
+        "a deletion names nowhere to move the scope to, so the note stops after \
+         the commit: {note:?}"
+    );
+    let named = note[0].rsplit(' ').next().unwrap();
+    assert!(
+        note[0] == format!("git records src/old.rs deleted in {named}") && head.starts_with(named),
+        "the note names the commit that removed it, and the commit is {head}: {note:?}"
+    );
+    assert!(
+        !text.contains("renamed"),
+        "a deletion went nowhere, and no rename may be invented for it: {text}"
+    );
+
+    // And the silence, which must not move. A path git has nothing to say about
+    // leaves the reader with nothing, which is what the fault is for.
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/kept.rs"), SIMILAR).unwrap();
+    r.seed_adr(DEAD_ADR, "Do not do X.", "src/never.rs");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert_eq!(
+        code(&out),
+        8,
+        "a death git cannot name is still a fault: {text}{}",
+        stderr(&out)
     );
     assert_eq!(
         proposal(&text),
         None,
-        "git cannot explain a deletion, and nothing may be proposed: {text}"
+        "git has nothing to say about it, and nothing may be invented: {text}"
     );
     for word in ["renamed", "delet", "removed"] {
         assert!(
             !text.contains(word),
-            "'{word}' claims to know what became of the file: {text}"
+            "'{word}' claims to know what became of a file git never knew: {text}"
         );
     }
-
-    // What makes the silence mean something: the same corpus and the same
-    // finding, differing by the rename and by nothing else.
-    let renamed = moved_fixture("src/old.rs", Some("src/new.rs"));
-    assert!(
-        proposal(&stdout(&renamed.ank("claude-code@ank", &["check"]))).is_some(),
-        "the renamed fixture must be explained, or the deleted one proves \
-         nothing about the walk"
-    );
 }
 
 /// `amend` refuses the scope of an accepted ADR with code 6, so proposing it
@@ -10591,41 +10747,54 @@ fn finished_task_scoped(r: &Repo, glob: &str) {
 
 /// The severity rule, on the state where it decides something.
 ///
-/// Two fixtures differing by one act, because a single one proves the exit code
-/// and not the reason for it. **Renamed:** git names the commit, so the corpus
-/// is outdated in a way the reader can follow rather than broken — a signal.
-/// **Deleted:** git explains nothing, the reader has nothing, and the fault is
-/// what says so.
+/// Three fixtures differing by one act, because a single one proves the exit
+/// code and not the reason for it. **Renamed:** git names the commit and where
+/// the path went, so the corpus is outdated in a way the reader can follow
+/// rather than broken — a signal. **Deleted:** git names the commit that removed
+/// it just as plainly, so the reader can follow that too — a signal
+/// (TASK-ec579d3a566e). **Never there:** git has nothing to say, the reader has
+/// nothing, and the fault is what says so.
+///
+/// The third case is what makes the first two mean anything: a walk that stopped
+/// asking would lower all three.
 ///
 /// Through the binary because the exit code is the whole claim, and no unit test
 /// of the severity reaches it.
 #[test]
 fn a_finished_tasks_dead_scope_faults_only_when_git_cannot_explain_it() {
-    for (to, expected) in [(Some("src/new.rs"), 0), (None, 8)] {
+    for (act, expected) in [("rename", 0), ("delete", 0), ("never", 8)] {
         let r = Repo::new();
         std::fs::create_dir_all(r.0.join("src")).unwrap();
         std::fs::write(r.0.join("src/old.rs"), SIMILAR).unwrap();
-        finished_task_scoped(&r, "src/old.rs");
+        // The scope of the third fixture names a path no commit ever carried,
+        // and the file beside it is what keeps the corpus otherwise ordinary.
+        let scope = match act {
+            "never" => "src/absent.rs",
+            _ => "src/old.rs",
+        };
+        finished_task_scoped(&r, scope);
         r.git(&["add", "-A"]);
         r.git(&["commit", "-qm", "seed"]);
-        match to {
-            Some(to) => std::fs::rename(r.0.join("src/old.rs"), r.0.join(to)).unwrap(),
-            None => std::fs::remove_file(r.0.join("src/old.rs")).unwrap(),
+        match act {
+            "rename" => std::fs::rename(r.0.join("src/old.rs"), r.0.join("src/new.rs")).unwrap(),
+            "delete" => std::fs::remove_file(r.0.join("src/old.rs")).unwrap(),
+            // Nothing dies here: the scope was never alive.
+            _ => {}
         }
         r.git(&["add", "-A"]);
-        r.git(&["commit", "-qm", "move it"]);
+        r.git(&["commit", "-qm", "move it", "--allow-empty"]);
 
         let out = r.ank("claude-code@ank", &["check"]);
         let text = stdout(&out);
-        assert_eq!(code(&out), expected, "to={to:?}: {text}{}", stderr(&out));
+        assert_eq!(code(&out), expected, "act={act}: {text}{}", stderr(&out));
         assert!(
-            text.contains("dead scope 'src/old.rs': no file matches it"),
+            text.contains(&format!("dead scope '{scope}': no file matches it")),
             "the wording does not move with the severity: {text}"
         );
         assert_eq!(
             proposal(&text).is_some(),
-            to.is_some(),
-            "to={to:?}: the explanation and the severity are the same fact: {text}"
+            expected == 0,
+            "act={act}: the explanation and the severity are the same fact: {text}"
         );
     }
 }
@@ -10796,14 +10965,21 @@ fn a_shallow_clone_cannot_explain_a_dead_scope_and_says_so_instead_of_faulting()
     }
 
     // And the fault survives where git does have the history and records
-    // nothing, or this would have bought the green by giving up the check.
-    let deleted = moved_fixture("src/old.rs", None);
-    let whole = clone_of(&deleted, None);
-    let out = deleted.ank_at("claude-code@ank", &["check"], &whole);
+    // nothing, or this would have bought the green by giving up the check. A
+    // path no commit ever carried is that case: a deletion is an answer git
+    // gives (TASK-ec579d3a566e), and this is the one it cannot.
+    let unknown = Repo::new();
+    std::fs::create_dir_all(unknown.0.join("src")).unwrap();
+    std::fs::write(unknown.0.join("src/kept.rs"), SIMILAR).unwrap();
+    unknown.seed_adr(DEAD_ADR, "Do not do X.", "src/absent.rs");
+    unknown.git(&["add", "-A"]);
+    unknown.git(&["commit", "-qm", "seed"]);
+    let whole = clone_of(&unknown, None);
+    let out = unknown.ank_at("claude-code@ank", &["check"], &whole);
     assert_eq!(
         code(&out),
         8,
-        "a deletion git can see is still a fault: {}",
+        "a path git never knew is still a fault: {}",
         stdout(&out)
     );
 }
