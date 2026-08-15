@@ -5,7 +5,7 @@ slug: a-dead-scope-git-records-as-deleted-is-a-signal
 title: A dead scope git records as deleted is a signal, not a fault
 created: 2026-08-15T21:29:04Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -15,7 +15,7 @@ done_criteria: |
   A dead scope whose path git records as deleted is reported as a signal naming the commit that removed it, on the terms ADR-97beaf55e73a already gives a rename, and a death git cannot name at all stays a fault. An ADR superseding ADR-97beaf55e73a carries its rename clause forward unchanged and states the deletion case, arriving proposed. A test in crates/ank-cli/tests/cli.rs drives the built binary over a repository where a finished task scopes a path a later commit deleted, and asserts the finding is a signal naming that commit and that the process exits 0; a second case, a scope naming a path that never existed, is asserted to stay a fault and to exit 8. The test fails against the code before the change, and what it printed is recorded in this task's log. cargo test --workspace and ank check are green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Found by retiring the dogfooding hook (TASK-10b8a29fd853). Deleting `.claude/`
