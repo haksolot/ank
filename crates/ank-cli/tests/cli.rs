@@ -2706,6 +2706,85 @@ fn a_reference_names_a_document_or_a_decision_and_no_other_kind() {
 }
 
 // ---------------------------------------------------------------------------
+// A description that enumerates output (TASK-213979c9df67)
+// ---------------------------------------------------------------------------
+
+/// The word a description must use to name a group `scope` prints.
+///
+/// A mapping and not a substring test, because the two surfaces speak
+/// deliberately different languages: the listing groups by kind and prints
+/// `ADR`, while a description addresses the reader in the vocabulary of §3 and
+/// says *constraints*. Asserting the heading itself appeared would demand that
+/// `help` say `ADR (20)`, which is the machine's word for it.
+///
+/// A group with no word declared here fails loudly rather than passing, the way
+/// `valid_value` does above: a fourth heading added to `scope` should make
+/// somebody say what a description has to call it, not slip through a test that
+/// only knew three.
+fn word_for_group(heading: &str) -> &'static str {
+    match heading {
+        "ADR" => "constraint",
+        "SPECIFICATIONS" => "specification",
+        "TASKS" => "task",
+        other => panic!(
+            "`ank scope` prints a group `{other}` and nobody has said what a \
+             description must call it: add it to word_for_group rather than \
+             guess"
+        ),
+    }
+}
+
+/// **A description that enumerates the verb's output is checked against the
+/// output** (§9, TASK-213979c9df67).
+///
+/// §9 already rules that a description is a fourth surface able to misinform,
+/// and the test that enforces it walks *flags*: it fails when a description
+/// advertises a flag the verb does not offer. Nothing compared a description
+/// that lists what a verb *prints* against what it prints, and one had gone
+/// stale exactly there — `scope` announced "the constraints that bind it and
+/// the tasks that touch it" while printing three groups, the third being the
+/// specifications. A reader of `help` therefore could not learn that `scope` is
+/// the verb that says which document governs a file, which is one of the two
+/// things it exists for.
+///
+/// Both surfaces are read from the binary, because the claim is about what the
+/// process prints and not about the table it is derived from.
+#[test]
+fn the_description_of_scope_names_every_group_it_prints() {
+    let r = Repo::new();
+    r.seed_docs();
+    // One entity of each kind that `scope` groups, all on one perimeter: the
+    // comparison is only worth making where every group is printed.
+    r.seed_task_scoped(ID, "docs/**");
+    r.seed_adr("ADR-00000000a0a0", "A rule.", "docs/**");
+    r.seed_spec("SPEC-00000000d0c1", "accepted", &[], None);
+
+    let printed = stdout(&r.ank("claude-code@ank", &["scope", "docs/doc.md"]));
+    let groups: Vec<String> = printed
+        .lines()
+        .filter_map(|l| l.split_once(" ("))
+        .filter(|(head, _)| !head.is_empty() && !head.starts_with(' '))
+        .map(|(head, _)| head.to_string())
+        .collect();
+    assert!(
+        groups.len() >= 3,
+        "the fixture must make `scope` print every group for the comparison to \
+         mean anything: {printed}"
+    );
+
+    let described = stdout(&r.ank("claude-code@ank", &["help", "scope"])).to_lowercase();
+    for heading in &groups {
+        let word = word_for_group(heading);
+        assert!(
+            described.contains(word),
+            "`ank scope` prints a `{heading}` group and `ank help scope` never \
+             says {word:?}: a description that enumerates what a verb emits and \
+             leaves one out is the fourth surface §9 refuses.\n\nprinted:\n{printed}\ndescribed:\n{described}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Concurrent readers of one corpus (TASK-e9dfaf187a1b)
 // ---------------------------------------------------------------------------
 
