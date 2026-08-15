@@ -16,6 +16,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 
 fn repo_file(rel: &str) -> String {
     let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -61,7 +62,21 @@ fn push_once(verbs: &mut Vec<String>, verb: String) {
 /// supersession that replaces it keeps this test green: an id pinned here would
 /// have to be re-typed on every revision, and the revision that forgot would
 /// look like a passing suite.
+///
+/// **Read once for the whole binary, and that is not an optimisation.** Three
+/// tests want this document, `cargo test` runs them on three threads, and the
+/// verbs that answer open the derived SQLite index — which today carries no
+/// busy timeout, so two of them racing on one corpus is `attempt to write a
+/// readonly database` (TASK-e9dfaf187a1b). It passed here and failed on all
+/// three platforms in CI, which is the shape of a concurrency defect and not of
+/// a flake. Reading once removes this suite from the race; the defect itself is
+/// ank's and has its own task.
 fn section_4_document() -> String {
+    static DOC: OnceLock<String> = OnceLock::new();
+    DOC.get_or_init(read_section_4_document).clone()
+}
+
+fn read_section_4_document() -> String {
     let ids = ank(&["find", "--type", "spec", "--json"]);
     let mut carrying: Vec<String> = Vec::new();
     for id in ids
