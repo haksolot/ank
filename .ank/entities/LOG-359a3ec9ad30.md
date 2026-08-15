@@ -11,6 +11,7 @@ scope:
   - npm/ank/README.md
   - .github/ISSUE_TEMPLATE/config.yml
 about: TASK-ab53a0d5654e
+seq: 1
 schema: 3
 version: 1
 ---

@@ -7,6 +7,7 @@ author: claude-agent-c
 scope:
   - docs/**
 about: TASK-00660963bcce
+seq: 1
 schema: 3
 version: 1
 ---

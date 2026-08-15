@@ -9,6 +9,7 @@ scope:
   - crates/ank-cli/src/claim.rs
   - docs/**
 about: TASK-d79dc424c63d
+seq: 0
 schema: 3
 version: 1
 ---

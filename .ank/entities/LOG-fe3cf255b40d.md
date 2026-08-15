@@ -7,6 +7,7 @@ author: claude-agent-c
 scope:
   - .github/workflows/ci.yml
 about: TASK-adf11c12c480
+seq: 1
 schema: 3
 version: 1
 ---

@@ -13,6 +13,7 @@ scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/init.rs
 about: TASK-40a972e98a9a
+seq: 1
 schema: 3
 version: 1
 ---

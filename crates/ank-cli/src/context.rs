@@ -872,7 +872,7 @@ fn build_execution(
     let loaded = store.load(&id)?;
     // The entries about this task, from the corpus, and from the previous log
     // directory only where a corpus has not been migrated yet (§3).
-    let log_entries = crate::entries::about(store, index, &loaded)?;
+    let log_entries = crate::entries::about(store, index, &loaded.entity)?;
     let Entity::Task(task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };

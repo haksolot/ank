@@ -9,6 +9,7 @@ scope:
   - crates/ank-cli/Cargo.toml
   - Cargo.lock
 about: TASK-b2c3d4e5f6a7
+seq: 1
 schema: 3
 version: 1
 ---

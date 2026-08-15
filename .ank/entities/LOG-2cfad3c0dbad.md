@@ -18,6 +18,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - crates/ank-cli/tests/skill.rs
 about: TASK-797d64113614
+seq: 0
 schema: 3
 version: 1
 ---

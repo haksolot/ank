@@ -7,6 +7,7 @@ author: seanl@sean-laptop
 scope:
   - .github/workflows/ci.yml
 about: TASK-d81a05ef8e8d
+seq: 0
 schema: 3
 version: 1
 ---

@@ -8,6 +8,7 @@ scope:
   - docs/**
   - README.md
 about: TASK-e32dc98faceb
+seq: 1
 schema: 3
 version: 1
 ---

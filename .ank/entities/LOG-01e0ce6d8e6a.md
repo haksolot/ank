@@ -7,6 +7,7 @@ author: claude-code@ank
 scope:
   - crates/ank-cli/src/claim.rs
 about: TASK-c3d4e5f6a7b8
+seq: 1
 schema: 3
 version: 1
 ---

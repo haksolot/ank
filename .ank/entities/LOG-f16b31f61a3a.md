@@ -9,6 +9,7 @@ scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-cli/tests/cli.rs
 about: TASK-bc214fd815b2
+seq: 1
 schema: 3
 version: 1
 ---

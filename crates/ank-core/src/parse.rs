@@ -104,8 +104,9 @@ struct SpecFm {
 }
 
 /// A log entry's frontmatter. No `status` — an entry has nothing to transition
-/// to — and `about` is required: an entry with no subject is the query the kind
-/// exists to make answerable, missing.
+/// to — and `about` and `seq` are both required: an entry with no subject is the
+/// query the kind exists to make answerable, missing, and an entry with no rank
+/// is the order missing, which a timestamp alone cannot supply (§3).
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct LogFm {
@@ -118,6 +119,7 @@ struct LogFm {
     author: Option<String>,
     scope: Vec<String>,
     about: String,
+    seq: u64,
     #[serde(default)]
     verified: Vec<Verified>,
     schema: u32,
@@ -396,6 +398,7 @@ fn parse_log_fm(fm: &str, body: &str) -> Result<Log> {
         author: raw.author,
         scope: raw.scope,
         about,
+        seq: raw.seq,
         verified: raw.verified,
         schema: raw.schema,
         version: raw.version,

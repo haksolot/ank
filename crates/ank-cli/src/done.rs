@@ -195,6 +195,7 @@ pub fn run(
     // something that did not happen (ADR-25f977377fa0).
     crate::entries::record(
         &store,
+        &crate::index::Index::open(&repo.ank)?,
         &finished,
         identity,
         &claim::now_utc(),
@@ -725,7 +726,7 @@ mod tests {
             let store = self.store();
             let loaded = store.load(&id).unwrap();
             let index = crate::index::Index::in_memory(store.root()).unwrap();
-            crate::entries::about(&store, &index, &loaded)
+            crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()
                 .map(|e| e.line)

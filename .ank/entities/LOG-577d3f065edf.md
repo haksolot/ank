@@ -8,6 +8,7 @@ scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
 about: TASK-4981a1370c0b
+seq: 1
 schema: 3
 version: 1
 ---

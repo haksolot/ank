@@ -7,6 +7,7 @@ author: claude-agent-c
 scope:
   - docs/ank-spec-v1.1.md
 about: TASK-62136e8c2b69
+seq: 0
 schema: 3
 version: 1
 ---

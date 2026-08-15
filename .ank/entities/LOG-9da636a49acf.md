@@ -10,6 +10,7 @@ scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/tests/**
 about: TASK-5bd23835d5a0
+seq: 0
 schema: 3
 version: 1
 ---

@@ -10,6 +10,7 @@ scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/tests/cli.rs
 about: TASK-cd3189ddf61e
+seq: 0
 schema: 3
 version: 1
 ---

@@ -7,6 +7,7 @@ author: claude-code@ankor
 scope:
   - crates/ank-cli/src/store.rs
 about: TASK-244a842bc0cc
+seq: 0
 schema: 3
 version: 1
 ---

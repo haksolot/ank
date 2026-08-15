@@ -8,6 +8,7 @@ scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/style.rs
 about: TASK-bfe1cbd9ec42
+seq: 0
 schema: 3
 version: 1
 ---

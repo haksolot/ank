@@ -237,7 +237,9 @@ fn write_entry(
         &line.message,
         format!("{}#{position}", subject.id()).as_bytes(),
     );
-    let entry = entries::from_line(id.clone(), subject, line);
+    // **The rank is the line's index in the file**, which is the order that
+    // append-only file recorded and the only order it ever had (§3).
+    let entry = entries::from_line(id.clone(), subject, position as u64, line);
     if let Ok(loaded) = store.load(&id) {
         // Same id and same content: a previous run wrote it. Same id and
         // different content is a collision the format says should not happen,
@@ -251,7 +253,12 @@ fn write_entry(
         )
         .with_hint(format!("ank show {id}")));
     }
-    store.create(&Entity::Log(entries::from_line(id.clone(), subject, line)))?;
+    store.create(&Entity::Log(entries::from_line(
+        id.clone(),
+        subject,
+        position as u64,
+        line,
+    )))?;
     // Read back from disk and compared to the line it came from. Not the struct
     // in hand: what the criterion is about is the corpus after the migration,
     // and only the file says what that is.

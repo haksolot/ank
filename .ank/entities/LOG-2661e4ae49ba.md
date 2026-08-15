@@ -7,6 +7,7 @@ author: seanl@sean-laptop
 scope:
   - crates/ank-cli/src/human.rs
 about: TASK-c92b7cc10f13
+seq: 1
 schema: 3
 version: 1
 ---

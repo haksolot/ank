@@ -8,6 +8,7 @@ scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/cli.rs
 about: TASK-cc1a2fb317f3
+seq: 0
 schema: 3
 version: 1
 ---

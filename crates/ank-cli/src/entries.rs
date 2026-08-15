@@ -32,7 +32,7 @@
 
 use crate::cli::Result;
 use crate::index::Index;
-use crate::store::{Loaded, Store};
+use crate::store::Store;
 use ank_core::{message_fields, Entity, EntityId, EntityKind, Log, LogEntry};
 
 /// One entry as a reader receives it: the line, and the entity that carries it.
@@ -45,7 +45,24 @@ use ank_core::{message_fields, Entity, EntityId, EntityKind, Log, LogEntry};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: Option<EntityId>,
+    /// The rank of §3: the entry's own `seq`, and the line's index in the file
+    /// for one read out of the previous layout — which is the order that file
+    /// recorded and the only one it had.
+    pub seq: u64,
     pub line: LogEntry,
+}
+
+impl Entry {
+    /// The total order of §3, over both sources at once.
+    ///
+    /// The same key [`ank_core::Log::order_key`] states, widened by one case:
+    /// a line out of the previous layout has no identifier, and `None` sorts
+    /// before `Some`, so where a migrated line and an entry share an instant
+    /// and a rank the older shape comes first. Deterministic, which is all the
+    /// last resort has to be.
+    fn order_key(&self) -> (&str, u64, Option<&EntityId>) {
+        (&self.line.timestamp, self.seq, self.id.as_ref())
+    }
 }
 
 /// Every entry about an entity, **oldest first**.
@@ -58,9 +75,9 @@ pub struct Entry {
 ///
 /// The entities of the corpus and whatever the previous layout still holds,
 /// together, less any line an entry already carries.
-pub fn about(store: &Store, index: &Index, subject: &Loaded) -> Result<Vec<Entry>> {
+pub fn about(store: &Store, index: &Index, subject: &Entity) -> Result<Vec<Entry>> {
     let mut out = Vec::new();
-    for row in index.entries_about(subject.entity.id())? {
+    for row in index.entries_about(subject.id())? {
         // Loaded from the file and not answered from the index: the message is
         // the title and the body together, and the index deliberately holds no
         // body (§6). A page prints at most what the budget affords, and that is
@@ -73,6 +90,7 @@ pub fn about(store: &Store, index: &Index, subject: &Loaded) -> Result<Vec<Entry
         };
         out.push(Entry {
             id: Some(entry.id.clone()),
+            seq: entry.seq,
             line: LogEntry::of(&entry),
         });
     }
@@ -80,19 +98,41 @@ pub fn about(store: &Store, index: &Index, subject: &Loaded) -> Result<Vec<Entry
     let previous: Vec<Entry> = store
         .previous_log_of(subject)?
         .into_iter()
+        .enumerate()
         // A line an entry already carries is the same line said twice, which
         // only a migration interrupted between its two acts can produce.
-        .filter(|line| !migrated.contains(&line))
-        .map(|line| Entry { id: None, line })
+        .filter(|(_, line)| !migrated.contains(&line))
+        // The line's index in the file **is** its rank: that file was
+        // append-only, so its order is the order the entries were written in,
+        // and it is the order `migrate` will give them (§3).
+        .map(|(n, line)| Entry {
+            id: None,
+            seq: n as u64,
+            line,
+        })
         .collect();
     out.extend(previous);
-    // Stable, so lines the previous layout holds keep the order that file gave
-    // them where two share a timestamp — the only order they have.
-    out.sort_by(|a, b| {
-        (&a.line.timestamp, a.id.as_ref().map(EntityId::to_string))
-            .cmp(&(&b.line.timestamp, b.id.as_ref().map(EntityId::to_string)))
-    });
+    out.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
     Ok(out)
+}
+
+/// The rank the next entry about this entity takes: one more than the highest
+/// any writer can see here, and 0 when there are none (§3).
+///
+/// **A read before a write, and it is not a lock.** Two writers who cannot see
+/// each other — two branches, two worktrees — compute the same value, which is
+/// the honest answer rather than a defect: they were concurrent, so there is no
+/// order between them to record. Nothing refuses, nothing retries, and the two
+/// entries are still two new files.
+///
+/// Counted over **both** sources, so a corpus that logged before it migrated
+/// does not restart at 0 and interleave its new entries among its old ones.
+pub fn next_seq(store: &Store, index: &Index, subject: &Entity) -> Result<u64> {
+    Ok(about(store, index, subject)?
+        .iter()
+        .map(|e| e.seq + 1)
+        .max()
+        .unwrap_or(0))
 }
 
 /// Writes one entry about an entity, and returns the identifier it was given.
@@ -112,6 +152,7 @@ pub fn about(store: &Store, index: &Index, subject: &Loaded) -> Result<Vec<Entry
 /// cheaper of the two failures.
 pub fn record(
     store: &Store,
+    index: &Index,
     subject: &Entity,
     identity: &str,
     created: &str,
@@ -129,7 +170,8 @@ pub fn record(
         message,
         &crate::commands::entropy(),
     );
-    store.create(&Entity::Log(from_line(id.clone(), subject, &line)))?;
+    let seq = next_seq(store, index, subject)?;
+    store.create(&Entity::Log(from_line(id.clone(), subject, seq, &line)))?;
     Ok(id)
 }
 
@@ -139,9 +181,11 @@ pub fn record(
 /// Shared with [`record`] so that a migrated entry and a freshly written one
 /// are the same shape: same split of the message, same scope rule, same fields
 /// present and absent. The two differ in one thing only, and it is the caller's
-/// to supply — the identifier, which a migration derives so that running it
-/// twice on one corpus proposes the same entries rather than a second set.
-pub fn from_line(id: EntityId, subject: &Entity, line: &LogEntry) -> Log {
+/// to supply — the identifier and the rank. A migration derives the identifier
+/// so that running it twice on one corpus proposes the same entries rather than
+/// a second set, and takes the rank from the line's position in the file it
+/// came from; a write takes the rank from what it can already see (§3).
+pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> Log {
     let (title, body) = message_fields(&line.message);
     Log {
         id,
@@ -154,6 +198,7 @@ pub fn from_line(id: EntityId, subject: &Entity, line: &LogEntry) -> Log {
         author: Some(line.who.clone()),
         scope: subject.scope().to_vec(),
         about: subject.id().clone(),
+        seq,
         verified: Vec::new(),
         schema: ank_core::SCHEMA_VERSION,
         version: 1,

@@ -7,6 +7,7 @@ author: claude-code/spec-kind-cli
 scope:
   - crates/ank-cli/**
 about: TASK-3e68786fa443
+seq: 0
 schema: 3
 version: 1
 ---

@@ -10,6 +10,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - docs/getting-started.md
 about: TASK-ca7b61b00896
+seq: 2
 schema: 3
 version: 1
 ---

@@ -8,6 +8,7 @@ author: human:marie
 scope:
   - src/auth/**
 about: TASK-8f3a91c2d4e7
+seq: 1
 schema: 3
 version: 1
 ---

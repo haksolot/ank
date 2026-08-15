@@ -710,11 +710,13 @@ impl Store {
     /// The entries of a migrated corpus are entities and do not come through
     /// here at all — [`crate::entries::about`] is what reads those, and what
     /// decides between the two sources.
-    pub fn previous_log_of(&self, loaded: &Loaded) -> Result<Vec<LogEntry>> {
-        let path = self.log_path_of(loaded.entity.id());
+    /// Taken as the entity rather than as a [`Loaded`], because the caller that
+    /// needs it most holds one it has just built and not one it has just read.
+    pub fn previous_log_of(&self, entity: &Entity) -> Result<Vec<LogEntry>> {
+        let path = self.log_path_of(entity.id());
         match fs::read_to_string(&path) {
             Ok(text) => parse_log_file(&text).map_err(|source| StoreError::Parse { path, source }),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok(parse_log(body_of(&loaded.entity))),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(parse_log(body_of(entity))),
             Err(source) => Err(StoreError::Io { path, source }),
         }
     }
@@ -1191,8 +1193,7 @@ mod tests {
     #[test]
     fn the_previous_log_layouts_are_read_and_a_missing_one_is_empty() {
         let (root, store, e) = seeded();
-        let loaded = store.load(e.id()).unwrap();
-        assert!(store.previous_log_of(&loaded).unwrap().is_empty());
+        assert!(store.previous_log_of(&e).unwrap().is_empty());
         assert!(store.previous_log_ids().unwrap().is_empty());
 
         let entry = LogEntry {
@@ -1205,7 +1206,7 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, format!("{}\n", entry.format_line())).unwrap();
 
-        let entries = store.previous_log_of(&loaded).unwrap();
+        let entries = store.previous_log_of(&e).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].who, "claude-code/1.4.2");
         assert_eq!(store.previous_log_ids().unwrap(), vec![e.id().clone()]);
@@ -1218,8 +1219,7 @@ mod tests {
             "\nFree body.\n\n## Log\n- 2026-07-26T14:02Z marie@laptop \u{2014} an entry\n".into();
         let other = Entity::Task(t);
         store.create(&other).unwrap();
-        let loaded = store.load(other.id()).unwrap();
-        assert_eq!(store.previous_log_of(&loaded).unwrap().len(), 1);
+        assert_eq!(store.previous_log_of(&other).unwrap().len(), 1);
     }
 
     /// **The store has no way to append to either previous layout**, and that

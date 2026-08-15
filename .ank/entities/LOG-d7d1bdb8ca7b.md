@@ -11,6 +11,7 @@ scope:
   - .ank/config.yml
   - .ank/tasks/TASK-aca0cb103980.md
 about: TASK-a7b8c9d0e1f2
+seq: 0
 schema: 3
 version: 1
 ---

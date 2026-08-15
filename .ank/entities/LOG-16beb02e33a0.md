@@ -7,6 +7,7 @@ author: claude-agent-c
 scope:
   - .github/workflows/release.yml
 about: TASK-d33024e7b98a
+seq: 1
 schema: 3
 version: 1
 ---

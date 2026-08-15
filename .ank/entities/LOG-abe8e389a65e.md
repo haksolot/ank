@@ -9,6 +9,7 @@ scope:
   - crates/ank-core/**
   - docs/ank-spec-v1.1.md
 about: TASK-df4c39031583
+seq: 1
 schema: 3
 version: 1
 ---

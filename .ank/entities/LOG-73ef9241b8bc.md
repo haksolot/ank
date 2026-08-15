@@ -15,6 +15,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - docs/**
 about: TASK-4601ed18d84e
+seq: 1
 schema: 3
 version: 1
 ---

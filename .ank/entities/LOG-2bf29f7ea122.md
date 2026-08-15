@@ -10,6 +10,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - docs/ank-spec-v1.1.md
 about: TASK-27cf26cbc414
+seq: 0
 schema: 3
 version: 1
 ---

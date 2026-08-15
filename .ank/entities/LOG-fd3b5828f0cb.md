@@ -8,6 +8,7 @@ scope:
   - .claude-plugin/**
   - README.md
 about: TASK-e1671f747e47
+seq: 1
 schema: 3
 version: 1
 ---

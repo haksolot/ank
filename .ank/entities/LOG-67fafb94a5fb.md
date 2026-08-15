@@ -7,6 +7,7 @@ author: claude-code/spec-ratified
 scope:
   - crates/ank-cli/**
 about: TASK-867a9a59f265
+seq: 2
 schema: 3
 version: 1
 ---

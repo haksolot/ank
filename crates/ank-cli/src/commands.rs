@@ -1691,7 +1691,7 @@ fn log_read(
     let title = loaded.entity.title().to_string();
     // The entries of the corpus, and the previous log directory only where a
     // corpus has not been migrated yet (§3).
-    let all = entries::about(store, &Index::open(&repo.ank)?, &loaded)?;
+    let all = entries::about(store, &Index::open(&repo.ank)?, &loaded.entity)?;
     let total = all.len();
     // The title line and the blank line under it are all this page spends
     // before the log, so the rest of the budget is the log's.
@@ -1823,8 +1823,14 @@ fn log_write(
         if let Ok(id) = store.resolve(given) {
             if id.kind() != EntityKind::Task {
                 let subject = store.load(&id)?;
-                let entry =
-                    entries::record(store, &subject.entity, identity, &claim::now_utc(), message)?;
+                let entry = entries::record(
+                    store,
+                    &Index::open(&repo.ank)?,
+                    &subject.entity,
+                    identity,
+                    &claim::now_utc(),
+                    message,
+                )?;
                 return report_logged(inv, &id, &entry, &[], out);
             }
         }
@@ -1841,6 +1847,7 @@ fn log_write(
     // carries a frozen field. What lands is one new file.
     let entry = entries::record(
         store,
+        &Index::open(&repo.ank)?,
         &loaded_for_log.entity,
         identity,
         &claim::now_utc(),
@@ -1954,6 +1961,7 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     store.write(&released, base_version)?;
     entries::record(
         &store,
+        &Index::open(&repo.ank)?,
         &released,
         identity,
         &claim::now_utc(),
@@ -2084,7 +2092,7 @@ mod tests {
             let store = self.store();
             let loaded = store.load(id).unwrap();
             let index = Index::in_memory(store.root()).unwrap();
-            crate::entries::about(&store, &index, &loaded)
+            crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()
                 .map(|e| e.line)

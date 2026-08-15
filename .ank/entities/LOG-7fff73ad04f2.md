@@ -17,6 +17,7 @@ scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/src/store.rs
 about: TASK-84238e3e179d
+seq: 0
 schema: 3
 version: 1
 ---

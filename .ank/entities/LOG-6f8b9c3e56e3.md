@@ -7,6 +7,7 @@ author: seanl@sean-laptop
 scope:
   - crates/ank-cli/**
 about: TASK-8c376169fb6c
+seq: 1
 schema: 3
 version: 1
 ---

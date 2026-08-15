@@ -7,6 +7,7 @@ author: claude-code@init
 scope:
   - crates/ank-core/**
 about: TASK-a1b2c3d4e5f6
+seq: 1
 schema: 3
 version: 1
 ---

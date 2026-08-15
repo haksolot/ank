@@ -14,6 +14,7 @@ scope:
   - CLAUDE.md
   - crates/ank-core/tests/golden/**
 about: TASK-f6b8eb330be5
+seq: 1
 schema: 3
 version: 1
 ---

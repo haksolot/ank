@@ -11,6 +11,7 @@ scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
 about: TASK-a015e74735c5
+seq: 0
 schema: 3
 version: 1
 ---

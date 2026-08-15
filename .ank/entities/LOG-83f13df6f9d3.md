@@ -7,6 +7,7 @@ author: seanl@sean-laptop
 scope:
   - README.md
 about: TASK-591d1726c305
+seq: 1
 schema: 3
 version: 1
 ---

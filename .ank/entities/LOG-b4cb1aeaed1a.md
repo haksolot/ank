@@ -8,6 +8,7 @@ scope:
   - docs/ank-spec-v1.1.md
   - docs/format.md
 about: TASK-7fcdd44933f0
+seq: 0
 schema: 3
 version: 1
 ---

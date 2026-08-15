@@ -9,6 +9,7 @@ scope:
   - README.md
   - CLAUDE.md
 about: TASK-ff6ce27c29ad
+seq: 2
 schema: 3
 version: 1
 ---

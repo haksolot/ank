@@ -8,6 +8,7 @@ scope:
   - .github/workflows/release.yml
   - .github/scripts/npm-assemble.sh
 about: TASK-ace80749fd5c
+seq: 1
 schema: 3
 version: 1
 ---

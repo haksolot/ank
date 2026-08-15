@@ -7,6 +7,7 @@ author: claude-code@ankor
 scope:
   - .github/workflows/ci.yml
 about: TASK-ca4714f5c719
+seq: 1
 schema: 3
 version: 1
 ---

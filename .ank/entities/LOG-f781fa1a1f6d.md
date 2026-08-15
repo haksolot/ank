@@ -10,6 +10,7 @@ scope:
   - crates/ank-cli/src/status.rs
   - crates/ank-cli/tests/**
 about: TASK-dacbcae6134c
+seq: 1
 schema: 3
 version: 1
 ---

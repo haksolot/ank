@@ -10,6 +10,7 @@ scope:
   - .ank/adr/**
   - crates/ank-cli/tests/**
 about: TASK-78326e2e3e89
+seq: 1
 schema: 3
 version: 1
 ---

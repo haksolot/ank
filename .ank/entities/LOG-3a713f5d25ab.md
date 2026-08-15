@@ -7,6 +7,7 @@ author: claude-code@ank
 scope:
   - crates/ank-cli/tests/cli.rs
 about: TASK-97437c25ddda
+seq: 1
 schema: 3
 version: 1
 ---

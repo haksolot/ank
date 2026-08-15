@@ -7,6 +7,7 @@ author: claude-code@ank
 scope:
   - crates/ank-cli/**
 about: TASK-bfa325e55424
+seq: 0
 schema: 3
 version: 1
 ---

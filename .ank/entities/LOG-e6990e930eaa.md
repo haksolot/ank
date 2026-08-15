@@ -9,6 +9,7 @@ scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-cli/tests/cli.rs
 about: TASK-ead719ac5914
+seq: 0
 schema: 3
 version: 1
 ---

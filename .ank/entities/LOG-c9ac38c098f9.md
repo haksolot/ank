@@ -1,5 +1,5 @@
 ---
-id: LOG-d57c501f5c21
+id: LOG-c9ac38c098f9
 type: log
 title: "correction to the first decision, and it is a change of rule rather than a detail: the two sources"
 created: 2026-08-15T11:33:02Z
@@ -8,6 +8,7 @@ scope:
   - crates/ank-cli/**
   - crates/ank-core/**
 about: TASK-df9c6d46e8ef
+seq: 2
 schema: 3
 version: 1
 ---

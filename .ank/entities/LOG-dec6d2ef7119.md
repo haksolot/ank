@@ -8,6 +8,7 @@ scope:
   - docs/ank-spec-v1.1.md
   - crates/ank-cli/src/human.rs
 about: TASK-9e9f815e7ef6
+seq: 1
 schema: 3
 version: 1
 ---

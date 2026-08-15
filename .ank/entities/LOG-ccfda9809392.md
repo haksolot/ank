@@ -8,6 +8,7 @@ scope:
   - .github/ISSUE_TEMPLATE/**
   - .github/pull_request_template.md
 about: TASK-90442c8f0ca2
+seq: 0
 schema: 3
 version: 1
 ---

@@ -8,6 +8,7 @@ scope:
   - crates/ank-cli/**
   - docs/**
 about: TASK-83d6eefdb36e
+seq: 0
 schema: 3
 version: 1
 ---

@@ -9,6 +9,7 @@ scope:
   - docs/ank-spec-v1.1.md
   - CLAUDE.md
 about: TASK-671dac854896
+seq: 0
 schema: 3
 version: 1
 ---

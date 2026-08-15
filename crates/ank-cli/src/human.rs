@@ -440,7 +440,9 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 _ => None,
             })
             .collect();
-        rows.sort_by(|a, b| (&a.created, a.id.to_string()).cmp(&(&b.created, b.id.to_string())));
+        // The order of §3, stated once in `ank_core` and read here rather than
+        // rebuilt: `created`, then `seq`, then the identifier.
+        rows.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
         for l in rows {
             entries_of
                 .entry(l.about.clone())
@@ -1493,11 +1495,20 @@ fn log_entries(
 /// the compare-and-swap refused must not leave one behind.
 fn record_entry(
     store: &Store,
+    repo: &Repo,
     subject: &Entity,
     identity: &str,
     message: String,
 ) -> Result<EntityId> {
-    crate::entries::record(store, subject, identity, &claim::now_utc(), &message)
+    let index = Index::open(&repo.ank)?;
+    crate::entries::record(
+        store,
+        &index,
+        subject,
+        identity,
+        &claim::now_utc(),
+        &message,
+    )
 }
 
 /// Why a task's log yielded nothing, and at what severity `check` says so.
@@ -3597,7 +3608,7 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     task.status = TaskStatus::Closed;
     let closed = Entity::Task(task);
     store.write(&closed, base_version)?;
-    record_entry(&store, &closed, identity, format!("closed: {reason}"))?;
+    record_entry(&store, repo, &closed, identity, format!("closed: {reason}"))?;
 
     let revoked = claim::delete(&repo.root, &id)?;
     if inv.json() {
@@ -3733,6 +3744,7 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     store.write(&attested, base_version)?;
     record_entry(
         &store,
+        repo,
         &attested,
         identity,
         format!("attested {kind}:{reference}"),
@@ -4013,6 +4025,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             store.write(&amended, base_version)?;
             record_entry(
                 &store,
+                repo,
                 &amended,
                 identity,
                 format!("amended: {}", changes.join(", ")),
@@ -4274,7 +4287,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     };
     // The entries about this entity, of whatever kind it is: an ADR carries
     // them too (ADR-25f977377fa0).
-    let mut log = crate::entries::about(&store, &Index::open(&repo.ank)?, &loaded)?;
+    let mut log = crate::entries::about(&store, &Index::open(&repo.ank)?, &loaded.entity)?;
     // A body still carrying its own `## Log` section has just been printed
     // above, byte for byte, as part of the entity — so those lines get no
     // second copy under it. They are exactly the ones with no identifier: an
@@ -4698,7 +4711,7 @@ mod tests {
             let store = self.store();
             let loaded = store.load(id).unwrap();
             let index = Index::in_memory(store.root()).unwrap();
-            crate::entries::about(&store, &index, &loaded)
+            crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()
                 .map(|e| e.line)
@@ -5489,6 +5502,7 @@ mod tests {
             let subject = t.store().load(id).unwrap().entity;
             crate::entries::record(
                 &t.store(),
+                &Index::in_memory(t.store().root()).unwrap(),
                 &subject,
                 "claude-code/1.4.2",
                 "2026-07-28T01:00Z",

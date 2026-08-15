@@ -10,6 +10,7 @@ scope:
   - CLAUDE.md
   - .claude/**
 about: TASK-3109a736c255
+seq: 2
 schema: 3
 version: 1
 ---

@@ -7,6 +7,7 @@ author: seanl@sean-laptop
 scope:
   - docs/ank-spec-v1.1.md
 about: TASK-ff1c20395929
+seq: 2
 schema: 3
 version: 1
 ---

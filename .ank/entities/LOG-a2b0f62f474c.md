@@ -11,6 +11,7 @@ scope:
   - crates/ank-cli/src/cli.rs
   - docs/ank-spec-v1.1.md
 about: TASK-028bcee93801
+seq: 3
 schema: 3
 version: 1
 ---

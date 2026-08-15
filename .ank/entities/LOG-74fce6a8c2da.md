@@ -7,6 +7,7 @@ author: claude-code@ank
 scope:
   - docs/getting-started.md
 about: TASK-7af1cd875d9a
+seq: 0
 schema: 3
 version: 1
 ---

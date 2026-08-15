@@ -1,5 +1,5 @@
 ---
-id: LOG-fee93deb183a
+id: LOG-b3ccbe5856e5
 type: log
 title: what 510 new entities do to the verbs that read the whole corpus, measured rather than assumed.
 created: 2026-08-15T11:33:25Z
@@ -8,6 +8,7 @@ scope:
   - crates/ank-cli/**
   - crates/ank-core/**
 about: TASK-df9c6d46e8ef
+seq: 3
 schema: 3
 version: 1
 ---

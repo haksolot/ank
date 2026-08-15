@@ -9,6 +9,7 @@ scope:
   - npm/**
   - docs/**
 about: TASK-79bb5c779a59
+seq: 2
 schema: 3
 version: 1
 ---

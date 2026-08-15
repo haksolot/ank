@@ -141,6 +141,23 @@ impl Log {
     pub fn message(&self) -> String {
         message_of(&self.title, &self.body)
     }
+
+    /// The total order of an entity's entries: `created`, then `seq`, then the
+    /// identifier (§3).
+    ///
+    /// **Every part is read off the entity**, which is the property that
+    /// matters: no file name, no directory order, nothing outside the entity.
+    /// The instant comes first because a merged history reads by wall time; the
+    /// rank breaks a shared second, which is the ordinary case and not the
+    /// exotic one; and the identifier is the last resort, where two entries are
+    /// genuinely concurrent and any stable answer is the right one.
+    ///
+    /// Stated here rather than at each reader, because `log` and `show` print
+    /// the two directions of one order and two implementations of it would
+    /// eventually disagree about a second.
+    pub fn order_key(&self) -> (&str, u64, &crate::id::EntityId) {
+        (&self.created, self.seq, &self.id)
+    }
 }
 
 // ---------------------------------------------------------------------------

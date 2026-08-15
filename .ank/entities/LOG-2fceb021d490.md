@@ -13,6 +13,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - crates/ank-cli/src/store.rs
 about: TASK-e70f3a12185a
+seq: 0
 schema: 3
 version: 1
 ---

@@ -9,6 +9,7 @@ scope:
   - crates/ank-cli/tests/cli.rs
   - docs/ank-spec-v1.1.md
 about: TASK-0b26c8b5bfc5
+seq: 1
 schema: 3
 version: 1
 ---

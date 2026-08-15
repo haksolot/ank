@@ -7,6 +7,7 @@ author: claude-code/spec-revision
 scope:
   - docs/**
 about: TASK-1d47cc52c42d
+seq: 2
 schema: 3
 version: 1
 ---

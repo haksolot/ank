@@ -7,6 +7,7 @@ author: claude-code/2.1.229+main-checkout
 scope:
   - .ank/**
 about: TASK-9bff1d5826b1
+seq: 7
 schema: 3
 version: 1
 ---

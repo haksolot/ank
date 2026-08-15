@@ -8,6 +8,7 @@ scope:
   - skill/**
   - crates/ank-cli/tests/skill.rs
 about: TASK-b495234f192c
+seq: 2
 schema: 3
 version: 1
 ---

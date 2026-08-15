@@ -8,6 +8,7 @@ scope:
   - skill/**
   - docs/**
 about: TASK-e3f4b6295b23
+seq: 0
 schema: 3
 version: 1
 ---

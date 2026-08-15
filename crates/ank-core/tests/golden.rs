@@ -190,6 +190,14 @@ fn invalid_files_are_rejected_with_the_right_error() {
             "log-without-about" => {
                 matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `about`")
             }
+            // A log entry with no rank. The order of an entity's entries is
+            // `created`, then `seq`, then the identifier, and a timestamp alone
+            // is not an order -- several entries in one second is the ordinary
+            // case. An absent `seq` is therefore the order missing, not a
+            // default to invent, and it is refused by name.
+            "log-without-seq" => {
+                matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `seq`")
+            }
             other => panic!("invalid file not covered: {other}"),
         };
         assert!(ok, "{name}: wrong error: {err:?}");

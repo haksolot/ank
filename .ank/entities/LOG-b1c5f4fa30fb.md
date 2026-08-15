@@ -14,6 +14,7 @@ scope:
   - AGENTS.md
   - .github/workflows/ci.yml
 about: TASK-73d87df5269f
+seq: 2
 schema: 3
 version: 1
 ---

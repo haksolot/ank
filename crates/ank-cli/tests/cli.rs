@@ -118,6 +118,13 @@ impl Repo {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
+        // What `ank init` writes, and the fixture was unrepresentative without
+        // it: the index is derived, disposable and **gitignored** (§6). Any verb
+        // that opens one leaves `.ank/index.db` behind, and a fixture that
+        // tracks it turns an ordinary `git merge` into a refusal about an
+        // untracked file the tool owns. `init` has its own tests for the
+        // appending behaviour; this is only the line those tests are about.
+        std::fs::write(r.0.join(".gitignore"), ".ank/index.db\n").unwrap();
         r
     }
 
@@ -391,7 +398,7 @@ impl Repo {
     /// which is the same rule the CLI applies (§3) and what keeps the fixtures
     /// seeding one meaningful.
     fn log_text(&self, id: &str) -> String {
-        let mut rows: Vec<(String, String)> = Vec::new();
+        let mut rows: Vec<((String, u64, String), String)> = Vec::new();
         for entry in std::fs::read_dir(self.0.join(".ank/entities"))
             .into_iter()
             .flatten()
@@ -411,7 +418,13 @@ impl Repo {
                 continue;
             }
             rows.push((
-                format!("{} {}", l.created, l.id),
+                // The order of §3, and the same key the tool uses: `created`,
+                // then `seq`, then the identifier. **A helper that sorted on
+                // the timestamp alone reproduced, inside the thing doing the
+                // catching, the very defect these tests exist to catch** — two
+                // entries of one second came out in identifier order, and it
+                // failed 1 run in 10 until this line named `seq`.
+                (l.created.clone(), l.seq, l.id.to_string()),
                 format!(
                     "- {} {} \u{2014} {}\n",
                     l.created,
@@ -424,8 +437,6 @@ impl Repo {
             return std::fs::read_to_string(self.0.join(".ank/log").join(format!("{id}.md")))
                 .unwrap_or_default();
         }
-        // The timestamp, then the identifier: the order every reader uses, so
-        // an assertion about two entries reads the same on every machine.
         rows.sort();
         rows.into_iter().map(|(_, line)| line).collect()
     }
@@ -3397,8 +3408,16 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
         "init wrote into the repository it was merely standing in"
     );
     assert!(
-        !inside.0.join(".gitattributes").exists() && !inside.0.join(".gitignore").exists(),
+        !inside.0.join(".gitattributes").exists(),
         "init wrote git files into the repository it was merely standing in"
+    );
+    // The fixture writes this one, so the question is whether `init` touched
+    // it, not whether it is there: `init` appends its own lines to a
+    // `.gitignore` it finds, and this one is exactly as the fixture left it.
+    assert_eq!(
+        std::fs::read_to_string(inside.0.join(".gitignore")).unwrap(),
+        ".ank/index.db\n",
+        "init appended to the .gitignore of the repository it was merely standing in"
     );
     let fetch = git_command(&inside.0)
         .args(["config", "--get-all", "remote.origin.fetch"])
@@ -11961,22 +11980,114 @@ fn a_long_message_is_elided_in_a_listing_and_whole_in_the_entry() {
     );
 }
 
-/// Two entries inside one second, which the corpus does contain: the order
-/// between them is decided by the fields and is the same on every run.
+/// The numbers the messages carry, oldest first, out of `ank log`'s newest-first
+/// page.
+fn logged_order(text: &str) -> Vec<String> {
+    let mut n: Vec<String> = text
+        .lines()
+        .filter_map(|l| l.split(" — entry ").nth(1).map(str::to_string))
+        .collect();
+    n.reverse();
+    n
+}
+
+/// **Entries written in one second come back in the order they were written.**
 ///
-/// `created` has one-second resolution (§3), so a tie is a real case and not a
-/// contrivance — six pairs of them in this repository's own log. What must not
-/// happen is the order coming from whatever the filesystem enumerated.
+/// This is the defect CI caught and the reason the kind carries `seq` at all.
+/// `created` has one-second resolution and one `ank log` costs a few hundred
+/// milliseconds, so several entries inside one second is the ordinary case;
+/// with the identifier as the only tiebreak the order was a hash, and a
+/// measured 10 runs in 12 printed four entries wrong. It passed on Windows in
+/// CI because that job is four times slower and its writes straddled a second
+/// more often, which is luck and not a platform property.
+///
+/// **Two assertions, and the second is what makes this test worth having on a
+/// machine whose clock happens to cooperate.** The order is asserted end to end
+/// through the binary; and `seq` is asserted to run 0, 1, 2 … which holds
+/// whether or not the writes shared a second, so a slow runner gets a real test
+/// rather than a vacuous pass. The timestamps observed are printed on failure,
+/// so a red build says which of the two situations it was in.
 #[test]
-fn two_entries_in_one_second_come_back_in_one_stable_order() {
+fn entries_written_in_one_second_come_back_in_write_order() {
     let r = Repo::new();
     r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    const N: usize = 8;
+    for i in 0..N {
+        assert_eq!(
+            code(&r.ank("claude-code@ank", &["log", &format!("entry {i}")])),
+            0
+        );
+    }
 
-    // Seeded through the previous layout and migrated, because that is the one
-    // way a test can *choose* the instants: `created` comes from the clock
-    // otherwise, and the case under test is two entries sharing a second.
-    // Written out of chronological order on purpose -- what is printed must be
-    // the timestamps' order and not the order anything was written in.
+    let out = r.ank("marie@laptop", &["log", LOGGED, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    let stamps: Vec<&str> = json
+        .match_indices("\"timestamp\":\"")
+        .map(|(i, m)| {
+            let rest = &json[i + m.len()..];
+            &rest[..rest.find('"').unwrap()]
+        })
+        .collect();
+    let distinct: std::collections::BTreeSet<&&str> = stamps.iter().collect();
+
+    let page = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
+    let expected: Vec<String> = (0..N).map(|i| i.to_string()).collect();
+    assert_eq!(
+        logged_order(&page),
+        expected,
+        "{N} entries came back out of the order they were written; \
+         {} distinct instants among {}:\n{page}",
+        distinct.len(),
+        stamps.len()
+    );
+
+    // The mechanism, and it holds whatever the clock did: the rank of an entry
+    // is one more than the highest its writer could see, so a run of writes is
+    // a run of ranks. A machine slow enough to put every write in its own
+    // second still tests this.
+    let ranks: Vec<String> = r
+        .entry_ids(LOGGED)
+        .iter()
+        .map(|id| {
+            let text = std::fs::read_to_string(r.0.join(".ank/entities").join(format!("{id}.md")))
+                .unwrap();
+            let line = text.lines().find(|l| l.starts_with("seq: ")).expect("seq");
+            line["seq: ".len()..].to_string()
+        })
+        .collect();
+    let mut ranks: Vec<u64> = ranks.iter().map(|s| s.parse().unwrap()).collect();
+    ranks.sort_unstable();
+    assert_eq!(
+        ranks,
+        (0..N as u64).collect::<Vec<_>>(),
+        "the ranks of {N} consecutive writes are 0..{N}"
+    );
+
+    // And the answer does not move between two reads of one corpus.
+    for _ in 0..3 {
+        assert_eq!(stdout(&r.ank("marie@laptop", &["log", LOGGED])), page);
+    }
+}
+
+/// A corpus migrated from the previous layout keeps the line order of the file
+/// it came from, and that is the only order those entries ever had.
+///
+/// The instants are chosen here, which is the one thing a test writing through
+/// `ank log` cannot do: `created` comes from the clock. Two of the four lines
+/// share a second, so the file's order is load-bearing for exactly the pair
+/// that has no other order — 6 such groups covering 12 entries in this
+/// repository's own corpus.
+///
+/// **Across distinct instants the timestamps decide**, which is why the file is
+/// written out of chronological order: one file of the 178 this corpus migrated
+/// stores its lines newest-first, and its own timestamps are the better
+/// evidence of what happened when (§3).
+#[test]
+fn a_migrated_log_keeps_its_line_order_inside_one_second() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
     std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
     std::fs::write(
         r.0.join(".ank/log").join(format!("{LOGGED}.md")),
@@ -11988,48 +12099,33 @@ fn two_entries_in_one_second_come_back_in_one_stable_order() {
     .unwrap();
     assert_eq!(code(&r.ank("marie@laptop", &["migrate"])), 0);
 
-    let first = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
-
-    // Newest first, whatever order the entries were written in. The two sharing
-    // a second sit together at the end, and which of the two comes first is not
-    // asserted -- what is asserted is that it never changes.
-    let numbers: Vec<char> = first
-        .lines()
-        .filter(|l| l.contains(" — entry "))
-        .filter_map(|l| l.chars().last())
-        .collect();
-    assert_eq!(numbers.len(), 4, "{first}");
+    let page = stdout(&r.ank("marie@laptop", &["log", LOGGED]));
     assert_eq!(
-        &numbers[..2],
-        &['3', '2'],
-        "the distinct instants come back newest first: {first}"
-    );
-    assert!(
-        numbers[2..] == ['0', '1'] || numbers[2..] == ['1', '0'],
-        "and the tied pair is the tied pair: {first}"
+        logged_order(&page),
+        vec!["0", "1", "2", "3"],
+        "the tied pair keeps the file's order and the rest is chronological:\n{page}"
     );
 
+    // Two reads of one corpus never differ.
     for _ in 0..3 {
-        assert_eq!(
-            stdout(&r.ank("marie@laptop", &["log", LOGGED])),
-            first,
-            "two reads of one corpus differ:\n{first}"
-        );
+        assert_eq!(stdout(&r.ank("marie@laptop", &["log", LOGGED])), page);
     }
 
     // `show` prints the same set in the opposite direction, and reversing one
     // gives the other -- so both orders come from the entries and not from two
     // independent walks that agree today.
-    let rows = |text: &str| -> Vec<String> {
-        text.lines()
-            .filter(|l| l.contains(" \u{2014} entry "))
-            .map(|l| l[l.find(" \u{2014} entry ").unwrap()..].to_string())
-            .collect()
-    };
-    let newest_first = rows(&first);
-    let mut oldest_first = rows(&stdout(&r.ank("marie@laptop", &["show", LOGGED])));
-    assert_eq!(newest_first.len(), 4, "{first}");
+    let mut oldest_first: Vec<String> = stdout(&r.ank("marie@laptop", &["show", LOGGED]))
+        .lines()
+        .filter_map(|l| l.split(" — entry ").nth(1).map(str::to_string))
+        .collect();
+    assert_eq!(
+        oldest_first,
+        vec!["0", "1", "2", "3"],
+        "show is oldest first"
+    );
     oldest_first.reverse();
+    let mut newest_first = logged_order(&page);
+    newest_first.reverse();
     assert_eq!(newest_first, oldest_first);
 }
 

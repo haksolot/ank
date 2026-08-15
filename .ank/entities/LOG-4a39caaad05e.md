@@ -8,6 +8,7 @@ scope:
   - README.md
   - docs/getting-started.md
 about: TASK-207e07504dcd
+seq: 2
 schema: 3
 version: 1
 ---

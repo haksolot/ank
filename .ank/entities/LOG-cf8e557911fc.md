@@ -12,6 +12,7 @@ scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/cli.rs
 about: TASK-58475a5570ba
+seq: 2
 schema: 3
 version: 1
 ---

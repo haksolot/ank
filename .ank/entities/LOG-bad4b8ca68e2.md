@@ -10,6 +10,7 @@ scope:
   - .github/workflows/ci.yml
   - docs/ank-spec-v1.1.md
 about: TASK-5c7ebad62d93
+seq: 0
 schema: 3
 version: 1
 ---

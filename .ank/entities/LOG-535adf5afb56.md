@@ -17,6 +17,7 @@ scope:
   - .gitignore
   - .github/workflows/ci.yml
 about: TASK-abe64bc069be
+seq: 4
 schema: 3
 version: 1
 ---
