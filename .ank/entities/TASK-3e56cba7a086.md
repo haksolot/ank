@@ -5,15 +5,20 @@ slug: the-dead-claude-scope-left-by-the-retired-hook-g
 title: The dead .claude scope left by the retired hook gets a reader
 created: 2026-08-15T21:21:05Z
 author: claude-code/10b8
-status: open
+status: done
 scope:
   - .ank/entities/TASK-3109a736c255.md
 blocked_by: [TASK-10b8a29fd853]
 done_criteria: |
   ank check exits 0 on this corpus, or the fault it reports on TASK-3109a736c255 is recorded as accepted with the reason in a log entry on this task. Whichever way it goes, the record of TASK-3109a736c255 is not rewritten to claim it never touched .claude/.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 14b9fb4
+    criteria: 897dfabcbb49
+    via: submitted
 schema: 3
-version: 1
+version: 3
 ---
 
 TASK-10b8a29fd853 removed the .claude/ directory by maintainer decision, and
