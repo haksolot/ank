@@ -119,6 +119,14 @@ impl AdrStatus {
     }
 }
 
+/// A spec's lifecycle is an ADR's, and it is the same type rather than a copy
+/// of it (§3). A spec is `proposed` while it is a draft, promoted by `accept`,
+/// and revised by supersession — the three values and the two legal
+/// transitions of [`AdrStatus`], stated once. Declaring a second enum with the
+/// same variants would be the per-layer restatement ADR-c9f9d0d6f05d exists to
+/// remove, and the two would eventually disagree.
+pub type SpecStatus = AdrStatus;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CriteriaBy {
@@ -356,10 +364,86 @@ pub struct Adr {
     pub body: String,
 }
 
+/// A specification: one document, whole (§3).
+///
+/// **It declares no `constraint`, and that absence is what justifies the
+/// kind.** A spec describes, an ADR binds; an entity that did both would be an
+/// ADR with an unbounded constraint, which restates the ceiling problem rather
+/// than solving it. Nothing in the refusal machinery reads a spec, and a rule
+/// that must bind is still an ADR.
+///
+/// What the kind buys is that the document moves the way every other decision
+/// does: a status, a supersession, a ratification anchor and a version. The
+/// anchor differs from an ADR's in one respect only — `ratified` holds the hash
+/// of the **body** and `scope`, because there is no narrower field carrying the
+/// authority, so revising an accepted specification is a supersession.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Spec {
+    pub id: EntityId,
+    pub slug: Option<String>,
+    pub title: String,
+    pub created: String,
+    /// The identity that ran `new`. `None` means the entity predates the field.
+    pub author: Option<String>,
+    pub status: SpecStatus,
+    pub scope: Vec<String>,
+    pub supersedes: Option<EntityId>,
+    /// Hash of the document and scope at acceptance (set by `accept`).
+    pub ratified: Option<String>,
+    /// Readings, optional and empty by default (§3).
+    pub verified: Vec<Verified>,
+    pub schema: u32,
+    pub version: u64,
+    /// The document itself.
+    pub body: String,
+}
+
+/// A log entry, as an entity (§3, ADR-25f977377fa0).
+///
+/// Distinct from [`crate::log::LogEntry`], which is the *rendering*: a dash,
+/// the timestamp, the identity, an em dash, the message. That grammar is what a
+/// reader sees and no longer what is stored — here the instant is `created`,
+/// the identity is `author`, the message is `title`, and the entity the entry
+/// is about is [`Log::about`].
+///
+/// **Written once and never modified.** A correction is a new entry naming the
+/// one it corrects, which is why the kind carries no `status`: an entry has
+/// nothing to transition to, and a field with one legal value records nothing.
+/// `version` stays, and earns its place by what it falsifies — an entry above 1
+/// has been rewritten, and the format says it should not have been.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Log {
+    pub id: EntityId,
+    pub slug: Option<String>,
+    /// The message. No field is added for it: every entity already carries the
+    /// field a lister prints, and a second one is the same sentence twice.
+    pub title: String,
+    pub created: String,
+    /// The identity that wrote the entry. `None` means the entity predates the
+    /// field, as on every other kind.
+    pub author: Option<String>,
+    /// The subject's scope, written when the entry is written. An entry appears
+    /// wherever what it is about appears, and it records the scope as it stood
+    /// rather than tracking it.
+    pub scope: Vec<String>,
+    /// The entity the entry is about, of any kind. This is what the previous
+    /// shape computed from the id instead: an address became a query, and in
+    /// exchange an entry is indexed and reachable like anything else.
+    pub about: EntityId,
+    /// Readings, optional and empty by default (§3).
+    pub verified: Vec<Verified>,
+    pub schema: u32,
+    pub version: u64,
+    /// Anything the line cannot hold.
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entity {
     Task(Task),
     Adr(Adr),
+    Spec(Spec),
+    Log(Log),
 }
 
 impl Entity {
@@ -367,6 +451,8 @@ impl Entity {
         match self {
             Entity::Task(t) => &t.id,
             Entity::Adr(a) => &a.id,
+            Entity::Spec(s) => &s.id,
+            Entity::Log(l) => &l.id,
         }
     }
 
@@ -374,6 +460,96 @@ impl Entity {
         match self {
             Entity::Task(t) => &t.scope,
             Entity::Adr(a) => &a.scope,
+            Entity::Spec(s) => &s.scope,
+            Entity::Log(l) => &l.scope,
+        }
+    }
+
+    /// The format version the file declares. Every kind carries one — it is in
+    /// the common base of §3 — so a caller asking the question asks it of an
+    /// entity rather than of each kind in turn.
+    pub fn schema(&self) -> u32 {
+        match self {
+            Entity::Task(t) => t.schema,
+            Entity::Adr(a) => a.schema,
+            Entity::Spec(s) => s.schema,
+            Entity::Log(l) => l.schema,
+        }
+    }
+
+    pub fn title(&self) -> &str {
+        match self {
+            Entity::Task(t) => &t.title,
+            Entity::Adr(a) => &a.title,
+            Entity::Spec(s) => &s.title,
+            Entity::Log(l) => &l.title,
+        }
+    }
+
+    pub fn created(&self) -> &str {
+        match self {
+            Entity::Task(t) => &t.created,
+            Entity::Adr(a) => &a.created,
+            Entity::Spec(s) => &s.created,
+            Entity::Log(l) => &l.created,
+        }
+    }
+
+    pub fn slug(&self) -> Option<&str> {
+        match self {
+            Entity::Task(t) => t.slug.as_deref(),
+            Entity::Adr(a) => a.slug.as_deref(),
+            Entity::Spec(s) => s.slug.as_deref(),
+            Entity::Log(l) => l.slug.as_deref(),
+        }
+    }
+
+    /// `None` means the entity predates the field, on every kind alike.
+    pub fn author(&self) -> Option<&str> {
+        match self {
+            Entity::Task(t) => t.author.as_deref(),
+            Entity::Adr(a) => a.author.as_deref(),
+            Entity::Spec(s) => s.author.as_deref(),
+            Entity::Log(l) => l.author.as_deref(),
+        }
+    }
+
+    pub fn verified(&self) -> &[Verified] {
+        match self {
+            Entity::Task(t) => &t.verified,
+            Entity::Adr(a) => &a.verified,
+            Entity::Spec(s) => &s.verified,
+            Entity::Log(l) => &l.verified,
+        }
+    }
+
+    pub fn version(&self) -> u64 {
+        match self {
+            Entity::Task(t) => t.version,
+            Entity::Adr(a) => a.version,
+            Entity::Spec(s) => s.version,
+            Entity::Log(l) => l.version,
+        }
+    }
+
+    /// The compare-and-swap counter of §7, written by the store on every write.
+    pub fn set_version(&mut self, v: u64) {
+        match self {
+            Entity::Task(t) => t.version = v,
+            Entity::Adr(a) => a.version = v,
+            Entity::Spec(s) => s.version = v,
+            Entity::Log(l) => l.version = v,
+        }
+    }
+
+    /// The body, for a caller that rewrites it. Reading it is
+    /// [`crate::registry::Fields::body`], which every kind already answers.
+    pub fn body_mut(&mut self) -> &mut String {
+        match self {
+            Entity::Task(t) => &mut t.body,
+            Entity::Adr(a) => &mut a.body,
+            Entity::Spec(s) => &mut s.body,
+            Entity::Log(l) => &mut l.body,
         }
     }
 }

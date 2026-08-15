@@ -30,12 +30,13 @@ pub use freeze::{freeze_hash, freeze_hash_short, verify_frozen};
 pub use id::{resolve_prefix, EntityId, EntityKind};
 pub use log::{append_log, append_log_file, parse_log, parse_log_file, LogEntry};
 pub use model::{
-    Adr, AdrStatus, CriteriaBy, Entity, Proof, ProofType, ProofVia, Task, TaskStatus, Verified,
-    MIN_SCHEMA, SCHEMA_VERSION,
+    Adr, AdrStatus, CriteriaBy, Entity, Log, Proof, ProofType, ProofVia, Spec, SpecStatus, Task,
+    TaskStatus, Verified, MIN_SCHEMA, SCHEMA_VERSION,
 };
 pub use parse::{
-    has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_task, serialize_adr,
-    serialize_entity, serialize_task,
+    has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_log_entity, parse_spec,
+    parse_task, serialize_adr, serialize_entity, serialize_log_entity, serialize_spec,
+    serialize_task,
 };
 pub use registry::{FieldSpec, Fields, KindSpec, KINDS};
 pub use scope::{normalize_path, ScopeSet};

@@ -95,13 +95,10 @@ fn valid_files_round_trip_byte_identical_once_canonical() {
             "round-trip differs for {}",
             path.display()
         );
-        schemas.push(match &entity {
-            Entity::Task(t) => t.schema,
-            Entity::Adr(a) => a.schema,
-        });
+        schemas.push(entity.schema());
         checked += 1;
     }
-    assert!(checked >= 8, "valid golden files are missing");
+    assert!(checked >= 10, "valid golden files are missing");
     // Guards the fixture against .gitattributes: if git ever normalises it on
     // checkout, this test stops covering CRLF and says so instead of passing.
     assert_eq!(
@@ -177,6 +174,21 @@ fn invalid_files_are_rejected_with_the_right_error() {
             "verified-without-at" => {
                 matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `at`")
             }
+            // The absence that justifies the kind, refused by name. A spec
+            // describes and an ADR binds, so a `constraint` inside a spec is
+            // not a field this kind has yet to learn: it is the one field the
+            // kind exists in order not to carry, and the diagnostic says which
+            // field rather than which kind.
+            "spec-with-constraint" => {
+                matches!(&err, Error::Yaml(_)) && err.to_string().contains("constraint")
+            }
+            // A log entry with no subject. Since the move, the entity an entry
+            // is about is a field and no longer arithmetic on the id, so the
+            // absent field is the association missing entirely — named, rather
+            // than defaulted to the entity that happens to be nearby.
+            "log-without-about" => {
+                matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `about`")
+            }
             other => panic!("invalid file not covered: {other}"),
         };
         assert!(ok, "{name}: wrong error: {err:?}");
@@ -225,6 +237,92 @@ fn an_adr_carries_a_reading_too() {
     // `verified` sits between `ratified` and `schema`, and the round-trip test
     // is what proves the position rather than this one.
     assert_eq!(a.ratified.as_deref(), Some("9f2b41c70de8"));
+}
+
+/// Goldens are the specification made executable, and this is the assertion
+/// that keeps them so: a row added to the registry with no fixture beside it
+/// fails here rather than shipping a kind whose round trip nobody has run.
+#[test]
+fn every_kind_in_the_registry_has_a_valid_fixture() {
+    let mut covered: Vec<&str> = Vec::new();
+    for path in entity_fixtures("valid") {
+        let input = fs::read_to_string(&path).unwrap();
+        let entity = parse_entity(&input).unwrap();
+        let name = entity.kind_spec().name;
+        if !covered.contains(&name) {
+            covered.push(name);
+        }
+    }
+    for kind in KINDS {
+        assert!(
+            covered.contains(&kind.name),
+            "no valid golden fixture of kind {}: the registry declares a kind the suite never reads",
+            kind.name
+        );
+    }
+}
+
+/// A spec declares no `constraint`, and the whole justification for the kind is
+/// that absence (§3): a spec describes, an ADR binds. The positive half is that
+/// it carries the rest of a decision's lifecycle — a status, a supersession, a
+/// ratification anchor — so the document moves the way every other decision
+/// does.
+#[test]
+fn a_spec_carries_a_lifecycle_and_declares_no_constraint() {
+    let input = fs::read_to_string(golden_dir("valid").join("SPEC-19c4f0a83b2e.md")).unwrap();
+    let s = parse_spec(&input).unwrap();
+    assert_eq!(s.schema, 3);
+    assert_eq!(s.status, SpecStatus::Accepted);
+    assert_eq!(
+        s.supersedes.as_ref().unwrap().to_string(),
+        "SPEC-c07d1b4a92e5"
+    );
+    assert_eq!(s.ratified.as_deref(), Some("9f2c81b0"));
+    assert_eq!(s.verified.len(), 1);
+
+    // The absence, stated on the table rather than on this one file: nothing in
+    // the kind's row can carry a constraint, so no spec can.
+    let row = s.kind_spec();
+    assert!(!row.fields.iter().any(|f| f.name == "constraint"));
+    // On the frontmatter and not on the file: a body is free-form markdown and
+    // this one discusses the absence in prose, exactly as the schema 3 task
+    // fixture discusses `## Log`.
+    let out = serialize_spec(&s);
+    let frontmatter = out.split("\n---\n").next().unwrap();
+    assert!(!frontmatter
+        .lines()
+        .any(|l| l.starts_with("constraint:") || l.starts_with("see:")));
+
+    // And the document is the body, which is what `context` names and never
+    // quotes: there is no field for it to serve.
+    assert!(s.body.contains("The document itself."));
+}
+
+/// A log entry names the entity it is about, in a field. That is what the
+/// previous shape computed from the id instead, and the trade — an address
+/// becomes a query — is the cost the kind was accepted with (ADR-25f977377fa0).
+#[test]
+fn a_log_entry_names_the_entity_it_is_about() {
+    let input = fs::read_to_string(golden_dir("valid").join("LOG-6b0f39d7a4c1.md")).unwrap();
+    let l = parse_log_entity(&input).unwrap();
+    assert_eq!(l.about.to_string(), "TASK-8f3a91c2d4e7");
+    assert_eq!(l.about.kind(), EntityKind::Task);
+
+    // The four things the rendered line prints are four fields, and the message
+    // is the title rather than a field of its own.
+    assert_eq!(l.created, "2026-07-26T14:02:00Z");
+    assert_eq!(l.author.as_deref(), Some("claude-code/1.4.2"));
+    assert_eq!(l.title, "jwt.verify removed from session.ts");
+
+    // No status on the row, because an entry has nothing to transition to.
+    assert!(!l.kind_spec().fields.iter().any(|f| f.name == "status"));
+    assert!(!serialize_log_entity(&l).contains("status:"));
+
+    // The subject exists in the corpus the suite reads, which is what makes the
+    // association a query that resolves rather than a string.
+    assert!(golden_dir("valid")
+        .join(format!("{}.md", l.about))
+        .is_file());
 }
 
 /// A proof entry says which route it arrived by, and the entries that predate

@@ -84,6 +84,9 @@ pub fn new(
     // The `git commit` pattern: no flags, an editor (§4). Checked before the
     // first `required`, because reaching one of those is the failure the
     // interactive form exists to replace.
+    //
+    // Whatever the registry declares beside `task` and `adr` stops at the match
+    // above: this verb resolves two subcommands and refuses the rest by name.
     if is_interactive(inv, kind) {
         return new_interactive(inv, repo, cfg, identity, kind, out);
     }
@@ -95,6 +98,7 @@ pub fn new(
     let store = Store::new(&repo.ank);
 
     let entity = match kind {
+        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
         EntityKind::Task => {
             // A task has no `supersedes` field, and a flag silently ignored
             // teaches the caller it worked. Same reasoning as `--verify` on an
@@ -208,10 +212,23 @@ pub fn new(
 /// difference matters because the flag form is the scripted path and must keep
 /// failing the way a script can act on. A build that forgot `--scope` has to
 /// stop, not sit in `vi` waiting for somebody who is not there.
+/// A kind the registry declares and `ank new` does not create.
+///
+/// The guarantee is one match, in `new` above: this verb resolves `task` and
+/// `adr` from argv and refuses everything else by name, so the paths below are
+/// reached with no other kind. Saying so out loud is what keeps a later reader
+/// from mistaking an invented flag set or an invented template for support that
+/// exists — a spec is created by the surface TASK-3e68786fa443 adds, and a log
+/// entry is written by `log` and by nothing else (§3).
+fn not_created_by_new(kind: &str) -> ! {
+    unreachable!("ank new resolves task and adr, and was reached with {kind}")
+}
+
 fn mandatory_flags(kind: EntityKind) -> &'static [&'static str] {
     match kind {
         EntityKind::Task => &["--title", "--scope"],
         EntityKind::Adr => &["--title", "--scope", "--constraint"],
+        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
     }
 }
 
@@ -231,6 +248,7 @@ fn flag_form(kind: EntityKind) -> String {
         EntityKind::Adr => {
             "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"".to_string()
         }
+        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
     }
 }
 
@@ -339,6 +357,7 @@ fn skeleton(
             version: 1,
             body: body_of(inv, kind)?,
         }),
+        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
     })
 }
 
@@ -371,6 +390,9 @@ fn template(skeleton: &Entity) -> String {
     let guidance = match skeleton {
         Entity::Task(_) => TASK_GUIDANCE,
         Entity::Adr(_) => ADR_GUIDANCE,
+        Entity::Spec(_) | Entity::Log(_) => {
+            not_created_by_new(ank_core::Fields::kind_spec(skeleton).name)
+        }
     };
     format!("---\n{guidance}{rest}")
 }
@@ -533,20 +555,14 @@ fn create_filled(
     };
 
     let id = entity.id().clone();
-    let title = match &entity {
-        Entity::Task(t) => t.title.clone(),
-        Entity::Adr(a) => a.title.clone(),
-    };
+    let title = entity.title().to_string();
     store.create(&entity)?;
     if inv.json() {
         let _ = writeln!(
             out,
             "{{\"id\":\"{id}\",\"kind\":\"{}\",\"created\":\"{}\"}}",
             kind.as_str(),
-            match &entity {
-                Entity::Task(t) => &t.created,
-                Entity::Adr(a) => &a.created,
-            }
+            entity.created()
         );
     } else if !inv.quiet() {
         let _ = writeln!(

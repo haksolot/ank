@@ -13,6 +13,8 @@ pub const MIN_PREFIX_LEN: usize = 4;
 pub enum EntityKind {
     Task,
     Adr,
+    Spec,
+    Log,
 }
 
 impl EntityKind {
@@ -41,11 +43,19 @@ impl EntityKind {
     }
 
     fn all() -> impl Iterator<Item = EntityKind> {
-        [EntityKind::Task, EntityKind::Adr].into_iter()
+        [
+            EntityKind::Task,
+            EntityKind::Adr,
+            EntityKind::Spec,
+            EntityKind::Log,
+        ]
+        .into_iter()
     }
 }
 
-/// Canonical identifier: `TASK-<12 hex>` or `ADR-<12 hex>`.
+/// Canonical identifier: a prefix the registry declares, then 12 hex characters
+/// — `TASK-`, `ADR-`, `SPEC-`, `LOG-` today, and the prefix is read from
+/// [`crate::registry::KINDS`] rather than written here.
 /// Immutable, derived from the act of creation, never from the content.
 ///
 /// **There is no short form here, and that absence is the decision.** §3 makes

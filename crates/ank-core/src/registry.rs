@@ -21,7 +21,7 @@
 //! An unknown field inside a known kind is still rejected, and an unknown kind
 //! is rejected by name. A kind is cheap to add; nothing else moved.
 
-use crate::model::{Adr, Entity, Proof, Task, Verified};
+use crate::model::{Adr, Entity, Log, Proof, Spec, Task, Verified};
 
 /// One field, at its canonical position.
 pub struct FieldSpec {
@@ -93,8 +93,51 @@ static ADR_FIELDS: &[FieldSpec] = &[
     req("version"),
 ];
 
+/// A spec is an ADR's table without `constraint` and without `see`, and the
+/// first absence is the whole justification for the kind (§3): a spec
+/// describes, an ADR binds. `see` goes with it — it exists to point at the
+/// reference code a positive *constraint* needs, and a kind with no constraint
+/// has nothing for it to serve.
+static SPEC_FIELDS: &[FieldSpec] = &[
+    req("id"),
+    req("type"),
+    opt("slug"),
+    req("title"),
+    req("created"),
+    opt("author"),
+    req("status"),
+    req("scope"),
+    opt("supersedes"),
+    opt("ratified"),
+    opt("verified"),
+    req("schema"),
+    req("version"),
+];
+
+/// A log entry carries `about` and **no `status`**: an entry is written once
+/// and has nothing to transition to, so a status would have one legal value and
+/// would only ever be copied (§3). `about` takes the position `status` and
+/// `scope` leave, immediately after the scope it is a statement about.
+static LOG_FIELDS: &[FieldSpec] = &[
+    req("id"),
+    req("type"),
+    opt("slug"),
+    req("title"),
+    req("created"),
+    opt("author"),
+    req("scope"),
+    req("about"),
+    opt("verified"),
+    req("schema"),
+    req("version"),
+];
+
 /// The registry. Its order is the order `ank help` and the specification use,
 /// and adding a row is the whole cost of a new kind.
+///
+/// The order is also what [`crate::id::EntityKind`] indexes: its variants are
+/// these rows, positionally, and `registry_and_enum_agree` asserts the two
+/// agree rather than trusting that they do.
 pub static KINDS: &[KindSpec] = &[
     KindSpec {
         name: "task",
@@ -105,6 +148,16 @@ pub static KINDS: &[KindSpec] = &[
         name: "adr",
         prefix: "ADR-",
         fields: ADR_FIELDS,
+    },
+    KindSpec {
+        name: "spec",
+        prefix: "SPEC-",
+        fields: SPEC_FIELDS,
+    },
+    KindSpec {
+        name: "log",
+        prefix: "LOG-",
+        fields: LOG_FIELDS,
     },
 ];
 
@@ -250,11 +303,84 @@ impl Fields for Adr {
     }
 }
 
+impl Fields for Spec {
+    fn field_value(&self, name: &str) -> Option<FieldValue<'_>> {
+        use FieldValue::*;
+        Some(match name {
+            "id" => Bare(self.id.to_string()),
+            "type" => Bare(self.id.kind().as_str().to_string()),
+            "slug" => Scalar(self.slug.as_deref()?),
+            "title" => Scalar(&self.title),
+            "created" => Scalar(&self.created),
+            "author" => Scalar(self.author.as_deref()?),
+            "status" => Bare(self.status.as_str().to_string()),
+            "scope" => Seq(&self.scope),
+            "supersedes" => Bare(self.supersedes.as_ref()?.to_string()),
+            "ratified" => Scalar(self.ratified.as_deref()?),
+            "verified" => {
+                if self.verified.is_empty() {
+                    return None;
+                }
+                Readings(&self.verified)
+            }
+            "schema" => Bare(self.schema.to_string()),
+            "version" => Bare(self.version.to_string()),
+            other => no_such_field("a spec", other),
+        })
+    }
+
+    fn kind_spec(&self) -> &'static KindSpec {
+        by_type_name(self.id.kind().as_str()).expect("the id's kind is in the registry")
+    }
+
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
+impl Fields for Log {
+    fn field_value(&self, name: &str) -> Option<FieldValue<'_>> {
+        use FieldValue::*;
+        Some(match name {
+            "id" => Bare(self.id.to_string()),
+            "type" => Bare(self.id.kind().as_str().to_string()),
+            "slug" => Scalar(self.slug.as_deref()?),
+            "title" => Scalar(&self.title),
+            "created" => Scalar(&self.created),
+            "author" => Scalar(self.author.as_deref()?),
+            "scope" => Seq(&self.scope),
+            // Required, and an entry with no subject is not a case the model
+            // can hold: it is what turns the address the previous shape
+            // computed into something a reader can look up.
+            "about" => Bare(self.about.to_string()),
+            "verified" => {
+                if self.verified.is_empty() {
+                    return None;
+                }
+                Readings(&self.verified)
+            }
+            "schema" => Bare(self.schema.to_string()),
+            "version" => Bare(self.version.to_string()),
+            other => no_such_field("a log entry", other),
+        })
+    }
+
+    fn kind_spec(&self) -> &'static KindSpec {
+        by_type_name(self.id.kind().as_str()).expect("the id's kind is in the registry")
+    }
+
+    fn body(&self) -> &str {
+        &self.body
+    }
+}
+
 impl Fields for Entity {
     fn field_value(&self, name: &str) -> Option<FieldValue<'_>> {
         match self {
             Entity::Task(t) => t.field_value(name),
             Entity::Adr(a) => a.field_value(name),
+            Entity::Spec(s) => s.field_value(name),
+            Entity::Log(l) => l.field_value(name),
         }
     }
 
@@ -262,6 +388,8 @@ impl Fields for Entity {
         match self {
             Entity::Task(t) => t.kind_spec(),
             Entity::Adr(a) => a.kind_spec(),
+            Entity::Spec(s) => s.kind_spec(),
+            Entity::Log(l) => l.kind_spec(),
         }
     }
 
@@ -269,6 +397,8 @@ impl Fields for Entity {
         match self {
             Entity::Task(t) => t.body(),
             Entity::Adr(a) => a.body(),
+            Entity::Spec(s) => s.body(),
+            Entity::Log(l) => l.body(),
         }
     }
 }
