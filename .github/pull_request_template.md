@@ -31,8 +31,9 @@ Windows.
 
 <!-- Delete this section if it does not. -->
 
-- [ ] `docs/ank-spec-v1.1.md` first -- no field exists in the code without
-      existing there
+- [ ] the specification first -- the `spec` document that states the rule, *The
+      data model* for a format change (`ank find --type spec`). No field exists
+      in the code without existing there
 - [ ] then `crates/ank-core/tests/golden/`
 - [ ] then the code
 

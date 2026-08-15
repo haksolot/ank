@@ -7,8 +7,9 @@ file points at them; it deliberately does not restate them, because a second,
 looser copy of a rule is how the two drift apart.
 
 If you have never run the tool, read [Getting started](docs/getting-started.md)
-first. If you need the normative answer to anything below, it is in
-[the specification](docs/ank-spec-v1.1.md), which is the source of truth.
+first. If you need the normative answer to anything below, it is in the
+specification, which is the source of truth: ten documents in `.ank/`, listed by
+`ank find --type spec` and indexed in [docs/ank-spec-v1.1.md](docs/ank-spec-v1.1.md).
 
 ## The three gates
 
@@ -81,8 +82,10 @@ The format is the specification, and `ank-core` is its reference
 implementation. Every format change happens in this order, and it is ratified
 (ADR-63b59c5c26f7):
 
-1. **the specification** — `docs/ank-spec-v1.1.md`. No field exists in the code
-   without existing there first.
+1. **the specification** — the `spec` document that states the rule, which for a
+   format change is *The data model* (`ank find --type spec` lists the ten, and
+   [docs/ank-spec-v1.1.md](docs/ank-spec-v1.1.md) indexes them). No field exists
+   in the code without existing there first.
 2. **the goldens** — `crates/ank-core/tests/golden/`. `valid/` must round-trip
    byte for byte once normalised, `invalid/` must be rejected with the expected
    error.

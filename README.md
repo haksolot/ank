@@ -124,7 +124,7 @@ costs about 58 tokens per session, and orientation is bounded at 8000 characters
 | go from install to a first finished task | [Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) |
 | hand it to an agent, whichever one you run | [Handing ank to an agent][agents] |
 | write a tool that reads or writes `.ank/` | [The file format](https://github.com/haksolot/ank/blob/main/docs/format.md) |
-| know why it is shaped this way | [The specification](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md) |
+| know why it is shaped this way | [The specification](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md) — ten documents in `.ank/`, indexed there |
 | open a pull request | [Contributing](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md) |
 | report a vulnerability | [Security policy](https://github.com/haksolot/ank/blob/main/SECURITY.md) |
 
