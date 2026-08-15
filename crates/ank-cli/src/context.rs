@@ -227,6 +227,12 @@ pub struct ConstraintLine {
     pub specificity: usize,
     /// Words shared with the perimeter's task titles, the tiebreak of §5.
     pub overlap: usize,
+    /// The peer whose corpus this constraint lives in, `None` for the ordinary
+    /// case of a rule at home (§7). A constraint that crosses is served here and
+    /// **named as such**: its file is one repository away, its id belongs to
+    /// another corpus, and a reader who cannot tell would go looking for it in
+    /// the wrong place.
+    pub home: Option<String>,
 }
 
 /// A specification governing the perimeter: **id and title, and nothing else**.
@@ -504,7 +510,9 @@ pub fn build(
 
     match head {
         Some(id) => build_execution(&store, repo, &index, &shorts, &coord, id, warnings),
-        None => build_orientation(&store, &rows, &shorts, &coord, path, limit, warnings),
+        None => build_orientation(
+            repo, cfg, &store, &rows, &shorts, &coord, path, limit, warnings,
+        ),
     }
 }
 
@@ -516,13 +524,15 @@ fn status_of(rows: &[Row]) -> HashMap<EntityId, String> {
 
 #[allow(clippy::too_many_arguments)]
 fn build_orientation(
+    repo: &Repo,
+    cfg: &Config,
     store: &Store,
     rows: &[Row],
     shorts: &HashMap<EntityId, String>,
     coord: &HashMap<EntityId, Coordination>,
     path: Option<&str>,
     limit: Option<usize>,
-    warnings: Vec<String>,
+    mut warnings: Vec<String>,
 ) -> Result<View> {
     let statuses = status_of(rows);
     let tasks: Vec<&Row> = rows
@@ -606,7 +616,17 @@ fn build_orientation(
         .collect::<Vec<_>>()
         .join(" ");
     let vocabulary = words(&titles);
-    let (constraints, proposals) = adr_lines(store, rows, shorts, path, &vocabulary)?;
+    let (mut constraints, mut proposals) = adr_lines(store, rows, shorts, path, &vocabulary)?;
+
+    // What a declared peer says about this perimeter, merged into the local
+    // sections rather than given one of its own: a rule binds or it does not,
+    // and a reader deciding what to obey has no use for a second list to
+    // remember. Where it lives is on the line (§7).
+    let (peer_active, peer_proposed) = peer_lines(repo, cfg, path, &vocabulary, &mut warnings);
+    constraints.extend(peer_active);
+    proposals.extend(peer_proposed);
+    constraints.sort_by(constraint_order);
+    proposals.sort_by(constraint_order);
 
     Ok(View {
         mode: Mode::Orientation {
@@ -657,6 +677,7 @@ fn adr_lines(
             overlap: words(&adr.constraint).intersection(vocabulary).count(),
             text: adr.constraint.trim_end().to_string(),
             specificity: specificity(&r.scope),
+            home: None,
         };
         if r.status == "accepted" {
             active.push(line);
@@ -664,14 +685,8 @@ fn adr_lines(
             proposed.push(line);
         }
     }
-    let order = |a: &ConstraintLine, b: &ConstraintLine| {
-        b.specificity
-            .cmp(&a.specificity)
-            .then(b.overlap.cmp(&a.overlap))
-            .then(a.id.to_string().cmp(&b.id.to_string()))
-    };
-    active.sort_by(order);
-    proposed.sort_by(order);
+    active.sort_by(constraint_order);
+    proposed.sort_by(constraint_order);
     Ok((active, proposed))
 }
 
@@ -718,6 +733,131 @@ fn spec_lines(
             .then(a.id.to_string().cmp(&b.id.to_string()))
     });
     out
+}
+
+/// Most specific first, then the vocabulary tiebreak, then the id, so that
+/// truncation is nothing more than dropping the tail.
+///
+/// Module-level rather than a closure inside [`adr_lines`], because the peer's
+/// constraints are merged into the same sections and a second ordering would be
+/// free to disagree with the first about which rule survives the budget.
+fn constraint_order(a: &ConstraintLine, b: &ConstraintLine) -> std::cmp::Ordering {
+    b.specificity
+        .cmp(&a.specificity)
+        .then(b.overlap.cmp(&a.overlap))
+        .then(a.id.to_string().cmp(&b.id.to_string()))
+        // Ids are minted without coordination and two corpora do not collide in
+        // practice (§7), but "in practice" is not an order: the home breaks the
+        // tie so that two runs can never differ.
+        .then(a.home.cmp(&b.home))
+}
+
+/// The constraints a declared peer's corpus contributes to this perimeter (§7).
+///
+/// The direction is worth stating once, because it reads backwards the first
+/// time. This repository declares the peer, so it may **read** the peer's
+/// corpus. What it looks for there is an ADR whose own `scope` names a peer of
+/// *the peer*, resolved through *the peer's* declarations, and pointing back at
+/// this repository. Two declarations, and each one is reviewed where it is
+/// written: "I read that corpus" here, "this decision binds that corpus" there.
+/// An entry that resolves to some third repository binds nothing here, which is
+/// what "the entry means the same thing wherever it is read" buys.
+///
+/// The ADR keeps exactly one home. Nothing is copied, nothing is cached, and
+/// nothing is written: the peer is opened through a [`Store`], which reads files
+/// and creates none — an [`Index`] would write `index.db` into a corpus this
+/// verb has no right to touch.
+///
+/// **Execution mode is deliberately untouched.** The constraints it serves are
+/// the set `claim` hashes into the claim record, and a rule from a corpus the
+/// refs cannot reach has no place in a freeze: claims do not cross (§7), and a
+/// hash that moved when a sibling checkout changed would make `done` warn about
+/// something no reader here could show.
+fn peer_lines(
+    repo: &Repo,
+    cfg: &Config,
+    path: Option<&str>,
+    vocabulary: &std::collections::HashSet<String>,
+    warnings: &mut Vec<String>,
+) -> (Vec<ConstraintLine>, Vec<ConstraintLine>) {
+    let mut active = Vec::new();
+    let mut proposed = Vec::new();
+
+    let (peers, peer_warnings) = crate::repo::peers_of(repo, cfg);
+    warnings.extend(peer_warnings);
+
+    for peer in peers {
+        let store = Store::new(&peer.repo.ank);
+        let ids = match store.list_ids() {
+            Ok(ids) => ids,
+            Err(_) => {
+                warnings.push(unreadable_peer(&peer));
+                continue;
+            }
+        };
+        // Counted and reported once for the corpus, not once per file: a peer's
+        // corpus fault is the peer's to fix, and a reader that turned it into a
+        // page of warnings would drown its own answer.
+        let mut unreadable = 0usize;
+        for id in ids.iter().filter(|id| id.kind() == EntityKind::Adr) {
+            let Ok(loaded) = store.load(id) else {
+                unreadable += 1;
+                continue;
+            };
+            let Entity::Adr(adr) = loaded.entity else {
+                continue;
+            };
+            // Same rule as at home: `superseded` is history, and history is not
+            // context.
+            if !matches!(adr.status.as_str(), "accepted" | "proposed") {
+                continue;
+            }
+            let globs: Vec<String> = adr
+                .scope
+                .iter()
+                .filter_map(|entry| crate::repo::peer_ref(entry))
+                .filter(|(name, _)| peer.binds(name, repo))
+                .map(|(_, glob)| glob.to_string())
+                .collect();
+            if globs.is_empty() || !in_perimeter(&globs, path) {
+                continue;
+            }
+            let line = ConstraintLine {
+                // The full id, never a short form: a displayed prefix is
+                // computed per corpus (§10), so the peer's four characters mean
+                // nothing here and could name a different entity outright.
+                short: format!("{}@{}", adr.id, peer.name),
+                id: adr.id.clone(),
+                title: adr.title.clone(),
+                overlap: words(&adr.constraint).intersection(vocabulary).count(),
+                text: adr.constraint.trim_end().to_string(),
+                specificity: specificity(&globs),
+                home: Some(peer.name.clone()),
+            };
+            if adr.status.as_str() == "accepted" {
+                active.push(line);
+            } else {
+                proposed.push(line);
+            }
+        }
+        if unreadable > 0 {
+            warnings.push(format!(
+                "peer '{}': {unreadable} entities this build cannot read, \
+                 answered without them (ank --repo {} check)",
+                peer.name,
+                peer.repo.root.display()
+            ));
+        }
+    }
+    (active, proposed)
+}
+
+fn unreadable_peer(peer: &crate::repo::Peer) -> String {
+    format!(
+        "peer '{}' could not be listed, answered without it (ank --repo {} check)",
+        peer.name,
+        peer.repo.root.display()
+    )
 }
 
 fn build_execution(
@@ -773,6 +913,7 @@ fn build_execution(
             text: text.trim_end().to_string(),
             specificity: specificity(&scope),
             overlap: 0,
+            home: None,
         });
     }
 
@@ -1329,17 +1470,29 @@ fn json_list(items: &[String]) -> String {
     )
 }
 
+/// The peer a constraint came from, `null` for a rule at home. The human
+/// surface carries the same fact in the identifier it prints; `--json` has
+/// nowhere to put a suffix, so it gets a field of its own.
+fn home_json(c: &ConstraintLine) -> String {
+    match &c.home {
+        Some(name) => format!("\"{}\"", esc(name)),
+        None => "null".to_string(),
+    }
+}
+
 pub fn render_json(view: &View) -> String {
     let constraints = view
         .constraints
         .iter()
         .map(|c| {
             format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"constraint\":\"{}\"}}",
+                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"constraint\":\"{}\",\
+                 \"home\":{}}}",
                 c.id,
                 esc(&c.short),
                 esc(&c.title),
-                esc(&c.text)
+                esc(&c.text),
+                home_json(c)
             )
         })
         .collect::<Vec<_>>()
@@ -1349,10 +1502,11 @@ pub fn render_json(view: &View) -> String {
         .iter()
         .map(|c| {
             format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\"}}",
+                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"home\":{}}}",
                 c.id,
                 esc(&c.short),
-                esc(&c.title)
+                esc(&c.title),
+                home_json(c)
             )
         })
         .collect::<Vec<_>>()
@@ -1490,6 +1644,7 @@ After a blank one."
                     .into(),
                 specificity: 0,
                 overlap: 0,
+                home: None,
             };
             let expected = 2 + short.chars().count() + 2;
             for style in [crate::style::PLAIN, crate::style::COLOR] {

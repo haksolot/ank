@@ -7751,6 +7751,7 @@ fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
         "claim_ttl_max",
         "claim_ttl_default",
         "default_branch",
+        "peers.<name>",
         "verifiers.<name>.run",
         "verifiers.<name>.timeout",
     ] {
@@ -7805,6 +7806,265 @@ fn config_refuses_a_write_that_would_leave_the_file_unreadable() {
     assert_eq!(out.status.code(), Some(1));
     assert!(erred(&out).contains("verifiers.ci.run"), "{}", erred(&out));
     assert_eq!(r.config_text(), before);
+}
+
+// ---------------------------------------------------------------------------
+// Corpora federate by reading (§7, ADR-a1de673043b4, TASK-13e802e46050)
+// ---------------------------------------------------------------------------
+
+/// Every file under `dir`, by path relative to it, with its bytes.
+///
+/// The whole subtree and not just `.ank/`: the assertion this exists for is that
+/// reading a peer writes **nothing** there, and an index quietly created beside
+/// the entities, a config rewritten, or a ref moved would each be a different
+/// way of failing the same promise. `.git/` is included for exactly that reason
+/// — claims do not cross, and the cheapest way to say so is to notice if one
+/// ever did.
+fn snapshot(dir: &Path) -> std::collections::BTreeMap<String, Vec<u8>> {
+    fn walk(
+        base: &Path,
+        dir: &Path,
+        out: &mut std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(base, &path, out)?;
+            } else {
+                let key = path
+                    .strip_prefix(base)
+                    .expect("walked from base")
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(key, std::fs::read(&path)?);
+            }
+        }
+        Ok(())
+    }
+    let mut out = std::collections::BTreeMap::new();
+    walk(dir, dir, &mut out).expect("the fixture is readable");
+    out
+}
+
+/// The path `from` uses to name `to`, relative and with forward slashes.
+///
+/// Relative because that is the reviewable form: an absolute path is a fact
+/// about one machine, which is the failure a declared peer exists to avoid. The
+/// fixtures are siblings in the temp directory, so one `..` is the whole of it.
+fn sibling_path(to: &Path) -> String {
+    format!(
+        "../{}",
+        to.file_name()
+            .expect("a fixture has a name")
+            .to_string_lossy()
+    )
+}
+
+/// The read half of federation, both halves of it asserted (TASK-13e802e46050).
+///
+/// Two corpora, and the direction is the part worth reading slowly. `reader`
+/// declares `home` as a peer, which is what lets it read that corpus at all.
+/// The ADR lives in `home` and nowhere else, and it declares that it binds a
+/// peer through its own scope — `app:src/**`, where `app` is a name `home`
+/// declares and resolves to `reader`. So the constraint has exactly one home,
+/// nothing is copied, and it is served where it binds.
+///
+/// The second assertion is the one that makes the task's title true and the one
+/// that will still be right in a year: after `reader` has answered, every byte
+/// under `home` is the byte that was there before.
+#[test]
+fn a_declared_peer_is_read_and_never_written() {
+    let home = Repo::new();
+    let reader = Repo::new();
+
+    // The peer declares the corpus its decision binds. Reviewed here, where the
+    // scope that uses the name is written.
+    home.set_config(&format!(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\npeers:\n  app: {}\n",
+        sibling_path(&reader.0)
+    ));
+    // Accepted, and written by hand: `accept` signs and commits, which is a
+    // different verb's test. What matters here is a binding rule whose scope
+    // reaches across.
+    std::fs::write(
+        home.0.join(".ank/entities/ADR-aaaaaaaaaaaa.md"),
+        "---\nid: ADR-aaaaaaaaaaaa\ntype: adr\nslug: one-home\n\
+         title: The session cookie is opaque on both sides\n\
+         created: 2026-08-01T00:00:00Z\nstatus: accepted\nscope:\n  - app:src/**\n\
+         constraint: |\n  A session identifier is opaque and carries no claims.\n\
+         schema: 1\nversion: 1\n---\n\nWhy.\n",
+    )
+    .unwrap();
+
+    // The reader declares the corpus it reads. Reviewed here, in the repository
+    // that wants to read.
+    reader.set_config(&format!(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\npeers:\n  core: {}\n",
+        sibling_path(&home.0)
+    ));
+    reader.seed_task_titled(ID, "Local work");
+
+    let before = snapshot(&home.0);
+    let out = reader.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+
+    let text = stdout(&out);
+    // Served, and named as what it is: the full id, because a short prefix is
+    // computed per corpus and means nothing here, and the peer it came from.
+    assert!(
+        text.contains("ADR-aaaaaaaaaaaa@core"),
+        "the peer's constraint was not served: {text}"
+    );
+    assert!(
+        text.contains("The session cookie is opaque on both sides"),
+        "{text}"
+    );
+    // The local corpus still answers about itself.
+    assert!(text.contains("Local work"), "{text}");
+
+    // Exactly one home. The reading never produced a copy.
+    assert!(
+        !reader.0.join(".ank/entities/ADR-aaaaaaaaaaaa.md").exists(),
+        "the ADR was copied into the reader's corpus"
+    );
+
+    // The assertion the title rests on.
+    let after = snapshot(&home.0);
+    let changed: Vec<&String> = after
+        .keys()
+        .chain(before.keys())
+        .filter(|k| before.get(*k) != after.get(*k))
+        .collect();
+    assert!(
+        changed.is_empty(),
+        "reading the peer modified {changed:?} under {}",
+        home.0.display()
+    );
+
+    // And `--json` carries the same fact where a suffix has nowhere to go.
+    let out = reader.ank("claude-code@ank", &["context", "--json"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        stdout(&out).contains("\"home\":\"core\""),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// A scope entry naming a peer the corpus that wrote it does not declare means
+/// nothing at all (§7), and the same entry read from a third repository binds
+/// nothing there.
+#[test]
+fn a_peer_name_the_writing_corpus_does_not_declare_binds_nobody() {
+    let home = Repo::new();
+    let reader = Repo::new();
+
+    // No `peers` at all in the corpus that wrote the scope, so `app` resolves to
+    // nothing and the entry is a name with no referent.
+    std::fs::write(
+        home.0.join(".ank/entities/ADR-bbbbbbbbbbbb.md"),
+        "---\nid: ADR-bbbbbbbbbbbb\ntype: adr\nslug: dangling\n\
+         title: A rule naming a peer nobody declared\n\
+         created: 2026-08-01T00:00:00Z\nstatus: accepted\nscope:\n  - app:src/**\n\
+         constraint: |\n  This must not bind anybody.\nschema: 1\nversion: 1\n---\n\nWhy.\n",
+    )
+    .unwrap();
+    reader.set_config(&format!(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\npeers:\n  core: {}\n",
+        sibling_path(&home.0)
+    ));
+
+    let out = reader.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(
+        !stdout(&out).contains("ADR-bbbbbbbbbbbb"),
+        "an unresolved peer name bound the reader: {}",
+        stdout(&out)
+    );
+}
+
+/// **Degrade, never fail** (§2): a peer that is not there costs one line and the
+/// local answer, the way `status --remote` answers an unreachable remote.
+#[test]
+fn a_peer_that_cannot_be_read_warns_once_and_answers_locally() {
+    let reader = Repo::new();
+    reader.set_config(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\npeers:\n  gone: ../not-a-corpus\n",
+    );
+    reader.seed_task_titled(ID, "Local work");
+
+    let out = reader.ank("claude-code@ank", &["context"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a missing peer must not fail: {}",
+        erred(&out)
+    );
+
+    let text = stdout(&out);
+    assert_eq!(
+        text.matches("peer 'gone'").count(),
+        1,
+        "warned more than once, or not at all: {text}"
+    );
+    assert!(text.contains("ank config --unset peers.gone"), "{text}");
+    // Answered locally, which is the whole of "degrade".
+    assert!(text.contains("Local work"), "{text}");
+}
+
+/// The key set stays closed: a peer is a key the parser knows, and everything
+/// else is still refused by name.
+#[test]
+fn config_declares_a_peer_and_the_key_set_stays_closed() {
+    let r = Repo::new();
+    r.set_config(AWKWARD);
+
+    // Declared through the verb, into a file that never carried the key.
+    let out = r.ank("claude-code@ank", &["config", "peers.core", "../core"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(stdout(&out).contains("../core"), "{}", stdout(&out));
+    assert!(
+        r.config_text().contains("core: ../core"),
+        "{}",
+        r.config_text()
+    );
+    // Every byte the caller did not name is still there.
+    assert!(r.config_text().starts_with(AWKWARD), "{}", r.config_text());
+
+    let out = r.ank("claude-code@ank", &["config", "peers.core"]);
+    assert_eq!(stdout(&out).trim(), "../core");
+
+    // A second peer joins the block rather than starting another one.
+    let out = r.ank("claude-code@ank", &["config", "peers.web", "../web"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert_eq!(r.config_text().matches("peers:").count(), 1);
+
+    // And an unknown key is still refused, with nothing written.
+    let before = r.config_text();
+    let out = r.ank("claude-code@ank", &["config", "peer.core", "../core"]);
+    assert_eq!(code(&out), 1);
+    assert!(
+        erred(&out).contains("unknown key 'peer.core'"),
+        "{}",
+        erred(&out)
+    );
+    assert_eq!(r.config_text(), before);
+
+    // A file carrying an unknown key still fails every other verb, which is the
+    // strictness this feature added a key to rather than removed.
+    r.set_config("schema: 1\npeerz:\n  core: ../core\n");
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 1);
+    assert!(erred(&out).contains("peerz"), "{}", erred(&out));
+
+    // Removing the last peer leaves a mapping the parser reads, not a key with
+    // no children.
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\npeers:\n  core: ../core\n");
+    let out = r.ank("claude-code@ank", &["config", "--unset", "peers.core"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
+    assert!(r.config_text().contains("peers: {}"), "{}", r.config_text());
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", erred(&out));
 }
 
 #[test]
@@ -8393,6 +8653,96 @@ fn a_listing_counts_the_open_rows_a_claim_would_refuse_and_names_free() {
     assert!(
         !done.contains("spoken for"),
         "a done listing is not sent to a flag that keeps only open tasks: {done}"
+    );
+}
+
+/// `find --json` answers about the coordination plane, in the spelling
+/// `context --json` already uses (TASK-e8e09606806f).
+///
+/// The two surfaces of one verb used to disagree about the same row: a reader
+/// at a terminal saw `[finished:<sha> on <branch>]`, a script reading `--json`
+/// saw `open` and nothing else. A caller filtering on that JSON would schedule
+/// work already finished on a branch — exactly the window the completion ref
+/// exists to close, reopened for whoever automated the question.
+///
+/// ADR-0c8ab846d262 is the argument: colour depends on the reader, structure
+/// does not, and a marker is not colour. It is the answer, and it reads the
+/// same in a pipe.
+///
+/// The state is asserted against the very string the human listing prints, so
+/// a second spelling of one fact fails here rather than shipping.
+#[test]
+fn find_json_carries_the_coordination_state_the_human_listing_shows() {
+    let finished = "TASK-a00000000005";
+    let held = "TASK-b00000000005";
+    let candidate = "TASK-c00000000005";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(finished, Some("A criterion."), &["ok"]);
+    r.seed_task_scoped(held, "crates/**");
+    r.seed_task_scoped(candidate, "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
+
+    // Both transitions happen on a branch, so `main` keeps reading `open` for
+    // both rows: the disagreement under test only exists while the file and the
+    // ref say different things.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("work.txt"), "y").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "work"]);
+    let finished_at = r.head();
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", finished])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "done"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", held])), 0);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "claimed"]);
+
+    r.git(&["checkout", "-q", "main"]);
+    for id in [finished, held] {
+        assert!(
+            r.task_text(id).contains("status: open"),
+            "the fixture is wrong if main already carries the transition of {id}"
+        );
+    }
+
+    // What the reader at a terminal is told about the finished row.
+    let marker = format!("[finished:{} on feature]", &finished_at[..7]);
+    let listing = stdout(&r.ank("someone@ank", &["find", "--status", "open"]));
+    assert!(
+        listing.contains(&marker),
+        "the fixture is wrong if the human listing does not mark the row: \
+         {listing}"
+    );
+
+    let j = stdout(&r.ank("someone@ank", &["find", "--status", "open", "--json"]));
+
+    // The same fact, the same words, on the same row — and the stored status
+    // still on the key it always had, so nothing a caller reads today moves.
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{finished}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"{}\"",
+            marker.trim_matches(|c| c == '[' || c == ']')
+        )),
+        "the finished state the listing shows is missing from the JSON row: {j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{held}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"claimed:claude-code@ank\""
+        )),
+        "a held row names its holder in the JSON too: {j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{candidate}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"open\""
+        )),
+        "a row the plane says nothing about carries its stored status as its \
+         state, exactly as context --json spells it: {j}"
     );
 }
 

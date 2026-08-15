@@ -717,7 +717,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(7, "verifiers.<name>.timeout on a verifier that is not declared"),
         ],
         notes: &[
-            "keys: schema context_budget claim_ttl_max claim_ttl_default default_branch verifiers.<name>.run verifiers.<name>.timeout",
+            "keys: schema context_budget claim_ttl_max claim_ttl_default default_branch peers.<name> verifiers.<name>.run verifiers.<name>.timeout",
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
         ],

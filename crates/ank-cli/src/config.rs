@@ -37,6 +37,12 @@ struct ConfigFile {
     claim_ttl_default: String,
     #[serde(default)]
     default_branch: Option<String>,
+    /// The corpora this repository reads, by name (§7, ADR-a1de673043b4). A key
+    /// per peer rather than a list, so `ank config peers.<name> <path>` reaches
+    /// exactly one declaration -- and so that adding federation adds a key
+    /// instead of relaxing the `deny_unknown_fields` above.
+    #[serde(default)]
+    peers: BTreeMap<String, String>,
     #[serde(default)]
     verifiers: BTreeMap<String, VerifierFile>,
     #[serde(default)]
@@ -99,6 +105,12 @@ pub struct Config {
     /// than guessing if that is absent too — see
     /// [`crate::git::resolve_default_branch`].
     pub default_branch: Option<String>,
+    /// Peer corpora, by the name a scope entry uses to reach them (§7). The
+    /// value is the path to the peer's root, resolved against this repository's
+    /// root when it is relative — never discovered, never inferred from a
+    /// remote, because inference is how a corpus starts depending on where
+    /// somebody checked something out.
+    pub peers: BTreeMap<String, String>,
     pub verifiers: BTreeMap<String, Verifier>,
     pub roles: BTreeMap<String, Role>,
     pub identities: BTreeMap<String, String>,
@@ -190,6 +202,14 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         claim_ttl_max,
         claim_ttl_default,
         default_branch,
+        // A declaration whose path is blank names no corpus. Kept rather than
+        // dropped: resolution warns about it by name, and a peer silently
+        // removed at parse time is a declaration nobody can see failing.
+        peers: raw
+            .peers
+            .into_iter()
+            .map(|(name, path)| (name, path.trim().to_string()))
+            .collect(),
         verifiers,
         roles: raw.roles,
         identities: raw.identities,
@@ -255,6 +275,7 @@ pub const KEYS: &[&str] = &[
     "claim_ttl_max",
     "claim_ttl_default",
     "default_branch",
+    "peers.<name>",
     "verifiers.<name>.run",
     "verifiers.<name>.timeout",
 ];
@@ -279,6 +300,10 @@ enum Key {
     /// `verifiers.<name>`: legal for `--unset` alone, which is what makes
     /// declaring a verifier reversible.
     Block { verifier: String },
+    /// `peers.<name>`: one scalar under one mapping, and how a peer corpus is
+    /// declared (§7). One level shallower than a verifier, so the whole key is
+    /// the declaration and `--unset` on it removes the peer outright.
+    Peer { name: String },
 }
 
 fn unknown_key(path: &str) -> CliError {
@@ -363,6 +388,34 @@ fn resolve_key(path: &str) -> Result<Key> {
             numeric: false,
             default: None,
         }),
+        ["peers"] => Err(
+            CliError::new(1, "'peers' is a mapping: address one by name")
+                .with_hint("ank config peers.<name> <path>"),
+        ),
+        ["peers", name] => {
+            // A name a scope entry could never spell is a declaration nothing
+            // can reach, and writing it would be a silent no-op rather than a
+            // configuration. Refused here, where the caller can still type
+            // another one.
+            if !crate::repo::is_peer_name(name) {
+                return Err(CliError::new(
+                    1,
+                    format!(
+                        "peer name '{name}' cannot be named by a scope: \
+                         two or more of a-z, A-Z, 0-9, '-' and '_'"
+                    ),
+                )
+                .with_hint("ank config peers.<name> <path>"));
+            }
+            Ok(Key::Peer {
+                name: (*name).to_string(),
+            })
+        }
+        ["peers", _, ..] => Err(CliError::new(
+            1,
+            format!("'{path}': a peer is one path, not a block"),
+        )
+        .with_hint("ank config peers.<name> <path>")),
         ["roles", ..] => Err(structured("roles")),
         ["identities", ..] => Err(structured("identities")),
         ["verifiers"] => Err(
@@ -685,6 +738,20 @@ fn verifiers_block(lines: &[Line]) -> Option<(usize, Block)> {
     Some((vi, block))
 }
 
+/// The `peers:` line and the block under it.
+fn peers_block(lines: &[Line]) -> Option<(usize, Block)> {
+    let i = find_key(lines, 0..lines.len(), 0, "peers")?;
+    let block = block_under(lines, i, 0);
+    Some((i, block))
+}
+
+/// The line declaring peer `name`.
+fn locate_peer(lines: &[Line], name: &str) -> Option<usize> {
+    let (_, block) = peers_block(lines)?;
+    let child = block.indent?;
+    find_key(lines, block.range, child, name)
+}
+
 /// The line declaring verifier `name`, and the block of its own fields.
 fn locate_verifier(lines: &[Line], name: &str) -> Option<(usize, usize, Block)> {
     let (_, block) = verifiers_block(lines)?;
@@ -833,6 +900,12 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
             Some(i) => scalar_at(&lines[i], name),
             None => Ok(from_default(default)),
         },
+        // No default: a peer nobody declared is a peer that does not exist, and
+        // there is nothing for the tool to resolve in its place.
+        Key::Peer { name } => match locate_peer(lines, name) {
+            Some(i) => scalar_at(&lines[i], &format!("peers.{name}")),
+            None => Ok(Value::Unset),
+        },
         Key::Field {
             verifier,
             field,
@@ -897,6 +970,83 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
         Key::Field {
             verifier, field, ..
         } => write_field(lines, verifier, field, value),
+        Key::Peer { name } => write_peer(lines, name, value),
+    }
+}
+
+/// One scalar under `peers:`, written the way [`write_field`] writes one under a
+/// verifier and one level shallower.
+///
+/// The `{}` promotion is the same byte and the same reason: a mapping written
+/// empty cannot receive a child, and the parent of the key being written is the
+/// one byte outside the line that a write is allowed to move (§4).
+fn write_peer(lines: &mut Vec<Line>, name: &str, value: &str) -> Result<()> {
+    let eol = dominant_eol(lines);
+    let rendered = render_value(value, false, None);
+
+    let Some(pi) = find_key(lines, 0..lines.len(), 0, "peers") else {
+        terminate_last(lines, &eol);
+        lines.push(Line {
+            text: "peers:".to_string(),
+            eol: eol.clone(),
+        });
+        lines.push(Line {
+            text: format!("  {name}: {rendered}"),
+            eol,
+        });
+        return Ok(());
+    };
+
+    let (_, after) = key_of(&lines[pi].text).expect("found by its key");
+    let span = value_span(&lines[pi].text, after);
+    if span.blocky {
+        return Err(blocky("peers"));
+    }
+    if !span.value.is_empty() && span.value != "{}" {
+        return Err(flow_mapping("peers"));
+    }
+
+    if span.value == "{}" {
+        let head = lines[pi].text[..span.start].trim_end().to_string();
+        let tail = lines[pi].text[span.end..].to_string();
+        lines[pi].text = format!("{head}{tail}");
+        lines.insert(
+            pi + 1,
+            Line {
+                text: format!("  {name}: {rendered}"),
+                eol,
+            },
+        );
+        return Ok(());
+    }
+
+    let block = block_under(lines, pi, 0);
+    let child = block.indent.unwrap_or(2);
+    match find_key(lines, block.range.clone(), child, name) {
+        Some(i) => {
+            let (_, after) = key_of(&lines[i].text).expect("found by its key");
+            let span = value_span(&lines[i].text, after);
+            if span.blocky {
+                return Err(blocky(&format!("peers.{name}")));
+            }
+            let rendered = render_value(value, false, span.quote);
+            splice(&mut lines[i], &span, &rendered);
+            Ok(())
+        }
+        None => {
+            let at = block.range.end;
+            if at == lines.len() {
+                terminate_last(lines, &eol);
+            }
+            lines.insert(
+                at,
+                Line {
+                    text: format!("{}{name}: {rendered}", " ".repeat(child)),
+                    eol,
+                },
+            );
+            Ok(())
+        }
     }
 }
 
@@ -1062,6 +1212,24 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
                 .and_then(|g| find_key(lines, inner.range.clone(), g, field))
             {
                 remove_lines(lines, j..j + 1);
+            }
+            Ok(())
+        }
+        Key::Peer { name } => {
+            let Some((pi, _)) = peers_block(lines) else {
+                return Ok(());
+            };
+            let Some(i) = locate_peer(lines, name) else {
+                return Ok(());
+            };
+            remove_lines(lines, i..i + 1);
+            // Same counterpart as `verifiers` below: the last peer removed
+            // leaves `peers:` with no children, which is a parse error and not
+            // an empty map.
+            if block_under(lines, pi, 0).indent.is_none() {
+                let (_, after) = key_of(&lines[pi].text).expect("found by its key");
+                let span = value_span(&lines[pi].text, after);
+                splice(&mut lines[pi], &span, "{}");
             }
             Ok(())
         }
@@ -1431,6 +1599,74 @@ identities: {}
             .iter()
             .map(|(n, v)| (n.clone(), crate::verify::definition_hash(v)))
             .collect()
+    }
+
+    /// A peer is a key the parser knows, and the strictness beside it is
+    /// untouched (§7, ADR-a1de673043b4).
+    #[test]
+    fn peers_are_read_and_an_unknown_key_is_still_refused() {
+        let cfg = parse("schema: 1\npeers:\n  core: ../core\n  web: /srv/web\n", p()).unwrap();
+        assert_eq!(cfg.peers.get("core").map(String::as_str), Some("../core"));
+        assert_eq!(cfg.peers.get("web").map(String::as_str), Some("/srv/web"));
+
+        // The key next door, misspelled, is still a refusal and not a shrug.
+        let err = parse("schema: 1\npeerz:\n  core: ../core\n", p()).unwrap_err();
+        assert!(err.message.contains("peerz"), "{}", err.message);
+
+        // No peers is no peers, not an error.
+        assert!(parse("schema: 1\n", p()).unwrap().peers.is_empty());
+    }
+
+    /// Declaring, redeclaring and removing a peer, each moving the line named
+    /// and the parent of it and nothing else (§4).
+    #[test]
+    fn declaring_a_peer_touches_the_line_and_its_parent_only() {
+        // Into a file that never carried the key.
+        let after = edit(FIXTURE, "peers.core", Some("../core")).unwrap();
+        assert!(
+            after.starts_with(FIXTURE),
+            "the file was rewritten: {after}"
+        );
+        assert!(after.ends_with("peers:\n  core: ../core\n"), "{after}");
+        assert_eq!(
+            read(&after, "peers.core").unwrap(),
+            Value::Set("../core".into())
+        );
+
+        // Into the block that now exists, and the value replaced in place.
+        let two = edit(&after, "peers.web", Some("../web")).unwrap();
+        assert_eq!(two.matches("peers:").count(), 1, "{two}");
+        let moved = edit(&two, "peers.core", Some("../elsewhere")).unwrap();
+        assert_eq!(splice_back(&two, &moved, 1), two);
+
+        // And out again, the last one collapsing the mapping to the empty form
+        // `init` writes rather than to a key with no children.
+        let one = edit(&moved, "peers.web", None).unwrap();
+        assert!(one.contains("core: ../elsewhere"), "{one}");
+        let none = edit(&one, "peers.core", None).unwrap();
+        assert!(none.contains("peers: {}"), "{none}");
+        assert!(parse(&none, p()).is_ok(), "{none}");
+        assert_eq!(read(&none, "peers.core").unwrap(), Value::Unset);
+
+        // `peers: {}` promotes to a block mapping, the counterpart of the above.
+        let back = edit(&none, "peers.core", Some("../core")).unwrap();
+        assert!(!back.contains("peers: {}"), "{back}");
+        assert!(parse(&back, p()).is_ok(), "{back}");
+    }
+
+    /// A peer nobody could name from a scope is refused where the caller can
+    /// still type another name (§7).
+    #[test]
+    fn a_peer_name_no_scope_could_spell_is_refused_by_name() {
+        for name in ["peers.c", "peers.a b", "peers.core!"] {
+            let err = resolve_key(name).unwrap_err();
+            assert_eq!(err.code, 1, "{name}");
+            assert!(err.message.contains("peer name"), "{name}: {}", err.message);
+        }
+        // The mapping itself is not a value, and the refusal says what to type.
+        let err = resolve_key("peers").unwrap_err();
+        assert!(err.hint.is_some_and(|h| h.contains("peers.<name>")));
+        assert!(resolve_key("peers.core").is_ok());
     }
 
     #[test]
