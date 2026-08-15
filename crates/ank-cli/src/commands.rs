@@ -1221,6 +1221,45 @@ fn cap_from(cfg: &Config) -> usize {
     (cfg.context_budget / 80).clamp(1, FIND_MAX_RESULTS)
 }
 
+/// The newest entries of a log that fit in `room` characters, and how many
+/// were left out.
+///
+/// **The same rule `context` already applies** to the log of the task in hand
+/// (§5): the log is the one section whose older half costs more than it
+/// informs, so it is read from the newest backwards and the oldest are what
+/// yield. `log` and `show` were the two readers with no budget at all, on a
+/// corpus where the log is more than a quarter of the bytes and only ever
+/// grows — a reader without a cap is the context-explosion vector the module
+/// header of `find` names (TASK-6c0463fb4319).
+///
+/// Measured in characters rather than in entries, because an entry is a
+/// sentence somebody wrote and two of them differ by an order of magnitude,
+/// where a `find` result is a title. Same budget, same conversion at the end:
+/// what a caller sets in `context_budget` is what every reader spends.
+///
+/// **One entry always survives**, whatever the room, for the reason §5 keeps
+/// one constraint and one task: a section printed empty says *nothing was ever
+/// recorded here*, which is a stronger and falser statement than a count.
+///
+/// Chronological in, chronological out — the slice is a suffix of `entries`,
+/// and a caller printing newest first reverses it as it did before.
+pub(crate) fn newest_that_fit(entries: &[LogEntry], room: usize) -> (&[LogEntry], usize) {
+    let mut kept = 0usize;
+    let mut left = room;
+    for e in entries.iter().rev() {
+        // The rendered line and the newline after it, plus the two columns the
+        // connector of `show` occupies -- the wider of the two renderings, so
+        // the cap never depends on which verb is asking.
+        let cost = e.format_line().chars().count() + 3;
+        if cost > left && kept > 0 {
+            break;
+        }
+        left = left.saturating_sub(cost);
+        kept += 1;
+    }
+    (&entries[entries.len() - kept..], entries.len() - kept)
+}
+
 fn scope_touches(scope: &[String], path: &str) -> bool {
     context::in_perimeter(scope, Some(path))
 }
@@ -1384,7 +1423,7 @@ pub fn log(
     let store = Store::new(&repo.ank);
     match inv.positionals.as_slice() {
         [one] => match store.resolve(one) {
-            Ok(id) => log_read(inv, &store, &id, out),
+            Ok(id) => log_read(inv, cfg, &store, &id, out),
             Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
         },
         [given, message] => {
@@ -1414,7 +1453,18 @@ pub fn log(
 /// somebody else recorded takes nothing from them (§4). The file is append-only,
 /// so the entry a reader came for is the last line of it — reversing is what
 /// makes the answer start with it.
-fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write) -> Result<i32> {
+///
+/// **Bounded by `context_budget`, like every other reader**, and it says what
+/// it cut. This page is nothing but the log, so the whole budget less the title
+/// line goes to it — which is what makes `ank log <id>` the answer `show` names
+/// when its own, smaller share of the same budget runs out.
+fn log_read(
+    inv: &Invocation,
+    cfg: &Config,
+    store: &Store,
+    id: &EntityId,
+    out: &mut dyn Write,
+) -> Result<i32> {
     let loaded = store.load(id)?;
     let Entity::Task(task) = loaded.entity.clone() else {
         return Err(
@@ -1424,7 +1474,14 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
     };
     // From wherever this entity's log is: the file since schema 3, the body
     // before it. A missing file is an empty log and never an error.
-    let entries: Vec<LogEntry> = store.log_of(&loaded)?.into_iter().rev().collect();
+    let all = store.log_of(&loaded)?;
+    let total = all.len();
+    // The title line and the blank line under it are all this page spends
+    // before the log, so the rest of the budget is the log's.
+    let spent = id.to_string().chars().count() + task.title.chars().count() + 4;
+    let (kept, cut) = newest_that_fit(&all, cfg.context_budget.saturating_sub(spent));
+    let shown = kept.len();
+    let entries: Vec<LogEntry> = kept.iter().rev().cloned().collect();
 
     if inv.json() {
         let items: Vec<String> = entries
@@ -1438,9 +1495,12 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
                 )
             })
             .collect();
+        // `total` and `shown` beside the entries, the two numbers `find --json`
+        // already carries: a parser handed a truncated list and no count cannot
+        // tell a short log from a cut one.
         let _ = writeln!(
             out,
-            "{{\"task\":\"{id}\",\"entries\":[{}]}}",
+            "{{\"task\":\"{id}\",\"total\":{total},\"shown\":{shown},\"entries\":[{}]}}",
             items.join(",")
         );
         return Ok(0);
@@ -1465,7 +1525,31 @@ fn log_read(inv: &Invocation, store: &Store, id: &EntityId, out: &mut dyn Write)
         // way here and another there.
         let _ = writeln!(out, "{}", crate::paint::log_line(e, inv.style()));
     }
+    if cut > 0 {
+        // Announced, never silent, and with the command that would print them:
+        // the budget is what cut them, and `ank config` is the verb that owns
+        // it (§9). A reader told only that something is missing learns that the
+        // tool hides things, which is the lesson `find` refuses to teach.
+        let _ = writeln!(
+            out,
+            "+{cut} earlier entries, ank config context_budget {} prints them",
+            budget_for_whole_log(&all, spent)
+        );
+    }
     Ok(0)
+}
+
+/// The `context_budget` at which nothing of this log would be cut.
+///
+/// The exact number and not a suggestion to raise it: §4 asks a message to name
+/// the command to run next, and "raise the budget" is the generic help that
+/// rule exists to forbid.
+fn budget_for_whole_log(entries: &[LogEntry], spent: usize) -> usize {
+    let cost: usize = entries
+        .iter()
+        .map(|e| e.format_line().chars().count() + 3)
+        .sum();
+    spent + cost
 }
 
 #[allow(clippy::too_many_arguments)]

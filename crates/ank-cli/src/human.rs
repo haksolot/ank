@@ -253,10 +253,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             };
             // A merge left half-done is a corpus fault long before it is a
             // parse error, and the message has to say so plainly (§7).
-            if text
-                .lines()
-                .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> ") || l == "=======")
-            {
+            if has_conflict_markers(&text) {
                 report
                     .findings
                     .push(Finding::fault(&name, "unresolved git conflict markers"));
@@ -317,6 +314,48 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                     }
                     entities.push((p, entity));
                 }
+            }
+        }
+    }
+
+    // A log file is a corpus file, and a merge left half done in one is the
+    // same fault as in an entity: same words, same severity, same exit code.
+    //
+    // **It used to be a signal, by accident and not by decision.** The strict
+    // log parser refuses the marker line, `check` reported the log as
+    // unreadable, and a signal leaves the exit code 0 — so an unresolved merge
+    // in a log passed CI green while the identical markers in the file beside
+    // it turned it red. Nothing about a log makes half a merge more acceptable
+    // there (TASK-6c0463fb4319).
+    //
+    // Walked from the directory rather than from the tasks, because a log file
+    // whose entity is absent is still a file this corpus carries, and the
+    // per-task read below has no way to reach one.
+    if let Ok(rd) = std::fs::read_dir(repo.ank.join(Store::LOG_DIR)) {
+        let mut logs: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+            .collect();
+        // Sorted, because `read_dir` is not: two runs on one corpus print one
+        // order, the same guarantee every other listing in this file gives.
+        logs.sort();
+        for p in logs {
+            let stem = p
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                // Not a fault here: a log the per-task read cannot open is
+                // already reported below, with the task it belongs to.
+                continue;
+            };
+            if has_conflict_markers(&text) {
+                report.findings.push(Finding::fault(
+                    format!("{}/{stem}.md", Store::LOG_DIR),
+                    "unresolved git conflict markers",
+                ));
             }
         }
     }
@@ -1089,10 +1128,15 @@ fn check_task(
                 );
             }
         }
+        // Already a fault, named once by the walk of the log directory. A
+        // second finding here would say the same file twice and at two
+        // severities, and the weaker of the two is the one a reader would act
+        // on.
+        Err(LogUnread::Conflicted) => {}
         // Reading nothing and reporting nothing would be the quiet failure §4
         // refuses everywhere else: the record would disappear along with the
         // line that broke the parse, and no line anywhere would say so.
-        Err(why) => report.findings.push(Finding::signal(
+        Err(LogUnread::Why(why)) => report.findings.push(Finding::signal(
             &t.id,
             format!(
                 "log unreadable, so a discrepancy it records is not reported: {why} \
@@ -1315,15 +1359,41 @@ fn check_task(
 /// nothing, and a caller that read `unwrap_or_default` would report "no
 /// discrepancy" about a log it never read — the record gone along with the line
 /// that broke it, and no line anywhere saying so.
-fn log_entries(store: &Store, t: &Task) -> std::result::Result<Vec<LogEntry>, String> {
+fn log_entries(store: &Store, t: &Task) -> std::result::Result<Vec<LogEntry>, LogUnread> {
     match std::fs::read_to_string(store.log_path_of(&t.id)) {
-        Ok(text) => parse_log_file(&text).map_err(|e| e.to_string()),
+        // The markers are looked for before the parse and not after it,
+        // because the parse cannot tell them from any other refused line and
+        // the two deserve different severities.
+        Ok(text) if has_conflict_markers(&text) => Err(LogUnread::Conflicted),
+        Ok(text) => parse_log_file(&text).map_err(|e| LogUnread::Why(e.to_string())),
         // A missing file is an empty log and never an error (§3); an entity
         // whose log is still a body section is read there, tolerantly, as that
         // form requires.
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(parse_log(&t.body)),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(LogUnread::Why(e.to_string())),
     }
+}
+
+/// Why a task's log yielded nothing, and at what severity `check` says so.
+enum LogUnread {
+    /// A merge left half done. The walk of the log directory has already
+    /// reported it as a fault, in the words an entity file gets, so the task
+    /// adds nothing: one broken file, one finding. The same `continue` the
+    /// entity walk makes after its own marker check, for the same reason.
+    Conflicted,
+    /// Anything else — a line the grammar refuses, a file that would not open.
+    /// A signal: the corpus is intact and one reader came back empty.
+    Why(String),
+}
+
+/// The three lines a half-finished merge leaves behind.
+///
+/// One rule, one implementation: an entity file, a log file and anything else
+/// this corpus grows are all read for the same markers, so none of them can
+/// end up looking for a different set.
+fn has_conflict_markers(text: &str) -> bool {
+    text.lines()
+        .any(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> ") || l == "=======")
 }
 
 /// What the reader of an over-constrained scope can actually do, and what they
@@ -3690,7 +3760,16 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
 /// **Both headings print even at zero.** An absent heading and a heading with
 /// nothing under it would be the same page, and only one of the two is an
 /// answer to *what waits on this*.
-pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+///
+/// **The cap lands on the log and never on the entity.** §4 guarantees the
+/// entity byte for byte and that stays exactly true — a truncated `show` is not
+/// a short answer but a wrong one, since the clause left out is the one nobody
+/// then reads. What is unbounded here is the section under it: the log only
+/// grows, and this verb was one of the two readers spending no budget at all.
+/// So the entity is printed whole, the log gets what the budget has left, and
+/// `ank log <id>` — the same budget with no entity to pay for — is the command
+/// the cut names (TASK-6c0463fb4319).
+pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
     let prefix = inv
         .positionals
         .first()
@@ -3719,6 +3798,14 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         LogHome::File => store.log_of(&loaded)?,
         LogHome::Body => Vec::new(),
     };
+    // What the budget has left once the entity is paid for, which is the whole
+    // point of charging the entity first: it is never cut, so it is never the
+    // section competing for room.
+    let (log, log_cut) = crate::commands::newest_that_fit(
+        &log,
+        cfg.context_budget.saturating_sub(text.chars().count()),
+    );
+    let log_total = log.len() + log_cut;
 
     if inv.json() {
         let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
@@ -3742,10 +3829,12 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         };
         let _ = writeln!(
             out,
-            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\"log\":{},\"content\":{}}}",
+            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\
+             \"log_total\":{log_total},\"log_shown\":{},\"log\":{},\"content\":{}}}",
             loaded.entity.id(),
             detached_json(&detached),
-            log_json(&log),
+            log.len(),
+            log_json(log),
             json_str(&text)
         );
     } else if !inv.quiet() {
@@ -3759,7 +3848,7 @@ pub fn show(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         // display an empty history for a task that has one — silently, which is
         // the failure the version bump exists to prevent (§3). Under the entity
         // and not inside it: what is above stays byte for byte the file.
-        log_section(out, &log, inv.style());
+        log_section(out, loaded.entity.id(), log, log_cut, inv.style());
         if let Some((blocked_by, unblocks)) = &edges {
             edge_section(out, "BLOCKED BY", blocked_by, inv.style());
             edge_section(out, "UNBLOCKS", unblocks, inv.style());
@@ -3795,14 +3884,29 @@ fn log_json(entries: &[LogEntry]) -> String {
 /// A body that still carries its own `## Log` section prints it above as part
 /// of the entity and gets no second copy here: [`Store::log_of`] answers from
 /// one place, never from both.
-fn log_section(out: &mut dyn Write, entries: &[LogEntry], style: crate::style::Style) {
+///
+/// **`LOG (kept of total)`, which is the header `context` already prints** for
+/// the log of the task in hand. Two verbs cutting the same section by the same
+/// rule must say so in the same words, or a reader learns two grammars for one
+/// fact. The count is the state; the line under it is the way out.
+fn log_section(
+    out: &mut dyn Write,
+    id: &EntityId,
+    entries: &[LogEntry],
+    cut: usize,
+    style: crate::style::Style,
+) {
     if entries.is_empty() {
         return;
     }
     let _ = writeln!(
         out,
         "\n{}",
-        style.header(&format!("LOG ({})", entries.len()))
+        style.header(&format!(
+            "LOG ({} of {})",
+            entries.len(),
+            entries.len() + cut
+        ))
     );
     for (i, e) in entries.iter().enumerate() {
         let connector = if i + 1 == entries.len() {
@@ -3811,6 +3915,14 @@ fn log_section(out: &mut dyn Write, entries: &[LogEntry], style: crate::style::S
             crate::style::glyph::BRANCH
         };
         let _ = writeln!(out, "{connector}{} {} — {}", e.timestamp, e.who, e.message);
+    }
+    if cut > 0 {
+        // The command that actually answers, and not a flag that does not
+        // exist: `log` prints the same budget with no entity charged against
+        // it, so it has strictly more room than this page had. Naming a
+        // command that would refuse is the failure ADR-97beaf55e73a and §5 both
+        // single out.
+        let _ = writeln!(out, "+{cut} earlier entries, ank log {id}");
     }
 }
 
@@ -4185,7 +4297,7 @@ mod tests {
                 "accept" => accept(&inv, &repo, &cfg, who, &mut out)?,
                 "close" => close(&inv, &repo, who, &mut out)?,
                 "amend" => amend(&inv, &repo, who, &mut out)?,
-                "show" => show(&inv, &repo, &mut out)?,
+                "show" => show(&inv, &repo, &cfg, &mut out)?,
                 other => panic!("not a human verb: {other}"),
             };
             Ok((code, String::from_utf8_lossy(&out).to_string()))
@@ -6237,7 +6349,7 @@ mod tests {
             let mut inv = crate::cli::parse(&argv).unwrap();
             inv.style = style;
             let mut out = Vec::new();
-            show(&inv, &repo, &mut out).unwrap();
+            show(&inv, &repo, &t.cfg(), &mut out).unwrap();
             String::from_utf8(out).unwrap()
         };
 

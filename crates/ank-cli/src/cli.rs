@@ -1627,7 +1627,7 @@ fn dispatch(
         "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
         "edit" => crate::edit::run(&inv, &s.repo, out),
         "amend" => crate::human::amend(&inv, &s.repo, &s.identity, out),
-        "show" => crate::human::show(&inv, &s.repo, out),
+        "show" => crate::human::show(&inv, &s.repo, &s.config, out),
         _ => Err(not_implemented(spec)),
     }?;
 

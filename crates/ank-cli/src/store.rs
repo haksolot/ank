@@ -693,9 +693,14 @@ impl Store {
     // The log, a file of its own since schema 3
     // -----------------------------------------------------------------------
 
+    /// The directory every log file lives in, one file per entity. Named here
+    /// rather than spelled out at each reader: `check` walks it, and a second
+    /// literal is a second thing to disagree with this one.
+    pub const LOG_DIR: &'static str = "log";
+
     /// The path of an entity's log, computed from the same id with no lookup.
     pub fn log_path_of(&self, id: &EntityId) -> PathBuf {
-        self.root.join("log").join(format!("{id}.md"))
+        self.root.join(Self::LOG_DIR).join(format!("{id}.md"))
     }
 
     /// The log of an entity, from wherever it currently lives.
