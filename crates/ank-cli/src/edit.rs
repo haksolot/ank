@@ -256,6 +256,28 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
                  --constraint \"<rule>\""
             )))
         }
+        (Entity::Spec(b), Entity::Spec(a)) => {
+            if b.body == a.body && b.scope == a.scope {
+                return Ok(());
+            }
+            // The same question, over the fields a spec anchors: the body and
+            // the scope, because no narrower field carries the authority (§3).
+            // The body of an accepted ADR stays editable and a spec's does not,
+            // and that is the whole difference between the two anchors — a
+            // revision of an accepted specification is a supersession.
+            if !matches!(human::freeze_state(repo, a), Freeze::Altered { .. }) {
+                return Ok(());
+            }
+            Err(CliError::new(
+                6,
+                format!(
+                    "{id} is ratified: its body and scope are anchored in its ratification commit"
+                ),
+            )
+            .with_hint(format!(
+                "ank new spec --supersedes {id} --title \"<t>\" --scope \"<glob>\""
+            )))
+        }
         // Unreachable through the parser, which resolves the variant from
         // `type:` and refuses a `type` the id does not carry — and the id was
         // compared above. Stated rather than assumed.

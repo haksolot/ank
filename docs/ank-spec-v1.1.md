@@ -528,8 +528,8 @@ These verbs are the rest of the surface. Four of them — `review`, `check`, `am
 
 ```
 review    ratification queue, pending proposals, corpus health
-accept    promotes a proposed ADR to accepted (produces the signed commit, §8, §12;
-          requires the default branch)
+accept    promotes a proposed ADR or spec to accepted (produces the signed commit,
+          §8, §12; requires the default branch)
 check     mechanical invariants, exit code usable in CI
 close     closes a task that will never be done (--reason mandatory)
 amend     changes `blocked_by`, `scope`, and a `done_criteria` no live claim freezes
@@ -554,7 +554,7 @@ error[7]: accept requires the default branch (current: feat/opaque-sessions, def
 
 **`amend` covers the three fields a plan actually changes on**, `blocked_by`, `scope` and `done_criteria`, and covers nothing else. A subtask discovered after a task was filed is a `blocked_by` added to something that already exists; a scope found to omit the files the work must touch is a scope corrected before the task can be claimed at all. Both are ordinary, both were done by hand until this verb existed, and an edit done by hand is indistinguishable in the resulting file from any other edit done by hand — which is the argument that put `attest` on this surface too.
 
-It **adds and removes explicitly** and never takes a replacement list: a verb given the whole list silently drops whatever the caller forgot to repeat. It refuses a `done` or `closed` task, since §3 allows exactly one write after completion and that write is `attest`'s. And it refuses the `scope` of an accepted ADR, whose `scope` is hashed into the ratification commit (§8) — changing a ratified decision is a succession, and succession has its own verb.
+It **adds and removes explicitly** and never takes a replacement list: a verb given the whole list silently drops whatever the caller forgot to repeat. It refuses a `done` or `closed` task, since §3 allows exactly one write after completion and that write is `attest`'s. And it refuses the `scope` of an accepted ADR or spec, whose `scope` is hashed into the ratification commit (§8) — changing a ratified decision is a succession, and succession has its own verb. The two are refused on the same terms and for the same reason, and a spec's anchor simply reaches wider: it covers the body as well, so what an ADR keeps editable after ratification a spec does not (§3).
 
 Amending the `scope` of a task under a live claim is **allowed and warned about**. The claim record anchors the hash of the constraints that scope selects (§7), so the change moves what binds the work in progress. Refusing would be wrong — a scope discovered false mid-task is exactly the situation the verb exists for — and allowing it silently would be worse.
 
@@ -1415,7 +1415,7 @@ The main guardrail is not the permission but **the status**: an agent writes fre
 
 `$ANK_AGENT` is set by the agent itself: an agent going off the rails can declare itself `human`. No file-level check can prevent that, since it has filesystem access.
 
-The only anchor that holds is therefore external: **ratification requires a signed commit**. `accept` produces the ratification commit itself (§12), recording the SHA and the hash of the accepted ADR's `constraint` + `scope`, and `check` verifies that signature against the keys in `.ank/allowed_signers`. The key file is versioned: adding a key to it is a diff in review.
+The only anchor that holds is therefore external: **ratification requires a signed commit**. `accept` produces the ratification commit itself (§12), recording the SHA and the hash of what was made binding — the accepted ADR's `constraint` + `scope`, or the accepted spec's body + `scope`, under the key that names which (§3, [format.md](format.md)) — and `check` verifies that signature against the keys in `.ank/allowed_signers`. The key file is versioned: adding a key to it is a diff in review.
 
 **The file uses git's allowed-signers layout**, `principal [options] keytype key`, with the key type naming the format:
 
