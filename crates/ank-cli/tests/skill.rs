@@ -48,12 +48,65 @@ fn push_once(verbs: &mut Vec<String>, verb: String) {
     }
 }
 
+/// The specification document carrying §4's `Commands` block.
+///
+/// **Read through the binary, and that is the point rather than a detour.** The
+/// specification is no longer a file in `docs/` — it is ten entities of kind
+/// `spec` in `.ank/` (ADR-5a690829388d) — and `.ank/` is reached through the CLI
+/// and never by opening the files (ADR-01b6dd05f0db). A test that walked the
+/// directory would be the one reader in the repository exempt from the rule the
+/// repository enforces on every agent.
+///
+/// The document is found by what it carries rather than by its id, so a
+/// supersession that replaces it keeps this test green: an id pinned here would
+/// have to be re-typed on every revision, and the revision that forgot would
+/// look like a passing suite.
+fn section_4_document() -> String {
+    let ids = ank(&["find", "--type", "spec", "--json"]);
+    let mut carrying: Vec<String> = Vec::new();
+    for id in ids
+        .split("\"id\":\"")
+        .skip(1)
+        .filter_map(|s| s.split('"').next())
+    {
+        let body = ank(&["show", id]);
+        if body.lines().any(|l| l.trim() == "### Commands") {
+            carrying.push(body);
+        }
+    }
+    assert_eq!(
+        carrying.len(),
+        1,
+        "exactly one spec document must carry §4's Commands block, and {} do: \
+         the block is what this suite reads the surface out of, so neither zero \
+         nor two is a state it can guess its way through",
+        carrying.len()
+    );
+    carrying.pop().expect("one document carries the block")
+}
+
+/// The binary, run from this crate's directory so that the walk of §6 resolves
+/// the repository's own corpus.
+fn ank(args: &[&str]) -> String {
+    let out = Command::new(env!("CARGO_BIN_EXE_ank"))
+        .args(args)
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("the binary must have been built");
+    assert!(
+        out.status.success(),
+        "ank {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
 /// The verbs of §4's `Commands` block, in the order the block lists them.
 ///
 /// Read from the specification rather than restated here: a second
 /// hand-maintained copy of the order is the very drift this is checking for.
 fn section_4_order() -> Vec<String> {
-    let spec = repo_file("docs/ank-spec-v1.1.md");
+    let spec = section_4_document();
     let mut verbs = Vec::new();
     let mut seen_heading = false;
     let mut inside = false;

@@ -1,0 +1,157 @@
+---
+id: SPEC-6aed60cd3717
+type: spec
+slug: the-attention-budget-and-the-constraint-lifecycl
+title: The attention budget and the constraint lifecycle
+created: 2026-08-15T17:45:37Z
+author: claude-code/opus-5
+status: proposed
+scope:
+  - crates/ank-cli/src/context.rs
+references: [SPEC-acee5d9cb21b, SPEC-c33e07a82cc4]
+schema: 3
+version: 2
+---
+
+One of the ten documents that carry the Ank specification (ADR-5a690829388d).
+This one carries **§5 and §11**: what `context` serves in each of its two modes,
+how the budget is divided and what is cut first, how ready tasks are ordered —
+and the lifecycle that decides what leaves injected context altogether.
+
+## Why the budget and the lifecycle are one document
+
+They are a measurement and its only sink, and neither is complete alone.
+
+§5 measures. It gives the budget a number, divides it by opposite rules in the
+two modes, and calls a scope **over-constrained** when constraints alone consume
+more than half of it — a corpus problem, reported by `check`, with the charge of
+each constraint listed largest first. Read alone it ends on a diagnosis with no
+act: the finding names a threshold that has been crossed and the reader has
+nothing to do about it that this document authorises.
+
+§11 is that act. Mechanisation is the sink — a constraint born in prose becomes a
+lint rule, and `enforced_by` takes it out of injected context without
+deactivating it — and the first of its three signals is *relative pressure*,
+which is read off §5's per-constraint breakdown and is defined nowhere else.
+Read alone it is a sink with no measurement: it says to mechanise what costs
+most, and the number that says which lives in the other section.
+
+The monolith put six sections between them and each cited the other to complete
+itself. That is the entanglement the test names, and merging is what the test
+asks for: **a document that cannot be read without holding another one open is
+not a document**, and here neither half could be read without the other.
+
+The merge also puts one rule where it belongs. §5 forbids the over-constrained
+finding from naming a command that would refuse, because every constraint charged
+is an accepted ADR and `amend` exits 6 on one — so the way out is mechanisation.
+That is a sentence about §11 written in §5, and it now sits in the document that
+carries both.
+
+## What it rests on
+
+- **The data model** — `scope`, the fields the ordering derives from, and the
+  statuses a listing prints.
+- **The CLI surface** — `context` itself, and the catalogue that reports the
+  over-constrained finding.
+
+---
+
+## 5. Attention budget
+
+The single most decisive point for real use. A `context` that explodes on a large repository is a `context` the agent will end up ignoring.
+
+### Two moments, two outputs
+
+`context` serves two situations that used to be treated, wrongly, as one.
+
+**Before claiming — orientation.** The agent does not yet know what to do. Breadth, not depth: the perimeter's active constraints named on one line each (id + title, never the `constraint` text and never the body), non-binding proposals on one line, the specifications governing the perimeter on one line each, and open tasks on one line each. **No `done_criteria`, no log** — it is not writing code yet, and execution detail would be noise. Constraints are named from orientation onward, because knowing which rules govern a perimeter is part of choosing within it; what they *say* is one `ank show <id>` away, the same split §9 settles for `help` and its per-verb page.
+
+**After claiming — execution.** HEAD is set. Inversion: no other task at all, but the full `done_criteria`, the constraints matching the scope **of the task**, the specifications governing it named as in orientation, and the most recent log entries.
+
+Same command, output driven by HEAD. Nothing more for the agent to memorise, and most of the useless context disappears.
+
+**What a holder sees of the coordination plane: nothing, and `status` is where the question belongs.** The markers `[claimed:holder]` and `[finished:<sha> on <branch>]` are orientation's, and execution mode carries no listing for them to sit on. That is deliberate rather than incidental. Execution mode exists to remove choice — it is why it drops every other task — and a list of what other agents hold is choice-shaped: it invites the one thing the mode is built to prevent, an agent shopping for work it has not finished. The end-of-loop line does name holders (`1 in progress by codex@host-9`), and it belongs to orientation for the same reason: it is what an agent reads when it has nothing to do.
+
+The information is not withheld, it is relocated. **`ank status` names every live claim in the repository, the caller's own and the other agents'**, with the holder and the expiry. `status` is off the loop, costs nothing to skip, and is what an agent runs when it wants to know where things stand rather than what to do next — the same argument that put a second claim of one identity there rather than in `context` (§7, TASK-38b384543551). It says so even when there is nothing to say, because silence and "this verb does not answer that" read identically.
+
+What a holder can do with the answer is smaller than it looks, and that bounds how much either verb owes it. At level 0 the claim refs are shared within the clone, so two agents cannot hold one task: `claim` refuses with code 4 and names the holder. A holder reading that another agent is on another task therefore learns something true and acts on none of it — which is exactly why the reporting verb is the right home and the working verb is not. When claims are pushed (level 1, §7), two clones arbitrate and the answer becomes worth more; nothing here has to change for that, because it is already a question `status` answers.
+
+```
+$ ank context src/auth/
+
+CONSTRAINTS (2 active)
+  ADR-3c7e  No self-contained JWTs for user auth
+  ADR-8b41  Rate limiting on every public endpoint
+
+PROPOSED (1, non-binding)
+  ADR-19d0  [pi@host-2] Prefer idempotent migrations
+
+TASKS (2)
+  TASK-8f3a  [claimed:claude-code@host-3] Migrate auth to opaque sessions
+  TASK-51c2  [open] Add secret rotation
+
+> ank claim 51c2 to start
+```
+
+### Truncation priority
+
+The budget is concrete: `context_budget` in `config.yml`, measured in characters, 8000 by default (roughly 2000 tokens — the character is the only unit measurable without depending on a tokeniser). **The two modes divide it by opposite rules, because they are answering opposite questions.**
+
+**In execution mode, a constraint is never truncated.** Cutting a binding constraint means an agent can violate a rule it never saw — a discreet `+12 more` would be the worst possible behaviour. The two-phase design makes the guarantee tenable: after claiming, the perimeter is that of the task alone, so few constraints match. A scope is **over-constrained** when constraints alone consume more than half of it in execution mode: a mechanical threshold, implementable as stated, and `check` reports it as such — it is a corpus problem, not a display problem.
+
+**What the finding reports is the total, then the charge of each constraint, largest first.** The total is the diagnosis; the breakdown is the only form of the fact anybody can act on, because there is no verb that splits a scope and nothing in `14737 characters` says which constraint to stop matching. Under `--json` the breakdown is structured — an id and a count per constraint, never a sentence a caller has to parse back into integers — for the reason `note` is separate from `message` (§4). And the finding names an act: narrowing the perimeter, which is `amend` on the task, or on a perimeter of one glob the replacement that `amend` accepts, since a scope may not empty. **What it must never name is a command that would refuse.** Every constraint charged against a perimeter is an accepted ADR, and `amend` exits 6 on one — its scope is anchored in the ratification commit (§8) — so the heaviest is named as the constraint that cannot be amended, and the way out is mechanising it (§11), never an edit. A reader who runs a suggested command and is refused learns that the tool is wrong, not that the entity is settled; that is the same rule a dead scope on a finished task follows (ADR-97beaf55e73a).
+
+**In orientation mode, constraints take at most a third of the budget and everything they do not use goes to the tasks.** Nothing binds yet, because nothing has been chosen, and orientation exists to choose: a page of rules with no work to apply them to is not a choice. The third is the mirror of the threshold above — execution calls a scope sick when its constraints exceed a half, so the mode where none of them bind yet is held to something stricter. Rendering one line per constraint is what makes the ceiling easy to respect rather than a cliff to fall off; a corpus with more constraints than fit in a third reports the remainder as a counter, and the reader who wants one reads it with `ank show`.
+
+Measured on this repository before the rule existed, at 8000 characters with 18 accepted constraints and 11 open tasks: orientation spent 7357 characters on seven constraints rendered in full and 157 on tasks — one task line printed, eleven cut, and the closing suggestion naming the only candidate it had room for. Giving a perimeter changed nothing, because constraints were charged first and in full either way (TASK-1ead0e19fb73).
+
+Within each half, what survives is decided in this order:
+
+1. Constraints with the most **specific** scope are kept — a narrow glob beats `src/**`, it was written for that precise code
+2. Constraints whose vocabulary overlaps the titles of the perimeter's tasks
+3. The rest as a counter: `+12 broad constraints, ank find --type adr --scope <path>`
+4. Tasks in the order of *Task ordering* below, the rest as a counter
+
+Tasks are cut last, and only once their own share is full. The previous revision cut them **first, before any constraint**, which is what the measurement above records the consequence of.
+
+**A specification is one line in either mode and is charged where it is printed**, beside the constraints, cut with them and counted with them when it does not fit. There is no mode that serves its body (§3), so nothing about it can grow past that line — which is the only reason a kind whose entities are measured in hundreds of thousands of bytes can sit in a page budgeted at eight thousand characters at all.
+
+**One constraint and one task always survive, whatever the budget.** The third is a ceiling on a section and not a licence to empty it: a page naming no rule at all would tell an agent the perimeter is unconstrained, which is a stronger and falser statement than naming one and counting the rest. On a budget too small for even that, the floor wins and the page runs over — the same order of precedence execution mode applies when a single binding constraint exceeds the whole budget.
+
+### Task ordering
+
+An agent facing eight ready tasks must pick one without hesitating and without inventing a criterion. The ordering is therefore **deterministic and derived**, never declared:
+
+1. Number of tasks this one directly unblocks, descending
+2. On a tie, the `created` field ascending (deterministic without depending on git)
+
+Tasks on the critical path rise naturally, with no `priority` field to maintain or derive. A human who wants to steer the work does so by creating or by claiming, not by reordering a list.
+
+### End of loop
+
+No ready task in the perimeter is a normal state, not an error. `context` says so explicitly and exits 0:
+
+```
+no ready tasks in scope (3 blocked, 1 in progress by codex@host-9)
+```
+
+An agent in a loop needs a clean stop signal. An empty output reads as a breakdown and triggers pointless retries.
+
+
+## 11. Constraint lifecycle
+
+Not implemented in v1, but the model must be laid down now because it determines the `enforced_by` field.
+
+The problem: if ADRs pile up without ever dying, context grows indefinitely and the tool becomes the problem it was meant to solve. A numeric ceiling merely relocates the arbitrariness.
+
+**Mechanisation is the natural sink.** A constraint is born in prose because we do not yet know how to check it. Many become mechanisable — "no `jwt.verify` in `src/auth`" is a lint rule. Once in CI, it has no business in context any more: the feedback loop catches it better, and deterministically. The `enforced_by` field takes it out of injected context without deactivating it.
+
+This turns the pressure the right way round: growing context pushes you to write checks, not to delete decisions.
+
+**Three complementary signals, none arbitrary:**
+
+- **Relative pressure** — what fraction of the `context` budget constraints consume on a scope. Self-scaling, dependent on no hand-picked number. **Charged per constraint, and that is what makes this section a measurement rather than an assertion.** A total says a perimeter is expensive and leaves "mechanise the ones that cost most" a preference nobody can check; the charge of each constraint, largest first, names which one `enforced_by` would buy the most by taking out of injected context, and by how much. The over-constrained finding of §5 is where that breakdown is read. It is also the counterweight to filing decisions in bursts: every constraint added is charged against every perimeter its scope meets, so the corpus that grows is the corpus that goes over budget, and the pressure lands on writing the check rather than on deleting the decision — which is the direction this section exists to enforce.
+- **Scope shrinkage** — a constraint declared on `src/**` whose related tasks have only ever touched `src/auth/**` is over-declared. Precision gained, information kept.
+- **Structural death** — a scope that no longer matches any file, a broken supersede chain. Verifiable, unlike temporal decay: a three-year-old constraint can be vital. The same rule applies to tasks: a task whose scope is dead is flagged by `check`, never closed automatically — the code may simply have moved.
+
+**Absolute rule: no automatic deletion.** A constraint that was never violated looks exactly like a useless one. The tool detects and proposes; a human ratifies. The only automatism allowed is removal from injected context for what is mechanised — and there it is safe, since CI has taken over.

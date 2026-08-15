@@ -529,6 +529,8 @@ loaded on every session, which is why its content is deliberately small.
   channels beyond npm, and what running several agents actually requires.
 - [format.md](format.md) — the file format and canonical form, for anyone
   writing a tool that reads or writes `.ank/`.
-- [ank-spec-v1.1.md](ank-spec-v1.1.md) — the specification, and the source of
-  truth for everything above. It argues the design; it is not a tutorial.
+- [ank-spec-v1.1.md](ank-spec-v1.1.md) — the index of the specification, the
+  source of truth for everything above: ten `spec` documents in `.ank/`, read
+  with `ank find --type spec` and `ank show <id>`. They argue the design; they
+  are not a tutorial.
 - `ank help` lists every verb, `ank help <verb>` answers about one.
