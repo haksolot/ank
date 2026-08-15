@@ -1,2 +1,3 @@
 - 2026-08-15T07:19:28Z claude-code/spec-revision — spec revision r drafted: two fired rows recorded in section 10, kinds spec and log declared in the section 3 registry, federation shape stated in section 7, the log-as-section passages and the git-union claim corrected
 - 2026-08-15T07:20:42Z claude-code/spec-revision — discrepancy: the criterion places both remaining log-as-section passages in section 12; one is, in the recovery argument, and the other is in section 13's deferred-to-v1.1 line, which is where 'log = timestamped union' still stood. Three passages in total, all corrected.
+- 2026-08-15T07:56:26Z claude-code/spec-revision — done, proof commit:b48680a

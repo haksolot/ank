@@ -5,15 +5,20 @@ slug: the-specification-records-that-three-deferred-ro
 title: The specification records that three deferred rows have fired
 created: 2026-08-15T06:56:12Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - docs/**
 blocked_by: []
 done_criteria: |
   A new revision of docs/ank-spec-v1.1.md records the trigger as fired for the rows 'Spec sections as routable entities' and 'Multi-repository federation', and records that ADR-ff294eff4d1a decided between a body section and a file and never considered an entity per entry. Section 3 declares the kinds spec and log in the registry, each with its field table. Section 7 states the federation shape ADR-a1de673043b4 fixes. The three passages that still describe the log as an append-only section of the entity file are corrected, as is the sentence claiming git unions two appends with no driver. No source file path and no line number enters the document. ank check stays green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: b48680a
+    criteria: a1bfccca3137
+    via: submitted
 schema: 3
-version: 3
+version: 4
 ---
 
 The specification is the source of truth and it moves first: format changes go
