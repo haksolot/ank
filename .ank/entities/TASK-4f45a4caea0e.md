@@ -5,7 +5,7 @@ slug: find-lists-what-the-coordination-plane-speaks-fo
 title: find lists what the coordination plane speaks for and never names --free
 created: 2026-08-15T06:08:26Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/cli.rs
@@ -15,8 +15,13 @@ blocked_by: []
 done_criteria: |
   ank find writes one final line, after the truncation line, whenever the rows it listed include tasks whose stored status is open and whose coordination record is a live claim or a completion. The line counts them and names --free. It is absent under --free, under --json and under --quiet, and absent when no listed row matches. Section 4 of docs/ank-spec-v1.1.md carries the sentence that fixes the line, beside the one that fixes the hidden count. A test in crates/ank-cli/tests/cli.rs drives the built binary: it seeds a completion ref and asserts the marker and the new line under find --status open, their absence under find --free, and no new line under find --status done.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: c8918b1c3b8795864c207282c7aaf37432ad2f14
+    criteria: 5a04e19afd98
+    via: submitted
 schema: 3
-version: 3
+version: 4
 ---
 
 Measured on a real session, then reproduced in a sandbox. A checkout behind the
