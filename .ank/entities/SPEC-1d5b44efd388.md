@@ -5,11 +5,12 @@ slug: intent-principles-and-what-v1-leaves-out
 title: Intent, principles, and what v1 leaves out
 created: 2026-08-15T17:45:36Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - "**"
+ratified: 9fec073faafe
 schema: 3
-version: 1
+version: 2
 ---
 
 This is one of the ten documents that carry the Ank specification, and it is the
