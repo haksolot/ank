@@ -4116,6 +4116,82 @@ fn a_lapsed_claim_taken_over_is_refused_with_the_new_holder_named() {
     );
 }
 
+/// The task offered as another thing to take is one whose ref is free, and a
+/// live claim someone else holds is not free (§7).
+///
+/// Found by running the tool. In a sandbox of two clones and two worktrees,
+/// `claim` refused and pointed at a task the same listing had rendered
+/// `[claimed:agent-a2/1]` one command earlier: the hint printed an exact
+/// command that refuses with code 4 the moment it is run, which is the generic
+/// help by another route — the very thing the completion-ref skip next to it
+/// was written to prevent (TASK-f601ba59229e).
+///
+/// The fixture builds the only state in which the defect is visible: the claim
+/// is taken on a branch, so the ref is live for every checkout of this
+/// repository while the file `main` carries still reads `open`. Claiming on
+/// `main` alone would move the file to `in_progress` and the status filter
+/// would hide the candidate before the ref was ever consulted, which is a
+/// fixture testing nothing.
+///
+/// A lapsed claim is the other half, and it is not a variation: pickup after
+/// expiry is a legal transition, `claim` takes it, and a fix that skipped a
+/// lapsed candidate would trade one wrong answer for another.
+#[test]
+fn the_refusal_does_not_offer_a_task_a_live_claim_already_holds() {
+    let wanted = "TASK-a00000000005";
+    let held = "TASK-b00000000005";
+    let r = Repo::new();
+    r.seed_task(wanted, Some("A verifiable criterion."));
+    r.seed_task(held, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
+
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    assert_eq!(code(&r.ank("agent-a2@ank", &["claim", held])), 0);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "claim on a branch"]);
+    r.git(&["checkout", "-q", "main"]);
+    assert!(
+        r.task_text(held).contains("status: open"),
+        "the fixture is wrong if main already carries the in_progress"
+    );
+    assert!(
+        r.claim_ref(held).unwrap().contains("holder: agent-a2@ank"),
+        "the ref is shared by every checkout, so the claim is live here"
+    );
+
+    // The task under refusal is held too, and by a third identity, so that the
+    // only thing the hint could name is the one held on the branch.
+    assert_eq!(code(&r.ank("agent-a1@ank", &["claim", wanted])), 0);
+
+    let out = r.ank("agent-a3@ank", &["claim", wanted]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 4, "{said}");
+    assert!(
+        !said.contains(&held[..9]),
+        "a task a live claim holds is not another ready task: {said}"
+    );
+    assert!(
+        said.contains("ank context"),
+        "with nothing free to offer, the hint is the listing: {said}"
+    );
+
+    // Lapsed, the same ref stops covering anything: the candidate comes back,
+    // and following the hint is a claim that succeeds.
+    r.expire_claim(held);
+    let out = r.ank("agent-a3@ank", &["claim", wanted]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 4, "{said}");
+    assert!(
+        said.contains(held),
+        "a lapsed claim covers nothing, and pickup after expiry is legal: {said}"
+    );
+    assert!(
+        said.contains("another ready task"),
+        "and it is offered as one: {said}"
+    );
+}
+
 /// The over-constrained signal reports the threshold it actually applied.
 ///
 /// The two numbers are parsed back out of the message and compared, which is
