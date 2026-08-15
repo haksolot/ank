@@ -63,13 +63,18 @@ pub fn entity(text: &str, style: Style) -> String {
     out
 }
 
-/// One `## Log` line, painted: the addressing recedes, the message does not.
+/// One log line, painted: the addressing recedes, the message does not.
 ///
-/// `log_line(e, PLAIN) == e.format_line()`, always — `log` prints through here
+/// `log_line(e, PLAIN) == e.display_line()`, always — `log` prints through here
 /// too, because the two verbs print the same line and one line must not have
 /// two shapes.
+///
+/// **The displayed line and not the stored message.** An entry is an entity and
+/// its message can run to thousands of characters (§3); what a lister prints is
+/// the head of it, with an ellipsis when there is more, and `ank show <LOG-id>`
+/// is where the rest is.
 pub fn log_line(e: &LogEntry, style: Style) -> String {
-    let line = e.format_line();
+    let line = e.display_line();
     if !style.enabled() {
         return line;
     }
@@ -78,7 +83,7 @@ pub fn log_line(e: &LogEntry, style: Style) -> String {
     // formatted line by construction, so this cannot drift if ank_core ever
     // changes what the separator is, and the cut is a character boundary
     // whatever the message contains — including another em-dash.
-    let cut = line.len() - e.message.len();
+    let cut = line.len() - e.shown_message().len();
     format!("{}{}", style.key(&line[..cut]), &line[cut..])
 }
 

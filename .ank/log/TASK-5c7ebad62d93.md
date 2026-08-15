@@ -1,2 +1,0 @@
-- 2026-08-14T18:03:16Z claude-code/5c7e — The local swap succeeds before the push is attempted, so a detached proof that missed the remote is already in this clone. That decides the hint: 'git push origin refs/ank/proof/<id>' finishes the job, where a re-run of attest would append a second entry to a record that is already correct.
-- 2026-08-14T18:04:44Z claude-code/5c7e — done, proof commit:1006bd9abc38ba6f3e9b0604b8af08a7eba26fec

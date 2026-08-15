@@ -1,2 +1,0 @@
-- 2026-08-11T23:19:14Z claude-code@sean-laptop — README cut from 270 to 150 lines; the 140 ceiling costs about 50 lines before any argument is made, between the HTML header, the context transcript and the six-row table
-- 2026-08-11T23:28:29Z claude-code@sean-laptop — done, proof test:31546304087

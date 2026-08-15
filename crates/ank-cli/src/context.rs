@@ -870,7 +870,9 @@ fn build_execution(
     mut warnings: Vec<String>,
 ) -> Result<View> {
     let loaded = store.load(&id)?;
-    let log_entries = store.log_of(&loaded)?;
+    // The entries about this task, from the corpus, and from the previous log
+    // directory only where a corpus has not been migrated yet (§3).
+    let log_entries = crate::entries::about(store, index, &loaded)?;
     let Entity::Task(task) = loaded.entity else {
         return Err(CliError::new(1, format!("{id} is not a task")));
     };
@@ -921,11 +923,20 @@ fn build_execution(
         claim::scopes_intersect(scope, &task.scope).unwrap_or(false)
     });
 
-    // Read through the store, so the task in hand shows its log whether that
-    // log is a file or still a section of this body.
+    // The line a lister prints, bounded whatever the message: an entry is an
+    // entity and its message can run to thousands of characters, which one
+    // entry would otherwise spend the whole page on (§5). The head of it here,
+    // and `ank show <LOG-id>` for the rest.
     let log: Vec<String> = log_entries
         .iter()
-        .map(|e| format!("{} {} — {}", e.timestamp, e.who, e.message))
+        .map(|e| {
+            format!(
+                "{} {} — {}",
+                e.line.timestamp,
+                e.line.who,
+                e.line.shown_message()
+            )
+        })
         .collect();
 
     Ok(View {
@@ -991,6 +1002,11 @@ pub(crate) fn marker_for(status: &str, coordination: &Coordination) -> String {
         // Saying so is the point: the log tells the next agent where the
         // previous one stopped.
         Coordination::Lapsed { holder } => format!("[{status} expired:{holder}]"),
+        // **A kind with no lifecycle carries no marker**, rather than an empty
+        // pair of brackets. A log entry has no `status` at all (§3), and `[]`
+        // in a listing reads as a status the reader failed to parse — the one
+        // output that says less than printing nothing.
+        Coordination::Free if status.is_empty() => String::new(),
         Coordination::Free => format!("[{status}]"),
     }
 }

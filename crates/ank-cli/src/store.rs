@@ -14,8 +14,8 @@
 //!   the second would overwrite the first with nothing to signal it.
 
 use ank_core::{
-    append_log, append_log_file, parse_entity, parse_log, parse_log_file, resolve_prefix,
-    serialize_entity, Entity, EntityId, EntityKind, LogEntry,
+    parse_entity, parse_log, parse_log_file, resolve_prefix, serialize_entity, Entity, EntityId,
+    EntityKind, LogEntry,
 };
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
@@ -205,10 +205,6 @@ pub fn version_of(entity: &Entity) -> u64 {
 
 fn set_version(entity: &mut Entity, v: u64) {
     entity.set_version(v);
-}
-
-fn set_body(entity: &mut Entity, body: String) {
-    *entity.body_mut() = body;
 }
 
 // ---------------------------------------------------------------------------
@@ -681,26 +677,40 @@ impl Store {
     }
 
     // -----------------------------------------------------------------------
-    // The log, a file of its own since schema 3
+    // The previous log layout, read for one window and never written
     // -----------------------------------------------------------------------
 
-    /// The directory every log file lives in, one file per entity. Named here
-    /// rather than spelled out at each reader: `check` walks it, and a second
-    /// literal is a second thing to disagree with this one.
+    /// The directory the previous layout kept a log in, one file per entity.
+    ///
+    /// **Nothing writes here any more.** An entry is an entity since
+    /// ADR-25f977377fa0, so there is no file to append to and the merge an
+    /// appended file required does not arise. What is left is a reader, on the
+    /// same terms §3 gives the previous entity layout: a corpus still holding
+    /// one is read from it and reported by `check` with the command that moves
+    /// it — never a fault, and never a silent half-history.
+    ///
+    /// Delete this constant and the three functions that read it, and the
+    /// window closes.
     pub const LOG_DIR: &'static str = "log";
 
-    /// The path of an entity's log, computed from the same id with no lookup.
+    /// The path the previous layout gave an entity's log, computed from the
+    /// same id with no lookup.
     pub fn log_path_of(&self, id: &EntityId) -> PathBuf {
         self.root.join(Self::LOG_DIR).join(format!("{id}.md"))
     }
 
-    /// The log of an entity, from wherever it currently lives.
+    /// The log an entity carries in one of the two previous layouts, oldest
+    /// first.
     ///
     /// The file when there is one, the `## Log` section of the body otherwise.
-    /// Never both, and never unioned: an entity carries its log in one place,
+    /// Never both, and never unioned: an entity carried its log in one place,
     /// and a reader that added the two would double every entry of a corpus
     /// caught mid-move. A missing file is an empty log and never an error.
-    pub fn log_of(&self, loaded: &Loaded) -> Result<Vec<LogEntry>> {
+    ///
+    /// The entries of a migrated corpus are entities and do not come through
+    /// here at all — [`crate::entries::about`] is what reads those, and what
+    /// decides between the two sources.
+    pub fn previous_log_of(&self, loaded: &Loaded) -> Result<Vec<LogEntry>> {
         let path = self.log_path_of(loaded.entity.id());
         match fs::read_to_string(&path) {
             Ok(text) => parse_log_file(&text).map_err(|source| StoreError::Parse { path, source }),
@@ -709,90 +719,18 @@ impl Store {
         }
     }
 
-    /// Where an entity's log lives.
+    /// The entities whose log is still a file of the previous layout, in
+    /// identifier order.
     ///
-    /// An entity whose body still carries a `## Log` section keeps it: writing
-    /// the entry into a new file instead would split one history across two
-    /// places, and since reading prefers the file, the older half would go
-    /// silent — which is the exact failure the schema bump exists to prevent.
-    /// Everything else has its log in a file, which is what schema 3 means.
-    ///
-    /// The caller must know this **before** it writes anything, because the
-    /// answer decides whether the entry belongs in the body it is about to
-    /// write or in a file it writes afterwards.
-    pub fn log_home(&self, loaded: &Loaded) -> LogHome {
-        if body_of(&loaded.entity)
-            .lines()
-            .any(|l| l.trim_end() == ank_core::log::LOG_HEADER)
-        {
-            LogHome::Body
-        } else {
-            LogHome::File
-        }
+    /// Sorted, because `read_dir` is not, and a migration that walks the
+    /// filesystem's order is a migration whose report differs between two runs
+    /// on one corpus. A missing directory is a corpus already moved, which is
+    /// not an error.
+    pub fn previous_log_ids(&self) -> Result<Vec<EntityId>> {
+        let mut ids = self.ids_in(&self.root.join(Self::LOG_DIR))?;
+        ids.sort_by_key(|id| id.to_string());
+        Ok(ids)
     }
-
-    /// Writes an entity **and** records one log entry for that write, each
-    /// where it belongs.
-    ///
-    /// The order is the decision. In the file form the entity is written first
-    /// and the entry lands after it, so a write that lost the compare-and-swap
-    /// leaves no line claiming a transition that never happened. In the body
-    /// form there is one write and the question does not arise, which is what
-    /// the previous layout bought and what the move gives up on purpose.
-    ///
-    /// `home` is taken rather than derived so the caller can read it off the
-    /// entity it loaded, before consuming it.
-    pub fn write_with_log(
-        &self,
-        home: LogHome,
-        entity: &Entity,
-        entry: &LogEntry,
-        base_version: u64,
-    ) -> Result<u64> {
-        let mut next = entity.clone();
-        if home == LogHome::Body {
-            set_body(&mut next, append_log(body_of(entity), entry));
-        }
-        let version = self.write(&next, base_version)?;
-        if home == LogHome::File {
-            self.append_to_log_file(next.id(), entry)?;
-        }
-        Ok(version)
-    }
-
-    /// Appends one entry to `.ank/log/<ID>.md`, creating the file if needed.
-    ///
-    /// Called **after** the entity write, when there is one. A log line is a
-    /// trace of something that happened, so a transition that failed must not
-    /// leave one behind; a transition with no trace is merely incomplete, which
-    /// is the cheaper of the two failures.
-    pub fn append_to_log_file(&self, id: &EntityId, entry: &LogEntry) -> Result<()> {
-        let path = self.log_path_of(id);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|source| StoreError::Io {
-                path: parent.to_path_buf(),
-                source,
-            })?;
-        }
-        let _lock = Lock::acquire(&path)?;
-        let current = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
-            Err(source) => return Err(StoreError::Io { path, source }),
-        };
-        write_atomic(&path, &append_log_file(&current, entry))
-    }
-}
-
-/// Where an entity's log is kept.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LogHome {
-    /// `.ank/log/<ID>.md`, which is what schema 3 means.
-    File,
-    /// A `## Log` section at the end of the body, written before the move and
-    /// still read there — and still appended to, so that one history stays in
-    /// one place.
-    Body,
 }
 
 /// The body of an entity, whichever kind it is. The registry answers it, so a
@@ -1247,72 +1185,58 @@ mod tests {
         assert_eq!(t.title, "The copy that counts");
     }
 
-    /// The log is a file, addressed by the same id, and a missing one is an
-    /// empty log rather than an error.
+    /// Both previous layouts are still read, one file per entity and the body
+    /// section otherwise, and a corpus already moved reads empty rather than
+    /// failing.
     #[test]
-    fn a_log_file_is_appended_to_and_a_missing_one_reads_empty() {
+    fn the_previous_log_layouts_are_read_and_a_missing_one_is_empty() {
         let (root, store, e) = seeded();
         let loaded = store.load(e.id()).unwrap();
-        assert!(store.log_of(&loaded).unwrap().is_empty());
-        assert!(!store.log_path_of(e.id()).exists());
+        assert!(store.previous_log_of(&loaded).unwrap().is_empty());
+        assert!(store.previous_log_ids().unwrap().is_empty());
 
         let entry = LogEntry {
             timestamp: "2026-08-12T09:14Z".into(),
             who: "claude-code/1.4.2".into(),
             message: "learned something".into(),
         };
-        assert_eq!(store.log_home(&loaded), LogHome::File);
-        store.append_to_log_file(e.id(), &entry).unwrap();
-        assert_eq!(
-            store.log_path_of(e.id()),
-            root.0.join("log").join(format!("{}.md", e.id()))
-        );
+        let path = store.log_path_of(e.id());
+        assert_eq!(path, root.0.join("log").join(format!("{}.md", e.id())));
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!("{}\n", entry.format_line())).unwrap();
 
-        let entries = store.log_of(&loaded).unwrap();
+        let entries = store.previous_log_of(&loaded).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].who, "claude-code/1.4.2");
+        assert_eq!(store.previous_log_ids().unwrap(), vec![e.id().clone()]);
 
-        // The entity file itself is untouched: an append is not a transition.
-        let after = fs::read_to_string(store.path_of(e.id())).unwrap();
-        assert_eq!(after, serialize_entity(&e));
-    }
-
-    /// An entity whose body still carries a `## Log` section keeps it. Writing
-    /// the entry into a new file would split one history across two places, and
-    /// since reading prefers the file the older half would go silent -- which is
-    /// the exact failure the schema bump exists to prevent.
-    #[test]
-    fn an_entity_whose_log_is_still_in_its_body_keeps_it_there() {
-        let root = TempRoot::new();
-        let store = Store::new(&root.0);
-        let Entity::Task(mut t) = task("000000000001", "Example task") else {
+        // The body form, which is older still and read where it is.
+        let Entity::Task(mut t) = task("000000000002", "Example task") else {
             panic!("not a task")
         };
         t.body =
             "\nFree body.\n\n## Log\n- 2026-07-26T14:02Z marie@laptop \u{2014} an entry\n".into();
-        let e = Entity::Task(t);
-        store.create(&e).unwrap();
+        let other = Entity::Task(t);
+        store.create(&other).unwrap();
+        let loaded = store.load(other.id()).unwrap();
+        assert_eq!(store.previous_log_of(&loaded).unwrap().len(), 1);
+    }
 
-        let loaded = store.load(e.id()).unwrap();
-        assert_eq!(store.log_of(&loaded).unwrap().len(), 1, "read where it is");
-
-        let entry = LogEntry {
-            timestamp: "2026-08-12T09:14Z".into(),
-            who: "claude-code/1.4.2".into(),
-            message: "learned something".into(),
-        };
-        assert_eq!(
-            store.log_home(&loaded),
-            LogHome::Body,
-            "the file form is not where this entity's log lives"
+    /// **The store has no way to append to either previous layout**, and that
+    /// absence is the decision: an entry is an entity, written once, so there
+    /// is no file for two writers to meet in. Asserted on the surface, because
+    /// a guarantee nothing can express is one a later edit reinstates by
+    /// accident.
+    #[test]
+    fn nothing_here_writes_a_log_file() {
+        let (_root, store, e) = seeded();
+        let before = fs::read_to_string(store.path_of(e.id())).unwrap();
+        store.write(&e, 1).unwrap();
+        assert!(
+            !store.log_path_of(e.id()).exists(),
+            "a write records no line anywhere"
         );
-        // And the write that carries it puts it in the body, leaving no file.
-        let base = version_of(&e);
-        store
-            .write_with_log(LogHome::Body, &e, &entry, base)
-            .unwrap();
-        assert!(!store.log_path_of(e.id()).exists());
-        let after = store.load(e.id()).unwrap();
-        assert_eq!(store.log_of(&after).unwrap().len(), 2, "appended in place");
+        assert!(!store.root().join(Store::LOG_DIR).exists());
+        assert_ne!(before, fs::read_to_string(store.path_of(e.id())).unwrap());
     }
 }

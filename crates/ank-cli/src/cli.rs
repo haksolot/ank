@@ -696,6 +696,30 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses_globals: &[],
         owner_task: None,
     },
+    // After `check`, which is the verb that names it: a corpus still holding
+    // the previous log directory is a `check` signal, and this is the command
+    // that signal prints (§4).
+    CommandSpec {
+        name: "migrate",
+        group: "keep the corpus honest",
+        renews: Renews::Never,
+        coordinates: false,
+        summary: "rewrites the previous log directory as entries, one entity per entry, and removes what it read",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[],
+        refuses: &[refuses(
+            1,
+            "a log file the grammar refuses, or one whose entity is not in the corpus: named, and nothing is written",
+        )],
+        notes: &[
+            "the entry count is asserted equal before and after, and every message is read back and compared",
+            "it writes files and never commits: review with git status .ank",
+        ],
+        refuses_globals: &[],
+        owner_task: None,
+    },
     // After `check` and before `init`: §4's order. It sits beside the verb
     // that writes `config.yml` in the first place, which is the reading §9
     // states -- what `init` writes, `config` maintains.
@@ -1621,6 +1645,7 @@ fn dispatch(
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
         "check" => crate::human::check(&inv, &s.repo, &s.config, out),
+        "migrate" => crate::migrate::run(&inv, &s.repo, out),
         "review" => crate::human::review(&inv, &s.repo, &s.config, out),
         "accept" => crate::human::accept(&inv, &s.repo, &s.config, &s.identity, out),
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
@@ -1763,7 +1788,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            21,
+            22,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1840,7 +1865,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
-            "attest", "amend", "show", "edit",
+            "attest", "amend", "show", "edit", "migrate",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

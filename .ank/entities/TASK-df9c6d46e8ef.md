@@ -5,7 +5,7 @@ slug: log-entries-become-entities-and-the-corpus-migra
 title: Log entries become entities, and the corpus migrates without losing one
 created: 2026-08-15T06:56:47Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/**
   - crates/ank-core/**
@@ -14,7 +14,7 @@ done_criteria: |
   A log entry is written as an entity naming the entity it is about, and nothing is appended to an existing file. ank log with an id and ank show read the entries back, newest first and oldest first respectively, capped and announcing what they cut. Entries are indexed and reachable through ank find. Any kind carries entries, an ADR included. The entries the corpus already holds are migrated, with their count asserted equal before and after and no message altered, and the previous log directory is no longer written. A test in crates/ank-cli/tests/cli.rs drives the built binary for write, read, show, find, the ADR case, and two concurrent entries merging with no conflict.
 criteria_by: creator
 schema: 3
-version: 2
+version: 3
 ---
 
 The deepest change of the group, and the last, because it moves 27 percent of the

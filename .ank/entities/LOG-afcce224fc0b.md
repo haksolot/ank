@@ -1,0 +1,14 @@
+---
+id: LOG-afcce224fc0b
+type: log
+title: The split is on the status of the ADR making the claim, not on the target's. A proposed superseder
+created: 2026-08-01T01:46:00Z
+author: seanl@sean-laptop
+scope:
+  - crates/ank-cli/src/human.rs
+about: TASK-195538e3e15c
+schema: 3
+version: 1
+---
+
+ over an unmarked target becomes a signal carrying '(proposed: not yet a succession)'; accepted and superseded keep the fault verbatim. The two other branches are untouched on purpose: a dangling supersedes target is a fault at any status, because no future accept can repair a reference to something that never existed, and the reverse direction (marked superseded, nothing supersedes it) describes a state only accept can produce. What makes this proportionate rather than lenient is the blast radius: exit 8 fails check-repo, which nearly every task in this corpus declares, so faulting on an intention let one new adr --supersedes -- an act the role table hands to the agent -- block every done in the repository until a human with a signing key ran accept. Tested proposed and accepted separately, each asserting the exit code through check and not only the finding level, because 0 versus 8 is the consequence that matters.

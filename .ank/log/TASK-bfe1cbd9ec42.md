@@ -1,2 +1,0 @@
-- 2026-08-09T03:03:45Z seanl@sean-laptop — Falsified the two table tests before trusting them: dropping the `open` arm from state_sgr turns both red with the message each was written to give -- "the marker [open] is not the colour section 4 gives it" and "open reaches a reader with no colour". Restored, 325 green.
-- 2026-08-09T03:10:11Z seanl@sean-laptop — done, proof test:31291756290

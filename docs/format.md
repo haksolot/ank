@@ -196,7 +196,7 @@ has no field carrying its authority, so `ratified` is taken over the body and
 | 1 | `id` | bare | `LOG-<12 hex>` |
 | 2 | `type` | bare | always `log` |
 | 3 | `slug` | scalar | optional |
-| 4 | `title` | scalar | the message |
+| 4 | `title` | scalar | the message, or its head (below) |
 | 5 | `created` | scalar | ISO 8601, UTC; the instant of the entry |
 | 6 | `author` | scalar | optional; who wrote the entry |
 | 7 | `scope` | block sequence | mandatory; the subject's scope as it stood |
@@ -333,6 +333,37 @@ identity, a space, an em dash, a space, the message:
 
 So an entry written under either previous shape reads across unchanged and
 nothing about it is reinterpreted: only where it lives has moved, twice.
+
+**A message longer than a line is split across `title` and the body, and the
+split is lossless.** One line of at most **100 characters** is the whole of the
+`title`, and the body is empty. Longer, the title runs to the last space at or
+before character 100 and at or after character 50 — the limit itself where there
+is no such space, and the first newline where one comes earlier — and the body is
+a newline, the remainder verbatim, a newline.
+
+**The message is the exact concatenation of the two.** The separating space
+belongs to the remainder, so joining inserts nothing; recovering the remainder
+removes exactly one newline at each end and never trims. Given the message
+
+    discrepancy: the criterion assumes merge=union and .gitattributes declares none, which is measurable
+
+a writer stores
+
+```yaml
+title: "discrepancy: the criterion assumes merge=union and .gitattributes declares"
+```
+
+with the body `"
+ none, which is measurable
+"`, and a reader that concatenates
+the title with the remainder gets the message back byte for byte. A body that is
+not of that shape carries no remainder, and the message is the title alone.
+
+The rule exists because the title is what every lister prints, on every kind: a
+2000-character title is one enormous quoted scalar and it is printed in full
+wherever entities are listed. **So print the head of the message with a trailing
+`…` when there is more**, and let a reader ask for the entry itself to see the
+whole. Machine output carries the whole message: a parser reads no page.
 
 Any kind may be logged against — a task, an ADR, a spec — and **an entity with no
 entries has an empty log, never an error**. Do not write one to record that there

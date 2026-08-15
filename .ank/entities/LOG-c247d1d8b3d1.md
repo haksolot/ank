@@ -1,0 +1,14 @@
+---
+id: LOG-c247d1d8b3d1
+type: log
+title: "Fixed: signature_state no longer ends in .ok()? -- a git failure becomes Signature::Unreadable {"
+created: 2026-08-02T23:14:41Z
+author: seanl@sean-laptop
+scope:
+  - crates/ank-cli/src/human.rs
+about: TASK-c92b7cc10f13
+schema: 3
+version: 1
+---
+
+ reason }, a sixth state, and check_adr counts it into report.unreadable_signatures with the first reason kept. One corpus line, like unchecked_signatures and for the same reason: 'N ratification signature(s) could not be read, so they are neither verified nor refused: <git's own message>'. A signal, not a fault -- a broken environment is not a forged ratification, and exiting 8 would fail the check-repo verifier of every task on a machine whose only defect is its gpg config. Kept apart from Unchecked on purpose: no key for an answer is not the same as no answer. The test lever is a gpg.format git rejects, one of the causes named when the task was filed. Measured before using it: with gpg.format=bogus in the repo config, rev-list --full-history, cat-file, rev-parse, for-each-ref and symbolic-ref all still exit 0, and only the signature read exits 128 -- so the corpus is still read and the ratification commit still reached, and nothing but the signature path is under test. Proved by reverting human.rs alone: the test fails with 'check: ok' and no mention of the ADR, the silence the task was filed for. Note for later: the status check in git::signature_of is load-bearing beyond this. With gpg.format=bogus git prints 'commit <sha>' and no placeholder lines, so a parser trusting the output would read the missing %G? as N and accuse a perfectly signed ratification of being unsigned.
