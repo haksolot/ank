@@ -30,9 +30,13 @@
 //! removing the file it read — is closed by dropping a previous-layout line
 //! that an entry already carries, byte for byte.
 
-use crate::cli::Result;
+use crate::cli::{CliError, Result};
 use crate::index::Index;
 use crate::store::Store;
+// Through the module rather than the crate root, which is where the rest of the
+// log lives: `ank_core::log` is public and documented as the log's home, and a
+// re-export is a line in a file this work has no other reason to open.
+use ank_core::log::control_character;
 use ank_core::{message_fields, Entity, EntityId, EntityKind, Log, LogEntry};
 
 /// One entry as a reader receives it: the line, and the entity that carries it.
@@ -135,6 +139,35 @@ pub fn next_seq(store: &Store, index: &Index, subject: &Entity) -> Result<u64> {
         .unwrap_or(0))
 }
 
+/// The refusal a caller message carrying a control character earns, or `None`
+/// when it carries none (TASK-f3910718320a).
+///
+/// **Worded once, so that every door says the same thing**, and the rule it
+/// asks is [`ank_core::log::control_character`]'s — one place decides what a
+/// message may hold and one place says so.
+///
+/// `verb` is the command to run again, which is the caller's and not this
+/// function's: `log` takes its message as a positional and `release` takes its
+/// reason on a flag, and §4 asks a refusal for the exact command rather than
+/// for generic help. Exit code 1, the code the empty-message refusal of `log`
+/// already answers with — this is the same door and the wording follows it.
+pub fn control_refusal(message: &str, verb: &str) -> Option<CliError> {
+    let (at, c) = control_character(message)?;
+    // The escape `char::escape_debug` prints is the one a reader who typed a
+    // backtick in PowerShell can recognise: `\r`, `\t`, `\u{1b}`. Naming the
+    // byte is the whole point of refusing instead of stripping.
+    let escape = c.escape_debug();
+    Some(
+        CliError::new(
+            1,
+            format!("a log entry cannot carry {escape} (character {at})"),
+        )
+        .with_hint(format!(
+            "{verb} \"<the same message, with no {escape} in it>\""
+        )),
+    )
+}
+
 /// Writes one entry about an entity, and returns the identifier it was given.
 ///
 /// **The scope is the subject's, copied at this moment** (§3). An entry appears
@@ -158,6 +191,15 @@ pub fn record(
     created: &str,
     message: &str,
 ) -> Result<EntityId> {
+    // **The one door, so every verb that writes an entry is covered**
+    // (TASK-f3910718320a). `log`, `done`, `release --reason` and the human
+    // verbs all record through this function and through nothing else, and a
+    // check written into one of them is a check the next verb would not have.
+    // Before the identifier and before the read of `seq`: a refusal writes
+    // nothing and reserves nothing.
+    if let Some(refusal) = control_refusal(message, "ank log") {
+        return Err(refusal);
+    }
     let line = LogEntry {
         timestamp: created.to_string(),
         who: identity.to_string(),

@@ -2005,6 +2005,15 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
                 .with_hint("ank release --reason \"needs access to the staging Redis store\""))
         }
     };
+    // The same rule as the door every entry goes through, asked here because of
+    // the order this verb writes in (TASK-f3910718320a): the transition is
+    // written first and the entry after it, so a refusal at the door alone
+    // would leave a task handed back with nothing in the corpus saying why —
+    // which is the gap `--reason` exists to close. One rule, two doors, and the
+    // command to run again is this verb's.
+    if let Some(refusal) = entries::control_refusal(&reason, "ank release --reason") {
+        return Err(refusal);
+    }
 
     let store = Store::new(&repo.ank);
     let (id, _, _, warnings) = acting_on(
