@@ -1263,7 +1263,13 @@ fn bearing_on(store: &Store, _repo: &Repo, task: &Task) -> Result<Vec<Adr>> {
     Ok(found)
 }
 
-fn scopes_intersect(a: &[String], b: &[String]) -> Result<bool> {
+/// Whether two scopes meet at all.
+///
+/// Shared with `context`, which asks it of a spec and the task in hand: what
+/// decides that a constraint bears on a task has to be what decides that a
+/// specification governs it, or one page would name the two for different
+/// perimeters.
+pub(crate) fn scopes_intersect(a: &[String], b: &[String]) -> Result<bool> {
     let invalid = |e: ank_core::Error| CliError::new(1, format!("invalid scope: {e}"));
     let set_a = ScopeSet::new(a).map_err(invalid)?;
     let set_b = ScopeSet::new(b).map_err(invalid)?;

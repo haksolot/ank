@@ -616,9 +616,13 @@ fn upsert(
             String::new(),
             a.constraint.clone(),
         ),
-        // A spec has the lifecycle and no sentence of that sort to carry: its
-        // document is the body, and what of it becomes searchable is the
-        // question TASK-3e68786fa443 answers when the kind reaches the CLI.
+        // A spec has the lifecycle and no sentence of that sort to carry, and
+        // **its body is deliberately not indexed**: the document is measured in
+        // hundreds of thousands of bytes, and the searchable column exists so
+        // that `find` can rank one line per result under the same budget
+        // `context` answers under (§5). A spec is found by its title, its slug
+        // and its scope, like every other entity; what it says is one
+        // `ank show` away.
         Entity::Spec(s) => (s.status.as_str().to_string(), String::new(), String::new()),
         // A log entry has no status at all, and its message is the `title`
         // above. TASK-df9c6d46e8ef is what makes entries reachable by query.

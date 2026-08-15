@@ -229,6 +229,26 @@ pub struct ConstraintLine {
     pub overlap: usize,
 }
 
+/// A specification governing the perimeter: **id and title, and nothing else**.
+///
+/// The absence of a text field is the type stating the rule of §5 rather than
+/// leaving it to the renderers. A [`ConstraintLine`] carries `text` because
+/// execution mode serves a constraint in full; a spec has no `constraint` to
+/// serve and its body is the document, so there is no mode that quotes it and
+/// no field here for one to reach for. The proportion is what makes that
+/// non-negotiable: the specification this repository stores is over two hundred
+/// thousand bytes against a budget of eight thousand characters, so one line of
+/// a spec body reaching this page is the budget gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecLine {
+    pub id: EntityId,
+    pub short: String,
+    pub title: String,
+    /// How narrow the scope is, as for a constraint: the section is cut from
+    /// the tail, so the order has to put the broad ones there.
+    pub specificity: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Mode {
     /// No claim held: breadth. Carries the perimeter it was computed for.
@@ -248,6 +268,8 @@ pub struct View {
     pub mode: Mode,
     pub constraints: Vec<ConstraintLine>,
     pub proposals: Vec<ConstraintLine>,
+    /// The specifications governing the perimeter, named in both modes (§5).
+    pub specs: Vec<SpecLine>,
     pub tasks: Vec<TaskLine>,
     /// Counts for the end-of-loop message, which has to be exact: an agent in
     /// a loop needs a clean stop signal, and a wrong count is worse than none.
@@ -288,12 +310,21 @@ pub fn shorts_of(repo: &Repo) -> Result<HashMap<EntityId, String>> {
 /// Kinds are computed apart because the displayed form carries the `TASK-` or
 /// `ADR-` prefix, and prefix resolution filters on it.
 ///
+/// **Which kinds is the registry's answer and not a list written here.** The
+/// loop used to name two, so a corpus holding an entity of a third kind got no
+/// short form for it and every listing printed the full twelve hex characters
+/// beside four-character neighbours — the one output nothing in §3 describes
+/// (ADR-c9f9d0d6f05d).
+///
 /// Pure, and called through [`shorts_of`] everywhere a verb prints: what it is
 /// handed decides whether the answer is right, and the choice of corpus is the
 /// half worth stating once rather than at five call sites.
 pub fn short_ids(ids: &[EntityId]) -> HashMap<EntityId, String> {
     let mut out = HashMap::new();
-    for kind in [EntityKind::Task, EntityKind::Adr] {
+    for kind in ank_core::KINDS
+        .iter()
+        .filter_map(|k| EntityKind::from_type_name(k.name))
+    {
         let of_kind: Vec<&EntityId> = ids.iter().filter(|i| i.kind() == kind).collect();
         let mut len = MIN_SHORT;
         while len < ank_core::id::ID_HEX_LEN {
@@ -583,6 +614,7 @@ fn build_orientation(
         },
         constraints,
         proposals,
+        specs: spec_lines(rows, shorts, |scope| in_perimeter(scope, path)),
         tasks: lines,
         blocked,
         in_progress,
@@ -643,6 +675,51 @@ fn adr_lines(
     Ok((active, proposed))
 }
 
+/// The specifications governing a perimeter, **named and never quoted** (§5).
+///
+/// Built from the index rows alone, and that is the property rather than an
+/// optimisation: `adr_lines` loads each ADR through the store because it needs
+/// the `constraint` field, and this function needs no field the row does not
+/// already carry. A spec is therefore never read off disk to be listed, so its
+/// body cannot reach this page even by accident.
+///
+/// `superseded` is dropped for the reason it is dropped from the constraints:
+/// it is history, and history is not context. A `proposed` spec is kept — it is
+/// a working draft of a document that already describes this perimeter, and the
+/// exclusion an ADR's `proposed` earns is about *binding*, which a spec never
+/// does in either status.
+///
+/// `governs` is the perimeter test, supplied by the caller because the two
+/// modes ask it about different ground: orientation about the path the caller
+/// named, execution about the scope of the task in hand.
+fn spec_lines(
+    rows: &[Row],
+    shorts: &HashMap<EntityId, String>,
+    governs: impl Fn(&[String]) -> bool,
+) -> Vec<SpecLine> {
+    let mut out: Vec<SpecLine> = rows
+        .iter()
+        .filter(|r| r.kind == EntityKind::Spec)
+        .filter(|r| matches!(r.status.as_str(), "accepted" | "proposed"))
+        .filter(|r| governs(&r.scope))
+        .map(|r| SpecLine {
+            short: shorts
+                .get(&r.id)
+                .cloned()
+                .unwrap_or_else(|| r.id.to_string()),
+            id: r.id.clone(),
+            title: r.title.clone(),
+            specificity: specificity(&r.scope),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.specificity
+            .cmp(&a.specificity)
+            .then(a.id.to_string().cmp(&b.id.to_string()))
+    });
+    out
+}
+
 fn build_execution(
     store: &Store,
     repo: &Repo,
@@ -699,6 +776,10 @@ fn build_execution(
         });
     }
 
+    let specs = spec_lines(&rows, shorts, |scope| {
+        claim::scopes_intersect(scope, &task.scope).unwrap_or(false)
+    });
+
     // Read through the store, so the task in hand shows its log whether that
     // log is a file or still a section of this body.
     let log: Vec<String> = log_entries
@@ -719,6 +800,11 @@ fn build_execution(
         },
         constraints,
         proposals: Vec::new(),
+        // Named as in orientation, over the scope of the task in hand (§5), and
+        // by the same test that decides whether a constraint bears on it: one
+        // rule, one implementation, or the page would name a spec for a
+        // perimeter it does not name a constraint for.
+        specs,
         tasks: Vec::new(),
         blocked: 0,
         in_progress: coord
@@ -924,6 +1010,11 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
                     out.extend(constraint_block(c, style));
                 }
             }
+            // Named here as in orientation, and never quoted: there is no mode
+            // that serves a spec body, because there is no `constraint` to
+            // serve and the body is the document (§3, §5). Charged before the
+            // log, which is what yields, so a spec line never costs an entry.
+            out.extend(spec_section(&view.specs, 0, ".", style));
             if !log.is_empty() {
                 // The log is what yields: it is the one section whose older
                 // half costs more than it informs.
@@ -949,11 +1040,13 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
             let scope_arg = path.clone().unwrap_or_else(|| ".".to_string());
             let mut constraints = view.constraints.clone();
             let mut proposals = view.proposals.clone();
+            let mut specs = view.specs.clone();
             let mut tasks = view.tasks.clone();
 
             let mut cut_tasks = 0usize;
             let mut cut_constraints = 0usize;
             let mut cut_proposals = 0usize;
+            let mut cut_specs = 0usize;
 
             // §5, first half: constraints take at most a third, and what they
             // do not use goes to the tasks. Charged before anything else is
@@ -964,14 +1057,34 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
             // characters of constraints against 157 of tasks, one task line
             // printed and eleven cut (TASK-1ead0e19fb73). The cut order used to
             // be tasks first, which is what produced that.
+            //
+            // A specification is charged here rather than against the tasks:
+            // §5 puts it beside the constraints, cut with them and counted with
+            // them. Specs yield first inside the share, because a constraint
+            // binds the work and a spec describes the ground — and because the
+            // floor of "one constraint always survives" is about a rule, so a
+            // page reduced to one line has to keep the rule rather than the
+            // description.
             let share = budget / 3;
-            while constraints.len() > 1
-                && chars(&constraint_section(
-                    &constraints,
-                    cut_constraints + 1,
+            let priced = |constraints: &[ConstraintLine],
+                          specs: &[SpecLine],
+                          cut_constraints: usize,
+                          cut_specs: usize| {
+                chars(&constraint_section(
+                    constraints,
+                    cut_constraints,
                     &scope_arg,
                     style,
-                )) > share
+                )) + chars(&spec_section(specs, cut_specs, &scope_arg, style))
+            };
+            while !specs.is_empty()
+                && priced(&constraints, &specs, cut_constraints, cut_specs + 1) > share
+            {
+                specs.pop();
+                cut_specs += 1;
+            }
+            while constraints.len() > 1
+                && priced(&constraints, &specs, cut_constraints + 1, cut_specs) > share
             {
                 constraints.pop();
                 cut_constraints += 1;
@@ -984,10 +1097,12 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
                 let size = chars(&orientation_lines(
                     &constraints,
                     &proposals,
+                    &specs,
                     &tasks,
                     cut_tasks,
                     cut_proposals,
                     cut_constraints,
+                    cut_specs,
                     &scope_arg,
                     view,
                     style,
@@ -998,6 +1113,9 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
                 if !proposals.is_empty() {
                     proposals.pop();
                     cut_proposals += 1;
+                } else if !specs.is_empty() {
+                    specs.pop();
+                    cut_specs += 1;
                 } else if tasks.len() > 1 {
                     tasks.pop();
                     cut_tasks += 1;
@@ -1013,10 +1131,12 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
             out.extend(orientation_lines(
                 &constraints,
                 &proposals,
+                &specs,
                 &tasks,
                 cut_tasks,
                 cut_proposals,
                 cut_constraints,
+                cut_specs,
                 &scope_arg,
                 view,
                 style,
@@ -1066,14 +1186,55 @@ fn constraint_section(
     out
 }
 
+/// The specifications governing the perimeter, one line each, in both modes.
+///
+/// **The section has no long form**, and that is the rule rather than an
+/// omission (§5): a specification is one line in either mode, so there is
+/// nothing here to expand into and nothing a mode switch could reveal. What the
+/// document says is one `ank show <id>` away — the split §5 settles for `help`
+/// and its per-verb page, applied to a kind whose entities are measured in
+/// hundreds of thousands of bytes against a page budgeted at eight thousand
+/// characters.
+///
+/// Split out for the reason [`constraint_section`] is: the budget prices this
+/// section before the page exists, and a second copy of the rendering would be
+/// free to disagree with the one that finally prints.
+fn spec_section(
+    specs: &[SpecLine],
+    cut_specs: usize,
+    scope_arg: &str,
+    style: Style,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    if specs.is_empty() && cut_specs == 0 {
+        return out;
+    }
+    out.push(String::new());
+    // The header counts what the perimeter holds and not what survived, exactly
+    // as `PROPOSED` does: this section can be emptied by truncation, so a count
+    // of survivors would read `(0)` above a notice saying one was cut.
+    out.push(style.header(&format!("SPECIFICATIONS ({})", specs.len() + cut_specs)));
+    for s in specs {
+        out.push(format!("  {}  {}", style.id(&s.short), s.title));
+    }
+    if cut_specs > 0 {
+        out.push(format!(
+            "  +{cut_specs} not shown, ank find --type spec --scope {scope_arg}"
+        ));
+    }
+    out
+}
+
 #[allow(clippy::too_many_arguments)]
 fn orientation_lines(
     constraints: &[ConstraintLine],
     proposals: &[ConstraintLine],
+    specs: &[SpecLine],
     tasks: &[TaskLine],
     cut_tasks: usize,
     cut_proposals: usize,
     cut_constraints: usize,
+    cut_specs: usize,
     scope_arg: &str,
     view: &View,
     style: Style,
@@ -1106,6 +1267,9 @@ fn orientation_lines(
             ));
         }
     }
+    // After the constraints and the proposals, before the tasks, which is the
+    // order §5 lists the four sections in.
+    out.extend(spec_section(specs, cut_specs, scope_arg, style));
     if !tasks.is_empty() {
         out.push(String::new());
         out.push(style.header(&format!("TASKS ({})", tasks.len())));
@@ -1193,6 +1357,23 @@ pub fn render_json(view: &View) -> String {
         })
         .collect::<Vec<_>>()
         .join(",");
+    // Id, short and title, and no fourth key. The machine surface is held to
+    // the same rule as the human one — there is no mode that serves a spec
+    // body — and a `--json` caller is exactly the one that would pipe two
+    // hundred thousand bytes into an agent's context without noticing.
+    let specs = view
+        .specs
+        .iter()
+        .map(|s| {
+            format!(
+                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\"}}",
+                s.id,
+                esc(&s.short),
+                esc(&s.title)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let tasks = view
         .tasks
         .iter()
@@ -1233,7 +1414,8 @@ pub fn render_json(view: &View) -> String {
 
     format!(
         "{{\"mode\":\"{mode}\",\"head\":{head},\"criteria\":{criteria},\
-         \"constraints\":[{constraints}],\"proposed\":[{proposals}],\"tasks\":[{tasks}],\
+         \"constraints\":[{constraints}],\"proposed\":[{proposals}],\"specs\":[{specs}],\
+         \"tasks\":[{tasks}],\
          \"log\":{log},\"ready\":{},\"blocked\":{},\"finished_elsewhere\":{},\"warnings\":{}}}",
         view.ready_count(),
         view.blocked,

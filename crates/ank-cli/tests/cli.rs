@@ -6666,6 +6666,7 @@ fn entity_files(r: &Repo, kind: &str) -> Vec<String> {
     let prefix = match kind {
         "tasks" => "TASK-",
         "adr" => "ADR-",
+        "spec" => "SPEC-",
         other => panic!("no such kind: {other}"),
     };
     let dir = r.0.join(".ank").join("entities");
@@ -6742,6 +6743,152 @@ fn new_adr_without_flags_opens_a_template_and_writes_what_comes_back() {
     // before anyone agreed to it.
     assert!(text.contains("status: proposed"), "{text}");
     assert!(!text.contains("ratified:"), "{text}");
+}
+
+/// The document a spec fixture carries, written so that every line of it is a
+/// string no other output could produce. The negative assertion below is only
+/// worth as much as that: a body made of ordinary words would let a page pass
+/// this test by coincidence.
+const SPEC_BODY_LINES: [&str; 3] = [
+    "Quoting-this-line-would-mean-the-budget-is-gone.",
+    "Section-two-of-a-document-nobody-should-see-in-context.",
+    "And-a-third-line-for-good-measure.",
+];
+
+/// The whole criterion of TASK-3e68786fa443, driven through the built binary:
+/// `new spec` creates, `show` reads whole, `find --type spec` lists, `context`
+/// names — and **no line of the document reaches `context` in either mode**.
+///
+/// The negative half is the point, and it is not the same assertion as the
+/// positive one read backwards. `context` names a spec exactly as it names an
+/// ADR, one line of id and title, and unlike an ADR there is no execution mode
+/// that serves the body either: there is no `constraint` field to serve, and the
+/// body is the document (§3, §5). The specification this repository stores is
+/// over two hundred thousand bytes against a budget of eight thousand
+/// characters, so a single line getting through is the budget gone and the mode
+/// broken — which a test asserting only that the title appears would never
+/// notice.
+#[test]
+fn a_spec_is_created_read_listed_and_named_but_never_quoted() {
+    let r = Repo::new();
+    let body = SPEC_BODY_LINES.join("\n");
+
+    // Created through the surface, with the body on stdin: a document is what
+    // `--body -` exists for, and a spec is the kind that has nothing else.
+    let out = r.ank_stdin(
+        "marie@laptop",
+        &[
+            "new",
+            "spec",
+            "--title",
+            "The session protocol",
+            // What the document governs, never where it lives (§3).
+            "--scope",
+            "src/auth/**",
+            "--body",
+            "-",
+        ],
+        &body,
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+    assert!(id.starts_with("SPEC-"), "the id carries the kind: {id}");
+
+    let files = entity_files(&r, "spec");
+    assert_eq!(files.len(), 1, "exactly one spec: {files:?}");
+    let text = std::fs::read_to_string(r.0.join(".ank/entities").join(&files[0])).unwrap();
+    assert!(text.contains("type: spec"), "{text}");
+    // The absence that justifies the kind: a spec describes, an ADR binds.
+    assert!(!text.contains("constraint:"), "{text}");
+    // Never born accepted and never born anchored, exactly as an ADR is not:
+    // ratification is a signed commit produced by `accept`.
+    assert!(text.contains("status: proposed"), "{text}");
+    assert!(!text.contains("ratified:"), "{text}");
+    assert!(text.contains("  - src/auth/**"), "{text}");
+
+    // `show` is the reader, byte for byte. Not "contains the body": the whole
+    // file, exactly, which is what the split with `context` rests on.
+    let out = r.ank("marie@laptop", &["show", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out), text, "show prints the entity whole");
+
+    // Listed by its own kind, and not by another's.
+    let out = r.ank("marie@laptop", &["find", "--type", "spec"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("The session protocol") && stdout(&out).contains("SPEC-"),
+        "{}",
+        stdout(&out)
+    );
+    let out = r.ank("marie@laptop", &["find", "--type", "task"]);
+    assert!(
+        !stdout(&out).contains("The session protocol"),
+        "a spec is not a task: {}",
+        stdout(&out)
+    );
+    // And the refusal names the kind rather than the two it used to know.
+    let out = r.ank("marie@laptop", &["find", "--type", "epic"]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(stderr(&out).contains("spec"), "{}", stderr(&out));
+
+    // Orientation: named beside the constraints, and not one line of the
+    // document with it.
+    let out = r.ank("marie@laptop", &["context", "src/auth/"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let oriented = stdout(&out);
+    assert!(
+        oriented.contains("SPECIFICATIONS") && oriented.contains("The session protocol"),
+        "named: {oriented}"
+    );
+    assert_no_spec_body(&oriented, "orientation");
+
+    // Execution: HEAD is set, the perimeter is the task's, and the spec is
+    // named there too — still without a line of its body, because there is no
+    // mode that serves one.
+    r.seed_task_scoped("TASK-000000000001", "src/auth/**");
+    let out = r.ank("marie@laptop", &["claim", "TASK-000000000001"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("marie@laptop", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let executing = stdout(&out);
+    assert!(
+        executing.contains("SPECIFICATIONS") && executing.contains("The session protocol"),
+        "named in execution too: {executing}"
+    );
+    assert_no_spec_body(&executing, "execution");
+
+    // The machine surface answers to the same rule: a `--json` caller is
+    // exactly the one that would pipe a document into an agent's context
+    // without noticing.
+    let out = r.ank("marie@laptop", &["context", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let json = stdout(&out);
+    assert!(json.contains("\"specs\":[{"), "{json}");
+    assert!(json.contains("The session protocol"), "{json}");
+    assert_no_spec_body(&json, "execution --json");
+
+    // And `help` lists the kind wherever it lists task and adr.
+    let out = r.ank("marie@laptop", &["help"]);
+    assert!(
+        stdout(&out).contains("ank new <task|adr|spec>"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+/// No line of the document, in `where`. Every line, not the first: a renderer
+/// that cut the body after one line would still be quoting it.
+fn assert_no_spec_body(page: &str, mode: &str) {
+    for line in SPEC_BODY_LINES {
+        assert!(
+            !page.contains(line),
+            "{mode} quotes a line of the spec body: {line}\n{page}"
+        );
+    }
 }
 
 /// The clause that keeps the interactive form from being the hole in the wall:
