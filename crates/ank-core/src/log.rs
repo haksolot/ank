@@ -135,6 +135,40 @@ pub fn message_of(title: &str, body: &str) -> String {
     }
 }
 
+/// The first control character a message carries and its position, counting
+/// from 1 — or `None` when it carries none.
+///
+/// **A control character is not content, and what it earns is a refusal rather
+/// than a repair.** Ank records what a caller states and does not edit it
+/// (ADR-6b3fa9ba3a05), so deleting bytes from a message somebody wrote is the
+/// worse of the two answers; but the byte was not typed either. Measured on
+/// TASK-f113addd8f40: PowerShell reads a backtick as its escape character, so
+/// `` `rev-list `` inside a double-quoted argument reached the binary as a
+/// carriage return followed by `ev-list`. The entry was written, the round-trip
+/// carried the byte back faithfully, `check` called the corpus healthy, and the
+/// line endings guard of the pipeline refused the branch on all three runners —
+/// the only reader that noticed was the one outside the tool. A lone carriage
+/// return is not CRLF either, so `.gitattributes` normalised nothing.
+///
+/// **A line feed is not one of them**, and that is [`split_message`] rather than
+/// an exception to this rule: a title is cut at the first newline and the
+/// remainder is the body, so a message of several lines is precisely what the
+/// format is written to store. Everything else in the Unicode `Cc` category is
+/// refused — the C0 range §3 names, and C1 with it, since YAML reads two of
+/// those as line breaks and a title carrying one would not come back the way it
+/// went in.
+///
+/// The position is part of the answer because a message is not always short:
+/// the reference corpus averages 453 characters an entry, and "somewhere in
+/// this message" is the diagnostic [`parse_log_file`] already refuses to give.
+pub fn control_character(message: &str) -> Option<(usize, char)> {
+    message
+        .chars()
+        .enumerate()
+        .find(|(_, c)| c.is_control() && *c != '\n')
+        .map(|(n, c)| (n + 1, c))
+}
+
 impl Log {
     /// The message, whole. `title` when it fitted on a line, and `title`
     /// followed by what the body carries when it did not.
@@ -396,6 +430,56 @@ mod tests {
         assert_eq!(body_remainder("\n rest\n"), Some(" rest"));
         assert_eq!(body_remainder("\n rest\n\n"), Some(" rest\n"));
         assert_eq!(body_remainder("no newlines"), None);
+    }
+
+    /// The character the format cannot hold is found, named where it sits, and
+    /// the one character §3 builds the split on is not one of them.
+    #[test]
+    fn a_control_character_is_found_and_a_line_feed_is_not_one() {
+        assert_eq!(
+            control_character("walked the corpus with git \rev-list"),
+            Some((28, '\r')),
+            "counted in characters from 1, and the carriage return is the 28th"
+        );
+        assert_eq!(control_character("a\tb"), Some((2, '\t')));
+        assert_eq!(control_character("a\u{0}b"), Some((2, '\0')));
+        assert_eq!(control_character("a\u{1b}[31m"), Some((2, '\u{1b}')));
+        assert_eq!(
+            control_character("é\u{85}"),
+            Some((2, '\u{85}')),
+            "C1 too, and the position counts characters and not bytes"
+        );
+
+        assert_eq!(control_character(""), None);
+        assert_eq!(
+            control_character("jwt.verify removed from session.ts"),
+            None
+        );
+        assert_eq!(
+            control_character("a line\nand another\n"),
+            None,
+            "the split rule is written on the line feed: it is not a stray byte"
+        );
+        assert_eq!(
+            control_character("unicode — accents é, an ellipsis …"),
+            None
+        );
+    }
+
+    /// Every message the round-trip contract is stated on is a message the rule
+    /// admits: the two would otherwise disagree about what may be stored, and
+    /// the one above is the one a caller meets first.
+    #[test]
+    fn the_rule_admits_every_message_the_round_trip_promises() {
+        for message in [
+            "short",
+            "",
+            " ",
+            "a line\nand another\n",
+            "discrepancy: the criterion assumes a premise the work then disproved",
+        ] {
+            assert_eq!(control_character(message), None, "{message:?}");
+        }
     }
 
     /// The rendered line is bounded whatever the message, and the elided one is

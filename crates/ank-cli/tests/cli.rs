@@ -3749,6 +3749,102 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
     );
 }
 
+/// A control character a shell put in a message never reaches the corpus
+/// (TASK-f3910718320a).
+///
+/// Through the binary because that is where it was measured, and because no
+/// module test could have caught it: the message was correct when it was typed
+/// and wrong when it arrived. PowerShell reads a backtick as its escape
+/// character, so `` `rev-list `` inside a double-quoted argument became a
+/// carriage return followed by `ev-list` before `ank` saw an argument at all.
+/// `ank log` wrote it, `ank check` called the corpus healthy, and the line
+/// endings guard of the pipeline refused the branch on all three runners.
+///
+/// Refused rather than stripped: ank records what a caller states and does not
+/// silently delete bytes from a message somebody wrote, so the refusal names
+/// the character by its escape and gives the command to run again — the
+/// empty-message refusal above is the precedent and the wording follows it.
+#[test]
+fn log_refuses_a_message_carrying_a_control_character() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let entries_before = r.entry_ids(ID);
+    let record_before = r.claim_ref(ID).expect("the claim is live");
+
+    // The message as it actually arrived, one line with a lone carriage return
+    // in the middle of it. Built rather than written literally, so that what is
+    // under test is legible in the source instead of hiding in an escape.
+    let mangled = format!("walked the corpus with git {}ev-list", '\r');
+    let out = r.ank("claude-code@ank", &["log", &mangled]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("\\r"),
+        "the character is named by its escape: {said}"
+    );
+    assert!(
+        said.contains("ank log \""),
+        "the command to run again, never generic help: {said}"
+    );
+    assert_eq!(r.entry_ids(ID), entries_before, "nothing was written");
+    assert_eq!(
+        r.claim_ref(ID).as_deref(),
+        Some(record_before.as_str()),
+        "a refused write renews no claim"
+    );
+
+    // The same message without it logs, so what is refused is the character and
+    // not the sentence.
+    let clean = "walked the corpus with git rev-list";
+    let out = r.ank("claude-code@ank", &["log", clean]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(r.log_text(ID).contains(clean), "{}", r.log_text(ID));
+
+    // And the file that landed holds no byte outside the grammar of §3: an
+    // entity is UTF-8, its lines end in a line feed, and nothing else below
+    // U+0020 belongs in one.
+    let written = r
+        .entry_ids(ID)
+        .into_iter()
+        .find(|id| !entries_before.contains(id))
+        .expect("the clean message produced an entry");
+    let bytes = std::fs::read(r.0.join(".ank/entities").join(format!("{written}.md"))).unwrap();
+    let stray: Vec<String> = bytes
+        .iter()
+        .filter(|b| **b < 0x20 && **b != b'\n')
+        .map(|b| format!("{b:#04x}"))
+        .collect();
+    assert!(stray.is_empty(), "control bytes in {written}.md: {stray:?}");
+
+    // The other door a caller's own text goes through, and the reason it is a
+    // second door rather than the same one: `release` writes the transition
+    // first and records the reason after it, so a refusal that came only at the
+    // entry would hand the task back with nothing in the corpus saying why —
+    // the gap `--reason` exists to close.
+    let out = r.ank("claude-code@ank", &["release", "--reason", &mangled]);
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let said = stderr(&out);
+    assert!(
+        said.contains("\\r"),
+        "the same wording at both doors: {said}"
+    );
+    assert!(
+        said.contains("ank release --reason \""),
+        "and this verb's own command to run again: {said}"
+    );
+    assert!(
+        r.task_text(ID).contains("status: in_progress"),
+        "the transition did not happen: {}",
+        r.task_text(ID)
+    );
+    assert!(
+        r.claim_ref(ID).is_some(),
+        "and the task was not handed back"
+    );
+}
+
 /// The disambiguation of §4, exercised on all three of its branches. It is
 /// stated rather than inferred precisely so that it can be asserted this way:
 /// one question — does the argument resolve — and one answer.
