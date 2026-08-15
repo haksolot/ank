@@ -827,14 +827,25 @@ fn check_scope_alive(
         Entity::Task(t) if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress)
     );
     for glob in globs {
-        let Ok(one) = ScopeSet::new(std::slice::from_ref(glob)) else {
+        // A scope entry naming a declared peer is about files in another
+        // repository (§7, ADR-a1de673043b4), so it matches nothing in this
+        // checkout by construction and always will. Confronting it with the
+        // local file list would make every cross-corpus constraint a dead scope
+        // — a corpus fault for having declared one. What is still checked is the
+        // glob half on its own: a cross-corpus entry nobody can compile is as
+        // broken as a local one.
+        let cross = crate::repo::peer_ref(glob);
+        let compiled = cross
+            .map(|(_, under)| under.to_string())
+            .unwrap_or_else(|| glob.clone());
+        let Ok(one) = ScopeSet::new(std::slice::from_ref(&compiled)) else {
             report.findings.push(Finding::fault(
                 entity.id(),
                 format!("invalid glob '{glob}'"),
             ));
             continue;
         };
-        if files.iter().any(|f| one.matches(f)) {
+        if cross.is_some() || files.iter().any(|f| one.matches(f)) {
             continue;
         }
         // The cost clause of ADR-97beaf55e73a, and the reason this sits here
