@@ -10975,6 +10975,15 @@ fn a_glob_is_explained_only_when_its_prefix_moved_to_one_place() {
 /// environment an agent's shell happens to export, which is how two sessions
 /// reported this test red while a third watched it pass (TASK-143a310de8b6).
 ///
+/// **No shell is needed for the variable to reach git**, which is the half of
+/// the cause a reader is most likely to reason away: `git_command` builds a
+/// bare `Command` through `spawn`, with no interpreter in between, so an
+/// argument nothing rewrote still comes out refused. `git.exe` reads
+/// `MSYS_NO_PATHCONV` itself. Measured against a three-slash form put back for
+/// one pair of runs (TASK-5052971b8e9c): with the variable set both
+/// shallow-clone tests fail on `fatal: '/C:/...' does not appear to be a git
+/// repository`, and with it unset the same two pass.
+///
 /// **One function and not one expression per caller**, because that measurement
 /// is the whole of what makes it right: a second site deriving the URL again is
 /// a second chance to write the three-slash form back in.
