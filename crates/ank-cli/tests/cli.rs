@@ -8509,6 +8509,96 @@ fn a_listing_counts_the_open_rows_a_claim_would_refuse_and_names_free() {
     );
 }
 
+/// `find --json` answers about the coordination plane, in the spelling
+/// `context --json` already uses (TASK-e8e09606806f).
+///
+/// The two surfaces of one verb used to disagree about the same row: a reader
+/// at a terminal saw `[finished:<sha> on <branch>]`, a script reading `--json`
+/// saw `open` and nothing else. A caller filtering on that JSON would schedule
+/// work already finished on a branch — exactly the window the completion ref
+/// exists to close, reopened for whoever automated the question.
+///
+/// ADR-0c8ab846d262 is the argument: colour depends on the reader, structure
+/// does not, and a marker is not colour. It is the answer, and it reads the
+/// same in a pipe.
+///
+/// The state is asserted against the very string the human listing prints, so
+/// a second spelling of one fact fails here rather than shipping.
+#[test]
+fn find_json_carries_the_coordination_state_the_human_listing_shows() {
+    let finished = "TASK-a00000000005";
+    let held = "TASK-b00000000005";
+    let candidate = "TASK-c00000000005";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(finished, Some("A criterion."), &["ok"]);
+    r.seed_task_scoped(held, "crates/**");
+    r.seed_task_scoped(candidate, "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
+
+    // Both transitions happen on a branch, so `main` keeps reading `open` for
+    // both rows: the disagreement under test only exists while the file and the
+    // ref say different things.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("work.txt"), "y").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "work"]);
+    let finished_at = r.head();
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", finished])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "done"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", held])), 0);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "claimed"]);
+
+    r.git(&["checkout", "-q", "main"]);
+    for id in [finished, held] {
+        assert!(
+            r.task_text(id).contains("status: open"),
+            "the fixture is wrong if main already carries the transition of {id}"
+        );
+    }
+
+    // What the reader at a terminal is told about the finished row.
+    let marker = format!("[finished:{} on feature]", &finished_at[..7]);
+    let listing = stdout(&r.ank("someone@ank", &["find", "--status", "open"]));
+    assert!(
+        listing.contains(&marker),
+        "the fixture is wrong if the human listing does not mark the row: \
+         {listing}"
+    );
+
+    let j = stdout(&r.ank("someone@ank", &["find", "--status", "open", "--json"]));
+
+    // The same fact, the same words, on the same row — and the stored status
+    // still on the key it always had, so nothing a caller reads today moves.
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{finished}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"{}\"",
+            marker.trim_matches(|c| c == '[' || c == ']')
+        )),
+        "the finished state the listing shows is missing from the JSON row: {j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{held}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"claimed:claude-code@ank\""
+        )),
+        "a held row names its holder in the JSON too: {j}"
+    );
+    assert!(
+        j.contains(&format!(
+            "{{\"id\":\"{candidate}\",\"kind\":\"task\",\"status\":\"open\",\
+             \"state\":\"open\""
+        )),
+        "a row the plane says nothing about carries its stored status as its \
+         state, exactly as context --json spells it: {j}"
+    );
+}
+
 #[test]
 fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
     let r = scoped_repo();
