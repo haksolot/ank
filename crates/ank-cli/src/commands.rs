@@ -115,6 +115,15 @@ pub fn new(
                     "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
                 ));
             }
+            if !inv.values("--reference").is_empty() {
+                return Err(CliError::new(
+                    1,
+                    "--reference applies to a spec: what a task depends on is blocked_by",
+                )
+                .with_hint(
+                    "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
+                ));
+            }
             let criteria = inv.value("--criteria").map(ensure_newline);
             let mut blocked_by = Vec::new();
             for raw in inv.values("--blocked-by") {
@@ -159,6 +168,18 @@ pub fn new(
                     "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
                 ));
             }
+            // A spec declares what it rests on; an ADR states a rule, and what
+            // it points at is `see`. Refused rather than dropped, on the same
+            // reasoning as the line above.
+            if !inv.values("--reference").is_empty() {
+                return Err(CliError::new(
+                    1,
+                    "--reference applies to a spec: an ADR binds rather than cites",
+                )
+                .with_hint(
+                    "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
+                ));
+            }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {
                 supersedes: supersedes_of(inv, &store, kind)?,
@@ -186,6 +207,7 @@ pub fn new(
             reject_foreign_flags(inv, kind)?;
             Entity::Spec(Spec {
                 supersedes: supersedes_of(inv, &store, kind)?,
+                references: references_of(inv, &store)?,
                 id: id.clone(),
                 slug: Some(slugify(&title)),
                 title: title.clone(),
@@ -429,6 +451,10 @@ fn skeleton(
             author: Some(identity.to_string()),
             status: SpecStatus::Proposed,
             scope,
+            // Empty, as `supersedes` is: the skeleton carries what the flags
+            // said and nothing invented. A caller who cites a document types
+            // the field into the template, and it round-trips like any other.
+            references: Vec::new(),
             supersedes: None,
             ratified: None,
             // A reading is recorded by whoever reads, never by `new` (§3).
@@ -878,6 +904,52 @@ fn supersedes_of(inv: &Invocation, store: &Store, kind: EntityKind) -> Result<Op
         .with_hint(format!("ank find --type {what}")));
     }
     Ok(Some(id))
+}
+
+/// Whether a specification may cite this kind (§3, ADR-5a690829388d).
+///
+/// A spec and an ADR, and nothing else. A document resting on a binding decision
+/// is ordinary and worth declaring; a task is work that finishes and a log entry
+/// is a trace of a moment, so a document citing one would cite something the
+/// corpus is designed to retire.
+///
+/// Stated once and read by all three callers — `new spec`, `amend` and `check` —
+/// because a rule enforced at a write and reported at a read is exactly the
+/// shape that comes to disagree with itself.
+pub(crate) fn citable(kind: EntityKind) -> bool {
+    matches!(kind, EntityKind::Spec | EntityKind::Adr)
+}
+
+/// Why that kind is not citable, in one sentence, for whoever has to say it.
+pub(crate) fn not_citable(id: &EntityId) -> String {
+    format!(
+        "{id} is a {}: a specification cites a spec or an adr, and nothing that is \
+         meant to be retired",
+        id.kind().as_str()
+    )
+}
+
+/// `--reference`, resolved at the point of the write.
+///
+/// Resolved rather than recorded raw, for the reason `--blocked-by` and
+/// `--supersedes` are: a reference matching nothing would otherwise surface in
+/// `check`, as a corpus fault nobody can attribute to the act that caused it.
+/// What `check` is left to report is the corpus moving underneath a citation
+/// that was good when it was written — a target deleted, promoted or superseded
+/// since — which is the drift ADR-5a690829388d exists to catch.
+fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
+    let mut out: Vec<EntityId> = Vec::new();
+    for raw in inv.values("--reference") {
+        let target = store.resolve(raw.trim())?;
+        if !citable(target.kind()) {
+            return Err(CliError::new(1, not_citable(&target))
+                .with_hint("ank find --type spec".to_string()));
+        }
+        if !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    Ok(out)
 }
 
 /// The prose that justifies the entity, in canonical shape.

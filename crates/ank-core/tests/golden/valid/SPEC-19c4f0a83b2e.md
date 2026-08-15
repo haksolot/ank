@@ -8,6 +8,7 @@ author: human:marie
 status: accepted
 scope:
   - src/auth/**
+references: [SPEC-3f81c9d0a2b7, ADR-19d0e2f4a6b8]
 supersedes: SPEC-c07d1b4a92e5
 ratified: 9f2c81b0
 verified:
@@ -21,8 +22,14 @@ The document itself.
 
 A spec carrying every optional field its row declares, so that the round trip
 pins each position: `slug` after `type`, `author` between `created` and
-`status`, `supersedes` and `ratified` after the scope, `verified` last before
-`schema`.
+`status`, `references` immediately after the scope, `supersedes` and `ratified`
+after it, `verified` last before `schema`.
+
+`references` names what this document rests on, and the two entries are the two
+kinds a specification may cite: another specification, and a decision that
+binds. One of them resolves inside this directory and the other does not, which
+is deliberate — whether a reference resolves is a `check` finding and never a
+parse error, exactly as `about` is on a log entry.
 
 What it does not carry is a `constraint`, and that absence is the whole
 justification for the kind: a spec describes, an ADR binds. The refusal is in

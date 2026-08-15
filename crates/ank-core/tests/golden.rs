@@ -307,6 +307,50 @@ fn a_spec_carries_a_lifecycle_and_declares_no_constraint() {
     assert!(s.body.contains("The document itself."));
 }
 
+/// A spec declares what it rests on in a field, and the format does no more
+/// than read it (§3, ADR-5a690829388d).
+///
+/// The two halves are one decision. A citation has to be a field or the
+/// coherence between documents cannot be verified at all; and it has to stay a
+/// *plain* field here, because deciding at parse time whether a target exists,
+/// is accepted or is of a citable kind would make one bad citation cost the
+/// whole corpus its readability. The fixture cites one entity this directory
+/// holds and one it does not, and both parse.
+#[test]
+fn a_spec_declares_its_references_and_the_parser_only_reads_them() {
+    let dir = golden_dir("valid");
+    let s = parse_spec(&fs::read_to_string(dir.join("SPEC-19c4f0a83b2e.md")).unwrap()).unwrap();
+
+    let cited: Vec<String> = s.references.iter().map(|r| r.to_string()).collect();
+    assert_eq!(cited, ["SPEC-3f81c9d0a2b7", "ADR-19d0e2f4a6b8"]);
+    // The two kinds a specification may cite, and the order is the file's: a
+    // flow list is a sequence, not a set, and the round-trip rests on it.
+    assert_eq!(s.references[0].kind(), EntityKind::Spec);
+    assert_eq!(s.references[1].kind(), EntityKind::Adr);
+
+    // Resolution is `check`'s question and not the parser's, which is what
+    // makes the unresolved entry above legal here.
+    assert!(!dir.join("SPEC-3f81c9d0a2b7.md").is_file());
+    assert!(dir.join("ADR-19d0e2f4a6b8.md").is_file());
+
+    // Omitted when empty, never `[]`. A spec written before the field existed
+    // must survive a rewrite unchanged, and the round-trip test above is what
+    // proves it does; this states the rule the emitter follows.
+    // On the frontmatter and not on the file: the body of this fixture
+    // discusses the field in prose, as it discusses the absent `constraint`.
+    let mut bare = s.clone();
+    bare.references.clear();
+    let front = serialize_spec(&bare);
+    let front = front.split("\n---\n").next().unwrap();
+    assert!(!front.lines().any(|l| l.starts_with("references:")));
+
+    // The position is the table's: after the perimeter, before the succession.
+    let out = serialize_spec(&s);
+    let at = |needle: &str| out.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    assert!(at("scope:") < at("references:"));
+    assert!(at("references:") < at("supersedes:"));
+}
+
 /// A log entry names the entity it is about, in a field. That is what the
 /// previous shape computed from the id instead, and the trade — an address
 /// becomes a query — is the cost the kind was accepted with (ADR-25f977377fa0).
