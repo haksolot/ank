@@ -474,10 +474,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
             // The kind-specific signals of a spec and of a log entry are not
-            // written yet: they arrive with the surfaces that create those
-            // entities (TASK-3e68786fa443, TASK-df9c6d46e8ef). What is checked
-            // here is what every kind owes — the scope above, authorship and
-            // readings below — and that already runs for them.
+            // written yet. A spec's are the freeze ones — altered since
+            // ratification, accepted with no anchor — and they arrive with the
+            // verb that can produce an anchor at all (TASK-867a9a59f265); a log
+            // entry's arrive with TASK-df9c6d46e8ef. What is checked here is
+            // what every kind owes — the scope above, authorship and readings
+            // below — and that already runs for them.
             Entity::Spec(_) | Entity::Log(_) => {}
         }
     }
@@ -993,11 +995,12 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
             "ank new adr --supersedes {id} --title \"<t>\" --scope \"{to}\" \
              --constraint \"<rule>\""
         )),
-        // A spec and a log entry are not reachable from `amend` or from `new`
-        // yet, so there is no command to name — and §4 is explicit that naming
-        // one which exits 7 is worse than naming none. The rename is reported
-        // either way. The verbs arrive with TASK-3e68786fa443 and
-        // TASK-df9c6d46e8ef, and the repair for those kinds arrives with them.
+        // A spec is created by `new` now and still not reachable from `amend`,
+        // and a log entry is reachable from neither — so there is no command to
+        // name, and §4 is explicit that naming one which exits 7 is worse than
+        // naming none. The rename is reported either way. `amend` reaches a
+        // spec with TASK-867a9a59f265 and the repair arrives with it;
+        // TASK-df9c6d46e8ef is the log entry's.
         Entity::Spec(_) | Entity::Log(_) => None,
     }
 }
@@ -3673,10 +3676,12 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         }
         // Declared in the registry, and not reachable from this verb yet. A
         // refusal on state, naming the kind, is what §4 asks of a verb that
-        // cannot act — and it is the honest answer while the surfaces that
-        // create these entities are still to be written (TASK-3e68786fa443,
-        // TASK-df9c6d46e8ef). Amending them here would be deciding, under
-        // another task's name, what those verbs are allowed to change.
+        // cannot act. A spec is created by `new` now, and what it could carry
+        // here is a scope change under the rule an ADR's is under — allowed
+        // while `proposed`, refused once the scope is anchored in the
+        // ratification commit — so it arrives with the verb that can produce
+        // that anchor (TASK-867a9a59f265). A log entry is written once and has
+        // nothing to amend at all (TASK-df9c6d46e8ef).
         ref other => {
             let kind = ank_core::Fields::kind_spec(other).name;
             return Err(

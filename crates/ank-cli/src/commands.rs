@@ -32,7 +32,7 @@ use crate::repo::Repo;
 use crate::store::{version_of, LogHome, Store};
 use ank_core::{
     append_log, parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId,
-    EntityKind, LogEntry, Task, TaskStatus, SCHEMA_VERSION,
+    EntityKind, LogEntry, Spec, SpecStatus, Task, TaskStatus, SCHEMA_VERSION,
 };
 use std::collections::HashMap;
 use std::io::{IsTerminal, Read, Write};
@@ -73,10 +73,11 @@ pub fn new(
     let kind = match inv.subcommand.as_deref() {
         Some("task") => EntityKind::Task,
         Some("adr") => EntityKind::Adr,
+        Some("spec") => EntityKind::Spec,
         other => {
             return Err(
                 CliError::new(1, format!("unknown subcommand {:?}", other.unwrap_or("")))
-                    .with_hint("ank new <task|adr>"),
+                    .with_hint("ank new <task|adr|spec>"),
             )
         }
     };
@@ -85,8 +86,9 @@ pub fn new(
     // first `required`, because reaching one of those is the failure the
     // interactive form exists to replace.
     //
-    // Whatever the registry declares beside `task` and `adr` stops at the match
-    // above: this verb resolves two subcommands and refuses the rest by name.
+    // Whatever the registry declares beside `task`, `adr` and `spec` stops at
+    // the match above: this verb resolves three subcommands and refuses the rest
+    // by name.
     if is_interactive(inv, kind) {
         return new_interactive(inv, repo, cfg, identity, kind, out);
     }
@@ -98,7 +100,7 @@ pub fn new(
     let store = Store::new(&repo.ank);
 
     let entity = match kind {
-        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
+        EntityKind::Log => not_created_by_new(kind.as_str()),
         EntityKind::Task => {
             // A task has no `supersedes` field, and a flag silently ignored
             // teaches the caller it worked. Same reasoning as `--verify` on an
@@ -106,7 +108,7 @@ pub fn new(
             if inv.value("--supersedes").is_some() {
                 return Err(CliError::new(
                     1,
-                    "--supersedes applies to an ADR: a task supersedes nothing",
+                    "--supersedes applies to an ADR or a spec: a task supersedes nothing",
                 )
                 .with_hint(
                     "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
@@ -158,7 +160,7 @@ pub fn new(
             }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {
-                supersedes: supersedes_of(inv, &store)?,
+                supersedes: supersedes_of(inv, &store, kind)?,
                 id: id.clone(),
                 slug: Some(slugify(&title)),
                 title: title.clone(),
@@ -176,6 +178,33 @@ pub fn new(
                 verified: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
+                body: body_of(inv, kind)?,
+            })
+        }
+        EntityKind::Spec => {
+            reject_foreign_flags(inv, kind)?;
+            Entity::Spec(Spec {
+                supersedes: supersedes_of(inv, &store, kind)?,
+                id: id.clone(),
+                slug: Some(slugify(&title)),
+                title: title.clone(),
+                created: created.clone(),
+                author: Some(identity.to_string()),
+                // Never `accepted`, for the reason an ADR is never born
+                // accepted: ratification is a signed commit produced by
+                // `accept`, and a specification that arrived accepted would
+                // carry the authority of a document nobody agreed to.
+                status: SpecStatus::Proposed,
+                scope,
+                ratified: None,
+                // A reading is recorded by whoever reads, never by `new` (§3).
+                verified: Vec::new(),
+                schema: SCHEMA_VERSION,
+                version: 1,
+                // The document itself. A spec has no `constraint` and no
+                // criterion, so this is the whole of what it says, and
+                // `--body -` is the channel a document of that size arrives
+                // through.
                 body: body_of(inv, kind)?,
             })
         }
@@ -214,21 +243,54 @@ pub fn new(
 /// stop, not sit in `vi` waiting for somebody who is not there.
 /// A kind the registry declares and `ank new` does not create.
 ///
-/// The guarantee is one match, in `new` above: this verb resolves `task` and
-/// `adr` from argv and refuses everything else by name, so the paths below are
-/// reached with no other kind. Saying so out loud is what keeps a later reader
-/// from mistaking an invented flag set or an invented template for support that
-/// exists — a spec is created by the surface TASK-3e68786fa443 adds, and a log
-/// entry is written by `log` and by nothing else (§3).
+/// The guarantee is one match, in `new` above: this verb resolves `task`, `adr`
+/// and `spec` from argv and refuses everything else by name, so the paths below
+/// are reached with no other kind. Saying so out loud is what keeps a later
+/// reader from mistaking an invented flag set or an invented template for
+/// support that exists — a log entry is written by `log` and by nothing else
+/// (§3).
 fn not_created_by_new(kind: &str) -> ! {
-    unreachable!("ank new resolves task and adr, and was reached with {kind}")
+    unreachable!("ank new resolves task, adr and spec, and was reached with {kind}")
+}
+
+/// The flags of another kind, refused rather than dropped.
+///
+/// Same reasoning as `--supersedes` on a task and `--verify` on an ADR, a few
+/// lines above: a flag silently ignored teaches the caller it worked. A spec
+/// carries neither the fields of a task — it is a document and not work — nor
+/// the `constraint` of an ADR, and that second absence is the whole
+/// justification for the kind (§3): a spec describes, an ADR binds.
+fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
+    let hint = flag_form(kind);
+    if inv.value("--constraint").is_some() {
+        return Err(CliError::new(
+            1,
+            "--constraint applies to an ADR: a spec describes, and an ADR binds",
+        )
+        .with_hint(hint));
+    }
+    for flag in ["--criteria", "--blocked-by", "--verify"] {
+        if !inv.values(flag).is_empty() {
+            return Err(CliError::new(
+                1,
+                format!("{flag} applies to a task: a spec is a document, not work"),
+            )
+            .with_hint(hint));
+        }
+    }
+    Ok(())
 }
 
 fn mandatory_flags(kind: EntityKind) -> &'static [&'static str] {
     match kind {
         EntityKind::Task => &["--title", "--scope"],
+        // A spec's mandatory flags are the common base and nothing else: its
+        // one distinguishing field is the body, and `--body` is optional
+        // everywhere — a document written in the editor form arrives under the
+        // second `---`, not through a flag.
+        EntityKind::Spec => &["--title", "--scope"],
         EntityKind::Adr => &["--title", "--scope", "--constraint"],
-        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
+        EntityKind::Log => not_created_by_new(kind.as_str()),
     }
 }
 
@@ -248,7 +310,8 @@ fn flag_form(kind: EntityKind) -> String {
         EntityKind::Adr => {
             "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"".to_string()
         }
-        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
+        EntityKind::Spec => "ank new spec --title \"<t>\" --scope \"<glob>\"".to_string(),
+        EntityKind::Log => not_created_by_new(kind.as_str()),
     }
 }
 
@@ -357,7 +420,23 @@ fn skeleton(
             version: 1,
             body: body_of(inv, kind)?,
         }),
-        EntityKind::Spec | EntityKind::Log => not_created_by_new(kind.as_str()),
+        EntityKind::Spec => Entity::Spec(Spec {
+            id: id.clone(),
+            slug,
+            title,
+            created: created.to_string(),
+            author: Some(identity.to_string()),
+            status: SpecStatus::Proposed,
+            scope,
+            supersedes: None,
+            ratified: None,
+            // A reading is recorded by whoever reads, never by `new` (§3).
+            verified: Vec::new(),
+            schema: SCHEMA_VERSION,
+            version: 1,
+            body: body_of(inv, kind)?,
+        }),
+        EntityKind::Log => not_created_by_new(kind.as_str()),
     })
 }
 
@@ -390,9 +469,8 @@ fn template(skeleton: &Entity) -> String {
     let guidance = match skeleton {
         Entity::Task(_) => TASK_GUIDANCE,
         Entity::Adr(_) => ADR_GUIDANCE,
-        Entity::Spec(_) | Entity::Log(_) => {
-            not_created_by_new(ank_core::Fields::kind_spec(skeleton).name)
-        }
+        Entity::Spec(_) => SPEC_GUIDANCE,
+        Entity::Log(_) => not_created_by_new(ank_core::Fields::kind_spec(skeleton).name),
     };
     format!("---\n{guidance}{rest}")
 }
@@ -425,6 +503,20 @@ const ADR_GUIDANCE: &str = "\
 #             injected into every context this scope covers, so write it to be
 #             obeyed rather than admired.
 # supersedes  the id of the ADR this replaces, if it replaces one.
+# status stays proposed: ratification is a signed commit, produced by accept.
+";
+
+const SPEC_GUIDANCE: &str = "\
+# Fill this in and save. A # to the end of the line is a comment and is
+# dropped. Below the second --- is the document, and nothing there is dropped:
+# a spec has no constraint field, and the body is what it says.
+# id, created and author are ank's, and are refused if they come back changed.
+# title       required, one line.
+# scope       required. What the document governs, not where it lives: a spec
+#             of a format scopes the format's implementation, never docs/.
+#             Attachment happens through scope and nothing else, so an entity
+#             without one is invisible to every context, forever.
+# supersedes  the id of the spec this replaces, if it replaces one.
 # status stays proposed: ratification is a signed commit, produced by accept.
 ";
 
@@ -548,6 +640,43 @@ fn create_filled(
             a.schema = SCHEMA_VERSION;
             a.version = 1;
             Entity::Adr(a)
+        }
+        (Entity::Spec(s), Entity::Spec(mut sp)) => {
+            require_title(&sp.title, &hint)?;
+            // No check on the body, and the asymmetry with an ADR's constraint
+            // is the kind's own: a constraint is required because an ADR with
+            // nothing to enforce binds nobody, and a specification is written
+            // over time — a document created empty and filled by later edits is
+            // the normal case, not a hole in the wall.
+            if sp.status != SpecStatus::Proposed {
+                return Err(CliError::new(
+                    7,
+                    format!("a new spec is born proposed, not {}", sp.status.as_str()),
+                )
+                .with_hint("ank accept <id>"));
+            }
+            if sp.ratified.is_some() {
+                return Err(CliError::new(
+                    7,
+                    "ratified names a signed commit, and only `accept` writes it",
+                )
+                .with_hint("ank accept <id>"));
+            }
+            if let Some(sup) = &sp.supersedes {
+                resolve_blockers(store, std::slice::from_ref(sup), &hint)?;
+            }
+            sp.scope = context::normalised_globs(&sp.scope, repo, "ank new spec --scope")?;
+            adopt(
+                &mut sp.slug,
+                &sp.title,
+                &mut sp.created,
+                &s.created,
+                &mut sp.author,
+                &s.author,
+            );
+            sp.schema = SCHEMA_VERSION;
+            sp.version = 1;
+            Entity::Spec(sp)
         }
         // Unreachable: `parse` resolves the variant from `type:` and refuses a
         // `type` the id does not carry, and the id was compared above.
@@ -731,18 +860,21 @@ fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
 /// the same function: a reference matching nothing would otherwise surface in
 /// `check`, as a corpus fault nobody can attribute to the act that caused it.
 /// A resolved id of the wrong kind is refused too — an ADR superseding a task
-/// is not a chain `accept` or `check` can make sense of.
-fn supersedes_of(inv: &Invocation, store: &Store) -> Result<Option<EntityId>> {
+/// is not a chain `accept` or `check` can make sense of, and neither is a spec
+/// superseding an ADR: the two kinds have separate successions because they
+/// carry different authority (§3).
+fn supersedes_of(inv: &Invocation, store: &Store, kind: EntityKind) -> Result<Option<EntityId>> {
     let Some(raw) = inv.value("--supersedes") else {
         return Ok(None);
     };
     let id = store.resolve(raw.trim())?;
-    if id.kind() != EntityKind::Adr {
+    if id.kind() != kind {
+        let what = kind.as_str();
         return Err(CliError::new(
             1,
-            format!("{id} is not an ADR: only an ADR supersedes an ADR"),
+            format!("{id} is not of kind {what}: a succession stays inside one kind"),
         )
-        .with_hint("ank find --type adr"));
+        .with_hint(format!("ank find --type {what}")));
     }
     Ok(Some(id))
 }
@@ -839,6 +971,21 @@ fn slugify(title: &str) -> String {
 // find
 // ---------------------------------------------------------------------------
 
+/// The kinds `--type` accepts, in the registry's order, as the refusal and the
+/// truncation counter both spell them.
+///
+/// Read from the registry and never written out here: the two places that name
+/// this list are a refusal and a hint, and a hint naming a kind the filter does
+/// not accept — or omitting one it does — is the tool teaching a command it
+/// would refuse (§4).
+fn kind_names() -> String {
+    ank_core::KINDS
+        .iter()
+        .map(|k| k.name)
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
 /// Lexical search over the index.
 ///
 /// §6 gives `find` FTS5, and this is a scan instead: over a corpus of this size
@@ -860,14 +1007,19 @@ pub fn find(
         .unwrap_or_default();
     let index = Index::open(&repo.ank)?;
 
+    // Resolved through the registry rather than against a list written here:
+    // a kind the registry declares and this match forgot is a kind `find`
+    // refuses while `show` prints it, which is the surface disagreeing with
+    // itself (ADR-c9f9d0d6f05d).
     let kind_filter = match inv.value("--type") {
         None => None,
-        Some("task") => Some(EntityKind::Task),
-        Some("adr") => Some(EntityKind::Adr),
-        Some(other) => {
-            return Err(CliError::new(1, format!("unknown --type '{other}'"))
-                .with_hint("ank find <query> --type task|adr"))
-        }
+        Some(name) => match EntityKind::from_type_name(name) {
+            Some(kind) => Some(kind),
+            None => {
+                return Err(CliError::new(1, format!("unknown --type '{name}'"))
+                    .with_hint(format!("ank find <query> --type {}", kind_names())))
+            }
+        },
     };
     let status_filter = inv.value("--status").map(|s| s.to_ascii_lowercase());
     // A path filter, and therefore the same normalisation the positionals get:
@@ -1029,8 +1181,9 @@ pub fn find(
         // an agent that absence means nothing exists.
         let _ = writeln!(
             out,
-            "+{} more, narrow with --scope <path> or --type task|adr",
-            total - shown
+            "+{} more, narrow with --scope <path> or --type {}",
+            total - shown,
+            kind_names()
         );
     }
     if total == 0 {
@@ -1169,8 +1322,16 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         .iter()
         .filter(|r| context::in_perimeter(&r.scope, perimeter.as_deref()))
         .collect();
-    let (adrs, tasks): (Vec<&Row>, Vec<&Row>) =
-        hits.iter().partition(|r| r.kind == EntityKind::Adr);
+    // Three buckets and no longer two. The partition used to keep the ADRs and
+    // call everything else a task, which was true while the registry declared
+    // two kinds and became a lie the moment it declared a third: a spec covering
+    // this path would have been listed under TASKS, and a listing that
+    // misnames a kind is worse than one that omits it.
+    let bucket =
+        |k: EntityKind| -> Vec<&Row> { hits.iter().filter(|r| r.kind == k).copied().collect() };
+    let adrs = bucket(EntityKind::Adr);
+    let specs = bucket(EntityKind::Spec);
+    let tasks = bucket(EntityKind::Task);
 
     if inv.json() {
         let item = |r: &&Row| {
@@ -1183,13 +1344,15 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             )
         };
         let adr: Vec<String> = adrs.iter().map(item).collect();
+        let spec: Vec<String> = specs.iter().map(item).collect();
         let task: Vec<String> = tasks.iter().map(item).collect();
         let _ = writeln!(
             out,
-            "{{\"path\":{},\"total\":{},\"adr\":[{}],\"tasks\":[{}]}}",
+            "{{\"path\":{},\"total\":{},\"adr\":[{}],\"specs\":[{}],\"tasks\":[{}]}}",
             json_string(shown),
             hits.len(),
             adr.join(","),
+            spec.join(","),
             task.join(",")
         );
         return Ok(0);
@@ -1214,7 +1377,11 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     // same rows and must print them with the same words.
     let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
     let held = crate::context::held_in(&coord, identity);
-    for (label, group) in [("ADR", &adrs), ("TASKS", &tasks)] {
+    for (label, group) in [
+        ("ADR", &adrs),
+        ("SPECIFICATIONS", &specs),
+        ("TASKS", &tasks),
+    ] {
         if group.is_empty() {
             continue;
         }
@@ -2155,7 +2322,7 @@ mod tests {
         let a_task_id = a_task(&t, "A task");
         let err = an_adr("Wrong kind", &["--supersedes", &a_task_id.to_string()]).unwrap_err();
         assert_eq!(err.code, 1, "{}", err.message);
-        assert!(err.message.contains("not an ADR"), "{}", err.message);
+        assert!(err.message.contains("not of kind adr"), "{}", err.message);
     }
 
     #[test]

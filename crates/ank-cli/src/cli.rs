@@ -437,8 +437,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         coordinates: false,
-        summary: "writes a task or an ADR that needs no hand finishing",
-        subcommands: &["task", "adr"],
+        summary: "writes a task, an ADR or a spec that needs no hand finishing",
+        subcommands: &["task", "adr", "spec"],
         max_positionals: 0,
         positional_help: "",
         flags: &[
@@ -1792,13 +1792,16 @@ mod tests {
     #[test]
     fn new_requires_its_subcommand() {
         let err = parse(&argv(&["new"])).unwrap_err();
-        assert_eq!(err.hint.as_deref(), Some("ank new <task|adr>"));
+        assert_eq!(err.hint.as_deref(), Some("ank new <task|adr|spec>"));
 
         let err = parse(&argv(&["new", "epic"])).unwrap_err();
         assert!(err.message.contains("epic"), "{}", err.message);
 
         let inv = ok(&["new", "task", "--title", "T", "--scope", "src/**"]);
         assert_eq!(inv.subcommand.as_deref(), Some("task"));
+
+        let inv = ok(&["new", "spec", "--title", "T", "--scope", "src/**"]);
+        assert_eq!(inv.subcommand.as_deref(), Some("spec"));
     }
 
     #[test]
