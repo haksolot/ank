@@ -87,7 +87,10 @@ run on all three.
   by the moment a verb is used, within a group in the order of §4; a group never
   says who may use a verb.
 - `.ank/` is reached only through the CLI, never by opening the files
-  (ADR-01b6dd05f0db). A `PreToolUse` hook in `.claude/` refuses it.
+  (ADR-01b6dd05f0db). Nothing in the tree refuses the call any more, and the
+  constraint is unchanged by that: `ank context` serves it at the top of every
+  session, it binds every agent, and `ank check` is what notices a file written
+  behind the CLI's back.
 - Immutability is verifiable, not defended: freezes are anchored by hash, and
   the CLI is not a gatekeeper.
 - Claims live in git refs `refs/ank/claims/<id>`, one per task, never in the
