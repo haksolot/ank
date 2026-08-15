@@ -26,7 +26,9 @@ run against.
       allowed_signers        public keys allowed to ratify (§8), versioned
       entities/TASK-<hex>.md
       entities/ADR-<hex>.md
-      log/<ID>.md            append-only work trace, one file per entity
+      entities/SPEC-<hex>.md
+      entities/LOG-<hex>.md  one entry of the work trace, written once
+      log/<ID>.md            the previous shape of the trace, read and never written
       index.db               derived, disposable, belongs in .gitignore — never a source of truth
 
 Flat, deliberately: attachment happens through the `scope` field, not through
@@ -35,34 +37,42 @@ tree.
 
 **One directory for every kind.** The kind is already in the id prefix, which is
 already in the file name, so a per-kind subdirectory would state it a third time
-and the only thing a third copy can do is disagree with the first two (§6). Both
-paths are computed from the id with no lookup: the entity is at
-`.ank/entities/<ID>.md` and its log, if it has one, at `.ank/log/<ID>.md`.
+and the only thing a third copy can do is disagree with the first two (§6). The
+path is computed from the id with no lookup: every entity is at
+`.ank/entities/<ID>.md`, whatever its kind, log entries included.
+
+**An entity's entries are a query, not a path.** They are the entities of kind
+`log` whose `about` names it — so finding them means reading the directory, or
+your own index, where the previous shape let you compute one address. That is the
+one thing this layout gives up, and it is deliberate (§3).
 
 The layout is **fixed, not configured**. A layout read from `config.yml` would
 mean your tool has to parse the configuration before it can find a file, and the
 conformance suite at the end of this page would stop being something anybody can
 run against a directory.
 
-**The previous layout, and the window for it.** Corpora written before this
-revision are at `tasks/TASK-<hex>.md` and `adr/ADR-<hex>.md`, with the log inside
-the task body. A reader **must accept them**; a writer **must never produce
-them**. A corpus holding both layouts is one corpus, and no entity in it is
-counted twice — if an id resolves in both, decide and document which wins rather
-than silently preferring one. `ank check` reports a corpus still in the previous
-layout as a signal, not a fault, naming the command that moves it: such a corpus
-parses, round-trips and answers every verb.
+**The previous layouts, and the window for them.** Corpora written before the
+flat directory are at `tasks/TASK-<hex>.md` and `adr/ADR-<hex>.md`, with the log
+inside the task body; corpora written between that revision and this one carry
+the trace as one file per entity under `.ank/log/`. A reader **must accept all of
+them**; a writer **must never produce them**. A corpus holding several layouts is
+one corpus, and nothing in it is counted twice — if an id resolves in both, decide
+and document which wins rather than silently preferring one, and an entity's
+entries are the union of the two sources. `ank check` reports a corpus still in a
+previous shape as a signal, not a fault, naming the command that moves it: such a
+corpus parses, round-trips and answers every verb.
 
 This dual read is a **window, not a feature**. It exists for the release across
 which an existing corpus moves, and a new tool has no reason to write anything
 but the flat layout.
 
-**Identifiers** are `TASK-` or `ADR-` followed by exactly 12 hexadecimal
-characters, lowercase on output and accepted in either case on input. They hash
-the act of creation — timestamp, identity, title, entropy — never the content,
-so they survive every edit (§3). A tool that resolves short prefixes must
-require at least 4 hex characters and must fail on an ambiguous one, listing the
-candidates. Guessing is the one behaviour the format rules out by name.
+**Identifiers** are `TASK-`, `ADR-`, `SPEC-` or `LOG-` followed by exactly 12
+hexadecimal characters, lowercase on output and accepted in either case on
+input. They hash the act of creation — timestamp, identity, title, entropy —
+never the content, so they survive every edit (§3). A tool that resolves short
+prefixes must require at least 4 hex characters and must fail on an ambiguous
+one, listing the candidates. Guessing is the one behaviour the format rules out
+by name.
 
 ## The shape of a file
 
@@ -76,7 +86,7 @@ Markdown with YAML frontmatter, UTF-8 without BOM, LF line endings:
 The delimiters are exact: the file begins with `---\n`, and the frontmatter ends
 at the first `\n---\n`. Everything after that separator is the body, kept
 verbatim, byte for byte. The body is free-form markdown and carries no
-convention at all: the one that used to live there, the log, is a file of its
+convention at all: the one that used to live there, the log, is an entity of its
 own now.
 
 **Unknown fields are rejected**, not ignored. That is what turns a typo like
@@ -151,6 +161,55 @@ optional on every kind.
 | 13 | `verified` | block sequence of maps | optional, omitted when empty |
 | 14 | `schema` | integer | |
 | 15 | `version` | integer | |
+
+### Spec
+
+An ADR without its `constraint`, and the absence is what makes it a kind of its
+own: a spec describes where an ADR binds, so nothing in it is ever injected into
+an agent's context (§3).
+
+| # | Field | Emission | Notes |
+|---|---|---|---|
+| 1 | `id` | bare | `SPEC-<12 hex>` |
+| 2 | `type` | bare | always `spec` |
+| 3 | `slug` | scalar | optional |
+| 4 | `title` | scalar | |
+| 5 | `created` | scalar | ISO 8601, UTC |
+| 6 | `author` | scalar | optional |
+| 7 | `status` | bare | `proposed` \| `accepted` \| `superseded` |
+| 8 | `scope` | block sequence | mandatory, never empty; what the document governs |
+| 9 | `supersedes` | bare | optional, an entity id |
+| 10 | `ratified` | scalar | optional; set by `accept`, over the body and `scope` |
+| 11 | `verified` | block sequence of maps | optional, omitted when empty |
+| 12 | `schema` | integer | |
+| 13 | `version` | integer | |
+
+The anchor differs from an ADR's in what it covers and in nothing else: a spec
+has no field carrying its authority, so `ratified` is taken over the body and
+`scope` together. A tool that verifies one hashes the body as it hashes a
+`constraint`, under the normalisation below.
+
+### Log entry
+
+| # | Field | Emission | Notes |
+|---|---|---|---|
+| 1 | `id` | bare | `LOG-<12 hex>` |
+| 2 | `type` | bare | always `log` |
+| 3 | `slug` | scalar | optional |
+| 4 | `title` | scalar | the message |
+| 5 | `created` | scalar | ISO 8601, UTC; the instant of the entry |
+| 6 | `author` | scalar | optional; who wrote the entry |
+| 7 | `scope` | block sequence | mandatory; the subject's scope as it stood |
+| 8 | `about` | bare | mandatory, an entity id of any kind |
+| 9 | `verified` | block sequence of maps | optional, omitted when empty |
+| 10 | `schema` | integer | |
+| 11 | `version` | integer | |
+
+**No `status`, and that is not an omission**: an entry is written once and has
+nothing to transition to, so the registry declares the kind without one and your
+parser must not require it. `version` stays, and on this kind it is a detector
+rather than a counter — an entry above 1 has been rewritten, which the format
+says should not happen.
 
 **Optional fields are omitted, never emitted empty.** An entity with no author
 serialises without the key at all. Writing `author:` with nothing after it would
@@ -251,30 +310,47 @@ only its own version would report a file one version newer as *unknown field
 `author`*, and its reader would go hunting for a typo. Naming the version says
 the one true thing: this file is newer than this tool. The argument is in §3.
 
+**A new kind carries no bump either**, and needs none: an unknown kind is
+rejected naming the kind, which is the same honest refusal by a different
+mechanism, so a tool that does not know `spec` or `log` stops on that entity and
+says which kind stopped it. The `spec` and `log` kinds are therefore readable at
+any version in the range, and the one case no bump could reach — a reader that
+opens a task file alone and looks for its entries where an older shape kept them
+— is covered by continuing to read that shape for one window (§6).
+
 ## The log
 
-**The log is a file, not a section of the body.** For the entity at
-`.ank/entities/<ID>.md`, it is `.ank/log/<ID>.md`, append-only, one line per
-entry:
+**The log is neither a section of the body nor a file per entity: an entry is an
+entity.** It carries the instant in `created`, the identity in `author`, the
+message in `title`, and what it is about in `about`, and it is written once and
+never modified. A correction is a new entry naming the one it corrects.
+
+The line grammar has not changed, and it is now how an entry is **printed**
+rather than how it is stored — a dash and a space, the timestamp, a space, the
+identity, a space, an em dash, a space, the message:
 
     - 2026-07-26T14:02Z claude-code/1.4.2 — jwt.verify removed from session.ts
 
-The line grammar: a dash and a space, the timestamp, a space, the identity, a
-space, an em dash, a space, the message. It has not changed, so a log written
-before this revision is copied across verbatim and nothing about an existing
-entry is reinterpreted — only its address moved.
+So an entry written under either previous shape reads across unchanged and
+nothing about it is reinterpreted: only where it lives has moved, twice.
 
-Any kind may have a log, and **a log file that does not exist is an empty log,
-never an error**. Do not create one to record that there is nothing to record.
+Any kind may be logged against — a task, an ADR, a spec — and **an entity with no
+entries has an empty log, never an error**. Do not write one to record that there
+is nothing to record.
 
-Appending is what makes a log entry a one-line git diff, and it is now a diff
-against a file that only ever grows — which is also why the merge rule that used
-to union log sections by timestamp is gone: git already unions two appends (§7).
+**Writing an entry is not a write to the entity it is about.** It writes no
+frontmatter there, bumps no `version` there, and touches no file carrying a
+frozen field. An entity file changes only on a real transition. That property is
+the reason the log left the body, and a tool that records an entry *and* rewrites
+the entity has given it up.
 
-**Appending to the log is not a write to the entity.** It writes no frontmatter,
-bumps no `version`, and touches no file carrying a frozen field. An entity file
-changes only on a real transition. That property is the reason the log moved, and
-a tool that appends a log line *and* rewrites the entity has given it up.
+**Two entries are two files, which is why there is no merge rule for the log.**
+The rule that used to union log sections by timestamp is gone, and the reason
+once recorded for dropping it was wrong: git does not union two appends by
+itself, it conflicts on them, unless a repository configures `merge=union` for
+the path (§7). What has been protecting the corpus all along is one file per
+entity, and an entry that is an entity extends that to the trace — there is no
+file for two parties to append to.
 
 **One convention lives in the message, and it is where a disproved criterion is
 recorded.** A message opening with `discrepancy:` says that the frozen
@@ -292,11 +368,13 @@ an entry; none should ever read it as permission to accept less.
 
 The log is a **work trace, not proof**: nothing authoritative is anchored in it,
 which is why there is no chained hash over it (§3), and which is what makes an
-append by a second party harmless. A tool may parse it, and may append to it; it
-should not reorder or rewrite it.
+entry written by a second party harmless. A tool may read entries and may add
+them; it should never reorder or rewrite one.
 
-In a corpus still in the previous layout, the log is a `## Log` section at the end
-of the task body, with the same line grammar. Read it there; never write it there.
+In a corpus in the earliest layout, the log is a `## Log` section at the end of
+the task body; in the one between, it is a file per entity under `.ank/log/`,
+one line per entry. Both carry the same line grammar. Read them there; write
+neither.
 
 ## What is derived, and must never be stored
 
@@ -370,16 +448,18 @@ port in an afternoon:
   rather than the bytes on disk. Fixtures at schema 1 and schema 2 are there to
   stay: a file written before a field existed must survive a rewrite unchanged,
   and if one of them moves, the version bump has silently become a migration.
-  A log fixture is a second file keyed by the same id as the entity it belongs
-  to.
+  Every kind carries one: a log entry is an ordinary entity fixture like any
+  other, and a fixture in the previous shape — a whole log keyed by the id of
+  the entity it belongs to — stays for as long as that shape is read.
 - `invalid/` — every file must be **rejected with the right error**, not merely
   rejected. Each case names a distinct failure: no frontmatter, a bad id, an
   unknown schema, an unknown kind, an unknown field inside a known kind, a bad
   status, a type mismatch, an empty scope, an invalid glob, `criteria_by`
-  without a criterion, a `verified` entry missing `by` or `at`, and a log line
-  the grammar does not accept. The list grows with the format; what does not
-  change is that a test asserting only that parsing returned *an* error passes
-  for the wrong reason forever.
+  without a criterion, a `verified` entry missing `by` or `at`, an entry naming
+  nothing in `about`, and a log line the grammar does not accept. One per kind
+  at least, or a kind ships with its strictness untested. The list grows with
+  the format; what does not change is that a test asserting only that parsing
+  returned *an* error passes for the wrong reason forever.
 
 There is no invalid fixture for a malformed actor. That is deliberate and is the
 one place strictness is wrong: the convention is checked, never parsed (above).
