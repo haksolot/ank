@@ -11,6 +11,7 @@
 //! and every listing verb then answers as if it were not there.
 
 use crate::cli::CliError;
+use crate::config::Config;
 use crate::store::Store;
 use ank_core::SCHEMA_VERSION;
 use std::io::{BufRead, BufReader};
@@ -76,6 +77,152 @@ pub fn resolve(repo_flag: Option<&str>, cwd: &Path) -> Result<Repo> {
     match repo_flag {
         Some(p) => at(Path::new(p)),
         None => discover(cwd),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Peer corpora (§7, ADR-a1de673043b4)
+// ---------------------------------------------------------------------------
+//
+// **A peer is declared, never discovered.** Nothing below walks the filesystem
+// looking for a sibling `.ank/` and nothing reads a git remote: a peer is a key
+// in `config.yml` and only that. Inference is how a corpus starts depending on
+// where somebody happened to check something out, which is the absolute scope
+// wearing a different hat.
+//
+// **Reading crosses, writing never does.** Everything here opens a `Store`,
+// which reads files and creates none — deliberately not an `Index`, whose first
+// act is to write `index.db` into the corpus it was pointed at. That single
+// choice is what makes the title of TASK-13e802e46050 true, and the integration
+// test asserts it from outside by comparing the peer's bytes before and after.
+//
+// **Claims do not cross**, and nothing here reads or writes `refs/ank/*` of a
+// peer: that is the one lock ADR-a1de673043b4 left standing.
+
+/// Whether `s` can be the name of a peer.
+///
+/// Two characters at least, so that a scope entry can never be confused with a
+/// Windows drive letter: `C:/Users` is a path on a machine, `front:src/**` is a
+/// glob under a declared corpus, and one character of difference between the
+/// two readings would be a corpus meaning something else on one platform.
+pub fn is_peer_name(s: &str) -> bool {
+    s.len() >= 2
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A scope entry that names a peer and a glob under that peer's root, as
+/// `<peer>:<glob>` — the form §7 describes, and the only thing that crosses.
+///
+/// `None` for an ordinary local glob, which is every entry in every corpus that
+/// federates with nobody. Callers that match a scope against the checkout's own
+/// files use this to leave a cross-corpus entry alone: it names no file here and
+/// never will, so treating it as a dead scope would make declaring a peer a
+/// corpus fault.
+pub fn peer_ref(entry: &str) -> Option<(&str, &str)> {
+    let (name, glob) = entry.split_once(':')?;
+    (is_peer_name(name) && !glob.is_empty()).then_some((name, glob))
+}
+
+/// A declared peer, opened for reading.
+pub struct Peer {
+    /// The name the declaration gave it, which is the name a scope entry spells.
+    pub name: String,
+    pub repo: Repo,
+    /// The peer's own configuration — needed because a scope entry written
+    /// *there* is resolved through the declarations *there* (§7).
+    pub config: Config,
+}
+
+/// The peer's root, as the declaration names it. A relative path is resolved
+/// against the declaring repository's root, which is the form worth reviewing:
+/// an absolute one is a fact about one machine.
+fn declared_root(from: &Repo, declared: &str) -> PathBuf {
+    let p = Path::new(declared);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        from.root.join(p)
+    }
+}
+
+/// Whether two paths name the same corpus, asked of the filesystem rather than
+/// of the strings.
+///
+/// `../front` from one root and an absolute path from another are the same
+/// directory and must compare equal, which no textual comparison delivers —
+/// symlinks, `..` and the case rules of Windows all sit in between. A path that
+/// cannot be canonicalised does not exist, and two things that do not exist are
+/// not the same corpus.
+pub fn same_corpus(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// Every peer this repository declares, with one warning per peer that could
+/// not be opened.
+///
+/// **Degrade, never fail** (§2). A peer absent from disk, or a corpus this build
+/// cannot read, costs one line and the local answer — the rule `status --remote`
+/// already follows for an unreachable remote, and the same reason: a reader does
+/// not fail because something it was told about is missing. Each warning names
+/// the peer and ends with the command that settles it.
+pub fn peers_of(from: &Repo, cfg: &Config) -> (Vec<Peer>, Vec<String>) {
+    let mut peers = Vec::new();
+    let mut warnings = Vec::new();
+    for (name, declared) in &cfg.peers {
+        if declared.is_empty() {
+            warnings.push(format!(
+                "peer '{name}' declares no path, answered without it \
+                 (ank config peers.{name} <path>)"
+            ));
+            continue;
+        }
+        let root = declared_root(from, declared);
+        let repo = match at(&root) {
+            Ok(repo) => repo,
+            Err(_) => {
+                warnings.push(format!(
+                    "peer '{name}' at {declared} is not a corpus, answered without it \
+                     (ank config --unset peers.{name})"
+                ));
+                continue;
+            }
+        };
+        let config = match crate::config::load(&repo.config_path()) {
+            Ok(config) => config,
+            Err(_) => {
+                warnings.push(format!(
+                    "peer '{name}' at {declared} could not be read, answered without it \
+                     (ank --repo {declared} config schema)"
+                ));
+                continue;
+            }
+        };
+        peers.push(Peer {
+            name: name.clone(),
+            repo,
+            config,
+        });
+    }
+    (peers, warnings)
+}
+
+impl Peer {
+    /// Whether a scope entry written in this peer's corpus binds `reader`.
+    ///
+    /// The name is resolved through **this peer's** declarations, never the
+    /// reader's: that is what makes the entry mean the same thing wherever it is
+    /// read, and mean nothing at all where the peer is not declared (§7).
+    pub fn binds(&self, name: &str, reader: &Repo) -> bool {
+        match self.config.peers.get(name) {
+            Some(declared) if !declared.is_empty() => {
+                same_corpus(&declared_root(&self.repo, declared), &reader.root)
+            }
+            _ => false,
+        }
     }
 }
 
@@ -258,6 +405,92 @@ mod tests {
             ),
         )
         .unwrap();
+    }
+
+    /// The one form that crosses, and the forms that must not be mistaken for
+    /// it (§7).
+    #[test]
+    fn a_scope_entry_names_a_peer_only_in_the_form_the_spec_gives() {
+        assert_eq!(peer_ref("front:src/**"), Some(("front", "src/**")));
+        assert_eq!(
+            peer_ref("ank-core:crates/**"),
+            Some(("ank-core", "crates/**"))
+        );
+
+        // An ordinary local glob, which is every entry in every corpus that
+        // federates with nobody.
+        assert_eq!(peer_ref("src/**"), None);
+        assert_eq!(peer_ref("docs/spec.md"), None);
+        // A Windows drive letter. This is why a peer name is two characters at
+        // minimum: one corpus must not mean two things depending on the machine
+        // reading it.
+        assert_eq!(peer_ref("C:/Windows/**"), None);
+        // A name with nothing under it names no files.
+        assert_eq!(peer_ref("front:"), None);
+        // A name a declaration could never carry.
+        assert_eq!(peer_ref("front end:src/**"), None);
+    }
+
+    /// A peer absent from disk is one warning and no peer, never a failure
+    /// (§2). The reader answers, which is the whole of "degrade".
+    #[test]
+    fn an_absent_peer_is_one_warning_and_the_local_answer() {
+        let t = Temp::new();
+        let repo = Repo::at(t.0.clone());
+        let cfg = crate::config::parse(
+            "schema: 1\npeers:\n  gone: ../nowhere\n  blank: \"\"\n",
+            Path::new("config.yml"),
+        )
+        .unwrap();
+
+        let (peers, warnings) = peers_of(&repo, &cfg);
+        assert!(peers.is_empty());
+        assert_eq!(warnings.len(), 2, "{warnings:?}");
+        assert!(
+            warnings.iter().any(|w| w.contains("peer 'gone'")),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("peer 'blank' declares no path")),
+            "{warnings:?}"
+        );
+    }
+
+    /// A declaration resolves relative to the root that wrote it, and `binds`
+    /// answers about the corpus it actually names — not about the string.
+    #[test]
+    fn a_peer_declaration_resolves_against_the_root_that_wrote_it() {
+        let a = Temp::new();
+        let b = Temp::new();
+        let to_b = format!("../{}", b.0.file_name().unwrap().to_string_lossy());
+        let to_a = format!("../{}", a.0.file_name().unwrap().to_string_lossy());
+        for (t, peer, path) in [(&a, "bee", &to_b), (&b, "ay", &to_a)] {
+            fs::write(
+                t.0.join(ANK_DIR).join("config.yml"),
+                format!("schema: 1\npeers:\n  {peer}: {path}\n"),
+            )
+            .unwrap();
+        }
+
+        let ra = Repo::at(a.0.clone());
+        let rb = Repo::at(b.0.clone());
+        let cfg_a = crate::config::load(&ra.config_path()).unwrap();
+
+        let (peers, warnings) = peers_of(&ra, &cfg_a);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(peers.len(), 1);
+        let bee = &peers[0];
+        assert_eq!(bee.name, "bee");
+        assert!(same_corpus(&bee.repo.root, &b.0));
+
+        // The name is resolved through the peer's own declarations, so `ay`
+        // written in B points back at A -- and a name B does not declare points
+        // nowhere at all.
+        assert!(bee.binds("ay", &ra));
+        assert!(!bee.binds("ay", &rb));
+        assert!(!bee.binds("undeclared", &ra));
     }
 
     #[test]
