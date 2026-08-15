@@ -1,0 +1,2 @@
+- 2026-08-15T06:19:00Z claude-code/opus-5 — measured in a sandbox of two clones and two worktrees: a claim taken on a branch and a done taken on a branch both leave the file reading open on main, so both markers land on rows the status filter matched. The count is two there, and --free answers no match in silence, which is the gap
+- 2026-08-15T06:19:29Z claude-code/opus-5 — done, proof commit:c8918b1c3b8795864c207282c7aaf37432ad2f14

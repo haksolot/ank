@@ -477,6 +477,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[],
         notes: &[
             "--status filters on the stored status; a claimed row still displays as [claimed:who]",
+            "a listing counts the open rows a claim would refuse, and names --free",
             "--free keeps the open tasks no live claim's scope overlaps, and says how many it hid",
         ],
         refuses_globals: &[],
