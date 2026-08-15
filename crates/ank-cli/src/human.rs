@@ -1658,11 +1658,27 @@ fn check_spec(
 /// finding would ask of it, and a rule that fired anyway would fire on every
 /// correct citation the day after any document is revised.
 ///
+/// **A citer that is itself superseded is asked nothing at all**
+/// (TASK-a6c643216f51). Every case above reads the target's state; this one
+/// reads the citing document's, and it comes first because a retired document
+/// owes no repair whatever its citations resolve to. A superseded entity is
+/// history: it records what was decided and what it rested on *at the time*, and
+/// following a chain would make it cite a document written after it was retired.
+/// The finding is worse than unactionable — `amend` reaches the references of
+/// any spec, so a reader following the instruction bumps the `version` of a
+/// document that is supposed to be settled, which is the shape of a late edit
+/// `check` reports everywhere else. Measured on this corpus the first time a
+/// spec was replaced: three live citers followed the chain, and the fourth had
+/// been retired in the same operation.
+///
 /// Only the declared field is read. A section number written in a sentence is
 /// not a reference, and scanning bodies for citations would make the check
 /// depend on how somebody phrased a paragraph — which is the drift this exists
 /// to catch, moved into the detector.
 fn check_references(s: &Spec, entities: &[(PathBuf, Entity)], report: &mut Report) {
+    if s.status == SpecStatus::Superseded {
+        return;
+    }
     let find = |id: &EntityId| entities.iter().find(|(_, e)| e.id() == id).map(|(_, e)| e);
     for target in &s.references {
         // The kind rule, read from the id and before any lookup: an id states
