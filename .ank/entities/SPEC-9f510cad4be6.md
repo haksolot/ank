@@ -5,14 +5,15 @@ slug: implementation-and-the-decisions-that-bound-it
 title: Implementation, and the decisions that bound it
 created: 2026-08-15T17:45:38Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/**
   - Cargo.toml
   - LICENSE
 references: [SPEC-183d297253ac, SPEC-3d12e76d9fa2]
+ratified: 2a12f5f7399d
 schema: 3
-version: 2
+version: 3
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
