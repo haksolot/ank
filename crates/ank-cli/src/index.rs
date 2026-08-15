@@ -525,11 +525,10 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
         let bad = |what: &str, v: &str| CliError::new(1, format!("index: bad {what} '{v}'"));
         Ok(Row {
             id: EntityId::parse(&id).map_err(|_| bad("id", &id))?,
-            kind: match kind.as_str() {
-                "task" => EntityKind::Task,
-                "adr" => EntityKind::Adr,
-                other => return Err(bad("kind", other)),
-            },
+            // The registry answers which kinds there are, so a row written by
+            // a binary that knows one more is read back rather than rejected
+            // for being new.
+            kind: EntityKind::from_type_name(&kind).ok_or_else(|| bad("kind", &kind))?,
             path: r.get(2).unwrap_or_default(),
             title: r.get(3).unwrap_or_default(),
             status: r.get(4).unwrap_or_default(),
@@ -599,27 +598,31 @@ fn upsert(
     // used to open the file for, and carrying them here is the whole point.
     // `criteria` is the criterion for a task and the constraint for an ADR --
     // in both cases the sentence that says what the entity is actually for.
-    let (kind, title, status, created, blocked_by, version, slug, criteria) = match entity {
+    // The common base of §3 is read through the registry rather than restated
+    // per kind; what stays a match is what actually differs between kinds.
+    let kind = ank_core::Fields::kind_spec(entity).name;
+    let title = entity.title().to_string();
+    let created = entity.created().to_string();
+    let version = entity.version();
+    let slug = entity.slug().unwrap_or_default().to_string();
+    let (status, blocked_by, criteria) = match entity {
         Entity::Task(t) => (
-            "task",
-            t.title.clone(),
             t.status.as_str().to_string(),
-            t.created.clone(),
             join_list(t.blocked_by.iter().map(|b| b.to_string())),
-            t.version,
-            t.slug.clone().unwrap_or_default(),
             t.done_criteria.clone().unwrap_or_default(),
         ),
         Entity::Adr(a) => (
-            "adr",
-            a.title.clone(),
             a.status.as_str().to_string(),
-            a.created.clone(),
             String::new(),
-            a.version,
-            a.slug.clone().unwrap_or_default(),
             a.constraint.clone(),
         ),
+        // A spec has the lifecycle and no sentence of that sort to carry: its
+        // document is the body, and what of it becomes searchable is the
+        // question TASK-3e68786fa443 answers when the kind reaches the CLI.
+        Entity::Spec(s) => (s.status.as_str().to_string(), String::new(), String::new()),
+        // A log entry has no status at all, and its message is the `title`
+        // above. TASK-df9c6d46e8ef is what makes entries reachable by query.
+        Entity::Log(_) => (String::new(), String::new(), String::new()),
     };
     // The path is not the key: an entity that moved file must not survive
     // twice, so the old row goes first. Same for its searchable twin, and by

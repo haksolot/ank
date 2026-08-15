@@ -78,6 +78,52 @@ struct AdrFm {
     version: u64,
 }
 
+/// A spec's frontmatter is an ADR's without `constraint` and without `see`, and
+/// the absence is enforced here by `deny_unknown_fields` rather than by a rule
+/// of its own: a `constraint:` inside a `spec` is refused naming the field,
+/// which is the same refusal a typo earns and the right one — the kind exists
+/// because a spec describes where an ADR binds (§3).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecFm {
+    id: String,
+    #[serde(rename = "type")]
+    entity_type: String,
+    slug: Option<String>,
+    title: String,
+    created: String,
+    author: Option<String>,
+    status: SpecStatus,
+    scope: Vec<String>,
+    supersedes: Option<String>,
+    ratified: Option<String>,
+    #[serde(default)]
+    verified: Vec<Verified>,
+    schema: u32,
+    version: u64,
+}
+
+/// A log entry's frontmatter. No `status` — an entry has nothing to transition
+/// to — and `about` is required: an entry with no subject is the query the kind
+/// exists to make answerable, missing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogFm {
+    id: String,
+    #[serde(rename = "type")]
+    entity_type: String,
+    slug: Option<String>,
+    title: String,
+    created: String,
+    author: Option<String>,
+    scope: Vec<String>,
+    about: String,
+    #[serde(default)]
+    verified: Vec<Verified>,
+    schema: u32,
+    version: u64,
+}
+
 #[derive(Deserialize)]
 struct TypeProbe {
     #[serde(rename = "type")]
@@ -148,52 +194,98 @@ fn parse_entity_lf(input: &str) -> Result<Entity> {
     match kind {
         EntityKind::Task => Ok(Entity::Task(parse_task_fm(fm, body)?)),
         EntityKind::Adr => Ok(Entity::Adr(parse_adr_fm(fm, body)?)),
+        EntityKind::Spec => Ok(Entity::Spec(parse_spec_fm(fm, body)?)),
+        EntityKind::Log => Ok(Entity::Log(parse_log_fm(fm, body)?)),
+    }
+}
+
+/// The entity was read and is of another kind. The kind it *is* comes from the
+/// registry, so the diagnostic names it without a per-kind table of names.
+fn wrong_kind(e: &Entity) -> Error {
+    Error::TypeMismatch {
+        id: e.id().to_string(),
+        field_type: e.kind_spec().name.to_string(),
     }
 }
 
 pub fn parse_task(input: &str) -> Result<Task> {
     match parse_entity(input)? {
         Entity::Task(t) => Ok(t),
-        Entity::Adr(a) => Err(Error::TypeMismatch {
-            id: a.id.to_string(),
-            field_type: "adr".into(),
-        }),
+        other => Err(wrong_kind(&other)),
     }
 }
 
 pub fn parse_adr(input: &str) -> Result<Adr> {
     match parse_entity(input)? {
         Entity::Adr(a) => Ok(a),
-        Entity::Task(t) => Err(Error::TypeMismatch {
-            id: t.id.to_string(),
-            field_type: "task".into(),
-        }),
+        other => Err(wrong_kind(&other)),
     }
 }
 
-fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
-    let raw: TaskFm = serde_yaml::from_str(fm)?;
-    let id = EntityId::parse(&raw.id)?;
-    if id.kind() != EntityKind::Task || raw.entity_type != EntityKind::Task.as_str() {
+pub fn parse_spec(input: &str) -> Result<Spec> {
+    match parse_entity(input)? {
+        Entity::Spec(s) => Ok(s),
+        other => Err(wrong_kind(&other)),
+    }
+}
+
+/// Named for the entity and not for the line: [`crate::log::parse_log`] reads
+/// the `## Log` section of a body, and this reads a file of kind `log`.
+pub fn parse_log_entity(input: &str) -> Result<Log> {
+    match parse_entity(input)? {
+        Entity::Log(l) => Ok(l),
+        other => Err(wrong_kind(&other)),
+    }
+}
+
+/// What every kind owes, checked once rather than once per kind: the id parses
+/// and agrees with `type`, the scope is present and its globs are valid, and
+/// the schema is inside the range this crate reads. Returns the parsed id,
+/// which is the one product of the checks a caller needs afterwards.
+///
+/// A fourth copy of this block is exactly what ADR-c9f9d0d6f05d says a kind
+/// must not cost, and the only thing a fourth copy could do is disagree with
+/// the first three.
+fn common_fields(
+    kind: EntityKind,
+    raw_id: &str,
+    entity_type: &str,
+    scope: &[String],
+    schema: u32,
+) -> Result<EntityId> {
+    let id = EntityId::parse(raw_id)?;
+    if id.kind() != kind || entity_type != kind.as_str() {
         return Err(Error::TypeMismatch {
-            id: raw.id,
-            field_type: raw.entity_type,
+            id: raw_id.to_string(),
+            field_type: entity_type.to_string(),
         });
     }
-    if raw.scope.is_empty() {
+    if scope.is_empty() {
         return Err(Error::EmptyScope);
     }
-    validate_globs(&raw.scope)?;
+    validate_globs(scope)?;
     // A range, not an equality (§3). Older parses — every field added after
     // version 1 is optional, so its absence reads as "written before this
     // existed". Newer is refused on the version rather than on the first field
     // it does not recognise, which is the only diagnosis that names the cause.
-    if raw.schema < MIN_SCHEMA || raw.schema > SCHEMA_VERSION {
+    if schema < MIN_SCHEMA || schema > SCHEMA_VERSION {
         return Err(Error::UnknownSchema {
-            found: raw.schema,
+            found: schema,
             supported: SCHEMA_VERSION,
         });
     }
+    Ok(id)
+}
+
+fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
+    let raw: TaskFm = serde_yaml::from_str(fm)?;
+    let id = common_fields(
+        EntityKind::Task,
+        &raw.id,
+        &raw.entity_type,
+        &raw.scope,
+        raw.schema,
+    )?;
     if raw.criteria_by.is_some() && raw.done_criteria.is_none() {
         return Err(Error::CriteriaByWithoutCriteria);
     }
@@ -225,27 +317,13 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
 
 fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
     let raw: AdrFm = serde_yaml::from_str(fm)?;
-    let id = EntityId::parse(&raw.id)?;
-    if id.kind() != EntityKind::Adr || raw.entity_type != EntityKind::Adr.as_str() {
-        return Err(Error::TypeMismatch {
-            id: raw.id,
-            field_type: raw.entity_type,
-        });
-    }
-    if raw.scope.is_empty() {
-        return Err(Error::EmptyScope);
-    }
-    validate_globs(&raw.scope)?;
-    // A range, not an equality (§3). Older parses — every field added after
-    // version 1 is optional, so its absence reads as "written before this
-    // existed". Newer is refused on the version rather than on the first field
-    // it does not recognise, which is the only diagnosis that names the cause.
-    if raw.schema < MIN_SCHEMA || raw.schema > SCHEMA_VERSION {
-        return Err(Error::UnknownSchema {
-            found: raw.schema,
-            supported: SCHEMA_VERSION,
-        });
-    }
+    let id = common_fields(
+        EntityKind::Adr,
+        &raw.id,
+        &raw.entity_type,
+        &raw.scope,
+        raw.schema,
+    )?;
     let supersedes = raw.supersedes.as_deref().map(EntityId::parse).transpose()?;
 
     Ok(Adr {
@@ -260,6 +338,64 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         see: raw.see,
         supersedes,
         ratified: raw.ratified,
+        verified: raw.verified,
+        schema: raw.schema,
+        version: raw.version,
+        body: body.to_string(),
+    })
+}
+
+fn parse_spec_fm(fm: &str, body: &str) -> Result<Spec> {
+    let raw: SpecFm = serde_yaml::from_str(fm)?;
+    let id = common_fields(
+        EntityKind::Spec,
+        &raw.id,
+        &raw.entity_type,
+        &raw.scope,
+        raw.schema,
+    )?;
+    let supersedes = raw.supersedes.as_deref().map(EntityId::parse).transpose()?;
+
+    Ok(Spec {
+        id,
+        slug: raw.slug,
+        title: raw.title,
+        created: raw.created,
+        author: raw.author,
+        status: raw.status,
+        scope: raw.scope,
+        supersedes,
+        ratified: raw.ratified,
+        verified: raw.verified,
+        schema: raw.schema,
+        version: raw.version,
+        body: body.to_string(),
+    })
+}
+
+fn parse_log_fm(fm: &str, body: &str) -> Result<Log> {
+    let raw: LogFm = serde_yaml::from_str(fm)?;
+    let id = common_fields(
+        EntityKind::Log,
+        &raw.id,
+        &raw.entity_type,
+        &raw.scope,
+        raw.schema,
+    )?;
+    // Any kind may be named: a task, an ADR, a spec — and an entry about an
+    // entry is not forbidden here either, because the format has no rule that
+    // would make it one. What is checked is that the reference is an identifier
+    // at all, which is what turns the address into a query that can resolve.
+    let about = EntityId::parse(&raw.about)?;
+
+    Ok(Log {
+        id,
+        slug: raw.slug,
+        title: raw.title,
+        created: raw.created,
+        author: raw.author,
+        scope: raw.scope,
+        about,
         verified: raw.verified,
         schema: raw.schema,
         version: raw.version,
@@ -408,6 +544,14 @@ pub fn serialize_task(t: &Task) -> String {
 
 pub fn serialize_adr(a: &Adr) -> String {
     serialize_fields(a)
+}
+
+pub fn serialize_spec(s: &Spec) -> String {
+    serialize_fields(s)
+}
+
+pub fn serialize_log_entity(l: &Log) -> String {
+    serialize_fields(l)
 }
 
 pub fn serialize_entity(e: &Entity) -> String {

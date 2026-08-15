@@ -473,6 +473,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
+            // The kind-specific signals of a spec and of a log entry are not
+            // written yet: they arrive with the surfaces that create those
+            // entities (TASK-3e68786fa443, TASK-df9c6d46e8ef). What is checked
+            // here is what every kind owes — the scope above, authorship and
+            // readings below — and that already runs for them.
+            Entity::Spec(_) | Entity::Log(_) => {}
         }
     }
 
@@ -976,6 +982,12 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
             "ank new adr --supersedes {id} --title \"<t>\" --scope \"{to}\" \
              --constraint \"<rule>\""
         )),
+        // A spec and a log entry are not reachable from `amend` or from `new`
+        // yet, so there is no command to name — and §4 is explicit that naming
+        // one which exits 7 is worse than naming none. The rename is reported
+        // either way. The verbs arrive with TASK-3e68786fa443 and
+        // TASK-df9c6d46e8ef, and the repair for those kinds arrives with them.
+        Entity::Spec(_) | Entity::Log(_) => None,
     }
 }
 
@@ -1758,17 +1770,11 @@ fn check_authorship(
 }
 
 fn author_of(e: &Entity) -> Option<&str> {
-    match e {
-        Entity::Task(t) => t.author.as_deref(),
-        Entity::Adr(a) => a.author.as_deref(),
-    }
+    e.author()
 }
 
 fn readings_of(e: &Entity) -> &[Verified] {
-    match e {
-        Entity::Task(t) => &t.verified,
-        Entity::Adr(a) => &a.verified,
-    }
+    e.verified()
 }
 
 /// What kind of actor a written identity claims to be (§3).
@@ -1812,10 +1818,7 @@ fn actor_kind(value: &str) -> Option<ActorKind> {
 }
 
 fn created_of(e: &Entity) -> &str {
-    match e {
-        Entity::Task(t) => &t.created,
-        Entity::Adr(a) => &a.created,
-    }
+    e.created()
 }
 
 /// `blocked_by` cycles, reported once per cycle and naming the whole ring: a
@@ -3657,6 +3660,19 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             store.write(&Entity::Adr(adr), base_version)?;
             report_amend(inv, &id, &changes, out);
         }
+        // Declared in the registry, and not reachable from this verb yet. A
+        // refusal on state, naming the kind, is what §4 asks of a verb that
+        // cannot act — and it is the honest answer while the surfaces that
+        // create these entities are still to be written (TASK-3e68786fa443,
+        // TASK-df9c6d46e8ef). Amending them here would be deciding, under
+        // another task's name, what those verbs are allowed to change.
+        ref other => {
+            let kind = ank_core::Fields::kind_spec(other).name;
+            return Err(
+                CliError::new(7, format!("{id} is a {kind}, and amend does not reach it"))
+                    .with_hint(format!("ank show {id}")),
+            );
+        }
     }
 
     Ok(0)
@@ -3781,7 +3797,9 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     // and the index is never opened for one.
     let edges = match &loaded.entity {
         Entity::Task(t) => Some(edges_of(repo, t)?),
-        Entity::Adr(_) => None,
+        // `blocked_by` is the only relation between tasks (§3), so no other
+        // kind has two directions of it to show.
+        _ => None,
     };
     // The union of §3's proof list with what the proof ref carries
     // (ADR-493471d64ba0). Empty for an ADR, which is measured by nothing, and
@@ -3789,7 +3807,8 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     // "absent", which is what a task with no attestation costs.
     let detached = match &loaded.entity {
         Entity::Task(t) => claim::detached_proofs(&repo.root, &t.id),
-        Entity::Adr(_) => Vec::new(),
+        // A proof anchors a completion, and only a task completes.
+        _ => Vec::new(),
     };
     // Only when the log is a file. A body still carrying its own `## Log`
     // section prints it above as part of the entity, and a second copy here

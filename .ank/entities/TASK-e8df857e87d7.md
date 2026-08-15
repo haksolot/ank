@@ -5,15 +5,21 @@ slug: the-core-admits-the-spec-and-log-kinds
 title: The core admits the spec and log kinds
 created: 2026-08-15T06:56:22Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-core/**
+  - crates/ank-cli/**
 blocked_by: [TASK-1d47cc52c42d]
 done_criteria: |
   crates/ank-core declares the kinds spec and log in its registry, each with an entity struct, a field table and canonical serialisation, and EntityKind, Entity and the parser admit them. A spec declares no constraint field; a log entry names the entity it is about. A golden fixture per new kind round-trips byte for byte under crates/ank-core/tests/golden.rs, and an invalid fixture per new kind is refused naming what is wrong. cargo test --workspace passes and cargo fmt --check is clean.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: fa4e879f387960e9ecefee1f69241cb95b10ed90
+    criteria: 54c002648492
+    via: submitted
 schema: 3
-version: 2
+version: 5
 ---
 
 The registry exists so that adding a kind is a table entry rather than a second

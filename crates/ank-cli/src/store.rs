@@ -200,24 +200,15 @@ pub type Result<T> = std::result::Result<T, StoreError>;
 // ---------------------------------------------------------------------------
 
 pub fn version_of(entity: &Entity) -> u64 {
-    match entity {
-        Entity::Task(t) => t.version,
-        Entity::Adr(a) => a.version,
-    }
+    entity.version()
 }
 
 fn set_version(entity: &mut Entity, v: u64) {
-    match entity {
-        Entity::Task(t) => t.version = v,
-        Entity::Adr(a) => a.version = v,
-    }
+    entity.set_version(v);
 }
 
 fn set_body(entity: &mut Entity, body: String) {
-    match entity {
-        Entity::Task(t) => t.body = body,
-        Entity::Adr(a) => a.body = body,
-    }
+    *entity.body_mut() = body;
 }
 
 // ---------------------------------------------------------------------------
@@ -804,12 +795,10 @@ pub enum LogHome {
     Body,
 }
 
-/// The body of an entity, whichever kind it is.
+/// The body of an entity, whichever kind it is. The registry answers it, so a
+/// kind added to the table needs nothing here.
 fn body_of(entity: &Entity) -> &str {
-    match entity {
-        Entity::Task(t) => &t.body,
-        Entity::Adr(a) => &a.body,
-    }
+    ank_core::Fields::body(entity)
 }
 
 // ---------------------------------------------------------------------------
