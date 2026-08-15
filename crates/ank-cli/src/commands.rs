@@ -934,14 +934,29 @@ pub fn find(
     let shown = total.min(cap);
 
     if inv.json() {
+        // `state` beside `status`, from the plane already read above and in the
+        // spelling `context --json` uses: the marker the human listing prints,
+        // brackets stripped. A marker is not colour — ADR-0c8ab846d262 keeps
+        // colour for the reader and structure for everyone — so the answer a
+        // terminal gets about a row finished on a branch is the answer a pipe
+        // gets, and a caller filtering on this JSON no longer schedules work the
+        // completion ref already closed. Additive: `status` stays the stored
+        // one, under the key it already has.
         let items: Vec<String> = hits[..shown]
             .iter()
             .map(|r| {
                 format!(
-                    "{{\"id\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\"title\":{}}}",
+                    "{{\"id\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\"state\":{},\"title\":{}}}",
                     r.id,
                     r.kind.as_str(),
                     r.status,
+                    json_string(
+                        crate::context::marker_for(
+                            &r.status,
+                            crate::context::coordination_of(&coord, &r.id)
+                        )
+                        .trim_matches(|c| c == '[' || c == ']')
+                    ),
                     json_string(&r.title)
                 )
             })
