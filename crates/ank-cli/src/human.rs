@@ -1622,12 +1622,145 @@ fn check_spec(
 ) {
     let view = Anchored::from(s);
     check_succession(&view, spec_ids, entities, report);
+    check_references(s, entities, report);
     check_anchor(
         &view,
         repo,
         "the document no longer says what was ratified",
         report,
     );
+}
+
+/// What a spec's `references` owe (§4, ADR-5a690829388d).
+///
+/// This is the mechanism that decision rests on: splitting a specification is
+/// safe because the drift it risks is **detected** rather than deprecated, and
+/// until a reference is resolved against the corpus that sentence is a promise
+/// with nothing behind it.
+///
+/// **The precedent is `blocked_by`, followed rather than reinvented.** A
+/// declared dependency, resolved locally, named when it dangles. What differs is
+/// that a specification has two states between "there" and "not there", and they
+/// do not deserve the same severity:
+///
+/// - **absent** is a fault, the same condition a `blocked_by` naming nothing is:
+///   a reader following the reference finds nothing;
+/// - **not accepted** is a signal, because a document may legitimately cite a
+///   draft while both are being written — refusing that would make it impossible
+///   to write two specifications at once — and what it must not do is pass
+///   unmentioned;
+/// - **superseded** is a signal, and it is the interesting one: the target is
+///   not missing, it moved, and the chain says where. The finding names the
+///   successor, so the repair is a citation update and not an investigation.
+///
+/// **A reference that followed the chain is not reported at all.** Where the
+/// citing document also names the end of the chain it has already done what the
+/// finding would ask of it, and a rule that fired anyway would fire on every
+/// correct citation the day after any document is revised.
+///
+/// Only the declared field is read. A section number written in a sentence is
+/// not a reference, and scanning bodies for citations would make the check
+/// depend on how somebody phrased a paragraph — which is the drift this exists
+/// to catch, moved into the detector.
+fn check_references(s: &Spec, entities: &[(PathBuf, Entity)], report: &mut Report) {
+    let find = |id: &EntityId| entities.iter().find(|(_, e)| e.id() == id).map(|(_, e)| e);
+    for target in &s.references {
+        // The kind rule, read from the id and before any lookup: an id states
+        // its own kind, and a task that does not exist is refused for the same
+        // reason the one that does is.
+        if !crate::commands::citable(target.kind()) {
+            report.findings.push(Finding::fault(
+                &s.id,
+                format!(
+                    "{} (ank amend {} --drop-reference {target})",
+                    crate::commands::not_citable(target),
+                    s.id
+                ),
+            ));
+            continue;
+        }
+        let Some(entity) = find(target) else {
+            report.findings.push(Finding::fault(
+                &s.id,
+                format!(
+                    "references {target}, which does not exist \
+                     (ank amend {} --drop-reference {target})",
+                    s.id
+                ),
+            ));
+            continue;
+        };
+        // Both citable kinds carry the same lifecycle, and the view is what
+        // says so once instead of matching on the kind here.
+        let Some(view) = Anchored::of(entity) else {
+            continue;
+        };
+        match view.status {
+            AdrStatus::Accepted => {}
+            AdrStatus::Proposed => report.findings.push(Finding::signal(
+                &s.id,
+                format!("references {target}, which is not accepted (ank accept {target})"),
+            )),
+            AdrStatus::Superseded => {
+                let head = chain_head(target, entities);
+                // The chain followed: nothing to say. The document already
+                // cites where the target went.
+                if head.as_ref().is_some_and(|h| s.references.contains(h)) {
+                    continue;
+                }
+                report.findings.push(Finding::signal(
+                    &s.id,
+                    match head {
+                        Some(head) => format!(
+                            "references {target}, which is superseded by {head} \
+                             (ank amend {} --reference {head} --drop-reference {target})",
+                            s.id
+                        ),
+                        // A superseded entity nothing supersedes is already a
+                        // fault against that entity, reported by
+                        // `check_succession`. Here it means the citation has
+                        // nowhere to follow to, and saying so is more use than
+                        // naming a successor that does not exist.
+                        None => format!(
+                            "references {target}, which is superseded and names no successor \
+                             (ank show {target})"
+                        ),
+                    },
+                ));
+            }
+        }
+    }
+}
+
+/// The end of a supersession chain: the entity that replaced this one, then the
+/// one that replaced that, until nothing does.
+///
+/// `None` where nothing supersedes the target at all — a corpus fault of its
+/// own, reported against the target and not against whoever cites it.
+///
+/// The walk is bounded by the number of entities and remembers where it has
+/// been, because a corpus can hold a cycle: `check_cycles` reports one for
+/// `blocked_by`, and nothing forbids a hand-written pair of documents naming
+/// each other. A walk that trusted the chain to terminate would hang the whole
+/// verb on a file somebody typed wrong.
+fn chain_head(target: &EntityId, entities: &[(PathBuf, Entity)]) -> Option<EntityId> {
+    let successor = |id: &EntityId| {
+        entities.iter().find_map(|(_, e)| {
+            Anchored::of(e)
+                .filter(|v| v.supersedes == Some(id))
+                .map(|v| v.id.clone())
+        })
+    };
+    let mut seen: Vec<EntityId> = vec![target.clone()];
+    let mut head = successor(target)?;
+    while let Some(next) = successor(&head) {
+        if seen.contains(&next) {
+            break;
+        }
+        seen.push(head);
+        head = next;
+    }
+    Some(head)
 }
 
 /// The succession half, for either kind that has one.
@@ -3911,22 +4044,46 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     )?;
     let add_blocked = resolve_all(&store, inv.values("--blocked-by"))?;
     let drop_blocked = resolve_all(&store, inv.values("--drop-blocked-by"))?;
+    // A dropped reference is **not** resolved against the corpus, and that is
+    // the whole point of the flag: the case it exists for is a citation naming
+    // an entity this corpus no longer holds, which `check` reports as a fault
+    // and `resolve` would refuse to look up. It is matched against what the
+    // entity stores, exactly as `--drop-scope` is.
+    let add_refs = resolve_all(&store, inv.values("--reference"))?;
+    let drop_refs = parse_all(inv.values("--drop-reference"), &id)?;
 
     if add_scope.is_empty()
         && drop_scope.is_empty()
         && add_blocked.is_empty()
         && drop_blocked.is_empty()
+        && add_refs.is_empty()
+        && drop_refs.is_empty()
         && criteria.is_none()
     {
         return Err(
             CliError::new(7, format!("nothing to amend on {id}")).with_hint(format!(
                 "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
-                 --scope <glob> | --drop-scope <glob> | --criteria \"<c>\""
+                 --scope <glob> | --drop-scope <glob> | --criteria \"<c>\" | \
+                 --reference <id> | --drop-reference <id>"
             )),
         );
     }
 
     let mut changes: Vec<String> = Vec::new();
+
+    // Refused rather than dropped, on the reasoning every other foreign flag on
+    // this verb follows: a flag silently ignored teaches the caller it worked.
+    // Stated once for the two kinds that do not carry the field, because the
+    // sentence is the same one twice — what a task depends on is `blocked_by`,
+    // and an ADR binds rather than cites.
+    if !matches!(loaded.entity, Entity::Spec(_)) && !(add_refs.is_empty() && drop_refs.is_empty()) {
+        let kind = ank_core::Fields::kind_spec(&loaded.entity).name;
+        return Err(CliError::new(
+            1,
+            format!("references applies to a spec: a {kind} cites nothing"),
+        )
+        .with_hint(format!("ank show {id}")));
+    }
 
     match loaded.entity {
         Entity::Task(mut task) => {
@@ -4117,7 +4274,17 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             // because no narrower field carries the authority. So an accepted
             // spec's scope is refused here on the same terms an accepted ADR's
             // is, and revising an accepted specification is a supersession.
-            if spec.status != SpecStatus::Proposed {
+            //
+            // **The refusal is on the scope and not on the entity**, which is
+            // what makes the repair `check` names reachable. A citation is not
+            // covered by the anchor — the commit hashes the body and the scope,
+            // and a reference is neither — and the finding that matters most
+            // fires on accepted documents, since revising one is a supersession
+            // and a supersession is what leaves the citations behind. Refusing
+            // the whole verb here would name a repair the verb turns down
+            // (ADR-5a690829388d).
+            let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
+            if touches_anchor && spec.status != SpecStatus::Proposed {
                 return Err(CliError::new(
                     6,
                     format!(
@@ -4128,6 +4295,13 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
                 .with_hint("ank new spec --supersedes <id> --title \"<t>\" --scope \"<glob>\""));
             }
 
+            amend_references(
+                &mut spec.references,
+                &add_refs,
+                &drop_refs,
+                &id,
+                &mut changes,
+            )?;
             amend_scope(&mut spec.scope, &add_scope, &drop_scope, &id, &mut changes)?;
             if changes.is_empty() {
                 return Err(CliError::new(7, format!("{id} already reads that way"))
@@ -4151,6 +4325,57 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     }
 
     Ok(0)
+}
+
+/// The `references` half, for the one kind that carries the field.
+///
+/// Add and remove and never replace, exactly as the scope half does: a verb
+/// taking the whole list silently drops whatever the caller forgot to repeat.
+/// A citation the document does not carry is refused rather than ignored,
+/// because "dropped" and "was never there" are the same output otherwise and
+/// only one of them is what the caller meant.
+///
+/// Emptying the list out is allowed, and it is the one place this differs from
+/// the scope: a document that cites nothing is an ordinary document, where an
+/// entity with no scope attaches to nothing and is invisible.
+fn amend_references(
+    references: &mut Vec<EntityId>,
+    add: &[EntityId],
+    drop: &[EntityId],
+    id: &EntityId,
+    changes: &mut Vec<String>,
+) -> Result<()> {
+    for r in drop {
+        if !references.contains(r) {
+            return Err(CliError::new(7, format!("{id} does not reference {r}"))
+                .with_hint(format!("ank show {id}")));
+        }
+    }
+    references.retain(|r| !drop.contains(r));
+    for r in add {
+        if r == id {
+            return Err(CliError::new(
+                7,
+                format!("{id} cannot reference itself: a document is read whole"),
+            )
+            .with_hint(format!("ank amend {id} --reference <other-id>")));
+        }
+        // The kind rule, at the point of the write and in the words `check`
+        // uses for the same state. Both readings come from one function
+        // (ADR-5a690829388d).
+        if !crate::commands::citable(r.kind()) {
+            return Err(CliError::new(1, crate::commands::not_citable(r))
+                .with_hint(format!("ank amend {id} --reference <SPEC-id|ADR-id>")));
+        }
+        if !references.contains(r) {
+            changes.push(format!("+references {r}"));
+            references.push(r.clone());
+        }
+    }
+    for r in drop {
+        changes.push(format!("-references {r}"));
+    }
+    Ok(())
 }
 
 /// The scope half, shared by both kinds.
@@ -4203,6 +4428,28 @@ fn trimmed(values: &[String]) -> Vec<String> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// The same list, read as identifiers and never looked up.
+///
+/// For `--drop-reference` alone, and the asymmetry with [`resolve_all`] is the
+/// decision rather than an omission: the citation worth dropping is usually one
+/// whose target the corpus has lost, and resolving it would refuse the very
+/// repair `check` names. A prefix is therefore not accepted here — there is
+/// nothing to disambiguate it against — so the id is typed whole, which is what
+/// the finding prints.
+fn parse_all(raw: &[String], id: &EntityId) -> Result<Vec<EntityId>> {
+    let mut out = Vec::new();
+    for r in raw {
+        let target = EntityId::parse(r.trim()).map_err(|e| {
+            CliError::new(7, format!("{e}"))
+                .with_hint(format!("ank amend {id} --drop-reference <full-id>"))
+        })?;
+        if !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    Ok(out)
 }
 
 /// Every reference resolved at the point of the edit. An unknown one refused

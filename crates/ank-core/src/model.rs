@@ -387,6 +387,16 @@ pub struct Spec {
     pub author: Option<String>,
     pub status: SpecStatus,
     pub scope: Vec<String>,
+    /// The documents and decisions this one rests on (§3, ADR-5a690829388d).
+    ///
+    /// A declared field and never a sentence: a specification cut into documents
+    /// drifts unless the coherence between them is verified, and verifying it
+    /// means the citation has to sit somewhere a parser can reach. What a
+    /// reference resolving to nothing, to a draft or to a superseded document
+    /// costs is `check`'s business — the kind that may be named included. Here
+    /// it is a list of identifiers, on the reading `about` already gets: a
+    /// corpus is not made unreadable by one citation.
+    pub references: Vec<EntityId>,
     pub supersedes: Option<EntityId>,
     /// Hash of the document and scope at acceptance (set by `accept`).
     pub ratified: Option<String>,

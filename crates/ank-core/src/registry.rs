@@ -98,6 +98,14 @@ static ADR_FIELDS: &[FieldSpec] = &[
 /// describes, an ADR binds. `see` goes with it — it exists to point at the
 /// reference code a positive *constraint* needs, and a kind with no constraint
 /// has nothing for it to serve.
+///
+/// `references` takes the position `blocked_by` takes on a task — immediately
+/// after the perimeter, before the succession — because it is the same shape of
+/// thing: a declared dependency, resolved locally. It is **optional** where
+/// `blocked_by` is required, and the asymmetry is a decision: a task always
+/// states whether it has blockers, while a document that cites nothing has
+/// nothing to state, and emitting `[]` on every spec written before the field
+/// existed would make each of them non-canonical at the release that added it.
 static SPEC_FIELDS: &[FieldSpec] = &[
     req("id"),
     req("type"),
@@ -107,6 +115,7 @@ static SPEC_FIELDS: &[FieldSpec] = &[
     opt("author"),
     req("status"),
     req("scope"),
+    opt("references"),
     opt("supersedes"),
     opt("ratified"),
     opt("verified"),
@@ -318,6 +327,14 @@ impl Fields for Spec {
             "author" => Scalar(self.author.as_deref()?),
             "status" => Bare(self.status.as_str().to_string()),
             "scope" => Seq(&self.scope),
+            // Omitted when empty, never written `[]`: see the table above for
+            // why this one does not follow `blocked_by`.
+            "references" => {
+                if self.references.is_empty() {
+                    return None;
+                }
+                Flow(self.references.iter().map(|r| r.to_string()).collect())
+            }
             "supersedes" => Bare(self.supersedes.as_ref()?.to_string()),
             "ratified" => Scalar(self.ratified.as_deref()?),
             "verified" => {

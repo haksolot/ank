@@ -484,6 +484,42 @@ impl Repo {
         .unwrap();
     }
 
+    /// A spec, in canonical form, with the two fields a citation test varies.
+    ///
+    /// Written by hand rather than through `ank new spec`, and necessarily so:
+    /// the states under test are a reference to an entity this corpus does not
+    /// hold and a citation left behind by a supersession, and `new` resolves
+    /// every reference it is given — so no writer will produce either of them.
+    /// That is the division of labour the field rests on: the write refuses what
+    /// it can attribute, and `check` reports the corpus moving underneath a
+    /// citation that was good when it was written.
+    fn seed_spec(&self, id: &str, status: &str, references: &[&str], supersedes: Option<&str>) {
+        let references = match references {
+            [] => String::new(),
+            r => format!("references: [{}]\n", r.join(", ")),
+        };
+        let supersedes = supersedes
+            .map(|s| format!("supersedes: {s}\n"))
+            .unwrap_or_default();
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: spec\nslug: a-document\ntitle: A document\n\
+                 created: 2026-08-01T00:00:00Z\nauthor: human:marie\nstatus: {status}\n\
+                 scope:\n  - docs/**\n{references}{supersedes}schema: 3\nversion: 1\n---\n\
+                 \nThe document itself.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A file under `docs/`, so that a seeded spec's scope names something and
+    /// the dead-scope machinery stays out of the fixture under test.
+    fn seed_docs(&self) {
+        std::fs::create_dir_all(self.0.join("docs")).unwrap();
+        std::fs::write(self.0.join("docs/doc.md"), "The document.\n").unwrap();
+    }
+
     /// `accept` signs for real, and a signature configured from the developer's
     /// own global git config would make this test pass here and nowhere else.
     /// SSH because `ssh-keygen` ships beside git on all three platforms and
@@ -2452,6 +2488,221 @@ fn inside_a_repository_the_coordination_half_still_runs() {
     let status = stdout(&r.ank("claude-code@ank", &["status"]));
     assert!(status.contains("branch main"), "{status}");
     assert!(!status.contains("no git repository"), "{status}");
+}
+
+// ---------------------------------------------------------------------------
+// References between documents (TASK-50dd8f9b565c, ADR-5a690829388d)
+// ---------------------------------------------------------------------------
+
+const CITING: &str = "SPEC-00000000a001";
+const GONE: &str = "SPEC-00000000ffff";
+const DRAFT: &str = "SPEC-00000000b002";
+const REPLACED: &str = "SPEC-00000000c003";
+const SUCCESSOR: &str = "SPEC-00000000d004";
+const FOLLOWER: &str = "SPEC-00000000e005";
+
+/// A corpus holding all three states a reference can be in, and one document
+/// that has already followed its chain.
+fn cited_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(CITING, "proposed", &[GONE, DRAFT, REPLACED], None);
+    r.seed_spec(DRAFT, "proposed", &[], None);
+    r.seed_spec(REPLACED, "superseded", &[], None);
+    r.seed_spec(SUCCESSOR, "accepted", &[], Some(REPLACED));
+    r.seed_spec(FOLLOWER, "proposed", &[REPLACED, SUCCESSOR], None);
+    r
+}
+
+/// Every finding `check` prints about one entity.
+fn findings_about(said: &str, id: &str) -> Vec<String> {
+    said.lines()
+        .filter(|l| l.contains(id))
+        .map(str::to_string)
+        .collect()
+}
+
+/// **`check` resolves what a specification declares it rests on**
+/// (ADR-5a690829388d, TASK-50dd8f9b565c).
+///
+/// This is the mechanism that decision rests on. It argues that cutting a
+/// specification into documents is safe because the drift it risks is
+/// *detected*, and until this runs through the binary that is a promise with
+/// nothing behind it.
+///
+/// Through the binary, because the claim is about what `check` reports and what
+/// its exit code then means to a pipeline: a fault has to reach exit 8 and a
+/// signal has to leave it at 0, and no unit test on the report can say whether
+/// the process agreed.
+#[test]
+fn check_resolves_the_references_a_spec_declares_to_another() {
+    let r = cited_fixture();
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+
+    // Absent: a fault, the same condition `blocked_by` naming nothing is.
+    let about = findings_about(&said, GONE);
+    assert_eq!(about.len(), 1, "one line for the missing target: {said}");
+    assert!(about[0].starts_with("error:"), "{said}");
+    assert!(about[0].contains("does not exist"), "{said}");
+    assert!(
+        about[0].contains(&format!("ank amend {CITING} --drop-reference {GONE}")),
+        "a finding names the command that repairs it: {said}"
+    );
+
+    // Unaccepted: a signal. Two specifications are legitimately written at
+    // once, and refusing that would make it impossible to write the second.
+    let about = findings_about(&said, DRAFT);
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(about[0].contains("not accepted"), "{said}");
+    assert!(about[0].contains(&format!("ank accept {DRAFT}")), "{said}");
+
+    // Superseded: a signal naming the successor, so the repair is a citation
+    // update and not an investigation.
+    let about: Vec<String> = findings_about(&said, REPLACED)
+        .into_iter()
+        .filter(|l| l.contains(CITING))
+        .collect();
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(
+        about[0].contains(&format!("superseded by {SUCCESSOR}")),
+        "{said}"
+    );
+    assert!(
+        about[0].contains(&format!(
+            "ank amend {CITING} --reference {SUCCESSOR} --drop-reference {REPLACED}"
+        )),
+        "the successor is known, so the message carries it: {said}"
+    );
+
+    // The chain followed is not reported at all. A document citing both the
+    // replaced one and its successor has already done what the finding would
+    // ask of it, and a rule firing anyway would fire on every correct citation
+    // the day after any document is revised.
+    assert!(
+        findings_about(&said, FOLLOWER).is_empty(),
+        "a reference that followed its chain was reported: {said}"
+    );
+
+    // The severities reach the process: one fault, so exit 8.
+    assert_eq!(code(&out), 8, "{said}");
+}
+
+/// The commands those findings name are commands the verb accepts.
+///
+/// A finding naming a repair that refuses on the spot is worse than a finding
+/// with no repair at all, and two of the three here land on documents `amend`
+/// used to turn down outright: a citation is not covered by the ratification
+/// anchor, so following a chain on an accepted document is an amend and never a
+/// supersession.
+#[test]
+fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
+    let r = cited_fixture();
+
+    // The absent target, dropped. It cannot be resolved — that is what the
+    // fault says — so the flag matches what the entity stores.
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", CITING, "--drop-reference", GONE],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The chain, followed in one call.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "amend",
+            CITING,
+            "--reference",
+            SUCCESSOR,
+            "--drop-reference",
+            REPLACED,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // And an accepted document's citations are reachable, where its scope is
+    // not: the anchor covers the body and the scope, and a reference is
+    // neither.
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", SUCCESSOR, "--reference", DRAFT],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", SUCCESSOR, "--scope", "src/**"],
+    );
+    assert_eq!(code(&out), 6, "{}", stdout(&out));
+
+    // What is left is the draft, which was a signal before and still is.
+    let said = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(findings_about(&said, GONE).is_empty(), "{said}");
+    assert!(
+        findings_about(&said, REPLACED)
+            .iter()
+            .all(|l| !l.contains(CITING)),
+        "{said}"
+    );
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["check"])),
+        0,
+        "the faults are gone, so the exit code is: {said}"
+    );
+}
+
+/// A specification cites a spec or an adr, and nothing that is meant to be
+/// retired. The rule is one function, read by the two writers and by `check`.
+#[test]
+fn a_reference_names_a_document_or_a_decision_and_no_other_kind() {
+    let r = cited_fixture();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // An ADR is citable, and it is the case the rule exists to allow: a
+    // document resting on a binding decision.
+    r.seed_adr("ADR-00000000a0a0", "A rule.", "docs/**");
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", CITING, "--reference", "ADR-00000000a0a0"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // A task is not. It is work that finishes, so a document citing one would
+    // cite something the corpus is designed to retire.
+    let out = r.ank("claude-code@ank", &["amend", CITING, "--reference", ID]);
+    assert_eq!(code(&out), 1, "{}", stdout(&out));
+    assert!(stderr(&out).contains("spec or an adr"), "{}", stderr(&out));
+
+    // The same refusal at creation, where the citation is first written.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "spec",
+            "--title",
+            "A document",
+            "--scope",
+            "docs/**",
+            "--reference",
+            ID,
+        ],
+    );
+    assert_eq!(code(&out), 1, "{}", stdout(&out));
+    assert!(stderr(&out).contains("spec or an adr"), "{}", stderr(&out));
+
+    // And the field belongs to the one kind that carries it.
+    let out = r.ank(
+        "claude-code@ank",
+        &["amend", ID, "--reference", "ADR-00000000a0a0"],
+    );
+    assert_eq!(code(&out), 1, "{}", stdout(&out));
+    assert!(
+        stderr(&out).contains("references applies to a spec"),
+        "{}",
+        stderr(&out)
+    );
 }
 
 /// A perimeter holding one proposal, with a budget as the only variable.
@@ -7605,6 +7856,10 @@ fn valid_value(flag: &str) -> &'static str {
         "--scope" | "--drop-scope" => "src/**",
         "--blocked-by" | "--drop-blocked-by" => "TASK-000000000001",
         "--supersedes" => "ADR-000000000001",
+        // A whole id and not a prefix: `--drop-reference` matches what the
+        // entity stores rather than resolving against the corpus, which is what
+        // makes dropping a citation to a deleted document possible at all.
+        "--reference" | "--drop-reference" => "SPEC-000000000001",
         "--verify" => "cargo-test",
         "--criteria" => "A measurable thing.",
         "--reason" => "a reason",
@@ -8643,7 +8898,12 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 20] = [
+const NOT_A_PATH: [&str; 22] = [
+    // Entity ids, both of them: what a document rests on is another entity of
+    // this corpus, never a file (ADR-5a690829388d). The scope is what names
+    // paths on a spec, and it is in GLOB_FLAGS.
+    "--reference",
+    "--drop-reference",
     "--limit",
     "--criteria",
     "--ttl",

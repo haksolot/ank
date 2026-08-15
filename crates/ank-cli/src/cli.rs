@@ -448,6 +448,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--blocked-by"),
             flag("--constraint"),
             flag("--supersedes"),
+            multi("--reference"),
             multi("--verify"),
             flag("--body"),
         ],
@@ -455,6 +456,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "a scope is mandatory: an entity attached to nothing is invisible",
             "--body - reads the body from stdin, so a long one needs no shell quoting",
+            "--reference declares what a spec rests on; it takes a spec or an adr, and check resolves it",
         ],
         refuses_globals: &[],
         owner_task: None,
@@ -570,13 +572,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Named,
         coordinates: false,
-        summary: "changes blocked_by, scope, and a done_criteria no live claim freezes",
+        summary: "changes blocked_by, references, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[
             multi("--blocked-by"),
             multi("--drop-blocked-by"),
+            multi("--reference"),
+            multi("--drop-reference"),
             multi("--scope"),
             multi("--drop-scope"),
             // Offered now, and it was `refused` here for as long as the verb
@@ -592,6 +596,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten",
             "--criteria replaces the criterion outright, and leaves criteria_by where it stands",
+            "--reference and --drop-reference reach a spec's citations, on an accepted one too: the anchor covers its body and scope, not what it cites",
         ],
         refuses_globals: &[],
         owner_task: None,

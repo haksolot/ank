@@ -408,6 +408,7 @@ author: human:marie
 status: accepted             # proposed | accepted | superseded
 scope:
   - src/auth/**
+references: [SPEC-3f81c9d0a2b7, ADR-19d0e2f4a6b8]   # what this document rests on
 supersedes: SPEC-c07d1b4a92e5
 ratified: 9f2c81b0           # hash of the document and scope at acceptance (set by accept)
 schema: 3
@@ -418,6 +419,16 @@ The document itself.
 ```
 
 **One entity per document, never one per section**, and §10's refusal is kept entire rather than worked around: a specification's authority comes from being one coherent document, its sections are not independent the way ADRs are, and cutting it into scoped fragments creates the drift one document prevents. A section is reached by reading the document. What fired is the remedy that row offered instead — distilling a section into a scoped ADR — and what it fired against is the vehicle: `constraint` is short by construction and frozen at ratification, orientation serves no rule text at all, and a perimeter is called over-constrained when constraints alone exceed half its budget (§5). A description does not fit through a channel sized for a rule, and §11's model has no sink for it either, every mechanism there being subtractive and presupposing a rule that could in principle be checked.
+
+**`references` is what makes several documents safe, and it is a declared field rather than a sentence** (ADR-5a690829388d). A specification cut into documents drifts unless the coherence between them is verified, and verifying it means the citation has to sit somewhere a parser can reach. So a spec declares what it rests on in a field of its own, `check` resolves every entry against the corpus, and three states are reported. A target the corpus does not hold is a **fault**: the reader following the reference finds nothing, which is exactly what a `blocked_by` naming nothing already is. A target that is not `accepted` is a **signal**, because two documents are legitimately written at once and refusing that would make it impossible to write the second — what it must not do is pass unmentioned. A target that is `superseded` is a **signal naming the successor**, so the repair is a citation update and not an investigation. Each of the three names the command that repairs it, and on the third that is the whole difference between a check that helps and one that scolds: the successor is known, so the message carries it. The field is optional and omitted when empty — a document that cites nothing says nothing, and emitting `[]` on every spec written before the field existed would make each of them non-canonical at the very release that introduced it.
+
+**A reference that follows the chain is not reported.** The finding on a superseded target fires only where the citing document does not also reference the end of that chain: a document that has followed the supersession has already done the thing the finding would ask for. Revising a ratified document *is* a supersession, so this is the state a split corpus produces most often, and a rule that fired anyway would fire on every correct citation the day after any document is revised.
+
+**A citation is not covered by the anchor, so the repair is an `amend` and not a supersession.** `ratified` hashes the body and the `scope`; a reference is neither of them. `amend --reference` and `--drop-reference` therefore reach an accepted document, where `--scope` on the same document is refused. That is what makes the repair each finding names actually available where it fires: revising a ratified document *is* a supersession, so the documents left citing a superseded target are usually accepted themselves, and a verb that refused them would be naming a command it turns down.
+
+**A reference names a `spec` or an `adr`, and no other kind.** A specification resting on a binding decision is ordinary and worth declaring; a task is work that finishes and an entry is a trace of a moment, so a document citing one would be citing something the corpus is designed to retire. The rule is enforced where the act can still be attributed — `new spec --reference`, `amend --reference` — and reported by `check` as a fault where a file arrived some other way. It is deliberately **not** a parse error: the format states shape, and refusing to read a whole corpus over one citation is a worse failure than naming it, which is the reading `about` already gets on a log entry.
+
+**Only what is declared is verified.** A section number written in a sentence is not a reference, and nothing scans a body for one. A check reading citations out of paragraphs would depend on how somebody phrased them, which is the drift this exists to catch, moved into the detector.
 
 **A spec declares no `constraint`, and the absence is what justifies the kind.** A spec describes, an ADR binds. An entity that did both would be an ADR with an unbounded constraint, which restates the ceiling rather than solving it. Nothing in the refusal machinery reads a spec, and a rule that must bind is still an ADR — writing one is what §11 already asks of a rule that has grown teeth.
 
@@ -682,7 +693,7 @@ ank done [<id>]             [--proof <type>:<ref>]
 ank release [<id>] --reason <r>
 ank new task --title <t> --scope <glob>... [--criteria <c>] [--blocked-by <id>...]
 ank new adr  --title <t> --scope <glob>... --constraint <c> [--supersedes <id>]
-ank new spec --title <t> --scope <glob>... [--supersedes <id>]
+ank new spec --title <t> --scope <glob>... [--supersedes <id>] [--reference <id>...]
 ank new task|adr|spec       (no flags: pre-filled template in $EDITOR)
 ank find <query>            [--type task|adr|spec|log] [--status ...] [--scope <path>] [--free]
 ank status                  [--remote]
@@ -692,6 +703,7 @@ ank close <id> --reason <r>
 ank amend <id>              [--blocked-by <id>...] [--drop-blocked-by <id>...]
                             [--scope <glob>...] [--drop-scope <glob>...]
                             [--criteria <c>]
+                            [--reference <id>...] [--drop-reference <id>...]
 ank attest <id> --proof <type>:<ref>   [--detached]
 ank edit <id>
 ank graph [<path>]
@@ -1075,6 +1087,7 @@ Summary of the invariants and signals, all mechanical:
 - actor values not matching the typed convention of §3, **reported once for the corpus and never per file**, on the same reasoning and for the same volume as the line above: the convention binds new writes, and the entities that predate it mean what they meant. A malformed actor is a finding here and never a parse error, or a rule would lock out the files it postdates;
 - an entity whose `author` is an agent and which carries **no reading by a `human:`** in `verified` (§3): a signal, one per entity, and never a fault. Nothing requires `verified`, and `check` derives what the fields state and nothing further — no score, no confidence, no ranking;
 - a corpus still in the previous per-kind layout, or still holding a work trace in the shape that preceded entries (§6), **reported once each**, naming the command that moves it: a signal and never a fault, since such a corpus parses, round-trips and answers every verb;
+- **a `references` entry of a spec that does not resolve** (§3, ADR-5a690829388d), one line per entry: a **fault** where the corpus holds no such entity, or holds one of a kind a specification does not cite — the reader following it finds nothing, and the repair is `ank amend <spec> --drop-reference <id>`; a **signal** where the target exists and is not `accepted`, naming `ank accept <id>`, since two documents are legitimately drafted at once; and a **signal** where the target is `superseded` and the citing document does not also reference the end of that chain, naming the successor and the amend that follows it. Only the declared field is read: a section number written in prose is not a reference and no finding pretends otherwise;
 - unresolved git conflict markers in `.ank/` files (§7);
 - **the corpus this checkout carries against the corpus on the default branch** (§7, ADR-47e2ac102f58), **reported once for the corpus and never per entity**: a signal naming how many entity files differ — held here and not there, there and not here, or held on both sides with different content — and the git command that closes the gap. Nothing is fetched to answer and nothing is merged: both revisions are already in this clone, and the gap is git's to close on the operator's word;
 - maintenance of the coordination plane (§7): pruning orphan refs, and completion refs whose task is `done` or `closed` on the default branch. `check` is the only command that prunes. A task carrying a completion ref for a long time without the default branch catching up is reported as a signal — that is a branch never merged, not a corpus anomaly, and the answer is human.

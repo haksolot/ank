@@ -178,16 +178,26 @@ an agent's context (§3).
 | 6 | `author` | scalar | optional |
 | 7 | `status` | bare | `proposed` \| `accepted` \| `superseded` |
 | 8 | `scope` | block sequence | mandatory, never empty; what the document governs |
-| 9 | `supersedes` | bare | optional, an entity id |
-| 10 | `ratified` | scalar | optional; set by `accept`, over the body and `scope` |
-| 11 | `verified` | block sequence of maps | optional, omitted when empty |
-| 12 | `schema` | integer | |
-| 13 | `version` | integer | |
+| 9 | `references` | flow list | optional, omitted when empty; entity ids |
+| 10 | `supersedes` | bare | optional, an entity id |
+| 11 | `ratified` | scalar | optional; set by `accept`, over the body and `scope` |
+| 12 | `verified` | block sequence of maps | optional, omitted when empty |
+| 13 | `schema` | integer | |
+| 14 | `version` | integer | |
 
 The anchor differs from an ADR's in what it covers and in nothing else: a spec
 has no field carrying its authority, so `ratified` is taken over the body and
 `scope` together. A tool that verifies one hashes the body as it hashes a
 `constraint`, under the normalisation below.
+
+`references` names the documents and decisions this one rests on, in the position
+`blocked_by` takes on a task: immediately after the perimeter, before the
+succession. It is a flow list of entity ids and it is **omitted when empty**, not
+written `[]` — a task always states whether it has blockers, and a document that
+cites nothing has nothing to state. A reader resolves each entry against the
+corpus; what a checker then reports of it is §4's business and not the format's,
+and an entry naming a kind other than `spec` or `adr` is a finding there rather
+than a parse error here (§3).
 
 ### Log entry
 

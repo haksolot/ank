@@ -95,6 +95,11 @@ struct SpecFm {
     author: Option<String>,
     status: SpecStatus,
     scope: Vec<String>,
+    // Absent before the field existed, and `default` rather than `Option`
+    // because an empty list and an absent one are the same statement: this
+    // document cites nothing. The serializer omits it either way.
+    #[serde(default)]
+    references: Vec<String>,
     supersedes: Option<String>,
     ratified: Option<String>,
     #[serde(default)]
@@ -357,6 +362,15 @@ fn parse_spec_fm(fm: &str, body: &str) -> Result<Spec> {
         raw.schema,
     )?;
     let supersedes = raw.supersedes.as_deref().map(EntityId::parse).transpose()?;
+    // Checked here for what it is — an identifier — and for nothing more. Which
+    // kinds a specification may cite, and whether the corpus holds the target
+    // at all, are `check` findings (§3): a rule enforced at parse time would
+    // make one citation cost the whole corpus its readability.
+    let references = raw
+        .references
+        .iter()
+        .map(|s| EntityId::parse(s))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Spec {
         id,
@@ -366,6 +380,7 @@ fn parse_spec_fm(fm: &str, body: &str) -> Result<Spec> {
         author: raw.author,
         status: raw.status,
         scope: raw.scope,
+        references,
         supersedes,
         ratified: raw.ratified,
         verified: raw.verified,
