@@ -40,6 +40,25 @@ pub const SCHEMA_VERSION: u32 = 4;
 
 pub const DB_FILE: &str = "index.db";
 
+/// How long a contended open or write waits before giving up
+/// (TASK-e9dfaf187a1b).
+///
+/// **Bounded, and the bound is the point.** SQLite's default is to fail a
+/// contended statement immediately, which made two agents reading one corpus in
+/// the same second refuse each other — the nominal execution model of §7, since
+/// worktrees of a repository share its `.ank/`. Waiting is the right answer
+/// because every write here is a refresh of a cache: it is short, it is
+/// idempotent, and the loser of the race wants exactly what the winner is
+/// computing.
+///
+/// Five seconds against a refresh measured in milliseconds on a corpus of a few
+/// hundred entities. High enough that contention is invisible, low enough that a
+/// stale lock — a process killed mid-write — surfaces as an error a reader can
+/// act on rather than as a verb that never returns. A verb that hangs is worse
+/// than one that fails, and §4 has an exit code for an environment that will not
+/// answer.
+const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 const SCHEMA: &str = "\
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -85,10 +104,106 @@ CREATE VIRTUAL TABLE entities_fts USING fts5(
 /// longest text and the most likely to match by accident.
 const FTS_WEIGHTS: [f64; 4] = [8.0, 4.0, 2.0, 1.0];
 
+/// What a contended index says, and the one string both halves of the
+/// recognition share (TASK-e9dfaf187a1b).
+///
+/// A `CliError` carries no cause, so the verdict reached at the point the
+/// rusqlite error exists has to survive in the message. Stating it once, beside
+/// the two functions that write and read it, is what keeps that honest.
+const CONTENDED: &str = "another process is writing the index";
+
 fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
+    // **Contention earns a different sentence and a different next step.** The
+    // hint below is right for a cache that cannot be read and actively wrong
+    // here: deleting a database another process is writing is how one loser of
+    // a race became an error for every reader in the repository. What repairs
+    // contention is time, so the command to run next is the same command again.
+    if is_busy(&e) {
+        return CliError::new(1, format!("index: {CONTENDED} ({e})"))
+            .with_hint("re-run the command: the index is a cache and the writer is finishing");
+    }
     // The index is disposable, so the next step is always the same one and it
     // is always safe. Never generic help.
     CliError::new(1, format!("index: {e}")).with_hint(format!("rm {}", ank.join(DB_FILE).display()))
+}
+
+/// The schema questions and the schema writes, as free functions over a
+/// connection.
+///
+/// They take `&Connection` rather than `&self` so that [`Index::ensure_schema`]
+/// can put them inside a transaction: rusqlite's `Transaction` dereferences to
+/// `Connection`, so one body serves both the bootstrap and the callers that ask
+/// outside one.
+fn tables_present_in(conn: &Connection) -> rusqlite::Result<bool> {
+    let found: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master \
+         WHERE type = 'table' AND name IN ('meta', 'files', 'entities')",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(found == 3)
+}
+
+fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
+    // A missing `meta` table is not an error here: it is what a fresh file
+    // looks like, and `query_row` on an absent table would say so with an
+    // error we would then have to classify.
+    let has_meta = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .is_some();
+    if !has_meta {
+        return Ok(None);
+    }
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'schema_version'",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(raw.and_then(|v| v.parse().ok()))
+}
+
+/// **Every table the schema creates, and `entities_fts` is one of them.**
+///
+/// It was missing from this list, and the delete-and-retry above is what hid
+/// it: a wipe left the virtual table standing, the reinstall below failed with
+/// `table entities_fts already exists`, the file was deleted and rebuilt from
+/// nothing, and the rebuild answered correctly. So the omission cost only a
+/// wasted rebuild until two processes did it at once — at which point the
+/// deletion was the other one's database (TASK-e9dfaf187a1b).
+fn wipe_in(conn: &Connection) -> rusqlite::Result<()> {
+    for table in ["entities_fts", "entities", "files", "meta"] {
+        conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
+    }
+    Ok(())
+}
+
+fn install_schema_in(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
+        params![SCHEMA_VERSION.to_string()],
+    )?;
+    Ok(())
+}
+
+/// SQLite reporting a lock rather than a defect.
+fn is_busy(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+/// The same verdict, read back off the error the caller holds.
+fn is_contention(e: &CliError) -> bool {
+    e.message.contains(CONTENDED)
 }
 
 /// An entity as the index holds it: the fields every reader needs in order to
@@ -180,6 +295,16 @@ impl Index {
         let path = ank.join(DB_FILE);
         match Self::try_open(ank, &path) {
             Ok(index) => Ok(index),
+            // **A busy database is not an unusable one, and the cure for the
+            // second is fatal to the first** (TASK-e9dfaf187a1b). Deleting the
+            // file is right for a cache that cannot be read — a foreign schema,
+            // bytes that are not a database — and it is what every other error
+            // here still gets. Applied to contention it unlinks a database that
+            // other processes hold open, and SQLite then reports their next
+            // write as `attempt to write a readonly database`: one loser of a
+            // race turned a moment of contention into an error for every reader
+            // in the repository. That is the form this defect took in CI.
+            Err(e) if is_contention(&e) => Err(e),
             Err(_) => {
                 // One retry, on a clean slate. A second failure is a real
                 // problem — a read-only directory, a full disk — and is
@@ -192,82 +317,54 @@ impl Index {
 
     fn try_open(ank: &Path, path: &Path) -> Result<Index> {
         let conn = Connection::open(path).map_err(|e| db_error(e, ank))?;
-        let index = Index {
+        // Before any statement, including the schema probe below: the probe is
+        // a read, a read takes a shared lock, and a shared lock is contended by
+        // the writer another process is in the middle of.
+        conn.busy_timeout(BUSY_TIMEOUT)
+            .map_err(|e| db_error(e, ank))?;
+        let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
         };
+        index.ensure_schema()?;
+        Ok(index)
+    }
+
+    /// Brings the file up to this build's schema, **atomically against other
+    /// processes** (TASK-e9dfaf187a1b).
+    ///
+    /// The check and the installation are one transaction and have to be. Read
+    /// apart, twelve processes opening a fresh corpus all find no schema, all
+    /// install one, and eleven of them fail with `table entities_fts already
+    /// exists` or find `no such table: entities` where another had just wiped —
+    /// measured, on exactly that shape. Under `IMMEDIATE` one wins the lock and
+    /// the others re-read *after* it commits, find the schema present, and do
+    /// nothing.
+    fn ensure_schema(&mut self) -> Result<()> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| db_error(e, &self.ank))?;
         // Both halves are needed, and the second was not obvious: `meta`
         // survives a `DROP TABLE entities`, so a version check alone declares
         // a gutted index healthy and the failure surfaces later, during the
         // refresh, as a missing table.
-        if index.schema_version()? != Some(SCHEMA_VERSION) || !index.tables_present()? {
-            index.wipe()?;
-            index.install_schema()?;
+        let stale = schema_version_of(&tx).map_err(|e| db_error(e, &self.ank))?
+            != Some(SCHEMA_VERSION)
+            || !tables_present_in(&tx).map_err(|e| db_error(e, &self.ank))?;
+        if stale {
+            wipe_in(&tx).map_err(|e| db_error(e, &self.ank))?;
+            install_schema_in(&tx).map_err(|e| db_error(e, &self.ank))?;
         }
-        Ok(index)
-    }
-
-    /// Whether every table the schema declares is actually there.
-    fn tables_present(&self) -> Result<bool> {
-        let found: i64 = self
-            .conn
-            .query_row(
-                "SELECT count(*) FROM sqlite_master \
-                 WHERE type = 'table' AND name IN ('meta', 'files', 'entities')",
-                [],
-                |r| r.get(0),
-            )
-            .map_err(|e| self.err(e))?;
-        Ok(found == 3)
+        tx.commit().map_err(|e| db_error(e, &self.ank))
     }
 
     fn schema_version(&self) -> Result<Option<u32>> {
-        // A missing `meta` table is not an error here: it is what a fresh file
-        // looks like, and `query_row` on an absent table would say so with an
-        // error we would then have to classify.
-        let has_meta: bool = self
-            .conn
-            .query_row(
-                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'",
-                [],
-                |r| r.get::<_, i64>(0),
-            )
-            .optional()
-            .map_err(|e| self.err(e))?
-            .is_some();
-        if !has_meta {
-            return Ok(None);
-        }
-        let raw: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'schema_version'",
-                [],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| self.err(e))?;
-        Ok(raw.and_then(|v| v.parse().ok()))
-    }
-
-    fn wipe(&self) -> Result<()> {
-        for table in ["entities", "files", "meta"] {
-            self.conn
-                .execute(&format!("DROP TABLE IF EXISTS {table}"), [])
-                .map_err(|e| self.err(e))?;
-        }
-        Ok(())
+        schema_version_of(&self.conn).map_err(|e| self.err(e))
     }
 
     fn install_schema(&self) -> Result<()> {
-        self.conn.execute_batch(SCHEMA).map_err(|e| self.err(e))?;
-        self.conn
-            .execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
-                params![SCHEMA_VERSION.to_string()],
-            )
-            .map_err(|e| self.err(e))?;
-        Ok(())
+        install_schema_in(&self.conn).map_err(|e| self.err(e))
     }
 
     fn err(&self, e: rusqlite::Error) -> CliError {
@@ -290,9 +387,19 @@ impl Index {
         let known = self.known_hashes()?;
         let mut done = Refreshed::default();
 
+        // **`IMMEDIATE`, and the busy timeout does not work without it**
+        // (TASK-e9dfaf187a1b). A deferred transaction takes a read lock at the
+        // first statement and asks to upgrade at the first write; SQLite
+        // refuses that upgrade with `database is locked` **without calling the
+        // busy handler at all**, because waiting there could deadlock two
+        // upgraders against each other. So the timeout set on the connection is
+        // simply not consulted, which is what a first attempt at this fix
+        // measured: twelve concurrent readers, eight refused, in under a
+        // second. Taking the write lock at `BEGIN` is what puts the wait back
+        // on the path that needs it.
         let tx = self
             .conn
-            .transaction()
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
         for (rel, file) in &on_disk {
             if known.get(rel) == Some(&file.hash) {

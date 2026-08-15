@@ -5,7 +5,7 @@ slug: two-ank-processes-on-one-corpus-race-on-the-deri
 title: Two ank processes on one corpus race on the derived index
 created: 2026-08-15T18:17:43Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/index.rs
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   Two ank processes that read the same corpus at the same time both answer. A test in crates/ank-cli/tests/cli.rs spawns several concurrent invocations of an index-opening verb against one repository, through the built binary, and asserts that every one of them exits 0 and that none reports the index in its error. The falsification is recorded in the task's log: the same test run against the code before the fix, with what it printed. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Measured in CI on 2026-08-15, on all three platforms at once, from a change that
