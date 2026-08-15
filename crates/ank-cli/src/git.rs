@@ -784,14 +784,25 @@ pub fn is_shallow(cwd: &Path) -> bool {
     answer
 }
 
-/// The `constraint`+`scope` hash a ratification commit recorded for `id`, or
-/// `None` when no such commit is reachable.
+/// The commit-message keys an anchor is recorded under, one per kind that
+/// carries one.
+///
+/// The walk, the hash and the signature are one mechanism; what differs is
+/// which text the anchor covers, and the key is what says so. An ADR anchors
+/// its `constraint`; a spec has no narrower field carrying the authority, so it
+/// anchors its body (§3), and a commit claiming `constraint+scope` over a kind
+/// that declares no constraint would name a field the file does not have.
+pub const ANCHOR_CONSTRAINT: &str = "constraint+scope";
+pub const ANCHOR_BODY: &str = "body+scope";
+
+/// The anchor hash a ratification commit recorded for `id`, or `None` when no
+/// such commit is reachable.
 ///
 /// `ratified` cannot name the commit: a commit cannot contain its own
 /// identifier, so no field written by the single commit `accept` makes could
-/// ever hold it (§3). The pointer is the history of the ADR's own path instead.
-/// Walking back from `HEAD`, the first commit whose subject is `ratify <id>` is
-/// the ratification, and the `constraint+scope:` line of its message is the
+/// ever hold it (§3). The pointer is the history of the entity's own path
+/// instead. Walking back from `HEAD`, the first commit whose subject is
+/// `ratify <id>` is the ratification, and the anchor line of its message is the
 /// anchor — the copy that matters, because the one in the file is written by
 /// whoever writes the file.
 ///
@@ -878,12 +889,18 @@ fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Rati
         if message.first().map(|l| l.trim()) != Some(subject.as_str()) {
             continue;
         }
+        // Either key, and read as a key rather than as a prefix: which one a
+        // commit carries is a fact about the kind that was ratified, and a
+        // reader that knew only one would report every spec unverifiable.
         return Ok(message
             .iter()
-            .find_map(|l| l.trim().strip_prefix("constraint+scope: "))
-            .map(|h| Ratification {
+            .find_map(|l| {
+                let (key, hash) = l.trim().split_once(": ")?;
+                matches!(key, ANCHOR_CONSTRAINT | ANCHOR_BODY).then(|| hash.trim().to_string())
+            })
+            .map(|anchor| Ratification {
                 sha: sha.trim().to_string(),
-                anchor: h.trim().to_string(),
+                anchor,
             }));
     }
     Ok(None)

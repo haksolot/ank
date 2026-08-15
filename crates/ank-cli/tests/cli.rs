@@ -6891,6 +6891,278 @@ fn assert_no_spec_body(page: &str, mode: &str) {
     }
 }
 
+/// The file of an entity of any kind, read off the disk rather than through the
+/// tool: what has to be true is the state of the corpus.
+fn entity_text(r: &Repo, id: &str) -> String {
+    std::fs::read_to_string(r.0.join(".ank/entities").join(format!("{id}.md"))).unwrap()
+}
+
+/// The other half of the lifecycle, the one that costs a signature, driven
+/// through the built binary: `accept`, `amend` and `check` on a spec.
+///
+/// **The anchor is the one place a spec differs from an ADR** (§3). `ratified`
+/// holds the hash of the body and the scope, because no narrower field carries
+/// the authority — so the commit key says `body+scope` rather than naming a
+/// `constraint` the kind does not declare, and a body that moves afterwards is
+/// altered on the same terms and by the same walk.
+///
+/// **And the consequence of that is deliberate, not an exception.** An accepted
+/// spec's scope is refused by `amend` exactly as an accepted ADR's is, with the
+/// same code 6 and a succession in its own kind's words: revising an accepted
+/// specification is a supersession, and a working draft stays `proposed` while
+/// it is one.
+///
+/// The negative at the end is the half that is not the positive read backwards.
+/// An altered ADR stops being injected, because injecting a rewritten rule would
+/// let whoever edits the file rewrite what every agent works under. A spec binds
+/// nobody, so **there is no constraint to suspend**: `context` names it after
+/// the alteration exactly as it named it before, and quotes no more of it.
+#[test]
+fn a_spec_is_ratified_amended_and_checked_like_an_adr() {
+    let r = Repo::new();
+    r.enable_signing();
+    declare_signing_key(&r);
+    // A scope matching no file is a fault of its own, and it would redden
+    // `check` before anything under test ran.
+    for (dir, file) in [
+        ("src/auth", "src/auth/session.rs"),
+        ("src/session", "src/session/store.rs"),
+    ] {
+        std::fs::create_dir_all(r.0.join(dir)).unwrap();
+        std::fs::write(r.0.join(file), "fn main() {}\n").unwrap();
+    }
+
+    let body = SPEC_BODY_LINES.join("\n");
+    let out = r.ank_stdin(
+        "marie@laptop",
+        &[
+            "new",
+            "spec",
+            "--title",
+            "The session protocol",
+            "--scope",
+            "src/auth/**",
+            "--body",
+            "-",
+        ],
+        &body,
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // `proposed`: nothing anchors the scope, so `amend` reaches it — the same
+    // rule an ADR's scope is under, and the reason the verb refused a spec by
+    // name for exactly as long as the kind could not be ratified.
+    let out = r.ank("marie@laptop", &["amend", &id, "--scope", "src/session/**"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        entity_text(&r, &id).contains("  - src/session/**"),
+        "{}",
+        entity_text(&r, &id)
+    );
+
+    // Silent before, or the fault at the end would prove nothing.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let out = r.ank("marie@laptop", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("accepted") && stdout(&out).contains(&id),
+        "{}",
+        stdout(&out)
+    );
+    let text = entity_text(&r, &id);
+    assert!(text.contains("status: accepted"), "{text}");
+    let anchor = text
+        .lines()
+        .find_map(|l| l.strip_prefix("ratified: "))
+        .expect("accept writes the anchor into the file")
+        .trim()
+        .to_string();
+
+    // The commit is the anchor that counts, and its key names what was hashed.
+    // `constraint+scope` over a kind that declares no constraint would name a
+    // field the file does not have.
+    let message = r.git(&["log", "-1", "--format=%B"]);
+    assert!(message.starts_with(&format!("ratify {id}")), "{message}");
+    assert!(
+        message.contains(&format!("body+scope: {anchor}")),
+        "{message}"
+    );
+    assert!(!message.contains("constraint+scope"), "{message}");
+
+    // Ratified and untouched. Exit 0 here is also what says the signature was
+    // judged and trusted: `.ank/allowed_signers` declares the key, so an
+    // unsigned or undeclared ratification would be a fault rather than silence.
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    // And the scope stops being amendable, in the accepted ADR's words and with
+    // its code.
+    let out = r.ank("marie@laptop", &["amend", &id, "--scope", "docs/**"]);
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("anchored in the ratification commit"),
+        "{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("ank new spec --supersedes"),
+        "the succession is named in the kind's own words: {}",
+        stderr(&out)
+    );
+
+    // `edit` is the paved road for everything else, and §4 says a change to a
+    // frozen field is refused there by naming the command that legally performs
+    // it. What the anchor covers is where the two kinds part: the body of an
+    // accepted ADR stays editable, and a spec's is the thing that was ratified.
+    let before = entity_text(&r, &id);
+    let editor = r.editor_saving(&before.replace(SPEC_BODY_LINES[0], "A-rewritten-first-line."));
+    let out = r.ank_edit("marie@laptop", &["edit", &id], Some(&editor));
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    assert!(stderr(&out).contains("ratified"), "{}", stderr(&out));
+    assert_eq!(entity_text(&r, &id), before, "the entity is untouched");
+
+    // And the refusal reaches no further than the anchor: a title is neither
+    // the body nor the scope.
+    let editor =
+        r.editor_saving(&before.replace("The session protocol", "The session protocol v2"));
+    let out = r.ank_edit("marie@laptop", &["edit", &id], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The document moves in the file, and no second signature follows it.
+    let moved = entity_text(&r, &id).replace(SPEC_BODY_LINES[1], "A-line-nobody-ever-ratified.");
+    std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), moved).unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&out),
+        8,
+        "a divergence is a fault: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("altered since ratification"),
+        "{}",
+        stdout(&out)
+    );
+    // The suspension an ADR gets exists to stop an edited rule from binding, and
+    // a spec binds nobody.
+    assert!(
+        !stdout(&out).contains("no longer injected"),
+        "a spec has no constraint to suspend: {}",
+        stdout(&out)
+    );
+    let out = r.ank("claude-code@ank", &["context", "src/auth/"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("SPECIFICATIONS") && stdout(&out).contains("The session protocol"),
+        "an altered spec is still named: {}",
+        stdout(&out)
+    );
+    assert_no_spec_body(&stdout(&out), "altered");
+}
+
+/// The two findings `check` owes a spec beyond the freeze itself.
+///
+/// **Accepted with no anchor is a signal**, the bootstrap exception §3 states
+/// for an ADR and states for the same reason here: a document promoted by
+/// editing the file, or one predating the verb, must not condemn the corpus and
+/// block every `done` behind it.
+///
+/// **A dead scope names the repair**, and which repair depends on the status —
+/// which is the whole point of `repair` branching rather than printing one
+/// command. The draft is amendable and the command says `amend`; the accepted
+/// one is not, and naming a command that exits 6 would be worse than naming
+/// none, so it names the supersession instead.
+#[test]
+fn a_spec_carries_the_bootstrap_signal_and_names_the_repair_for_a_dead_scope() {
+    const BOOTSTRAP: &str = "SPEC-0000000000ab";
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src/auth")).unwrap();
+    std::fs::write(r.0.join("src/auth/session.rs"), "fn main() {}\n").unwrap();
+
+    let out = r.ank_stdin(
+        "marie@laptop",
+        &[
+            "new",
+            "spec",
+            "--title",
+            "A draft",
+            "--scope",
+            "src/auth/session.rs",
+            "--body",
+            "-",
+        ],
+        "The draft.\n",
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let draft = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    // Accepted and never anchored: the state no verb produces and every
+    // bootstrap corpus is in. Written by hand for that reason.
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{BOOTSTRAP}.md")),
+        format!(
+            "---\nid: {BOOTSTRAP}\ntype: spec\nslug: bootstrap\n\
+             title: A specification accepted by hand\ncreated: 2026-07-20T00:00:00Z\n\
+             status: accepted\nscope:\n  - src/auth/session.rs\nschema: 3\nversion: 1\n\
+             ---\n\nThe document.\n"
+        ),
+    )
+    .unwrap();
+
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    std::fs::create_dir_all(r.0.join("src/session")).unwrap();
+    r.git(&["mv", "src/auth/session.rs", "src/session/store.rs"]);
+    r.git(&["commit", "-qm", "the file moves"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+    // Both are signals: a dead scope git can explain is not a broken corpus,
+    // and a bootstrap anchor is not a violation.
+    assert_eq!(code(&out), 0, "{said}{}", stderr(&out));
+    assert!(
+        said.contains("accepted with no ratification commit"),
+        "{said}"
+    );
+    assert!(
+        said.contains("git records src/auth/session.rs renamed to src/session/store.rs"),
+        "{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "ank amend {draft} --drop-scope \"src/auth/session.rs\" \
+             --scope \"src/session/store.rs\""
+        )),
+        "the draft is amendable, and the repair says so:\n{said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "ank new spec --supersedes {BOOTSTRAP} --title \"<t>\" \
+             --scope \"src/session/store.rs\""
+        )),
+        "the accepted one is a supersession, and naming an amend would refuse:\n{said}"
+    );
+    assert!(
+        !said.contains(&format!("ank amend {BOOTSTRAP}")),
+        "the finding names a command that would refuse:\n{said}"
+    );
+}
+
 /// The clause that keeps the interactive form from being the hole in the wall:
 /// it refuses what the flag form refuses, in the flag form's words and with the
 /// flag form's code.

@@ -527,7 +527,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         coordinates: true,
-        summary: "promotes a proposed ADR to accepted, through a signed ratification commit; on the default branch only",
+        summary: "promotes a proposed ADR or spec to accepted, through a signed ratification commit; on the default branch only",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
