@@ -26,21 +26,27 @@ way `.git/` is — not a directory to grep, a CLI to call.
 $ ank context src/auth/
 
 CONSTRAINTS (2 active)
-  ADR-3c7e  Do not introduce self-contained JWTs for user auth.
-            Every session goes through the Redis store.
-  ADR-8b41  Rate limiting mandatory on every public endpoint.
+  ADR-3c7e  No self-contained JWTs for user auth
+  ADR-8b41  Rate limiting on every public endpoint
+
+SPECIFICATIONS (1)
+  SPEC-d41f  Session and token handling
 
 TASKS (2)
-  TASK-8f3a  [claimed:pi@host-3] Migrate auth to opaque sessions
   TASK-51c2  [open] Add secret rotation
+  TASK-8f3a  [claimed:pi/host-3] Migrate auth to opaque sessions
 
-> ank claim 51c2 to start
+> ank claim TASK-51c2 to start
 ```
 
 One call, and the answer is bounded — 8000 characters by default, roughly 2000
-tokens. Behind it two kinds of entity: a decision that constrains code, and a
-unit of work with what would prove it finished. Both are plain markdown with YAML
-frontmatter, joined to the code by nothing but globs.
+tokens. Orientation names the rules rather than quoting them: which ones govern
+the path is the answer, and what one says is an `ank show` away. Behind it four
+kinds of entity: an ADR, a decision that constrains code; a spec, the normative
+text that describes rather than binds; a task, a unit of work with what would
+prove it finished; and a log entry, written once and never transitioned. All
+four are plain markdown with YAML frontmatter, joined to the code by nothing but
+globs.
 
 ## Install
 
@@ -108,8 +114,10 @@ knowledge crossing organisations, where a rejected document is knowledge lost;
 ank optimises for a criterion that cannot be quietly weakened, where an
 accepted-but-malformed file is a rule that silently stopped applying.
 
-Efficiency is two numbers rather than an adjective: the skill an agent loads
-costs about 58 tokens per session, and orientation is bounded at 8000 characters.
+Efficiency is two numbers rather than an adjective: the skill costs about 58
+tokens in every session, which is its frontmatter — the `name` and `description`
+a harness keeps loaded whether or not the skill is ever invoked, the body being
+read only when it is — and orientation is bounded at 8000 characters.
 
 ## What it is not
 
@@ -130,7 +138,10 @@ costs about 58 tokens per session, and orientation is bounded at 8000 characters
 
 The specification is the source of truth; the others exist so it does not have to
 be a tutorial. Pre-v1, on Linux, macOS and Windows. This repository dogfoods its
-own format: the plan lives in `.ank/`, and the tool reads, claims and closes its own tasks, under a [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md).
+own format down to that source of truth: the specification is ten accepted `spec`
+entities in `.ank/`, listed by `ank find --type spec` and printed whole by
+`ank show`, reached through the CLI and never by opening the files — and the plan
+is there beside it, the tool reading, claiming and closing its own tasks, under a [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md).
 
 ## Licence
 
