@@ -941,6 +941,32 @@ pub fn find(
         return Ok(0);
     }
 
+    // The rows on this page the coordination plane already speaks for. Each
+    // marker says it one row at a time; the line at the end says it once and
+    // names the flag that drops them, which is the service `+N more` and the
+    // hidden count already perform for their own filters. Without it a reader
+    // whose checkout is behind the default branch sees ten `[finished:…]` rows
+    // under `--status open`, concludes the filter is broken, and has nothing
+    // pointing at the flag that answers the question actually being asked.
+    //
+    // Open tasks and nothing else, because that is all `--free` keeps: a
+    // `--status done` listing shows `[finished:…]` too, for as long as `check`
+    // has not pruned the ref, and sending that reader to `--free` would name a
+    // command answering a different question — §7 admits no hint that would
+    // refuse on the spot.
+    //
+    // Counted over every hit rather than over the page, like `hidden`, since
+    // `--status open` is the listing of what remains and the count is about
+    // what remains, not about what fit.
+    let spoken_for = if inv.has("--free") {
+        0
+    } else {
+        hits.iter()
+            .filter(|r| r.kind == EntityKind::Task && r.status == "open")
+            .filter(|r| context::coordination_of(&coord, &r.id).blocks_readiness())
+            .count()
+    };
+
     let style = inv.style();
     // The row the caller is holding, marked the way `git branch` marks the
     // current branch (§4). A listing is where a held task is otherwise
@@ -986,6 +1012,15 @@ pub fn find(
         // and a filter that silently returns two out of seven reads as a corpus
         // with two tasks left in it (ADR-052accd6e3b2).
         let _ = writeln!(out, "{hidden} hidden, scope overlaps a live claim");
+    }
+    if spoken_for > 0 {
+        // Nothing is dropped here, which is why the word is not "hidden": these
+        // rows were listed, and the line only says how many of them a `claim`
+        // would refuse.
+        let _ = writeln!(
+            out,
+            "{spoken_for} spoken for (finished elsewhere or held), --free lists what is claimable"
+        );
     }
     Ok(0)
 }

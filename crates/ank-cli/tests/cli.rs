@@ -8066,6 +8066,111 @@ fn find_free_does_not_offer_a_task_finished_on_another_branch() {
     );
 }
 
+/// A listing counts the open rows a `claim` would refuse, and names `--free`
+/// (§4).
+///
+/// The case is measured, not imagined. A session whose checkout was behind the
+/// default branch ran `find -s open`, got thirteen rows of which ten displayed
+/// `[finished:… on …]`, and concluded the status filter was broken. Every row
+/// was right: `--status` compares the status the file carries, the marker comes
+/// from the coordination plane, and the two disagree for exactly as long as a
+/// `done` sits on a branch nobody has merged. What was missing was the way out
+/// — `--free` already answers the question that reader was asking, and nothing
+/// in the listing said so.
+///
+/// Open tasks alone are counted. A `--status done` listing carries the same
+/// marker until `check` prunes the ref, and `--free` keeps no done task, so
+/// naming it there would be a hint answering a different question (§7).
+#[test]
+fn a_listing_counts_the_open_rows_a_claim_would_refuse_and_names_free() {
+    let finished = "TASK-a00000000004";
+    let held = "TASK-b00000000004";
+    let candidate = "TASK-c00000000004";
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(finished, Some("A criterion."), &["ok"]);
+    r.seed_task_scoped(held, "crates/**");
+    r.seed_task_scoped(candidate, "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed tasks"]);
+
+    // Both transitions happen on a branch, so `main` keeps reading `open` for
+    // both rows: that is the whole of the case, and a fixture that committed
+    // either one onto `main` would be testing nothing.
+    r.git(&["checkout", "-q", "-b", "feature"]);
+    std::fs::write(r.0.join("work.txt"), "y").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "work"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", finished])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "done"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", held])), 0);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "claimed"]);
+
+    r.git(&["checkout", "-q", "main"]);
+    for id in [finished, held] {
+        assert!(
+            r.task_text(id).contains("status: open"),
+            "the fixture is wrong if main already carries the transition of {id}"
+        );
+    }
+
+    let listing = stdout(&r.ank("someone@ank", &["find", "--status", "open"]));
+    assert!(
+        listing.contains("[finished:"),
+        "the completion marker still stands on an open row: {listing}"
+    );
+    assert!(
+        listing.contains("[claimed:claude-code@ank]"),
+        "and so does the claim marker: {listing}"
+    );
+    assert!(
+        listing.contains(&candidate[..9]),
+        "the claimable row is listed too, unfiltered: {listing}"
+    );
+    assert!(
+        listing.contains("2 spoken for"),
+        "the line counts both rows a claim would refuse: {listing}"
+    );
+    assert!(
+        listing.contains("--free"),
+        "and names the flag that drops them: {listing}"
+    );
+    assert!(
+        !listing.contains("hidden"),
+        "nothing was dropped, so the hidden count is not borrowed: {listing}"
+    );
+
+    // Under the flag the rows are gone, so there is nothing left to say and the
+    // line that would point at the flag already in force is absent.
+    let free = stdout(&r.ank("someone@ank", &["find", "--free"]));
+    assert!(free.contains(&candidate[..9]), "{free}");
+    assert!(!free.contains("spoken for"), "{free}");
+
+    // The machine surface is untouched by a sentence written for a reader, and
+    // `--quiet` still writes nothing at all.
+    let j = stdout(&r.ank("someone@ank", &["find", "--status", "open", "--json"]));
+    assert!(!j.contains("spoken for"), "{j}");
+    let q = stdout(&r.ank("someone@ank", &["find", "--status", "open", "--quiet"]));
+    assert!(q.is_empty(), "{q}");
+
+    // Once the branch lands, the file says `done` and the ref outlives it until
+    // `check` prunes: the marker stays, and the line must not follow it there,
+    // since `--free` keeps no done task.
+    r.git(&["merge", "-q", "--no-ff", "-m", "merge", "feature"]);
+    let done = stdout(&r.ank("someone@ank", &["find", "--status", "done"]));
+    assert!(
+        done.contains("[finished:"),
+        "the ref outlives the merge until check prunes: {done}"
+    );
+    assert!(
+        !done.contains("spoken for"),
+        "a done listing is not sent to a flag that keeps only open tasks: {done}"
+    );
+}
+
 #[test]
 fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
     let r = scoped_repo();
