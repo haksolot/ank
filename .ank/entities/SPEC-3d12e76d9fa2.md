@@ -5,14 +5,15 @@ slug: proof-anchoring-and-authority
 title: Proof, anchoring and authority
 created: 2026-08-15T17:45:37Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/verify.rs
   - .ank/allowed_signers
 references: [SPEC-acee5d9cb21b, SPEC-183d297253ac, SPEC-9f510cad4be6]
+ratified: 2a7a2e8d824b
 schema: 3
-version: 2
+version: 3
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
