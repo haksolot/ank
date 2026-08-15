@@ -5,7 +5,7 @@ slug: check-verifies-the-references-a-spec-declares-to
 title: check verifies the references a spec declares to another
 created: 2026-08-15T15:47:33Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/**
   - crates/ank-core/**
@@ -14,8 +14,13 @@ blocked_by: []
 done_criteria: |
   A spec declares its references to other specs in a field of its own, and ank check reports a reference naming an entity that is absent from the corpus, that is not accepted, or that has been superseded without the citing document following the chain. The finding is a fault where the target is absent and a signal where it is unaccepted or superseded, and each names the command that repairs it. A test in crates/ank-cli/tests/cli.rs drives the built binary through the three cases.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 3a84c6e831324cf0aa8f5f3e8416bce59922a02a
+    criteria: 54302b7f30c6
+    via: submitted
 schema: 3
-version: 3
+version: 4
 ---
 
 This is the mechanism ADR-5a690829388d rests on, and it comes first for that
