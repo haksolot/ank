@@ -37,8 +37,8 @@ use crate::style;
 use crate::verify;
 use ank_core::{
     freeze, has_crlf, normalise_line_endings, parse_entity, parse_log, parse_log_file,
-    serialize_entity, verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Task,
-    TaskStatus, Verified,
+    serialize_entity, verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Spec,
+    SpecStatus, Task, TaskStatus, Verified,
 };
 use ank_core::{log::ELLIPSIS, CriteriaBy, ProofType, ProofVia, ScopeSet};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -417,6 +417,14 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         .filter(|(_, e)| e.id().kind() == EntityKind::Adr)
         .map(|(_, e)| e.id().clone())
         .collect();
+    // The same set for the other kind that has a succession. Separate, because
+    // a succession stays inside one kind (§3): a chain that crossed would be a
+    // broken reference and is reported as one.
+    let spec_ids: HashSet<EntityId> = entities
+        .iter()
+        .filter(|(_, e)| e.id().kind() == EntityKind::Spec)
+        .map(|(_, e)| e.id().clone())
+        .collect();
 
     // The entries of each entity, from the corpus already parsed rather than
     // from the index: `check` has every file in hand, and opening a second
@@ -529,15 +537,14 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
-            // A spec's kind-specific signals are the freeze ones — altered
-            // since ratification, accepted with no anchor — and they arrive
-            // with the verb that can produce an anchor at all
-            // (TASK-867a9a59f265). A log entry's are checked where they can be:
-            // `about` is validated against the corpus below, once, with the
-            // count rather than one line per entry. What is checked here is
-            // what every kind owes — authorship and readings below — and that
-            // already runs for them.
-            Entity::Spec(_) | Entity::Log(_) => {}
+            Entity::Spec(s) => check_spec(s, repo, &spec_ids, &entities, &mut report),
+            // A log entry's are checked where they can be: `about` is validated
+            // against the corpus below, once, with a count rather than one line
+            // per entry — there are five hundred of them. What is checked here
+            // is what every kind owes, authorship and readings below, and that
+            // already runs for it; the scope above is the one exception, for
+            // the reason stated there.
+            Entity::Log(_) => {}
         }
     }
     check_entries(&entities, &in_scope, &mut report);
@@ -1053,13 +1060,19 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
             "ank new adr --supersedes {id} --title \"<t>\" --scope \"{to}\" \
              --constraint \"<rule>\""
         )),
-        // A spec is created by `new` now and still not reachable from `amend`,
-        // and a log entry is reachable from neither — so there is no command to
-        // name, and §4 is explicit that naming one which exits 7 is worse than
-        // naming none. The rename is reported either way. `amend` reaches a
-        // spec with TASK-867a9a59f265 and the repair arrives with it;
+        // A spec's scope moves under exactly the rule an ADR's does, and for
+        // the same reason: while it is `proposed` the scope is anchored by
+        // nothing, and once it is ratified the anchor covers the body *and* the
+        // scope (§3), so `amend` exits 6 and the change is a supersession.
+        Entity::Spec(s) if s.status == AdrStatus::Proposed => Some(amend),
+        Entity::Spec(_) => Some(format!(
+            "ank new spec --supersedes {id} --title \"<t>\" --scope \"{to}\""
+        )),
+        // A log entry is written once and `amend` reaches it from nowhere, so
+        // there is no command to name, and §4 is explicit that naming one which
+        // exits 7 is worse than naming none. The rename is reported either way.
         // TASK-df9c6d46e8ef is the log entry's.
-        Entity::Spec(_) | Entity::Log(_) => None,
+        Entity::Log(_) => None,
     }
 }
 
@@ -1572,10 +1585,56 @@ fn check_adr(
     entities: &[(PathBuf, Entity)],
     report: &mut Report,
 ) {
-    if let Some(target) = &a.supersedes {
-        if !adr_ids.contains(target) {
+    let view = Anchored::from(a);
+    check_succession(&view, adr_ids, entities, report);
+    check_anchor(&view, repo, "its constraint is no longer injected", report);
+    if a.constraint.trim().is_empty() {
+        report
+            .findings
+            .push(Finding::fault(&a.id, "no constraint: it binds nothing"));
+    }
+}
+
+/// What a spec owes beyond what every kind owes (§3).
+///
+/// The same two halves as an ADR's, over the same view, and the one thing that
+/// is not the same is what an alteration costs. An altered ADR stops being
+/// injected, because injecting a rewritten rule would let the editor rewrite
+/// what every agent works under; **a spec binds nobody**, so there is no
+/// injection to suspend and the finding says what is true and stops there.
+fn check_spec(
+    s: &Spec,
+    repo: &Repo,
+    spec_ids: &HashSet<EntityId>,
+    entities: &[(PathBuf, Entity)],
+    report: &mut Report,
+) {
+    let view = Anchored::from(s);
+    check_succession(&view, spec_ids, entities, report);
+    check_anchor(
+        &view,
+        repo,
+        "the document no longer says what was ratified",
+        report,
+    );
+}
+
+/// The succession half, for either kind that has one.
+///
+/// `peers` is the set of ids of that same kind, and every question below is
+/// asked inside it: a succession stays inside one kind (§3), so an ADR naming a
+/// spec is a broken reference and not a chain.
+fn check_succession(
+    view: &Anchored,
+    peers: &HashSet<EntityId>,
+    entities: &[(PathBuf, Entity)],
+    report: &mut Report,
+) {
+    let kind = view.id.kind();
+    if let Some(target) = view.supersedes {
+        if !peers.contains(target) {
             report.findings.push(Finding::fault(
-                &a.id,
+                view.id,
                 format!("supersedes {target}, which does not exist"),
             ));
         } else {
@@ -1590,47 +1649,55 @@ fn check_adr(
             // act the role table hands to the agent, would block every `done` in
             // the repository until a human ratified it. The consequence is out
             // of all proportion to the state it describes.
-            let replaced = entities.iter().find_map(|(_, e)| match e {
-                Entity::Adr(other) if &other.id == target => Some(other.status),
-                _ => None,
+            let replaced = entities.iter().find_map(|(_, e)| {
+                Anchored::of_kind(e, kind)
+                    .filter(|v| v.id == target)
+                    .map(|v| v.status)
             });
             if replaced != Some(AdrStatus::Superseded) {
                 let message = format!("supersedes {target}, which is not marked superseded");
-                report.findings.push(if a.status == AdrStatus::Proposed {
-                    Finding::signal(&a.id, format!("{message} (proposed: not yet a succession)"))
+                report.findings.push(if view.status == AdrStatus::Proposed {
+                    Finding::signal(
+                        view.id,
+                        format!("{message} (proposed: not yet a succession)"),
+                    )
                 } else {
-                    Finding::fault(&a.id, message)
+                    Finding::fault(view.id, message)
                 });
             }
         }
     }
-    if a.status == AdrStatus::Superseded
-        && !entities.iter().any(
-            |(_, e)| matches!(e, Entity::Adr(other) if other.supersedes.as_ref() == Some(&a.id)),
-        )
+    if view.status == AdrStatus::Superseded
+        && !entities
+            .iter()
+            .any(|(_, e)| Anchored::of_kind(e, kind).is_some_and(|v| v.supersedes == Some(view.id)))
     {
         report.findings.push(Finding::fault(
-            &a.id,
-            "marked superseded but no ADR supersedes it",
+            view.id,
+            format!("marked superseded but no {} supersedes it", kind_word(kind)),
         ));
     }
-    if a.status == AdrStatus::Accepted && a.ratified.is_none() {
+}
+
+/// The anchor half, for either kind that has one.
+///
+/// `consequence` is what the alteration costs, and it is the one sentence the
+/// two kinds do not share: see [`check_spec`].
+fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Report) {
+    if view.status == AdrStatus::Accepted && view.ratified.is_none() {
         // A signal and not a fault: the ADRs predating `accept` are ratified by
         // the repository's history, which allowed_signers records as the
         // bootstrap exception. Making it a violation would condemn a whole
         // corpus at once and block every `done` behind it.
         report.findings.push(Finding::signal(
-            &a.id,
+            view.id,
             "accepted with no ratification commit (bootstrap, or accepted by hand)",
         ));
     }
-    match freeze_state(repo, a) {
+    match freeze_state(repo, *view) {
         Freeze::Altered { ratified, now } => report.findings.push(Finding::fault(
-            &a.id,
-            format!(
-                "altered since ratification (ratified {ratified}, now {now}): \
-                 its constraint is no longer injected"
-            ),
+            view.id,
+            format!("altered since ratification (ratified {ratified}, now {now}): {consequence}"),
         )),
 
         // Not a fault, and the distinction is the point. An unreachable
@@ -1638,7 +1705,7 @@ fn check_adr(
         // broken freeze — and a check that cries divergence over a shallow clone
         // is a check people learn to ignore.
         Freeze::Unverifiable => report.findings.push(Finding::signal(
-            &a.id,
+            view.id,
             "ratified, but no ratification commit is reachable: the freeze cannot be verified",
         )),
 
@@ -1648,24 +1715,24 @@ fn check_adr(
     // The anchor is worth exactly what the signature on the commit carrying it
     // is worth (§8). An anchor read from a commit nobody signed anchors nothing
     // against the one case the whole mechanism exists for.
-    match signature_state(repo, a) {
+    match signature_state(repo, *view) {
         Some(Signature::Absent) => report.findings.push(Finding::fault(
-            &a.id,
+            view.id,
             "its ratification commit is not signed: the anchor proves nothing (§8)",
         )),
         Some(Signature::Invalid { status }) => report.findings.push(Finding::fault(
-            &a.id,
+            view.id,
             format!("its ratification commit carries a signature git refuses ({status}): not a ratification"),
         )),
         Some(Signature::Undeclared { fingerprint }) => report.findings.push(Finding::fault(
-            &a.id,
+            view.id,
             format!(
                 "ratified by {fingerprint}, which .ank/allowed_signers does not declare"
             ),
         )),
 
         // Counted, not reported here. A missing public key is a property of
-        // the machine and not of this ADR, so it is one line for the corpus
+        // the machine and not of this entity, so it is one line for the corpus
         // rather than one per entity — the same rule §4 already applies to the
         // entities predating `author`, and for the same reason: a line per file
         // is the volume that teaches a reader to stop reading `check`. It is
@@ -1684,11 +1751,6 @@ fn check_adr(
         }
 
         Some(Signature::Trusted) | None => {}
-    }
-    if a.constraint.trim().is_empty() {
-        report
-            .findings
-            .push(Finding::fault(&a.id, "no constraint: it binds nothing"));
     }
 }
 
@@ -2875,12 +2937,16 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
 // accept
 // ---------------------------------------------------------------------------
 
-/// Promotes a `proposed` ADR to `accepted` and commits it, signed.
+/// Promotes a `proposed` ADR or spec to `accepted` and commits it, signed.
 ///
 /// The only command writing into history rather than into the working tree, and
 /// therefore the only one carrying a branch precondition (§12): a ratification
 /// commit cannot wait for a merge to become authoritative — it is authoritative
 /// as soon as it exists, on the branch where it exists.
+///
+/// A spec goes through this verb and no other, and everything below reads it
+/// through [`Anchored`]: the same transition, the same succession, the same
+/// signed commit, over a hash of the body rather than of a `constraint` (§3).
 pub fn accept(
     inv: &Invocation,
     repo: &Repo,
@@ -2918,11 +2984,28 @@ pub fn accept(
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
-    let Entity::Adr(mut adr) = loaded.entity else {
-        return Err(CliError::new(1, format!("{prefix} is not an ADR"))
-            .with_hint(format!("ank show {prefix}")));
+    let mut entity = loaded.entity;
+    // A refusal on state, naming the kind rather than the two kinds this verb
+    // happens to reach: a task is not ratified — it is claimed and proved — and
+    // a log entry is written once.
+    let Some(view) = Anchored::of(&entity) else {
+        let kind = ank_core::Fields::kind_spec(&entity).name;
+        return Err(CliError::new(
+            1,
+            format!("{prefix} is a {kind}, and only an ADR or a spec carries a ratification"),
+        )
+        .with_hint(format!("ank show {prefix}")));
     };
-    // Ratifying is not re-accepting. An `accepted` ADR carrying no anchor at
+    let id = view.id.clone();
+    let status = view.status;
+    let anchored_at = view.ratified.map(str::to_string);
+    // The hash of what is being made binding, recorded before the commit that
+    // makes it so: the anchored text and `scope` together are what is ratified
+    // (§8), and `anchor_key` names which text that is.
+    let anchor = view.anchor();
+    let anchor_key = view.key;
+
+    // Ratifying is not re-accepting. An `accepted` entity carrying no anchor at
     // all was promoted by editing the file, or predates the tool — `check`
     // reports exactly that, as a signal — and this is the only door through
     // which a bootstrap corpus ever acquires the signed commits the authority
@@ -2934,41 +3017,33 @@ pub fn accept(
     // decision stays a succession, and the hint names it rather than showing the
     // file. Supplying a *first* anchor launders nothing: there is nothing for it
     // to diverge from.
-    let ratifying_in_place = match (adr.status, adr.ratified.as_deref()) {
+    let ratifying_in_place = match (status, anchored_at.as_deref()) {
         (AdrStatus::Accepted, Some(anchor)) => {
             return Err(
-                CliError::new(6, format!("{} is already ratified at {anchor}", adr.id))
-                    .with_hint(format!("ank new adr --supersedes {}", adr.id)),
+                CliError::new(6, format!("{id} is already ratified at {anchor}"))
+                    .with_hint(succession_command(&id)),
             );
         }
         (AdrStatus::Accepted, None) => true,
         _ => false,
     };
     if !ratifying_in_place {
-        adr.status
+        status
             .check_transition(AdrStatus::Accepted)
-            .map_err(|e| {
-                CliError::new(6, e.to_string()).with_hint(format!("ank show {}", adr.id))
-            })?;
+            .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {id}")))?;
     }
-    let id = adr.id.clone();
 
     // Everything that can refuse, refused before anything is written. A
     // half-performed succession is a corpus the ratification commit would then
     // make authoritative, and `accept` has no second pass to repair it.
-    let replaced = succession(&store, &adr)?;
+    let replaced = succession(&store, &entity)?;
 
-    // The hash of what is being made binding, recorded before the commit that
-    // makes it so: `constraint` and `scope` together are what is ratified (§8).
-    //
     // The promotion itself is written here, and it was missing: the transition
     // was checked above and never performed, so `accept` wrote `ratified` onto
     // an ADR that stayed `proposed`. Neither test reached this line — both
     // assert refusals — which is the shape CLAUDE.md warns about, found by a
     // test that finally ran the commit.
-    let anchor = ratification_anchor(&adr.constraint, &adr.scope);
-    adr.status = AdrStatus::Accepted;
-    adr.ratified = Some(anchor.clone());
+    promote(&mut entity, anchor.clone());
 
     let mut paths = Vec::new();
 
@@ -2983,32 +3058,36 @@ pub fn accept(
     // bump a version to record nothing.
     if let Succession::Pending(target) = &replaced {
         let mut target = target.clone();
-        let target_base = target.version;
-        target.status = AdrStatus::Superseded;
-        paths.extend(entity_rel_paths_to_stage(repo, &target.id));
-        store.write(&Entity::Adr(target), target_base)?;
+        let target_base = version_of(&target);
+        supersede(&mut target);
+        paths.extend(entity_rel_paths_to_stage(repo, target.id()));
+        store.write(&target, target_base)?;
     }
     paths.extend(entity_rel_paths_to_stage(repo, &id));
-    store.write(&Entity::Adr(adr), base_version)?;
+    store.write(&entity, base_version)?;
 
     // One commit for both writes. The succession is a single act, and two
     // commits would leave a window in which history says the constraint binds
     // while the one it replaced still binds too.
     let replaces = match replaced.target() {
-        Some(t) => format!("supersedes: {}\n", t.id),
+        Some(t) => format!("supersedes: {}\n", t.id()),
         None => String::new(),
     };
-    let message = format!("ratify {id}\n\nconstraint+scope: {anchor}\n{replaces}by: {identity}\n");
+    let message = format!("ratify {id}\n\n{anchor_key}: {anchor}\n{replaces}by: {identity}\n");
     let commit = commit_signed(&repo.root, &paths, &message)?;
 
     if inv.json() {
         let superseded = match replaced.target() {
-            Some(t) => format!("\"{}\"", t.id),
+            Some(t) => format!("\"{}\"", t.id()),
             None => "null".to_string(),
         };
+        // Keyed by the kind, which is what the caller typed an id of. A field
+        // named `adr` over a spec would be the same lie the commit key would
+        // have told, in the surface a parser reads.
+        let kind = id.kind().as_str();
         let _ = writeln!(
             out,
-            "{{\"adr\":\"{id}\",\"status\":\"accepted\",\"superseded\":{superseded},\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
+            "{{\"{kind}\":\"{id}\",\"status\":\"accepted\",\"superseded\":{superseded},\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
         );
     } else if !inv.quiet() {
         // Two words for two acts. Reporting "accepted" over an ADR that was
@@ -3032,49 +3111,112 @@ pub fn accept(
                 out,
                 "{} {}",
                 style.retracted("superseded"),
-                style.id(&t.id.to_string())
+                style.id(&t.id().to_string())
             );
         }
     }
     Ok(0)
 }
 
-/// What `accept` has left to do about the ADR this one replaces.
+/// The command that changes a ratified decision, in the kind's own words.
+///
+/// `--supersedes` resolves inside one kind (§3), so the chain a spec declares is
+/// a spec's and the hint has to say which — naming `new adr` to the holder of a
+/// spec would be a command that refuses.
+fn succession_command(id: &EntityId) -> String {
+    format!("ank new {} --supersedes {id}", id.kind().as_str())
+}
+
+/// Writes the promotion `accept` has just authorised.
+///
+/// The two arms are the two kinds that carry an anchor, and nothing else about
+/// them differs here: the status is the same enum and the anchor is the same
+/// hash, computed over the text [`Anchored`] named.
+fn promote(entity: &mut Entity, anchor: String) {
+    match entity {
+        Entity::Adr(a) => {
+            a.status = AdrStatus::Accepted;
+            a.ratified = Some(anchor);
+        }
+        Entity::Spec(s) => {
+            s.status = AdrStatus::Accepted;
+            s.ratified = Some(anchor);
+        }
+        // `Anchored::of` refused these before anything was read, and stating it
+        // is cheaper than a silent no-op if that ever stops being true.
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!(
+                "accept resolves an ADR or a spec, and reached {}",
+                entity.id()
+            )
+        }
+    }
+}
+
+/// The other half of the same act: the entity being replaced, marked.
+fn supersede(entity: &mut Entity) {
+    match entity {
+        Entity::Adr(a) => a.status = AdrStatus::Superseded,
+        Entity::Spec(s) => s.status = AdrStatus::Superseded,
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!(
+                "a succession stays inside one kind, and reached {}",
+                entity.id()
+            )
+        }
+    }
+}
+
+/// What `accept` has left to do about the entity this one replaces.
 enum Succession {
     /// It replaces nothing.
     None,
     /// The target is accepted, and this `accept` marks it superseded.
-    Pending(Adr),
-    /// The target already reads `superseded` and no other accepted ADR claims
-    /// it, so the succession is on record and there is nothing left to write.
-    Recorded(Adr),
+    Pending(Entity),
+    /// The target already reads `superseded` and no other accepted entity
+    /// claims it, so the succession is on record and there is nothing left to
+    /// write.
+    Recorded(Entity),
 }
 
 impl Succession {
     /// The target, whether or not this `accept` is the one writing it — the
     /// commit message and the output name it either way, because the succession
     /// is what the ratification is about.
-    fn target(&self) -> Option<&Adr> {
+    fn target(&self) -> Option<&Entity> {
         match self {
             Succession::None => None,
-            Succession::Pending(a) | Succession::Recorded(a) => Some(a),
+            Succession::Pending(e) | Succession::Recorded(e) => Some(e),
         }
     }
 }
 
-/// The ADR this one replaces, loaded and checked.
+/// The entity this one replaces, loaded and checked.
 ///
 /// `model.rs` states `Accepted -> Superseded` as the only legal write on an
 /// accepted ADR, "performed by the `accept` of the ADR that replaces it". This
 /// is that write's precondition, and it runs before `accept` touches anything:
 /// a refusal must leave the corpus exactly as it found it.
-fn succession(store: &Store, adr: &Adr) -> Result<Succession> {
-    let Some(target_id) = adr.supersedes.clone() else {
+///
+/// **A succession stays inside one kind** (§3), which is what `new --supersedes`
+/// already refuses at creation and what this re-establishes over a file that
+/// reached the corpus another way: a spec replacing an ADR is not a chain
+/// `accept` or `check` can make sense of.
+fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
+    let kind = entity.id().kind();
+    let Some(target_id) = Anchored::of(entity).and_then(|v| v.supersedes).cloned() else {
         return Ok(Succession::None);
     };
-    let Entity::Adr(target) = store.load(&target_id)?.entity else {
-        return Err(CliError::new(1, format!("{target_id} is not an ADR"))
-            .with_hint(format!("ank show {target_id}")));
+    let target = store.load(&target_id)?.entity;
+    let Some(target_status) = Anchored::of_kind(&target, kind).map(|v| v.status) else {
+        return Err(CliError::new(
+            1,
+            format!(
+                "{target_id} is not of kind {}: a succession stays inside one kind",
+                kind.as_str()
+            ),
+        )
+        .with_hint(format!("ank show {target_id}")));
     };
 
     // Already replaced by somebody else. Re-pointing the chain silently would
@@ -3082,14 +3224,15 @@ fn succession(store: &Store, adr: &Adr) -> Result<Succession> {
     // one it dropped.
     //
     // Scanned before the status is read, because it is what the status alone
-    // cannot say: a target marked `superseded` is either this ADR's doing or
+    // cannot say: a target marked `superseded` is either this entity's doing or
     // another's, and only the absence of another claimant makes it this one's.
     for other in store.list_ids()? {
-        if other.kind() != EntityKind::Adr || other == adr.id {
+        if other.kind() != kind || &other == entity.id() {
             continue;
         }
-        if let Entity::Adr(o) = store.load(&other)?.entity {
-            if o.supersedes.as_ref() == Some(&target_id) && o.status == AdrStatus::Accepted {
+        let loaded = store.load(&other)?.entity;
+        if let Some(o) = Anchored::of(&loaded) {
+            if o.supersedes == Some(&target_id) && o.status == AdrStatus::Accepted {
                 return Err(CliError::new(
                     7,
                     format!("{target_id} is already superseded by {other}"),
@@ -3099,7 +3242,7 @@ fn succession(store: &Store, adr: &Adr) -> Result<Succession> {
         }
     }
 
-    match target.status {
+    match target_status {
         AdrStatus::Accepted => Ok(Succession::Pending(target)),
 
         // Marked, unclaimed by anyone else, and named here: the succession
@@ -3113,13 +3256,98 @@ fn succession(store: &Store, adr: &Adr) -> Result<Succession> {
         // A prerequisite unmet, so 7 and not the 6 of an illegal transition.
         AdrStatus::Proposed => Err(CliError::new(
             7,
-            format!("{target_id} is proposed, and only an accepted ADR can be superseded"),
+            format!("{target_id} is proposed, and only an accepted one can be superseded"),
         )
         .with_hint(format!("ank accept {target_id}"))),
     }
 }
 
-/// Whether an accepted ADR still says what was ratified (§3).
+/// What carries a ratification anchor, read as one shape.
+///
+/// An ADR anchors its `constraint`; a spec has no narrower field carrying the
+/// authority, so it anchors its **body** and `scope` (§3). That is the whole
+/// difference between the two, and it is a difference in *what is hashed*: the
+/// walk to the ratification commit, the hash and the signature check are one
+/// mechanism, reached through this view rather than written a second time.
+///
+/// A task and a log entry carry none — a task is frozen by its criterion, an
+/// entry is written once — so [`Anchored::of`] answers `None` for them.
+#[derive(Clone, Copy)]
+pub struct Anchored<'a> {
+    id: &'a EntityId,
+    status: AdrStatus,
+    /// What the file claims, which is what sends `check` looking for the
+    /// commit. Never what the comparison is made against.
+    ratified: Option<&'a str>,
+    supersedes: Option<&'a EntityId>,
+    /// The text the anchor covers, beside the scope.
+    text: &'a str,
+    scope: &'a [String],
+    /// The commit-message key naming what this kind's anchor covers.
+    key: &'static str,
+}
+
+/// The kind, named the way prose names it rather than the way `type:` spells
+/// it: an acronym stays an acronym, and "no adr supersedes it" is a sentence
+/// nobody writes.
+fn kind_word(kind: EntityKind) -> &'static str {
+    match kind {
+        EntityKind::Adr => "ADR",
+        EntityKind::Log => "log entry",
+        EntityKind::Task | EntityKind::Spec => kind.as_str(),
+    }
+}
+
+impl<'a> Anchored<'a> {
+    fn of(entity: &'a Entity) -> Option<Self> {
+        match entity {
+            Entity::Adr(a) => Some(Self::from(a)),
+            Entity::Spec(s) => Some(Self::from(s)),
+            Entity::Task(_) | Entity::Log(_) => None,
+        }
+    }
+
+    /// The same view, restricted to one kind. A succession stays inside one
+    /// kind (§3), so every question about a chain is asked among peers.
+    fn of_kind(entity: &'a Entity, kind: EntityKind) -> Option<Self> {
+        Self::of(entity).filter(|v| v.id.kind() == kind)
+    }
+
+    /// The hash this entity would be anchored at as it stands.
+    fn anchor(&self) -> String {
+        ratification_anchor(self.text, self.scope)
+    }
+}
+
+impl<'a> From<&'a Adr> for Anchored<'a> {
+    fn from(a: &'a Adr) -> Self {
+        Anchored {
+            id: &a.id,
+            status: a.status,
+            ratified: a.ratified.as_deref(),
+            supersedes: a.supersedes.as_ref(),
+            text: &a.constraint,
+            scope: &a.scope,
+            key: git::ANCHOR_CONSTRAINT,
+        }
+    }
+}
+
+impl<'a> From<&'a Spec> for Anchored<'a> {
+    fn from(s: &'a Spec) -> Self {
+        Anchored {
+            id: &s.id,
+            status: s.status,
+            ratified: s.ratified.as_deref(),
+            supersedes: s.supersedes.as_ref(),
+            text: &s.body,
+            scope: &s.scope,
+            key: git::ANCHOR_BODY,
+        }
+    }
+}
+
+/// Whether an accepted ADR or spec still says what was ratified (§3).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Freeze {
     /// Nothing to compare: proposed, superseded, or accepted with no anchor at
@@ -3134,25 +3362,27 @@ pub enum Freeze {
     Unverifiable,
 }
 
-/// Compares an accepted ADR against the anchor its ratification commit records.
+/// Compares an accepted entity against the anchor its ratification commit
+/// records.
 ///
 /// The comparison deliberately ignores the `ratified` field's own value and
 /// uses only the commit's. The field is written by whoever writes the file, so
 /// an editor changing a constraint can change it in the same stroke; the
 /// commit's copy is the one that costs a signature to replace. What `ratified`
-/// still does is say the ADR claims to be ratified, which is what sends us
+/// still does is say the entity claims to be ratified, which is what sends us
 /// looking for the commit at all.
-pub fn freeze_state(repo: &Repo, adr: &Adr) -> Freeze {
-    if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
+pub fn freeze_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Freeze {
+    let view = of.into();
+    if view.status != AdrStatus::Accepted || view.ratified.is_none() {
         return Freeze::Unanchored;
     }
-    let recorded = match ratification_of(repo, adr) {
+    let recorded = match ratification_of(repo, &view) {
         Some(r) => r.anchor,
         // A git that cannot answer is not a divergence either. Reporting one
         // over a broken environment is how a finding becomes noise.
         None => return Freeze::Unverifiable,
     };
-    let now = ratification_anchor(&adr.constraint, &adr.scope);
+    let now = view.anchor();
     if now == recorded {
         Freeze::Intact
     } else {
@@ -3163,17 +3393,17 @@ pub fn freeze_state(repo: &Repo, adr: &Adr) -> Freeze {
     }
 }
 
-/// The ratification commit for an accepted, anchored ADR.
-fn ratification_of(repo: &Repo, adr: &Adr) -> Option<git::Ratification> {
-    if adr.status != AdrStatus::Accepted || adr.ratified.is_none() {
+/// The ratification commit for an accepted, anchored entity.
+fn ratification_of(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
+    if view.status != AdrStatus::Accepted || view.ratified.is_none() {
         return None;
     }
-    // Whichever layout the ADR sits in, and its own history is what carries the
-    // ratification: an ADR ratified before the move has its commit on the path
+    // Whichever layout the entity sits in, and its own history is what carries
+    // the ratification: one ratified before the move has its commit on the path
     // it had then. The candidates go in together rather than one call each,
-    // because the memo is keyed on the ADR and a first miss would be cached.
-    let paths = entity_rel_paths(repo, &adr.id);
-    git::ratification_at(&repo.root, &adr.id.to_string(), &paths).unwrap_or(None)
+    // because the memo is keyed on the entity and a first miss would be cached.
+    let paths = entity_rel_paths(repo, view.id);
+    git::ratification_at(&repo.root, &view.id.to_string(), &paths).unwrap_or(None)
 }
 
 /// The signature on the commit the anchor was read from, or `None` when there
@@ -3184,7 +3414,8 @@ fn ratification_of(repo: &Repo, adr: &Adr) -> Option<git::Ratification> {
 /// anchor was compared against the file without anyone asking who wrote it, so
 /// an ordinary unsigned commit whose subject read `ratify <id>` was accepted as
 /// a ratification.
-pub fn signature_state(repo: &Repo, adr: &Adr) -> Option<Signature> {
+pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<Signature> {
+    let view = of.into();
     let declared = declared_signers(repo);
     let signers = repo.ank.join("allowed_signers");
 
@@ -3198,7 +3429,7 @@ pub fn signature_state(repo: &Repo, adr: &Adr) -> Option<Signature> {
         return None;
     }
 
-    let sha = ratification_of(repo, adr)?.sha;
+    let sha = ratification_of(repo, &view)?.sha;
     // `.ok()?` here used to fold every git failure into `None`, the one verdict
     // `check_adr` says nothing about — so a machine where the signature could
     // not be read looked exactly like a corpus that declared no key at all
@@ -3248,10 +3479,14 @@ fn commit_carries_signature(root: &Path, sha: &str) -> bool {
         .any(|l| l.starts_with("gpgsig"))
 }
 
-/// Hash of `constraint` + `scope`, normalised. What the ratification commit
-/// anchors, and what `check` compares the file against afterwards.
-pub fn ratification_anchor(constraint: &str, scope: &[String]) -> String {
-    let mut buf = freeze::normalize(constraint);
+/// Hash of the anchored text + `scope`, normalised. What the ratification
+/// commit anchors, and what `check` compares the file against afterwards.
+///
+/// One buffer and one hash for both kinds: the text is an ADR's `constraint` or
+/// a spec's body (§3), and which one it is belongs to the caller — writing a
+/// second hash for the second kind is how the two would come to disagree.
+pub fn ratification_anchor(text: &str, scope: &[String]) -> String {
+    let mut buf = freeze::normalize(text);
     buf.push('\n');
     for g in scope {
         buf.push_str(g.trim());
@@ -3844,14 +4079,55 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             store.write(&Entity::Adr(adr), base_version)?;
             report_amend(inv, &id, &changes, out);
         }
-        // Declared in the registry, and not reachable from this verb yet. A
-        // refusal on state, naming the kind, is what §4 asks of a verb that
-        // cannot act. A spec is created by `new` now, and what it could carry
-        // here is a scope change under the rule an ADR's is under — allowed
-        // while `proposed`, refused once the scope is anchored in the
-        // ratification commit — so it arrives with the verb that can produce
-        // that anchor (TASK-867a9a59f265). A log entry is written once and has
-        // nothing to amend at all (TASK-df9c6d46e8ef).
+        Entity::Spec(mut spec) => {
+            // Refused rather than dropped, exactly as on an ADR: a flag
+            // silently ignored teaches the caller it worked. A spec is a
+            // document — it blocks nothing and is measured by nothing — so the
+            // scope is the whole of what this verb has to offer it.
+            if !add_blocked.is_empty() || !drop_blocked.is_empty() {
+                return Err(CliError::new(
+                    1,
+                    "blocked_by applies to a task: a spec blocks nothing",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
+            if criteria.is_some() {
+                return Err(CliError::new(
+                    1,
+                    "done_criteria applies to a task: a spec declares no criterion",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
+            // The one place a spec's freeze bites wider than an ADR's, and it
+            // is the doctrine applied rather than an exception to it: the
+            // ratification commit anchors the body *and* the scope (§3),
+            // because no narrower field carries the authority. So an accepted
+            // spec's scope is refused here on the same terms an accepted ADR's
+            // is, and revising an accepted specification is a supersession.
+            if spec.status != SpecStatus::Proposed {
+                return Err(CliError::new(
+                    6,
+                    format!(
+                        "{id} is {} and its scope is anchored in the ratification commit",
+                        spec.status.as_str()
+                    ),
+                )
+                .with_hint("ank new spec --supersedes <id> --title \"<t>\" --scope \"<glob>\""));
+            }
+
+            amend_scope(&mut spec.scope, &add_scope, &drop_scope, &id, &mut changes)?;
+            if changes.is_empty() {
+                return Err(CliError::new(7, format!("{id} already reads that way"))
+                    .with_hint(format!("ank show {id}")));
+            }
+            // Recorded by `version` and by the diff, as an ADR's amend is.
+            store.write(&Entity::Spec(spec), base_version)?;
+            report_amend(inv, &id, &changes, out);
+        }
+        // Declared in the registry, and not reachable from this verb. A refusal
+        // on state, naming the kind, is what §4 asks of a verb that cannot act:
+        // a log entry is written once and has nothing to amend at all
+        // (TASK-df9c6d46e8ef).
         ref other => {
             let kind = ank_core::Fields::kind_spec(other).name;
             return Err(

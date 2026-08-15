@@ -436,11 +436,18 @@ task that is `in_progress` in the file with no ref behind it is simply one whose
 claim expired — legal, and re-claimable (§7).
 
 **The ratification anchor is a commit message.** `accept` writes `ratified:` into
-the ADR *and* produces a commit whose subject is `ratify <id>` and whose body
-carries `constraint+scope: <hash>`. The copy in the commit is the one that
-counts, because the copy in the file is written by whoever writes the file. A
-verifier walks the ADR's own path history with `--full-history` and takes the
-first such commit (§3).
+the entity *and* produces a commit whose subject is `ratify <id>` and whose body
+carries the anchor. The copy in the commit is the one that counts, because the
+copy in the file is written by whoever writes the file. A verifier walks the
+entity's own path history with `--full-history` and takes the first such commit
+(§3).
+
+**The key names what was hashed**, and there are two because there are two kinds
+that carry an anchor: `constraint+scope: <hash>` on an ADR, `body+scope: <hash>`
+on a spec. A spec declares no `constraint` — that absence is what justifies the
+kind — so the authority is carried by the whole document, and a commit claiming
+`constraint+scope` over one would name a field the file does not have. A reader
+accepts either key; a writer writes the one its kind carries.
 
 ## The two hashes
 
@@ -452,9 +459,11 @@ tolerating a change of meaning: CRLF becomes LF, trailing whitespace is stripped
 from each line, trailing blank lines are removed.
 
 - **The criterion freeze**, recorded by `claim`: `hash(normalize(done_criteria))`.
-- **The ratification anchor**, recorded by `accept`: the normalised `constraint`,
-  a newline, then each `scope` glob trimmed and followed by a newline — hashed
-  as one buffer.
+- **The ratification anchor**, recorded by `accept`: the normalised anchored
+  text, a newline, then each `scope` glob trimmed and followed by a newline —
+  hashed as one buffer. The anchored text is an ADR's `constraint` and a spec's
+  body, which is the one place the two anchors differ and what the commit key
+  above says.
 
 Freezing is verifiable, not defended (§2). Your tool can rewrite any field in
 any file; what it cannot do is make the recorded hash agree afterwards.
