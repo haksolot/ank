@@ -127,8 +127,17 @@ pub fn parse_log_file(contents: &str) -> Result<Vec<LogEntry>> {
 ///
 /// Invariant: the result differs from the input by exactly one line, with no
 /// header to create the first time — one thing less than the body section
-/// needed, and the reason git's own union of two appends resolves this file
-/// with no merge driver (§7).
+/// needed.
+///
+/// **That does not make the file merge itself.** Git's three-way merge
+/// conflicts on two lines appended to the end of one file: it is the textbook
+/// adjacent-change case, and a second party appending to a task's log — a
+/// pipeline, a reviewer, a second agent in the same tree — is exactly it. What
+/// resolves it is `merge=union` on `.ank/log/**` in `.gitattributes`, declared
+/// there and verified by a real merge in `crates/ank-cli/tests/cli.rs`. The
+/// property that holds whatever git does is one file per entity, which comes
+/// from the addressing (§3) and is why two agents on two tasks never meet at
+/// all (TASK-6c0463fb4319).
 pub fn append_log_file(contents: &str, entry: &LogEntry) -> String {
     let mut out = contents.to_string();
     if !out.is_empty() && !out.ends_with('\n') {

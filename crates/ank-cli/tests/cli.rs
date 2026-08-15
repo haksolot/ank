@@ -3150,7 +3150,9 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     let j = stdout(&out);
     assert!(
-        j.starts_with(&format!("{{\"task\":\"{ID}\",\"entries\":[")),
+        j.starts_with(&format!(
+            "{{\"task\":\"{ID}\",\"total\":2,\"shown\":2,\"entries\":["
+        )),
         "{j}"
     );
     assert!(
@@ -10464,6 +10466,264 @@ fn every_verb_that_logs_writes_to_the_log_file() {
     );
 }
 
+/// This repository's own `.gitattributes`, so a fixture merges under the rules
+/// the corpus actually ships with.
+///
+/// Copied rather than written: a test that declares `merge=union` itself proves
+/// that git has a union driver, which nobody doubted, and would go on passing
+/// for years after somebody deleted the line from the file that matters.
+fn repository_gitattributes() -> String {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the manifest is two directories under the repository root");
+    std::fs::read_to_string(root.join(".gitattributes"))
+        .expect("the repository declares its attributes")
+}
+
+/// Two branches append to one task's log, and the merge keeps both entries.
+///
+/// **The claim under test is about git, so git is what is made to behave.**
+/// Three texts said git's own union resolves two appends with no merge driver;
+/// nothing in the repository configured one, and git's three-way merge
+/// conflicts on two lines added at the end of one file — the textbook
+/// adjacent-change case. An assertion about the contents of `.gitattributes`
+/// would have proved none of that, in either direction (TASK-6c0463fb4319).
+///
+/// The case is the one ADR-ff294eff4d1a celebrated most: a second party
+/// appending to a task's log while the holder appends to it too. One file per
+/// entity keeps two agents on two *tasks* apart whatever git does; it is
+/// exactly this case it does not cover.
+#[test]
+fn two_branches_appending_to_one_log_merge_with_no_conflict() {
+    let r = Repo::new();
+    std::fs::write(r.0.join(".gitattributes"), repository_gitattributes()).unwrap();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+
+    // A shared ancestor that already has the file: the case is a log two
+    // parties append to, not one two parties create.
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["log", "the entry both sides start from"]
+        )),
+        0
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the corpus and its log"]);
+
+    // One branch each, and a real entry written by the binary on each -- a log
+    // line forged by the test would be a line no writer produces.
+    r.git(&["checkout", "-q", "-b", "reviewer"]);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["log", "written on the reviewer branch"]
+        )),
+        0
+    );
+    r.git(&["commit", "-qam", "the reviewer's entry"]);
+
+    r.git(&["checkout", "-q", "main"]);
+    r.git(&["checkout", "-q", "-b", "holder"]);
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["log", "written on the holder branch"])),
+        0
+    );
+    r.git(&["commit", "-qam", "the holder's entry"]);
+
+    // The merge itself, allowed to fail: `Repo::git` would panic with git's
+    // words, and what this test is about is the exit code.
+    let merge = git_command(&r.0)
+        .args(["merge", "--no-edit", "reviewer"])
+        .output()
+        .unwrap();
+    assert!(
+        merge.status.success(),
+        "two appends to one log conflicted:\n{}\n{}\n--- the file ---\n{}",
+        String::from_utf8_lossy(&merge.stdout),
+        String::from_utf8_lossy(&merge.stderr),
+        r.log_text(LOGGED)
+    );
+
+    // Both entries survived, and the third that was there before them.
+    let log = r.log_text(LOGGED);
+    for entry in [
+        "the entry both sides start from",
+        "written on the reviewer branch",
+        "written on the holder branch",
+    ] {
+        assert!(log.contains(entry), "{entry} was lost:\n{log}");
+    }
+    for marker in ["<<<<<<<", "=======", ">>>>>>>"] {
+        assert!(
+            !log.contains(marker),
+            "a resolved merge leaves no {marker}:\n{log}"
+        );
+    }
+
+    // And the corpus reads: the file parses, so the verbs answer from it and
+    // `check` finds nothing.
+    let out = r.ank("claude-code@ank", &["log", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let printed = stdout(&out);
+    assert!(
+        printed.contains("written on the reviewer branch")
+            && printed.contains("written on the holder branch"),
+        "{printed}"
+    );
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+}
+
+/// The other half, and the one with teeth: when a merge *is* left half done,
+/// `check` says so at the severity an entity file gets.
+///
+/// It used to be a signal. The strict log parser refused the marker line,
+/// `check` reported the log as unreadable, and a signal leaves the exit code 0
+/// — so an unresolved merge in a log passed CI green while the identical
+/// markers in the entity beside it turned it red (TASK-6c0463fb4319).
+#[test]
+fn a_conflict_marker_in_a_log_is_a_fault_like_one_in_an_entity() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    assert_eq!(code(&r.ank("claude-code@ank", &["log", "an entry"])), 0);
+
+    let path = r.0.join(".ank/log").join(format!("{LOGGED}.md"));
+    let intact = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        format!(
+            "{intact}<<<<<<< HEAD\n- 2026-08-15T09:00Z claude-code@ank — mine\n\
+             =======\n- 2026-08-15T09:01Z marie@laptop — theirs\n>>>>>>> reviewer\n"
+        ),
+    )
+    .unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&out),
+        8,
+        "a merge left half done is a fault: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let text = stdout(&out);
+    assert!(
+        text.contains("unresolved git conflict markers"),
+        "the same words an entity file gets: {text}"
+    );
+    assert!(
+        text.contains(&format!("log/{LOGGED}.md")),
+        "and it names the file: {text}"
+    );
+
+    // Restored, and `check` is green again -- so the finding is about the
+    // markers and not about the fixture.
+    std::fs::write(&path, &intact).unwrap();
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+}
+
+/// `log` and `show` answer under `context_budget` and say what they cut.
+///
+/// They were the two readers in the tool with no budget and no flags, while
+/// `find` and `context` are both bounded — on a corpus where the log is more
+/// than a quarter of the bytes and only ever grows. The module header of `find`
+/// states the reason it is capped at all: a reader without a cap is a
+/// context-explosion vector (TASK-6c0463fb4319).
+#[test]
+fn log_and_show_cap_the_log_and_announce_what_they_cut() {
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", LOGGED])), 0);
+    for i in 0..12 {
+        assert_eq!(
+            code(&r.ank(
+                "claude-code@ank",
+                &[
+                    "log",
+                    &format!("entry number {i:02} of a log that only ever grows"),
+                ]
+            )),
+            0
+        );
+    }
+    // A budget small enough that the log cannot fit in it. Written after the
+    // entries so that the claim above was taken under the shipped default.
+    std::fs::write(
+        r.0.join(".ank/config.yml"),
+        "schema: 1\ncontext_budget: 400\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+    )
+    .unwrap();
+
+    let out = r.ank("claude-code@ank", &["log", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    let listed = text.lines().filter(|l| l.starts_with("- ")).count();
+    assert!(
+        (1..12).contains(&listed),
+        "the cap follows context_budget, and never empties the section:\n{text}"
+    );
+    assert!(
+        text.contains("entry number 11") && !text.contains("entry number 00"),
+        "the newest survive and the oldest yield:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("+{} earlier entries", 12 - listed)),
+        "announced, never silent:\n{text}"
+    );
+    assert!(
+        text.contains("ank config context_budget "),
+        "and it names the command that would print them:\n{text}"
+    );
+
+    // The two counts a parser needs, the pair `find --json` already carries.
+    let out = r.ank("claude-code@ank", &["log", LOGGED, "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains(&format!("\"total\":12,\"shown\":{listed}")),
+        "{}",
+        stdout(&out)
+    );
+
+    // `show` charges the entity first and never cuts it: a truncated entity is
+    // not a short answer but a wrong one (§4). What yields is the log under it.
+    let out = r.ank("claude-code@ank", &["show", LOGGED]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.starts_with(&r.task_text(LOGGED)),
+        "the entity is still verbatim:\n{text}"
+    );
+    let shown = text
+        .lines()
+        .filter(|l| l.contains("claude-code@ank —"))
+        .count();
+    assert!(
+        (1..12).contains(&shown),
+        "the log is what the budget cuts:\n{text}"
+    );
+    assert!(
+        text.contains(&format!("LOG ({shown} of 12)")),
+        "kept of total, the header `context` already prints:\n{text}"
+    );
+    assert!(
+        text.contains(&format!(
+            "+{} earlier entries, ank log {LOGGED}",
+            12 - shown
+        )),
+        "naming the reader that has more room, not a flag that does not exist:\n{text}"
+    );
+    assert!(
+        shown <= listed,
+        "`show` pays for the entity out of the same budget, so it can only \
+         print fewer than `log`: {shown} against {listed}"
+    );
+}
+
 /// Read from wherever it is, by every surface that shows it.
 #[test]
 fn show_log_and_context_read_the_log_from_the_file() {
@@ -10483,7 +10743,14 @@ fn show_log_and_context_read_the_log_from_the_file() {
         text.starts_with(&r.task_text(LOGGED)),
         "the entity is still verbatim: {text}"
     );
-    assert!(text.contains("LOG (1)"), "{text}");
+    // `kept of total`, the header `context` already prints for the same
+    // section: the log is capped by the budget like every other reader, and one
+    // fact does not get two grammars (TASK-6c0463fb4319).
+    assert!(text.contains("LOG (1 of 1)"), "{text}");
+    assert!(
+        !text.contains("earlier entries"),
+        "nothing was cut, so nothing is announced: {text}"
+    );
     assert!(text.contains("learned something"), "{text}");
 
     // `ank log <id>` with no message.
@@ -10509,6 +10776,13 @@ fn show_log_and_context_read_the_log_from_the_file() {
     assert_json_only(&out, "ank show --json");
     assert!(
         stdout(&out).contains("\"log\":[{\"timestamp\":"),
+        "{}",
+        stdout(&out)
+    );
+    // The two counts a parser needs to tell a short log from a cut one, the
+    // same pair `find --json` carries.
+    assert!(
+        stdout(&out).contains("\"log_total\":1,\"log_shown\":1"),
         "{}",
         stdout(&out)
     );
