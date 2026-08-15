@@ -5,15 +5,16 @@ slug: a-specification-is-an-entity-and-its-authority-i
 title: A specification is an entity, and its authority is the whole document
 created: 2026-08-15T06:53:45Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - docs/**
   - crates/ank-core/**
   - crates/ank-cli/**
 constraint: |
   A specification is an entity of kind spec: one entity per document, never one per section. It declares no constraint field, because what it carries is description and not a rule, and it moves through the lifecycle every entity has: proposed, accepted, superseded, ratified by signature, anchored by hash, versioned. context names it the way it names an ADR, id and title, and never quotes its body; show is what reads it. A section is reached by reading the document, never by a second entity.
+ratified: "427360235989"
 schema: 3
-version: 2
+version: 3
 ---
 
 Section 10 refused a `spec` kind once already, and this decision is not that
