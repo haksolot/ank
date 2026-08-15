@@ -2653,6 +2653,81 @@ fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
     );
 }
 
+const RETIRED: &str = "SPEC-00000000f006";
+const HEIR: &str = "SPEC-00000000a007";
+
+/// The same three states, cited twice: once by a live document, once by one
+/// that has itself been replaced.
+fn retired_citer_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(CITING, "proposed", &[GONE, DRAFT, REPLACED], None);
+    r.seed_spec(DRAFT, "proposed", &[], None);
+    r.seed_spec(REPLACED, "superseded", &[], None);
+    r.seed_spec(SUCCESSOR, "accepted", &[], Some(REPLACED));
+    r.seed_spec(RETIRED, "superseded", &[GONE, DRAFT, REPLACED], None);
+    r.seed_spec(HEIR, "accepted", &[SUCCESSOR], Some(RETIRED));
+    r
+}
+
+/// **A citer that is itself superseded is not asked to follow anything**
+/// (TASK-a6c643216f51).
+///
+/// Measured the first time a spec was replaced: three live documents followed
+/// the chain, which is ADR-5a690829388d working as designed, and the fourth had
+/// been retired in the same operation. What the finding asked of it was that a
+/// document nobody reads any more be edited to cite one written after it was
+/// retired — and the repair it named would have worked, bumping the `version` of
+/// a document that is supposed to be settled.
+///
+/// A superseded entity is history: it records what was decided and what it
+/// rested on at the time. So the whole reference half is skipped for it — the
+/// absent target, the unaccepted one and the superseded one alike — and what
+/// must not move is the live case, which is the entire reason the signal exists.
+///
+/// Through the binary, because the claim is about what `check` prints and about
+/// the exit code that print then carries to a pipeline.
+#[test]
+fn a_superseded_document_is_not_asked_to_follow_a_chain() {
+    let r = retired_citer_fixture();
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = stdout(&out);
+
+    // Nothing whatsoever against the retired citer, and nothing naming it.
+    assert!(
+        findings_about(&said, RETIRED).is_empty(),
+        "a superseded document was asked to repair its citations: {said}"
+    );
+
+    // The three states it cites are reported once each, and the once is the
+    // live document: a citation is counted for the reader who can still act on
+    // it, and never twice.
+    for target in [GONE, DRAFT] {
+        let about = findings_about(&said, target);
+        assert_eq!(
+            about.len(),
+            1,
+            "only the live citer owes a repair for {target}: {said}"
+        );
+        assert!(about[0].contains(CITING), "{said}");
+    }
+    let about: Vec<String> = findings_about(&said, REPLACED)
+        .into_iter()
+        .filter(|l| l.contains("references"))
+        .collect();
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(about[0].contains(CITING), "{said}");
+    assert!(
+        about[0].contains(&format!("superseded by {SUCCESSOR}")),
+        "the live case still names the successor: {said}"
+    );
+
+    // The live fault reaches the process. Skipping the retired citer silences a
+    // finding, never a corpus.
+    assert_eq!(code(&out), 8, "{said}");
+}
+
 /// A specification cites a spec or an adr, and nothing that is meant to be
 /// retired. The rule is one function, read by the two writers and by `check`.
 #[test]
