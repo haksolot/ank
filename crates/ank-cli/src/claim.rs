@@ -2019,8 +2019,24 @@ fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&s
 /// A candidate carrying a completion ref is skipped: its file says `open` on
 /// this branch, and offering it would print an exact command that refuses the
 /// moment it is run — which is the generic help by another route.
+///
+/// A candidate whose ref carries a live claim is skipped for the same reason,
+/// and it took a defect to notice that this is the same case one ref state over
+/// (TASK-f601ba59229e). The file reads `open` here exactly as often — the
+/// holder claimed on their own branch and the status this one carries has not
+/// moved — and `ank claim <id>` on it refuses with code 4, `held by`. The ready
+/// task the message promises is one whose ref is free (§7), not one whose file
+/// reads `open` on this branch only because something has not landed yet.
+///
+/// A lapsed claim is not that case and is still offered: pickup after expiry is
+/// a legal transition, `acquire` takes it, and skipping it would trade one
+/// wrong answer for another. The predicate is therefore `is_expired`, the same
+/// reading every other caller gets. A record whose expiry does not parse is
+/// treated as live: `acquire` refuses on it too, so offering it would print the
+/// refusing command all over again.
 fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> {
     let map = status_map(store).ok()?;
+    let now = now_secs();
     let mut candidates: Vec<&EntityId> = map
         .iter()
         .filter(|(id, st)| **st == TaskStatus::Open && **id != task.id)
@@ -2040,14 +2056,16 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
         if !scopes_intersect(&task.scope, &t.scope).unwrap_or(false) {
             continue;
         }
-        if matches!(
-            read(cwd, id),
+        match read(cwd, id) {
             Ok(Some(Held {
                 record: Record::Completed(_),
                 ..
-            }))
-        ) {
-            continue;
+            })) => continue,
+            Ok(Some(Held {
+                record: Record::Claim(c),
+                ..
+            })) if !is_expired(&c, now, id).unwrap_or(false) => continue,
+            _ => {}
         }
         return Some(id.clone());
     }
