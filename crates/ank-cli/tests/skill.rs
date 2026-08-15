@@ -76,6 +76,16 @@ fn section_4_document() -> String {
     DOC.get_or_init(read_section_4_document).clone()
 }
 
+/// **A proposed successor is not the specification yet, and this is where that
+/// bites.** While a supersession is in flight two documents carry the block —
+/// the ratified one and its replacement — and the suite has to read the one the
+/// corpus is actually held to. `accept` is what makes a document binding, so
+/// the ratified one wins, and after ratification the question does not arise
+/// again: the predecessor is `superseded` and carries nothing anybody reads.
+///
+/// The fallback to *any* document that carries it is for the corpus that has
+/// none accepted at all — a fresh split, a bootstrap — where reading the draft
+/// is better than refusing to read.
 fn read_section_4_document() -> String {
     let ids = ank(&["find", "--type", "spec", "--json"]);
     let mut carrying: Vec<String> = Vec::new();
@@ -89,15 +99,29 @@ fn read_section_4_document() -> String {
             carrying.push(body);
         }
     }
+    // `superseded` is filtered out with `proposed` rather than kept beside
+    // `accepted`: a replaced document is not what the corpus is held to either,
+    // and letting one through would make the suite read the surface out of the
+    // document that was just retired.
+    let ratified: Vec<String> = carrying
+        .iter()
+        .filter(|body| body.lines().any(|l| l.trim_end() == "status: accepted"))
+        .cloned()
+        .collect();
+    let mut candidates = if ratified.is_empty() {
+        carrying
+    } else {
+        ratified
+    };
     assert_eq!(
-        carrying.len(),
+        candidates.len(),
         1,
-        "exactly one spec document must carry §4's Commands block, and {} do: \
-         the block is what this suite reads the surface out of, so neither zero \
-         nor two is a state it can guess its way through",
-        carrying.len()
+        "exactly one ratified spec document must carry §4's Commands block, and \
+         {} do: the block is what this suite reads the surface out of, so \
+         neither zero nor two is a state it can guess its way through",
+        candidates.len()
     );
-    carrying.pop().expect("one document carries the block")
+    candidates.pop().expect("one document carries the block")
 }
 
 /// The binary, run from this crate's directory so that the walk of §6 resolves
@@ -296,6 +320,21 @@ const LOOP_VERBS: [&str; 8] = [
 /// recording one — and `ank new task` alone does not carry it.
 const PLANNING_VERBS: [&str; 5] = ["review", "graph", "check", "amend", "new adr"];
 
+/// Investigation: how an agent arrives informed (ADR-5dd7b4a9c875).
+///
+/// The two that carry the mode are `scope` and `status`: they answer *what
+/// governs this file* and *where am I*, they were shipped long before this, and
+/// an agent taught only the loop had the question and not the verb. `find
+/// --type spec` is the third, and it is what the corpus gained when the
+/// specification became entities of it (ADR-5a690829388d) — the normative
+/// answer reachable from inside the tool.
+///
+/// `log` is deliberately absent from this list although the mode teaches its
+/// read form: the string `ank log` is already required by the loop, so
+/// asserting it here would assert nothing. What guards the read form is
+/// `the_skill_teaches_the_read_form_of_log` below.
+const INVESTIGATION_VERBS: [&str; 3] = ["scope", "status", "find --type spec"];
+
 #[test]
 fn the_skill_carries_the_whole_loop() {
     let text = skill();
@@ -332,6 +371,59 @@ fn the_skill_carries_the_planning_mode() {
     }
 }
 
+/// The third mode ADR-5dd7b4a9c875 added, asserted on the same terms as the
+/// other two: the verb is named, because an agent only knows the verbs this
+/// file names.
+#[test]
+fn the_skill_carries_the_investigation_mode() {
+    let text = skill();
+    for verb in INVESTIGATION_VERBS {
+        assert!(
+            text.contains(&format!("ank {verb}")),
+            "SKILL.md never shows `ank {verb}`: an agent that cannot ask what \
+             governs a file, or where it is, investigates by guessing"
+        );
+    }
+}
+
+/// **The read form of `log` is taught, and it is the half that is easy to lose**
+/// (ADR-5dd7b4a9c875).
+///
+/// `ank log "<message>"` writes and renews the claim; `ank log <id>` reads, needs
+/// no claim, and is where the previous holder said why they handed the task
+/// back. The loop already forces the write form to appear, so a test on `ank
+/// log` alone would pass on a file that teaches only writing — which is exactly
+/// the state this mode was added to end.
+#[test]
+fn the_skill_teaches_the_read_form_of_log() {
+    let text = skill();
+    assert!(
+        text.contains("ank log <id>"),
+        "SKILL.md shows `ank log` only as a write: the read form is how a \
+         holder inherits what the last one learned, and an agent that has not \
+         been told about it repeats them"
+    );
+}
+
+/// **The file says why before it says how** (ADR-5dd7b4a9c875).
+///
+/// Asserted by the two things the argument has to establish rather than by any
+/// phrasing, on the standard the accept and styling tests already set: a test
+/// pinned to one sentence fails on a correct rewrite and reports it as a
+/// removal. An agent that knows the moves and not what they protect is the one
+/// that works around them in good faith.
+#[test]
+fn the_skill_says_what_the_rules_protect() {
+    let text = skill();
+    for token in ["two planes", "anchored"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?}: it teaches the verbs without the \
+             model behind them, which is the gap ADR-5dd7b4a9c875 closed"
+        );
+    }
+}
+
 /// **`accept` is described and never invited** (ADR-e17e1bbd93ff).
 ///
 /// The two halves are one rule and neither works alone. The skill must say what
@@ -363,20 +455,27 @@ fn the_skill_describes_accept_without_inviting_it() {
 /// loaded on demand. The number is a ceiling to notice drift, not a target to
 /// fill.
 ///
-/// It moved from 80/700 to 140/1200 with ADR-e17e1bbd93ff, and moved because a
-/// decision said so — which is the only way it is allowed to move. A ceiling
-/// raised to accommodate whatever was just written is not a ceiling.
+/// It moved from 80/700 to 140/1200 with ADR-e17e1bbd93ff and to 180/1500 with
+/// ADR-5dd7b4a9c875, and each time because a decision said so — which is the
+/// only way it is allowed to move. A ceiling raised to accommodate whatever was
+/// just written is not a ceiling.
+///
+/// The last move carries a measurement the earlier ones did not: what a session
+/// pays for unconditionally is the frontmatter, `~58 tok` of `name` and
+/// `description`, and the body is read when the skill is invoked. The ceiling
+/// is kept for the by-hand route, which copies the whole file into whatever a
+/// harness loads — it bounds the worst route rather than the measured one.
 #[test]
 fn the_skill_stays_within_one_page() {
     let text = skill();
     let lines = text.lines().count();
     let words = text.split_whitespace().count();
     assert!(
-        lines <= 140,
-        "SKILL.md is {lines} lines: it is loaded permanently, so growth costs \
-         every session in every repo. Move detail to `ank help`."
+        lines <= 180,
+        "SKILL.md is {lines} lines: a harness that loads the whole file pays \
+         for every one of them, every session. Move detail to `ank help`."
     );
-    assert!(words <= 1200, "SKILL.md is {words} words, over the ceiling");
+    assert!(words <= 1500, "SKILL.md is {words} words, over the ceiling");
 }
 
 /// These verbs run for whoever types them -- nothing here is refused to an
@@ -385,17 +484,22 @@ fn the_skill_stays_within_one_page() {
 /// would grow what every session pays for, by habit rather than by decision,
 /// which is how a permanently loaded file actually grows.
 ///
-/// The list shrinks only by decision, and it has twice. `show` left it when it
-/// moved into the loop, back when the loop was still called a surface;
+/// The list shrinks only by decision, and it has three times. `show` left it
+/// when it moved into the loop, back when the loop was still called a surface;
 /// `review`, `check` and `amend` left it with ADR-e17e1bbd93ff, which bought
-/// planning with a raised ceiling and said so. `accept` is the interesting
-/// survivor: the skill now *describes* it, and still must not show the command,
-/// so it stays here while `the_skill_describes_accept_without_inviting_it`
-/// holds the other half. Everything remaining costs a succession.
+/// planning with a raised ceiling and said so; `status` and `scope` left it
+/// with ADR-5dd7b4a9c875, which bought investigation the same way. `accept` is
+/// the interesting survivor: the skill now *describes* it, and still must not
+/// show the command, so it stays here while
+/// `the_skill_describes_accept_without_inviting_it` holds the other half.
+///
+/// What is left is `close`, `attest` and `edit`, and they are left for the
+/// ordinary reason rather than by oversight: nothing has decided they are worth
+/// what every session pays for them. Each one costs a succession.
 #[test]
 fn the_skill_teaches_nothing_beyond_what_is_frozen() {
     let text = skill();
-    for verb in ["accept", "close", "attest", "edit", "status", "scope"] {
+    for verb in ["accept", "close", "attest", "edit"] {
         assert!(
             !text.contains(&format!("ank {verb}")),
             "SKILL.md shows `ank {verb}`, which is outside the content it is \

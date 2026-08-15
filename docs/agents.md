@@ -14,10 +14,18 @@ One plain markdown file, [`../skill/SKILL.md`](../skill/SKILL.md). It is the onl
 copy that exists in git, and every route below points at it rather than holding
 one of its own — so no route can fall behind it.
 
-It teaches one page: the loop `context -> claim -> show -> log -> done`, the
-three off-loop verbs `new`, `find` and `release`, the planning verbs, and the
-rules that are not negotiable. It is loaded on every session, which is why its
-content is deliberately small and why growing it costs an ADR.
+It teaches one page: why ank is shaped as it is, then the loop
+`context -> claim -> show -> log -> done`, the three off-loop verbs `new`,
+`find` and `release`, the investigation verbs `scope`, `status` and the read
+form of `log`, the planning verbs, and the rules that are not negotiable. Its
+content is deliberately small and growing it costs an ADR.
+
+**What that costs a session is the frontmatter, not the page.** The projection
+below is `~58 tok` always-on, and that is the skill's `name` and `description`;
+the body is read when the skill is invoked. The ceiling on the body is kept
+anyway, because the by-hand route at the end of this page copies the whole file
+into whatever a harness loads, and some harnesses load all of it every session —
+so it bounds the worst route rather than the measured one.
 
 One convention it carries is worth knowing before you watch an agent follow it:
 **`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
