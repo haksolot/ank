@@ -1,0 +1,379 @@
+name: publish-apt
+
+# ank installs from an apt repository this project hosts on its own GitHub
+# Pages, so the index lives where every other channel lives and no satellite
+# appears (ADR-782a3556cf2d, carrying ADR-e3cb36646d77 forward).
+#
+# The whole tree is rebuilt from the GitHub releases on every run by
+# .github/scripts/apt-repo.sh. Nothing is carried over between runs and nothing
+# is edited in place, so there is no state to drift -- which is why this
+# workflow has no "assert the committed file is the derivation" job the way
+# publish-brew and publish-scoop do. Their derived files are committed and can
+# therefore be edited by hand; this one is built and published in the same run,
+# and never exists in the tree at all.
+#
+# What is committed is exactly one file, packaging/deb/ank-archive-keyring.asc,
+# and the script fails if the key it signs with is not that one.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - "packaging/deb/**"
+      - ".github/scripts/apt-repo.sh"
+      - ".github/workflows/publish-apt.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packaging/deb/**"
+      - ".github/scripts/apt-repo.sh"
+      - ".github/workflows/publish-apt.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Two releases rebuilding and deploying the same site would race, and the loser
+# would publish a pool missing the newer tag. Never cancelled: a tag is not
+# something you get to publish twice.
+concurrency:
+  group: publish-apt-${{ github.event_name == 'release' && 'release' || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: the repository is built and signed
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the tools the build needs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: build it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+          # An event that deploys may not fall back to a throwaway key: a
+          # published tree signed by a key no user trusts is worse than a
+          # publish that failed, because apt reports it as a repository it
+          # cannot verify and the reader goes looking at their own machine.
+          # Events that publish nothing may fall back, which is what keeps this
+          # testable on a pull request from a fork, where secrets are not
+          # exposed.
+          APT_REQUIRE_KEY: ${{ (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
+          APT_PAGES_URL: https://haksolot.github.io/ank
+        run: bash .github/scripts/apt-repo.sh _site
+
+      - name: what was built
+        run: |
+          set -euo pipefail
+          find _site -type f | sort
+          echo ""
+          echo "--- dists/stable/Release ---"
+          cat _site/deb/dists/stable/Release
+
+      # For the install job, which runs in a Debian container and has to test
+      # these exact bytes rather than a second build of them.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: apt-site
+          path: _site
+          if-no-files-found: error
+
+      # The Pages deployment reads this one, so it is uploaded by the events
+      # that deploy and by no other.
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        with:
+          path: _site
+
+  deploy:
+    name: the tree is published to Pages
+    needs: build
+    # A dispatch deploys too, and that is the whole point of it. Publishing to
+    # Pages is otherwise provable only by cutting a tag, and a channel whose
+    # hosting is first exercised by a release is a channel whose hosting is
+    # first exercised in front of users. The tree it deploys is the same
+    # function of the same releases, so a dispatch publishes what a release
+    # would have published and nothing else.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    # Pages allows one deployment at a time, and a queued one is not a failed
+    # one: the group is the site rather than the ref.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    outputs:
+      page_url: ${{ steps.deploy.outputs.page_url }}
+
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  # A repository nobody installed from is a repository nobody tested, and the
+  # criterion is about the binary. So this runs a real apt client in a real
+  # Debian, adds the repository the way the instructions say to, and reads the
+  # version back out of the installed binary.
+  install:
+    name: apt-get install ank
+    needs: [build, deploy]
+    # `deploy` is skipped on the events that publish nothing, and a skipped need
+    # would skip this job with it. Spelled out rather than left to the default:
+    # what this job requires is that the build succeeded, and that the
+    # deployment succeeded *when there was one*.
+    if: >-
+      ${{ !cancelled()
+      && needs.build.result == 'success'
+      && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    container:
+      image: debian:stable-slim
+
+    steps:
+      - name: an apt client and nothing else
+        run: |
+          set -eu
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          apt-get --version
+          . /etc/os-release && echo "testing on ${PRETTY_NAME}"
+
+          # The slim images ship a dpkg configuration that throws documentation
+          # away as it unpacks -- path-exclude=/usr/share/doc/*, with copyright
+          # excepted, which is why copyright alone survives. It is there to keep
+          # images small and it is not what a Debian install does, so a test
+          # that left it in place would report the image's configuration as a
+          # missing file in the package. Removed by name, and printed, because a
+          # silent rm here would hide the next image that ships a different one.
+          for f in /etc/dpkg/dpkg.cfg.d/*; do
+            [ -f "$f" ] || continue
+            if grep -q '^path-exclude' "$f"; then
+              echo "removing the image's documentation exclusion: $f"
+              cat "$f"
+              rm -f "$f"
+            fi
+          done
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: apt-site
+          path: _site
+
+      # apt drops privileges to the _apt user before it fetches anything, and
+      # the file method is a fetch like any other: a tree only root can read
+      # comes back as "open (13: Permission denied)", which reads like a broken
+      # repository rather than like a mode bit.
+      - name: the tree is readable by the user apt fetches as
+        run: chmod -R a+rX _site
+
+      - name: the repository to add
+        id: source
+        run: |
+          set -eu
+          # Keyed on whether a deployment happened rather than on which event
+          # caused it: what decides is whether the tree under test is reachable
+          # at the URL a user would type, and `page_url` is empty exactly when
+          # it is not. A run that deployed then asserts against the deployment
+          # it just made -- never against the previous one, which would be the
+          # previous release.
+          if [ -n "${PAGE_URL:-}" ]; then
+            base="${PAGE_URL%/}/deb"
+          else
+            # What is under test is the tree in hand, which no URL serves yet.
+            # apt's file method reads it with no server in the way; the
+            # transport is Pages' business and not this package's.
+            base="file://${GITHUB_WORKSPACE}/_site/deb"
+          fi
+          echo "the repository is ${base}"
+          echo "base=${base}" >> "$GITHUB_OUTPUT"
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+
+      # Only when something was deployed. apt fetches the index and the key
+      # itself, so those are covered by the steps below; this covers the two
+      # files nothing else asks for -- the landing page a reader arrives at,
+      # and the detached signature an older apt falls back to when it has no
+      # InRelease.
+      - name: Pages serves what the tree carries
+        if: startsWith(steps.source.outputs.base, 'http')
+        run: |
+          set -eu
+          root="${{ steps.source.outputs.base }}"
+          for path in "${root%/deb}/index.html" \
+                      "${root}/dists/stable/Release.gpg" \
+                      "${root}/dists/stable/InRelease"; do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "$path" 2>/dev/null || echo failed)
+            echo "  ${code}  ${path}"
+            test "$code" = "200" || {
+              echo "Pages did not serve ${path}" >&2
+              exit 1
+            }
+          done
+
+      # The negative control, and it runs before the key is installed rather
+      # than after. Signing an index buys exactly one thing -- an apt client
+      # refusing what it cannot verify -- and a job that only ever ran the happy
+      # path would pass just as well against a repository signed by nobody.
+      - name: an unverifiable repository is refused
+        run: |
+          set -eu
+          echo "deb [trusted=no] ${{ steps.source.outputs.base }} stable main" \
+            > /etc/apt/sources.list.d/ank.list
+
+          set +e
+          out=$(apt-get update 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          echo "exit $code"
+
+          if [ "$code" -eq 0 ]; then
+            echo "apt accepted a repository whose key it does not have." >&2
+            echo "  the signature is not doing the work it is there to do." >&2
+            exit 1
+          fi
+          # It has to refuse for the reason we think. A 404 refuses too, and a
+          # test that accepted any non-zero code would pass against a
+          # repository that is simply not there.
+          if ! printf '%s' "$out" | grep -qiE 'NO_PUBKEY|not signed|no.*public key|GPG error'; then
+            echo "apt refused, but not because of the signature." >&2
+            echo "  read the output above: this is a different failure." >&2
+            exit 1
+          fi
+          rm -f /etc/apt/sources.list.d/ank.list
+          echo "refused, and said it was the signature"
+
+      - name: add the repository and its key
+        run: |
+          set -eu
+          install -d -m 0755 /etc/apt/keyrings
+          case "${{ steps.source.outputs.base }}" in
+            http*)
+              # Fetched over the network whenever the tree is served over one,
+              # because "is the key reachable at the URL the instructions print"
+              # is part of what a published channel has to be true, and a copy
+              # taken from the artefact would never find out.
+              curl -fsSL "${{ steps.source.outputs.base }}/ank-archive-keyring.asc" \
+                -o /etc/apt/keyrings/ank-archive-keyring.asc
+              ;;
+            *)
+              cp _site/deb/ank-archive-keyring.asc /etc/apt/keyrings/ank-archive-keyring.asc
+              ;;
+          esac
+          chmod 0644 /etc/apt/keyrings/ank-archive-keyring.asc
+          gpg --show-keys --with-colons /etc/apt/keyrings/ank-archive-keyring.asc |
+            sed -n 's/^fpr:::::::::\(.*\):/  key /p'
+
+          echo "deb [signed-by=/etc/apt/keyrings/ank-archive-keyring.asc] ${{ steps.source.outputs.base }} stable main" \
+            > /etc/apt/sources.list.d/ank.list
+          cat /etc/apt/sources.list.d/ank.list
+
+          apt-get update
+
+      - name: apt-get install ank
+        run: |
+          set -eu
+          apt-get install -y ank
+          # Asserted here rather than left to the step after it: a package that
+          # unpacked but installed the binary somewhere else fails later as
+          # "ank: command not found", which sends the reader after the PATH
+          # instead of after the package layout.
+          test -x /usr/bin/ank || {
+            echo "the package installed no executable at /usr/bin/ank" >&2
+            dpkg -L ank >&2
+            exit 1
+          }
+          echo "--- what the package carries ---"
+          dpkg -L ank
+          echo "--- what apt thinks it is ---"
+          dpkg -s ank
+
+      # The criterion in as many words. `--version` prints "ank <version>
+      # (<commit>, skill <hash>)", so the assertion is on the version token: it
+      # is read from the package apt resolved rather than pinned here, because
+      # on a release that is the tag and between releases it is whatever the
+      # newest published one is.
+      - name: ank --version names the version apt installed
+        run: |
+          set -eu
+          expected=$(dpkg-query -W -f='${Version}' ank)
+          actual=$(ank --version)
+          echo "apt installed: ${expected}"
+          echo "ank --version: ${actual}"
+          case "$actual" in
+            "ank ${expected}"*) ;;
+            *)
+              echo "the installed binary does not name ${expected}" >&2
+              exit 1
+              ;;
+          esac
+
+          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
+            # And on a release, that version has to be the one just published.
+            # A pool that rebuilt without the new tag would install the previous
+            # one and every assertion above would still pass.
+            released="${GITHUB_REF_NAME#v}"
+            test "$expected" = "$released" || {
+              echo "the release published ${released} but apt served ${expected}" >&2
+              echo "  the pool was rebuilt without the tag that triggered it." >&2
+              exit 1
+            }
+            echo "and it is the version this release published"
+          fi
+
+      # The licence and the documentation the criterion names, checked where
+      # Debian puts them rather than where the archive had them.
+      #
+      # Asserted twice, against two different things, because they answer two
+      # different questions. `dpkg-deb -c` reads the package itself and is the
+      # claim the criterion actually makes -- what the .deb carries -- and no
+      # dpkg configuration on any machine can change the answer. The filesystem
+      # check is the other half: that a real install lands them. The first run
+      # of this job had only the second, and the slim image's path-exclude made
+      # it report a file the package was carrying all along as missing.
+      - name: the package carries its licence and its documentation
+        run: |
+          set -eu
+          deb=$(ls _site/deb/pool/main/a/ank/ank_*_amd64.deb | sort -V | tail -1)
+          echo "--- what ${deb##*/} carries ---"
+          dpkg-deb -c "$deb"
+
+          for f in copyright README.md SKILL.md; do
+            dpkg-deb -c "$deb" | grep -q " ./usr/share/doc/ank/${f}$" || {
+              echo "the package does not carry usr/share/doc/ank/${f}" >&2
+              exit 1
+            }
+          done
+          dpkg-deb -c "$deb" | grep -q " ./usr/bin/ank$" || {
+            echo "the package does not carry usr/bin/ank" >&2
+            exit 1
+          }
+          # A man page is what this package deliberately does not ship, so it is
+          # named rather than left to be noticed: the documentation travels as
+          # the README and the skill the binary was built alongside.
+          if dpkg-deb -c "$deb" | grep -q "usr/share/man/"; then
+            echo "the package carries a man page, which it is not meant to" >&2
+            exit 1
+          fi
+          echo "the package carries the binary, the licence and the documentation"
+
+          echo "--- and the install landed them ---"
+          for f in copyright README.md SKILL.md; do
+            test -s "/usr/share/doc/ank/${f}" || {
+              echo "/usr/share/doc/ank/${f} is missing or empty after install" >&2
+              exit 1
+            }
+            echo "  /usr/share/doc/ank/${f}"
+          done
+          head -1 /usr/share/doc/ank/copyright
