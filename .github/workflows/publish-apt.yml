@@ -142,6 +142,22 @@ jobs:
           apt-get --version
           . /etc/os-release && echo "testing on ${PRETTY_NAME}"
 
+          # The slim images ship a dpkg configuration that throws documentation
+          # away as it unpacks -- path-exclude=/usr/share/doc/*, with copyright
+          # excepted, which is why copyright alone survives. It is there to keep
+          # images small and it is not what a Debian install does, so a test
+          # that left it in place would report the image's configuration as a
+          # missing file in the package. Removed by name, and printed, because a
+          # silent rm here would hide the next image that ships a different one.
+          for f in /etc/dpkg/dpkg.cfg.d/*; do
+            [ -f "$f" ] || continue
+            if grep -q '^path-exclude' "$f"; then
+              echo "removing the image's documentation exclusion: $f"
+              cat "$f"
+              rm -f "$f"
+            fi
+          done
+
       - uses: actions/download-artifact@v8
         with:
           name: apt-site
@@ -285,12 +301,44 @@ jobs:
 
       # The licence and the documentation the criterion names, checked where
       # Debian puts them rather than where the archive had them.
+      #
+      # Asserted twice, against two different things, because they answer two
+      # different questions. `dpkg-deb -c` reads the package itself and is the
+      # claim the criterion actually makes -- what the .deb carries -- and no
+      # dpkg configuration on any machine can change the answer. The filesystem
+      # check is the other half: that a real install lands them. The first run
+      # of this job had only the second, and the slim image's path-exclude made
+      # it report a file the package was carrying all along as missing.
       - name: the package carries its licence and its documentation
         run: |
           set -eu
+          deb=$(ls _site/deb/pool/main/a/ank/ank_*_amd64.deb | sort -V | tail -1)
+          echo "--- what ${deb##*/} carries ---"
+          dpkg-deb -c "$deb"
+
+          for f in copyright README.md SKILL.md; do
+            dpkg-deb -c "$deb" | grep -q " ./usr/share/doc/ank/${f}$" || {
+              echo "the package does not carry usr/share/doc/ank/${f}" >&2
+              exit 1
+            }
+          done
+          dpkg-deb -c "$deb" | grep -q " ./usr/bin/ank$" || {
+            echo "the package does not carry usr/bin/ank" >&2
+            exit 1
+          }
+          # A man page is what this package deliberately does not ship, so it is
+          # named rather than left to be noticed: the documentation travels as
+          # the README and the skill the binary was built alongside.
+          if dpkg-deb -c "$deb" | grep -q "usr/share/man/"; then
+            echo "the package carries a man page, which it is not meant to" >&2
+            exit 1
+          fi
+          echo "the package carries the binary, the licence and the documentation"
+
+          echo "--- and the install landed them ---"
           for f in copyright README.md SKILL.md; do
             test -s "/usr/share/doc/ank/${f}" || {
-              echo "/usr/share/doc/ank/${f} is missing or empty" >&2
+              echo "/usr/share/doc/ank/${f} is missing or empty after install" >&2
               exit 1
             }
             echo "  /usr/share/doc/ank/${f}"
