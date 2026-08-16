@@ -4,7 +4,7 @@ name: release
 # produced from a branch would make "the binary for v0.1.0" a question rather
 # than an answer.
 #
-# `workflow_dispatch` builds the same three binaries and publishes nothing. The
+# `workflow_dispatch` builds the same four binaries and publishes nothing. The
 # alternative is discovering that the release pipeline is broken at the moment
 # you use it, on a tag you then have to delete -- and a tag is the one thing
 # here that is awkward to take back.
@@ -80,6 +80,23 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             archive: tar.gz
+          # An Intel runner, not `--target x86_64-apple-darwin` on the arm64
+          # one: this job tests before it packages, and a cross-compiled binary
+          # gets tested either not at all or through a translation layer nobody
+          # downloading it is running. Half the Mac install base is what the row
+          # is for, and a row that only linked would ship exactly the untested
+          # file the test step below refuses to call a release.
+          #
+          # The label is version-pinned where its siblings are `-latest`
+          # because there is no Intel `-latest` to take: `macos-13` was the
+          # last one and was retired in December 2025. `macos-15-intel` is the
+          # standard image GitHub named as its replacement, and the last x86_64
+          # image Actions will offer -- it goes away in August 2027, and this
+          # row goes with it rather than quietly moving to another arm64
+          # runner.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
@@ -103,7 +120,7 @@ jobs:
           sudo apt-get install -y musl-tools
           rustup target add x86_64-unknown-linux-musl
 
-      # The criterion asks for the suite on all three, not only for a build
+      # The criterion asks for the suite on every target, not only for a build
       # that links. A binary nobody tested is not a release, it is a file.
       - name: test
         run: cargo test --workspace --target ${{ matrix.target }}
@@ -393,7 +410,7 @@ jobs:
           done
 
   publish:
-    # Only after all three. A release carrying two platforms out of three would
+    # Only after every row. A release carrying three targets out of four would
     # be worse than no release: it looks complete.
     #
     # `build` and not `npm-smoke`, deliberately: the release page is the primary
