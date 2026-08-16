@@ -58,13 +58,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
-          # A release may not fall back to a throwaway key: a published tree
-          # signed by a key no user trusts is worse than a publish that failed,
-          # because apt reports it as a repository it cannot verify and the
-          # reader goes looking at their own machine. Every other event may fall
-          # back, which is what keeps this testable on a pull request from a
-          # fork, where secrets are not exposed.
-          APT_REQUIRE_KEY: ${{ github.event_name == 'release' && '1' || '0' }}
+          # An event that deploys may not fall back to a throwaway key: a
+          # published tree signed by a key no user trusts is worse than a
+          # publish that failed, because apt reports it as a repository it
+          # cannot verify and the reader goes looking at their own machine.
+          # Events that publish nothing may fall back, which is what keeps this
+          # testable on a pull request from a fork, where secrets are not
+          # exposed.
+          APT_REQUIRE_KEY: ${{ (github.event_name == 'release' || github.event_name == 'workflow_dispatch') && '1' || '0' }}
           APT_PAGES_URL: https://haksolot.github.io/ank
         run: bash .github/scripts/apt-repo.sh _site
 
@@ -84,17 +85,23 @@ jobs:
           path: _site
           if-no-files-found: error
 
-      # The Pages deployment reads this one. Uploaded only on a release,
-      # because it is the only event that deploys.
+      # The Pages deployment reads this one, so it is uploaded by the events
+      # that deploy and by no other.
       - uses: actions/upload-pages-artifact@v3
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         with:
           path: _site
 
   deploy:
     name: the tree is published to Pages
     needs: build
-    if: github.event_name == 'release'
+    # A dispatch deploys too, and that is the whole point of it. Publishing to
+    # Pages is otherwise provable only by cutting a tag, and a channel whose
+    # hosting is first exercised by a release is a channel whose hosting is
+    # first exercised in front of users. The tree it deploys is the same
+    # function of the same releases, so a dispatch publishes what a release
+    # would have published and nothing else.
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       pages: write
@@ -121,14 +128,14 @@ jobs:
   install:
     name: apt-get install ank
     needs: [build, deploy]
-    # `deploy` is skipped on every event but a release, and a skipped need would
-    # skip this job with it. Spelled out rather than left to the default: what
-    # this job requires is that the build succeeded, and that the deployment
-    # succeeded *when there was one*.
+    # `deploy` is skipped on the events that publish nothing, and a skipped need
+    # would skip this job with it. Spelled out rather than left to the default:
+    # what this job requires is that the build succeeded, and that the
+    # deployment succeeded *when there was one*.
     if: >-
       ${{ !cancelled()
       && needs.build.result == 'success'
-      && (github.event_name != 'release' || needs.deploy.result == 'success') }}
+      && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
     runs-on: ubuntu-latest
     container:
       image: debian:stable-slim
@@ -174,12 +181,13 @@ jobs:
         id: source
         run: |
           set -eu
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            # The deployment has just happened, so the published tree is
-            # reachable at the URL a user would type. This is the full loop and
-            # it is only provable here: on any other event the tree under test
-            # is not on Pages yet, and asserting against the previous
-            # deployment would assert against the previous release.
+          # Keyed on whether a deployment happened rather than on which event
+          # caused it: what decides is whether the tree under test is reachable
+          # at the URL a user would type, and `page_url` is empty exactly when
+          # it is not. A run that deployed then asserts against the deployment
+          # it just made -- never against the previous one, which would be the
+          # previous release.
+          if [ -n "${PAGE_URL:-}" ]; then
             base="${PAGE_URL%/}/deb"
           else
             # What is under test is the tree in hand, which no URL serves yet.
@@ -191,6 +199,27 @@ jobs:
           echo "base=${base}" >> "$GITHUB_OUTPUT"
         env:
           PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+
+      # Only when something was deployed. apt fetches the index and the key
+      # itself, so those are covered by the steps below; this covers the two
+      # files nothing else asks for -- the landing page a reader arrives at,
+      # and the detached signature an older apt falls back to when it has no
+      # InRelease.
+      - name: Pages serves what the tree carries
+        if: startsWith(steps.source.outputs.base, 'http')
+        run: |
+          set -eu
+          root="${{ steps.source.outputs.base }}"
+          for path in "${root%/deb}/index.html" \
+                      "${root}/dists/stable/Release.gpg" \
+                      "${root}/dists/stable/InRelease"; do
+            code=$(curl -fsS -o /dev/null -w '%{http_code}' "$path" 2>/dev/null || echo failed)
+            echo "  ${code}  ${path}"
+            test "$code" = "200" || {
+              echo "Pages did not serve ${path}" >&2
+              exit 1
+            }
+          done
 
       # The negative control, and it runs before the key is installed rather
       # than after. Signing an index buys exactly one thing -- an apt client
@@ -229,15 +258,19 @@ jobs:
         run: |
           set -eu
           install -d -m 0755 /etc/apt/keyrings
-          if [ "${GITHUB_EVENT_NAME}" = "release" ]; then
-            # Fetched over the network on a release, because "is the key
-            # reachable at the URL the instructions print" is part of what a
-            # published channel has to be true.
-            curl -fsSL "${{ steps.source.outputs.base }}/ank-archive-keyring.asc" \
-              -o /etc/apt/keyrings/ank-archive-keyring.asc
-          else
-            cp _site/deb/ank-archive-keyring.asc /etc/apt/keyrings/ank-archive-keyring.asc
-          fi
+          case "${{ steps.source.outputs.base }}" in
+            http*)
+              # Fetched over the network whenever the tree is served over one,
+              # because "is the key reachable at the URL the instructions print"
+              # is part of what a published channel has to be true, and a copy
+              # taken from the artefact would never find out.
+              curl -fsSL "${{ steps.source.outputs.base }}/ank-archive-keyring.asc" \
+                -o /etc/apt/keyrings/ank-archive-keyring.asc
+              ;;
+            *)
+              cp _site/deb/ank-archive-keyring.asc /etc/apt/keyrings/ank-archive-keyring.asc
+              ;;
+          esac
           chmod 0644 /etc/apt/keyrings/ank-archive-keyring.asc
           gpg --show-keys --with-colons /etc/apt/keyrings/ank-archive-keyring.asc |
             sed -n 's/^fpr:::::::::\(.*\):/  key /p'
