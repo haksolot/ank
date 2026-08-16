@@ -11,6 +11,24 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="https://github.com/haksolot/ank/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/haksolot/ank"></a>
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a></p>
 
+**The binary:**
+
+```sh
+npm install -g @haksolot/ank
+```
+
+**The skill**, into whichever agent you run:
+
+```sh
+npx skills add haksolot/ank
+```
+
+Ank needs **git 2.34 or newer**. Every other route — `curl | sh`, Homebrew,
+Scoop, apt, release binaries, `cargo`, the Claude Code plugin, `pi`, a hand copy
+— is in [handing ank to an agent][agents].
+
+---
+
 An agent that spawns on your codebase can read every line of it. It cannot read
 your tracker, your wiki, or the thread where you decided six months ago that
 sessions must never be self-contained JWTs. So it writes plausible code that
@@ -48,16 +66,18 @@ prove it finished; and a log entry, written once and never transitioned. All
 four are plain markdown with YAML frontmatter, joined to the code by nothing but
 globs.
 
-## Install
+## The loop, running
 
-```
-npm install -g @haksolot/ank     # the binary
-npx skills add haksolot/ank      # the skill, into whichever agent you run
-```
+A constraint served, the work that follows respecting it, and `done` running the
+verifier itself rather than being told a result.
 
-Ank needs **git 2.34 or newer**. Every other route — release binaries, `cargo`,
-the Claude Code plugin, `pi`, a hand copy, or a platform npm does not carry — is
-in [handing ank to an agent][agents].
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.svg">
+<img src="assets/demo.svg" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
+
+Nothing in it opens a file under `.ank/`. It is rebuilt by
+`assets/demo/setup.sh`, played by `play.sh` and rendered by `render.sh`, so a
+retake is a re-run rather than a performance.
 
 ## Why it works this way
 
