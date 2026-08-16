@@ -47,9 +47,6 @@ CONSTRAINTS (2 active)
   ADR-3c7e  No self-contained JWTs for user auth
   ADR-8b41  Rate limiting on every public endpoint
 
-SPECIFICATIONS (1)
-  SPEC-d41f  Session and token handling
-
 TASKS (2)
   TASK-51c2  [open] Add secret rotation
   TASK-8f3a  [claimed:pi/host-3] Migrate auth to opaque sessions
@@ -68,12 +65,13 @@ globs.
 
 ## The loop, running
 
-A constraint served, the work that follows respecting it, and `done` running the
-verifier itself rather than being told a result.
+A constraint served, what `blocked_by` orders, the work that follows respecting
+the constraint, and `done` running the verifier itself rather than being told a
+result.
 
 <p align="center"><picture>
-<source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.svg">
-<img src="assets/demo.svg" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
+<source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
+<img src="assets/demo.gif" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; ank graph shows which task is takeable; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
 
 Nothing in it opens a file under `.ank/`. It is rebuilt by
 `assets/demo/setup.sh`, played by `play.sh` and rendered by `render.sh`, so a

@@ -2,6 +2,10 @@
 # What the recording plays. Written rather than typed, so a retake is a re-run
 # and not a performance: the recording is a function of this file and of the
 # demo repository, both of which are rebuilt from scripts.
+#
+# Colours are the eight ANSI ones and never the 256-colour cube, so the theme
+# passed to agg governs every pixel. A 38;5;183 here would come out of xterm's
+# palette and be the one thing on screen Catppuccin does not reach.
 set -uo pipefail
 . "$HOME/.cargo/env" 2>/dev/null || true
 
@@ -11,7 +15,7 @@ cd "$HOME/demo"
 ROOT=$(ank find --status open 2>/dev/null |
   sed -n 's/^  \(TASK-[0-9a-f]*\).*does not know.*/\1/p' | head -1)
 
-P=$'\033[38;5;183mdepot\033[0m \033[38;5;245m$\033[0m '
+P=$'\033[35mdepot\033[0m \033[34m$\033[0m '
 
 # Types a command the way a reader reads one, then runs it.
 say() {
@@ -33,55 +37,46 @@ pause 0.8
 
 # 1. Orientation: what governs this file, and what is claimable inside it.
 say "ank context src/deploy.rs"
+pause 3.5
+
+# 2. Which of them is even takeable. blocked_by is an order, not a list, and
+#    the tree is the only place that reads as one.
+say "ank graph"
 pause 4.5
 
-# 2. The claim freezes the criterion.
+# 3. The claim freezes the criterion.
 say "ank claim $ROOT"
 pause 1.6
 
-# 3. The criterion, and the constraint in full. This is the beat the whole
+# 4. The criterion, and the constraint in full. This is the beat the whole
 #    recording exists for.
 say "ank context"
-pause 9.5
+pause 8.5
 
-# 4. The work. Written at once because an agent writes a file at once, and
-#    what matters is that the message it produces is the one the constraint
-#    asked for.
+# 5. The work. Written at once because an agent writes a file at once, and what
+#    matters is that the message it produces is the one the constraint asked
+#    for. `tee` rather than a redirect and a second copy: one text on screen and
+#    on disk, so they cannot drift.
 printf '%b%s\n' "$P" "cat > src/deploy.rs <<'RS'"
-cat > src/deploy.rs <<'RS'
+tee src/deploy.rs <<'RS'
 //! Sends a build to an environment.
 
 const KNOWN: [&str; 3] = ["staging", "canary", "production"];
 
 pub fn deploy(env: &str) -> Result<(), String> {
     if !KNOWN.contains(&env) {
-        return Err(format!(
-            "unknown environment '{env}', try: depot deploy {}",
-            KNOWN.join(" | depot deploy ")
-        ));
-    }
-    println!("deploying to {env}");
-    Ok(())
-}
-RS
-cat <<'RS'
-//! Sends a build to an environment.
-
-const KNOWN: [&str; 3] = ["staging", "canary", "production"];
-
-pub fn deploy(env: &str) -> Result<(), String> {
-    if !KNOWN.contains(&env) {
-        return Err(format!(
-            "unknown environment '{env}', try: depot deploy {}",
-            KNOWN.join(" | depot deploy ")
-        ));
+        let head: String = env.chars().take(4).collect();
+        return Err(match KNOWN.iter().find(|k| k.starts_with(&head)) {
+            Some(k) => format!("unknown environment '{env}', try: depot deploy {k}"),
+            None => format!("unknown environment '{env}', known: {}", KNOWN.join(", ")),
+        });
     }
     println!("deploying to {env}");
     Ok(())
 }
 RS
 printf 'RS\n'
-pause 3.5
+pause 3.0
 
 cat > tests/deploy.rs <<'RS'
 #[test]
@@ -92,14 +87,14 @@ fn a_known_environment_is_deployed_to() {
 #[test]
 fn an_unknown_one_is_refused_with_the_command_to_run() {
     let err = depot::deploy::deploy("stagin").unwrap_err();
-    assert!(err.contains("depot deploy staging"), "{err}");
+    assert_eq!(err, "unknown environment 'stagin', try: depot deploy staging");
 }
 RS
 
-# The constraint said a refusal names the command that fixes it. Here it is.
+# The constraint promised "try: depot deploy staging". Here it is, to the byte.
 say "cargo run -q -- stagin"
-pause 4.0
+pause 3.5
 
-# 5. done runs the declared verifier itself and writes the proof.
+# 6. done runs the declared verifier itself and writes the proof.
 say "ank done"
-pause 5.0
+pause 4.5
