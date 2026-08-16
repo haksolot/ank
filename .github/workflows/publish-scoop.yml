@@ -240,9 +240,13 @@ jobs:
           # reach this one: a failed install would print in red and leave the
           # step green. The shim it was supposed to write is the assertion --
           # and the step after this one, which runs the binary, is the other.
+          # `${shim}` and not `$shim`: a colon after a bare variable name makes
+          # PowerShell read the whole thing as a drive-qualified variable, and
+          # it is a parse error rather than a runtime one -- the step does not
+          # run a single line, so nothing before it in the block runs either.
           $shim = "$env:USERPROFILE\scoop\shims\ank.exe"
           if (-not (Test-Path $shim)) {
-            throw "scoop install left no shim at $shim: read the scoop output above"
+            throw "scoop install left no shim at ${shim}: read the scoop output above"
           }
 
       # The criterion in as many words. `--version` prints "ank <version>
