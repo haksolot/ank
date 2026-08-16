@@ -5,7 +5,7 @@ slug: ank-is-installable-with-winget
 title: ank is installable with winget
 created: 2026-08-16T03:35:49Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - packaging/winget/**
   - .github/workflows/publish-winget.yml
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   packaging/winget carries the three manifest files winget requires, rendered for a version with the installer URL and the sha256 the release publishes. A workflow triggered on a published release renders them and opens a pull request against microsoft/winget-pkgs under a token the repository holds. A CI job on Windows validates the rendered manifests with winget validate and installs from them locally, asserting ank --version prints the released version. The pull request is opened and never merged by this repository: the registry reviews it. cargo test --workspace and ank check stay green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 387382f0fd1db85f4142a86b6aeae7c91fb42c10
+    criteria: f85663ec0578
+    via: submitted
 schema: 3
-version: 1
+version: 3
 ---
 
 winget's registry is `microsoft/winget-pkgs`, a central index that accepts a
