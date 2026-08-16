@@ -91,7 +91,10 @@ jobs:
             exit 1
           fi
 
-          .github/scripts/winget-manifests.sh "$version"
+          # Invoked through `bash` and not executed: the mode bit does not
+          # survive a checkout on Windows, where this repository is also
+          # developed, so nothing here may depend on it.
+          bash .github/scripts/winget-manifests.sh "$version"
 
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
@@ -107,8 +110,9 @@ jobs:
             {
               echo ""
               echo "packaging/winget is not what deriving it for ${{ steps.derive.outputs.version }} produces."
-              echo "these are generated files: take the diff above as the fix, or re-run"
-              echo ".github/scripts/winget-manifests.sh <version> for a tag that has a release."
+              echo "these are generated files: take the diff above as the fix, or re-derive them."
+              echo ""
+              echo "  bash .github/scripts/winget-manifests.sh ${{ steps.derive.outputs.version }}"
             } >&2
             exit 1
           fi
