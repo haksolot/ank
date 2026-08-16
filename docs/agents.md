@@ -182,7 +182,7 @@ all.
 Either way, check it answers:
 
     $ ank --version
-    ank 0.1.3 (f573bc3, skill 3f350ad26459)
+    ank <version> (<commit>, skill <revision>)
 
 Three components: the version, the commit it was built from, and **the revision
 of the skill it was built alongside**. That last one is the value

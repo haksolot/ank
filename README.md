@@ -137,7 +137,10 @@ read only when it is — and orientation is bounded at 8000 characters.
 | report a vulnerability | [Security policy](https://github.com/haksolot/ank/blob/main/SECURITY.md) |
 
 The specification is the source of truth; the others exist so it does not have to
-be a tutorial. Pre-v1, on Linux, macOS and Windows. This repository dogfoods its
+be a tutorial. Linux, macOS and Windows. The version is `0.x` on purpose rather
+than for want of finishing: the loop and the exit codes are specified and an
+agent can branch on them today, while the storage format is not frozen — and a
+major version is a promise about exactly that. This repository dogfoods its
 own format down to that source of truth: the specification is ten accepted `spec`
 entities in `.ank/`, listed by `ank find --type spec` and printed whole by
 `ank show`, reached through the CLI and never by opening the files — and the plan
