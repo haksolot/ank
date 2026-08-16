@@ -577,6 +577,49 @@ fn the_skill_states_the_execution_model_it_assumes() {
     }
 }
 
+/// **The skill says how to choose work when other agents are running**
+/// (TASK-182a7f58cdd6).
+///
+/// The file already stated the arrangement — a tree per agent, an identity per
+/// session — which is how *not* to become the second agent in one perimeter. It
+/// said nothing about being one legitimately, and two ratified decisions
+/// produce exactly the output that case needs: ADR-052accd6e3b2 names a live
+/// claim whose scope intersects yours at claim time and takes the task anyway,
+/// and ADR-47e2ac102f58 makes `status` report this checkout's drift from the
+/// default branch. Both are answers to a question the skill never told anyone
+/// to ask, so the answers reached no reader.
+///
+/// The failures that costs are silent when made and expensive when they
+/// surface: a task picked off the top of a list overlaps work already running
+/// and is found at review, and a branch cut from a stale base is green here and
+/// red on the machine that merges.
+///
+/// Not a superseding ADR, on the same measurement as the test above. What is
+/// frozen is which *verbs* the file teaches plus the ceiling, and this adds
+/// neither a verb nor a flag: `status`, `claim` and `graph` are all taught
+/// already, and what is new is which question to put to them. The ceiling held
+/// at 173 lines and 1489 words of 180 and 1500 — written to fit rather than
+/// measured and then excused.
+///
+/// Asserted on tokens no other line of the file supplies, so a rewrite that
+/// keeps the teaching passes and a deletion fails. `graph` and `status` would
+/// each have been the natural choice and are deliberately not used: the file
+/// names both verbs elsewhere, so a test resting on them would stay green over
+/// a deleted paragraph.
+#[test]
+fn the_skill_says_how_to_choose_work_beside_another_agent() {
+    let text = skill();
+    for token in ["intersects", "unblocked", "collide"] {
+        assert!(
+            text.contains(token),
+            "SKILL.md does not say {token:?}: an agent that has loaded only this \
+             file knows it should have a tree of its own, and not how to pick a \
+             task when somebody else already holds one — nor that taking none \
+             is an available answer"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Which revision is installed (TASK-b495234f192c)
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "6ddced7793f9"
+  revision: "89529c87fb02"
 ---
 
 # ank
@@ -143,13 +143,19 @@ authority ends is part of planning well.
   directly. `ank show <id>` gives you an entity whole, `ank find` lists,
   `ank context` binds — the CLI knows the budget, the freeze and who holds what;
   the files do not.
-- **One agent, one working tree, one identity.** The nominal case is a tree per
-  agent — a clone or a `git worktree` — each on its own branch. `ANK_AGENT`
-  names the session and falls back to `<user>@<hostname>`, so two sessions in
-  one tree are one agent to the refs: they share a claim instead of arbitrating
-  over it, and the second one is refused work it should have been given. Set it
-  per session. Several agents in one tree runs, and is a degraded mode rather
-  than the design.
+- **One agent, one working tree, one identity.** A tree per agent — a clone or a
+  `git worktree` — each on a branch cut fresh from the default one: `status`
+  names the drift, and a stale base turns a green tree red elsewhere. Set
+  `ANK_AGENT` per session; it falls back to `<user>@<hostname>`, so two sessions
+  in one tree are one agent to the refs, sharing a claim instead of arbitrating
+  over it — a degraded mode rather than the design. ank commits nothing but
+  `accept`: one branch per task, and the default branch is where work arrives.
+- **Take the task that cannot collide, or take none.** `status` says what another
+  agent holds; `claim` names a live claim whose scope intersects yours and takes
+  the task anyway, a fact to read and not an error to refuse; `graph` shows what
+  `blocked_by` orders. Read all three first. When nothing open is both unblocked
+  and clear, take nothing and say so: an idle session is cheaper than two agents
+  rewriting one perimeter.
 - **What you read is never styled.** Colour is emitted only when a human is at
   a terminal, never into a pipe, a file or `--json`, so the bytes reaching you
   are plain: there is nothing to configure and no second surface to prefer.
