@@ -104,13 +104,51 @@ anything to it.
 ## The binary
 
 The README names npm because it is the shortest line that works on most
-machines. Three others exist.
+machines. Several others exist, and every one of them is carried by this
+repository rather than by a satellite somebody keeps in step
+(ADR-782a3556cf2d): the tap, the bucket and the apt index all live here, and
+each is derived from a published release rather than updated by hand.
 
 **A release binary.** Every release carries a static binary for three targets —
 `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`
 — each with a `.sha256` beside it. Take the archive for your platform from the
 [releases page](https://github.com/haksolot/ank/releases/latest), check the hash,
 unpack it, and put `ank` on your `PATH`.
+
+**`curl | sh`**, for the machine no package manager on this list serves:
+
+    curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh
+
+It reads your platform from `uname`, fetches the archive and the `.sha256`
+published beside it, and refuses before unpacking if the two disagree. On a
+platform no release carries it refuses by name and lists what does exist, rather
+than ending in silence.
+
+**Homebrew**, on macOS and Linux. This repository is its own tap, so the URL is
+part of the command:
+
+    brew tap haksolot/ank https://github.com/haksolot/ank
+    brew install haksolot/ank/ank
+
+**Scoop**, on Windows, for the same reason and in the same shape:
+
+    scoop bucket add ank https://github.com/haksolot/ank
+    scoop install ank/ank
+
+**apt**, on Debian and Ubuntu, from a repository this project hosts on its own
+GitHub Pages:
+
+    sudo install -d -m 0755 /etc/apt/keyrings
+    curl -fsSL https://haksolot.github.io/ank/deb/ank-archive-keyring.asc |
+      sudo tee /etc/apt/keyrings/ank-archive-keyring.asc > /dev/null
+    echo "deb [signed-by=/etc/apt/keyrings/ank-archive-keyring.asc] https://haksolot.github.io/ank/deb stable main" |
+      sudo tee /etc/apt/sources.list.d/ank.list > /dev/null
+    sudo apt-get update
+    sudo apt-get install -y ank
+
+`amd64` only, which is the release matrix rather than a decision about apt. The
+key that signs the index is a distribution key and never this project's
+ratification key.
 
 **npm**, which is the channel to reach for on a machine whose firewall blocks
 downloading a bare executable but lets the registry through:
@@ -133,6 +171,13 @@ which is the honest answer rather than a silent failure.
 
 It is `--git` because nothing publishes to crates.io. That puts `ank` in
 `~/.cargo/bin`, and needs Rust 1.95 or newer and a C compiler.
+
+**What is not a way to install ank yet**, named here so you do not go looking.
+`winget install Haksolot.Ank` does not work: the manifest is derived from the
+release and proved on every run of the pipeline — validated and installed from
+on a Windows runner — but it reaches `microsoft/winget-pkgs` only when a release
+is next published, and the registry reviews it after that. Arch is not served at
+all.
 
 Either way, check it answers:
 
