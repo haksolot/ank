@@ -5,7 +5,7 @@ slug: the-skill-says-how-to-work-beside-another-agent
 title: The skill says how to work beside another agent, not only how not to be one
 created: 2026-08-16T20:09:10Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   SKILL.md tells an agent how to pick work when others are running: that status names what another agent holds, that claim names a live claim whose scope intersects and takes the task anyway rather than refusing, that graph shows what blocked_by orders, and that taking nothing is an available answer when nothing open is both unblocked and clear. It says a branch is cut fresh from the default branch and why, and that ank commits nothing but accept. The ceiling is unchanged at 180 lines and 1500 words and the file is within it, measured by the existing test rather than asserted. metadata.revision names the new body hash. A superseding ADR carries the change and arrives proposed; the skill is not edited without it. cargo test --workspace and ank check stay green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: df0c20246ae7c66e93d70de15f208a83010d85fd
+    criteria: 82cda8266f53
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 The skill already says "one agent, one working tree, one identity", and that is
