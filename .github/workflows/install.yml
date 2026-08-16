@@ -1,0 +1,290 @@
+name: install
+
+# install.sh is the channel for the machine that has no package manager anyone
+# packages ank for, and it is the one channel that runs arbitrary code off the
+# network on the caller's machine. So it is tested on the three platforms it
+# claims to install, and the two things it must never do -- unpack an archive
+# whose hash does not match, and end in silence on a platform it has no archive
+# for -- are asserted rather than assumed.
+#
+# Its own workflow rather than a job in ci.yml: this one runs on
+# macos-15-intel, which ci.yml's matrix does not carry, and it tests a released
+# artefact rather than the tree.
+
+on:
+  push:
+  pull_request:
+
+# Read-only. This workflow publishes nothing; it reads the release page.
+permissions:
+  contents: read
+
+env:
+  # The version the staged release below carries. Deliberately not a version
+  # this project has ever published, so a step that silently reached the real
+  # release instead of the staged one cannot pass.
+  STAGED_VERSION: "9.9.9"
+  STAGED_PORT: "8731"
+
+jobs:
+  install:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A refusal that is wrong on one architecture is exactly the information
+      # this workflow exists to produce. Without fail-fast, the other two rows
+      # still say whether it is architecture-specific.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          # The Intel row, and the reason this workflow exists on three rows
+          # rather than two: half the Mac install base is x86_64, and a script
+          # that resolves the wrong target there installs a binary that cannot
+          # run. `macos-15-intel` is the same label release.yml builds on, and
+          # goes away in August 2027 with that row.
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # `sh` and not bash: the script declares POSIX sh in its shebang because
+      # busybox ash is what the smallest Linux images ship, and a bashism that
+      # only bash accepts would be found by the caller rather than here.
+      - name: it parses as POSIX sh
+        run: sh -n install.sh
+
+      - name: it explains itself
+        run: |
+          set -e
+          sh install.sh --help
+          out=$(sh install.sh --help 2>&1)
+          for t in x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+            printf '%s' "$out" | grep -q -- "$t" || {
+              echo "--help does not name $t"
+              exit 1
+            }
+          done
+          echo "--help names all three targets"
+
+      # The first of the two failures that matter. A fake `uname` on PATH is
+      # what makes this testable on a machine that is one of the supported
+      # platforms: the script reads the pair through `uname`, so this is the
+      # real code path and not a flag that bypasses it.
+      - name: an unsupported platform is refused by name
+        run: |
+          set -e
+          mkdir -p fake
+          cat > fake/uname <<'EOF'
+          #!/bin/sh
+          case "$1" in
+            -s) echo Linux ;;
+            -m) echo riscv64 ;;
+            *) echo Linux ;;
+          esac
+          EOF
+          chmod +x fake/uname
+
+          set +e
+          out=$(PATH="$PWD/fake:$PATH" sh install.sh --dir "$PWD/nowhere" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          echo "exit $code"
+
+          test "$code" -eq 2 || { echo "expected exit 2 for an unsupported platform"; exit 1; }
+
+          # It has to name the pair it saw. "unsupported platform" on its own
+          # leaves the caller with nothing to act on.
+          printf '%s' "$out" | grep -q 'Linux/riscv64' || {
+            echo "the refusal does not name the pair it saw"
+            exit 1
+          }
+          # And what does exist, so the caller can tell a missing build from a
+          # machine nobody builds for.
+          for t in x86_64-unknown-linux-musl aarch64-apple-darwin x86_64-apple-darwin; do
+            printf '%s' "$out" | grep -q -- "$t" || {
+              echo "the refusal does not list $t"
+              exit 1
+            }
+          done
+          # Refusing and installing something anyway would be the worst of both.
+          test ! -e "$PWD/nowhere" || { echo "it created the install directory anyway"; exit 1; }
+          echo "refused, named the pair, listed the alternatives, installed nothing"
+
+      # A release the script has never seen, served from localhost. This is
+      # what lets the whole path -- resolve, fetch the checksum, fetch the
+      # archive, verify, unpack, install, report the PATH -- run on all three
+      # architectures, including the one no published release carries yet.
+      #
+      # The payload is a stand-in and not the ank binary, deliberately. What is
+      # under test here is the script; whether a real binary runs on a given
+      # architecture is release.yml's question, and it answers it by running
+      # the suite on each target before it packages anything.
+      - name: stage a release and serve it
+        run: |
+          set -e
+          name="ank-${STAGED_VERSION}-${{ matrix.target }}"
+          mkdir -p "stage/$name"
+          cat > "stage/$name/ank" <<EOF
+          #!/bin/sh
+          if [ "\$1" = "--version" ]; then
+            echo "ank ${STAGED_VERSION} (staged)"
+            exit 0
+          fi
+          echo "staged stand-in for ank" >&2
+          exit 2
+          EOF
+          chmod +x "stage/$name/ank"
+          echo "staged" > "stage/$name/README.md"
+
+          cd stage
+          # The same layout release.yml packages: one directory named after the
+          # archive, and the checksum in sha256sum's own format beside it. The
+          # script parses that file, so a shape invented here would test a
+          # parser against nothing.
+          tar czf "${name}.tar.gz" "$name"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+          mkdir -p "srv/v${STAGED_VERSION}"
+          cp "${name}.tar.gz" "${name}.tar.gz.sha256" "srv/v${STAGED_VERSION}/"
+
+          cd srv
+          nohup python3 -m http.server "$STAGED_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
+          # Polled rather than slept: a fixed sleep is either wasted or too
+          # short, and too short here fails the next step for a reason that has
+          # nothing to do with the script.
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fs -o /dev/null "http://127.0.0.1:${STAGED_PORT}/v${STAGED_VERSION}/${name}.tar.gz.sha256"; then
+              echo "serving on ${STAGED_PORT}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "the staged release never came up"
+          exit 1
+
+      - name: the staged release installs and answers with its version
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          set -e
+          sh install.sh --version "$STAGED_VERSION" --dir "$PWD/staged-bin"
+          got=$("$PWD/staged-bin/ank" --version)
+          echo "ank --version: $got"
+          test "$got" = "ank ${STAGED_VERSION} (staged)" || {
+            echo "expected: ank ${STAGED_VERSION} (staged)"
+            exit 1
+          }
+
+      # The second of the two failures that matter, and the reason the .sha256
+      # is published at all. One byte appended to the archive, the checksum
+      # left as it was: the script must refuse before unpacking and leave the
+      # install directory as it found it.
+      - name: a tampered archive is refused before unpacking
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          set -e
+          name="ank-${STAGED_VERSION}-${{ matrix.target }}"
+          printf 'tamper' >> "stage/srv/v${STAGED_VERSION}/${name}.tar.gz"
+
+          # Pre-created and marked, so "nothing was installed" is an assertion
+          # about a directory that exists rather than about one that never did.
+          mkdir -p "$PWD/tamper-bin"
+          : > "$PWD/tamper-bin/.marker"
+
+          set +e
+          out=$(sh install.sh --version "$STAGED_VERSION" --dir "$PWD/tamper-bin" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          echo "exit $code"
+
+          test "$code" -eq 4 || { echo "expected exit 4 for a checksum mismatch"; exit 1; }
+          printf '%s' "$out" | grep -qi 'checksum mismatch' || {
+            echo "the refusal does not say the checksum did not match"
+            exit 1
+          }
+          test ! -e "$PWD/tamper-bin/ank" || {
+            echo "it installed the binary despite the mismatch"
+            exit 1
+          }
+          echo "refused, and installed nothing"
+
+      # The real release, which is the claim the caller actually cares about.
+      #
+      # The release is asked what it carries before the script is run, so this
+      # step never asserts a version that is not published: on a target the
+      # latest release carries, the install must succeed and `ank --version`
+      # must print that version; on one it does not carry, the script must
+      # refuse with code 3 naming the archive it looked for. Today that second
+      # branch is x86_64-apple-darwin, whose row landed in release.yml after
+      # v0.2.0 was tagged. When a release carries it, this step flips to the
+      # first branch with no edit here -- an expectation written as a literal
+      # would have had to be remembered instead.
+      #
+      # The repository is read out of install.sh rather than written here: the
+      # script hardcodes the one it installs from, and a workflow asking a
+      # different repository what exists would check the script against a
+      # release it never fetches.
+      - name: the latest release installs, or says why it cannot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          repo=$(sed -n 's/^repo="\(.*\)"$/\1/p' install.sh | head -1)
+          test -n "$repo" || { echo "could not read the repository out of install.sh"; exit 1; }
+          echo "install.sh installs from: $repo"
+
+          tag=$(gh release view --repo "$repo" --json tagName --jq .tagName)
+          version="${tag#v}"
+          archive="ank-${version}-${{ matrix.target }}.tar.gz"
+          echo "latest release: $tag"
+          echo "archive for this row: $archive"
+
+          carried=no
+          if gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' |
+            grep -qx "$archive"; then
+            carried=yes
+          fi
+          echo "carried by $tag: $carried"
+
+          mkdir -p "$PWD/real-bin"
+          set +e
+          out=$(sh install.sh --dir "$PWD/real-bin" 2>&1)
+          code=$?
+          set -e
+          echo "$out"
+          echo "exit $code"
+
+          if [ "$carried" = yes ]; then
+            test "$code" -eq 0 || { echo "the latest release carries $archive and the install failed"; exit 1; }
+            got=$("$PWD/real-bin/ank" --version)
+            echo "ank --version: $got"
+            case "$got" in
+              "ank ${version}"*) echo "the binary answers with the released version" ;;
+              *)
+                echo "expected ank --version to start with: ank ${version}"
+                exit 1
+                ;;
+            esac
+          else
+            test "$code" -eq 3 || {
+              echo "$tag does not carry $archive, so the script had to refuse with 3"
+              exit 1
+            }
+            printf '%s' "$out" | grep -q -- "$archive" || {
+              echo "the refusal does not name the archive it looked for"
+              exit 1
+            }
+            test ! -e "$PWD/real-bin/ank" || { echo "it refused and installed something anyway"; exit 1; }
+            echo "$tag carries no $archive, and the script said so rather than failing silently"
+          fi

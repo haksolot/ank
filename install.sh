@@ -1,0 +1,524 @@
+#!/bin/sh
+#
+# Install ank from a GitHub release.
+#
+#   curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh -s -- --version v0.2.0
+#
+# POSIX sh and no bashisms, deliberately. This is the channel for the Linux
+# distribution that will never have a native package, and the smallest of those
+# ship busybox ash with no bash at all. The binary is a static musl build, so
+# one archive covers every distribution -- but only if the script that fetches
+# it runs there too.
+#
+# Exit codes, so a caller can branch on the failure rather than on the message:
+#
+#   1  usage, or a directory that cannot be written
+#   2  unsupported platform
+#   3  the download failed, or the release does not carry this archive
+#   4  the checksum did not match the one the release published
+#   5  a tool this script needs is missing
+#
+set -eu
+
+repo="haksolot/ank"
+raw_url="https://raw.githubusercontent.com/${repo}/main/install.sh"
+releases_url="https://github.com/${repo}/releases"
+default_base_url="${releases_url}/download"
+
+# --------------------------------------------------------------------------
+# Output
+# --------------------------------------------------------------------------
+
+# Everything informational goes to stderr, because the interesting use of this
+# script is `curl ... | sh` and the caller may well be reading stdout.
+say() {
+  printf '%s\n' "$*" >&2
+}
+
+# `die <code> <line>...`: the code carries the kind of failure, the lines carry
+# what to do next. Nothing here ever ends in silence -- that is the one thing
+# an install script cannot do, since the caller is otherwise left with no
+# binary and no idea why.
+die() {
+  die_code=$1
+  shift
+  say "ank: $1"
+  shift
+  for die_line in "$@"; do
+    say "$die_line"
+  done
+  exit "$die_code"
+}
+
+# --------------------------------------------------------------------------
+# Platforms
+# --------------------------------------------------------------------------
+
+# The targets release.yml builds, minus Windows, which ships a .zip that this
+# script has no business unpacking. Written once and read by both the refusal
+# and the help text: a list that says one thing when it refuses and another
+# when it is asked is worse than no list at all.
+supported_lines() {
+  cat <<'EOF'
+  Linux  x86_64        x86_64-unknown-linux-musl
+  Darwin arm64         aarch64-apple-darwin
+  Darwin x86_64        x86_64-apple-darwin
+EOF
+}
+
+usage() {
+  cat >&2 <<EOF
+install ank from a GitHub release
+
+usage:
+  install.sh [--version <version>] [--dir <path>]
+
+  curl -fsSL ${raw_url} | sh
+  curl -fsSL ${raw_url} | sh -s -- --version v0.2.0
+
+options:
+  --version <version>  install this release instead of the latest one;
+                       "v0.2.0" and "0.2.0" both work
+  --dir <path>         install into <path> instead of \$HOME/.local/bin
+  -h, --help           print this and exit
+
+environment:
+  ANK_VERSION          same as --version
+  ANK_INSTALL_DIR      same as --dir
+  ANK_BASE_URL         where the archives are fetched from, for a mirror or a
+                       staged release; requires --version, since only GitHub
+                       can be asked which release is the latest
+
+platforms:
+$(supported_lines)
+
+  Windows is published as a .zip and this script does not install it:
+    ${releases_url}
+
+exit codes:
+  1 usage   2 unsupported platform   3 download   4 checksum   5 missing tool
+EOF
+}
+
+# Sets \$target, or refuses naming the pair it saw. uname -m is normalised
+# first, because one machine answers differently depending on the distribution:
+# amd64 and x86_64 are one target, aarch64 and arm64 are another.
+detect_target() {
+  detect_os=$(uname -s 2>/dev/null) || detect_os=unknown
+  detect_raw=$(uname -m 2>/dev/null) || detect_raw=unknown
+  detect_arch=$detect_raw
+
+  case "$detect_arch" in
+    x86_64 | amd64) detect_arch=x86_64 ;;
+    aarch64 | arm64) detect_arch=arm64 ;;
+  esac
+
+  case "${detect_os}/${detect_arch}" in
+    Linux/x86_64) target=x86_64-unknown-linux-musl ;;
+    Darwin/arm64) target=aarch64-apple-darwin ;;
+    Darwin/x86_64) target=x86_64-apple-darwin ;;
+    *)
+      say "ank: no release archive for ${detect_os}/${detect_arch}."
+      say ""
+      say "uname reported: ${detect_os} ${detect_raw}"
+      say ""
+      say "The release carries these:"
+      supported_lines >&2
+      say ""
+      say "Windows is published as a .zip and this script does not install it."
+      say "Everything the release carries is listed at:"
+      say "  ${releases_url}"
+      say ""
+      say "Nothing was installed."
+      exit 2
+      ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
+# Tools
+# --------------------------------------------------------------------------
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# curl or wget, whichever is there. Both are missing often enough on a minimal
+# container image that naming the two that would work is worth the lines.
+pick_downloader() {
+  if have curl; then
+    downloader=curl
+  elif have wget; then
+    downloader=wget
+  else
+    die 5 "neither curl nor wget is installed, so nothing can be downloaded." \
+      "" \
+      "Install one of them and run this again:" \
+      "  apt-get install -y curl     # debian, ubuntu" \
+      "  apk add curl                # alpine" \
+      "  dnf install -y curl         # fedora, rhel"
+  fi
+}
+
+# sha256sum on Linux, shasum on macOS, openssl as the fallback that is on
+# nearly everything else. If none of the three is present the script stops
+# here rather than installing unverified: skipping the check is the failure
+# this whole file is shaped to avoid, so it is not allowed to be the thing
+# that degrades quietly.
+pick_sha_tool() {
+  if have sha256sum; then
+    sha_tool=sha256sum
+  elif have shasum; then
+    sha_tool=shasum
+  elif have openssl; then
+    sha_tool=openssl
+  else
+    die 5 "no way to compute a SHA-256 on this machine." \
+      "" \
+      "The release publishes a .sha256 beside every archive and this script" \
+      "refuses to unpack one it could not verify. Install any of these:" \
+      "  sha256sum (coreutils), shasum (perl), openssl" \
+      "" \
+      "Nothing was installed."
+  fi
+}
+
+sha256_of() {
+  case "$sha_tool" in
+    sha256sum) sha256sum "$1" | awk '{print $1}' ;;
+    shasum) shasum -a 256 "$1" | awk '{print $1}' ;;
+    openssl) openssl dgst -sha256 "$1" | awk '{print $NF}' ;;
+  esac
+}
+
+lower() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
+}
+
+# --------------------------------------------------------------------------
+# Downloading
+# --------------------------------------------------------------------------
+
+# `fetch <url> <path>`. Returns non-zero on failure and leaves the HTTP status
+# in \$fetch_status when it has one, because "this release does not carry that
+# archive" and "the network is down" are different messages and the 404 is
+# what tells them apart.
+fetch() {
+  fetch_url=$1
+  fetch_out=$2
+  fetch_status=""
+
+  if [ "$downloader" = curl ]; then
+    # No -f: with it curl returns non-zero and the status is harder to read
+    # back out. The status is checked here instead, which is the same
+    # guarantee with a better message.
+    fetch_status=$(curl -sSL --retry 3 --retry-delay 1 \
+      -o "$fetch_out" -w '%{http_code}' "$fetch_url" 2>/dev/null) || fetch_status=""
+    case "$fetch_status" in
+      2??) return 0 ;;
+      *) return 1 ;;
+    esac
+  else
+    # wget does not hand the status back, so the caller falls through to the
+    # general message. Parsing wget's stderr for it is not more reliable than
+    # saying less.
+    wget -q -O "$fetch_out" "$fetch_url" 2>/dev/null || return 1
+    return 0
+  fi
+}
+
+# The tag of the latest release, read off the redirect rather than through the
+# API: /releases/latest redirects to /releases/tag/<tag>, which costs no rate
+# limit, where api.github.com allows sixty unauthenticated calls an hour per
+# address and a shared CI runner or an office NAT can be out of them before
+# anyone types this.
+resolve_latest() {
+  if [ "$downloader" = curl ]; then
+    resolved=$(curl -sSL -o /dev/null -w '%{url_effective}' \
+      "${releases_url}/latest" 2>/dev/null) || resolved=""
+    tag=${resolved##*/}
+  else
+    # wget does not report the URL it landed on, so the one place the API is
+    # called is here, on the machine that has no curl.
+    tag=$(wget -q -O - "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null |
+      sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+      head -1) || tag=""
+  fi
+
+  case "$tag" in
+    v*) : ;;
+    *)
+      die 3 "could not work out which release is the latest." \
+        "" \
+        "Name one instead:" \
+        "  install.sh --version v0.2.0" \
+        "" \
+        "The releases are listed at:" \
+        "  ${releases_url}"
+      ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
+# Arguments
+# --------------------------------------------------------------------------
+
+version=${ANK_VERSION:-}
+install_dir=${ANK_INSTALL_DIR:-}
+base_url=${ANK_BASE_URL:-}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --version)
+      [ $# -ge 2 ] ||
+        die 1 "--version needs a value." "" "  install.sh --version v0.2.0"
+      version=$2
+      shift 2
+      ;;
+    --version=*)
+      version=${1#--version=}
+      shift
+      ;;
+    --dir)
+      [ $# -ge 2 ] ||
+        die 1 "--dir needs a value." "" "  install.sh --dir \$HOME/.local/bin"
+      install_dir=$2
+      shift 2
+      ;;
+    --dir=*)
+      install_dir=${1#--dir=}
+      shift
+      ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    *)
+      die 1 "unknown option: $1" \
+        "" \
+        "Run it with --help to see what it takes:" \
+        "  install.sh --help"
+      ;;
+  esac
+done
+
+if [ -n "$base_url" ]; then
+  case "$base_url" in
+    http://* | https://*) : ;;
+    *)
+      die 1 "ANK_BASE_URL must start with http:// or https://, got: ${base_url}" \
+        "" \
+        "Unset it to fetch from the GitHub release:" \
+        "  unset ANK_BASE_URL"
+      ;;
+  esac
+  if [ -z "$version" ]; then
+    die 1 "ANK_BASE_URL is set, so the version has to be named." \
+      "" \
+      "Only GitHub can be asked which release is the latest; a mirror cannot." \
+      "  install.sh --version v0.2.0"
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# Install
+# --------------------------------------------------------------------------
+
+pick_downloader
+pick_sha_tool
+detect_target
+
+# The second form is BSD mktemp's, which wants a template where GNU's is happy
+# without one. Both spellings rather than the one that works on the machine
+# this was written on.
+tmp=$(mktemp -d 2>/dev/null) || tmp=$(mktemp -d -t ank 2>/dev/null) || tmp=""
+[ -n "$tmp" ] || die 5 "could not create a temporary directory."
+# On the ordinary exit as well, so a refusal below leaves nothing behind.
+trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp"; exit 130' INT
+trap 'rm -rf "$tmp"; exit 143' TERM
+
+if [ -n "$version" ]; then
+  # "v0.2.0" and "0.2.0" are the same request. The tag carries the v and the
+  # archive name does not, and making the caller know which is which is the
+  # kind of detail a released script gets to absorb.
+  tag=v${version#v}
+else
+  resolve_latest
+fi
+bare=${tag#v}
+
+archive="ank-${bare}-${target}.tar.gz"
+url="${base_url:-$default_base_url}/${tag}/${archive}"
+
+say "ank ${tag}  ${target}"
+
+# The checksum first: it is the smaller of the two files, so a release that
+# does not carry this target says so before megabytes move. It is also the
+# request that answers "is this platform in this release", which is a question
+# the caller deserves answered rather than left as a stalled download.
+if ! fetch "${url}.sha256" "${tmp}/sha256"; then
+  if [ "$fetch_status" = 404 ]; then
+    die 3 "${tag} does not carry an archive for this platform." \
+      "" \
+      "  looked for:  ${archive}" \
+      "  at:          ${url}" \
+      "" \
+      "The platform is one this project builds for, so this is about the" \
+      "release and not about the machine. What ${tag} carries is listed at:" \
+      "  ${releases_url}/tag/${tag}" \
+      "" \
+      "Pick a release that carries it:" \
+      "  install.sh --version <version>" \
+      "" \
+      "Nothing was installed."
+  fi
+  die 3 "could not download the checksum for ${archive}${fetch_status:+ (HTTP ${fetch_status})}." \
+    "" \
+    "  ${url}.sha256" \
+    "" \
+    "Nothing was installed."
+fi
+
+expected=$(lower "$(awk 'NR==1 {print $1}' "${tmp}/sha256")")
+
+# A captive portal answering every request with a login page is a real way to
+# get a .sha256 that parses into something. Sixty-four hex characters, or this
+# was not the release answering.
+case "$expected" in
+  *[!0-9a-f]* | "") expected_ok=no ;;
+  *) [ "${#expected}" -eq 64 ] && expected_ok=yes || expected_ok=no ;;
+esac
+if [ "$expected_ok" = no ]; then
+  die 4 "the published checksum for ${archive} is not a SHA-256." \
+    "" \
+    "  ${url}.sha256" \
+    "  read back:  ${expected:-<empty>}" \
+    "" \
+    "Something other than the release answered that request. Nothing was" \
+    "unpacked and nothing was installed."
+fi
+
+if ! fetch "$url" "${tmp}/${archive}"; then
+  die 3 "could not download ${archive}${fetch_status:+ (HTTP ${fetch_status})}." \
+    "" \
+    "  ${url}" \
+    "" \
+    "Nothing was installed."
+fi
+
+actual=$(lower "$(sha256_of "${tmp}/${archive}")")
+
+# Before unpacking, and this is what the file is for. A script that downloads
+# an executable over the network and runs it without checking the hash
+# published beside it is a supply chain with a hole in the middle.
+#
+# What the check buys, stated honestly: it catches a truncated or corrupted
+# download, a mirror serving the wrong file, and an archive that is not the
+# one the release recorded. It is not a signature -- the hash comes from the
+# same host as the archive -- which is why the default host is GitHub over TLS
+# and why ANK_BASE_URL is documented as a mirror rather than as a default.
+if [ "$expected" != "$actual" ]; then
+  die 4 "checksum mismatch, refusing to unpack ${archive}." \
+    "" \
+    "  expected:   ${expected}" \
+    "  actual:     ${actual}" \
+    "  published:  ${url}.sha256" \
+    "" \
+    "The download does not match the hash the release published beside it." \
+    "Nothing was unpacked and nothing was installed." \
+    "" \
+    "Retry once, in case the transfer was truncated. If it happens again, do" \
+    "not install this archive, and say so:" \
+    "  https://github.com/${repo}/security"
+fi
+
+say "checksum ok  ${actual}"
+
+tar xzf "${tmp}/${archive}" -C "$tmp" ||
+  die 3 "could not unpack ${archive}." "" "Nothing was installed."
+
+# The layout release.yml packages: one directory named after the archive,
+# carrying the binary beside README.md, LICENSE and SKILL.md.
+binary="${tmp}/ank-${bare}-${target}/ank"
+if [ ! -f "$binary" ]; then
+  die 3 "${archive} does not contain ank where this script expected it." \
+    "" \
+    "  looked for:  ank-${bare}-${target}/ank" \
+    "" \
+    "Nothing was installed."
+fi
+
+if [ -z "$install_dir" ]; then
+  [ -n "${HOME:-}" ] ||
+    die 1 "HOME is not set, so there is no default install directory." \
+      "" \
+      "Name one:" \
+      "  install.sh --dir /usr/local/bin"
+  install_dir="${HOME}/.local/bin"
+fi
+
+mkdir -p "$install_dir" 2>/dev/null ||
+  die 1 "could not create ${install_dir}." \
+    "" \
+    "Install somewhere writable, or run this with the rights to write there:" \
+    "  install.sh --dir \$HOME/.local/bin"
+
+[ -w "$install_dir" ] ||
+  die 1 "${install_dir} is not writable." \
+    "" \
+    "Install somewhere writable, or run this with the rights to write there:" \
+    "  install.sh --dir \$HOME/.local/bin"
+
+chmod +x "$binary"
+# A rename into place rather than a copy over the file: on Linux, replacing a
+# binary that is currently running is fine, writing into it is not.
+mv -f "$binary" "${install_dir}/ank" ||
+  die 1 "could not write ${install_dir}/ank." "" "Nothing was installed."
+
+installed_version=$("${install_dir}/ank" --version 2>/dev/null | head -1) ||
+  installed_version=""
+
+say ""
+say "installed  ${install_dir}/ank"
+if [ -n "$installed_version" ]; then
+  say "           ${installed_version}"
+fi
+
+# The last way left to leave a caller without a working `ank`: a binary in a
+# directory nothing looks in. Naming the line to add is the difference between
+# an install that worked and an install that appears not to have run.
+case ":${PATH}:" in
+  *":${install_dir}:"*)
+    say ""
+    say "${install_dir} is on your PATH. Run: ank help"
+    ;;
+  *)
+    case "${SHELL:-}" in
+      */fish)
+        path_line="fish_add_path ${install_dir}"
+        path_file="~/.config/fish/config.fish"
+        ;;
+      */zsh)
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        path_file="~/.zshrc"
+        ;;
+      */bash)
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        path_file="~/.bashrc"
+        ;;
+      *)
+        path_line="export PATH=\"${install_dir}:\$PATH\""
+        path_file="your shell's startup file"
+        ;;
+    esac
+    say ""
+    say "${install_dir} is not on your PATH, so \`ank\` is not a command yet."
+    say "Add this line to ${path_file}:"
+    say ""
+    say "  ${path_line}"
+    say ""
+    say "then open a new shell, or run that line now in this one."
+    ;;
+esac
