@@ -5,7 +5,7 @@ slug: curl-sh-installs-ank-on-any-linux-and-macos
 title: curl | sh installs ank on any Linux and macOS
 created: 2026-08-16T03:34:51Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - install.sh
 blocked_by: [TASK-054fd964221f]
@@ -13,7 +13,7 @@ done_criteria: |
   install.sh resolves the platform, downloads the matching archive from the latest GitHub release or a version given to it, verifies the published .sha256 before unpacking, installs the binary to a directory on PATH or names the one to add, and refuses with a readable message on an unsupported platform rather than installing nothing silently. A CI job runs it on Linux and on both macOS architectures and asserts ank --version prints the released version. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 2
+version: 3
 ---
 
 The specification has promised this since v1 and it does not exist. It matters
