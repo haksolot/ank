@@ -206,11 +206,22 @@ jobs:
             # checkout is this repository at this commit, minus the network,
             # which is not the part being tested. The push is explicit because
             # a checkout can be detached and a clone follows HEAD.
-            $source = Join-Path $env:RUNNER_TEMP 'ank-bucket.git'
-            git init --bare --initial-branch=main $source
+            #
+            # A `file:///` URL and not the bare path: `scoop bucket add` puts
+            # its argument through the git-URL regex of lib/buckets.ps1 before
+            # it clones anything, and a Windows path matches nothing in it --
+            # "is not a valid Git URL!", the bucket silently not added, and the
+            # install failing afterwards for a reason that names the manifest
+            # rather than the URL. Three slashes, so the authority is empty and
+            # the drive letter stays in the path. Nothing here runs under MSYS,
+            # so the path conversion that mangles `file://` URLs in git-bash is
+            # not in play.
+            $repo = Join-Path $env:RUNNER_TEMP 'ank-bucket.git'
+            git init --bare --initial-branch=main $repo
             if ($LASTEXITCODE -ne 0) { throw "git init failed" }
-            git push $source HEAD:refs/heads/main
+            git push $repo HEAD:refs/heads/main
             if ($LASTEXITCODE -ne 0) { throw "git push to the local bucket failed" }
+            $source = 'file:///' + ($repo -replace '\\', '/')
           }
           "the bucket source is $source"
           "source=$source" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
@@ -235,6 +246,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           scoop bucket add ank '${{ steps.bucket.outputs.source }}'
+          # Asserted here rather than left to the install: a bucket scoop
+          # declined to add still leaves `scoop install ank/ank` failing, but
+          # it fails saying it cannot find the manifest, which sends the reader
+          # after the manifest instead of after the URL.
+          $manifest = "$env:USERPROFILE\scoop\buckets\ank\bucket\ank.json"
+          if (-not (Test-Path $manifest)) {
+            throw "scoop bucket add produced no manifest at ${manifest}: read the scoop output above"
+          }
           scoop install ank/ank
           # `scoop` is a PowerShell script, so its exit code does not reliably
           # reach this one: a failed install would print in red and leave the
