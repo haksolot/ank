@@ -11,6 +11,24 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="https://github.com/haksolot/ank/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/haksolot/ank"></a>
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a></p>
 
+**The binary:**
+
+```sh
+npm install -g @haksolot/ank
+```
+
+**The skill**, into whichever agent you run:
+
+```sh
+npx skills add haksolot/ank
+```
+
+Ank needs **git 2.34 or newer**. Every other route — `curl | sh`, Homebrew,
+Scoop, apt, release binaries, `cargo`, the Claude Code plugin, `pi`, a hand copy
+— is in [handing ank to an agent][agents].
+
+---
+
 An agent that spawns on your codebase can read every line of it. It cannot read
 your tracker, your wiki, or the thread where you decided six months ago that
 sessions must never be self-contained JWTs. So it writes plausible code that
@@ -22,42 +40,25 @@ way `.git/` is — not a directory to grep, a CLI to call.
 
 ## What an agent gets
 
-```
-$ ank context src/auth/
+A constraint served, what `blocked_by` orders, the work that follows respecting
+the constraint, and `done` running the verifier itself rather than being told a
+result.
 
-CONSTRAINTS (2 active)
-  ADR-3c7e  No self-contained JWTs for user auth
-  ADR-8b41  Rate limiting on every public endpoint
-
-SPECIFICATIONS (1)
-  SPEC-d41f  Session and token handling
-
-TASKS (2)
-  TASK-51c2  [open] Add secret rotation
-  TASK-8f3a  [claimed:pi/host-3] Migrate auth to opaque sessions
-
-> ank claim TASK-51c2 to start
-```
+<p align="center"><picture>
+<source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
+<img src="assets/demo.gif" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; ank graph shows which task is takeable; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
 
 One call, and the answer is bounded — 8000 characters by default, roughly 2000
-tokens. Orientation names the rules rather than quoting them: which ones govern
-the path is the answer, and what one says is an `ank show` away. Behind it four
-kinds of entity: an ADR, a decision that constrains code; a spec, the normative
-text that describes rather than binds; a task, a unit of work with what would
-prove it finished; and a log entry, written once and never transitioned. All
-four are plain markdown with YAML frontmatter, joined to the code by nothing but
-globs.
+tokens. Orientation names the rules; execution serves the one that binds, whole.
+Behind them four kinds of entity: an ADR, a decision that constrains code; a
+spec, normative text that describes rather than binds; a task, a unit of work
+with what would prove it finished; and a log entry, written once and never
+transitioned. All four are plain markdown with YAML frontmatter, joined to the
+code by nothing but globs.
 
-## Install
-
-```
-npm install -g @haksolot/ank     # the binary
-npx skills add haksolot/ank      # the skill, into whichever agent you run
-```
-
-Ank needs **git 2.34 or newer**. Every other route — release binaries, `cargo`,
-the Claude Code plugin, `pi`, a hand copy, or a platform npm does not carry — is
-in [handing ank to an agent][agents].
+Nothing in the recording opens a file under `.ank/`. It is rebuilt by
+`assets/demo/setup.sh`, played by `play.sh` and rendered by `render.sh`, so a
+retake is a re-run rather than a performance.
 
 ## Why it works this way
 
