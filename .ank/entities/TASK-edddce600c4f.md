@@ -5,7 +5,7 @@ slug: the-npm-packages-ship-the-licence-file-they-decl
 title: The npm packages ship the licence file they declare
 created: 2026-08-17T20:03:18Z
 author: claude-code/2.1.233+exposition
-status: open
+status: closed
 scope:
   - .github/workflows/release.yml
   - npm/**
@@ -14,7 +14,7 @@ done_criteria: |
   Each published npm package contains the licence text its package.json's files array declares. The npm smoke job proves it on the package it installs rather than on the directory before publish: a package whose files list names LICENSE and whose tarball lacks it fails the job. cargo test is green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Found while relicensing the tree (TASK-47beb64fd204). All four
