@@ -6,16 +6,32 @@ edition = "2021"
 # no dependencies at all and would compile on far less, but the workspace
 # resolves one lockfile and builds as a unit.
 rust-version = "1.95"
-# GPL-3.0-only, and the choice is not a default. ADR-68018cda382c makes
-# `ank-core` and any crate existing "so another program can read or write the
-# format" Apache-2.0. This is not one of them: what it holds is the surface of
-# the tool -- the verbs it dispatches, the flags it accepts, the states it
-# refuses on and the codes it exits with -- and the tool is what the copyleft
-# covers. An outside integrator binds to `ank help --json`, which is data and
-# needs no linking (TASK-af4a6db95aab), and ADR-372b82af1ec7 puts the protocol
-# surface in this workspace rather than outside it. A third-party crate wanting
-# to link this one is a decision to take on its own terms.
-license = "GPL-3.0-only"
+# Apache-2.0, not the workspace's GPL-3.0-only, and the choice is deliberate.
+#
+# The README has long promised that "the copyleft covers the tool's code, not the
+# format: your `.ank/` files and *the tools that read them* are not derivative
+# works". ADR-68018cda382c exists because that sentence was false of `ank-core`.
+# It would be false again here, and on the very crate whose reason to exist is
+# that other surfaces can exist (ADR-6fd69efb629c): a tool that reads a corpus
+# and wants the exit codes typed would have to become GPL to say `error[7]`
+# correctly.
+#
+# There is also no mechanism in here to defend. This crate is `const` data and
+# two enums -- the description of an interface. The copyleft protects the store,
+# the claim arbitration and `check`'s invariants, and none of those are here.
+# Copyleft on a description does not prevent a reimplementation either: `ank help
+# --json`, `docs/format.md` and the golden suite are all published, so the only
+# thing it would price out is the honest route.
+#
+# It costs `ank-cli` nothing: Apache-2.0 is one-way compatible into GPL-3.0-only,
+# so the binary links this exactly as it will link an Apache-2.0 `ank-core`.
+#
+# ADR-68018cda382c's scope is `crates/ank-core/**`, `LICENSE` and `README.md`, so
+# it does not govern this crate and no supersession was owed -- the choice was
+# unconstrained, and it is recorded here because this is where a reader looks for
+# it. The licence *text* arrives with that ADR's implementation, which is what
+# owns `LICENSE`.
+license = "Apache-2.0"
 description = "The Ank machine contract: the verb table, the refusals and the exit codes, consumed by every surface."
 
 # Deliberately none, and this is load-bearing rather than tidy. Every surface
