@@ -15,6 +15,7 @@ dependencies = [
 name = "ank-cli"
 version = "0.3.0"
 dependencies = [
+ "ank-contract",
  "ank-core",
  "hex",
  "rusqlite",
@@ -22,6 +23,10 @@ dependencies = [
  "serde_yaml",
  "sha2",
 ]
+
+[[package]]
+name = "ank-contract"
+version = "0.3.0"
 
 [[package]]
 name = "ank-core"

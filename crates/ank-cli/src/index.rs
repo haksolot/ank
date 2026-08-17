@@ -25,6 +25,7 @@
 
 use crate::cli::{CliError, Result};
 use crate::store::Store;
+use ank_contract::ExitCode;
 use ank_core::{parse_entity, Entity, EntityId, EntityKind};
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -119,12 +120,13 @@ fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
     // a race became an error for every reader in the repository. What repairs
     // contention is time, so the command to run next is the same command again.
     if is_busy(&e) {
-        return CliError::new(1, format!("index: {CONTENDED} ({e})"))
+        return CliError::new(ExitCode::Generic, format!("index: {CONTENDED} ({e})"))
             .with_hint("re-run the command: the index is a cache and the writer is finishing");
     }
     // The index is disposable, so the next step is always the same one and it
     // is always safe. Never generic help.
-    CliError::new(1, format!("index: {e}")).with_hint(format!("rm {}", ank.join(DB_FILE).display()))
+    CliError::new(ExitCode::Generic, format!("index: {e}"))
+        .with_hint(format!("rm {}", ank.join(DB_FILE).display()))
 }
 
 /// The schema questions and the schema writes, as free functions over a
@@ -478,11 +480,17 @@ impl Index {
                 // A corpus with no ADR directory yet is a young corpus, not a
                 // broken one — and one already moved has no `tasks/` at all.
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => return Err(CliError::new(1, format!("{}: {e}", full.display()))),
+                Err(e) => {
+                    return Err(CliError::new(
+                        ExitCode::Generic,
+                        format!("{}: {e}", full.display()),
+                    ))
+                }
             };
             for entry in entries {
-                let entry =
-                    entry.map_err(|e| CliError::new(1, format!("{}: {e}", full.display())))?;
+                let entry = entry.map_err(|e| {
+                    CliError::new(ExitCode::Generic, format!("{}: {e}", full.display()))
+                })?;
                 let path = entry.path();
                 if path.extension().and_then(|s| s.to_str()) != Some("md") {
                     continue;
@@ -503,8 +511,9 @@ impl Index {
                 if !seen.insert(id.to_string()) {
                     continue;
                 }
-                let bytes = std::fs::read(&path)
-                    .map_err(|e| CliError::new(1, format!("{}: {e}", path.display())))?;
+                let bytes = std::fs::read(&path).map_err(|e| {
+                    CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
+                })?;
                 found.insert(
                     format!("{dir}/{stem}.md"),
                     ScannedFile {
@@ -662,7 +671,9 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
     let seq: i64 = r.get(9)?;
     let version: i64 = r.get(10)?;
     let built = (|| -> Result<Row> {
-        let bad = |what: &str, v: &str| CliError::new(1, format!("index: bad {what} '{v}'"));
+        let bad = |what: &str, v: &str| {
+            CliError::new(ExitCode::Generic, format!("index: bad {what} '{v}'"))
+        };
         Ok(Row {
             id: EntityId::parse(&id).map_err(|_| bad("id", &id))?,
             // The registry answers which kinds there are, so a row written by

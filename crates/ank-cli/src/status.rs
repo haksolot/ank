@@ -22,6 +22,7 @@ use crate::human;
 use crate::index::{Index, Row};
 use crate::json::Obj;
 use crate::repo::Repo;
+use ank_contract::ExitCode;
 use ank_core::EntityKind;
 use std::io::Write;
 
@@ -32,7 +33,7 @@ pub fn run(
     identity: &str,
     identity_source: crate::identity::Source,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     // git per verb, never at startup (ADR-9307e5d214a7). Outside a repository
     // `status` still answers on the corpus, and the coordination plane becomes
     // the one thing it says it cannot see. Both are three-state on purpose:
@@ -324,10 +325,10 @@ pub fn run(
             .num("signals", report.signals())
             .finish();
         let _ = writeln!(out, "{doc}");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     // The keys recede and the values do not (§4). `status` is the one output
@@ -528,7 +529,7 @@ pub fn run(
         "ank context"
     };
     let _ = writeln!(out, "\n{}", style.next(&format!("> {next}")));
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The other live claims this identity holds, under the one binding the

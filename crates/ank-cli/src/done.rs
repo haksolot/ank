@@ -33,6 +33,7 @@ use crate::git;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::verify;
+use ank_contract::ExitCode;
 use ank_core::{
     freeze_hash_short, verify_frozen, Entity, EntityId, Proof, ProofType, ProofVia, ScopeSet,
     TaskStatus,
@@ -116,7 +117,7 @@ pub fn run(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
 
     // HEAD is derived: the task this agent holds a live claim on. An explicit
@@ -132,15 +133,19 @@ pub fn run(
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{id} is not a task")));
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{id} is not a task"),
+        ));
     };
 
     let criteria = task.done_criteria.clone().unwrap_or_default();
     let Record::Claim(claim_record) = &held.record else {
-        return Err(
-            CliError::new(4, format!("{id} carries a completion record, not a claim"))
-                .with_hint("ank context"),
-        );
+        return Err(CliError::new(
+            ExitCode::Unavailable,
+            format!("{id} carries a completion record, not a claim"),
+        )
+        .with_hint("ank context"));
     };
 
     // Before anything runs. A criterion weakened after the claim is a code 6,
@@ -164,7 +169,7 @@ pub fn run(
     } else {
         if inv.value("--proof").is_some() {
             return Err(CliError::new(
-                5,
+                ExitCode::Proof,
                 format!(
                     "{id} declares verifiers ({}), so --proof is refused",
                     declared.join(", ")
@@ -244,7 +249,7 @@ pub fn run(
             inv.style().landed("done")
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 fn done_message(proofs: &[Proof]) -> String {
@@ -274,7 +279,10 @@ fn resolve_head(
     cap: std::time::Duration,
 ) -> Result<(EntityId, Held)> {
     let Some(head) = claim::on_task(cwd, identity)? else {
-        return Err(CliError::new(6, "no task in progress for this agent").with_hint("ank context"));
+        return Err(
+            CliError::new(ExitCode::Transition, "no task in progress for this agent")
+                .with_hint("ank context"),
+        );
     };
     let standing = match given {
         Some(given) => {
@@ -287,7 +295,7 @@ fn resolve_head(
                 // flag, and it is unchanged for an id this agent does not hold.
                 claim::standing_on(cwd, identity, &asked)?.ok_or_else(|| {
                     CliError::new(
-                        6,
+                        ExitCode::Transition,
                         format!("{asked} is not the task in progress ({})", head.id),
                     )
                     .with_hint(format!("ank done {}", head.id))
@@ -311,7 +319,7 @@ fn resolve_head(
                 let mut all: Vec<String> = vec![head.id.to_string()];
                 all.extend(also.iter().map(|(id, _)| id.to_string()));
                 return Err(CliError::new(
-                    6,
+                    ExitCode::Transition,
                     format!(
                         "{} live claims on this identity, and done takes one: {}",
                         all.len(),
@@ -335,7 +343,7 @@ fn resolve_head(
     }
     let held = claim::read(cwd, &standing.id)?.ok_or_else(|| {
         CliError::new(
-            9,
+            ExitCode::Environment,
             format!("the claim on {} vanished while being read", standing.id),
         )
         .with_hint("ank context")
@@ -396,11 +404,14 @@ fn warn_on_constraint_drift(
 
 fn check_frozen_criteria(id: &EntityId, criteria: &str, claim: &ClaimRecord) -> Result<()> {
     if criteria.trim().is_empty() {
-        return Err(CliError::new(7, format!("{id} has no done_criteria")).with_hint("ank context"));
+        return Err(
+            CliError::new(ExitCode::Prerequisite, format!("{id} has no done_criteria"))
+                .with_hint("ank context"),
+        );
     }
     if !verify_frozen(criteria, &claim.criteria) {
         return Err(CliError::new(
-            6,
+            ExitCode::Transition,
             format!(
                 "done_criteria of {id} changed since the claim (claimed {}, now {})",
                 claim.criteria,
@@ -438,7 +449,7 @@ fn run_verifiers(
             // Not the agent's code failing: the corpus references a verifier
             // the configuration does not declare.
             return Err(CliError::new(
-                9,
+                ExitCode::Environment,
                 format!("{id} declares verifier '{name}', absent from config.yml"),
             )
             .with_hint(format!("ank config verifiers.{name}.run \"<command>\"")));
@@ -528,26 +539,29 @@ pub fn submitted_proof(
     // in hand, and the one type Ank checks against git — the same one the other
     // three hints in this function already name.
     let Some(raw) = inv.value("--proof") else {
-        return Err(CliError::new(5, format!("proof required to {purpose}"))
-            .with_hint(format!("{command} --proof commit:<sha>")));
+        return Err(
+            CliError::new(ExitCode::Proof, format!("proof required to {purpose}"))
+                .with_hint(format!("{command} --proof commit:<sha>")),
+        );
     };
     let (kind, reference) = raw.split_once(':').ok_or_else(|| {
         CliError::new(
-            5,
+            ExitCode::Proof,
             format!("unreadable proof '{raw}', expected <type>:<ref>"),
         )
         .with_hint(format!("{command} --proof commit:<sha>"))
     })?;
     let proof_type = parse_proof_type(kind).ok_or_else(|| {
-        CliError::new(5, format!("unknown proof type '{kind}'")).with_hint(format!(
+        CliError::new(ExitCode::Proof, format!("unknown proof type '{kind}'")).with_hint(format!(
             "{command} --proof commit|test|human-review|assertion:<ref>"
         ))
     })?;
     if reference.trim().is_empty() {
-        return Err(
-            CliError::new(5, format!("proof '{raw}' carries no reference"))
-                .with_hint(format!("{command} --proof commit:<sha>")),
-        );
+        return Err(CliError::new(
+            ExitCode::Proof,
+            format!("proof '{raw}' carries no reference"),
+        )
+        .with_hint(format!("{command} --proof commit:<sha>")));
     }
 
     // Ank validates what it can. A commit is checkable by anyone with git, so
@@ -558,7 +572,7 @@ pub fn submitted_proof(
         let args = ["rev-parse", "--verify", "--quiet", spec.as_str()];
         if !git::output(cwd, &args)?.status.success() {
             return Err(CliError::new(
-                5,
+                ExitCode::Proof,
                 format!("commit {reference} not found in this repository"),
             )
             .with_hint(format!("git log --oneline -1 {reference}")));
@@ -798,7 +812,7 @@ mod tests {
         let err = t
             .done(&["--proof", "assertion:it works"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 5, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Proof, "{}", err.message);
         assert!(err.message.contains("ok-one"), "{}", err.message);
         assert_eq!(
             t.task().status,
@@ -815,7 +829,8 @@ mod tests {
 
         let err = t.done(&[], "claude-code@ank").unwrap_err();
         assert_eq!(
-            err.code, 5,
+            err.code,
+            ExitCode::Proof,
             "a verifier that ran and said no: {}",
             err.message
         );
@@ -839,7 +854,7 @@ mod tests {
         t.claim(&id, "claude-code@ank");
 
         let err = t.done(&[], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 9, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Environment, "{}", err.message);
         assert!(err.message.contains("no-such-verifier"), "{}", err.message);
         assert_eq!(t.task().status, TaskStatus::InProgress);
     }
@@ -864,7 +879,12 @@ mod tests {
         t.store().write(&Entity::Task(task), 2).unwrap();
 
         let err = t.done(&[], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 6, "a diverged freeze is code 6: {}", err.message);
+        assert_eq!(
+            err.code,
+            ExitCode::Transition,
+            "a diverged freeze is code 6: {}",
+            err.message
+        );
         assert!(
             err.message.contains("changed since the claim"),
             "{}",
@@ -888,7 +908,7 @@ mod tests {
         t.claim(&id, "claude-code@ank");
 
         let err = t.done(&[], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 5);
+        assert_eq!(err.code, ExitCode::Proof);
         assert!(err.message.contains("proof required"), "{}", err.message);
         assert!(err.hint.unwrap().contains("--proof"));
     }
@@ -908,7 +928,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 5, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Proof, "{}", err.message);
         assert_eq!(t.task().status, TaskStatus::InProgress);
 
         t.done(&["--proof", &format!("commit:{head}")], "claude-code@ank")
@@ -934,7 +954,7 @@ mod tests {
             ("assertion:", "carries no reference"),
         ] {
             let err = t.done(&["--proof", arg], "claude-code@ank").unwrap_err();
-            assert_eq!(err.code, 5, "{arg}: {}", err.message);
+            assert_eq!(err.code, ExitCode::Proof, "{arg}: {}", err.message);
             assert!(err.message.contains(needle), "{arg}: {}", err.message);
             assert!(err.hint.is_some(), "{arg}");
         }
@@ -1028,7 +1048,7 @@ mod tests {
         // And the missing-proof case, where the message names the purpose and
         // is therefore the one place the two are allowed to read differently.
         let missing = attest("");
-        assert_eq!(missing.code, 5);
+        assert_eq!(missing.code, ExitCode::Proof);
     }
 
     // -----------------------------------------------------------------------
@@ -1078,7 +1098,7 @@ mod tests {
         let id = t.seed(&["ok-one"]);
 
         let err = t.done(&[], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert!(
             err.message.contains("no task in progress"),
             "{}",
@@ -1088,7 +1108,7 @@ mod tests {
         // Held by somebody else: still not this agent's to finish.
         t.claim(&id, "codex@host-9");
         let err = t.done(&[], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert_eq!(t.task().status, TaskStatus::InProgress);
     }
 
@@ -1113,7 +1133,7 @@ mod tests {
         let err = t
             .done(&["TASK-00000000ffff"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert!(
             err.message.contains("not the task in progress"),
             "{}",

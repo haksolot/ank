@@ -29,15 +29,15 @@ use crate::human::{self, Freeze};
 use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
+use ank_contract::ExitCode;
 use ank_core::{freeze, parse_entity, Entity, EntityId};
 use std::io::Write;
 use std::path::Path;
 
-pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
-    let prefix = inv
-        .positionals
-        .first()
-        .ok_or_else(|| CliError::new(1, "edit expects an id").with_hint("ank edit <id>"))?;
+pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "edit expects an id").with_hint("ank edit <id>")
+    })?;
 
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
@@ -49,7 +49,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     // by hand, and handing back text that differs from the file would be a
     // surprise the verb has no use for. Canonical form is what comes out.
     let original = std::fs::read_to_string(&loaded.path)
-        .map_err(|e| CliError::new(1, format!("{}: {e}", loaded.path.display())))?;
+        .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", loaded.path.display())))?;
 
     // Before anything is written anywhere: an unset `$EDITOR` is an environment
     // failure, not a task failure (§4), and the id is already resolved so the
@@ -59,20 +59,27 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 
     let scratch = editor::scratch_path(&id.to_string());
     std::fs::write(&scratch, &original).map_err(|e| {
-        CliError::new(9, format!("cannot write {}: {e}", scratch.display())).with_hint(format!(
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot write {}: {e}", scratch.display()),
+        )
+        .with_hint(format!(
             "ls -ld {}",
             scratch.parent().unwrap_or(&scratch).display()
         ))
     })?;
 
-    let outcome = (|| -> Result<i32> {
+    let outcome = (|| -> Result<ExitCode> {
         editor::open(&editor, &repo.root, &scratch, &hint)?;
         let edited = std::fs::read_to_string(&scratch).map_err(|e| {
-            CliError::new(9, format!("cannot read back {}: {e}", scratch.display()))
+            CliError::new(
+                ExitCode::Environment,
+                format!("cannot read back {}: {e}", scratch.display()),
+            )
         })?;
         if edited == original {
             report_unchanged(inv, &id, base_version, out);
-            return Ok(0);
+            return Ok(ExitCode::Ok);
         }
         write_back(
             inv,
@@ -106,7 +113,7 @@ fn write_back(
     edited: &str,
     base_version: u64,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let id = before.id();
     let after = parse_entity(edited).map_err(|e| {
         editor::invalid_entity(
@@ -160,7 +167,7 @@ fn write_back(
             inv.style().id(&id.to_string())
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 fn report_unchanged(inv: &Invocation, id: &EntityId, version: u64, out: &mut dyn Write) {
@@ -190,7 +197,7 @@ fn check_id(before: &EntityId, after: &EntityId) -> Result<()> {
         return Ok(());
     }
     Err(CliError::new(
-        6,
+        ExitCode::Transition,
         format!(
             "the id is derived from the act of creation and cannot change: \
              {before} came back as {after}"
@@ -229,7 +236,7 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
                 return Ok(());
             }
             Err(CliError::new(
-                6,
+                ExitCode::Transition,
                 format!("done_criteria is frozen by the claim on {id}, and the edit moves it"),
             )
             .with_hint("ank release --reason \"<why the criterion is wrong>\""))
@@ -247,7 +254,7 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
                 return Ok(());
             }
             Err(CliError::new(
-                6,
+                ExitCode::Transition,
                 format!(
                     "{id} is ratified: constraint and scope are anchored in its \
                      ratification commit"
@@ -271,7 +278,7 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
                 return Ok(());
             }
             Err(CliError::new(
-                6,
+                ExitCode::Transition,
                 format!(
                     "{id} is ratified: its body and scope are anchored in its ratification commit"
                 ),
@@ -283,10 +290,11 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
         // Unreachable through the parser, which resolves the variant from
         // `type:` and refuses a `type` the id does not carry — and the id was
         // compared above. Stated rather than assumed.
-        _ => Err(
-            CliError::new(6, format!("{id} came back as a different kind of entity"))
-                .with_hint(format!("ank edit {id}")),
-        ),
+        _ => Err(CliError::new(
+            ExitCode::Transition,
+            format!("{id} came back as a different kind of entity"),
+        )
+        .with_hint(format!("ank edit {id}"))),
     }
 }
 
@@ -410,7 +418,7 @@ mod tests {
         let b = EntityId::parse("TASK-000000000002").unwrap();
         assert!(check_id(&a, &a).is_ok());
         let err = check_id(&a, &b).unwrap_err();
-        assert_eq!(err.code, 6);
+        assert_eq!(err.code, ExitCode::Transition);
         assert!(err.message.contains("000000000001"), "{}", err.message);
         assert!(err.message.contains("000000000002"), "{}", err.message);
     }

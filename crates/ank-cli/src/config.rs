@@ -6,6 +6,7 @@
 //! that is the counterpart of "the format is the specification".
 
 use crate::cli::{CliError, Invocation};
+use ank_contract::ExitCode;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -157,11 +158,11 @@ pub fn parse_duration(text: &str) -> std::result::Result<Duration, String> {
 
 pub fn parse(text: &str, path: &Path) -> Result<Config> {
     let raw: ConfigFile = serde_yaml::from_str(text)
-        .map_err(|e| CliError::new(1, format!("{}: {e}", path.display())))?;
+        .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
 
     if raw.schema != SUPPORTED_SCHEMA {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!(
                 "{}: unknown schema {} (supported: {SUPPORTED_SCHEMA})",
                 path.display(),
@@ -172,7 +173,12 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
     }
 
     let dur = |v: &str, field: &str| -> Result<Duration> {
-        parse_duration(v).map_err(|e| CliError::new(1, format!("{}: {field}: {e}", path.display())))
+        parse_duration(v).map_err(|e| {
+            CliError::new(
+                ExitCode::Generic,
+                format!("{}: {field}: {e}", path.display()),
+            )
+        })
     };
 
     let claim_ttl_max = dur(&raw.claim_ttl_max, "claim_ttl_max")?;
@@ -219,9 +225,10 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
 pub fn load(path: &Path) -> Result<Config> {
     let text = std::fs::read_to_string(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            CliError::new(1, format!("{} not found", path.display())).with_hint("ank init")
+            CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
+                .with_hint("ank init")
         } else {
-            CliError::new(1, format!("{}: {e}", path.display()))
+            CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
         }
     })?;
     parse(&text, path)
@@ -307,12 +314,13 @@ enum Key {
 }
 
 fn unknown_key(path: &str) -> CliError {
-    CliError::new(1, format!("unknown key '{path}'")).with_hint(format!("keys: {}", KEYS.join(" ")))
+    CliError::new(ExitCode::Generic, format!("unknown key '{path}'"))
+        .with_hint(format!("keys: {}", KEYS.join(" ")))
 }
 
 fn structured(name: &str) -> CliError {
     CliError::new(
-        1,
+        ExitCode::Generic,
         format!("'{name}' has a structured value, which ank config does not address"),
     )
     .with_hint(format!(
@@ -326,7 +334,7 @@ fn structured(name: &str) -> CliError {
 /// flattening it moves a hash that anchors historical proofs.
 fn blocky(name: &str) -> CliError {
     CliError::new(
-        1,
+        ExitCode::Generic,
         format!("'{name}' is a block or folded scalar, which ank config does not rewrite"),
     )
     .with_hint(
@@ -336,20 +344,23 @@ fn blocky(name: &str) -> CliError {
 
 fn flow_mapping(name: &str) -> CliError {
     CliError::new(
-        1,
+        ExitCode::Generic,
         format!("'{name}' is written as a non-empty flow mapping, which ank config does not edit"),
     )
     .with_hint("edit .ank/config.yml by hand, or write it as a block mapping")
 }
 
 fn undeclared(verifier: &str) -> CliError {
-    CliError::new(7, format!("verifier '{verifier}' is not declared"))
-        .with_hint(format!("ank config verifiers.{verifier}.run \"<command>\""))
+    CliError::new(
+        ExitCode::Prerequisite,
+        format!("verifier '{verifier}' is not declared"),
+    )
+    .with_hint(format!("ank config verifiers.{verifier}.run \"<command>\""))
 }
 
 fn whole_block(verifier: &str) -> CliError {
     CliError::new(
-        1,
+        ExitCode::Generic,
         format!("'verifiers.{verifier}' is a whole verifier, not a value: --unset removes it"),
     )
     .with_hint(format!("ank config verifiers.{verifier}.run"))
@@ -388,10 +399,11 @@ fn resolve_key(path: &str) -> Result<Key> {
             numeric: false,
             default: None,
         }),
-        ["peers"] => Err(
-            CliError::new(1, "'peers' is a mapping: address one by name")
-                .with_hint("ank config peers.<name> <path>"),
-        ),
+        ["peers"] => Err(CliError::new(
+            ExitCode::Generic,
+            "'peers' is a mapping: address one by name",
+        )
+        .with_hint("ank config peers.<name> <path>")),
         ["peers", name] => {
             // A name a scope entry could never spell is a declaration nothing
             // can reach, and writing it would be a silent no-op rather than a
@@ -399,7 +411,7 @@ fn resolve_key(path: &str) -> Result<Key> {
             // another one.
             if !crate::repo::is_peer_name(name) {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     format!(
                         "peer name '{name}' cannot be named by a scope: \
                          two or more of a-z, A-Z, 0-9, '-' and '_'"
@@ -412,16 +424,17 @@ fn resolve_key(path: &str) -> Result<Key> {
             })
         }
         ["peers", _, ..] => Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("'{path}': a peer is one path, not a block"),
         )
         .with_hint("ank config peers.<name> <path>")),
         ["roles", ..] => Err(structured("roles")),
         ["identities", ..] => Err(structured("identities")),
-        ["verifiers"] => Err(
-            CliError::new(1, "'verifiers' is a mapping: address one by name")
-                .with_hint("ank config verifiers.<name>.run \"<command>\""),
-        ),
+        ["verifiers"] => Err(CliError::new(
+            ExitCode::Generic,
+            "'verifiers' is a mapping: address one by name",
+        )
+        .with_hint("ank config verifiers.<name>.run \"<command>\"")),
         ["verifiers", name] => Ok(Key::Block {
             verifier: (*name).to_string(),
         }),
@@ -436,12 +449,12 @@ fn resolve_key(path: &str) -> Result<Key> {
             default: Some(DEFAULT_VERIFIER_TIMEOUT.to_string()),
         }),
         ["verifiers", _, other] => Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("unknown verifier field '{other}'"),
         )
         .with_hint("ank config verifiers.<name>.run   or   ank config verifiers.<name>.timeout")),
         ["verifiers", _, _, _, ..] => Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!(
                 "'{path}': a verifier whose name contains '.' cannot be addressed by a dotted path"
             ),
@@ -1199,7 +1212,7 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
         } => {
             if *field == "run" {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     format!("verifiers.{verifier}.run is required: a verifier with no command is not one"),
                 )
                 .with_hint(format!("ank config --unset verifiers.{verifier}")));
@@ -1270,28 +1283,28 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
 /// `config.yml` for every other verb, so a file that does not parse fails all
 /// of them, `check` included. A verb that exists to repair the file and is
 /// disabled by exactly the file it repairs is not a verb.
-pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> Result<i32> {
+pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> Result<ExitCode> {
     let path = repo.config_path();
     let unset = inv.has("--unset");
 
     let Some(raw_key) = inv.positionals.first() else {
-        return Err(
-            CliError::new(1, "config expects a key").with_hint(format!("keys: {}", KEYS.join(" ")))
-        );
+        return Err(CliError::new(ExitCode::Generic, "config expects a key")
+            .with_hint(format!("keys: {}", KEYS.join(" "))));
     };
     let key = resolve_key(raw_key)?;
     let value = inv.positionals.get(1);
 
     if unset && value.is_some() {
-        return Err(CliError::new(1, "--unset takes no value")
+        return Err(CliError::new(ExitCode::Generic, "--unset takes no value")
             .with_hint(format!("ank config --unset {raw_key}")));
     }
 
     let text = std::fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
-            CliError::new(1, format!("{} not found", path.display())).with_hint("ank init")
+            CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
+                .with_hint("ank init")
         } else {
-            CliError::new(1, format!("{}: {e}", path.display()))
+            CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
         }
     })?;
     let lines = split_lines(&text);
@@ -1310,7 +1323,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         } else if !inv.quiet() {
             let _ = writeln!(out, "{}", before.display());
         }
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     let before = observe(&lines, &key)?;
@@ -1329,7 +1342,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     if let Err(e) = parse(&after_text, &path) {
         if parse(&text, &path).is_ok() {
             return Err(CliError::new(
-                1,
+                ExitCode::Generic,
                 format!(
                     "refused: the write would leave {} unreadable",
                     path.display()
@@ -1343,7 +1356,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     let changed = after_text != text;
     if changed {
         std::fs::write(&path, &after_text)
-            .map_err(|e| CliError::new(1, format!("{}: {e}", path.display())))?;
+            .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
     }
 
     if inv.json() {
@@ -1369,7 +1382,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
             );
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 #[cfg(test)]
@@ -1400,7 +1413,7 @@ mod tests {
     #[test]
     fn an_unknown_schema_is_refused_with_the_next_step() {
         let err = parse("schema: 2\n", p()).unwrap_err();
-        assert_eq!(err.code, 1);
+        assert_eq!(err.code, ExitCode::Generic);
         assert!(err.message.contains("unknown schema 2"), "{}", err.message);
         assert!(err.hint.is_some());
     }
@@ -1408,7 +1421,7 @@ mod tests {
     #[test]
     fn an_unknown_field_is_refused_rather_than_ignored() {
         let err = parse("schema: 1\nbudget_context: 10\n", p()).unwrap_err();
-        assert_eq!(err.code, 1);
+        assert_eq!(err.code, ExitCode::Generic);
         assert!(err.message.contains("budget_context"), "{}", err.message);
     }
 
@@ -1658,7 +1671,7 @@ identities: {}
     fn a_peer_name_no_scope_could_spell_is_refused_by_name() {
         for name in ["peers.c", "peers.a b", "peers.core!"] {
             let err = resolve_key(name).unwrap_err();
-            assert_eq!(err.code, 1, "{name}");
+            assert_eq!(err.code, ExitCode::Generic, "{name}");
             assert!(err.message.contains("peer name"), "{name}: {}", err.message);
         }
         // The mapping itself is not a value, and the refusal says what to type.
@@ -1822,7 +1835,7 @@ identities: {}
             let text =
                 format!("schema: 1\nverifiers:\n  ci:\n    run: {marker}\n      cargo test\n");
             let err = edit(&text, "verifiers.ci.run", Some("cargo test -q")).unwrap_err();
-            assert_eq!(err.code, 1);
+            assert_eq!(err.code, ExitCode::Generic);
             assert!(
                 err.message.contains("verifiers.ci.run"),
                 "the refusal must name the key: {}",
@@ -1986,7 +1999,7 @@ identities: {}
     fn the_key_set_is_closed_and_every_refusal_names_what_it_refused() {
         // Unknown: the set it does know, and nothing written.
         let err = edit(FIXTURE, "budget_context", Some("10")).unwrap_err();
-        assert_eq!(err.code, 1);
+        assert_eq!(err.code, ExitCode::Generic);
         assert!(err.message.contains("budget_context"), "{}", err.message);
         let hint = err.hint.unwrap();
         for key in KEYS {
@@ -2009,7 +2022,7 @@ identities: {}
         // A timeout cannot declare a verifier: it would name one that has no
         // command to run, and the file would not parse.
         let err = edit(FIXTURE, "verifiers.nope.timeout", Some("5m")).unwrap_err();
-        assert_eq!(err.code, 7);
+        assert_eq!(err.code, ExitCode::Prerequisite);
         assert_eq!(
             err.hint.as_deref(),
             Some("ank config verifiers.nope.run \"<command>\"")

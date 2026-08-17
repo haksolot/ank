@@ -27,6 +27,10 @@ ank-core = { path = "../ank-core" }
 
 [dependencies]
 ank-core = { path = "../ank-core" }
+# The surface this binary dispatches, and the only declaration of it
+# (ADR-6fd69efb629c). No third-party code enters with it: the crate is in this
+# workspace and has no dependencies of its own.
+ank-contract = { path = "../ank-contract" }
 # Already in the tree through ank-core: no new crate enters here.
 # config.yml is the only YAML the CLI reads itself; sha2 and hex are the
 # index's content hash per file, which decides what needs reindexing (§6).

@@ -36,6 +36,7 @@ use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::style;
 use crate::verify;
+use ank_contract::ExitCode;
 use ank_core::{
     freeze, has_crlf, normalise_line_endings, parse_entity, parse_log, parse_log_file,
     serialize_entity, verify_frozen, Adr, AdrStatus, Entity, EntityId, EntityKind, LogEntry, Spec,
@@ -176,13 +177,14 @@ impl Report {
     pub fn signals(&self) -> usize {
         self.findings.len() - self.faults()
     }
-    /// 0 when the corpus is healthy, 8 when it has faults. Never 1, so CI can
-    /// tell a sick corpus from a broken tool (§4).
-    pub fn exit_code(&self) -> i32 {
+    /// [`ExitCode::Ok`] when the corpus is healthy, [`ExitCode::Findings`] when
+    /// it has faults. Never [`ExitCode::Generic`], so CI can tell a sick corpus
+    /// from a broken tool (§4).
+    pub fn exit_code(&self) -> ExitCode {
         if self.faults() > 0 {
-            8
+            ExitCode::Findings
         } else {
-            0
+            ExitCode::Ok
         }
     }
 }
@@ -191,7 +193,7 @@ impl Report {
 // check
 // ---------------------------------------------------------------------------
 
-pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
+pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
     let path = crate::context::perimeter(inv, repo)?;
     let report = inspect(repo, cfg, path.as_deref(), true)?;
     render(&report, inv, out);
@@ -2621,7 +2623,7 @@ fn blobs_here(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<
             .collect();
         if objects.len() != i - start {
             return Err(CliError::new(
-                9,
+                ExitCode::Environment,
                 format!(
                     "git hash-object answered {} object(s) for {} file(s)",
                     objects.len(),
@@ -2981,7 +2983,12 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
 
 /// The human read of a perimeter: what binds it, what has died, and what
 /// `check` would say — without touching the coordination plane.
-pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
+pub fn review(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let path = crate::context::perimeter(inv, repo)?;
     let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
@@ -3148,11 +3155,10 @@ pub fn accept(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
-    let prefix = inv
-        .positionals
-        .first()
-        .ok_or_else(|| CliError::new(1, "accept expects an id").with_hint("ank accept <id>"))?;
+) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "accept expects an id").with_hint("ank accept <id>")
+    })?;
 
     // 9 and 7 are deliberately distinct. 9 says "I do not know where the right
     // place is", and the repository needs repairing; 7 says "you are not in the
@@ -3166,7 +3172,7 @@ pub fn accept(
     if current.as_deref() != Some(default_branch.as_str()) {
         let here = current.as_deref().unwrap_or("a detached HEAD");
         return Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             format!(
                 "accept requires the default branch (current: {here}, default: {default_branch})"
             ),
@@ -3186,7 +3192,7 @@ pub fn accept(
     let Some(view) = Anchored::of(&entity) else {
         let kind = ank_core::Fields::kind_spec(&entity).name;
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("{prefix} is a {kind}, and only an ADR or a spec carries a ratification"),
         )
         .with_hint(format!("ank show {prefix}")));
@@ -3214,18 +3220,19 @@ pub fn accept(
     // to diverge from.
     let ratifying_in_place = match (status, anchored_at.as_deref()) {
         (AdrStatus::Accepted, Some(anchor)) => {
-            return Err(
-                CliError::new(6, format!("{id} is already ratified at {anchor}"))
-                    .with_hint(succession_command(&id)),
-            );
+            return Err(CliError::new(
+                ExitCode::Transition,
+                format!("{id} is already ratified at {anchor}"),
+            )
+            .with_hint(succession_command(&id)));
         }
         (AdrStatus::Accepted, None) => true,
         _ => false,
     };
     if !ratifying_in_place {
-        status
-            .check_transition(AdrStatus::Accepted)
-            .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {id}")))?;
+        status.check_transition(AdrStatus::Accepted).map_err(|e| {
+            CliError::new(ExitCode::Transition, e.to_string()).with_hint(format!("ank show {id}"))
+        })?;
     }
 
     // Everything that can refuse, refused before anything is written. A
@@ -3315,7 +3322,7 @@ pub fn accept(
             );
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The command that changes a ratified decision, in the kind's own words.
@@ -3410,7 +3417,7 @@ fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
     let target = store.load(&target_id)?.entity;
     let Some(target_status) = Anchored::of_kind(&target, kind).map(|v| v.status) else {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!(
                 "{target_id} is not of kind {}: a succession stays inside one kind",
                 kind.as_str()
@@ -3434,7 +3441,7 @@ fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
         if let Some(o) = Anchored::of(&loaded) {
             if o.supersedes == Some(&target_id) && o.status == AdrStatus::Accepted {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     format!("{target_id} is already superseded by {other}"),
                 )
                 .with_hint(format!("ank show {other}")));
@@ -3455,7 +3462,7 @@ fn succession(store: &Store, entity: &Entity) -> Result<Succession> {
         // a caller who wrote one almost certainly meant a different identifier.
         // A prerequisite unmet, so 7 and not the 6 of an illegal transition.
         AdrStatus::Proposed => Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             format!("{target_id} is proposed, and only an accepted one can be superseded"),
         )
         .with_hint(format!("ank accept {target_id}"))),
@@ -3713,14 +3720,19 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
             .current_dir(cwd)
             .args(args)
             .output()
-            .map_err(|e| CliError::new(9, format!("git {}: {e}", args.join(" "))))?;
+            .map_err(|e| {
+                CliError::new(
+                    ExitCode::Environment,
+                    format!("git {}: {e}", args.join(" ")),
+                )
+            })?;
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(
-                CliError::new(9, format!("git {} failed: {stderr}", args.join(" "))).with_hint(
-                    "git config user.signingkey <key> && git config commit.gpgsign true",
-                ),
-            );
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!("git {} failed: {stderr}", args.join(" ")),
+            )
+            .with_hint("git config user.signingkey <key> && git config commit.gpgsign true"));
         }
         Ok(())
     };
@@ -3769,18 +3781,26 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
 /// wastes work already performed, a `close` invisible elsewhere costs work on a
 /// task somebody proposed to abandon — and that work, if it finishes, produces
 /// a proof, which argues against the closure rather than being lost.
-pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn close(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let prefix = inv.positionals.first().ok_or_else(|| {
-        CliError::new(1, "close expects an id").with_hint("ank close <id> --reason \"<r>\"")
+        CliError::new(ExitCode::Generic, "close expects an id")
+            .with_hint("ank close <id> --reason \"<r>\"")
     })?;
     let reason = match inv.value("--reason") {
         Some(r) if !r.trim().is_empty() => r.trim().to_string(),
         _ => {
-            return Err(
-                CliError::new(7, "--reason is required to close a task").with_hint(format!(
-                    "ank close {prefix} --reason \"superseded by the new pipeline\""
-                )),
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                "--reason is required to close a task",
             )
+            .with_hint(format!(
+                "ank close {prefix} --reason \"superseded by the new pipeline\""
+            )))
         }
     };
 
@@ -3788,12 +3808,17 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{prefix} is not a task")));
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is not a task"),
+        ));
     };
     let id = task.id.clone();
     task.status
         .check_transition(TaskStatus::Closed)
-        .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {id}")))?;
+        .map_err(|e| {
+            CliError::new(ExitCode::Transition, e.to_string()).with_hint(format!("ank show {id}"))
+        })?;
     task.status = TaskStatus::Closed;
     let closed = Entity::Task(task);
     store.write(&closed, base_version)?;
@@ -3819,7 +3844,7 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             let _ = writeln!(out, "the active claim was revoked");
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 // ---------------------------------------------------------------------------
@@ -3855,9 +3880,14 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 /// types, return the same codes and check a commit against git the same way, by
 /// construction — while each still names itself in its own hints, because
 /// `ank done --proof commit:<sha>` is not the command an `attest` caller needs.
-pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn attest(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let prefix = inv.positionals.first().ok_or_else(|| {
-        CliError::new(1, "attest expects an id")
+        CliError::new(ExitCode::Generic, "attest expects an id")
             .with_hint("ank attest <id> --proof test:<ci-run-ref>")
     })?;
 
@@ -3865,7 +3895,10 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{prefix} is not a task")));
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is not a task"),
+        ));
     };
     let id = task.id.clone();
 
@@ -3874,7 +3907,7 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     // says so rather than leaving the reader to guess.
     if task.status != TaskStatus::Done {
         return Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             format!(
                 "{id} is {}, and attest applies to a finished task",
                 task.status.as_str()
@@ -3959,7 +3992,7 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
             inv.style().id(&id.to_string())
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// `--detached`: the attestation goes to `refs/ank/proof/<id>` and no file is
@@ -3988,7 +4021,7 @@ fn detached(
     proof: &ank_core::Proof,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let kind = proof.proof_type.as_str();
     let reference = proof.reference.clone();
     let (written, entries) = claim::attach_proof(&repo.root, id, proof, identity)?;
@@ -3997,11 +4030,13 @@ fn detached(
         // not a case anybody meets — one ref per task, and pipelines attest
         // different tasks — and "not met" is not "cannot happen", so it is an
         // ordinary lost swap naming the retry rather than a silent overwrite.
-        return Err(
-            CliError::new(4, format!("another attestation reached {id} first")).with_hint(format!(
-                "ank attest {id} --proof {kind}:{reference} --detached"
-            )),
-        );
+        return Err(CliError::new(
+            ExitCode::Unavailable,
+            format!("another attestation reached {id} first"),
+        )
+        .with_hint(format!(
+            "ank attest {id} --proof {kind}:{reference} --detached"
+        )));
     }
 
     if inv.json() {
@@ -4035,10 +4070,10 @@ fn detached(
     // The hint is a push and not a re-run: the local swap succeeded, so the
     // record is already in this clone and one command finishes the job.
     if let Some(failure) = written.sync.proof_failure() {
-        return Err(CliError::new(9, failure)
+        return Err(CliError::new(ExitCode::Environment, failure)
             .with_hint(format!("git push origin {}", claim::proof_ref(id))));
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 // ---------------------------------------------------------------------------
@@ -4065,9 +4100,15 @@ fn detached(
 /// drops whatever the caller forgot to repeat, and the round-trip guarantees
 /// nothing about intent. Naming what enters and what leaves is also what makes
 /// the log line worth reading afterwards.
-pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn amend(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let prefix = inv.positionals.first().ok_or_else(|| {
-        CliError::new(1, "amend expects an id").with_hint("ank amend <id> --blocked-by <id>")
+        CliError::new(ExitCode::Generic, "amend expects an id")
+            .with_hint("ank amend <id> --blocked-by <id>")
     })?;
 
     // Blank is refused rather than treated as a removal: a task with no
@@ -4076,7 +4117,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     let criteria = match inv.value("--criteria") {
         Some(c) if c.trim().is_empty() => {
             return Err(CliError::new(
-                7,
+                ExitCode::Prerequisite,
                 "--criteria is empty, and a task with no done_criteria cannot be claimed",
             )
             .with_hint(format!(
@@ -4126,11 +4167,13 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         && criteria.is_none()
     {
         return Err(
-            CliError::new(7, format!("nothing to amend on {id}")).with_hint(format!(
-                "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
+            CliError::new(ExitCode::Prerequisite, format!("nothing to amend on {id}")).with_hint(
+                format!(
+                    "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
                  --scope <glob> | --drop-scope <glob> | --criteria \"<c>\" | \
                  --reference <id> | --drop-reference <id>"
-            )),
+                ),
+            ),
         );
     }
 
@@ -4144,7 +4187,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
     if !matches!(loaded.entity, Entity::Spec(_)) && !(add_refs.is_empty() && drop_refs.is_empty()) {
         let kind = ank_core::Fields::kind_spec(&loaded.entity).name;
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("references applies to a spec: a {kind} cites nothing"),
         )
         .with_hint(format!("ank show {id}")));
@@ -4158,7 +4201,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             // reports as "done task modified beyond appending a proof".
             if matches!(task.status, TaskStatus::Done | TaskStatus::Closed) {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     format!("{id} is {}, and its plan is settled", task.status.as_str()),
                 )
                 .with_hint(format!("ank show {id}")));
@@ -4166,15 +4209,18 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
             for b in &drop_blocked {
                 if !task.blocked_by.contains(b) {
-                    return Err(CliError::new(7, format!("{b} does not block {id}"))
-                        .with_hint(format!("ank show {id}")));
+                    return Err(CliError::new(
+                        ExitCode::Prerequisite,
+                        format!("{b} does not block {id}"),
+                    )
+                    .with_hint(format!("ank show {id}")));
                 }
             }
             task.blocked_by.retain(|b| !drop_blocked.contains(b));
             for b in add_blocked {
                 if b == id {
                     return Err(CliError::new(
-                        7,
+                        ExitCode::Prerequisite,
                         format!("{id} cannot block itself: that is a cycle of one"),
                     )
                     .with_hint(format!("ank amend {id} --blocked-by <other-id>")));
@@ -4205,7 +4251,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             if let Some(criteria) = criteria {
                 if let Some(held) = claim::live(&repo.root, &id)? {
                     return Err(CliError::new(
-                        6,
+                        ExitCode::Transition,
                         format!(
                             "done_criteria is frozen by the claim {} holds on {id}",
                             held.holder
@@ -4228,8 +4274,11 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             }
 
             if changes.is_empty() {
-                return Err(CliError::new(7, format!("{id} already reads that way"))
-                    .with_hint(format!("ank show {id}")));
+                return Err(CliError::new(
+                    ExitCode::Prerequisite,
+                    format!("{id} already reads that way"),
+                )
+                .with_hint(format!("ank show {id}")));
             }
 
             // A scope change moves which ADRs bear on the work, and the claim
@@ -4269,7 +4318,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         Entity::Adr(mut adr) => {
             if !add_blocked.is_empty() || !drop_blocked.is_empty() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "blocked_by applies to a task: an ADR blocks nothing",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
@@ -4280,7 +4329,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             // constraint, and changing that one is a succession.
             if criteria.is_some() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "done_criteria applies to a task: an ADR declares no criterion",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
@@ -4292,7 +4341,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             // a ratified decision, and it has its own verb.
             if adr.status != AdrStatus::Proposed {
                 return Err(CliError::new(
-                    6,
+                    ExitCode::Transition,
                     format!(
                         "{id} is {} and its scope is anchored in the ratification commit",
                         adr.status.as_str()
@@ -4306,8 +4355,11 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
             amend_scope(&mut adr.scope, &add_scope, &drop_scope, &id, &mut changes)?;
             if changes.is_empty() {
-                return Err(CliError::new(7, format!("{id} already reads that way"))
-                    .with_hint(format!("ank show {id}")));
+                return Err(CliError::new(
+                    ExitCode::Prerequisite,
+                    format!("{id} already reads that way"),
+                )
+                .with_hint(format!("ank show {id}")));
             }
             // An ADR has no log section, so the change is recorded by `version`
             // and by the diff, which is what every other write to an ADR does.
@@ -4321,14 +4373,14 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             // scope is the whole of what this verb has to offer it.
             if !add_blocked.is_empty() || !drop_blocked.is_empty() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "blocked_by applies to a task: a spec blocks nothing",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
             }
             if criteria.is_some() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "done_criteria applies to a task: a spec declares no criterion",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
@@ -4351,7 +4403,7 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
             if touches_anchor && spec.status != SpecStatus::Proposed {
                 return Err(CliError::new(
-                    6,
+                    ExitCode::Transition,
                     format!(
                         "{id} is {} and its scope is anchored in the ratification commit",
                         spec.status.as_str()
@@ -4369,8 +4421,11 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             )?;
             amend_scope(&mut spec.scope, &add_scope, &drop_scope, &id, &mut changes)?;
             if changes.is_empty() {
-                return Err(CliError::new(7, format!("{id} already reads that way"))
-                    .with_hint(format!("ank show {id}")));
+                return Err(CliError::new(
+                    ExitCode::Prerequisite,
+                    format!("{id} already reads that way"),
+                )
+                .with_hint(format!("ank show {id}")));
             }
             // Recorded by `version` and by the diff, as an ADR's amend is.
             store.write(&Entity::Spec(spec), base_version)?;
@@ -4382,14 +4437,15 @@ pub fn amend(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         // (TASK-df9c6d46e8ef).
         ref other => {
             let kind = ank_core::Fields::kind_spec(other).name;
-            return Err(
-                CliError::new(7, format!("{id} is a {kind}, and amend does not reach it"))
-                    .with_hint(format!("ank show {id}")),
-            );
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("{id} is a {kind}, and amend does not reach it"),
+            )
+            .with_hint(format!("ank show {id}")));
         }
     }
 
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The `references` half, for the one kind that carries the field.
@@ -4412,15 +4468,18 @@ fn amend_references(
 ) -> Result<()> {
     for r in drop {
         if !references.contains(r) {
-            return Err(CliError::new(7, format!("{id} does not reference {r}"))
-                .with_hint(format!("ank show {id}")));
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("{id} does not reference {r}"),
+            )
+            .with_hint(format!("ank show {id}")));
         }
     }
     references.retain(|r| !drop.contains(r));
     for r in add {
         if r == id {
             return Err(CliError::new(
-                7,
+                ExitCode::Prerequisite,
                 format!("{id} cannot reference itself: a document is read whole"),
             )
             .with_hint(format!("ank amend {id} --reference <other-id>")));
@@ -4429,8 +4488,10 @@ fn amend_references(
         // uses for the same state. Both readings come from one function
         // (ADR-5a690829388d).
         if !crate::commands::citable(r.kind()) {
-            return Err(CliError::new(1, crate::commands::not_citable(r))
-                .with_hint(format!("ank amend {id} --reference <SPEC-id|ADR-id>")));
+            return Err(
+                CliError::new(ExitCode::Generic, crate::commands::not_citable(r))
+                    .with_hint(format!("ank amend {id} --reference <SPEC-id|ADR-id>")),
+            );
         }
         if !references.contains(r) {
             changes.push(format!("+references {r}"));
@@ -4457,10 +4518,11 @@ fn amend_scope(
 ) -> Result<()> {
     for g in drop {
         if !scope.iter().any(|s| s == g) {
-            return Err(
-                CliError::new(7, format!("'{g}' is not in the scope of {id}"))
-                    .with_hint(format!("ank show {id}")),
-            );
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("'{g}' is not in the scope of {id}"),
+            )
+            .with_hint(format!("ank show {id}")));
         }
     }
     scope.retain(|s| !drop.iter().any(|d| d == s));
@@ -4475,7 +4537,7 @@ fn amend_scope(
     }
     if scope.is_empty() {
         return Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             format!("{id} would be left with no scope, and attach to nothing"),
         )
         .with_hint(format!("ank amend {id} --scope \"<glob>\"")));
@@ -4483,7 +4545,8 @@ fn amend_scope(
     // Validated here rather than trusted: a glob that does not compile would
     // otherwise surface in `check` as a corpus fault nobody can attribute.
     ank_core::scope::validate_globs(scope).map_err(|e| {
-        CliError::new(7, format!("{e}")).with_hint("ank amend <id> --scope \"src/**\"")
+        CliError::new(ExitCode::Prerequisite, format!("{e}"))
+            .with_hint("ank amend <id> --scope \"src/**\"")
     })
 }
 
@@ -4507,7 +4570,7 @@ fn parse_all(raw: &[String], id: &EntityId) -> Result<Vec<EntityId>> {
     let mut out = Vec::new();
     for r in raw {
         let target = EntityId::parse(r.trim()).map_err(|e| {
-            CliError::new(7, format!("{e}"))
+            CliError::new(ExitCode::Prerequisite, format!("{e}"))
                 .with_hint(format!("ank amend {id} --drop-reference <full-id>"))
         })?;
         if !out.contains(&target) {
@@ -4571,11 +4634,10 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
 /// So the entity is printed whole, the log gets what the budget has left, and
 /// `ank log <id>` — the same budget with no entity to pay for — is the command
 /// the cut names (TASK-6c0463fb4319).
-pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<i32> {
-    let prefix = inv
-        .positionals
-        .first()
-        .ok_or_else(|| CliError::new(1, "show expects an id").with_hint("ank show <id>"))?;
+pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "show expects an id").with_hint("ank show <id>")
+    })?;
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let text = serialize_entity(&loaded.entity);
@@ -4667,7 +4729,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
             proof_section(out, t, &detached, inv.style());
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// Does this entity still carry a `## Log` section in its body?
@@ -5129,7 +5191,7 @@ mod tests {
             )
             .unwrap();
         }
-        fn call(&self, argv: &[&str], who: &str) -> Result<(i32, String)> {
+        fn call(&self, argv: &[&str], who: &str) -> Result<(ExitCode, String)> {
             let argv: Vec<String> = argv.iter().map(|a| a.to_string()).collect();
             let inv = crate::cli::parse(&argv).unwrap();
             let mut out = Vec::new();
@@ -5226,7 +5288,7 @@ mod tests {
         t.write(&task("000000000001", TaskStatus::Open, &[]));
         t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
         let (code, out) = t.call(&["check"], "marie@laptop").unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert_eq!(t.report().faults(), 0, "{:?}", t.report().findings);
         assert!(out.contains("check: ok"), "{out}");
     }
@@ -5258,7 +5320,11 @@ mod tests {
             "{:?}",
             r.findings
         );
-        assert_eq!(t.call(&["check"], "m").unwrap().0, 8, "faults exit 8");
+        assert_eq!(
+            t.call(&["check"], "m").unwrap().0,
+            ExitCode::Findings,
+            "faults exit 8"
+        );
     }
 
     /// The same symptom as the test above -- the round-trip differs -- and the
@@ -5295,7 +5361,7 @@ mod tests {
         assert_eq!(r.faults(), 0, "{:?}", r.findings);
         assert_eq!(
             t.call(&["check"], "m").unwrap().0,
-            0,
+            ExitCode::Ok,
             "CRLF alone must not fail the build"
         );
     }
@@ -5318,7 +5384,7 @@ mod tests {
 
         let r = t.report();
         assert!(has(&r, Level::Fault, "non-canonical"), "{:?}", r.findings);
-        assert_eq!(t.call(&["check"], "m").unwrap().0, 8);
+        assert_eq!(t.call(&["check"], "m").unwrap().0, ExitCode::Findings);
     }
 
     #[test]
@@ -5608,7 +5674,7 @@ mod tests {
         // block every `done` in the repository behind one proposal.
         assert_eq!(
             t.call(&["check"], "marie@laptop").unwrap().0,
-            0,
+            ExitCode::Ok,
             "an intention must not block every done in the repository"
         );
     }
@@ -5632,7 +5698,10 @@ mod tests {
             "{:?}",
             r.findings
         );
-        assert_eq!(t.call(&["check"], "marie@laptop").unwrap().0, 8);
+        assert_eq!(
+            t.call(&["check"], "marie@laptop").unwrap().0,
+            ExitCode::Findings
+        );
     }
 
     #[test]
@@ -5685,7 +5754,11 @@ mod tests {
         assert!(has(&r, Level::Signal, "set by the claimer"));
         assert!(has(&r, Level::Signal, "no ratification commit"));
         assert!(has(&r, Level::Signal, "no ratification key"));
-        assert_eq!(t.call(&["check"], "m").unwrap().0, 0, "signals exit 0");
+        assert_eq!(
+            t.call(&["check"], "m").unwrap().0,
+            ExitCode::Ok,
+            "signals exit 0"
+        );
     }
 
     /// The three shapes a proof list can take, because the interesting one is
@@ -6099,7 +6172,7 @@ mod tests {
         let err = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(
             err.message.contains("feat/opaque-sessions"),
             "{}",
@@ -6135,7 +6208,8 @@ mod tests {
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
         assert_eq!(
-            err.code, 9,
+            err.code,
+            ExitCode::Environment,
             "9 is the repository to repair, 7 is the caller in the wrong place: {}",
             err.message
         );
@@ -6173,7 +6247,7 @@ mod tests {
         let (code, out) = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(out.contains("accepted ADR-00000000aaaa"), "{out}");
         assert!(!out.contains("superseded"), "nothing was replaced: {out}");
 
@@ -6202,7 +6276,7 @@ mod tests {
         let (code, out) = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(out.contains("superseded ADR-00000000bbbb"), "{out}");
 
         assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Accepted);
@@ -6263,7 +6337,7 @@ mod tests {
         let err = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.message.contains("proposed"), "{}", err.message);
         assert_eq!(
             err.hint.as_deref(),
@@ -6299,7 +6373,7 @@ mod tests {
         let err = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.message.contains("ADR-00000000cccc"), "{}", err.message);
 
         assert_eq!(t.adr_at("00000000aaaa").status, AdrStatus::Proposed);
@@ -6320,7 +6394,7 @@ mod tests {
         let (code, out) = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(
             out.contains("ratified ADR-00000000aaaa"),
             "the act is the anchor, not a promotion that already happened: {out}"
@@ -6363,7 +6437,7 @@ mod tests {
         let err = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert!(err.message.contains("deadbeefcafe"), "{}", err.message);
         assert_eq!(
             err.hint.as_deref(),
@@ -6400,7 +6474,7 @@ mod tests {
         let (code, out) = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(t.adr_at("00000000aaaa").ratified.is_some());
         assert_eq!(
             t.adr_at("00000000bbbb").version,
@@ -6445,7 +6519,7 @@ mod tests {
         let err = t
             .call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(t.adr_at("00000000aaaa").ratified.is_none());
     }
 
@@ -7017,7 +7091,7 @@ mod tests {
         let (code, out) = t
             .call(&["amend", "0000", "--scope", "docs/**"], "marie@laptop")
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(out.contains("amended"), "{out}");
         // The warning moved to standard error, which this harness does not
         // capture (TASK-2eefcdd80124): stdout under `--json` is a parser's
@@ -7050,7 +7124,7 @@ mod tests {
                 "marie@laptop",
             )
             .unwrap();
-        assert_eq!(code, 0, "{out}");
+        assert_eq!(code, ExitCode::Ok, "{out}");
         assert!(out.contains("+blocked_by"), "{out}");
         assert!(!out.contains("warning"), "{out}");
     }
@@ -7065,7 +7139,7 @@ mod tests {
         let err = t
             .call(&["amend", "0000", "--scope", "docs/**"], "marie@laptop")
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.message.contains("settled"), "{}", err.message);
 
         // An accepted ADR's scope is hashed into the ratification commit, so
@@ -7078,7 +7152,7 @@ mod tests {
                 "marie@laptop",
             )
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert!(
             err.hint.unwrap().contains("--supersedes"),
             "the way through"
@@ -7092,7 +7166,7 @@ mod tests {
                 "marie@laptop",
             )
             .unwrap();
-        assert_eq!(code, 0);
+        assert_eq!(code, ExitCode::Ok);
         let Entity::Adr(after) = t
             .store()
             .load(&EntityId::parse("ADR-00000000bbbb").unwrap())
@@ -7112,7 +7186,7 @@ mod tests {
         t.claim_as(&id, "codex@host-9", "A verifiable criterion.\n");
 
         let err = t.call(&["close", "0000"], "marie@laptop").unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.hint.unwrap().contains("--reason"));
 
         let (code, out) = t
@@ -7126,7 +7200,7 @@ mod tests {
                 "marie@laptop",
             )
             .unwrap();
-        assert_eq!(code, 0);
+        assert_eq!(code, ExitCode::Ok);
         assert!(out.contains("revoked"), "{out}");
 
         let Entity::Task(after) = t.store().load(&id).unwrap().entity else {
@@ -7149,7 +7223,7 @@ mod tests {
         let id = EntityId::parse("TASK-000000000001").unwrap();
         t.write(&task("000000000001", TaskStatus::Open, &[]));
         let (code, out) = t.call(&["show", "0000"], "marie@laptop").unwrap();
-        assert_eq!(code, 0);
+        assert_eq!(code, ExitCode::Ok);
         // The entity comes first and comes whole: the derived sections are
         // appended under it, and nothing is allowed to reformat what is above.
         let file = std::fs::read_to_string(t.store().path_of(&id)).unwrap();
@@ -7171,7 +7245,7 @@ mod tests {
         let id = EntityId::parse("ADR-00000000aaaa").unwrap();
         t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
         let (code, out) = t.call(&["show", "ADR-0000"], "marie@laptop").unwrap();
-        assert_eq!(code, 0);
+        assert_eq!(code, ExitCode::Ok);
         assert_eq!(
             out,
             std::fs::read_to_string(t.store().path_of(&id)).unwrap()

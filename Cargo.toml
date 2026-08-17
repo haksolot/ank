@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/ank-core", "crates/ank-cli"]
+members = ["crates/ank-core", "crates/ank-contract", "crates/ank-cli"]
 resolver = "2"

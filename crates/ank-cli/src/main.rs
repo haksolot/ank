@@ -53,5 +53,7 @@ fn main() {
     // the process was actually attached to, and answering the question once
     // keeps every verb downstream from asking it differently (§4).
     let style = style::detect();
-    std::process::exit(cli::run(&argv, &cwd, &mut out, style));
+    // The one bare integer in the tool, and it is where the type has to end:
+    // `exit` takes an `i32` (§4, ADR-6fd69efb629c).
+    std::process::exit(cli::run(&argv, &cwd, &mut out, style).code());
 }
