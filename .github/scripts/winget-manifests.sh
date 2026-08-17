@@ -219,7 +219,7 @@ PublisherUrl: ${server}/haksolot
 PublisherSupportUrl: ${repo_url}/issues
 PackageName: ank
 PackageUrl: ${repo_url}
-License: GPL-3.0-only
+License: Apache-2.0
 LicenseUrl: ${repo_url}/blob/main/LICENSE
 Copyright: Copyright (C) 2026 haksolot
 ShortDescription: Tasks and architecture decisions in your repo, behind one CLI agents can call
