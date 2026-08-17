@@ -10,7 +10,14 @@ edition = "2021"
 # name instead of failing inside a build script, and pinned in ci.yml so the
 # claim turns something red the day it stops being true.
 rust-version = "1.95"
-license = "GPL-3.0-only"
+# Apache-2.0, and this is the crate where that is a decision rather than a
+# default: the tool used to be GPL-3.0-only, and ADR-68018cda382c argued that the
+# tool was precisely the part worth defending with copyleft. ADR-9f03438f5422
+# supersedes it and says why the trade is judged differently -- and what it gives
+# up, which is that a proprietary fork is now permitted. Prospective only: a
+# release already made under GPL-3.0 stays available under GPL-3.0 to whoever
+# received it.
+license = "Apache-2.0"
 description = "The Ank CLI: one surface, refusing on state and never on identity."
 
 [[bin]]

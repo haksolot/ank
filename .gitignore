@@ -1,5 +1,8 @@
 /target
 .ank/index.db
+# Windows Explorer writes this into any folder it has been asked to display
+# differently, `.ank/` included. No slash, so it is caught wherever it lands.
+desktop.ini
 # The release run fills these from the artefacts it just built (npm/README.md).
 npm/ank-*/bin/
 npm/*/LICENSE

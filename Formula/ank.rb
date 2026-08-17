@@ -24,7 +24,7 @@ class Ank < Formula
   desc "Tasks and architecture decisions in your repo, behind one CLI agents can call"
   homepage "https://github.com/haksolot/ank"
   version "0.3.0"
-  license "GPL-3.0-only"
+  license "Apache-2.0"
 
   on_macos do
     on_arm do

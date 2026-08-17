@@ -6,7 +6,7 @@ edition = "2021"
 # code needs far less, but the workspace resolves one lockfile and builds as a
 # unit, so a floor that holds only here would not be a floor.
 rust-version = "1.95"
-license = "GPL-3.0-only"
+license = "Apache-2.0"
 description = "Parser and data model for the Ank format. The format is the specification; this crate is its reference implementation."
 
 [dependencies]

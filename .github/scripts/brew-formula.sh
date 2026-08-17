@@ -283,7 +283,7 @@ class Ank < Formula
   desc "Tasks and architecture decisions in your repo, behind one CLI agents can call"
   homepage "${repo_url}"
   version "${version}"
-  license "GPL-3.0-only"
+  license "Apache-2.0"
 
 ${os_blocks}
 
