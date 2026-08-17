@@ -6,31 +6,16 @@ edition = "2021"
 # no dependencies at all and would compile on far less, but the workspace
 # resolves one lockfile and builds as a unit.
 rust-version = "1.95"
-# Apache-2.0, not the workspace's GPL-3.0-only, and the choice is deliberate.
+# Apache-2.0, like the whole tree (ADR-9f03438f5422).
 #
-# The README has long promised that "the copyleft covers the tool's code, not the
-# format: your `.ank/` files and *the tools that read them* are not derivative
-# works". ADR-68018cda382c exists because that sentence was false of `ank-core`.
-# It would be false again here, and on the very crate whose reason to exist is
-# that other surfaces can exist (ADR-6fd69efb629c): a tool that reads a corpus
-# and wants the exit codes typed would have to become GPL to say `error[7]`
-# correctly.
-#
-# There is also no mechanism in here to defend. This crate is `const` data and
-# two enums -- the description of an interface. The copyleft protects the store,
-# the claim arbitration and `check`'s invariants, and none of those are here.
-# Copyleft on a description does not prevent a reimplementation either: `ank help
-# --json`, `docs/format.md` and the golden suite are all published, so the only
-# thing it would price out is the honest route.
-#
-# It costs `ank-cli` nothing: Apache-2.0 is one-way compatible into GPL-3.0-only,
-# so the binary links this exactly as it will link an Apache-2.0 `ank-core`.
-#
-# ADR-68018cda382c's scope is `crates/ank-core/**`, `LICENSE` and `README.md`, so
-# it does not govern this crate and no supersession was owed -- the choice was
-# unconstrained, and it is recorded here because this is where a reader looks for
-# it. The licence *text* arrives with that ADR's implementation, which is what
-# owns `LICENSE`.
+# This crate was the first to carry it, a day before the rest, and the argument
+# it was given then is worth keeping because it is the argument that moved the
+# boundary: a tool that reads a corpus and wants its exit codes typed would have
+# had to become GPL to say `error[7]` correctly, and there is no mechanism in
+# here to defend anyway -- `const` data and two enums, the description of an
+# interface. That reasoning applied to the format crate the day before, and to
+# the tool the day after, which is how a line redrawn twice in one direction
+# turned out to be a line in the wrong place.
 license = "Apache-2.0"
 description = "The Ank machine contract: the verb table, the refusals and the exit codes, consumed by every surface."
 

@@ -2,7 +2,7 @@
 
 ## Context
 
-Ank is a CLI (Rust, GPL-3.0) that makes tasks and architecture decisions
+Ank is a CLI (Rust, Apache-2.0) that makes tasks and architecture decisions
 readable by agents, directly in the repository. The specification is the source
 of truth and is **ten entities of kind `spec` in `.ank/`** — `ank find --type
 spec` lists them, `ank show <id>` prints one whole, `ank context <path>` names

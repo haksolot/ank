@@ -5,7 +5,7 @@ slug: every-licence-declaration-in-the-tree-says-apach
 title: Every licence declaration in the tree says Apache-2.0
 created: 2026-08-17T19:39:22Z
 author: claude-code/2.1.233+exposition
-status: open
+status: in_progress
 scope:
   - LICENSE
   - README.md
@@ -21,7 +21,7 @@ done_criteria: |
   No file in the tree declares GPL, and grep is the check: the root LICENSE carries the Apache-2.0 text, all three crate manifests declare Apache-2.0 and each crate carries that text beside it, and every channel that declares a licence says Apache-2.0 -- the four npm package.json files and the root one, the Homebrew formula, the Scoop manifest, the winget locale. README.md, CLAUDE.md and npm/ank/README.md state one licence with no second answer, and the README badge agrees. The tree says somewhere a reader will find it that the change is prospective and that a release already made under GPL-3.0 stays available under it. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 ADR-9f03438f5422 requires it. This is the mechanical half; the decision and what

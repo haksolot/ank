@@ -2,7 +2,7 @@
   "name": "@haksolot/ank-pi",
   "private": true,
   "description": "Pi package manifest for the ank skill. Not published: the published package is @haksolot/ank, under npm/ank.",
-  "license": "GPL-3.0-only",
+  "license": "Apache-2.0",
   "homepage": "https://github.com/haksolot/ank",
   "repository": {
     "type": "git",

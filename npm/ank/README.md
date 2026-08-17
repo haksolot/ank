@@ -15,6 +15,7 @@ This package carries the CLI. The skill an agent loads is a separate install, an
 [the documentation](https://github.com/haksolot/ank) covers both, along with the
 specification and the source.
 
-GPL-3.0 — the copyleft covers the tool's code, not the format: your `.ank/`
-files, and the third-party tools that read or write them, are not derivative
-works.
+Apache-2.0 — your `.ank/` files, the third-party tools that read or write them,
+and anything you build on top are yours. Ank was GPL-3.0-only until 0.3.0, and
+the change is prospective: a release you already received under GPL-3.0 stays
+available to you under GPL-3.0.

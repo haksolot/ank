@@ -9,7 +9,7 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 
 <p align="center"><a href="https://github.com/haksolot/ank/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/haksolot/ank/actions/workflows/ci.yml/badge.svg"></a>
 <a href="https://github.com/haksolot/ank/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/haksolot/ank"></a>
-<a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-GPL--3.0-blue"></a></p>
+<a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a></p>
 
 **The binary:**
 
@@ -150,8 +150,14 @@ is there beside it, the tool reading, claiming and closing its own tasks, under 
 
 ## Licence
 
-GPL-3.0 — see [LICENSE](LICENSE). The copyleft covers the tool's code, not the
-format: your `.ank/` files and the tools that read them are not derivative works.
+Apache-2.0, whole — see [LICENSE](LICENSE). Every crate, the binary as
+distributed, and every channel that declares a licence say the same thing, so
+your `.ank/` files, the tools that read them, and anything you build on top are
+yours (ADR-9f03438f5422).
+
+Ank was GPL-3.0-only until 0.3.0, and the change is **prospective**: a release
+you already received under GPL-3.0 stays available to you under GPL-3.0, and
+nothing here withdraws that.
 
 [agents]: https://github.com/haksolot/ank/blob/main/docs/agents.md
 [okf]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
