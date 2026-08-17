@@ -2929,6 +2929,75 @@ fn concurrent_readers_of_one_corpus_all_answer() {
     );
 }
 
+/// The same twelve readers, with **no wait allowed at all**
+/// (TASK-4111dfae8a87).
+///
+/// The test above proves the invariant on whatever machine happens to run it,
+/// and that is its weakness: it passes when the hardware was fast enough for the
+/// readers never to have met. Measured on CI, run 32061737531 on
+/// `windows-latest`, it failed with twelve refusals out of twelve on a commit
+/// that changed no code -- so the invariant was resting on a five-second wall
+/// being wider than the queue, which is a margin and not a guarantee.
+///
+/// Setting the wall to zero is what an arbitrarily loaded runner is, and it is
+/// deterministic. With it, any contention at all refuses immediately, so this
+/// passes only if the readers take no write lock -- which is the property the
+/// fix installed: a healthy schema is confirmed by a read, and a refresh with
+/// nothing to write opens no transaction. Measured on this tree: four of sixty
+/// refused before, none of a hundred and twenty after.
+///
+/// The index is warmed first, on purpose. A cold corpus has real work to
+/// serialise and one process must wait for it; what must never contend is the
+/// steady state, which is the state a board polling every thirty seconds and a
+/// dozen agents running `find` are in.
+#[test]
+fn readers_of_a_warm_corpus_take_no_write_lock() {
+    let r = Repo::new();
+    for i in 0..12 {
+        r.seed_task_titled(&format!("TASK-00000000{i:04x}"), &format!("Task {i}"));
+    }
+    // One reader with a normal wall, to build the index and leave it current.
+    let warm = r.ank("warm@host", &["find", "Task"]);
+    assert_eq!(code(&warm), 0, "warming: {}", stderr(&warm));
+
+    let verbs: [&[&str]; 3] = [&["find", "Task"], &["context"], &["scope", "src"]];
+    let mut running = Vec::new();
+    for i in 0..12 {
+        running.push(
+            ank_command()
+                .args(verbs[i % verbs.len()])
+                .arg("--repo")
+                .arg(&r.0)
+                .env("ANK_AGENT", format!("agent-{i}@host"))
+                .env("ANK_INDEX_BUSY_MS", "0")
+                .current_dir(std::env::temp_dir())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("the binary must have been built"),
+        );
+    }
+
+    let mut refused = Vec::new();
+    for (i, child) in running.into_iter().enumerate() {
+        let out = child.wait_with_output().expect("a spawned ank must finish");
+        if !out.status.success() {
+            refused.push(format!(
+                "#{i} exited {:?}: {}",
+                code(&out),
+                stderr(&out).trim()
+            ));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "a reader of a warm corpus asked for the write lock. Nothing diverged and          the schema was already installed, so there was nothing to write and no          lock to take; whatever asked for one is what makes this invariant rest          on a deadline again:
+{}",
+        refused.join("
+")
+    );
+}
+
 /// A perimeter holding one proposal, with a budget as the only variable.
 fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
     let r = Repo::new();
