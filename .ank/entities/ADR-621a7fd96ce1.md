@@ -5,15 +5,16 @@ slug: a-corpus-is-addressable-and-a-reader-may-aggrega
 title: A corpus is addressable, and a reader may aggregate several
 created: 2026-08-17T05:13:26Z
 author: claude-code/2.1.233+integration-contract
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/src/config.rs
   - docs/**
 constraint: |
   A repository carries an identity a reader can key on, derived from its root commit and never from its path, so one corpus reached by two paths is one corpus and two corpora in one tree are two. A reader may hold several corpora at once and present them together; each is addressed on its own, the way --repo addresses one. Writing never crosses a corpus boundary and claims stay per repository, unchanged from ADR-a1de673043b4. Aggregation is declared and never discovered: nothing walks a filesystem looking for corpora.
+ratified: c0111d70f458
 schema: 3
-version: 1
+version: 2
 ---
 
 ## Why
