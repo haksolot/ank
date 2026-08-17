@@ -5,14 +5,15 @@ slug: a-protocol-surface-is-a-generated-full-surface-p
 title: A protocol surface is a generated full-surface passthrough, or it does not exist
 created: 2026-08-17T05:14:01Z
 author: claude-code/2.1.233+integration-contract
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/cli.rs
 constraint: |
   A protocol surface exposes every verb the CLI dispatches, generated from the same table the CLI dispatches from, or it does not exist. No curated subset, under any protocol. It refuses on state exactly as the CLI does and never on identity, and it carries the CLI's exit codes as the reason for a refusal. It speaks for exactly one corpus, addressed the way --repo addresses one: claims stay per clone, and no server arbitrates across clones -- a deployment over several repositories is several corpora addressed separately and never one merged claim space. It writes under a typed process identity. It ships from this repository, and it is a sibling binary rather than a verb, so the verb list and skill/SKILL.md are untouched.
 supersedes: ADR-1713af205186
+ratified: 629f3ae1a72d
 schema: 3
-version: 3
+version: 4
 ---
 
 ## What this supersedes, and what it keeps
