@@ -166,6 +166,41 @@ pub fn same_corpus(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// The identity a reader keys a corpus on, or `None` for a tree with no history
+/// (ADR-621a7fd96ce1).
+///
+/// **The root commit, and never the path.** [`same_corpus`] above answers the
+/// same question by canonicalising two paths, and that is the right answer to
+/// the question it is asked — is this the same directory — but it is the wrong
+/// answer to the one a reader has: is this the same *corpus*. Two worktrees of
+/// one repository share a corpus and have different paths; two clones of
+/// different repositories can sit at the same path on two machines. A path is
+/// neither stable nor unique, and it is the only thing a reader had.
+///
+/// The root commit is stable, cheap to read, and already the identity git itself
+/// would use. It survives a move, a clone, a symlink and a rename, because none
+/// of those writes history.
+///
+/// **The oldest root of `HEAD`**, asked with `--reverse` so the answer is the
+/// first line rather than the last. A history can have several roots — a graft,
+/// an unrelated branch merged in — and "the root commit" then names more than one
+/// thing; taking the oldest is deterministic and it is the commit the repository
+/// actually began at. Asked against `HEAD` rather than `--all` so that fetching
+/// somebody's unrelated branch cannot change what this corpus is called.
+///
+/// **A tree with no commits has no identity, and says so** rather than falling
+/// back to its path. That is the whole point: a value derived from the path would
+/// be a value that changes when the directory moves, which is the defect this
+/// exists to remove, reintroduced for the one case that cannot be answered. A
+/// reader that needs to key such a corpus keys it on nothing and knows it.
+pub fn identity(root: &Path) -> Option<String> {
+    let out = crate::git::run(root, &["rev-list", "--max-parents=0", "--reverse", "HEAD"]).ok()?;
+    out.lines()
+        .next()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Every peer this repository declares, with one warning per peer that could
 /// not be opened.
 ///
