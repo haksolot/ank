@@ -11,11 +11,12 @@ contact_links:
       answers.
 
   - name: Read the specification first
-    url: https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md
+    url: https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md
     about: >
-      The source of truth, ten documents in .ank/ that this page indexes. They
-      settle every question the other documents defer to them, including why a
-      verb refuses on state and never on identity.
+      The source of truth is ten spec documents in .ank/, not a page on this
+      site: `ank find --type spec` lists them and `ank show <id>` prints one
+      whole. They settle every question the other documents defer to them,
+      including why a verb refuses on state and never on identity.
 
   - name: Getting started
     url: https://github.com/haksolot/ank/blob/main/docs/getting-started.md

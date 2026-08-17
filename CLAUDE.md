@@ -7,8 +7,7 @@ readable by agents, directly in the repository. The specification is the source
 of truth and is **ten entities of kind `spec` in `.ank/`** — `ank find --type
 spec` lists them, `ank show <id>` prints one whole, `ank context <path>` names
 the ones governing a perimeter. Read the one that covers your perimeter before
-any design decision; `docs/ank-spec-v1.1.md` is now an index naming the ten and
-carries no rule. This repo dogfoods its own format: the development plan lives in
+any design decision. This repo dogfoods its own format: the development plan lives in
 `.ank/`, and it is reached through the CLI, never by opening the files
 (ADR-01b6dd05f0db). `ank show <id>` prints an entity whole, `ank find` lists,
 `ank context` binds.

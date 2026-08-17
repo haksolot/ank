@@ -15,11 +15,10 @@ body:
     attributes:
       label: Which section
       description: >
-        The specification is ten `spec` documents in `.ank/`, indexed in
-        [docs/ank-spec-v1.1.md](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md);
-        the section numbers below are the ones the documents still use, and the
-        index says which document carries each. Pick the section that states the
-        rule you read.
+        The specification is ten `spec` documents in `.ank/`, listed by
+        `ank find --type spec`. The section numbers below are the ones the
+        documents still use, and each document says in its own body which
+        sections it carries. Pick the section that states the rule you read.
       options:
         - "3. Data model"
         - "4. CLI surface"
