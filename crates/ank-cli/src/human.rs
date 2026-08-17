@@ -2917,7 +2917,7 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
                     .finish()
             })
             .collect();
-        let doc = Obj::new()
+        let doc = Obj::document()
             .num("faults", report.faults())
             .num("signals", report.signals())
             .num("tasks", report.tasks)
@@ -3065,7 +3065,7 @@ pub fn review(
                     .finish()
             })
             .collect();
-        let doc = Obj::new()
+        let doc = Obj::document()
             .array("proposed", waiting)
             .array("live", items)
             .num("dead", dead.len())
@@ -3280,16 +3280,17 @@ pub fn accept(
 
     if inv.json() {
         let superseded = replaced.target().map(|t| t.id().to_string());
-        // Keyed by the kind, which is what the caller typed an id of. A field
-        // named `adr` over a spec would be the same lie the commit key would
-        // have told, in the surface a parser reads.
-        //
-        // It is also the one key in this binary whose *name* depends on the
-        // data, which no typed client can bind. TASK-155e98c184ed owns fixing
-        // that; this document is carried across unchanged on purpose.
-        let kind = id.kind().as_str();
-        let doc = Obj::new()
-            .str(kind, &id.to_string())
+        // The id under a fixed key, and the kind beside it as a value
+        // (TASK-155e98c184ed). It used to be keyed *by* the kind — `adr` over an
+        // ADR, `spec` over a spec — which was the one key in this binary whose
+        // name depended on the data. No typed client can bind that: the parser
+        // has to know the answer before it reads it, and a struct cannot have a
+        // field whose name arrives at runtime. Nothing is lost by moving it,
+        // because the kind is still there and is now a value a client can match
+        // on rather than a key it has to search for.
+        let doc = Obj::document()
+            .str("id", &id.to_string())
+            .str("kind", id.kind().as_str())
             .str("status", "accepted")
             .opt_str("superseded", superseded.as_deref())
             .str("commit", &commit)
@@ -3826,7 +3827,7 @@ pub fn close(
 
     let revoked = claim::delete(&repo.root, &id)?;
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("task", &id.to_string())
             .str("status", "closed")
             .bool("claim_revoked", revoked)
@@ -3975,7 +3976,7 @@ pub fn attest(
     )?;
 
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("task", &id.to_string())
             .obj(
                 "appended",
@@ -4040,7 +4041,7 @@ fn detached(
     }
 
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("task", &id.to_string())
             .obj(
                 "attached",
@@ -4596,7 +4597,7 @@ fn resolve_all(store: &Store, raw: &[String]) -> Result<Vec<EntityId>> {
 
 fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut dyn Write) {
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("entity", &id.to_string())
             .strings("amended", changes)
             .finish();
@@ -4691,7 +4692,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
             Some(Record::Proof(_)) => Some("a proof record on the claim ref".to_string()),
             None => None,
         };
-        let mut doc = Obj::new()
+        let mut doc = Obj::document()
             .str("id", &loaded.entity.id().to_string())
             .opt_str("coordination", state.as_deref());
         // Only a task has the two directions, and a document that carried them

@@ -509,6 +509,33 @@ fn globals_line(globals: &[&'static FlagSpec], with_short: bool) -> String {
         .join(" ")
 }
 
+/// The declared shape of a document, flattened to dotted paths.
+///
+/// Nesting is how a shape is written in `ank-contract`, because that reads well
+/// beside the code. A dotted path is how it is published, because `help --json`
+/// describes its own output too, and a description that recursed into itself
+/// would not terminate. `tasks` is followed by `tasks.id` and `tasks.title`, in
+/// the order the document emits them, so a reader walking the list top to bottom
+/// walks the document.
+fn fields_json(prefix: &str, fields: &[ank_contract::shape::Field]) -> Vec<String> {
+    let mut rows = Vec::new();
+    for field in fields {
+        let name = match prefix.is_empty() {
+            true => field.name.to_string(),
+            false => format!("{prefix}.{}", field.name),
+        };
+        rows.push(
+            Obj::new()
+                .str("name", &name)
+                .str("type", field.ty.name())
+                .bool("nullable", field.nullable)
+                .finish(),
+        );
+        rows.extend(fields_json(&name, field.ty.fields()));
+    }
+    rows
+}
+
 fn json_of(specs: &[&CommandSpec]) -> String {
     let verbs: Vec<String> = specs
         .iter()
@@ -539,6 +566,30 @@ fn json_of(specs: &[&CommandSpec]) -> String {
             // reader, so giving a machine the grouping and withholding it from
             // the caller who scripts against it would be the split this ADR
             // rejected, the other way round (ADR-f61e2d2c75e8).
+            // What comes back, which is the half this document was missing
+            // (ADR-6fd69efb629c). A caller can discover a flag by being refused
+            // one; it cannot discover a field by being handed it, because it has
+            // to know the name before it can look.
+            //
+            // `contract` is prepended rather than declared on each verb: it is
+            // on every document by construction, and twenty-two copies of one
+            // row is twenty-two chances for one of them to be wrong.
+            let returns: Vec<String> = spec
+                .output
+                .iter()
+                .map(|shape| {
+                    let mut fields = vec![Obj::new()
+                        .str("name", "contract")
+                        .str("type", "number")
+                        .bool("nullable", false)
+                        .finish()];
+                    fields.extend(fields_json("", shape.fields));
+                    Obj::new()
+                        .opt_str("when", shape.when)
+                        .array("fields", fields)
+                        .finish()
+                })
+                .collect();
             Obj::new()
                 .str("name", spec.name)
                 .str("usage", &usage(spec))
@@ -547,10 +598,11 @@ fn json_of(specs: &[&CommandSpec]) -> String {
                 .array("flags", flags)
                 .strings("notes", spec.notes)
                 .array("refuses", refusals)
+                .array("returns", returns)
                 .finish()
         })
         .collect();
-    Obj::new().array("verbs", verbs).finish()
+    Obj::document().array("verbs", verbs).finish()
 }
 
 /// `ank help` and `ank help <verb>` (§9).
@@ -1384,7 +1436,10 @@ mod tests {
     #[test]
     fn help_speaks_json_in_both_of_its_forms() {
         let all = help_out(&["help", "--json"]);
-        assert!(all.starts_with("{\"verbs\":["), "{all}");
+        // The envelope first and the verbs behind it (ADR-6fd69efb629c): the
+        // contract version is the one field a client reads before it knows
+        // whether it can read the rest, so it leads.
+        assert!(all.starts_with("{\"contract\":1,\"verbs\":["), "{all}");
         for spec in COMMANDS {
             assert!(
                 all.contains(&format!("\"name\":\"{}\"", spec.name)),

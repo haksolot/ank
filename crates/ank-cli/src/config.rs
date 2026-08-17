@@ -1314,7 +1314,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         // value is not a thing, and only `--unset` addresses it.
         let before = read_key(&lines, &key)?;
         if inv.json() {
-            let doc = crate::json::Obj::new()
+            let doc = crate::json::Obj::document()
                 .str("key", raw_key)
                 .raw("value", &before.json())
                 .str("source", before.source())
@@ -1360,7 +1360,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     }
 
     if inv.json() {
-        let doc = crate::json::Obj::new()
+        let doc = crate::json::Obj::document()
             .str("key", raw_key)
             .raw("previous", &before.json())
             .raw("value", &after.json())

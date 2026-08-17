@@ -217,7 +217,7 @@ pub fn run(
     }
 
     if inv.json() {
-        let doc = crate::json::Obj::new()
+        let doc = crate::json::Obj::document()
             .str("task", &id.to_string())
             .str("status", "done")
             .str("commit", &completed.commit)

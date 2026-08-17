@@ -3710,7 +3710,7 @@ fn log_with_an_id_and_no_message_reads_and_asks_for_no_claim() {
     let j = stdout(&out);
     assert!(
         j.starts_with(&format!(
-            "{{\"about\":\"{ID}\",\"total\":2,\"shown\":2,\"entries\":["
+            "{{\"contract\":1,\"about\":\"{ID}\",\"total\":2,\"shown\":2,\"entries\":["
         )),
         "{j}"
     );
@@ -7038,7 +7038,8 @@ fn help_json_reaches_the_process_intact() {
     let out = help_from_nowhere(&["help", "--json"]);
     let text = String::from_utf8_lossy(&out.stdout).to_string();
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert!(text.starts_with("{\"verbs\":["), "{text}");
+    // The envelope leads, and the verbs follow it (ADR-6fd69efb629c).
+    assert!(text.starts_with("{\"contract\":1,\"verbs\":["), "{text}");
     assert!(text.trim_end().ends_with("]}"), "{text}");
     assert!(text.contains("\"name\":\"claim\""), "{text}");
     assert!(
@@ -14098,4 +14099,234 @@ fn json_golden_verbs_needing_their_own_environment() {
     assert_eq!(code(&out), 0, "init, again: {}", stderr(&out));
     golden("init-again", &stdout(&out));
     let _ = std::fs::remove_dir_all(&fresh);
+}
+
+// ---------------------------------------------------------------------------
+// The declared shapes, against what the binary actually printed
+// ---------------------------------------------------------------------------
+
+/// Every fixture in `tests/golden-json/`, checked against the shape its verb
+/// declares in `ank-contract` (ADR-6fd69efb629c).
+///
+/// This is what makes the declaration a contract rather than documentation.
+/// `help --json` publishes what a client should expect back; without this test
+/// nothing would connect that promise to the bytes the binary emits, and the two
+/// would drift in the direction that costs the client and not us — a description
+/// that is wrong reads exactly like a description that is right.
+///
+/// **The fixtures are the sample, and their limits are stated rather than
+/// papered over.** An empty array in a fixture cannot show the shape of its
+/// elements, so the rows underneath it go unverified here; the declaration for
+/// those comes from the builders in the source, and it becomes verified the day
+/// a fixture exercises one. The check says how many it could not see, so the
+/// number cannot quietly grow.
+///
+/// Parsed with `serde_yaml`, which is already a dependency and reads JSON
+/// because YAML 1.2 is a superset of it. §13 spends a dependency only on
+/// necessity, and a second parser to read what a parser in the tree already
+/// reads is not one.
+#[test]
+fn every_golden_conforms_to_the_shape_its_verb_declares() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN_DIR);
+    let mut checked = 0;
+    let mut unverified: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(&dir).expect("the goldens must exist") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let stem = path.file_stem().unwrap().to_str().unwrap().to_string();
+        // `config-read`, `help-verb`, `init-again`: the fixture names a call,
+        // and the verb is what precedes the dash.
+        let verb = stem.split('-').next().unwrap();
+        let spec =
+            ank_contract::spec_of(verb).unwrap_or_else(|| panic!("{stem}: no verb named {verb}"));
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{stem}: the fixture is not readable JSON: {e}"));
+
+        // A verb with several documents conforms if it conforms to one of them.
+        // The failure is reported against every candidate, because "it matched
+        // none" without saying how is the report that sends a reader guessing.
+        let mut failures = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        let matched =
+            spec.output
+                .iter()
+                .any(|shape| match conforms(&doc, shape.fields, "", &mut seen) {
+                    Ok(()) => true,
+                    Err(e) => {
+                        failures.push(format!("  {}: {e}", shape.when.unwrap_or("the document")));
+                        false
+                    }
+                });
+        assert!(
+            matched,
+            "{stem} does not match any shape `{verb}` declares:\n{}",
+            failures.join("\n")
+        );
+        // Named by fixture and with the row indices dropped, so the list says
+        // *which* declaration is unexercised rather than which row happened to
+        // be empty. `context.log` and `show.log` are two different fields, and a
+        // list keyed on the path alone would have hidden one behind the other.
+        for path in seen {
+            let mut normalised = String::with_capacity(path.len());
+            let mut in_index = false;
+            for c in path.chars() {
+                match c {
+                    '[' => {
+                        in_index = true;
+                        normalised.push('[');
+                    }
+                    ']' => {
+                        in_index = false;
+                        normalised.push(']');
+                    }
+                    _ if in_index => {}
+                    _ => normalised.push(c),
+                }
+            }
+            unverified.push(format!("{stem}.{normalised}"));
+        }
+        checked += 1;
+    }
+
+    assert_eq!(checked, 26, "one fixture per document the surface returns");
+    // Named rather than counted, and pinned rather than merely reported. These
+    // are the element shapes no fixture reaches, so their declarations rest on
+    // the builders in the source and on nothing this test can see. Writing the
+    // list out means a fixture that starts exercising one turns this red and has
+    // to be acknowledged, instead of quietly shrinking a number nobody watches —
+    // and it means the gap is legible to a reader of the test rather than a
+    // property they have to go and measure.
+    unverified.sort();
+    unverified.dedup();
+    assert_eq!(
+        unverified,
+        [
+            "check.findings[].charge",
+            "context.constraints",
+            "context.specs",
+            "graph.edges",
+            "help.verbs[].refuses",
+            "log-read.entries",
+            "review.live",
+            "scope.specs",
+            "show.blocked_by",
+            "show.detached_proofs",
+            "show.log",
+            "show.unblocks",
+            "status.also_held",
+            "status.elsewhere",
+        ],
+        "the element shapes the fixtures do not exercise have moved"
+    );
+}
+
+/// One document against one declared shape, recursively.
+///
+/// The keys are compared **in order and in full**: a document that gained a
+/// field the shape does not declare is as wrong as one that lost a field it
+/// does, because ADR-6fd69efb629c's promise is about both directions — within a
+/// version a document may gain a field only by declaring it first.
+fn conforms(
+    value: &serde_yaml::Value,
+    fields: &[ank_contract::shape::Field],
+    path: &str,
+    unverified: &mut Vec<String>,
+) -> Result<(), String> {
+    use ank_contract::shape::Type;
+    use serde_yaml::Value;
+
+    let map = match value {
+        Value::Mapping(m) => m,
+        other => {
+            return Err(format!(
+                "{path}: expected an object, found {}",
+                kind_of(other)
+            ))
+        }
+    };
+
+    // `contract` is on every document and on no declaration: the rendering adds
+    // it, so the check adds it too. **Top level only** — the version describes
+    // the document, not every object inside it, which is why `Obj::document`
+    // seeds it and `Obj::new` does not.
+    let expected: Vec<String> = path
+        .is_empty()
+        .then(|| "contract".to_string())
+        .into_iter()
+        .chain(fields.iter().map(|f| f.name.to_string()))
+        .collect();
+    let found: Vec<String> = map
+        .keys()
+        .map(|k| k.as_str().unwrap_or("<not a string>").to_string())
+        .collect();
+    if found != expected {
+        return Err(format!(
+            "{path}: keys are {found:?}, the shape declares {expected:?}"
+        ));
+    }
+
+    for field in fields {
+        let here = match path.is_empty() {
+            true => field.name.to_string(),
+            false => format!("{path}.{}", field.name),
+        };
+        let v = &map[field.name];
+        if v.is_null() {
+            if !field.nullable {
+                return Err(format!("{here}: null, and the shape does not allow it"));
+            }
+            continue;
+        }
+        match field.ty {
+            Type::Str if v.as_str().is_some() => {}
+            Type::Num if v.is_number() => {}
+            Type::Bool if v.as_bool().is_some() => {}
+            Type::Strings | Type::Array(_) if v.as_sequence().is_some() => {}
+            Type::Object(inner) => conforms(v, inner, &here, unverified)?,
+            _ => {
+                return Err(format!(
+                    "{here}: declared {}, found {}",
+                    field.ty.name(),
+                    kind_of(v)
+                ))
+            }
+        }
+        if let Type::Strings = field.ty {
+            for (i, item) in v.as_sequence().unwrap().iter().enumerate() {
+                if item.as_str().is_none() {
+                    return Err(format!(
+                        "{here}[{i}]: declared string, found {}",
+                        kind_of(item)
+                    ));
+                }
+            }
+        }
+        if let Type::Array(inner) = field.ty {
+            let rows = v.as_sequence().unwrap();
+            if rows.is_empty() {
+                unverified.push(here.clone());
+            }
+            for (i, row) in rows.iter().enumerate() {
+                conforms(row, inner, &format!("{here}[{i}]"), unverified)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn kind_of(v: &serde_yaml::Value) -> &'static str {
+    match v {
+        serde_yaml::Value::Null => "null",
+        serde_yaml::Value::Bool(_) => "a boolean",
+        serde_yaml::Value::Number(_) => "a number",
+        serde_yaml::Value::String(_) => "a string",
+        serde_yaml::Value::Sequence(_) => "an array",
+        serde_yaml::Value::Mapping(_) => "an object",
+        serde_yaml::Value::Tagged(_) => "a tagged value",
+    }
 }

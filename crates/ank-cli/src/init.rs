@@ -122,7 +122,7 @@ impl Report {
         if self.added_refspec {
             added.push("remote.origin.fetch");
         }
-        crate::json::Obj::new()
+        crate::json::Obj::document()
             .strings("created", &self.created_dirs)
             .strings("wrote", &wrote)
             .strings("added", &added)

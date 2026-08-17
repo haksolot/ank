@@ -104,7 +104,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
 
     if plan.is_empty() {
         if inv.json() {
-            let doc = crate::json::Obj::new()
+            let doc = crate::json::Obj::document()
                 .num("files", 0)
                 .num("entries", 0)
                 .num("created", 0)
@@ -197,7 +197,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
 
     let files = plan.len();
     if inv.json() {
-        let doc = crate::json::Obj::new()
+        let doc = crate::json::Obj::document()
             .num("files", files)
             .num("entries", lines)
             .num("created", created)

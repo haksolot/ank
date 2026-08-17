@@ -1881,7 +1881,7 @@ pub fn run(
         .collect();
 
     if inv.json() {
-        let doc = crate::json::Obj::new()
+        let doc = crate::json::Obj::document()
             .str("task", &acquired.id.to_string())
             .str("holder", &acquired.holder)
             .str("expires", &acquired.expires)
