@@ -5,7 +5,7 @@ slug: a-reader-is-never-refused-by-contention-and-a-ti
 title: A reader is never refused by contention, and a timeout is not what guarantees it
 created: 2026-08-17T20:02:58Z
 author: claude-code/2.1.233+exposition
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/tests/**
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   Twelve concurrent readers of one corpus all answer, and the guarantee does not rest on a wall-clock deadline being long enough: the test that asserts it passes on a runner loaded enough to have broken the current implementation. What replaces the deadline is stated in the code and is not a larger constant. cargo test is green on the three platforms.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: f472579
+    criteria: e4a38459159f
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 Measured on CI, 2026-08-17, run 32061737531 on `windows-latest`:
