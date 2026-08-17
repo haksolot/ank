@@ -892,12 +892,32 @@ fn check_scope_alive(
     // states where work *will* happen, and a task scoping a file it is about to
     // create is the normal case — this repository's own release task scopes a
     // workflow it exists to write. Making that a fault would exit 8 in CI on
-    // every repository that plans anything. A task already done or closed is
-    // judged the other way: it claimed to touch files that are not there.
+    // every repository that plans anything.
+    //
+    // **A `done` task is judged the other way, and a `closed` one is not**
+    // (TASK-4c031f7b44ed). This read `!(Open | InProgress)` and so treated the
+    // two terminal states as one. The rule §4 states is a fault for "a finished
+    // task, *which claimed to touch files that are not there*", and that clause
+    // is the whole justification: a `done` task claimed it, and a `closed` task
+    // claimed nothing — it records that the work will not happen, so a perimeter
+    // matching no file is its truth rather than its defect.
+    //
+    // Judging them alike also punished the repair §4 prescribes. `review` groups
+    // dead scopes "into a cleanup section with `close` suggested", so following
+    // that advice converted a signal into a fault — and into one nobody can
+    // clear, since `amend` refuses a finished task, which is precisely what §4
+    // calls "a finding readers learn to skip". Measured on this corpus:
+    // TASK-34d27790dba9 scopes `viewer/**`, no commit on the default branch ever
+    // carried it, and closing the task reddened `ank check` for good.
+    let status = match entity {
+        Entity::Task(t) => Some(t.status),
+        _ => None,
+    };
     let ahead_of_the_code = matches!(
-        entity,
-        Entity::Task(t) if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress)
+        status,
+        Some(TaskStatus::Open) | Some(TaskStatus::InProgress)
     );
+    let retired = matches!(status, Some(TaskStatus::Closed));
     for glob in globs {
         // A scope entry naming a declared peer is about files in another
         // repository (§7, ADR-a1de673043b4), so it matches nothing in this
@@ -963,6 +983,16 @@ fn check_scope_alive(
             Finding::signal(
                 entity.id(),
                 format!("scope '{glob}' matches no file yet: work not started, or a typo"),
+            )
+        } else if retired {
+            // Its own sentence, and not the open task's. "Work not started" is
+            // wrong for a closure twice over: the work may well have been started
+            // somewhere else, and the scope is not a typo. What a reader needs is
+            // that the task is closed and the perimeter went with it, which is a
+            // record and not a repair — so nothing here names a command.
+            Finding::signal(
+                entity.id(),
+                format!("scope '{glob}' matches no file, and the task is closed: nothing is owed"),
             )
         } else {
             let message = format!("dead scope '{glob}': no file matches it");
