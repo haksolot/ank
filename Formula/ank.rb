@@ -20,29 +20,28 @@
 # rewrite: the platform blocks below become one url and sha256 on the source
 # tarball plus `system "cargo", "install", *std_cargo_args`, and the rest of
 # this file stands.
-#
-# v0.2.0 published no archive for:
-#   ank-0.2.0-x86_64-apple-darwin.tar.gz
-# so this formula carries no block for it. That is a row of the release matrix
-# and not a decision here: the first tag cut with that row restores the block,
-# derived, with no edit to this file or to the script that writes it.
 class Ank < Formula
   desc "Tasks and architecture decisions in your repo, behind one CLI agents can call"
   homepage "https://github.com/haksolot/ank"
-  version "0.2.0"
+  version "0.3.0"
   license "GPL-3.0-only"
 
   on_macos do
     on_arm do
-      url "https://github.com/haksolot/ank/releases/download/v0.2.0/ank-0.2.0-aarch64-apple-darwin.tar.gz"
-      sha256 "834f36627fc8325b0d3c46d2be62f39f6b6f53246ee754255c94952471297623"
+      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-aarch64-apple-darwin.tar.gz"
+      sha256 "d135438816247679324d6b41dfdad3cfd915ccded76b855cd57e50665e833c78"
+    end
+
+    on_intel do
+      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-x86_64-apple-darwin.tar.gz"
+      sha256 "90f118195f76384d50966ca9f82706e4f065ed9365e3b139df0e9dbe9451b854"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/haksolot/ank/releases/download/v0.2.0/ank-0.2.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "9d45670ecf3c9472aa1f542a9d6a33b6f476040cb25e4a189417ca03db1aee01"
+      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "d4a79967dc156deffd4ad94c2545837381843f432ab0e1592aad524705fe7b6a"
     end
   end
 
