@@ -3107,6 +3107,77 @@ default_branch: main
     let _ = std::fs::remove_dir_all(&second);
 }
 
+/// A closure with a perimeter that names nothing is a record, not a defect
+/// (TASK-4c031f7b44ed).
+///
+/// Driven through the binary because the thing being judged is `check`'s exit
+/// code, which is what CI routes on. Both terminal states in one test, because
+/// the point is that they are *not* the same fact: a `done` task claimed to touch
+/// files, a `closed` one claimed nothing.
+///
+/// The perimeter names a directory no commit ever carried, so neither
+/// ADR-97beaf55e73a's rename walk nor ADR-3094538d831e's deletion clause has
+/// anything to lower a severity with. That is the case with no way out, and it is
+/// the one that used to redden a corpus for good: `amend` refuses a finished task,
+/// so the fault could never be cleared.
+#[test]
+fn a_closed_task_whose_scope_names_nothing_leaves_check_green() {
+    const GONE: &str = "TASK-00000000c105";
+    let r = Repo::new();
+    r.seed_task_scoped(GONE, "nowhere/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a task whose perimeter never existed"]);
+
+    // Open, it is work not started, and green. This is the state the corpus was
+    // stuck in: honest, and permanent, because closing it was punished.
+    let out = r.ank(AGENT, &["check"]);
+    assert_eq!(code(&out), 0, "open: {}{}", stdout(&out), stderr(&out));
+    assert!(
+        stdout(&out).contains("work not started"),
+        "open: {}",
+        stdout(&out)
+    );
+
+    let out = r.ank(AGENT, &["close", GONE, "--reason", "it ships elsewhere"]);
+    assert_eq!(code(&out), 0, "close: {}", stderr(&out));
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = stdout(&out);
+    assert_eq!(
+        code(&out),
+        0,
+        "a closure with a dead perimeter must not redden a corpus: {said}{}",
+        stderr(&out)
+    );
+    assert!(
+        said.contains("the task is closed: nothing is owed"),
+        "the closure needs its own sentence, not the open task's: {said}"
+    );
+    assert!(
+        !said.contains("work not started"),
+        "a closed task did not fail to start: {said}"
+    );
+
+    // `done` is the other terminal state and keeps the fault, because it *did*
+    // claim to touch those files. Same corpus, same missing directory, so the
+    // only variable is the status.
+    let text = r.task_text(GONE).replace("status: closed", "status: done");
+    std::fs::write(r.0.join(".ank/entities").join(format!("{GONE}.md")), text).unwrap();
+    let out = r.ank(AGENT, &["check"]);
+    assert_eq!(
+        code(&out),
+        8,
+        "a done task claimed to touch files that are not there: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert!(
+        stdout(&out).contains("dead scope"),
+        "done: {}",
+        stdout(&out)
+    );
+}
+
 /// A perimeter holding one proposal, with a budget as the only variable.
 fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
     let r = Repo::new();
