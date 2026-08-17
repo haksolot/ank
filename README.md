@@ -11,21 +11,12 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="https://github.com/haksolot/ank/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/haksolot/ank"></a>
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a></p>
 
-**The binary:**
-
 ```sh
-npm install -g @haksolot/ank
+npm install -g @haksolot/ank     # the binary
+npx skills add haksolot/ank      # the skill, into whichever agent you run
 ```
 
-**The skill**, into whichever agent you run:
-
-```sh
-npx skills add haksolot/ank
-```
-
-Ank needs **git 2.34 or newer**. Every other route — `curl | sh`, Homebrew,
-Scoop, apt, release binaries, `cargo`, the Claude Code plugin, `pi`, a hand copy
-— is in [handing ank to an agent][agents].
+Needs **git 2.34 or newer**. Every other route is in [handing ank to an agent][agents].
 
 ---
 
@@ -35,90 +26,91 @@ sessions must never be self-contained JWTs. So it writes plausible code that
 breaks a rule nobody wrote down where it could be found.
 
 Ank puts that layer in the repository, attached to the code it constrains, and
-serves it through one command surface. `.ank/` itself is opaque to an agent, the
-way `.git/` is — not a directory to grep, a CLI to call.
+serves it through one command surface. `.ank/` is opaque to an agent, the way
+`.git/` is: not a directory to grep, a CLI to call.
 
-## What an agent gets
+## The loop
 
-A constraint served, what `blocked_by` orders, the work that follows respecting
-the constraint, and `done` running the verifier itself rather than being told a
-result.
+What applies here, and what is takeable:
+
+```console
+$ ank context src/auth/
+
+CONSTRAINTS (1 active)
+  ADR-f848  Sessions are opaque, never self-contained JWTs
+
+TASKS (1)
+  TASK-2352  [open] Rotate a session on privilege change
+
+> ank claim TASK-2352 to start
+```
+
+Taking it freezes the criterion by hash, so editing it later to get unstuck
+unblocks nothing:
+
+```console
+$ ank claim TASK-2352
+claimed TASK-235214d1655d rotate-a-session-on-privilege-change -> HEAD
+```
+
+The same verb now answers about the one task you hold, and serves the rule that
+binds it **in full** rather than by title:
+
+```console
+$ ank context
+
+TASK-2352  Rotate a session on privilege change
+
+DONE_CRITERIA
+  Logging in at a higher privilege level issues a new identifier and invalidates the old one.
+
+CONSTRAINTS (1 active)
+  ADR-f848  A session identifier is opaque and resolved server-side. No claim travels in the token.
+```
+
+Then work. Logging what you learn is also what holds the claim, and `done` runs
+the verifiers the task declares rather than taking your word for the result:
+
+```console
+$ ank log "the old identifier has to be invalidated, not just replaced"
+logged LOG-3c812d240fe3 on TASK-235214d1655d
+
+$ ank done --proof commit:97fdae7
+proof recorded: commit -> 97fdae7
+TASK-235214d1655d -> done
+```
+
+`ank check` is the verb a pipeline runs: parse, round-trip, references, frozen
+fields, orphaned claims. It exits **0** healthy, **8** on faults, **9** when the
+environment failed rather than the work.
+
+[Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) walks all of it, from `ank init` onward.
 
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
 <img src="assets/demo.gif" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; ank graph shows which task is takeable; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
 
-One call, and the answer is bounded — 8000 characters by default, roughly 2000
-tokens. Orientation names the rules; execution serves the one that binds, whole.
-Behind them four kinds of entity: an ADR, a decision that constrains code; a
-spec, normative text that describes rather than binds; a task, a unit of work
-with what would prove it finished; and a log entry, written once and never
-transitioned. All four are plain markdown with YAML frontmatter, joined to the
-code by nothing but globs.
-
-Nothing in the recording opens a file under `.ank/`. It is rebuilt by
-`assets/demo/setup.sh`, played by `play.sh` and rendered by `render.sh`, so a
-retake is a re-run rather than a performance.
-
 ## Why it works this way
 
-**Scope, not hierarchy.** Constraints and work are two independent planes joined
-only by globs. A constraint written last year applies to work created today, and
-scope is verifiable where a label is not: a glob is confronted with the filesystem.
+**Scope, not hierarchy.** Constraints and work are two planes joined only by globs.
+A rule written last year binds work created today, and a glob is verifiable against
+the filesystem where a label is not.
 
-**Nobody declares themselves done.** A task names verifiers; `ank done` runs them
-itself and records what actually ran, hashed. An agent that reports its own
-result can simply be wrong.
+**Nobody declares themselves done.** An agent that reports its own result can simply
+be wrong, so `ank done` runs the verifiers itself and records what ran, hashed.
 
-**Freezing is verifiable, not defended.** The CLI cannot stop anyone editing a
-file and does not pretend to. Every frozen field is anchored by a hash the editor
-does not control, and `ank check` compares. Editing a criterion to unblock
-yourself unblocks nothing; it makes the divergence visible.
+**Freezing is verifiable, not defended.** The CLI cannot stop you editing a file and
+does not pretend to. Frozen fields are anchored by a hash the editor does not
+control, and `ank check` compares.
 
 **Git does the hard parts.** Claims are git refs, so the compare-and-swap that
-arbitrates two agents is the one git already guarantees. Parallel agents are the
-nominal case, not an extension — a worktree per agent, a branch per task,
-`blocked_by` for what actually waits; the assembled workflow is in
-[handing ank to an agent][agents]. Undo, history and recovery are git's. There
-is nothing to run.
+arbitrates two agents is the one git already guarantees. Undo, history and recovery
+are git's. There is nothing to run.
 
-## Where this sits
-
-Ank is not the first curated layer over a codebase. Here is where it differs.
-
-**Against retrieval.** RAG answers *what looks relevant to this query*;
-`ank context src/auth/` answers *what applies to this path*. The first ranks by
-similarity, the second is a set-membership test — and for a constraint that is
-the whole point, because a rule that should have bound but ranked seventh did not
-bind, and nothing says so. No embeddings, no index service, no re-indexing per
-commit. The cost is real: somebody has to have written the constraint and its
-scope. Ank does not replace search over a corpus nobody curated; it replaces the
-wiki page that was never found.
-
-**Against an LLM-maintained wiki.** Karpathy's [pattern][wiki] is three layers —
-raw sources, a wiki the model owns, a schema file — and three operations: ingest,
-query, lint. Ank has that shape and differs on what the middle layer *is*. A wiki
-page is derived from sources and can be regenerated if lost; an ADR records a
-choice that has none. Somebody decided opaque sessions over JWTs, and the record
-is the only copy — nothing can re-ingest its way back to it. Hence hash-anchored
-and signed at ratification rather than rewritten, and a lint that is mechanical
-rather than a model re-reading for contradictions.
-
-**Against OKF.** Google's [Open Knowledge Format][okf] is the closest relative,
-reached independently: markdown with YAML frontmatter, no server, no SDK,
-identity carried by the path, the format as the contract so producer and consumer
-stay swappable. Its v0.2 trust signals are the same instinct as ank's proofs, and
-ank has adopted two outright — the actor convention and `verified`. One axis
-diverges, deliberately on both sides. OKF tells consumers never to reject a
-document for what it lacks; ank rejects an unknown field. OKF optimises for
-knowledge crossing organisations, where a rejected document is knowledge lost;
-ank optimises for a criterion that cannot be quietly weakened, where an
-accepted-but-malformed file is a rule that silently stopped applying.
-
-Efficiency is two numbers rather than an adjective: the skill costs about 58
-tokens in every session, which is its frontmatter — the `name` and `description`
-a harness keeps loaded whether or not the skill is ever invoked, the body being
-read only when it is — and orientation is bounded at 8000 characters.
+One call is bounded at 8000 characters by default, roughly 2000 tokens. Behind it
+four kinds of entity, all plain markdown with YAML frontmatter: an **ADR** that
+constrains code, a **spec** that describes without binding, a **task** with what
+would prove it finished, and a **log entry**, written once.
 
 ## What it is not
 
@@ -132,33 +124,27 @@ read only when it is — and orientation is bounded at 8000 characters.
 |---|---|
 | go from install to a first finished task | [Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) |
 | hand it to an agent, whichever one you run | [Handing ank to an agent][agents] |
-| build a tool on top of ank | [Integrating with ank](https://github.com/haksolot/ank/blob/main/docs/integrating.md) — the machine contract: `help --json`, the exit codes, and where a task's state actually lives |
+| build a tool on top of ank | [Integrating with ank](https://github.com/haksolot/ank/blob/main/docs/integrating.md) |
 | write a tool that reads or writes `.ank/` | [The file format](https://github.com/haksolot/ank/blob/main/docs/format.md) |
-| know why it is shaped this way | [The specification](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md) — ten documents in `.ank/`, indexed there |
+| know how it compares to RAG, a wiki, or OKF | [How ank compares](https://github.com/haksolot/ank/blob/main/docs/alternatives.md) |
 | open a pull request | [Contributing](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md) |
 | report a vulnerability | [Security policy](https://github.com/haksolot/ank/blob/main/SECURITY.md) |
 
-The specification is the source of truth; the others exist so it does not have to
-be a tutorial. Linux, macOS and Windows. The version is `0.x` on purpose rather
-than for want of finishing: the loop and the exit codes are specified and an
-agent can branch on them today, while the storage format is not frozen — and a
-major version is a promise about exactly that. This repository dogfoods its
-own format down to that source of truth: the specification is ten accepted `spec`
-entities in `.ank/`, listed by `ank find --type spec` and printed whole by
-`ank show`, reached through the CLI and never by opening the files — and the plan
-is there beside it, the tool reading, claiming and closing its own tasks, under a [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md).
+The specification is the source of truth and lives as ten accepted `spec` entities
+in `.ank/`: `ank find --type spec` lists them, `ank show <id>` prints one whole.
+This repository dogfoods its own format, so the plan is in there beside them.
+
+Linux, macOS and Windows. The version is `0.x` deliberately: the loop and the exit
+codes are specified and an agent can branch on them today, while the storage format
+is not, and a major version is a promise about exactly that. Contributions are under
+a [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md).
 
 ## Licence
 
-Apache-2.0, whole — see [LICENSE](LICENSE). Every crate, the binary as
-distributed, and every channel that declares a licence say the same thing, so
-your `.ank/` files, the tools that read them, and anything you build on top are
-yours (ADR-9f03438f5422).
-
-Ank was GPL-3.0-only until 0.3.0, and the change is **prospective**: a release
-you already received under GPL-3.0 stays available to you under GPL-3.0, and
-nothing here withdraws that.
+Apache-2.0, whole. See [LICENSE](LICENSE). Every crate, the binary as distributed
+and every channel that declares a licence say the same thing, so your `.ank/` files,
+the tools that read them, and anything you build on top are yours. Ank was
+GPL-3.0-only until 0.3.0 and the change is **prospective**: a release you already
+received stays available to you under GPL-3.0.
 
 [agents]: https://github.com/haksolot/ank/blob/main/docs/agents.md
-[okf]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
-[wiki]: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
