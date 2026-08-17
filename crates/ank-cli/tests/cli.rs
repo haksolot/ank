@@ -10456,7 +10456,49 @@ fn no_verb_puts_anything_but_json_on_stdout_under_json() {
         args.push("--json");
         let out = r.ank_edit("claude-code@ank", &args, None);
         assert_json_only(&out, &format!("`ank {}`", args.join(" ")));
+
+        // **And once more where the verb can succeed**, for the one verb this
+        // fixture can only ever make refuse (TASK-9e63827380a1). `Repo` carries
+        // a `.ank/`, which is what `init` exists to produce, so above it always
+        // refuses; a refusal leaves stdout empty, and an empty stdout is what
+        // `assert_json_only` returns early on. The sweep therefore proved that
+        // `init` refuses cleanly and had never once seen it succeed — which is
+        // exactly where it printed six lines of prose under `--json`.
+        //
+        // A sweep that only ever reaches a verb's refusal has a hole the shape
+        // of that verb's success.
+        if verb == "init" {
+            let fresh = fresh_git_dir("sweep-init");
+            let out = ank_command()
+                .args(["init", "--json"])
+                .env("ANK_AGENT", "claude-code@ank")
+                .current_dir(&fresh)
+                .output()
+                .expect("the binary must have been built");
+            assert_eq!(code(&out), 0, "init must succeed here: {}", stderr(&out));
+            assert_json_only(&out, "`ank init --json` where it succeeds");
+            let _ = std::fs::remove_dir_all(&fresh);
+        }
     }
+}
+
+/// A git repository with no corpus in it, for the verbs whose success needs
+/// one. Named by the caller so two of them never collide.
+fn fresh_git_dir(what: &str) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let p = std::env::temp_dir().join(format!(
+        "ank-cli-{what}-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(&p).unwrap();
+    let out = git_command(&p)
+        .args(["init", "-q", "-b", "main"])
+        .output()
+        .expect("git must be installed: it is a hard dependency");
+    assert!(out.status.success(), "git init: {}", stderr(&out));
+    p
 }
 
 #[test]
@@ -14036,9 +14078,24 @@ fn json_golden_verbs_needing_their_own_environment() {
     assert_eq!(code(&out), 0, "migrate: {}", stderr(&out));
     golden("migrate", &stdout(&out));
 
-    // `init` is the one verb with no golden here, and deliberately: it does
-    // not honour `--json` at all, it prints its six human lines. Capturing
-    // these fixtures is what found that, and TASK-9e63827380a1 owns it. A
-    // fixture named `init.json` holding prose would pin the defect as if it
-    // were the contract.
+    // init, which refuses --repo by name and so is run from a directory. Two
+    // fixtures and not one: the second run is the idempotent case, and the
+    // shape it returns is the point — three empty lists and `changed: false`,
+    // so a parser reads one document and never two.
+    let fresh = fresh_git_dir("golden-init");
+    let init_json = |dir: &Path| {
+        ank_command()
+            .args(["init", "--json"])
+            .env("ANK_AGENT", AGENT)
+            .current_dir(dir)
+            .output()
+            .expect("the binary must have been built")
+    };
+    let out = init_json(&fresh);
+    assert_eq!(code(&out), 0, "init: {}", stderr(&out));
+    golden("init", &stdout(&out));
+    let out = init_json(&fresh);
+    assert_eq!(code(&out), 0, "init, again: {}", stderr(&out));
+    golden("init-again", &stdout(&out));
+    let _ = std::fs::remove_dir_all(&fresh);
 }
