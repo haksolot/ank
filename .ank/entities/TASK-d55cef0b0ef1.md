@@ -5,7 +5,7 @@ slug: a-corpus-is-addressable-by-an-identity-that-surv
 title: A corpus is addressable by an identity that survives being moved, cloned or symlinked
 created: 2026-08-17T19:21:48Z
 author: claude-code/2.1.233+exposition
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/src/status.rs
@@ -14,8 +14,13 @@ blocked_by: []
 done_criteria: |
   A repository carries an identity derived from its root commit and never from its path, so two worktrees of one repository answer the same value and two clones of different repositories answer different ones. ank status --json carries it, and a test drives the binary to prove both halves: one repository reached by two paths is one corpus, two corpora in one tree are two. A tree with no history answers a declared fallback rather than inventing a value, and the fallback is documented where the field is. The field is gained within contract version 1, which permits gaining and forbids losing, so CONTRACT_VERSION does not move and the goldens are updated in the same commit. cargo test is green and cargo fmt --check passes.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: a158729
+    criteria: 02c4ce0ac8c1
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 ADR-621a7fd96ce1 requires it. `--repo` already addresses a corpus and `peers.<name>`
