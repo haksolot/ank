@@ -77,9 +77,11 @@ run on all three.
 - The format is the specification: `ank-core` is the reference implementation,
   and the round-trip stays byte-identical on canonical form. Any format change
   goes through the specification first, then the goldens, then the code.
-- The CLI exposes one surface (ADR-f61e2d2c75e8, carrying ADR-c656cbcc33a9
-  forward): every verb is available to every caller, and it refuses on state,
-  never on identity. What is frozen is not the dispatch table but the content of
+- The CLI exposes one surface (ADR-5dd7b4a9c875, which superseded
+  ADR-f61e2d2c75e8 and carries ADR-c656cbcc33a9 forward through it): every verb
+  is available to every caller, it refuses on state, never on identity, and the
+  verbs themselves do not change. What is frozen is not the dispatch table but
+  the content of
   `skill/SKILL.md` — the loop (`context claim show log done`, with `new find
   release` off-loop) and the planning verbs (`new adr`, `amend`, `review`,
   `graph`, `check`) — it is loaded permanently, so growing what it teaches costs

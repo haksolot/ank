@@ -865,7 +865,7 @@ impl Value {
 
     fn json(&self) -> String {
         match self {
-            Value::Set(v) | Value::Default(v) => crate::cli::json_str(v),
+            Value::Set(v) | Value::Default(v) => crate::json::string(v),
             Value::Unset => "null".to_string(),
         }
     }
@@ -1301,13 +1301,12 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         // value is not a thing, and only `--unset` addresses it.
         let before = read_key(&lines, &key)?;
         if inv.json() {
-            let _ = writeln!(
-                out,
-                "{{\"key\":{},\"value\":{},\"source\":{}}}",
-                crate::cli::json_str(raw_key),
-                before.json(),
-                crate::cli::json_str(before.source())
-            );
+            let doc = crate::json::Obj::new()
+                .str("key", raw_key)
+                .raw("value", &before.json())
+                .str("source", before.source())
+                .finish();
+            let _ = writeln!(out, "{doc}");
         } else if !inv.quiet() {
             let _ = writeln!(out, "{}", before.display());
         }
@@ -1348,14 +1347,13 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     }
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"key\":{},\"previous\":{},\"value\":{},\"changed\":{}}}",
-            crate::cli::json_str(raw_key),
-            before.json(),
-            after.json(),
-            changed
-        );
+        let doc = crate::json::Obj::new()
+            .str("key", raw_key)
+            .raw("previous", &before.json())
+            .raw("value", &after.json())
+            .bool("changed", changed)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         if changed {
             let _ = writeln!(out, "{raw_key} {} -> {}", before.display(), after.display());

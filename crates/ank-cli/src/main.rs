@@ -19,6 +19,7 @@ mod config;
 mod git;
 mod identity;
 mod init;
+mod json;
 mod paint;
 mod repo;
 mod store;

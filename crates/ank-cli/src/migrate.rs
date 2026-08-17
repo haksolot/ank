@@ -100,7 +100,12 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 
     if plan.is_empty() {
         if inv.json() {
-            let _ = writeln!(out, "{{\"files\":0,\"entries\":0,\"created\":0}}");
+            let doc = crate::json::Obj::new()
+                .num("files", 0)
+                .num("entries", 0)
+                .num("created", 0)
+                .finish();
+            let _ = writeln!(out, "{doc}");
         } else if !inv.quiet() {
             let _ = writeln!(out, "nothing to migrate");
         }
@@ -188,10 +193,12 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
 
     let files = plan.len();
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"files\":{files},\"entries\":{lines},\"created\":{created}}}"
-        );
+        let doc = crate::json::Obj::new()
+            .num("files", files)
+            .num("entries", lines)
+            .num("created", created)
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(0);
     }
     if inv.quiet() {

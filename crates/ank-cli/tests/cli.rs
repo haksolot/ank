@@ -13789,3 +13789,256 @@ fn a_log_check_cannot_read_is_reported_rather_than_read_as_empty() {
         "the line is named, because the file grows: {said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The JSON goldens (TASK-2c12b027f805)
+// ---------------------------------------------------------------------------
+
+/// Where a caller's parser meets this binary, pinned one file per verb.
+///
+/// Captured from the process and never from a function. A fixture compared
+/// against what an emitter returns proves the emitter, and what §4 promises is
+/// what leaves the process — the same distinction this whole file exists for.
+///
+/// Volatile values are named rather than kept: an instant, a commit, an
+/// identifier the binary generated. A golden that changes every run pins
+/// nothing, and everything outside those three is compared byte for byte.
+///
+/// Bless a new or deliberately changed shape with
+/// `ANK_BLESS_GOLDEN=1 cargo test --test cli -- json_golden`, and read the diff
+/// before committing it: that diff is the contract changing.
+const GOLDEN_DIR: &str = "tests/golden-json";
+
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric()
+}
+
+/// `dddd-dd-ddTdd:dd:ddZ`, the only instant the format writes.
+fn timestamp_len_at(b: &[char], i: usize) -> Option<usize> {
+    const SHAPE: &str = "nnnn-nn-nnTnn:nn:nnZ";
+    if i + SHAPE.len() > b.len() {
+        return None;
+    }
+    for (k, want) in SHAPE.chars().enumerate() {
+        let got = b[i + k];
+        let ok = match want {
+            'n' => got.is_ascii_digit(),
+            c => got == c,
+        };
+        if !ok {
+            return None;
+        }
+    }
+    Some(SHAPE.len())
+}
+
+fn redact(s: &str) -> String {
+    let b: Vec<char> = s.chars().collect();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if let Some(n) = timestamp_len_at(&b, i) {
+            out.push_str("<TIME>");
+            i += n;
+            continue;
+        }
+        if b[i].is_ascii_hexdigit() {
+            let mut j = i;
+            while j < b.len() && b[j].is_ascii_hexdigit() {
+                j += 1;
+            }
+            let word: String = b[i..j].iter().collect();
+            let whole =
+                (i == 0 || !is_word_char(b[i - 1])) && (j == b.len() || !is_word_char(b[j]));
+            // A seeded identifier is deterministic and worth pinning; the
+            // zero prefix is what the fixtures in this file use for one. Only
+            // what the binary minted itself is named away.
+            if whole && word.len() == 40 {
+                out.push_str("<SHA>");
+            } else if whole && word.len() == 12 && !word.starts_with("0000") {
+                out.push_str("<HEX>");
+            } else {
+                out.push_str(&word);
+            }
+            i = j;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    out
+}
+
+fn golden(name: &str, actual: &str) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join(GOLDEN_DIR)
+        .join(format!("{name}.json"));
+    let actual = format!("{}\n", redact(actual.trim_end_matches('\n')));
+    if std::env::var_os("ANK_BLESS_GOLDEN").is_some() {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, actual.as_bytes()).unwrap();
+        return;
+    }
+    let expected = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("no golden for {name} at {}: {e}", path.display()))
+        .replace("\r\n", "\n");
+    assert_eq!(
+        actual, expected,
+        "the --json document of `{name}` is not what the golden pins.\n\
+         If the contract really changed, bless it and read the diff:\n  \
+         ANK_BLESS_GOLDEN=1 cargo test --test cli -- json_golden"
+    );
+}
+
+/// A corpus with one of everything, so that a document has something to carry.
+///
+/// Seeded with the zero-prefixed identifiers this file uses, and with the fixed
+/// instants `seed_*` write, so that what survives redaction is the shape and
+/// not the run.
+fn golden_repo() -> Repo {
+    const ADR: &str = "ADR-0000000000ab";
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_docs();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    r
+}
+
+const AGENT: &str = "claude-code/1.0.0";
+
+#[test]
+fn json_golden_reading_verbs() {
+    let r = golden_repo();
+    for (name, args) in [
+        ("help", &["help", "--json"][..]),
+        ("help-verb", &["help", "claim", "--json"][..]),
+        ("find", &["find", "Example", "--json"][..]),
+        ("show", &["show", ID, "--json"][..]),
+        ("graph", &["graph", "src/**", "--json"][..]),
+        ("scope", &["scope", "src/main.rs", "--json"][..]),
+        ("check", &["check", "--json"][..]),
+        ("review", &["review", "src/**", "--json"][..]),
+        ("status", &["status", "--json"][..]),
+        ("context", &["context", "src/**", "--json"][..]),
+        ("config-read", &["config", "claim_ttl_max", "--json"][..]),
+        ("log-read", &["log", ID, "--json"][..]),
+    ] {
+        let out = r.ank(AGENT, args);
+        assert!(
+            !stdout(&out).is_empty(),
+            "{name} emitted no document: {}",
+            stderr(&out)
+        );
+        golden(name, &stdout(&out));
+    }
+}
+
+/// The verbs that write. One fixture each: a document that depended on the
+/// verb before it would pin the order rather than the shape.
+#[test]
+fn json_golden_writing_verbs() {
+    // new
+    let r = golden_repo();
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "task",
+            "--title",
+            "A new task",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "It is done when it is done.",
+            "--json",
+        ],
+    );
+    golden("new", &stdout(&out));
+
+    // claim, then the verbs that need a live claim
+    let r = golden_repo();
+    let out = r.ank(AGENT, &["claim", ID, "--json"]);
+    golden("claim", &stdout(&out));
+    let out = r.ank(AGENT, &["log", "what I learned", "--json"]);
+    golden("log-write", &stdout(&out));
+    let out = r.ank(
+        AGENT,
+        &["release", "--reason", "the criterion is wrong", "--json"],
+    );
+    golden("release", &stdout(&out));
+
+    // done, over a claim and a proof the caller holds
+    let r = golden_repo();
+    let head = r.head();
+    r.ank(AGENT, &["claim", ID]);
+    let out = r.ank(
+        AGENT,
+        &["done", "--proof", &format!("commit:{head}"), "--json"],
+    );
+    golden("done", &stdout(&out));
+
+    // attest, on the task that proof now names
+    let out = r.ank(AGENT, &["attest", ID, "--proof", "test:12345", "--json"]);
+    golden("attest", &stdout(&out));
+
+    // amend and close, on a corpus that never claimed
+    let r = golden_repo();
+    r.seed_task("TASK-000000000002", Some("Another criterion."));
+    let out = r.ank(
+        AGENT,
+        &["amend", ID, "--blocked-by", "TASK-000000000002", "--json"],
+    );
+    golden("amend", &stdout(&out));
+    let out = r.ank(
+        AGENT,
+        &["close", ID, "--reason", "overtaken by events", "--json"],
+    );
+    golden("close", &stdout(&out));
+
+    // config, writing
+    let r = golden_repo();
+    let out = r.ank(AGENT, &["config", "context_budget", "9000", "--json"]);
+    golden("config-write", &stdout(&out));
+}
+
+/// The four that need an environment of their own: a signature, an editor, a
+/// previous layout to migrate, and a directory with no corpus in it yet.
+#[test]
+fn json_golden_verbs_needing_their_own_environment() {
+    // accept, which is the one verb that commits
+    let r = golden_repo();
+    r.enable_signing();
+    let out = r.ank(AGENT, &["accept", "ADR-0000000000ab", "--json"]);
+    assert_eq!(code(&out), 0, "accept: {}", stderr(&out));
+    golden("accept", &stdout(&out));
+
+    // edit, with an editor that saves
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let editor = r.editor_saving(EDITED_TASK);
+    let out = r.ank_edit(AGENT, &["edit", ID, "--json"], Some(&editor));
+    assert_eq!(code(&out), 0, "edit: {}", stderr(&out));
+    golden("edit", &stdout(&out));
+
+    // migrate, over the layout that is read and never written
+    let r = golden_repo();
+    std::fs::create_dir_all(r.0.join(".ank/log")).unwrap();
+    std::fs::write(
+        r.0.join(".ank/log").join(format!("{ID}.md")),
+        "- 2026-07-28T00:00:00Z claude-code@ank \u{2014} an entry\n",
+    )
+    .unwrap();
+    let out = r.ank(AGENT, &["migrate", "--json"]);
+    assert_eq!(code(&out), 0, "migrate: {}", stderr(&out));
+    golden("migrate", &stdout(&out));
+
+    // `init` is the one verb with no golden here, and deliberately: it does
+    // not honour `--json` at all, it prints its six human lines. Capturing
+    // these fixtures is what found that, and TASK-9e63827380a1 owns it. A
+    // fixture named `init.json` holding prose would pin the defect as if it
+    // were the contract.
+}

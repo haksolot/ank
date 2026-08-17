@@ -17,10 +17,11 @@
 use crate::cli::{Invocation, Result};
 use crate::config::Config;
 use crate::context;
+use crate::git;
 use crate::human;
 use crate::index::{Index, Row};
+use crate::json::Obj;
 use crate::repo::Repo;
-use crate::{commands, git};
 use ank_core::EntityKind;
 use std::io::Write;
 
@@ -232,10 +233,11 @@ pub fn run(
         // clock: the human surface says it in words, and a rendering that knows
         // something the other two do not is the defect, not the economy.
         let claim_json = match &claimed {
-            Some((task, expires)) => format!(
-                "{{\"id\":\"{}\",\"expires\":\"{expires}\",\"lapsed\":{lapsed}}}",
-                task.id
-            ),
+            Some((task, expires)) => Obj::new()
+                .str("id", &task.id.to_string())
+                .str("expires", expires)
+                .bool("lapsed", lapsed)
+                .finish(),
             None => "null".into(),
         };
         // The same information, not a shorter version of it: a caller that
@@ -244,7 +246,12 @@ pub fn run(
         // hide the case from the reader most likely to cause it.
         let also_json: Vec<String> = also_held
             .iter()
-            .map(|(id, c)| format!("{{\"id\":\"{id}\",\"expires\":\"{}\"}}", c.expires))
+            .map(|(id, c)| {
+                Obj::new()
+                    .str("id", &id.to_string())
+                    .str("expires", &c.expires)
+                    .finish()
+            })
             .collect();
         // The other agents' claims, on the same terms as `also_held`: a caller
         // that scripts around `status` is the one most likely to be running
@@ -260,64 +267,63 @@ pub fn run(
         let elsewhere_json: Vec<String> = elsewhere
             .iter()
             .map(|h| {
-                format!(
-                    "{{\"id\":\"{}\",\"title\":{},\"holder\":{},\"expires\":{},\"seen\":{}}}",
-                    h.id,
-                    opt_json(h.title.as_deref()),
-                    opt_json(h.holder.as_deref()),
-                    opt_json(h.expires.as_deref()),
-                    opt_json(h.seen.map(Seen::word))
-                )
+                Obj::new()
+                    .str("id", &h.id.to_string())
+                    .opt_str("title", h.title.as_deref())
+                    .opt_str("holder", h.holder.as_deref())
+                    .opt_str("expires", h.expires.as_deref())
+                    .opt_str("seen", h.seen.map(Seen::word))
+                    .finish()
             })
             .collect();
         // Value and source as separate fields, which is the shape `config`
         // already gives an answer whose provenance is half of it: a script
         // matching on the token decides, and never on the parenthesis the
         // human surface writes.
-        let identity_json = format!(
-            "{{\"value\":{},\"source\":{}}}",
-            commands::json_string(identity),
-            commands::json_string(identity_source.word())
-        );
+        let identity_json = Obj::new()
+            .str("value", identity)
+            .str("source", identity_source.word())
+            .finish();
         // Null is the question never answered, and it is not zero: a caller
         // that reads zero has been told the corpus is level, which is exactly
         // the answer no verb may give without having compared (§4).
         let drift_json = match &report.drift {
-            Some(d) => format!(
-                "{{\"branch\":{},\"entities\":{}}}",
-                commands::json_string(&d.branch),
-                d.entities
-            ),
+            Some(d) => Obj::new()
+                .str("branch", &d.branch)
+                .num("entities", d.entities)
+                .finish(),
             None => "null".into(),
         };
-        let _ = writeln!(
-            out,
-            "{{\"branch\":{},\"default_branch\":{},\"identity\":{identity_json},\
-             \"claim\":{claim_json},\"drift\":{drift_json},\
-             \"also_held\":[{}],\"remote\":{},\"elsewhere\":[{}],\
-             \"constraints\":{constraints},\"queue\":{queue},\"unmerged\":{unmerged},\
-             \"faults\":{},\"signals\":{}}}",
+        let doc = Obj::new()
             // Both collapse to null, and legitimately: a parser asking for the
             // branch gets "there is none to report", and the three ways of
             // having none are a distinction the human surface draws in words.
-            opt_json(branch.as_ref().and_then(|b| b.as_deref())),
-            opt_json(
+            .opt_str("branch", branch.as_ref().and_then(|b| b.as_deref()))
+            .opt_str(
+                "default_branch",
                 default
                     .as_ref()
                     .and_then(|d| d.as_ref().ok())
-                    .map(|s| s.as_str())
-            ),
-            also_json.join(","),
+                    .map(|s| s.as_str()),
+            )
+            .raw("identity", &identity_json)
+            .raw("claim", &claim_json)
+            .raw("drift", &drift_json)
+            .array("also_held", also_json)
             // Whether origin was read, and nothing else: a caller that asked
             // for the remote plane and got the local one has to be able to tell,
             // and `--json` has nowhere to put the warning the human surface
             // prints. False is both "not asked" and "asked, no remote to read",
             // which `seen` then separates — null everywhere, or a word.
-            matches!(remote, Remote::Read(_)),
-            elsewhere_json.join(","),
-            report.faults(),
-            report.signals()
-        );
+            .bool("remote", matches!(remote, Remote::Read(_)))
+            .array("elsewhere", elsewhere_json)
+            .num("constraints", constraints)
+            .num("queue", queue)
+            .num("unmerged", unmerged)
+            .num("faults", report.faults())
+            .num("signals", report.signals())
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(0);
     }
     if inv.quiet() {
@@ -682,11 +688,4 @@ fn anchor_of(glob: &str) -> String {
         None => glob,
     };
     cut.trim_end_matches('/').to_string()
-}
-
-fn opt_json(v: Option<&str>) -> String {
-    match v {
-        Some(s) => commands::json_string(s),
-        None => "null".into(),
-    }
 }

@@ -1,5 +1,9 @@
 .ank/** text eol=lf
 crates/ank-core/tests/golden/** text eol=lf
+# The JSON goldens are compared against what the binary just printed, and the
+# binary prints LF on all three platforms. Declared for the same reason as the
+# line above it: a fixture whose bytes depend on the checkout is not a fixture.
+crates/ank-cli/tests/golden-json/** text eol=lf
 
 # There is no merge rule for the log, and the absence is the decision
 # (ADR-25f977377fa0). `.ank/log/** merge=union` used to be here, and it was
