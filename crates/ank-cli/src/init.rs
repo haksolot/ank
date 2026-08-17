@@ -62,15 +62,27 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<i32> {
     // not a repository.
     git::ensure_usable(&target)?;
     let report = init_at(&target)?;
-    for line in report.lines_terse() {
-        let _ = writeln!(out, "{line}");
+    // `--json` is available on every command without exception (§4), and this
+    // verb was the exception: it printed its prose and ignored the flag. The
+    // sweep never caught it because a `Repo` fixture already carries a `.ank/`,
+    // so `init` refused, stdout was empty, and an empty stdout is what a
+    // refusal is supposed to leave (TASK-9e63827380a1).
+    if inv.json() {
+        let _ = writeln!(out, "{}", report.json());
+    } else if !inv.quiet() {
+        for line in report.lines_terse() {
+            let _ = writeln!(out, "{line}");
+        }
     }
     Ok(0)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
-    pub created_dirs: bool,
+    /// The directories this run made, in the order they were made. A list and
+    /// not a flag: the flag named both whenever either was missing, so a run
+    /// that created one of the two reported creating a directory it found.
+    pub created_dirs: Vec<String>,
     pub wrote_config: bool,
     pub wrote_gitattributes: bool,
     pub wrote_gitignore: bool,
@@ -79,12 +91,60 @@ pub struct Report {
 }
 
 impl Report {
+    /// The same six effects as [`lines_terse`], grouped by the verb that
+    /// applies to them, and always the same shape: three lists, empty when
+    /// there is nothing in them, so a parser reads one document and not two.
+    ///
+    /// `changed` is the question a script actually asks — whether there is
+    /// anything to commit — and it is answered rather than left to be derived
+    /// from the emptiness of three lists.
+    ///
+    /// [`lines_terse`]: Report::lines_terse
+    pub fn json(&self) -> String {
+        let mut wrote: Vec<&str> = Vec::new();
+        if self.wrote_config {
+            wrote.push(".ank/config.yml");
+        }
+        if self.wrote_gitattributes {
+            wrote.push(".gitattributes");
+        }
+        if self.wrote_gitignore {
+            wrote.push(".gitignore");
+        }
+        // Where each was added, not what was added: the caller who wants to
+        // inspect the result needs the address, and the two addresses are of
+        // different kinds — a file and a git config key.
+        let mut added: Vec<&str> = Vec::new();
+        if self.wrote_agents_pointer {
+            added.push("AGENTS.md");
+        }
+        if self.added_refspec {
+            added.push("remote.origin.fetch");
+        }
+        crate::json::Obj::new()
+            .strings("created", &self.created_dirs)
+            .strings("wrote", &wrote)
+            .strings("added", &added)
+            .bool("changed", self.changed())
+            .finish()
+    }
+
+    /// Whether this run had any effect at all.
+    pub fn changed(&self) -> bool {
+        !self.created_dirs.is_empty()
+            || self.wrote_config
+            || self.wrote_gitattributes
+            || self.wrote_gitignore
+            || self.wrote_agents_pointer
+            || self.added_refspec
+    }
+
     /// Terse output, `git status` style: one line per real effect, nothing for
     /// what was already in place.
     pub fn lines_terse(&self) -> Vec<String> {
         let mut v = Vec::new();
-        if self.created_dirs {
-            v.push("created .ank/entities .ank/log".to_string());
+        if !self.created_dirs.is_empty() {
+            v.push(format!("created {}", self.created_dirs.join(" ")));
         }
         if self.wrote_config {
             v.push("wrote .ank/config.yml".to_string());
@@ -127,7 +187,7 @@ pub fn init_at(root: &Path) -> Result<Report> {
         let dir = ank.join(sub);
         if !dir.is_dir() {
             fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
-            report.created_dirs = true;
+            report.created_dirs.push(format!("{}/{sub}", repo::ANK_DIR));
         }
     }
 
@@ -242,7 +302,7 @@ mod tests {
         let t = Temp::new_repo();
         let r = init_at(&t.0).unwrap();
 
-        assert!(r.created_dirs);
+        assert_eq!(r.created_dirs, vec![".ank/entities", ".ank/log"]);
         assert!(t.0.join(".ank/entities").is_dir());
         assert!(t.0.join(".ank/log").is_dir());
 
