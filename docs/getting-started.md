@@ -115,9 +115,11 @@ remote has none. It refuses rather than guessing:
       -> git remote set-head origin -a
       -> or ank config default_branch <name>
 
-## The two kinds of file
+## The two kinds this page uses
 
-Flat in `.ank/`, markdown with YAML frontmatter, and only two of them.
+Flat in `.ank/`, markdown with YAML frontmatter. Four kinds exist and this page
+needs two of them; the other two are a **spec**, normative text that describes
+rather than binds, and a **log entry**, written once and never transitioned.
 
 An **ADR** is a decision that constrains code. Its `constraint` is the one
 field injected into an agent's context, so it is short and imperative; the body
@@ -523,14 +525,44 @@ The shortest of them, which detects what you run and links it to a single copy:
 That installs the skill, not the binary. The skill teaches one page, and it is
 loaded on every session, which is why its content is deliberately small.
 
+## Why it works this way
+
+You have now done the loop once, which is the right moment for the four claims
+underneath it. Each one is a property of the tool rather than a convention you
+are asked to keep.
+
+**Scope, not hierarchy.** Constraints and work are two planes joined only by
+globs. A rule written last year binds work created today, and a glob is
+verifiable against the filesystem where a label is not. There is no epic, no
+parent and no rollup to keep in step.
+
+**Nobody declares themselves done.** An agent that reports its own result can
+simply be wrong, so `ank done` runs the verifiers itself and records what
+actually ran, hashed. That is why the previous section refused a `done` with no
+proof rather than trusting the caller.
+
+**Freezing is verifiable, not defended.** The CLI cannot stop you editing a file
+and does not pretend to. Frozen fields are anchored by a hash the editor does not
+control, and `ank check` compares. Editing a criterion to unblock yourself
+unblocks nothing; it makes the divergence visible.
+
+**Git does the hard parts.** Claims are git refs, so the compare-and-swap that
+arbitrates two agents is the one git already guarantees. Undo, history and
+recovery are git's, and there is no server to run.
+
+One call is bounded at 8000 characters by default, roughly 2000 tokens, which is
+the constraint every one of those choices is paid for by: what `context` serves
+has to fit in a context window beside the code.
+
 ## Where to go next
 
 - [agents.md](agents.md): the four routes that reach an agent, the binary
   channels beyond npm, and what running several agents actually requires.
 - [format.md](format.md): the file format and canonical form, for anyone
   writing a tool that reads or writes `.ank/`.
+- [alternatives.md](alternatives.md): how this compares to retrieval, an
+  LLM-maintained wiki, and OKF.
 - The specification, the source of truth for everything above: ten `spec`
   documents in `.ank/`, read with `ank find --type spec` and `ank show <id>`.
-  They argue the design; they
-  are not a tutorial.
+  They argue the design; they are not a tutorial.
 - `ank help` lists every verb, `ank help <verb>` answers about one.

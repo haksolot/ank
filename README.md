@@ -29,88 +29,14 @@ Ank puts that layer in the repository, attached to the code it constrains, and
 serves it through one command surface. `.ank/` is opaque to an agent, the way
 `.git/` is: not a directory to grep, a CLI to call.
 
-## The loop
-
-What applies here, and what is takeable:
-
-```console
-$ ank context src/auth/
-
-CONSTRAINTS (1 active)
-  ADR-f848  Sessions are opaque, never self-contained JWTs
-
-TASKS (1)
-  TASK-2352  [open] Rotate a session on privilege change
-
-> ank claim TASK-2352 to start
-```
-
-Taking it freezes the criterion by hash, so editing it later to get unstuck
-unblocks nothing:
-
-```console
-$ ank claim TASK-2352
-claimed TASK-235214d1655d rotate-a-session-on-privilege-change -> HEAD
-```
-
-The same verb now answers about the one task you hold, and serves the rule that
-binds it **in full** rather than by title:
-
-```console
-$ ank context
-
-TASK-2352  Rotate a session on privilege change
-
-DONE_CRITERIA
-  Logging in at a higher privilege level issues a new identifier and invalidates the old one.
-
-CONSTRAINTS (1 active)
-  ADR-f848  A session identifier is opaque and resolved server-side. No claim travels in the token.
-```
-
-Then work. Logging what you learn is also what holds the claim, and `done` runs
-the verifiers the task declares rather than taking your word for the result:
-
-```console
-$ ank log "the old identifier has to be invalidated, not just replaced"
-logged LOG-3c812d240fe3 on TASK-235214d1655d
-
-$ ank done --proof commit:97fdae7
-proof recorded: commit -> 97fdae7
-TASK-235214d1655d -> done
-```
-
-`ank check` is the verb a pipeline runs: parse, round-trip, references, frozen
-fields, orphaned claims. It exits **0** healthy, **8** on faults, **9** when the
-environment failed rather than the work.
-
-[Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) walks all of it, from `ank init` onward.
-
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
 <img src="assets/demo.gif" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; ank graph shows which task is takeable; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
 
-## Why it works this way
-
-**Scope, not hierarchy.** Constraints and work are two planes joined only by globs.
-A rule written last year binds work created today, and a glob is verifiable against
-the filesystem where a label is not.
-
-**Nobody declares themselves done.** An agent that reports its own result can simply
-be wrong, so `ank done` runs the verifiers itself and records what ran, hashed.
-
-**Freezing is verifiable, not defended.** The CLI cannot stop you editing a file and
-does not pretend to. Frozen fields are anchored by a hash the editor does not
-control, and `ank check` compares.
-
-**Git does the hard parts.** Claims are git refs, so the compare-and-swap that
-arbitrates two agents is the one git already guarantees. Undo, history and recovery
-are git's. There is nothing to run.
-
-One call is bounded at 8000 characters by default, roughly 2000 tokens. Behind it
-four kinds of entity, all plain markdown with YAML frontmatter: an **ADR** that
-constrains code, a **spec** that describes without binding, a **task** with what
-would prove it finished, and a **log entry**, written once.
+Four verbs carry the loop: `ank context` for what binds here and what is takeable,
+`ank claim` to take a task and freeze its criterion, `ank log` while you work, and
+`ank done` to finish with a proof that `ank check` can verify afterwards.
+[Getting started][start] walks all of it with real output, from `ank init` onward.
 
 ## What it is not
 
@@ -122,7 +48,7 @@ would prove it finished, and a **log entry**, written once.
 
 | If you want to | Read |
 |---|---|
-| go from install to a first finished task | [Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) |
+| go from install to a first finished task | [Getting started][start] |
 | hand it to an agent, whichever one you run | [Handing ank to an agent][agents] |
 | build a tool on top of ank | [Integrating with ank](https://github.com/haksolot/ank/blob/main/docs/integrating.md) |
 | write a tool that reads or writes `.ank/` | [The file format](https://github.com/haksolot/ank/blob/main/docs/format.md) |
@@ -132,7 +58,6 @@ would prove it finished, and a **log entry**, written once.
 
 The specification is the source of truth and lives as ten accepted `spec` entities
 in `.ank/`: `ank find --type spec` lists them, `ank show <id>` prints one whole.
-This repository dogfoods its own format, so the plan is in there beside them.
 
 Linux, macOS and Windows. The version is `0.x` deliberately: the loop and the exit
 codes are specified and an agent can branch on them today, while the storage format
@@ -141,10 +66,7 @@ a [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md
 
 ## Licence
 
-Apache-2.0, whole. See [LICENSE](LICENSE). Every crate, the binary as distributed
-and every channel that declares a licence say the same thing, so your `.ank/` files,
-the tools that read them, and anything you build on top are yours. Ank was
-GPL-3.0-only until 0.3.0 and the change is **prospective**: a release you already
-received stays available to you under GPL-3.0.
+Apache-2.0. See [LICENSE](LICENSE).
 
 [agents]: https://github.com/haksolot/ank/blob/main/docs/agents.md
+[start]: https://github.com/haksolot/ank/blob/main/docs/getting-started.md
