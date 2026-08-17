@@ -5,7 +5,7 @@ slug: the-reader-lives-outside-this-repository-and-thi
 title: The reader lives outside this repository, and this one keeps the surface it rests on
 created: 2026-08-17T21:48:20Z
 author: claude-code/2.1.233+exposition
-status: proposed
+status: accepted
 scope:
   - docs/**
   - crates/ank-cli/**
@@ -21,8 +21,9 @@ constraint: |
   A reader may exist. It ships from its own repository, on the same terms as any
   other third-party tool, and this decision says nothing about its shape.
 supersedes: ADR-bcb18aecb7e1
+ratified: f79b47a4aeaa
 schema: 3
-version: 1
+version: 2
 ---
 
 ## What this supersedes, and what it does not call wrong

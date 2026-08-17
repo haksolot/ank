@@ -5,7 +5,7 @@ slug: a-read-only-local-viewer-opens-ank-in-the-browse
 title: A read-only local viewer opens .ank in the browser, without a server
 created: 2026-08-05T04:04:29Z
 author: seanl@sean-laptop
-status: accepted
+status: superseded
 scope:
   - docs/**
 constraint: |
@@ -20,7 +20,7 @@ constraint: |
   the CLI.
 ratified: 2a48845ea581
 schema: 2
-version: 3
+version: 4
 ---
 
 ## Context
