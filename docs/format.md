@@ -9,7 +9,7 @@ your tool to call it.
 
 **This document is not normative.** Section 3 of the specification is — *The
 data model*, one of the ten `spec` documents in `.ank/` that
-[ank-spec-v1.1.md](ank-spec-v1.1.md) indexes — and where the two disagree the
+`ank find --type spec` lists — and where the two disagree the
 specification is right and this page is a bug. What you will find here instead
 is the mechanical half a writer has to reproduce exactly — the field order, the
 emission rules, the quoting predicate — which the specification states as
@@ -550,8 +550,8 @@ writes still looks fine until something else reads it.
 
 ## Where to go next
 
-- [ank-spec-v1.1.md](ank-spec-v1.1.md) — the index of the specification's ten
-  documents, and which of them carries each section: §3 for the data model and
+- The specification's ten `spec` documents in `.ank/`, each declaring in its own
+  body which sections it carries: §3 for the data model and
   canonical form, §6 for storage, §7 for the coordination plane, §8 for identity
   and ratification. `ank show <id>` prints one whole.
 - [getting-started.md](getting-started.md) — if you also want to use the tool.

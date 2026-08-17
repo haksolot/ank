@@ -9,7 +9,9 @@ looser copy of a rule is how the two drift apart.
 If you have never run the tool, read [Getting started](docs/getting-started.md)
 first. If you need the normative answer to anything below, it is in the
 specification, which is the source of truth: ten documents in `.ank/`, listed by
-`ank find --type spec` and indexed in [docs/ank-spec-v1.1.md](docs/ank-spec-v1.1.md).
+`ank find --type spec` and printed whole by `ank show <id>`. Each one says in its
+own body which sections of the old monolith it carries, so a rule that reads
+`(§7)` is resolved by the document that claims §7.
 
 ## The three gates
 
@@ -83,9 +85,8 @@ implementation. Every format change happens in this order, and it is ratified
 (ADR-63b59c5c26f7):
 
 1. **the specification** — the `spec` document that states the rule, which for a
-   format change is *The data model* (`ank find --type spec` lists the ten, and
-   [docs/ank-spec-v1.1.md](docs/ank-spec-v1.1.md) indexes them). No field exists
-   in the code without existing there first.
+   format change is *The data model*, one of the ten `ank find --type spec`
+   lists. No field exists in the code without existing there first.
 2. **the goldens** — `crates/ank-core/tests/golden/`. `valid/` must round-trip
    byte for byte once normalised, `invalid/` must be rejected with the expected
    error.

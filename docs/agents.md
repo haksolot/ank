@@ -271,7 +271,7 @@ nowhere else.
   with real output, including the refusals a fresh repository will give you.
 - [format.md](format.md) — the file format, for anyone writing a tool that reads
   or writes `.ank/`.
-- [ank-spec-v1.1.md](ank-spec-v1.1.md) — the index of the specification, which
-  is the source of truth for everything above and lives as ten `spec` documents
-  in `.ank/` (`ank find --type spec`, `ank show <id>`).
+- The specification, the source of truth for everything above, which lives as
+  ten `spec` documents in `.ank/`: `ank find --type spec` lists them and
+  `ank show <id>` prints one whole.
 - `ank help` lists every verb, `ank help <verb>` answers about one.
