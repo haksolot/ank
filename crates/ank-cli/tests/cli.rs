@@ -2998,6 +2998,115 @@ fn readers_of_a_warm_corpus_take_no_write_lock() {
     );
 }
 
+/// A corpus is keyed on its root commit, so a path cannot change what it is
+/// (ADR-621a7fd96ce1).
+///
+/// Driven through the binary because the claim is about what a reader gets back,
+/// and the reader in question is a board keying its rows on the answer. Four
+/// halves, and the two middle ones are the whole point: the same repository
+/// reached by a second path is the same corpus, and a second repository inside
+/// the same working tree is a different one. A path answers both of those wrong.
+#[test]
+fn a_corpus_is_keyed_on_its_root_commit_and_not_on_its_path() {
+    let corpus_of = |out: &std::process::Output| -> serde_yaml::Value {
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&stdout(out)).expect("status --json must be readable");
+        doc["corpus"].clone()
+    };
+
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // A tree with no commits has no root commit, so it has no identity and says
+    // so. Falling back to the path here would reintroduce, for the one case that
+    // cannot be answered, exactly the defect this field removes.
+    let out = r.ank(AGENT, &["status", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        corpus_of(&out).is_null(),
+        "a tree with no history invented a value: {}",
+        stdout(&out)
+    );
+
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the root commit"]);
+    let out = r.ank(AGENT, &["status", "--json"]);
+    let here = corpus_of(&out);
+    let sha = here
+        .as_str()
+        .expect("an identity, once there is history")
+        .to_string();
+    assert_eq!(sha.len(), 40, "the root commit, whole: {sha}");
+    assert_eq!(
+        sha,
+        r.git(&["rev-list", "--max-parents=0", "HEAD"]).trim(),
+        "the identity is the root commit and not a hash of something else"
+    );
+
+    // The same repository, a second path. A worktree is the case the ADR names
+    // first, and it is the one a path gets wrong every time: two directories,
+    // one corpus.
+    let second = std::env::temp_dir().join(format!("ank-wt-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&second);
+    r.git(&["worktree", "add", "-q", second.to_str().unwrap(), "HEAD"]);
+    let out = ank_command()
+        .args(["status", "--json", "--repo"])
+        .arg(&second)
+        .env("ANK_AGENT", AGENT)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        corpus_of(&out).as_str(),
+        Some(sha.as_str()),
+        "one repository reached by two paths answered two corpora"
+    );
+
+    // A second corpus inside the same working tree. Its own git repository, so
+    // its own root commit, so its own identity -- and a reader keying on the
+    // enclosing path would have merged the two.
+    let nested = r.0.join("vendor");
+    std::fs::create_dir_all(nested.join(".ank/entities")).unwrap();
+    std::fs::write(
+        nested.join(".ank/config.yml"),
+        "schema: 1
+claim_ttl_max: 2h
+default_branch: main
+",
+    )
+    .unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "test@ank.local"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "another root"],
+    ] {
+        let out = git_command(&nested)
+            .args(&args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    let out = ank_command()
+        .args(["status", "--json", "--repo"])
+        .arg(&nested)
+        .env("ANK_AGENT", AGENT)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let inner = corpus_of(&out);
+    assert!(
+        inner.as_str().is_some() && inner.as_str() != Some(sha.as_str()),
+        "two corpora in one tree answered one identity: {inner:?} against {sha}"
+    );
+
+    let _ = std::fs::remove_dir_all(&second);
+}
+
 /// A perimeter holding one proposal, with a budget as the only variable.
 fn proposed_fixture(budget: &str, with_proposal: bool) -> Repo {
     let r = Repo::new();

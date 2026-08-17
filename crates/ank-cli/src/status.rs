@@ -295,7 +295,15 @@ pub fn run(
                 .finish(),
             None => "null".into(),
         };
+        // The corpus this answer is about, keyed on something a reader can hold
+        // (ADR-621a7fd96ce1). A board showing three repositories has to key its
+        // rows on something, and until now the only thing it had was the path --
+        // which two worktrees of one repository disagree about and two clones on
+        // two machines can share. `null` for a tree with no history, which is
+        // the one corpus that cannot be named and says so.
+        let corpus = crate::repo::identity(&repo.root);
         let doc = Obj::document()
+            .opt_str("corpus", corpus.as_deref())
             // Both collapse to null, and legitimately: a parser asking for the
             // branch gets "there is none to report", and the three ways of
             // having none are a distinction the human surface draws in words.

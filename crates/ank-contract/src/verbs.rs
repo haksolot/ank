@@ -139,6 +139,13 @@ const CONTEXT_OUT: &[Field] = &[
 ];
 
 const STATUS_OUT: &[Field] = &[
+    // The first field gained under the contract, and the demonstration of what
+    // CONTRACT_VERSION promises: a document may gain a field within a version and
+    // may never lose, rename or retype one, so this arrives at 1 and the version
+    // does not move (ADR-621a7fd96ce1, ADR-6fd69efb629c). A client written against
+    // `status --json` yesterday keeps working, which is the whole of what the
+    // breaking change was spent to buy.
+    opt("corpus", Type::Str),
     opt("branch", Type::Str),
     opt("default_branch", Type::Str),
     f(
