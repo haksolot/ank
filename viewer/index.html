@@ -1,0 +1,747 @@
+<meta charset="utf-8">
+<title>ank viewer</title>
+<!--
+  A read-only local viewer for a .ank/ corpus (ADR-bcb18aecb7e1,
+  TASK-34d27790dba9).
+
+  One self-contained file. No build step, no backend, no network request, no
+  dependency fetched at view time. It reads the repository through the browser's
+  File System Access API and writes nothing: no file, no ref, no claim. Every
+  handle it asks for is requested read-only, so the guarantee is enforced by the
+  browser and not only promised here.
+
+  It is granted the **repository root** and not `.ank/`, and that is
+  load-bearing. The corpus is in `.ank/entities/`, but the claims are not in the
+  corpus at all -- they are blobs at `refs/ank/claims/<id>`, under `.git/`.
+  Without the root the page can show what the work is and never who is doing it,
+  which is the half worth looking at.
+
+  Everything between the two `ank-viewer:core` markers is free of the DOM and is
+  what `selftest.mjs` runs under Node against a real repository, cross-checked
+  against `ank --json`. Rendering lives below them.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfa; --fg: #1a1a1a; --dim: #6b6b6b; --line: #e0e0dd;
+    --accent: #2b5fd9; --held: #b8641a; --done: #3a7d44; --card: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16161a; --fg: #e8e8e6; --dim: #97978f; --line: #2c2c32;
+      --accent: #7aa2f7; --held: #e0af68; --done: #79c07f; --card: #1d1d22;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+    padding: 1rem 1.25rem; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: var(--bg); z-index: 2;
+  }
+  h1 { font-size: 1rem; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  button {
+    font: inherit; padding: .35rem .8rem; cursor: pointer;
+    background: var(--accent); color: #fff; border: 0; border-radius: 3px;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+  #where { color: var(--dim); }
+  main { padding: 1.25rem; max-width: 1100px; }
+  section { margin-bottom: 2.25rem; }
+  h2 {
+    font-size: .8rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--dim); margin: 0 0 .75rem; font-weight: 600;
+  }
+  table { border-collapse: collapse; width: 100%; }
+  td, th { padding: .3rem .6rem .3rem 0; text-align: left; vertical-align: top; }
+  th { color: var(--dim); font-weight: 500; font-size: .8rem; }
+  tr + tr td { border-top: 1px solid var(--line); }
+  .id { color: var(--accent); white-space: nowrap; }
+  .dim { color: var(--dim); }
+  .held { color: var(--held); }
+  .done { color: var(--done); }
+  .wrap { overflow-x: auto; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 4px;
+    padding: .8rem 1rem; margin-bottom: .5rem;
+  }
+  .edge { padding-left: 1.5rem; }
+  .empty { color: var(--dim); font-style: italic; }
+  #err { color: #c0392b; white-space: pre-wrap; }
+  .counts { display: flex; gap: 1.5rem; flex-wrap: wrap; color: var(--dim); }
+  .counts b { color: var(--fg); font-weight: 600; }
+</style>
+
+<header>
+  <h1>ank viewer</h1>
+  <button id="open">Open a repository</button>
+  <span id="where" class="dim">nothing opened</span>
+  <button id="again" class="ghost" hidden>Re-read</button>
+</header>
+<main>
+  <p id="intro" class="dim">
+    Grant the <b>repository root</b>, not <code>.ank/</code>: the claims live in
+    <code>.git/refs/ank/</code> and the page cannot show who holds what without it.
+    Read-only, always &mdash; nothing here writes.
+  </p>
+  <p id="err"></p>
+  <div id="out"></div>
+</main>
+
+<script type="module">
+// ---- ank-viewer:core:begin ----
+// No DOM below this line, and none above the closing marker. `selftest.mjs`
+// slices this region out and runs it under Node against a real repository.
+
+/** Zlib, through the platform. Present in browsers and in Node 18+. */
+export async function inflate(bytes, stopAfter) {
+  const ds = new DecompressionStream('deflate');
+  const writer = ds.writable.getWriter();
+  // Deliberately not awaited: a pack entry is inflated from a slice that runs
+  // to the end of the file, so the stream ends long before the write does and
+  // the write never settles. The reader below is what decides when we are done.
+  writer.write(bytes).catch(() => {});
+  writer.close().catch(() => {});
+
+  const reader = ds.readable.getReader();
+  const parts = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      parts.push(value);
+      total += value.length;
+      if (stopAfter !== undefined && total >= stopAfter) break;
+    }
+  } catch (e) {
+    // Trailing bytes after the end of a zlib stream. If we already have what
+    // was asked for, that is the expected shape of reading from a packfile.
+    if (stopAfter === undefined || total < stopAfter) throw e;
+  }
+  try { await reader.cancel(); } catch { /* already closed */ }
+
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return stopAfter === undefined ? out : out.subarray(0, stopAfter);
+}
+
+const decoder = new TextDecoder();
+const hex = (b) => b.toString(16).padStart(2, '0');
+export const shaOf = (bytes, at) =>
+  Array.from(bytes.subarray(at, at + 20), hex).join('');
+
+// ---------------------------------------------------------------------------
+// The format
+// ---------------------------------------------------------------------------
+
+/**
+ * Frontmatter and body, split exactly where `ank-core` splits them: the file
+ * opens with `---\n` and the block ends at the first `\n---\n`.
+ *
+ * A deliberately small YAML reader, not a general one. It covers the forms the
+ * registry can emit -- scalars, block scalars, flow and block sequences, and
+ * the two lists of mappings (`proof`, `verified`) -- and nothing else, because
+ * a form the writer cannot produce is a form no reader has to accept.
+ */
+export function parseEntity(text) {
+  const src = text.replace(/\r\n/g, '\n');
+  if (!src.startsWith('---\n')) return null;
+  const end = src.indexOf('\n---\n', 3);
+  if (end === -1) return null;
+  const fm = src.slice(4, end + 1);
+  const body = src.slice(end + 5);
+
+  const fields = {};
+  const lines = fm.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim() || /^\s/.test(line)) continue;
+    const colon = line.indexOf(':');
+    if (colon === -1) continue;
+    const key = line.slice(0, colon).trim();
+    let rest = line.slice(colon + 1).trim();
+
+    if (rest === '|' || rest === '|-') {
+      const block = [];
+      while (i + 1 < lines.length && (/^\s{2}/.test(lines[i + 1]) || lines[i + 1] === '')) {
+        if (lines[i + 1] === '' && !/^\s{2}/.test(lines[i + 2] ?? '')) break;
+        block.push(lines[++i].slice(2));
+      }
+      fields[key] = block.join('\n').replace(/\n+$/, '');
+      continue;
+    }
+    if (rest === '') {
+      // A block sequence, or a list of mappings. Both are collected as raw
+      // indented lines; only the sequence case is turned into values, because
+      // nothing in the viewer reads a proof field by name.
+      const items = [];
+      while (i + 1 < lines.length && /^\s+/.test(lines[i + 1])) {
+        const item = lines[++i].trim();
+        if (item.startsWith('- ')) items.push(unquote(item.slice(2)));
+      }
+      fields[key] = items;
+      continue;
+    }
+    if (rest.startsWith('[') && rest.endsWith(']')) {
+      const inner = rest.slice(1, -1).trim();
+      fields[key] = inner ? inner.split(',').map((s) => unquote(s.trim())) : [];
+      continue;
+    }
+    fields[key] = unquote(rest);
+  }
+  fields.body = body;
+  return fields;
+}
+
+function unquote(s) {
+  if (s.length >= 2 && s[0] === '"' && s[s.length - 1] === '"') {
+    return s.slice(1, -1).replace(/\\(["\\])/g, '$1').replace(/\\n/g, '\n');
+  }
+  if (s.length >= 2 && s[0] === "'" && s[s.length - 1] === "'") {
+    return s.slice(1, -1).replace(/''/g, "'");
+  }
+  return s;
+}
+
+/**
+ * A claim, completion or proof record. One `key: value` per line, plus the one
+ * nested list `proofs:` which the viewer counts rather than reads.
+ */
+export function parseRecord(text) {
+  const out = { proofs: 0 };
+  for (const raw of text.replace(/\r\n/g, '\n').split('\n')) {
+    if (/^\s*-\s/.test(raw)) { if (/^\s*-\s*identity:/.test(raw)) out.proofs++; continue; }
+    if (/^\s/.test(raw) || !raw.trim()) continue;
+    const colon = raw.indexOf(':');
+    if (colon === -1) continue;
+    out[raw.slice(0, colon).trim()] = unquote(raw.slice(colon + 1).trim());
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// git: refs
+// ---------------------------------------------------------------------------
+
+/**
+ * Every ref under `refs/ank/`, from both places git is free to keep one.
+ *
+ * Measured on this repository before it was written: 62 of 64 were in
+ * `packed-refs` and 2 were loose files. A reader that walked only
+ * `.git/refs/ank/` would have shown two claims out of sixty-four and looked
+ * correct doing it.
+ */
+export async function readAnkRefs(fs) {
+  const refs = new Map();
+
+  const packed = await fs.bytes(['.git', 'packed-refs']);
+  if (packed) {
+    for (const line of decoder.decode(packed).split('\n')) {
+      if (!line || line[0] === '#' || line[0] === '^') continue;
+      const sp = line.indexOf(' ');
+      if (sp === -1) continue;
+      const name = line.slice(sp + 1).trim();
+      if (name.startsWith('refs/ank/')) refs.set(name, line.slice(0, sp).trim());
+    }
+  }
+
+  // Loose last: a loose ref outranks the packed copy of the same name.
+  const walk = async (parts) => {
+    for (const name of await fs.list(parts)) {
+      const child = [...parts, name];
+      if (await fs.isDir(child)) { await walk(child); continue; }
+      const raw = await fs.bytes(child);
+      if (!raw) continue;
+      refs.set(child.slice(1).join('/'), decoder.decode(raw).trim());
+    }
+  };
+  if (await fs.isDir(['.git', 'refs', 'ank'])) await walk(['.git', 'refs', 'ank']);
+
+  return refs;
+}
+
+// ---------------------------------------------------------------------------
+// git: objects
+// ---------------------------------------------------------------------------
+
+/** `<type> <size>\0<content>`, the shape every git object is stored in. */
+function splitObject(raw) {
+  const nul = raw.indexOf(0);
+  const header = decoder.decode(raw.subarray(0, nul)).split(' ');
+  return { type: header[0], data: raw.subarray(nul + 1) };
+}
+
+async function readLoose(fs, sha) {
+  const raw = await fs.bytes(['.git', 'objects', sha.slice(0, 2), sha.slice(2)]);
+  if (!raw) return null;
+  return splitObject(await inflate(raw));
+}
+
+const PACK_TYPES = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
+
+/** A size varint, low bits first after the type byte. */
+function readPackHeader(buf, at) {
+  let byte = buf[at++];
+  const type = (byte >> 4) & 7;
+  let size = byte & 15;
+  let shift = 4;
+  while (byte & 0x80) {
+    byte = buf[at++];
+    size |= (byte & 0x7f) << shift;
+    shift += 7;
+  }
+  return { type, size, at };
+}
+
+/** The other varint git uses, for a negative offset. Big end first, biased. */
+function readOffset(buf, at) {
+  let byte = buf[at++];
+  let value = byte & 0x7f;
+  while (byte & 0x80) {
+    byte = buf[at++];
+    value = ((value + 1) << 7) | (byte & 0x7f);
+  }
+  return { value, at };
+}
+
+/** A delta size varint, and the copy/insert instructions after it. */
+function applyDelta(base, delta) {
+  let at = 0;
+  const size = () => {
+    let v = 0, shift = 0, byte;
+    do { byte = delta[at++]; v |= (byte & 0x7f) << shift; shift += 7; } while (byte & 0x80);
+    return v;
+  };
+  size();                       // base size, checked by git and not by us
+  const out = new Uint8Array(size());
+  let put = 0;
+  while (at < delta.length) {
+    const op = delta[at++];
+    if (op & 0x80) {
+      let off = 0, len = 0;
+      for (let i = 0; i < 4; i++) if (op & (1 << i)) off |= delta[at++] << (i * 8);
+      for (let i = 0; i < 3; i++) if (op & (0x10 << i)) len |= delta[at++] << (i * 8);
+      if (len === 0) len = 0x10000;
+      out.set(base.subarray(off, off + len), put);
+      put += len;
+    } else {
+      out.set(delta.subarray(at, at + op), put);
+      put += op;
+      at += op;
+    }
+  }
+  return out;
+}
+
+/**
+ * A pack index, version 2 only. Version 1 has not been written by git since
+ * 2007 and nothing in this repository carries one; a reader that guessed at it
+ * would be guessing.
+ */
+function parseIdx(buf) {
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  if (!(buf[0] === 0xff && buf[1] === 0x74 && buf[2] === 0x4f && buf[3] === 0x63)) return null;
+  if (dv.getUint32(4) !== 2) return null;
+  const count = dv.getUint32(8 + 255 * 4);
+  const shaAt = 8 + 256 * 4;
+  const offAt = shaAt + count * 20 + count * 4;
+  const bigAt = offAt + count * 4;
+  return { dv, buf, count, shaAt, offAt, bigAt };
+}
+
+function idxLookup(idx, sha) {
+  // The table is sorted by sha, so this is a binary search and not a scan: an
+  // idx of this repository holds tens of thousands of entries.
+  let lo = 0, hi = idx.count - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const here = shaOf(idx.buf, idx.shaAt + mid * 20);
+    if (here === sha) {
+      const raw = idx.dv.getUint32(idx.offAt + mid * 4);
+      if (!(raw & 0x80000000)) return raw;
+      const big = raw & 0x7fffffff;
+      return Number(idx.dv.getBigUint64(idx.bigAt + big * 8));
+    }
+    if (here < sha) lo = mid + 1; else hi = mid - 1;
+  }
+  return null;
+}
+
+async function readFromPack(pack, idx, offset) {
+  const { type, size, at } = readPackHeader(pack, offset);
+  if (PACK_TYPES[type]) {
+    return { type: PACK_TYPES[type], data: await inflate(pack.subarray(at), size) };
+  }
+  if (type === 6) {
+    const { value, at: after } = readOffset(pack, at);
+    const base = await readFromPack(pack, idx, offset - value);
+    const delta = await inflate(pack.subarray(after), size);
+    return { type: base.type, data: applyDelta(base.data, delta) };
+  }
+  if (type === 7) {
+    const baseSha = shaOf(pack, at);
+    const baseOffset = idxLookup(idx, baseSha);
+    if (baseOffset === null) throw new Error(`REF_DELTA base ${baseSha} is in another pack`);
+    const base = await readFromPack(pack, idx, baseOffset);
+    const delta = await inflate(pack.subarray(at + 20), size);
+    return { type: base.type, data: applyDelta(base.data, delta) };
+  }
+  throw new Error(`unknown pack object type ${type}`);
+}
+
+/**
+ * One object, wherever git happens to have put it.
+ *
+ * Loose first because it is cheap and because a loose object outranks a packed
+ * copy. `packs` is built once and reused: an idx is megabytes, and there is one
+ * lookup per claim.
+ */
+export async function readObject(fs, packs, sha) {
+  const loose = await readLoose(fs, sha);
+  if (loose) return loose;
+  for (const p of packs) {
+    const offset = idxLookup(p.idx, sha);
+    if (offset !== null) return readFromPack(p.pack, p.idx, offset);
+  }
+  return null;
+}
+
+export async function openPacks(fs) {
+  const packs = [];
+  if (!(await fs.isDir(['.git', 'objects', 'pack']))) return packs;
+  for (const name of await fs.list(['.git', 'objects', 'pack'])) {
+    if (!name.endsWith('.idx')) continue;
+    const idxBytes = await fs.bytes(['.git', 'objects', 'pack', name]);
+    const idx = idxBytes && parseIdx(idxBytes);
+    if (!idx) continue;
+    const pack = await fs.bytes(['.git', 'objects', 'pack', name.replace(/\.idx$/, '.pack')]);
+    if (pack) packs.push({ idx, pack });
+  }
+  return packs;
+}
+
+// ---------------------------------------------------------------------------
+// The corpus
+// ---------------------------------------------------------------------------
+
+/**
+ * Everything the page shows, read once.
+ *
+ * Failures are collected rather than thrown. A packfile this reader cannot
+ * follow must cost one claim and not the whole board, and it must say so: a
+ * viewer that silently showed a task as free because it could not read the ref
+ * would be worse than one that showed nothing.
+ */
+export async function readCorpus(fs) {
+  const problems = [];
+  const entities = [];
+
+  if (!(await fs.isDir(['.ank', 'entities']))) {
+    throw new Error('no .ank/entities/ here: grant the repository root, not a subdirectory');
+  }
+  for (const name of await fs.list(['.ank', 'entities'])) {
+    if (!name.endsWith('.md')) continue;
+    const raw = await fs.bytes(['.ank', 'entities', name]);
+    if (!raw) continue;
+    const e = parseEntity(decoder.decode(raw));
+    if (!e || !e.id) { problems.push(`${name}: does not parse as an entity`); continue; }
+    entities.push(e);
+  }
+  entities.sort((a, b) => (a.id < b.id ? -1 : 1));
+
+  const coordination = new Map();
+  let refs = new Map();
+  try {
+    refs = await readAnkRefs(fs);
+  } catch (e) {
+    problems.push(`refs unreadable: ${e.message}`);
+  }
+  const packs = refs.size ? await openPacks(fs) : [];
+  const now = Date.now();
+
+  for (const [name, sha] of refs) {
+    const id = name.slice(name.lastIndexOf('/') + 1);
+    if (!name.startsWith('refs/ank/claims/')) continue;
+    try {
+      const object = await readObject(fs, packs, sha);
+      if (!object) { problems.push(`${id}: object ${sha.slice(0, 7)} not found`); continue; }
+      const record = parseRecord(decoder.decode(object.data));
+      if (record.state === 'claim') {
+        coordination.set(id, {
+          state: 'claimed',
+          holder: record.holder,
+          expires: record.expires,
+          lapsed: Date.parse(record.expires) < now,
+        });
+      } else if (record.state === 'completed') {
+        coordination.set(id, { state: 'completed', commit: (record.commit || '').slice(0, 7) });
+      } else {
+        coordination.set(id, { state: record.state || 'unreadable' });
+      }
+    } catch (e) {
+      problems.push(`${id}: ${e.message}`);
+    }
+  }
+
+  const detached = new Map();
+  for (const [name, sha] of refs) {
+    if (!name.startsWith('refs/ank/proof/')) continue;
+    const id = name.slice(name.lastIndexOf('/') + 1);
+    try {
+      const object = await readObject(fs, packs, sha);
+      if (object) detached.set(id, parseRecord(decoder.decode(object.data)).proofs);
+    } catch (e) {
+      problems.push(`${id}: proof ref: ${e.message}`);
+    }
+  }
+
+  return { entities, coordination, detached, problems, refs: refs.size };
+}
+
+/**
+ * The `blocked_by` graph, both directions.
+ *
+ * Blocked is derived and never stored, exactly as the model derives it: a task
+ * is blocked when at least one of its blockers is not `done`. `closed` does not
+ * unblock, and a reference to nothing is reported rather than dropped -- a
+ * shorter list is a wrong answer to a question about what blocks this.
+ */
+export function graphOf(entities) {
+  const byId = new Map(entities.map((e) => [e.id, e]));
+  const unblocks = new Map();
+  const blockers = new Map();
+  const dangling = [];
+  for (const e of entities) {
+    if (e.type !== 'task') continue;
+    const list = Array.isArray(e.blocked_by) ? e.blocked_by : [];
+    blockers.set(e.id, list);
+    for (const b of list) {
+      if (!byId.has(b)) { dangling.push([e.id, b]); continue; }
+      if (!unblocks.has(b)) unblocks.set(b, []);
+      unblocks.get(b).push(e.id);
+    }
+  }
+  const isBlocked = (e) =>
+    (blockers.get(e.id) || []).some((b) => byId.get(b)?.status !== 'done');
+  return { byId, unblocks, blockers, dangling, isBlocked };
+}
+// ---- ank-viewer:core:end ----
+
+// ---------------------------------------------------------------------------
+// The page
+// ---------------------------------------------------------------------------
+
+/** The File System Access API, behind the same interface `selftest.mjs` fills. */
+function browserFs(root) {
+  const dirCache = new Map();
+  const dirAt = async (parts) => {
+    const key = parts.join('/');
+    if (dirCache.has(key)) return dirCache.get(key);
+    let handle = root;
+    for (const part of parts) {
+      if (!handle) break;
+      try {
+        handle = await handle.getDirectoryHandle(part);
+      } catch {
+        handle = null;
+      }
+    }
+    dirCache.set(key, handle);
+    return handle;
+  };
+  return {
+    async isDir(parts) { return (await dirAt(parts)) !== null; },
+    async list(parts) {
+      const dir = await dirAt(parts);
+      if (!dir) return [];
+      const names = [];
+      for await (const name of dir.keys()) names.push(name);
+      return names.sort();
+    },
+    async bytes(parts) {
+      const dir = await dirAt(parts.slice(0, -1));
+      if (!dir) return null;
+      try {
+        const file = await (await dir.getFileHandle(parts[parts.length - 1])).getFile();
+        return new Uint8Array(await file.arrayBuffer());
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
+const $ = (id) => document.getElementById(id);
+const el = (tag, cls, text) => {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+};
+
+function coordinationCell(c) {
+  if (!c) return el('span', 'dim', '\u2014');
+  if (c.state === 'claimed') {
+    const s = el('span', 'held');
+    s.textContent = `${c.holder} until ${c.expires}${c.lapsed ? ' (lapsed)' : ''}`;
+    return s;
+  }
+  if (c.state === 'completed') return el('span', 'done', `finished at ${c.commit}`);
+  return el('span', 'dim', c.state);
+}
+
+function render(corpus) {
+  const out = $('out');
+  out.textContent = '';
+  const { entities, coordination, detached, problems } = corpus;
+  const g = graphOf(entities);
+  const tasks = entities.filter((e) => e.type === 'task');
+
+  const counts = el('div', 'counts');
+  for (const [label, n] of [
+    ['entities', entities.length],
+    ['tasks', tasks.length],
+    ['open', tasks.filter((t) => t.status === 'open').length],
+    ['in progress', tasks.filter((t) => t.status === 'in_progress').length],
+    ['live claims', [...coordination.values()].filter((c) => c.state === 'claimed').length],
+    ['refs read', corpus.refs],
+  ]) {
+    const s = el('span');
+    s.append(el('b', null, String(n)), ` ${label}`);
+    counts.append(s);
+  }
+  const summary = el('section');
+  summary.append(el('h2', null, 'corpus'), counts);
+  out.append(summary);
+
+  if (problems.length) {
+    const s = el('section');
+    s.append(el('h2', null, `unread (${problems.length})`));
+    for (const p of problems.slice(0, 40)) s.append(el('div', 'card', p));
+    out.append(s);
+  }
+
+  // Who is working on what, first: it is the question the page exists for.
+  const live = [...coordination.entries()].filter(([, c]) => c.state === 'claimed');
+  const held = el('section');
+  held.append(el('h2', null, 'held now'));
+  if (!live.length) {
+    held.append(el('p', 'empty', 'no live claim in this repository'));
+  } else {
+    for (const [id, c] of live) {
+      const card = el('div', 'card');
+      card.append(el('span', 'id', id), ' ', el('span', null, g.byId.get(id)?.title ?? ''));
+      card.append(el('div', null, ''));
+      card.lastChild.append(coordinationCell(c));
+      held.append(card);
+    }
+  }
+  out.append(held);
+
+  const table = (title, rows) => {
+    const s = el('section');
+    s.append(el('h2', null, title));
+    if (!rows.length) { s.append(el('p', 'empty', 'none')); return s; }
+    const t = el('table');
+    const head = el('tr');
+    for (const h of ['id', 'status', 'title', 'coordination']) head.append(el('th', null, h));
+    t.append(head);
+    for (const e of rows) {
+      const tr = el('tr');
+      tr.append(el('td', 'id', e.id));
+      const st = el('td');
+      st.append(el('span', e.status === 'done' ? 'done' : null,
+        e.status + (e.type === 'task' && g.isBlocked(e) ? ' (blocked)' : '')));
+      tr.append(st);
+      tr.append(el('td', null, e.title));
+      const co = el('td');
+      co.append(coordinationCell(coordination.get(e.id)));
+      if (detached.has(e.id)) co.append(el('span', 'dim', `  ${detached.get(e.id)} attested`));
+      tr.append(co);
+      t.append(tr);
+    }
+    const wrap = el('div', 'wrap');
+    wrap.append(t);
+    s.append(wrap);
+    return s;
+  };
+
+  out.append(table('tasks', tasks));
+  out.append(table('decisions', entities.filter((e) => e.type === 'adr' || e.type === 'spec')));
+
+  // The graph as edges, which is what the graph is; the tree a terminal draws
+  // is a reading of it.
+  const gs = el('section');
+  gs.append(el('h2', null, 'blocked_by'));
+  const edges = tasks.filter((t) => (g.blockers.get(t.id) || []).length);
+  if (!edges.length) {
+    gs.append(el('p', 'empty', 'no edge in this corpus'));
+  } else {
+    for (const t of edges) {
+      const card = el('div', 'card');
+      card.append(el('span', 'id', t.id), ' ', el('span', null, t.title));
+      for (const b of g.blockers.get(t.id)) {
+        const line = el('div', 'edge');
+        const target = g.byId.get(b);
+        line.append(el('span', 'dim', 'blocked by '), el('span', 'id', b), ' ');
+        line.append(target
+          ? el('span', target.status === 'done' ? 'done' : null, `${target.status} \u2014 ${target.title}`)
+          : el('span', 'held', 'resolves to nothing in this corpus'));
+        card.append(line);
+      }
+      gs.append(card);
+    }
+  }
+  out.append(gs);
+}
+
+let lastRoot = null;
+
+async function load(root) {
+  $('err').textContent = '';
+  try {
+    // Read-only, asked of the browser rather than promised here: the page
+    // cannot write even if it were wrong (ADR-bcb18aecb7e1).
+    if (root.requestPermission) {
+      const granted = await root.requestPermission({ mode: 'read' });
+      if (granted !== 'granted') throw new Error('read permission was not granted');
+    }
+    lastRoot = root;
+    $('where').textContent = root.name;
+    $('again').hidden = false;
+    $('intro').hidden = true;
+    render(await readCorpus(browserFs(root)));
+  } catch (e) {
+    $('err').textContent = String(e && e.message ? e.message : e);
+  }
+}
+
+$('open').addEventListener('click', async () => {
+  if (!window.showDirectoryPicker) {
+    $('err').textContent =
+      'This browser has no File System Access API. The viewer needs a Chromium-based browser, which ADR-bcb18aecb7e1 accepts as the cost of reading the repository live.';
+    return;
+  }
+  try {
+    await load(await window.showDirectoryPicker({ mode: 'read' }));
+  } catch (e) {
+    if (!e || e.name === 'AbortError') return;
+    // The one refusal worth translating. A `file://` page is its own origin,
+    // and a browser may decline to hand it a directory on that ground -- which
+    // would be a refusal of *how the page was opened* and not of the
+    // repository, so the message has to say which.
+    $('err').textContent =
+      e.name === 'SecurityError' && location.protocol === 'file:'
+        ? `This browser refused the directory picker to a page opened from a file:// URL (${e.message}). ` +
+          'Serve this directory over http://localhost and open it from there; the page still reads nothing over the network and still writes nothing.'
+        : String(e.message ?? e);
+  }
+});
+
+$('again').addEventListener('click', () => lastRoot && load(lastRoot));
+</script>
