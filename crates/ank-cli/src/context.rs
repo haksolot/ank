@@ -1546,7 +1546,7 @@ pub fn render_json(view: &View) -> String {
         Mode::Orientation { .. } => &[],
     };
 
-    Obj::new()
+    Obj::document()
         .str("mode", mode)
         .opt_str("head", head.as_deref())
         .opt_str("criteria", criteria.as_deref())

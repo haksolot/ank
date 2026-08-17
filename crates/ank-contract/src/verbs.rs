@@ -16,6 +16,236 @@
 
 use crate::exit::ExitCode;
 use crate::renews::Renews;
+use crate::shape::{f, one, opt, when, Field, Shape, Type};
+
+// ---------------------------------------------------------------------------
+// The documents the verbs return (ADR-6fd69efb629c)
+// ---------------------------------------------------------------------------
+//
+// Named above the table rather than inlined into it: several are shared by two
+// verbs, and a `CommandSpec` whose `output` ran to twenty lines would bury the
+// twelve fields that say what the verb *is*.
+//
+// The `contract` field is on every document and is on none of these lists. It
+// is added by the rendering, because it is universal by construction —
+// `Obj::document` seeds it — and repeating it twenty-two times would invite the
+// one copy that gets it wrong.
+
+/// A row of `blocked_by` or `unblocks`. `status` and `title` are null where the
+/// reference resolves to nothing: `show` still prints the edge it could not
+/// resolve, because a shorter list is a wrong answer to "what blocks this".
+const EDGE: &[Field] = &[
+    f("id", Type::Str),
+    f("short", Type::Str),
+    opt("status", Type::Str),
+    opt("title", Type::Str),
+];
+
+/// A proof recorded on a ref rather than in the file (§7, ADR-4934).
+const DETACHED_PROOF: &[Field] = &[
+    f("type", Type::Str),
+    f("ref", Type::Str),
+    f("by", Type::Str),
+    f("at", Type::Str),
+];
+
+/// A log entry. `id` is null for an entry read out of the previous layout,
+/// which has no entity of its own.
+const LOG_ENTRY: &[Field] = &[
+    opt("id", Type::Str),
+    f("timestamp", Type::Str),
+    f("who", Type::Str),
+    f("message", Type::Str),
+];
+
+/// An entity row as `scope` and `find` render one.
+const ROW: &[Field] = &[
+    f("id", Type::Str),
+    f("kind", Type::Str),
+    f("status", Type::Str),
+    f("title", Type::Str),
+];
+
+const SHOW_TASK: &[Field] = &[
+    f("id", Type::Str),
+    opt("coordination", Type::Str),
+    f("blocked_by", Type::Array(EDGE)),
+    f("unblocks", Type::Array(EDGE)),
+    f("detached_proofs", Type::Array(DETACHED_PROOF)),
+    f("log_total", Type::Num),
+    f("log_shown", Type::Num),
+    f("log", Type::Array(LOG_ENTRY)),
+    f("content", Type::Str),
+];
+
+const SHOW_OTHER: &[Field] = &[
+    f("id", Type::Str),
+    opt("coordination", Type::Str),
+    f("detached_proofs", Type::Array(DETACHED_PROOF)),
+    f("log_total", Type::Num),
+    f("log_shown", Type::Num),
+    f("log", Type::Array(LOG_ENTRY)),
+    f("content", Type::Str),
+];
+
+const CONTEXT_OUT: &[Field] = &[
+    f("mode", Type::Str),
+    opt("head", Type::Str),
+    opt("criteria", Type::Str),
+    f(
+        "constraints",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("constraint", Type::Str),
+            opt("home", Type::Str),
+        ]),
+    ),
+    f(
+        "proposed",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            opt("home", Type::Str),
+        ]),
+    ),
+    f(
+        "specs",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+        ]),
+    ),
+    f(
+        "tasks",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("status", Type::Str),
+            f("ready", Type::Bool),
+            f("unblocks", Type::Num),
+            f("state", Type::Str),
+        ]),
+    ),
+    f("log", Type::Strings),
+    f("ready", Type::Num),
+    f("blocked", Type::Num),
+    f("finished_elsewhere", Type::Num),
+    f("warnings", Type::Strings),
+];
+
+const STATUS_OUT: &[Field] = &[
+    opt("branch", Type::Str),
+    opt("default_branch", Type::Str),
+    f(
+        "identity",
+        Type::Object(&[f("value", Type::Str), f("source", Type::Str)]),
+    ),
+    opt(
+        "claim",
+        Type::Object(&[
+            f("id", Type::Str),
+            f("expires", Type::Str),
+            f("lapsed", Type::Bool),
+        ]),
+    ),
+    opt(
+        "drift",
+        Type::Object(&[f("branch", Type::Str), f("entities", Type::Num)]),
+    ),
+    f(
+        "also_held",
+        Type::Array(&[f("id", Type::Str), f("expires", Type::Str)]),
+    ),
+    f("remote", Type::Bool),
+    f(
+        "elsewhere",
+        Type::Array(&[
+            f("id", Type::Str),
+            opt("title", Type::Str),
+            opt("holder", Type::Str),
+            opt("expires", Type::Str),
+            opt("seen", Type::Str),
+        ]),
+    ),
+    f("constraints", Type::Num),
+    f("queue", Type::Num),
+    f("unmerged", Type::Num),
+    f("faults", Type::Num),
+    f("signals", Type::Num),
+];
+
+const CHECK_OUT: &[Field] = &[
+    f("faults", Type::Num),
+    f("signals", Type::Num),
+    f("tasks", Type::Num),
+    f("adr", Type::Num),
+    f("pruned", Type::Strings),
+    f(
+        "findings",
+        Type::Array(&[
+            f("level", Type::Str),
+            f("subject", Type::Str),
+            f("message", Type::Str),
+            f("note", Type::Strings),
+            f(
+                "charge",
+                Type::Array(&[f("id", Type::Str), f("characters", Type::Num)]),
+            ),
+        ]),
+    ),
+];
+
+/// What `help --json` returns, which is this description of itself.
+const HELP_OUT: &[Field] = &[f(
+    "verbs",
+    Type::Array(&[
+        f("name", Type::Str),
+        f("usage", Type::Str),
+        f("summary", Type::Str),
+        f("group", Type::Str),
+        f(
+            "flags",
+            Type::Array(&[
+                f("name", Type::Str),
+                opt("short", Type::Str),
+                f("takes_value", Type::Bool),
+                f("repeatable", Type::Bool),
+            ]),
+        ),
+        f("notes", Type::Strings),
+        f(
+            "refuses",
+            Type::Array(&[f("code", Type::Num), f("when", Type::Str)]),
+        ),
+        // Flat, with the path in the name: `tasks` is followed by `tasks.id`,
+        // `tasks.title` and the rest. Nesting is how a shape is *written* here,
+        // because that is what reads well beside the code; a dotted path is how
+        // it is *published*, because this very document would otherwise have to
+        // describe its own recursion, and a declaration that recurses into
+        // itself does not terminate. No key in any document contains a dot, so
+        // the path is unambiguous, and a client that wants the tree splits on
+        // one character.
+        f(
+            "returns",
+            Type::Array(&[
+                opt("when", Type::Str),
+                f(
+                    "fields",
+                    Type::Array(&[
+                        f("name", Type::Str),
+                        f("type", Type::Str),
+                        f("nullable", Type::Bool),
+                    ]),
+                ),
+            ]),
+        ),
+    ]),
+)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlagSpec {
@@ -196,6 +426,19 @@ pub struct CommandSpec {
     /// list beside the dispatch would let a new one default to renewing nothing,
     /// which is the failure this ADR corrects wearing a different hat.
     pub renews: Renews,
+    /// The document the verb returns under `--json`, declared once and rendered
+    /// by `help --json` (ADR-6fd69efb629c).
+    ///
+    /// Declared here for the reason `coordinates` and `renews` are, and the
+    /// reason is sharper for this one: a verb added without a shape is a verb
+    /// whose output nothing describes, and the compiler is the only thing that
+    /// asks every verb the question. A list of shapes kept beside the renderer
+    /// would let the twenty-third verb answer with a document no client can
+    /// bind, silently.
+    ///
+    /// The `contract` field is on every document and is on no list here; the
+    /// rendering adds it, because it is universal by construction.
+    pub output: &'static [Shape],
     /// The task that carries the implementation, **while it does not exist**.
     /// It is therefore also the marker of an unrouted verb: a command that
     /// [`dispatch`] reaches clears the field, so the two never drift apart the
@@ -245,6 +488,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[],
         notes: &["a constraint is never truncated in execution mode; a cut is always announced"],
         refuses_globals: &[],
+        output: &[one(CONTEXT_OUT)],
         owner_task: None,
     },
     CommandSpec {
@@ -263,6 +507,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &["--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one"],
         refuses_globals: &[],
+        output: &[one(&[f("task", Type::Str), f("holder", Type::Str), f("expires", Type::Str), f("warnings", Type::Strings)])],
         owner_task: None,
     },
     CommandSpec {
@@ -278,6 +523,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one")],
         notes: &[],
         refuses_globals: &[],
+        output: &[when("over a task", SHOW_TASK), when("over an ADR, a spec or a log entry", SHOW_OTHER)],
         owner_task: None,
     },
     CommandSpec {
@@ -295,6 +541,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(ExitCode::Transition, "writing with no claim held by this agent")],
         notes: &[],
         refuses_globals: &[],
+        output: &[when("reading, `ank log <id>`", &[f("about", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("entries", Type::Array(LOG_ENTRY))]), when("appending, `ank log <id> <message>`", &[f("about", Type::Str), f("entry", Type::Str), f("logged", Type::Bool), f("warnings", Type::Strings)])],
         owner_task: None,
     },
     CommandSpec {
@@ -321,6 +568,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "config.yml defines the verifiers; the task's verify: list decides which of them run",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("commit", Type::Str), opt("branch", Type::Str), f("proofs", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {
@@ -336,6 +584,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(ExitCode::Transition, "no claim held by this agent")],
         notes: &[],
         refuses_globals: &[],
+        output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("reason", Type::Str), f("warnings", Type::Strings)])],
         owner_task: None,
     },
     CommandSpec {
@@ -365,6 +614,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--reference declares what a spec rests on; it takes a spec or an adr, and check resolves it",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("created", Type::Str)])],
         owner_task: None,
     },
     CommandSpec {
@@ -389,6 +639,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--free keeps the open tasks no live claim's scope overlaps, and says how many it hid",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str)]))])],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
@@ -413,6 +664,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--remote reads the claim refs from origin with ls-remote and never fetches; without it status describes the local plane only",
         ],
         refuses_globals: &[],
+        output: &[one(STATUS_OUT)],
         owner_task: None,
     },
     CommandSpec {
@@ -432,6 +684,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // kind. Found while pinning the goldens for TASK-2c12b027f805.
         notes: &["exit 8 means findings, as it does for check; a signal alone leaves it 0"],
         refuses_globals: &[],
+        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {
@@ -454,6 +707,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &["the one act ank commits for; it is a human act, signed"],
         refuses_globals: &[],
+        output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), opt("superseded", Type::Str), f("commit", Type::Str), f("anchor", Type::Str)])],
         owner_task: None,
     },
     CommandSpec {
@@ -475,6 +729,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &[],
         refuses_globals: &[],
+        output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("claim_revoked", Type::Bool)])],
         owner_task: None,
     },
     CommandSpec {
@@ -509,6 +764,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--reference and --drop-reference reach a spec's citations, on an accepted one too: the anchor covers its body and scope, not what it cites",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("entity", Type::Str), f("amended", Type::Strings)])],
         owner_task: None,
     },
     CommandSpec {
@@ -537,6 +793,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--detached records the proof in refs/ank/proof/<id> and writes no file, so a pipeline anchors a run without a commit",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("task", Type::Str), f("appended", Type::Object(&[f("type", Type::Str), f("ref", Type::Str)])), f("proofs", Type::Num)])],
         owner_task: None,
     },
     // After `attest` and before `graph`: §4's order, and the last gap in it.
@@ -557,6 +814,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a GUI editor needs its wait flag, or it returns before you have typed and the file is written back unedited",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("entity", Type::Str), f("changed", Type::Strings), f("version", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {
@@ -572,6 +830,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[],
         notes: &[],
         refuses_globals: &[],
+        output: &[one(&[f("path", Type::Str), f("tasks", Type::Array(&[f("id", Type::Str), f("short", Type::Str), f("status", Type::Str), f("title", Type::Str)])), f("edges", Type::Array(&[f("task", Type::Str), f("blocked_by", Type::Str)]))])],
         owner_task: None,
     },
     CommandSpec {
@@ -587,6 +846,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[],
         notes: &[],
         refuses_globals: &[],
+        output: &[one(&[f("path", Type::Str), f("total", Type::Num), f("adr", Type::Array(ROW)), f("specs", Type::Array(ROW)), f("tasks", Type::Array(ROW))])],
         owner_task: None,
     },
     CommandSpec {
@@ -609,6 +869,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
         ],
         refuses_globals: &[],
+        output: &[one(CHECK_OUT)],
         owner_task: None,
     },
     // After `check`, which is the verb that names it: a corpus still holding
@@ -633,6 +894,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "it writes files and never commits: review with git status .ank",
         ],
         refuses_globals: &[],
+        output: &[one(&[f("files", Type::Num), f("entries", Type::Num), f("created", Type::Num)])],
         owner_task: None,
     },
     // After `check` and before `init`: §4's order. It sits beside the verb
@@ -661,6 +923,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
         ],
         refuses_globals: &[],
+        output: &[when("reading, `ank config <key>`", &[f("key", Type::Str), opt("value", Type::Str), f("source", Type::Str)]), when("writing, `ank config <key> <value>`", &[f("key", Type::Str), opt("previous", Type::Str), opt("value", Type::Str), f("changed", Type::Bool)])],
         owner_task: None,
     },
     CommandSpec {
@@ -679,6 +942,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         )],
         notes: &["a target elsewhere is ank init <path>; with no argument it initialises the current directory"],
         refuses_globals: &["--repo"],
+        output: &[one(&[f("created", Type::Strings), f("wrote", Type::Strings), f("added", Type::Strings), f("changed", Type::Bool)])],
         owner_task: None,
     },
     CommandSpec {
@@ -694,6 +958,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(ExitCode::NotFound, "no such verb; never a fallback to the general listing")],
         notes: &[],
         refuses_globals: &[],
+        output: &[one(HELP_OUT)],
         owner_task: None,
     },
 ];

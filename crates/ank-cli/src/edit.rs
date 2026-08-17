@@ -145,7 +145,7 @@ fn write_back(
     let version = store.write(&after, base_version)?;
 
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("entity", &id.to_string())
             .strings("changed", &changed)
             .num("version", version)
@@ -172,7 +172,7 @@ fn write_back(
 
 fn report_unchanged(inv: &Invocation, id: &EntityId, version: u64, out: &mut dyn Write) {
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("entity", &id.to_string())
             .strings("changed", Vec::<String>::new())
             .num("version", version)

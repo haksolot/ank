@@ -74,8 +74,26 @@ pub struct Obj {
 }
 
 impl Obj {
+    /// A document fragment: a nested object, or a row of an array.
     pub fn new() -> Obj {
         Obj { buf: String::new() }
+    }
+
+    /// A **top-level** document, which carries the contract version it was
+    /// written against (ADR-6fd69efb629c).
+    ///
+    /// Seeded by the constructor rather than added by `finish`, for two reasons.
+    /// `finish` also renders nested objects and array rows, which must not carry
+    /// it — the version describes the document, not every object inside it. And
+    /// the key belongs first, where a reader looking for it finds it before
+    /// anything else, and `Obj` keeps the order its caller wrote.
+    ///
+    /// Using [`Obj::new`] at the top level is therefore a way to emit a document
+    /// with no version, which is why nothing here is asked to remember: the
+    /// conformance test walks every fixture in `tests/golden-json/` and there is
+    /// one per verb, so a verb that forgot is a verb whose golden fails.
+    pub fn document() -> Obj {
+        Obj::new().num("contract", ank_contract::CONTRACT_VERSION)
     }
 
     fn key(&mut self, key: &str) {

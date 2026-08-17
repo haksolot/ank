@@ -295,7 +295,7 @@ pub fn run(
                 .finish(),
             None => "null".into(),
         };
-        let doc = Obj::new()
+        let doc = Obj::document()
             // Both collapse to null, and legitimately: a parser asking for the
             // branch gets "there is none to report", and the three ways of
             // having none are a distinction the human surface draws in words.

@@ -238,7 +238,7 @@ pub fn new(
 
     store.create(&entity)?;
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("id", &id.to_string())
             .str("kind", kind.as_str())
             .str("created", &created)
@@ -730,7 +730,7 @@ fn create_filled(
     let title = entity.title().to_string();
     store.create(&entity)?;
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("id", &id.to_string())
             .str("kind", kind.as_str())
             .str("created", entity.created())
@@ -1215,7 +1215,7 @@ pub fn find(
                     .finish()
             })
             .collect();
-        let doc = Obj::new()
+        let doc = Obj::document()
             .num("total", total)
             .num("shown", shown)
             .num("hidden", hidden)
@@ -1464,7 +1464,7 @@ pub fn scope(
         let adr: Vec<String> = adrs.iter().map(item).collect();
         let spec: Vec<String> = specs.iter().map(item).collect();
         let task: Vec<String> = tasks.iter().map(item).collect();
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("path", shown)
             .num("total", hits.len())
             .array("adr", adr)
@@ -1805,7 +1805,7 @@ fn log_read(
         // `total` and `shown` beside the entries, the two numbers `find --json`
         // already carries: a parser handed a truncated list and no count cannot
         // tell a short log from a cut one.
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("about", &id.to_string())
             .num("total", total)
             .num("shown", shown)
@@ -1990,7 +1990,7 @@ fn report_logged(
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("about", &subject.to_string())
             .str("entry", &entry.to_string())
             .bool("logged", true)
@@ -2083,7 +2083,7 @@ pub fn release(
     claim::delete(&repo.root, &id)?;
 
     if inv.json() {
-        let doc = Obj::new()
+        let doc = Obj::document()
             .str("task", &id.to_string())
             .str("status", "open")
             .str("reason", &reason)

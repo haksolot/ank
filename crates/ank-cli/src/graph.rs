@@ -275,7 +275,7 @@ fn json(
             );
         }
     }
-    let doc = Obj::new()
+    let doc = Obj::document()
         .str("path", path)
         .array("tasks", tasks)
         .array("edges", edges)

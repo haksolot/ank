@@ -1,1 +1,1 @@
-{"path":"src/main.rs","total":2,"adr":[{"id":"ADR-0000000000ab","kind":"adr","status":"proposed","title":"A decision"}],"specs":[],"tasks":[{"id":"TASK-000000000001","kind":"task","status":"open","title":"Example task"}]}
+{"contract":1,"path":"src/main.rs","total":2,"adr":[{"id":"ADR-0000000000ab","kind":"adr","status":"proposed","title":"A decision"}],"specs":[],"tasks":[{"id":"TASK-000000000001","kind":"task","status":"open","title":"Example task"}]}
