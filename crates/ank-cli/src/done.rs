@@ -212,17 +212,16 @@ pub fn run(
     }
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{id}\",\"status\":\"done\",\"commit\":\"{}\",\"branch\":{},\"proofs\":{}}}",
-            completed.commit,
-            completed
-                .branch
-                .as_ref()
-                .map(|b| format!("\"{b}\""))
-                .unwrap_or_else(|| "null".to_string()),
-            proofs.len()
-        );
+        let doc = crate::json::Obj::new()
+            .str("task", &id.to_string())
+            .str("status", "done")
+            .str("commit", &completed.commit)
+            // Null on a detached HEAD, and not the empty string: the branch a
+            // completion was made on is a fact a caller may not have.
+            .opt_str("branch", completed.branch.as_deref())
+            .num("proofs", proofs.len())
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         for p in &proofs {
             let _ = writeln!(

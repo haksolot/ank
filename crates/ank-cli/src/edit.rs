@@ -24,9 +24,9 @@
 
 use crate::claim;
 use crate::cli::{CliError, Invocation, Result};
-use crate::commands::json_string;
 use crate::editor;
 use crate::human::{self, Freeze};
+use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use ank_core::{freeze, parse_entity, Entity, EntityId};
@@ -138,12 +138,12 @@ fn write_back(
     let version = store.write(&after, base_version)?;
 
     if inv.json() {
-        let items: Vec<String> = changed.iter().map(|f| json_string(f)).collect();
-        let _ = writeln!(
-            out,
-            "{{\"entity\":\"{id}\",\"changed\":[{}],\"version\":{version}}}",
-            items.join(",")
-        );
+        let doc = Obj::new()
+            .str("entity", &id.to_string())
+            .strings("changed", &changed)
+            .num("version", version)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         // Text that differed while no parsed field did: whitespace, field order,
         // a quoting style. The write is real — it is the normalisation — and
@@ -165,10 +165,12 @@ fn write_back(
 
 fn report_unchanged(inv: &Invocation, id: &EntityId, version: u64, out: &mut dyn Write) {
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"entity\":\"{id}\",\"changed\":[],\"version\":{version}}}"
-        );
+        let doc = Obj::new()
+            .str("entity", &id.to_string())
+            .strings("changed", Vec::<String>::new())
+            .num("version", version)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         // Not a transition: nothing moved, so the word takes no direction and
         // only the identifier is painted.

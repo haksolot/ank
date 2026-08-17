@@ -28,6 +28,7 @@ use crate::cli::{CliError, Invocation, Result};
 use crate::config::Config;
 use crate::git;
 use crate::index::{Index, Row};
+use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::Store;
 use crate::style::Style;
@@ -1459,139 +1460,100 @@ fn orientation_lines(
 // JSON
 // ---------------------------------------------------------------------------
 
-fn esc(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 2);
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-fn json_list(items: &[String]) -> String {
-    format!(
-        "[{}]",
-        items
-            .iter()
-            .map(|i| format!("\"{}\"", esc(i)))
-            .collect::<Vec<_>>()
-            .join(",")
-    )
-}
-
-/// The peer a constraint came from, `null` for a rule at home. The human
-/// surface carries the same fact in the identifier it prints; `--json` has
-/// nowhere to put a suffix, so it gets a field of its own.
-fn home_json(c: &ConstraintLine) -> String {
-    match &c.home {
-        Some(name) => format!("\"{}\"", esc(name)),
-        None => "null".to_string(),
-    }
-}
-
 pub fn render_json(view: &View) -> String {
-    let constraints = view
+    // The peer a constraint came from, `null` for a rule at home. The human
+    // surface carries the same fact in the identifier it prints; `--json` has
+    // nowhere to put a suffix, so it gets a field of its own.
+    let constraints: Vec<String> = view
         .constraints
         .iter()
         .map(|c| {
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"constraint\":\"{}\",\
-                 \"home\":{}}}",
-                c.id,
-                esc(&c.short),
-                esc(&c.title),
-                esc(&c.text),
-                home_json(c)
-            )
+            Obj::new()
+                .str("id", &c.id.to_string())
+                .str("short", &c.short)
+                .str("title", &c.title)
+                .str("constraint", &c.text)
+                .opt_str("home", c.home.as_deref())
+                .finish()
         })
-        .collect::<Vec<_>>()
-        .join(",");
-    let proposals = view
+        .collect();
+    let proposals: Vec<String> = view
         .proposals
         .iter()
         .map(|c| {
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"home\":{}}}",
-                c.id,
-                esc(&c.short),
-                esc(&c.title),
-                home_json(c)
-            )
+            Obj::new()
+                .str("id", &c.id.to_string())
+                .str("short", &c.short)
+                .str("title", &c.title)
+                .opt_str("home", c.home.as_deref())
+                .finish()
         })
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect();
     // Id, short and title, and no fourth key. The machine surface is held to
     // the same rule as the human one — there is no mode that serves a spec
     // body — and a `--json` caller is exactly the one that would pipe two
     // hundred thousand bytes into an agent's context without noticing.
-    let specs = view
+    let specs: Vec<String> = view
         .specs
         .iter()
         .map(|s| {
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\"}}",
-                s.id,
-                esc(&s.short),
-                esc(&s.title)
-            )
+            Obj::new()
+                .str("id", &s.id.to_string())
+                .str("short", &s.short)
+                .str("title", &s.title)
+                .finish()
         })
-        .collect::<Vec<_>>()
-        .join(",");
-    let tasks = view
+        .collect();
+    let tasks: Vec<String> = view
         .tasks
         .iter()
         .map(|t| {
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"title\":\"{}\",\"status\":\"{}\",\
-                 \"ready\":{},\"unblocks\":{},\"state\":\"{}\"}}",
-                t.id,
-                esc(&t.short),
-                esc(&t.title),
-                esc(&t.status),
-                t.ready,
-                t.unblocks,
-                esc(marker(t).trim_matches(|c| c == '[' || c == ']'))
-            )
+            let state = marker(t);
+            Obj::new()
+                .str("id", &t.id.to_string())
+                .str("short", &t.short)
+                .str("title", &t.title)
+                .str("status", &t.status)
+                .bool("ready", t.ready)
+                .num("unblocks", t.unblocks)
+                .str("state", state.trim_matches(|c| c == '[' || c == ']'))
+                .finish()
         })
-        .collect::<Vec<_>>()
-        .join(",");
+        .collect();
 
     let mode = match &view.mode {
         Mode::Orientation { .. } => "orientation",
         Mode::Execution { .. } => "execution",
     };
     let head = match &view.mode {
-        Mode::Execution { id, .. } => format!("\"{id}\""),
-        Mode::Orientation { .. } => "null".to_string(),
+        Mode::Execution { id, .. } => Some(id.to_string()),
+        Mode::Orientation { .. } => None,
     };
     let criteria = match &view.mode {
         Mode::Execution {
             criteria: Some(c), ..
-        } => format!("\"{}\"", esc(c)),
-        _ => "null".to_string(),
+        } => Some(c.clone()),
+        _ => None,
     };
-    let log = match &view.mode {
-        Mode::Execution { log, .. } => json_list(log),
-        Mode::Orientation { .. } => "[]".to_string(),
+    let log: &[String] = match &view.mode {
+        Mode::Execution { log, .. } => log,
+        Mode::Orientation { .. } => &[],
     };
 
-    format!(
-        "{{\"mode\":\"{mode}\",\"head\":{head},\"criteria\":{criteria},\
-         \"constraints\":[{constraints}],\"proposed\":[{proposals}],\"specs\":[{specs}],\
-         \"tasks\":[{tasks}],\
-         \"log\":{log},\"ready\":{},\"blocked\":{},\"finished_elsewhere\":{},\"warnings\":{}}}",
-        view.ready_count(),
-        view.blocked,
-        view.finished_elsewhere,
-        json_list(&view.warnings)
-    )
+    Obj::new()
+        .str("mode", mode)
+        .opt_str("head", head.as_deref())
+        .opt_str("criteria", criteria.as_deref())
+        .array("constraints", constraints)
+        .array("proposed", proposals)
+        .array("specs", specs)
+        .array("tasks", tasks)
+        .strings("log", log)
+        .num("ready", view.ready_count())
+        .num("blocked", view.blocked)
+        .num("finished_elsewhere", view.finished_elsewhere)
+        .strings("warnings", &view.warnings)
+        .finish()
 }
 
 // ---------------------------------------------------------------------------

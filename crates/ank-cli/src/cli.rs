@@ -35,6 +35,7 @@
 //! tested, one test per case.
 
 use crate::claim::Renews;
+use crate::json::Obj;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::Write;
@@ -520,7 +521,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         positional_help: "[<path>]",
         flags: &[],
         refuses: &[],
-        notes: &[],
+        // `review` shares `check`'s report and therefore its exit code, and for
+        // a long time it said so nowhere: a caller reading 8 as "check found
+        // something" met it from a verb whose page promised nothing of the
+        // kind. Found while pinning the goldens for TASK-2c12b027f805.
+        notes: &["exit 8 means findings, as it does for check; a signal alone leaves it 0"],
         refuses_globals: &[],
         owner_task: None,
     },
@@ -1191,25 +1196,6 @@ fn globals_line(globals: &[&'static FlagSpec], with_short: bool) -> String {
         .join(" ")
 }
 
-/// Minimal JSON string escaping. The strings rendered here are `&'static str`
-/// literals and none of them needs it today, which is precisely why it is
-/// written rather than assumed: the day a verb or a flag carries a quote, the
-/// output stays parseable instead of becoming a bug in whatever consumes it.
-pub fn json_str(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
 fn json_of(specs: &[&CommandSpec]) -> String {
     let verbs: Vec<String> = specs
         .iter()
@@ -1217,9 +1203,8 @@ fn json_of(specs: &[&CommandSpec]) -> String {
             let refusals: Vec<String> = spec
                 .refuses
                 .iter()
-                .map(|r| format!("{{\"code\":{},\"when\":{}}}", r.code, json_str(r.when)))
+                .map(|r| Obj::new().num("code", r.code).str("when", r.when).finish())
                 .collect();
-            let notes: Vec<String> = spec.notes.iter().map(|n| json_str(n)).collect();
             let flags: Vec<String> = listed_flags(spec)
                 .into_iter()
                 .chain(globals_of(spec))
@@ -1227,17 +1212,13 @@ fn json_of(specs: &[&CommandSpec]) -> String {
                     // The short form is here and not only in the human listing:
                     // `--json` is how a script reads the surface, and a mapping
                     // it cannot see is a mapping it cannot use.
-                    let short = match short_of(f.name) {
-                        Some(c) => json_str(&format!("-{c}")),
-                        None => "null".to_string(),
-                    };
-                    format!(
-                        "{{\"name\":{},\"short\":{},\"takes_value\":{},\"repeatable\":{}}}",
-                        json_str(f.name),
-                        short,
-                        f.takes_value,
-                        f.repeatable
-                    )
+                    let short = short_of(f.name).map(|c| format!("-{c}"));
+                    Obj::new()
+                        .str("name", f.name)
+                        .opt_str("short", short.as_deref())
+                        .bool("takes_value", f.takes_value)
+                        .bool("repeatable", f.repeatable)
+                        .finish()
                 })
                 .collect();
             // `group` is here and not only in the human listing: §4 emits the
@@ -1245,19 +1226,18 @@ fn json_of(specs: &[&CommandSpec]) -> String {
             // reader, so giving a machine the grouping and withholding it from
             // the caller who scripts against it would be the split this ADR
             // rejected, the other way round (ADR-f61e2d2c75e8).
-            format!(
-                "{{\"name\":{},\"usage\":{},\"summary\":{},\"group\":{},\"flags\":[{}],\"notes\":[{}],\"refuses\":[{}]}}",
-                json_str(spec.name),
-                json_str(&usage(spec)),
-                json_str(spec.summary),
-                json_str(spec.group),
-                flags.join(","),
-                notes.join(","),
-                refusals.join(",")
-            )
+            Obj::new()
+                .str("name", spec.name)
+                .str("usage", &usage(spec))
+                .str("summary", spec.summary)
+                .str("group", spec.group)
+                .array("flags", flags)
+                .strings("notes", spec.notes)
+                .array("refuses", refusals)
+                .finish()
         })
         .collect();
-    format!("{{\"verbs\":[{}]}}", verbs.join(","))
+    Obj::new().array("verbs", verbs).finish()
 }
 
 /// `ank help` and `ank help <verb>` (§9).

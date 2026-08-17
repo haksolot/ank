@@ -29,6 +29,7 @@ use crate::context;
 use crate::editor;
 use crate::entries::{self, Entry};
 use crate::index::{Index, Row};
+use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use ank_core::{
@@ -235,11 +236,12 @@ pub fn new(
 
     store.create(&entity)?;
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"id\":\"{id}\",\"kind\":\"{}\",\"created\":\"{created}\"}}",
-            kind.as_str()
-        );
+        let doc = Obj::new()
+            .str("id", &id.to_string())
+            .str("kind", kind.as_str())
+            .str("created", &created)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -714,12 +716,12 @@ fn create_filled(
     let title = entity.title().to_string();
     store.create(&entity)?;
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"id\":\"{id}\",\"kind\":\"{}\",\"created\":\"{}\"}}",
-            kind.as_str(),
-            entity.created()
-        );
+        let doc = Obj::new()
+            .str("id", &id.to_string())
+            .str("kind", kind.as_str())
+            .str("created", entity.created())
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -1170,27 +1172,26 @@ pub fn find(
         let items: Vec<String> = hits[..shown]
             .iter()
             .map(|r| {
-                format!(
-                    "{{\"id\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\"state\":{},\"title\":{}}}",
-                    r.id,
-                    r.kind.as_str(),
-                    r.status,
-                    json_string(
-                        crate::context::marker_for(
-                            &r.status,
-                            crate::context::coordination_of(&coord, &r.id)
-                        )
-                        .trim_matches(|c| c == '[' || c == ']')
-                    ),
-                    json_string(&r.title)
-                )
+                let state = crate::context::marker_for(
+                    &r.status,
+                    crate::context::coordination_of(&coord, &r.id),
+                );
+                Obj::new()
+                    .str("id", &r.id.to_string())
+                    .str("kind", r.kind.as_str())
+                    .str("status", &r.status.to_string())
+                    .str("state", state.trim_matches(|c| c == '[' || c == ']'))
+                    .str("title", &r.title)
+                    .finish()
             })
             .collect();
-        let _ = writeln!(
-            out,
-            "{{\"total\":{total},\"shown\":{shown},\"hidden\":{hidden},\"results\":[{}]}}",
-            items.join(",")
-        );
+        let doc = Obj::new()
+            .num("total", total)
+            .num("shown", shown)
+            .num("hidden", hidden)
+            .array("results", items)
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(0);
     }
     if inv.quiet() {
@@ -1416,26 +1417,24 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
     if inv.json() {
         let item = |r: &&Row| {
-            format!(
-                "{{\"id\":\"{}\",\"kind\":\"{}\",\"status\":\"{}\",\"title\":{}}}",
-                r.id,
-                r.kind.as_str(),
-                r.status,
-                json_string(&r.title)
-            )
+            Obj::new()
+                .str("id", &r.id.to_string())
+                .str("kind", r.kind.as_str())
+                .str("status", &r.status.to_string())
+                .str("title", &r.title)
+                .finish()
         };
         let adr: Vec<String> = adrs.iter().map(item).collect();
         let spec: Vec<String> = specs.iter().map(item).collect();
         let task: Vec<String> = tasks.iter().map(item).collect();
-        let _ = writeln!(
-            out,
-            "{{\"path\":{},\"total\":{},\"adr\":[{}],\"specs\":[{}],\"tasks\":[{}]}}",
-            json_string(shown),
-            hits.len(),
-            adr.join(","),
-            spec.join(","),
-            task.join(",")
-        );
+        let doc = Obj::new()
+            .str("path", shown)
+            .num("total", hits.len())
+            .array("adr", adr)
+            .array("specs", spec)
+            .array("tasks", task)
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(0);
     }
     if inv.quiet() {
@@ -1551,24 +1550,6 @@ pub(crate) fn entry_cost(e: &LogEntry) -> usize {
 
 fn scope_touches(scope: &[String], path: &str) -> bool {
     context::in_perimeter(scope, Some(path))
-}
-
-/// Title, identifier and slug first, then the text that carries the meaning: a
-/// task's criterion, an ADR's constraint. Not the whole body — a query matching
-/// a paragraph of reasoning is a match an agent cannot act on.
-pub(crate) fn json_string(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1687,12 +1668,6 @@ fn warn_before_acting(inv: &Invocation, warnings: &[String]) {
     }
 }
 
-/// The same sentences for a parser, as `claim --json` already carries them.
-fn warnings_json(warnings: &[String]) -> String {
-    let items: Vec<String> = warnings.iter().map(|w| json_string(w)).collect();
-    format!(",\"warnings\":[{}]", items.join(","))
-}
-
 /// `log [<id>] [<message>]` (§4). `git log` reads, and so does this one when it
 /// is given nothing but an id — the one place the git intuition was betrayed,
 /// closed without renaming the verb.
@@ -1780,25 +1755,24 @@ fn log_read(
                 // reading a page and has no budget to spend. The listing above
                 // is where the cut happens, and this is what `ank show <entry>`
                 // would print.
-                format!(
-                    "{{\"id\":{},\"timestamp\":{},\"who\":{},\"message\":{}}}",
-                    e.id.as_ref()
-                        .map(|i| json_string(&i.to_string()))
-                        .unwrap_or_else(|| "null".to_string()),
-                    json_string(&e.line.timestamp),
-                    json_string(&e.line.who),
-                    json_string(&e.line.message)
-                )
+                Obj::new()
+                    .opt_str("id", e.id.as_ref().map(|i| i.to_string()).as_deref())
+                    .str("timestamp", &e.line.timestamp)
+                    .str("who", &e.line.who)
+                    .str("message", &e.line.message)
+                    .finish()
             })
             .collect();
         // `total` and `shown` beside the entries, the two numbers `find --json`
         // already carries: a parser handed a truncated list and no count cannot
         // tell a short log from a cut one.
-        let _ = writeln!(
-            out,
-            "{{\"about\":\"{id}\",\"total\":{total},\"shown\":{shown},\"entries\":[{}]}}",
-            items.join(",")
-        );
+        let doc = Obj::new()
+            .str("about", &id.to_string())
+            .num("total", total)
+            .num("shown", shown)
+            .array("entries", items)
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(0);
     }
     if inv.quiet() {
@@ -1975,11 +1949,13 @@ fn report_logged(
     out: &mut dyn Write,
 ) -> Result<i32> {
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"about\":\"{subject}\",\"entry\":\"{entry}\",\"logged\":true{}}}",
-            warnings_json(warnings)
-        );
+        let doc = Obj::new()
+            .str("about", &subject.to_string())
+            .str("entry", &entry.to_string())
+            .bool("logged", true)
+            .strings("warnings", warnings)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -2055,12 +2031,13 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     claim::delete(&repo.root, &id)?;
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{id}\",\"status\":\"open\",\"reason\":{}{}}}",
-            json_string(&reason),
-            warnings_json(&warnings)
-        );
+        let doc = Obj::new()
+            .str("task", &id.to_string())
+            .str("status", "open")
+            .str("reason", &reason)
+            .strings("warnings", &warnings)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,

@@ -14,6 +14,7 @@
 use crate::cli::{Invocation, Result};
 use crate::context;
 use crate::index::{Index, Row};
+use crate::json::Obj;
 use crate::repo::Repo;
 use ank_core::{EntityId, EntityKind};
 use std::collections::{HashMap, HashSet};
@@ -250,33 +251,34 @@ fn json(
     let tasks: Vec<String> = nodes
         .iter()
         .map(|r| {
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"status\":\"{}\",\"title\":{}}}",
-                r.id,
-                shorts
-                    .get(&r.id)
-                    .cloned()
-                    .unwrap_or_else(|| r.id.to_string()),
-                r.status,
-                crate::commands::json_string(&r.title)
-            )
+            let short = shorts
+                .get(&r.id)
+                .cloned()
+                .unwrap_or_else(|| r.id.to_string());
+            Obj::new()
+                .str("id", &r.id.to_string())
+                .str("short", &short)
+                .str("status", &r.status.to_string())
+                .str("title", &r.title)
+                .finish()
         })
         .collect();
     let mut edges: Vec<String> = Vec::new();
     for row in nodes {
         for blocker in &row.blocked_by {
-            edges.push(format!(
-                "{{\"task\":\"{}\",\"blocked_by\":\"{blocker}\"}}",
-                row.id
-            ));
+            edges.push(
+                Obj::new()
+                    .str("task", &row.id.to_string())
+                    .str("blocked_by", &blocker.to_string())
+                    .finish(),
+            );
         }
     }
-    let _ = writeln!(
-        out,
-        "{{\"path\":{},\"tasks\":[{}],\"edges\":[{}]}}",
-        crate::commands::json_string(path),
-        tasks.join(","),
-        edges.join(",")
-    );
+    let doc = Obj::new()
+        .str("path", path)
+        .array("tasks", tasks)
+        .array("edges", edges)
+        .finish();
+    let _ = writeln!(out, "{doc}");
     Ok(0)
 }

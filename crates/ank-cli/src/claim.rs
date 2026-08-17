@@ -1890,18 +1890,13 @@ pub fn run(
         .collect();
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{}\",\"holder\":\"{}\",\"expires\":\"{}\",\"warnings\":[{}]}}",
-            acquired.id,
-            acquired.holder,
-            acquired.expires,
-            warnings
-                .iter()
-                .map(|w| crate::commands::json_string(w))
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let doc = crate::json::Obj::new()
+            .str("task", &acquired.id.to_string())
+            .str("holder", &acquired.holder)
+            .str("expires", &acquired.expires)
+            .strings("warnings", &warnings)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else {
         // A warning survives `--quiet`: what it reports is not the confirmation
         // the flag is there to silence.

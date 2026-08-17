@@ -31,6 +31,7 @@ use crate::cli::{CliError, Invocation, Result};
 use crate::config::Config;
 use crate::git;
 use crate::index::Index;
+use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
 use crate::style;
@@ -2886,7 +2887,6 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             .findings
             .iter()
             .map(|f| {
-                let note: Vec<String> = f.note.iter().map(|l| json_str(l)).collect();
                 // Numbers, not the lines a human is shown. A caller sorting
                 // constraints by cost or summing them gets arithmetic it can do
                 // directly; re-parsing "charges 2431 characters" would be the
@@ -2894,34 +2894,36 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
                 let charge: Vec<String> = f
                     .charge
                     .iter()
-                    .map(|c| format!("{{\"id\":\"{}\",\"characters\":{}}}", c.id, c.characters))
+                    .map(|c| {
+                        Obj::new()
+                            .str("id", &c.id.to_string())
+                            .num("characters", c.characters)
+                            .finish()
+                    })
                     .collect();
-                format!(
-                    "{{\"level\":\"{}\",\"subject\":\"{}\",\"message\":{},\"note\":[{}],\
-                     \"charge\":[{}]}}",
-                    if f.level == Level::Fault {
-                        "fault"
-                    } else {
-                        "signal"
-                    },
-                    f.subject,
-                    json_str(&f.message),
-                    note.join(","),
-                    charge.join(",")
-                )
+                let level = if f.level == Level::Fault {
+                    "fault"
+                } else {
+                    "signal"
+                };
+                Obj::new()
+                    .str("level", level)
+                    .str("subject", &f.subject.to_string())
+                    .str("message", &f.message)
+                    .strings("note", &f.note)
+                    .array("charge", charge)
+                    .finish()
             })
             .collect();
-        let pruned: Vec<String> = report.pruned.iter().map(|p| json_str(p)).collect();
-        let _ = writeln!(
-            out,
-            "{{\"faults\":{},\"signals\":{},\"tasks\":{},\"adr\":{},\"pruned\":[{}],\"findings\":[{}]}}",
-            report.faults(),
-            report.signals(),
-            report.tasks,
-            report.adrs,
-            pruned.join(","),
-            items.join(",")
-        );
+        let doc = Obj::new()
+            .num("faults", report.faults())
+            .num("signals", report.signals())
+            .num("tasks", report.tasks)
+            .num("adr", report.adrs)
+            .strings("pruned", &report.pruned)
+            .array("findings", items)
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return;
     }
     if inv.quiet() {
@@ -2971,21 +2973,6 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
         report.adrs,
         report.signals()
     );
-}
-
-fn json_str(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
 }
 
 // ---------------------------------------------------------------------------
@@ -3052,11 +3039,11 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         let items: Vec<String> = live
             .iter()
             .map(|(r, n)| {
-                format!(
-                    "{{\"id\":\"{}\",\"title\":{},\"files\":{n}}}",
-                    r.id,
-                    json_str(&r.title)
-                )
+                Obj::new()
+                    .str("id", &r.id.to_string())
+                    .str("title", &r.title)
+                    .num("files", n)
+                    .finish()
             })
             .collect();
         // `files` is not carried here, and its absence is the point: it counts
@@ -3064,17 +3051,21 @@ pub fn review(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) 
         // is ratified. The queue's question is which decisions are waiting.
         let waiting: Vec<String> = proposed
             .iter()
-            .map(|r| format!("{{\"id\":\"{}\",\"title\":{}}}", r.id, json_str(&r.title)))
+            .map(|r| {
+                Obj::new()
+                    .str("id", &r.id.to_string())
+                    .str("title", &r.title)
+                    .finish()
+            })
             .collect();
-        let _ = writeln!(
-            out,
-            "{{\"proposed\":[{}],\"live\":[{}],\"dead\":{},\"faults\":{},\"signals\":{}}}",
-            waiting.join(","),
-            items.join(","),
-            dead.len(),
-            report.faults(),
-            report.signals()
-        );
+        let doc = Obj::new()
+            .array("proposed", waiting)
+            .array("live", items)
+            .num("dead", dead.len())
+            .num("faults", report.faults())
+            .num("signals", report.signals())
+            .finish();
+        let _ = writeln!(out, "{doc}");
         return Ok(report.exit_code());
     }
     if !inv.quiet() {
@@ -3281,18 +3272,23 @@ pub fn accept(
     let commit = commit_signed(&repo.root, &paths, &message)?;
 
     if inv.json() {
-        let superseded = match replaced.target() {
-            Some(t) => format!("\"{}\"", t.id()),
-            None => "null".to_string(),
-        };
+        let superseded = replaced.target().map(|t| t.id().to_string());
         // Keyed by the kind, which is what the caller typed an id of. A field
         // named `adr` over a spec would be the same lie the commit key would
         // have told, in the surface a parser reads.
+        //
+        // It is also the one key in this binary whose *name* depends on the
+        // data, which no typed client can bind. TASK-155e98c184ed owns fixing
+        // that; this document is carried across unchanged on purpose.
         let kind = id.kind().as_str();
-        let _ = writeln!(
-            out,
-            "{{\"{kind}\":\"{id}\",\"status\":\"accepted\",\"superseded\":{superseded},\"commit\":\"{commit}\",\"anchor\":\"{anchor}\"}}"
-        );
+        let doc = Obj::new()
+            .str(kind, &id.to_string())
+            .str("status", "accepted")
+            .opt_str("superseded", superseded.as_deref())
+            .str("commit", &commit)
+            .str("anchor", &anchor)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         // Two words for two acts. Reporting "accepted" over an ADR that was
         // already accepted would describe the wrong half of what just happened:
@@ -3805,10 +3801,12 @@ pub fn close(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
 
     let revoked = claim::delete(&repo.root, &id)?;
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{id}\",\"status\":\"closed\",\"claim_revoked\":{revoked}}}"
-        );
+        let doc = Obj::new()
+            .str("task", &id.to_string())
+            .str("status", "closed")
+            .bool("claim_revoked", revoked)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -3944,11 +3942,15 @@ pub fn attest(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write
     )?;
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{id}\",\"appended\":{{\"type\":\"{kind}\",\"ref\":{}}},\"proofs\":{entries}}}",
-            json_str(&reference)
-        );
+        let doc = Obj::new()
+            .str("task", &id.to_string())
+            .obj(
+                "appended",
+                Obj::new().str("type", &kind).str("ref", &reference),
+            )
+            .num("proofs", entries)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -4003,13 +4005,16 @@ fn detached(
     }
 
     if inv.json() {
-        let _ = writeln!(
-            out,
-            "{{\"task\":\"{id}\",\"attached\":{{\"type\":\"{kind}\",\"ref\":{}}},\
-             \"detached_proofs\":{entries},\"pushed\":{}}}",
-            json_str(&reference),
-            written.sync == claim::Sync::Pushed
-        );
+        let doc = Obj::new()
+            .str("task", &id.to_string())
+            .obj(
+                "attached",
+                Obj::new().str("type", &kind).str("ref", &reference),
+            )
+            .num("detached_proofs", entries)
+            .bool("pushed", written.sync == claim::Sync::Pushed)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -4528,12 +4533,11 @@ fn resolve_all(store: &Store, raw: &[String]) -> Result<Vec<EntityId>> {
 
 fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut dyn Write) {
     if inv.json() {
-        let items: Vec<String> = changes.iter().map(|c| json_str(c)).collect();
-        let _ = writeln!(
-            out,
-            "{{\"entity\":\"{id}\",\"amended\":[{}]}}",
-            items.join(",")
-        );
+        let doc = Obj::new()
+            .str("entity", &id.to_string())
+            .strings("amended", changes)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         let _ = writeln!(
             out,
@@ -4614,34 +4618,35 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
 
     if inv.json() {
         let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
-            Some(Record::Claim(c)) => format!("\"claimed by {}\"", c.holder),
-            Some(Record::Completed(c)) => {
-                format!("\"finished at {}\"", &c.commit[..7.min(c.commit.len())])
-            }
+            Some(Record::Claim(c)) => Some(format!("claimed by {}", c.holder)),
+            Some(Record::Completed(c)) => Some(format!(
+                "finished at {}",
+                &c.commit[..7.min(c.commit.len())]
+            )),
             // Reported and never coerced: the claim namespace carrying an
             // attestation is a damaged plane, and answering `null` would
             // present the task as free.
-            Some(Record::Proof(_)) => "\"a proof record on the claim ref\"".to_string(),
-            None => "null".to_string(),
+            Some(Record::Proof(_)) => Some("a proof record on the claim ref".to_string()),
+            None => None,
         };
-        let derived = match &edges {
-            Some((blocked_by, unblocks)) => format!(
-                ",\"blocked_by\":{},\"unblocks\":{}",
-                edges_json(blocked_by),
-                edges_json(unblocks)
-            ),
-            None => String::new(),
-        };
-        let _ = writeln!(
-            out,
-            "{{\"id\":\"{}\",\"coordination\":{state}{derived},\"detached_proofs\":{},\
-             \"log_total\":{log_total},\"log_shown\":{},\"log\":{},\"content\":{}}}",
-            loaded.entity.id(),
-            detached_json(&detached),
-            log.len(),
-            log_json(log),
-            json_str(&text)
-        );
+        let mut doc = Obj::new()
+            .str("id", &loaded.entity.id().to_string())
+            .opt_str("coordination", state.as_deref());
+        // Only a task has the two directions, and a document that carried them
+        // empty over an ADR would be answering a question that was not asked.
+        if let Some((blocked_by, unblocks)) = &edges {
+            doc = doc
+                .raw("blocked_by", &edges_json(blocked_by))
+                .raw("unblocks", &edges_json(unblocks));
+        }
+        let doc = doc
+            .raw("detached_proofs", &detached_json(&detached))
+            .num("log_total", log_total)
+            .num("log_shown", log.len())
+            .raw("log", &log_json(log))
+            .str("content", &text)
+            .finish();
+        let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
         // Painted here and not above: `--json` carries the entity as data and
         // must keep receiving `text` itself. `cli::dispatch` already forces the
@@ -4686,18 +4691,15 @@ fn log_json(entries: &[crate::entries::Entry]) -> String {
             // The message **whole**, and the entry's own id beside it. A parser
             // is not reading a page: what the listing elides for width, this
             // carries in full, and the id is what makes one addressable.
-            format!(
-                "{{\"id\":{},\"timestamp\":{},\"who\":{},\"message\":{}}}",
-                e.id.as_ref()
-                    .map(|i| json_str(&i.to_string()))
-                    .unwrap_or_else(|| "null".to_string()),
-                json_str(&e.line.timestamp),
-                json_str(&e.line.who),
-                json_str(&e.line.message)
-            )
+            Obj::new()
+                .opt_str("id", e.id.as_ref().map(|i| i.to_string()).as_deref())
+                .str("timestamp", &e.line.timestamp)
+                .str("who", &e.line.who)
+                .str("message", &e.line.message)
+                .finish()
         })
         .collect();
-    format!("[{}]", items.join(","))
+    crate::json::array(items)
 }
 
 /// The entity's log, printed under it and never inside it.
@@ -4826,16 +4828,15 @@ fn detached_json(detached: &[claim::AttestedProof]) -> String {
     let items: Vec<String> = detached
         .iter()
         .map(|a| {
-            format!(
-                "{{\"type\":\"{}\",\"ref\":{},\"by\":{},\"at\":\"{}\"}}",
-                a.proof.proof_type.as_str(),
-                json_str(&a.proof.reference),
-                json_str(&a.identity),
-                a.attested
-            )
+            Obj::new()
+                .str("type", a.proof.proof_type.as_str())
+                .str("ref", &a.proof.reference)
+                .str("by", &a.identity)
+                .str("at", &a.attested)
+                .finish()
         })
         .collect();
-    format!("[{}]", items.join(","))
+    crate::json::array(items)
 }
 
 /// One end of a `blocked_by` edge, resolved against the corpus.
@@ -4941,20 +4942,15 @@ fn edges_json(edges: &[Edge]) -> String {
     let items: Vec<String> = edges
         .iter()
         .map(|e| {
-            let field = |v: &Option<String>| match v {
-                Some(s) => json_str(s),
-                None => "null".to_string(),
-            };
-            format!(
-                "{{\"id\":\"{}\",\"short\":\"{}\",\"status\":{},\"title\":{}}}",
-                e.id,
-                e.short,
-                field(&e.status),
-                field(&e.title)
-            )
+            Obj::new()
+                .str("id", &e.id.to_string())
+                .str("short", &e.short)
+                .opt_str("status", e.status.as_deref())
+                .opt_str("title", e.title.as_deref())
+                .finish()
         })
         .collect();
-    format!("[{}]", items.join(","))
+    crate::json::array(items)
 }
 
 #[cfg(test)]
