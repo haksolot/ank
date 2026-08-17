@@ -28,7 +28,7 @@ The third is the same line as the `check-repo` verifier in `.ank/config.yml`, on
 purpose: a CI that validated `.ank/` differently from `ank done` would let a
 corpus pass one and fail the other. Exit 8 means findings, and findings are a
 failure. Two further jobs build the workspace on the declared MSRV and prove
-that the minor below it fails — see the MSRV section.
+that the minor below it fails. See the MSRV section.
 
 Run all three locally before opening a pull request. They are the same commands
 in both places.
@@ -53,7 +53,7 @@ so with `ank release --reason "<why>"`.
 **Never edit `status:` by hand.** `ank done` runs the declared verifiers and
 writes the proof of what actually ran, hashed. Setting the field yourself
 produces a task that claims to be finished with nothing behind the claim, and an
-agent — or a human — that grades its own work can simply be wrong.
+agent, or a human, that grades its own work can simply be wrong.
 
 **`.ank/` is reached through the CLI, not by opening the files**
 (ADR-01b6dd05f0db). `ank show <id>` gives an entity whole, `ank find` lists,
@@ -69,14 +69,14 @@ visible to anyone else.
 **A contributor without push access to `refs/ank/*` runs at level 0.** The claim
 is real and it is entirely local: nobody upstream can see it, and nobody
 upstream is prevented from claiming the same task. That is the design working as
-specified, not a defect — level 0 is the default mode and needs no
+specified, not a defect: level 0 is the default mode and needs no
 configuration.
 
 The consequence is procedural. From a fork, coordination happens **in the issue
 or in the pull request**: say which task you are taking before you start, and
 say it where a maintainer can read it. `ank claim` still does its job in your
-clone — it freezes the criterion, which is the half that protects your work —
-but it announces nothing.
+clone, freezing the criterion, which is the half that protects your work.
+It announces nothing.
 
 ## Changing the format
 
@@ -84,17 +84,17 @@ The format is the specification, and `ank-core` is its reference
 implementation. Every format change happens in this order, and it is ratified
 (ADR-63b59c5c26f7):
 
-1. **the specification** — the `spec` document that states the rule, which for a
+1. **the specification**: the `spec` document that states the rule, which for a
    format change is *The data model*, one of the ten `ank find --type spec`
    lists. No field exists in the code without existing there first.
-2. **the goldens** — `crates/ank-core/tests/golden/`. `valid/` must round-trip
+2. **the goldens**: `crates/ank-core/tests/golden/`. `valid/` must round-trip
    byte for byte once normalised, `invalid/` must be rejected with the expected
    error.
 3. **the code**.
 
 The round-trip is byte-identical on canonical form; valid but non-canonical
 input is read correctly and normalised on first rewrite. CRLF is read, never
-written — one golden is in CRLF on purpose and must come back in LF.
+written, and one golden is in CRLF on purpose and must come back in LF.
 
 ## The MSRV is measured, never chosen
 
@@ -111,7 +111,7 @@ upward against the tree, and re-measuring means re-running that walk:
 cargo +<toolchain> build --workspace --locked --ignore-rust-version
 ```
 
-An unexpectedly successful build names a number to lower — it does not lower it.
+An unexpectedly successful build names a number to lower. It does not lower it.
 If a job goes red here, read the diagnostic and open an issue or a task; the
 walk is what decides, and a human runs the walk.
 
@@ -120,7 +120,7 @@ walk is what decides, and a human runs the walk.
 English is the only language of the project (ADR-d3a8dcf38817): prose,
 identifiers, comments, CLI output, error messages, entity titles, bodies, slugs
 and log entries. Non-English text is a finding, not a matter of taste. The one
-exception is a string whose meaning is its literal value — an external proof
+exception is a string whose meaning is its literal value: an external proof
 reference, a quoted third-party message, a fixture asserting a byte sequence.
 
 ## Style
@@ -141,7 +141,7 @@ reference, a quoted third-party message, a fixture asserting a byte sequence.
 
 A suspected vulnerability goes to [private advisory
 reporting](https://github.com/haksolot/ank/security/advisories/new), never to a
-public issue — [SECURITY.md](SECURITY.md) says what is in scope and what section
+public issue. [SECURITY.md](SECURITY.md) says what is in scope and what section
 1 already answers.
 
 Anything else is an issue. The forms ask for what the tool already produces: the
