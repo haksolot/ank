@@ -132,6 +132,7 @@ read only when it is — and orientation is bounded at 8000 characters.
 |---|---|
 | go from install to a first finished task | [Getting started](https://github.com/haksolot/ank/blob/main/docs/getting-started.md) |
 | hand it to an agent, whichever one you run | [Handing ank to an agent][agents] |
+| build a tool on top of ank | [Integrating with ank](https://github.com/haksolot/ank/blob/main/docs/integrating.md) — the machine contract: `help --json`, the exit codes, and where a task's state actually lives |
 | write a tool that reads or writes `.ank/` | [The file format](https://github.com/haksolot/ank/blob/main/docs/format.md) |
 | know why it is shaped this way | [The specification](https://github.com/haksolot/ank/blob/main/docs/ank-spec-v1.1.md) — ten documents in `.ank/`, indexed there |
 | open a pull request | [Contributing](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md) |
