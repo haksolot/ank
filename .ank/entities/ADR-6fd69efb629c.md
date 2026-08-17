@@ -5,13 +5,14 @@ slug: the-machine-surface-is-a-versioned-contract-gene
 title: The machine surface is a versioned contract, generated from one table
 created: 2026-08-17T05:12:40Z
 author: claude-code/2.1.233+integration-contract
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   Every --json document is produced by one writer and one escaper, and carries the contract version it was written against. The verb table, the exit codes and the output shape of every verb live in one crate that every surface consumes, so no surface can describe a verb the CLI does not dispatch, and none can drift from it. `ank help --json` is that description: verbs, flags, refusals, exit codes and output shapes, generated and never written by hand. A golden fixture pins the output of every verb, and a shape that changes without its fixture changing is a failing test. Within a contract version a document may gain a field and may never lose, rename or retype one; anything else bumps the version. No document carries a key whose name depends on the data.
+ratified: 274d910f127a
 schema: 3
-version: 3
+version: 4
 ---
 
 ## Why
