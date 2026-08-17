@@ -60,6 +60,34 @@ pub const DB_FILE: &str = "index.db";
 /// answer.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
+/// The wall above, in milliseconds, for the one test that has to prove the
+/// invariant does not rest on it (TASK-4111dfae8a87).
+///
+/// **A knob for a test and not for tuning**, which is why it is undocumented
+/// outside this comment and why nothing suggests it in an error. The invariant is
+/// that contention never refuses a reader (§6): the index is derived and
+/// disposable, so a reader losing a race to it has lost nothing it needed. That
+/// claim used to be tested by running twelve readers and hoping the machine was
+/// slow enough to have made them contend — a test that passes because the
+/// hardware was fast is a test that reports the hardware.
+///
+/// Set it to `1` and a five-second wall becomes a one-millisecond one, which is
+/// what an arbitrarily loaded runner is. Measured on this tree before the fix:
+/// twelve cold readers, twelve refused across three rounds. After it, on a warm
+/// index, no reader asks for the write lock at all, so the value cannot matter —
+/// and that is the difference between a guarantee and a margin.
+const BUSY_TIMEOUT_ENV: &str = "ANK_INDEX_BUSY_MS";
+
+fn busy_timeout() -> std::time::Duration {
+    match std::env::var(BUSY_TIMEOUT_ENV)
+        .ok()
+        .and_then(|v| v.parse().ok())
+    {
+        Some(ms) => std::time::Duration::from_millis(ms),
+        None => BUSY_TIMEOUT,
+    }
+}
+
 const SCHEMA: &str = "\
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -250,6 +278,23 @@ pub struct Refreshed {
     pub unreadable: usize,
 }
 
+/// One row's worth of work, decided before the write lock is asked for.
+///
+/// It exists so that two things happen outside the transaction: the parse, which
+/// is the slowest thing this module does, and the *decision* — because a refresh
+/// with nothing to write must be able to say so without opening a transaction at
+/// all (TASK-4111dfae8a87).
+enum Write {
+    /// The file parsed and carries the id its name does: index it under `hash`.
+    Index(String, String, Box<Entity>),
+    /// A file that is an entity by name and did not parse as one, or parsed
+    /// under another id. Its hash is recorded so the failure costs one parse
+    /// rather than one per command.
+    Unreadable(String, String),
+    /// A row whose file is gone.
+    Remove(String),
+}
+
 pub struct Index {
     conn: Connection,
     ank: PathBuf,
@@ -322,7 +367,7 @@ impl Index {
         // Before any statement, including the schema probe below: the probe is
         // a read, a read takes a shared lock, and a shared lock is contended by
         // the writer another process is in the middle of.
-        conn.busy_timeout(BUSY_TIMEOUT)
+        conn.busy_timeout(busy_timeout())
             .map_err(|e| db_error(e, ank))?;
         let mut index = Index {
             conn,
@@ -343,18 +388,38 @@ impl Index {
     /// the others re-read *after* it commits, find the schema present, and do
     /// nothing.
     fn ensure_schema(&mut self) -> Result<()> {
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(|e| db_error(e, &self.ank))?;
+        // **Asked as a read first, and that is what makes a reader lock-free**
+        // (TASK-4111dfae8a87). This used to open the write transaction below
+        // unconditionally, so every process that opened the index took the write
+        // lock in order to discover it had nothing to install — the same defect
+        // the refresh had, one layer down, and the one that kept a warm corpus
+        // contended after the refresh stopped contending. Measured: twelve
+        // readers of a warm index, no wait allowed at all, four refused before
+        // this and none after.
+        //
         // Both halves are needed, and the second was not obvious: `meta`
         // survives a `DROP TABLE entities`, so a version check alone declares
         // a gutted index healthy and the failure surfaces later, during the
         // refresh, as a missing table.
-        let stale = schema_version_of(&tx).map_err(|e| db_error(e, &self.ank))?
-            != Some(SCHEMA_VERSION)
-            || !tables_present_in(&tx).map_err(|e| db_error(e, &self.ank))?;
-        if stale {
+        let healthy = |c: &Connection| -> rusqlite::Result<bool> {
+            Ok(schema_version_of(c)? == Some(SCHEMA_VERSION) && tables_present_in(c)?)
+        };
+        if healthy(&self.conn).map_err(|e| db_error(e, &self.ank))? {
+            return Ok(());
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| db_error(e, &self.ank))?;
+        // **Asked again under the lock**, because the read above is a snapshot
+        // and twelve processes opening a fresh corpus all take it before any of
+        // them installs anything. The check and the installation are one
+        // transaction and have to be: read apart, eleven of the twelve fail with
+        // `table entities_fts already exists`. What the read above buys is not
+        // atomicity — it is the eleven-out-of-twelve case where there was never
+        // anything to install.
+        if !healthy(&tx).map_err(|e| db_error(e, &self.ank))? {
             wipe_in(&tx).map_err(|e| db_error(e, &self.ank))?;
             install_schema_in(&tx).map_err(|e| db_error(e, &self.ank))?;
         }
@@ -389,6 +454,54 @@ impl Index {
         let known = self.known_hashes()?;
         let mut done = Refreshed::default();
 
+        // **Decided, and parsed, before the lock is asked for**
+        // (TASK-4111dfae8a87). What the write has to be is a function of the
+        // files and of the rows already there, and neither of those needs the
+        // write lock to be read. Doing the deciding and the parsing inside the
+        // transaction meant the lock was held for the whole of the slowest work
+        // in this function, and held by every reader, for the benefit of the
+        // ones that had something to write.
+        let mut writes: Vec<Write> = Vec::new();
+        for (rel, file) in &on_disk {
+            if known.get(rel) == Some(&file.hash) {
+                done.unchanged += 1;
+                continue;
+            }
+            match parse_entity(&file.text) {
+                Ok(entity) if entity.id() == &file.id => {
+                    writes.push(Write::Index(
+                        rel.clone(),
+                        file.hash.clone(),
+                        Box::new(entity),
+                    ));
+                }
+                // Parsed but under another id than its file name carries, or
+                // did not parse at all. The hash is still recorded, so the
+                // failure costs one parse and not one per command; `check`
+                // reports it, the index only declines to hold it.
+                _ => writes.push(Write::Unreadable(rel.clone(), file.hash.clone())),
+            }
+        }
+        for rel in known.keys() {
+            if !on_disk.contains_key(rel) {
+                writes.push(Write::Remove(rel.clone()));
+            }
+        }
+
+        // **Nothing to write, so no lock is taken at all**, and this is the
+        // clause that removes the contention rather than waiting it out
+        // (TASK-4111dfae8a87). The steady state of a corpus being *read* is that
+        // every hash matches, which is exactly the case a poller lives in — a
+        // board refreshing every thirty seconds, twelve agents running `find`.
+        // Before this, all of them opened a write transaction to write nothing,
+        // so they serialised on a lock none of them needed, and whether they
+        // answered depended on a five-second wall being wide enough for the
+        // queue. Reading takes a read lock now, which SQLite lets any number of
+        // processes hold at once.
+        if writes.is_empty() {
+            return Ok(done);
+        }
+
         // **`IMMEDIATE`, and the busy timeout does not work without it**
         // (TASK-e9dfaf187a1b). A deferred transaction takes a read lock at the
         // first statement and asks to upgrade at the first write; SQLite
@@ -403,31 +516,21 @@ impl Index {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
-        for (rel, file) in &on_disk {
-            if known.get(rel) == Some(&file.hash) {
-                done.unchanged += 1;
-                continue;
-            }
-            match parse_entity(&file.text) {
-                Ok(entity) if entity.id() == &file.id => {
-                    upsert(&tx, rel, &file.hash, &entity).map_err(|e| db_error(e, &self.ank))?;
+        for write in &writes {
+            match write {
+                Write::Index(rel, hash, entity) => {
+                    upsert(&tx, rel, hash, entity).map_err(|e| db_error(e, &self.ank))?;
                     done.indexed += 1;
                 }
-                // Parsed but under another id than its file name carries, or
-                // did not parse at all. The hash is still recorded, so the
-                // failure costs one parse and not one per command; `check`
-                // reports it, the index only declines to hold it.
-                _ => {
+                Write::Unreadable(rel, hash) => {
                     forget(&tx, rel).map_err(|e| db_error(e, &self.ank))?;
-                    remember(&tx, rel, &file.hash).map_err(|e| db_error(e, &self.ank))?;
+                    remember(&tx, rel, hash).map_err(|e| db_error(e, &self.ank))?;
                     done.unreadable += 1;
                 }
-            }
-        }
-        for rel in known.keys() {
-            if !on_disk.contains_key(rel) {
-                forget(&tx, rel).map_err(|e| db_error(e, &self.ank))?;
-                done.removed += 1;
+                Write::Remove(rel) => {
+                    forget(&tx, rel).map_err(|e| db_error(e, &self.ank))?;
+                    done.removed += 1;
+                }
             }
         }
         tx.commit().map_err(|e| db_error(e, &self.ank))?;
