@@ -15,6 +15,7 @@
 
 use crate::cli::{CliError, Result};
 use crate::verify;
+use ank_contract::ExitCode;
 use std::path::{Path, PathBuf};
 
 /// `$EDITOR`, or the environment failure §4 specifies for its absence.
@@ -43,10 +44,11 @@ pub fn from_env(value: Option<&str>, hint: &str) -> Result<String> {
         Some(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
         // Nothing is guessed. An editor picked on the caller's behalf would open
         // something they never asked for, on a file they are about to commit.
-        _ => Err(
-            CliError::new(9, "EDITOR is not set, and there is no editor to open")
-                .with_hint(hint.to_string()),
-        ),
+        _ => Err(CliError::new(
+            ExitCode::Environment,
+            "EDITOR is not set, and there is no editor to open",
+        )
+        .with_hint(hint.to_string())),
     }
 }
 
@@ -70,7 +72,8 @@ pub fn open(editor: &str, cwd: &Path, file: &Path, hint: &str) -> Result<()> {
         .arg(&command)
         .status()
         .map_err(|e| {
-            CliError::new(9, format!("cannot run the editor: {e}")).with_hint(hint.to_string())
+            CliError::new(ExitCode::Environment, format!("cannot run the editor: {e}"))
+                .with_hint(hint.to_string())
         })?;
     if status.success() {
         return Ok(());
@@ -80,7 +83,7 @@ pub fn open(editor: &str, cwd: &Path, file: &Path, hint: &str) -> Result<()> {
         None => "a signal".to_string(),
     };
     Err(CliError::new(
-        9,
+        ExitCode::Environment,
         format!("the editor exited {code}, so nothing was written"),
     )
     .with_hint(hint.to_string()))
@@ -119,9 +122,9 @@ pub fn invalid_entity(e: ank_core::Error, what: &str, hint: &str) -> CliError {
     let code = match e {
         // The entity parsed and does not hold together: the same class of thing
         // `--scope` and `--criteria` are refused for on the flag path.
-        EmptyScope | InvalidGlob(_) | CriteriaByWithoutCriteria => 7,
+        EmptyScope | InvalidGlob(_) | CriteriaByWithoutCriteria => ExitCode::Prerequisite,
         // Malformed: nothing here is a field the caller failed to supply.
-        _ => 1,
+        _ => ExitCode::Generic,
     };
     CliError::new(code, format!("{what}: {e}")).with_hint(hint.to_string())
 }
@@ -173,7 +176,7 @@ mod tests {
     #[test]
     fn an_unset_editor_is_an_environment_failure_that_names_the_retry() {
         let err = from_env(None, "EDITOR=vi ank edit 039e").unwrap_err();
-        assert_eq!(err.code, 9);
+        assert_eq!(err.code, ExitCode::Environment);
         assert_eq!(err.hint.as_deref(), Some("EDITOR=vi ank edit 039e"));
 
         // Exported to nothing is the same answer as never exported, rather than
@@ -182,13 +185,13 @@ mod tests {
             from_env(Some(""), "EDITOR=vi ank edit 039e")
                 .unwrap_err()
                 .code,
-            9
+            ExitCode::Environment
         );
         assert_eq!(
             from_env(Some("   "), "EDITOR=vi ank edit 039e")
                 .unwrap_err()
                 .code,
-            9
+            ExitCode::Environment
         );
 
         // A command line, not a program name, and the surrounding blanks a shell

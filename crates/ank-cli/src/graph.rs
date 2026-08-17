@@ -16,11 +16,12 @@ use crate::context;
 use crate::index::{Index, Row};
 use crate::json::Obj;
 use crate::repo::Repo;
+use ank_contract::ExitCode;
 use ank_core::{EntityId, EntityKind};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 
-pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCode> {
     let perimeter = context::perimeter(inv, repo)?;
     let shown = perimeter.as_deref().unwrap_or(".");
 
@@ -69,7 +70,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         return json(out, shown, &nodes, &shorts);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     // Names the perimeter it drew (§4). Without it an empty answer and an answer
@@ -77,7 +78,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     let _ = writeln!(out, "{shown}");
     if nodes.is_empty() {
         let _ = writeln!(out, "\nno task in this perimeter");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     let _ = writeln!(out);
 
@@ -124,7 +125,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         nodes.len(),
         roots.len()
     );
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// One node and everything it unblocks, depth first.
@@ -247,7 +248,7 @@ fn json(
     path: &str,
     nodes: &[&Row],
     shorts: &HashMap<EntityId, String>,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let tasks: Vec<String> = nodes
         .iter()
         .map(|r| {
@@ -280,5 +281,5 @@ fn json(
         .array("edges", edges)
         .finish();
     let _ = writeln!(out, "{doc}");
-    Ok(0)
+    Ok(ExitCode::Ok)
 }

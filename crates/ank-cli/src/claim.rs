@@ -30,6 +30,7 @@ use crate::human::Freeze;
 use crate::identity::ENV_AGENT;
 use crate::repo::Repo;
 use crate::store::Store;
+use ank_contract::ExitCode;
 use ank_core::{
     freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, Proof, ScopeSet, Task,
     TaskStatus,
@@ -280,8 +281,11 @@ fn corrupt(name: &str, detail: impl std::fmt::Display) -> CliError {
     // Code 9: a coordination ref nobody can read is an environment to repair,
     // not a failure of the agent's work (§4). Never a silent fallback to the
     // other state — that is what would let a completion read as a free task.
-    CliError::new(9, format!("unreadable record on {name}: {detail}"))
-        .with_hint(format!("git update-ref -d {name}"))
+    CliError::new(
+        ExitCode::Environment,
+        format!("unreadable record on {name}: {detail}"),
+    )
+    .with_hint(format!("git update-ref -d {name}"))
 }
 
 /// Serialises a record. `state` is written first and every value goes through
@@ -463,7 +467,7 @@ fn already_holding(cwd: &Path, identity: &str, target: &EntityId, now: i64) -> R
         return Ok(());
     };
     Err(CliError::new(
-        7,
+        ExitCode::Prerequisite,
         format!(
             "{identity} holds a live claim on {id} ({})",
             remaining_text(record, now)
@@ -522,16 +526,16 @@ fn write_blob(cwd: &Path, record: &Record) -> Result<String> {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| CliError::new(9, format!("git hash-object: {e}")))?;
+        .map_err(|e| CliError::new(ExitCode::Environment, format!("git hash-object: {e}")))?;
     child
         .stdin
         .take()
-        .ok_or_else(|| CliError::new(9, "git hash-object: no stdin"))?
+        .ok_or_else(|| CliError::new(ExitCode::Environment, "git hash-object: no stdin"))?
         .write_all(text.as_bytes())
-        .map_err(|e| CliError::new(9, format!("git hash-object: {e}")))?;
+        .map_err(|e| CliError::new(ExitCode::Environment, format!("git hash-object: {e}")))?;
     let out = child
         .wait_with_output()
-        .map_err(|e| CliError::new(9, format!("git hash-object: {e}")))?;
+        .map_err(|e| CliError::new(ExitCode::Environment, format!("git hash-object: {e}")))?;
     if !out.status.success() {
         return Err(git::failed(&["hash-object", "-w", "--stdin"], &out));
     }
@@ -1058,35 +1062,12 @@ pub fn renew(
 // Renewal by working (§3, ADR-0bb7ea8991bc)
 // ---------------------------------------------------------------------------
 
-/// What a verb is about, as far as the lease is concerned (§3).
-///
-/// §3 renewed the lease on `log` alone, and `log` is *reporting* rather than
-/// working: after the design is settled there is often an hour of mechanical
-/// fixing with nothing worth logging, so the lease lapsed precisely during the
-/// stretch where the work was least interruptible. Renewal follows **the
-/// holder's verbs against the task it holds** instead.
-///
-/// **Declared per verb on [`crate::cli::CommandSpec`] and read here.** The rule
-/// is "the holder's verbs against the held task" and not a list of verb names,
-/// because a list beside the dispatch is what goes stale when a verb is added —
-/// the same argument `coordinates` makes on the same table, and for the same
-/// reason: a field makes the compiler ask the question of every verb that is
-/// ever added, where a separate enumeration lets a new one default to silence.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Renews {
-    /// Nothing. The verb is about the repository or the corpus rather than about
-    /// a task — `status`, `find`, `check` — or it is one of the verbs that
-    /// settles the lease itself: `claim` grants one rather than extending it,
-    /// `log` renews as part of its own write and reports what the write turned
-    /// up, and `done` and `release` end the claim.
-    Never,
-    /// The task its `<id>` names, and only when that is the one the caller
-    /// holds. `ank show` on another task renews nothing.
-    Named,
-    /// The task the caller holds, which is the only one the verb is ever about:
-    /// `context` in execution mode.
-    Held,
-}
+// What a verb is about as far as the lease is concerned is a property of the
+// verb, so it is declared with the verb table in `ank-contract` and read here
+// (ADR-6fd69efb629c). Re-exported because `crate::claim::Renews` is where the
+// rule's own module puts it in every reader's hands, and because the act of
+// renewing — the only thing that touches a ref — stays in this file.
+pub use ank_contract::Renews;
 
 /// Renews the caller's lease when the verb that just ran was work on the task it
 /// holds (§3, ADR-0bb7ea8991bc).
@@ -1270,7 +1251,8 @@ fn bearing_on(store: &Store, _repo: &Repo, task: &Task) -> Result<Vec<Adr>> {
 /// specification governs it, or one page would name the two for different
 /// perimeters.
 pub(crate) fn scopes_intersect(a: &[String], b: &[String]) -> Result<bool> {
-    let invalid = |e: ank_core::Error| CliError::new(1, format!("invalid scope: {e}"));
+    let invalid =
+        |e: ank_core::Error| CliError::new(ExitCode::Generic, format!("invalid scope: {e}"));
     let set_a = ScopeSet::new(a).map_err(invalid)?;
     let set_b = ScopeSet::new(b).map_err(invalid)?;
     Ok(a.iter().any(|g| set_b.overlaps_dir(g, b)) || b.iter().any(|g| set_a.overlaps_dir(g, a)))
@@ -1610,7 +1592,7 @@ pub fn complete(cwd: &Path, id: &EntityId, identity: &str) -> Result<(CompletedR
             sync,
         } => Ok((record, sync)),
         Written { cas: Cas::Lost, .. } => Err(CliError::new(
-            4,
+            ExitCode::Unavailable,
             format!("{id} moved while it was being completed"),
         )
         .with_hint(format!("ank claim {id}"))),
@@ -1635,7 +1617,7 @@ fn held_by_other(
     other_ready: Option<&str>,
 ) -> CliError {
     CliError::new(
-        4,
+        ExitCode::Unavailable,
         format!(
             "{id} held by {} ({})",
             claim.holder,
@@ -1656,7 +1638,7 @@ fn finished_elsewhere(
         None => format!("commit {commit}, detached HEAD"),
     };
     CliError::new(
-        4,
+        ExitCode::Unavailable,
         format!("{id} finished on another branch ({where_}), not merged here yet"),
     )
     .with_hint(other_task_hint(other_ready))
@@ -1677,7 +1659,7 @@ fn blocker_finished_elsewhere(
         None => format!("finished on a detached HEAD (commit {commit})"),
     };
     CliError::new(
-        7,
+        ExitCode::Prerequisite,
         format!("{task} is blocked by {blocker}, {where_}, not merged here yet"),
     )
     .with_hint(other_task_hint(other_ready))
@@ -1712,8 +1694,11 @@ fn lost_the_race(
             record: Record::Proof(_),
             ..
         }) => corrupt(&claim_ref(id), "a proof record on the claim ref"),
-        None => CliError::new(4, format!("{id} was taken and released while claiming"))
-            .with_hint(format!("ank claim {id}")),
+        None => CliError::new(
+            ExitCode::Unavailable,
+            format!("{id} was taken and released while claiming"),
+        )
+        .with_hint(format!("ank claim {id}")),
     })
 }
 
@@ -1768,17 +1753,18 @@ pub fn run(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
-    let prefix = inv
-        .positionals
-        .first()
-        .ok_or_else(|| CliError::new(1, "claim expects a task id").with_hint("ank claim <id>"))?;
+) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "claim expects a task id").with_hint("ank claim <id>")
+    })?;
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = crate::store::version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{prefix} is not a task"))
-            .with_hint(format!("ank show {prefix}")));
+        return Err(
+            CliError::new(ExitCode::Generic, format!("{prefix} is not a task"))
+                .with_hint(format!("ank show {prefix}")),
+        );
     };
 
     let ttl = resolve_ttl(inv.value("--ttl"), cfg)?;
@@ -1804,7 +1790,7 @@ pub fn run(
                 .is_some_and(|existing| !existing.trim().is_empty());
             if carried {
                 return Err(CliError::new(
-                    6,
+                    ExitCode::Transition,
                     format!("{} already carries a done_criteria", task.id),
                 )
                 .with_hint(format!(
@@ -1819,12 +1805,14 @@ pub fn run(
     let criteria = match task.done_criteria.as_deref() {
         Some(c) if !c.trim().is_empty() => c.to_string(),
         _ => {
-            return Err(
-                CliError::new(7, format!("{} has no done_criteria", task.id)).with_hint(format!(
-                    "ank claim {} --criteria \"<verifiable criterion>\"",
-                    task.id
-                )),
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("{} has no done_criteria", task.id),
             )
+            .with_hint(format!(
+                "ank claim {} --criteria \"<verifiable criterion>\"",
+                task.id
+            )))
         }
     };
     // The remote's view first, so a task held in another clone is refused with
@@ -1836,7 +1824,10 @@ pub fn run(
     check_blockers(&repo.root, &store, &task, ready.as_deref())?;
     task.status
         .check_transition(TaskStatus::InProgress)
-        .map_err(|e| CliError::new(6, e.to_string()).with_hint(format!("ank show {}", task.id)))?;
+        .map_err(|e| {
+            CliError::new(ExitCode::Transition, e.to_string())
+                .with_hint(format!("ank show {}", task.id))
+        })?;
 
     // Last of the preconditions, and last on purpose. Everything above refuses
     // on the task asked for; this one refuses on what the caller already holds,
@@ -1913,7 +1904,7 @@ pub fn run(
             );
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// A criterion, normalised for storage. Shared with `amend --criteria`: the two
@@ -1937,8 +1928,9 @@ pub fn ensure_trailing_newline(text: &str) -> String {
 /// the cap, which is the same answer `--ttl 24h` gets.
 fn resolve_ttl(flag: Option<&str>, cfg: &Config) -> Result<Duration> {
     let asked = match flag {
-        Some(v) => config::parse_duration(v)
-            .map_err(|e| CliError::new(1, e).with_hint("ank claim <id> --ttl 30m"))?,
+        Some(v) => config::parse_duration(v).map_err(|e| {
+            CliError::new(ExitCode::Generic, e).with_hint("ank claim <id> --ttl 30m")
+        })?,
         None => cfg.claim_ttl_default,
     };
     Ok(asked.min(cfg.claim_ttl_max))
@@ -1986,7 +1978,7 @@ fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&s
     let map = status_map(store)?;
     let blockers = task
         .active_blockers(|id| map.get(id).copied())
-        .map_err(|e| CliError::new(7, e.to_string()).with_hint("ank check"))?;
+        .map_err(|e| CliError::new(ExitCode::Prerequisite, e.to_string()).with_hint("ank check"))?;
 
     // A blocker carrying a completion ref is named ahead of the first one,
     // wherever it sits in the list: it is the one fact the plain message hides,
@@ -2004,10 +1996,11 @@ fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&s
     if let Some(first) = blockers.first() {
         let closed = map.get(*first) == Some(&TaskStatus::Closed);
         let why = if closed { " (closed)" } else { "" };
-        return Err(
-            CliError::new(7, format!("{} is blocked by {first}{why}", task.id))
-                .with_hint(format!("ank show {first}")),
-        );
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!("{} is blocked by {first}{why}", task.id),
+        )
+        .with_hint(format!("ank show {first}")));
     }
     Ok(())
 }
@@ -2370,7 +2363,7 @@ mod tests {
             &claim_ref(&id),
         )
         .unwrap_err();
-        assert_eq!(err.code, 9);
+        assert_eq!(err.code, ExitCode::Environment);
         assert!(err.message.contains("abandoned"), "{}", err.message);
         assert!(err.hint.unwrap().contains("update-ref -d"));
 
@@ -2384,7 +2377,7 @@ mod tests {
             "state: claim\ntask: TASK-000000000001\n",
         ] {
             let err = parse_record(text, &claim_ref(&id)).unwrap_err();
-            assert_eq!(err.code, 9, "{text}");
+            assert_eq!(err.code, ExitCode::Environment, "{text}");
             assert!(err.message.contains("unreadable record"), "{text}");
         }
     }
@@ -2415,7 +2408,7 @@ mod tests {
         git::run(&t.0, &["update-ref", &claim_ref(&id), &blob]).unwrap();
 
         let err = read(&t.0, &id).unwrap_err();
-        assert_eq!(err.code, 9);
+        assert_eq!(err.code, ExitCode::Environment);
         assert!(err.message.contains(&claim_ref(&id)), "{}", err.message);
     }
 
@@ -2434,7 +2427,7 @@ mod tests {
         let before = t.task_text(&task.id);
 
         let inv = invocation(&["claim", &task.id.to_string()]);
-        assert_eq!(run_verb(&t, &inv).unwrap(), 0);
+        assert_eq!(run_verb(&t, &inv).unwrap(), ExitCode::Ok);
 
         let text = t.task_text(&task.id);
         assert!(text.contains("status: in_progress"), "{text}");
@@ -2496,7 +2489,12 @@ mod tests {
         assert_eq!(winners, 1, "exactly one winner: {results:?}");
         for r in results.iter().filter(|r| r.is_err()) {
             let err = r.as_ref().unwrap_err();
-            assert_eq!(err.code, 4, "the losers exit with 4: {}", err.render());
+            assert_eq!(
+                err.code,
+                ExitCode::Unavailable,
+                "the losers exit with 4: {}",
+                err.render()
+            );
             assert!(err.hint.is_some(), "a refusal always says what to do next");
         }
 
@@ -2518,7 +2516,7 @@ mod tests {
         take(&t, &task, "codex@host-9", DEFAULT_TTL).unwrap();
 
         let err = take(&t, &task, "claude-code@ank", DEFAULT_TTL).unwrap_err();
-        assert_eq!(err.code, 4);
+        assert_eq!(err.code, ExitCode::Unavailable);
         assert!(err.message.contains("codex@host-9"), "{}", err.message);
         assert!(err.message.contains("expires in"), "{}", err.message);
     }
@@ -2609,7 +2607,7 @@ mod tests {
         assert!(!text.contains("expires"), "a completion has no TTL: {text}");
 
         let err = take(&t, &task, "codex@host-9", DEFAULT_TTL).unwrap_err();
-        assert_eq!(err.code, 4);
+        assert_eq!(err.code, ExitCode::Unavailable);
         assert!(
             err.message.contains("finished on another branch"),
             "{}",
@@ -2624,7 +2622,7 @@ mod tests {
         t.seed(&other);
         take(&t, &other, "codex@host-9", DEFAULT_TTL).unwrap();
         let held_err = take(&t, &other, "claude-code@ank", DEFAULT_TTL).unwrap_err();
-        assert_eq!(held_err.code, 4);
+        assert_eq!(held_err.code, ExitCode::Unavailable);
         assert_ne!(held_err.message, err.message);
         assert!(!held_err.message.contains("finished on another branch"));
     }
@@ -2696,7 +2694,7 @@ mod tests {
 
         let inv = invocation(&["claim", &task.id.to_string()]);
         let err = run_verb(&t, &inv).unwrap_err();
-        assert_eq!(err.code, 7);
+        assert_eq!(err.code, ExitCode::Prerequisite);
         assert!(err.message.contains("no done_criteria"), "{}", err.message);
         let hint = err.hint.unwrap();
         assert!(hint.contains("--criteria"), "{hint}");
@@ -2713,7 +2711,7 @@ mod tests {
             "--criteria",
             "The binary exits 0.",
         ]);
-        assert_eq!(run_verb(&t, &inv).unwrap(), 0);
+        assert_eq!(run_verb(&t, &inv).unwrap(), ExitCode::Ok);
         let text = t.task_text(&task.id);
         assert!(text.contains("criteria_by: claimer"), "{text}");
         assert!(text.contains("The binary exits 0."), "{text}");
@@ -2730,7 +2728,7 @@ mod tests {
 
         let inv = invocation(&["claim", &blocked.id.to_string()]);
         let err = run_verb(&t, &inv).unwrap_err();
-        assert_eq!(err.code, 7);
+        assert_eq!(err.code, ExitCode::Prerequisite);
         assert!(
             err.message.contains(&blocker.id.to_string()),
             "{}",
@@ -2742,14 +2740,14 @@ mod tests {
         closed.status = TaskStatus::Closed;
         t.seed(&closed);
         let err = run_verb(&t, &inv).unwrap_err();
-        assert_eq!(err.code, 7);
+        assert_eq!(err.code, ExitCode::Prerequisite);
         assert!(err.message.contains("closed"), "{}", err.message);
 
         // Done unblocks.
         let mut done = blocker.clone();
         done.status = TaskStatus::Done;
         t.seed(&done);
-        assert_eq!(run_verb(&t, &inv).unwrap(), 0);
+        assert_eq!(run_verb(&t, &inv).unwrap(), ExitCode::Ok);
     }
 
     #[test]
@@ -2922,7 +2920,7 @@ mod tests {
 
         let inv = invocation(&["claim", &wanted.id.to_string()]);
         let err = run_verb(&t, &inv).unwrap_err();
-        assert_eq!(err.code, 4);
+        assert_eq!(err.code, ExitCode::Unavailable);
         let hint = err.hint.unwrap();
         assert!(hint.contains(&ready.id.to_string()), "{hint}");
         assert!(hint.contains("another ready task"), "{hint}");
@@ -2973,7 +2971,7 @@ mod tests {
         config::parse(&config::default_yaml(), Path::new("config.yml")).unwrap()
     }
 
-    fn run_verb(t: &Temp, inv: &Invocation) -> Result<i32> {
+    fn run_verb(t: &Temp, inv: &Invocation) -> Result<ExitCode> {
         let repo = Repo {
             root: t.0.clone(),
             ank: t.0.join(".ank"),

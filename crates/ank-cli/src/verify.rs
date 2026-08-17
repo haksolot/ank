@@ -21,6 +21,7 @@
 
 use crate::cli::CliError;
 use crate::config::Verifier;
+use ank_contract::ExitCode;
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -111,7 +112,7 @@ pub fn find_sh() -> Result<PathBuf> {
         }
     }
     Err(CliError::new(
-        9,
+        ExitCode::Environment,
         "sh not found: verifiers run through sh -c on the three platforms",
     )
     .with_hint(if cfg!(windows) {
@@ -148,11 +149,18 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
         std::process::id(),
         name.replace(|c: char| !c.is_alphanumeric(), "-")
     ));
-    let file = std::fs::File::create(&out_path)
-        .map_err(|e| CliError::new(9, format!("cannot capture verifier output: {e}")))?;
-    let errs = file
-        .try_clone()
-        .map_err(|e| CliError::new(9, format!("cannot capture verifier output: {e}")))?;
+    let file = std::fs::File::create(&out_path).map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot capture verifier output: {e}"),
+        )
+    })?;
+    let errs = file.try_clone().map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot capture verifier output: {e}"),
+        )
+    })?;
 
     let started = Instant::now();
     let mut child = Command::new(&sh)
@@ -164,11 +172,11 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
         .stderr(Stdio::from(errs))
         .spawn()
         .map_err(|e| {
-            CliError::new(9, format!("cannot run verifier '{name}': {e}")).with_hint(format!(
-                "{} -c {:?}",
-                sh.display(),
-                v.run
-            ))
+            CliError::new(
+                ExitCode::Environment,
+                format!("cannot run verifier '{name}': {e}"),
+            )
+            .with_hint(format!("{} -c {:?}", sh.display(), v.run))
         })?;
 
     let mut timed_out = false;
@@ -186,7 +194,7 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
             }
             Err(e) => {
                 return Err(CliError::new(
-                    9,
+                    ExitCode::Environment,
                     format!("cannot wait for verifier '{name}': {e}"),
                 ))
             }
@@ -206,7 +214,7 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
             let tail = String::from_utf8_lossy(&output);
             let tail = tail.lines().last().unwrap_or("").trim();
             return Err(CliError::new(
-                9,
+                ExitCode::Environment,
                 format!("verifier '{name}' could not run (shell code {c}): {tail}"),
             )
             .with_hint(format!("sh -c {:?}", v.run)));
@@ -244,7 +252,7 @@ pub fn failure(outcome: &Outcome, run: &str) -> CliError {
                 .unwrap_or_else(|| "signal".into())
         )
     };
-    CliError::new(5, detail).with_hint(format!("sh -c {run:?}"))
+    CliError::new(ExitCode::Proof, detail).with_hint(format!("sh -c {run:?}"))
 }
 
 #[cfg(test)]
@@ -295,7 +303,11 @@ mod tests {
         assert_eq!(out.code, Some(1));
 
         let err = failure(&out, "exit 1");
-        assert_eq!(err.code, 5, "a verifier that ran and refused is code 5");
+        assert_eq!(
+            err.code,
+            ExitCode::Proof,
+            "a verifier that ran and refused is code 5"
+        );
         assert!(err.message.contains("nope"), "{}", err.message);
         assert!(err.hint.is_some());
     }
@@ -305,7 +317,7 @@ mod tests {
         // 127 from the shell. Reporting this as a failed verifier would send
         // an agent to fix code that was never wrong.
         let err = run(&cwd(), "missing", &verifier("no-such-command-anywhere", 30)).unwrap_err();
-        assert_eq!(err.code, 9, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Environment, "{}", err.message);
         assert!(err.message.contains("missing"), "{}", err.message);
         assert!(err.hint.is_some(), "and it says what to run");
     }
@@ -323,7 +335,11 @@ mod tests {
         );
 
         let err = failure(&out, "sleep 30");
-        assert_eq!(err.code, 5, "exceeding the timeout is a code 5 (§4)");
+        assert_eq!(
+            err.code,
+            ExitCode::Proof,
+            "exceeding the timeout is a code 5 (§4)"
+        );
         assert!(err.message.contains("timed out"), "{}", err.message);
         assert!(err.message.contains('s'), "with the elapsed time");
     }

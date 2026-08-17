@@ -37,6 +37,7 @@ use crate::entries;
 use crate::index::Index;
 use crate::repo::Repo;
 use crate::store::Store;
+use ank_contract::ExitCode;
 use ank_core::{Entity, EntityId, Log, LogEntry};
 use std::io::Write;
 
@@ -55,7 +56,7 @@ enum Written {
     AlreadyThere,
 }
 
-pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
+pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
     let index = Index::open(&repo.ank)?;
     let subjects = store.previous_log_ids()?;
@@ -69,20 +70,23 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     for id in &subjects {
         let path = store.log_path_of(id);
         let text = std::fs::read_to_string(&path)
-            .map_err(|e| CliError::new(1, format!("{}: {e}", path.display())))?;
+            .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
         // Named, never skipped. The parser refuses the whole file on its first
         // malformed line, and that refusal is the guarantee: a file quietly
         // dropped would take every sound entry beside it.
         let parsed = ank_core::parse_log_file(&text).map_err(|e| {
-            CliError::new(1, format!("{}/{id}.md: {e}", Store::LOG_DIR))
-                .with_hint(format!("ank show {id}"))
+            CliError::new(
+                ExitCode::Generic,
+                format!("{}/{id}.md: {e}", Store::LOG_DIR),
+            )
+            .with_hint(format!("ank show {id}"))
         })?;
         // A log file whose entity is absent has nothing to be about, and an
         // entry with no subject is the query the kind exists to answer,
         // missing. Reported rather than invented.
         let subject = store.load(id).map_err(|e| {
             CliError::new(
-                1,
+                ExitCode::Generic,
                 format!(
                     "{}/{id}.md has entries and {id} is not in the corpus: {e}",
                     Store::LOG_DIR
@@ -109,7 +113,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         } else if !inv.quiet() {
             let _ = writeln!(out, "nothing to migrate");
         }
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     // Per subject, because the count below is per subject: a line whose entry
@@ -153,7 +157,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             );
             if !found.contains(&wanted) {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     format!(
                         "{}/{id}.md: the entry of {} is not in the corpus after the migration",
                         Store::LOG_DIR,
@@ -169,7 +173,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         let expected = planned.already + created_here;
         if found.len() != expected {
             return Err(CliError::new(
-                1,
+                ExitCode::Generic,
                 format!(
                     "{id}: {expected} entries were expected and {} are in the corpus",
                     found.len()
@@ -184,7 +188,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
     for planned in &plan {
         let path = store.log_path_of(planned.subject.id());
         std::fs::remove_file(&path)
-            .map_err(|e| CliError::new(1, format!("{}: {e}", path.display())))?;
+            .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
     }
     // Empty now, and left behind it would keep `check` reporting a corpus that
     // has moved. Ignored if it will not go: a stray file in it is the caller's
@@ -199,10 +203,10 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
             .num("created", created)
             .finish();
         let _ = writeln!(out, "{doc}");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     let _ = writeln!(
         out,
@@ -220,7 +224,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<i32> {
         );
     }
     let _ = writeln!(out, "review and commit: git add -A .ank && git status .ank");
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// One line, as an entity, unless the corpus already carries exactly it.
@@ -255,7 +259,7 @@ fn write_entry(
             return Ok(Written::AlreadyThere);
         }
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("{id} already exists and is not the entry this line becomes"),
         )
         .with_hint(format!("ank show {id}")));
@@ -271,13 +275,13 @@ fn write_entry(
     // and only the file says what that is.
     let Entity::Log(back) = store.load(&id)?.entity else {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("{id} was written and does not read back as an entry"),
         ));
     };
     if back.message() != line.message {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!(
                 "{id} does not carry the message of {}/{}.md line {}",
                 Store::LOG_DIR,
@@ -299,7 +303,7 @@ fn write_entry(
 fn verify_fields(back: &Log, line: &LogEntry, id: &EntityId) -> Result<()> {
     if back.created != line.timestamp || back.author.as_deref() != Some(line.who.as_str()) {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!(
                 "{id} was written as {} by {:?} and the line said {} by {}",
                 back.created, back.author, line.timestamp, line.who

@@ -32,6 +32,7 @@ use crate::index::{Index, Row};
 use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
+use ank_contract::ExitCode;
 use ank_core::{
     parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId, EntityKind,
     LogEntry, Spec, SpecStatus, Task, TaskStatus, SCHEMA_VERSION,
@@ -71,16 +72,17 @@ pub fn new(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let kind = match inv.subcommand.as_deref() {
         Some("task") => EntityKind::Task,
         Some("adr") => EntityKind::Adr,
         Some("spec") => EntityKind::Spec,
         other => {
-            return Err(
-                CliError::new(1, format!("unknown subcommand {:?}", other.unwrap_or("")))
-                    .with_hint("ank new <task|adr|spec>"),
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!("unknown subcommand {:?}", other.unwrap_or("")),
             )
+            .with_hint("ank new <task|adr|spec>"))
         }
     };
 
@@ -109,7 +111,7 @@ pub fn new(
             // ADR, a few lines below.
             if inv.value("--supersedes").is_some() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "--supersedes applies to an ADR or a spec: a task supersedes nothing",
                 )
                 .with_hint(
@@ -118,7 +120,7 @@ pub fn new(
             }
             if !inv.values("--reference").is_empty() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "--reference applies to a spec: what a task depends on is blocked_by",
                 )
                 .with_hint(
@@ -162,7 +164,7 @@ pub fn new(
             // dropped. A flag silently ignored teaches the caller it worked.
             if !inv.values("--verify").is_empty() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "--verify applies to a task: an ADR declares no verifier",
                 )
                 .with_hint(
@@ -174,7 +176,7 @@ pub fn new(
             // reasoning as the line above.
             if !inv.values("--reference").is_empty() {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     "--reference applies to a spec: an ADR binds rather than cites",
                 )
                 .with_hint(
@@ -250,7 +252,7 @@ pub fn new(
             inv.style().id(&id.to_string())
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +291,7 @@ fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
     let hint = flag_form(kind);
     if inv.value("--constraint").is_some() {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             "--constraint applies to an ADR: a spec describes, and an ADR binds",
         )
         .with_hint(hint));
@@ -297,7 +299,7 @@ fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
     for flag in ["--criteria", "--blocked-by", "--verify"] {
         if !inv.values(flag).is_empty() {
             return Err(CliError::new(
-                1,
+                ExitCode::Generic,
                 format!("{flag} applies to a task: a spec is a document, not work"),
             )
             .with_hint(hint));
@@ -347,7 +349,7 @@ fn new_interactive(
     identity: &str,
     kind: EntityKind,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     // Stamped once, here, and kept: the act of creation is the invocation of
     // `new`, not the moment the editor happened to be closed. The id hashes it
     // (§3) and is refused below if the file comes back carrying another.
@@ -359,14 +361,21 @@ fn new_interactive(
     let hint = flag_form(kind);
     let editor = editor::command(&hint)?;
     let scratch = editor::scratch_path(&id.to_string());
-    std::fs::write(&scratch, template(&skeleton))
-        .map_err(|e| CliError::new(9, format!("cannot write {}: {e}", scratch.display())))?;
+    std::fs::write(&scratch, template(&skeleton)).map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot write {}: {e}", scratch.display()),
+        )
+    })?;
 
     let store = Store::new(&repo.ank);
-    let outcome = (|| -> Result<i32> {
+    let outcome = (|| -> Result<ExitCode> {
         editor::open(&editor, &repo.root, &scratch, &hint)?;
         let filled = std::fs::read_to_string(&scratch).map_err(|e| {
-            CliError::new(9, format!("cannot read back {}: {e}", scratch.display()))
+            CliError::new(
+                ExitCode::Environment,
+                format!("cannot read back {}: {e}", scratch.display()),
+            )
         })?;
         create_filled(inv, repo, &store, cfg, &skeleton, &filled, out)
     })();
@@ -563,7 +572,7 @@ fn create_filled(
     skeleton: &Entity,
     filled: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let kind = skeleton.id().kind();
     let hint = flag_form(kind);
     let parsed =
@@ -574,7 +583,7 @@ fn create_filled(
     // one to order, so this refusal names none.
     if parsed.id() != skeleton.id() {
         return Err(CliError::new(
-            6,
+            ExitCode::Transition,
             format!(
                 "the id is ank's and cannot be chosen: {} came back as {}",
                 skeleton.id(),
@@ -592,14 +601,14 @@ fn create_filled(
             // shape rather than the moment it was introduced.
             if t.status != TaskStatus::Open {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     format!("a new task is born open, not {}", t.status.as_str()),
                 )
                 .with_hint(hint));
             }
             if !t.proof.is_empty() {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     "a proof is what `done` writes, and there is nothing yet to prove",
                 )
                 .with_hint(hint));
@@ -631,7 +640,7 @@ fn create_filled(
             require_title(&a.title, &hint)?;
             if a.constraint.trim().is_empty() {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     "a constraint is required: an ADR with nothing to enforce binds nobody",
                 )
                 .with_hint(hint));
@@ -641,14 +650,14 @@ fn create_filled(
             // ADR that arrived ratified would bind before anyone agreed to it.
             if a.status != AdrStatus::Proposed {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     format!("a new adr is born proposed, not {}", a.status.as_str()),
                 )
                 .with_hint("ank accept <id>"));
             }
             if a.ratified.is_some() {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     "ratified names a signed commit, and only `accept` writes it",
                 )
                 .with_hint("ank accept <id>"));
@@ -679,14 +688,14 @@ fn create_filled(
             // the normal case, not a hole in the wall.
             if sp.status != SpecStatus::Proposed {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     format!("a new spec is born proposed, not {}", sp.status.as_str()),
                 )
                 .with_hint("ank accept <id>"));
             }
             if sp.ratified.is_some() {
                 return Err(CliError::new(
-                    7,
+                    ExitCode::Prerequisite,
                     "ratified names a signed commit, and only `accept` writes it",
                 )
                 .with_hint("ank accept <id>"));
@@ -709,7 +718,12 @@ fn create_filled(
         }
         // Unreachable: `parse` resolves the variant from `type:` and refuses a
         // `type` the id does not carry, and the id was compared above.
-        _ => return Err(CliError::new(1, "the template came back as another kind").with_hint(hint)),
+        _ => {
+            return Err(
+                CliError::new(ExitCode::Generic, "the template came back as another kind")
+                    .with_hint(hint),
+            )
+        }
     };
 
     let id = entity.id().clone();
@@ -730,13 +744,13 @@ fn create_filled(
             inv.style().id(&id.to_string())
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 fn require_title(title: &str, hint: &str) -> Result<()> {
     if title.trim().is_empty() {
         return Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             "a title is required: it is what a listing shows and what the id hashes",
         )
         .with_hint(hint.to_string()));
@@ -773,8 +787,11 @@ fn resolve_blockers(store: &Store, ids: &[EntityId], hint: &str) -> Result<()> {
     for id in ids {
         if store.load(id).is_err() {
             let _ = hint;
-            return Err(CliError::new(7, format!("no entity {id} in this corpus"))
-                .with_hint(format!("ank find {id}")));
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("no entity {id} in this corpus"),
+            )
+            .with_hint(format!("ank find {id}")));
         }
     }
     Ok(())
@@ -796,7 +813,11 @@ fn undeclared_verifier(name: &str, cfg: &Config) -> CliError {
     } else {
         format!("declared: {}\n  -> or {declare}", known.join(" "))
     };
-    CliError::new(7, format!("no verifier '{name}' in .ank/config.yml")).with_hint(hint)
+    CliError::new(
+        ExitCode::Prerequisite,
+        format!("no verifier '{name}' in .ank/config.yml"),
+    )
+    .with_hint(hint)
 }
 
 /// The `verify` names, checked against `config.yml` the way `verifiers_of`
@@ -826,7 +847,7 @@ fn scope_of(inv: &Invocation, repo: &Repo, kind: EntityKind) -> Result<Vec<Strin
     let globs = context::normalised_globs(inv.values("--scope"), repo, &usage)?;
     if globs.is_empty() {
         return Err(CliError::new(
-            7,
+            ExitCode::Prerequisite,
             "a scope is required: it is the only thing attaching an entity to code",
         )
         .with_hint(format!(
@@ -840,12 +861,14 @@ fn scope_of(inv: &Invocation, repo: &Repo, kind: EntityKind) -> Result<Vec<Strin
 fn required(inv: &Invocation, flag: &str, what: &str) -> Result<String> {
     match inv.value(flag) {
         Some(v) if !v.trim().is_empty() => Ok(v.trim().to_string()),
-        _ => Err(
-            CliError::new(7, format!("{flag} is required: {what}")).with_hint(format!(
-                "ank new {} {flag} \"<value>\"",
-                inv.subcommand.as_deref().unwrap_or("task")
-            )),
-        ),
+        _ => Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!("{flag} is required: {what}"),
+        )
+        .with_hint(format!(
+            "ank new {} {flag} \"<value>\"",
+            inv.subcommand.as_deref().unwrap_or("task")
+        ))),
     }
 }
 
@@ -900,7 +923,7 @@ fn supersedes_of(inv: &Invocation, store: &Store, kind: EntityKind) -> Result<Op
     if id.kind() != kind {
         let what = kind.as_str();
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             format!("{id} is not of kind {what}: a succession stays inside one kind"),
         )
         .with_hint(format!("ank find --type {what}")));
@@ -944,7 +967,7 @@ fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
     for raw in inv.values("--reference") {
         let target = store.resolve(raw.trim())?;
         if !citable(target.kind()) {
-            return Err(CliError::new(1, not_citable(&target))
+            return Err(CliError::new(ExitCode::Generic, not_citable(&target))
                 .with_hint("ank find --type spec".to_string()));
         }
         if !out.contains(&target) {
@@ -1010,18 +1033,23 @@ fn read_body_from_stdin(kind: EntityKind) -> Result<String> {
     let hint = format!("printf '%s' \"<the body>\" | {} --body -", flag_form(kind));
     if std::io::stdin().is_terminal() {
         return Err(CliError::new(
-            9,
+            ExitCode::Environment,
             "--body - reads the body from stdin, and stdin is a terminal: pipe it, \
              or drop the flag and let $EDITOR open",
         )
         .with_hint(hint));
     }
     let mut text = String::new();
-    std::io::stdin()
-        .read_to_string(&mut text)
-        .map_err(|e| CliError::new(9, format!("--body -: cannot read stdin: {e}")))?;
+    std::io::stdin().read_to_string(&mut text).map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("--body -: cannot read stdin: {e}"),
+        )
+    })?;
     if text.trim().is_empty() {
-        return Err(CliError::new(9, "--body - read nothing on stdin").with_hint(hint));
+        return Err(
+            CliError::new(ExitCode::Environment, "--body - read nothing on stdin").with_hint(hint),
+        );
     }
     Ok(text)
 }
@@ -1074,7 +1102,7 @@ pub fn find(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let query = inv
         .positionals
         .first()
@@ -1091,8 +1119,10 @@ pub fn find(
         Some(name) => match EntityKind::from_type_name(name) {
             Some(kind) => Some(kind),
             None => {
-                return Err(CliError::new(1, format!("unknown --type '{name}'"))
-                    .with_hint(format!("ank find <query> --type {}", kind_names())))
+                return Err(
+                    CliError::new(ExitCode::Generic, format!("unknown --type '{name}'"))
+                        .with_hint(format!("ank find <query> --type {}", kind_names())),
+                )
             }
         },
     };
@@ -1192,10 +1222,10 @@ pub fn find(
             .array("results", items)
             .finish();
         let _ = writeln!(out, "{doc}");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     // The rows on this page the coordination plane already speaks for. Each
@@ -1280,7 +1310,7 @@ pub fn find(
             "{spoken_for} spoken for (finished elsewhere or held), --free lists what is claimable"
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The ground each live claim covers, as the index knows it.
@@ -1374,9 +1404,16 @@ fn free_of_live_claims<'a>(
 /// lie: "what covers this path" is a question whose partial answer is wrong
 /// rather than short, since the constraint left out is exactly the one nobody
 /// would then read.
-pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn scope(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     if inv.positionals.first().is_none() {
-        return Err(CliError::new(1, "scope needs a path").with_hint("ank scope <path>"));
+        return Err(
+            CliError::new(ExitCode::Generic, "scope needs a path").with_hint("ank scope <path>")
+        );
     }
     // Normalised by the one helper every path-taking verb uses, rather than
     // here: this verb shipped with its own half of the rule -- separator and
@@ -1435,10 +1472,10 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             .array("tasks", task)
             .finish();
         let _ = writeln!(out, "{doc}");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     // Names the perimeter it drew, the way §4 asks `graph` to: an answer about
@@ -1450,7 +1487,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
         // constrains this", which is the same sentence as "ank could not tell",
         // and only one of the two is safe to act on.
         let _ = writeln!(out, "nothing covers this path");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     let style = inv.style();
     // One read, both answers, exactly as in `find`: the two listings print the
@@ -1488,7 +1525,7 @@ pub fn scope(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write)
             );
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The same budget `context` answers under (§4, §5), converted to a number of
@@ -1618,7 +1655,8 @@ fn acting_on(
     tail: &str,
 ) -> Result<(EntityId, String, ClaimRecord, Vec<String>)> {
     let head = claim::on_task(cwd, identity)?.ok_or_else(|| {
-        CliError::new(6, "no task in progress for this agent").with_hint("ank context")
+        CliError::new(ExitCode::Transition, "no task in progress for this agent")
+            .with_hint("ank context")
     })?;
 
     let standing = match given {
@@ -1629,7 +1667,7 @@ fn acting_on(
             } else {
                 claim::standing_on(cwd, identity, &asked)?.ok_or_else(|| {
                     CliError::new(
-                        6,
+                        ExitCode::Transition,
                         format!("{asked} is not the task in progress ({})", head.id),
                     )
                     .with_hint(format!("ank {verb} {}{tail}", head.id))
@@ -1683,7 +1721,7 @@ pub fn log(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
     match inv.positionals.as_slice() {
         [one] => match store.resolve(one) {
@@ -1696,7 +1734,7 @@ pub fn log(
             // live, so neither is picked (§4).
             if let Ok(other) = store.resolve(message) {
                 return Err(CliError::new(
-                    1,
+                    ExitCode::Generic,
                     format!(
                         "{message} reads two ways: the log of {other} to print, \
                          or a message to write on {given}"
@@ -1706,10 +1744,11 @@ pub fn log(
             }
             log_write(inv, repo, cfg, identity, &store, Some(given), message, out)
         }
-        _ => Err(
-            CliError::new(1, "log expects a message to write or an id to read")
-                .with_hint("ank log \"<what you just did>\""),
-        ),
+        _ => Err(CliError::new(
+            ExitCode::Generic,
+            "log expects a message to write or an id to read",
+        )
+        .with_hint("ank log \"<what you just did>\"")),
     }
 }
 
@@ -1733,7 +1772,7 @@ fn log_read(
     store: &Store,
     id: &EntityId,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let loaded = store.load(id)?;
     let title = loaded.entity.title().to_string();
     // The entries of the corpus, and the previous log directory only where a
@@ -1773,10 +1812,10 @@ fn log_read(
             .array("entries", items)
             .finish();
         let _ = writeln!(out, "{doc}");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     if inv.quiet() {
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
 
     let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), title);
@@ -1784,7 +1823,7 @@ fn log_read(
         // Named rather than left blank: an empty answer and an answer about the
         // wrong entity look identical otherwise.
         let _ = writeln!(out, "\nno log entry yet");
-        return Ok(0);
+        return Ok(ExitCode::Ok);
     }
     let _ = writeln!(out);
     // **This verb is the index of an entity's entries, so its rows are
@@ -1828,7 +1867,7 @@ fn log_read(
             budget_for_whole_log(&all, spent)
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// The `context_budget` at which nothing of this log would be cut.
@@ -1851,10 +1890,12 @@ fn log_write(
     given: Option<&String>,
     message: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     if message.trim().is_empty() {
-        return Err(CliError::new(1, "an empty log entry records nothing")
-            .with_hint("ank log \"<what you just did>\""));
+        return Err(
+            CliError::new(ExitCode::Generic, "an empty log entry records nothing")
+                .with_hint("ank log \"<what you just did>\""),
+        );
     }
     let message = message.trim();
 
@@ -1947,7 +1988,7 @@ fn report_logged(
     entry: &EntityId,
     warnings: &[String],
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     if inv.json() {
         let doc = Obj::new()
             .str("about", &subject.to_string())
@@ -1965,10 +2006,15 @@ fn report_logged(
             inv.style().id(&subject.to_string())
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
-pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<i32> {
+pub fn release(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     // Mandatory, and refused with the full command as an example. `release` is
     // the delegation mechanism between agents: the reason goes into the log,
     // and the next holder receives it in its `context`, so it resumes where the
@@ -1977,8 +2023,11 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     let reason = match inv.value("--reason") {
         Some(r) if !r.trim().is_empty() => r.trim().to_string(),
         _ => {
-            return Err(CliError::new(7, "--reason is required to release a task")
-                .with_hint("ank release --reason \"needs access to the staging Redis store\""))
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                "--reason is required to release a task",
+            )
+            .with_hint("ank release --reason \"needs access to the staging Redis store\""))
         }
     };
     // The same rule as the door every entry goes through, asked here because of
@@ -2005,11 +2054,14 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
     let loaded = store.load(&id)?;
     let base_version = version_of(&loaded.entity);
     let Entity::Task(mut task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{id} is not a task")));
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{id} is not a task"),
+        ));
     };
     task.status
         .check_transition(TaskStatus::Open)
-        .map_err(|e| CliError::new(6, e.to_string()).with_hint("ank context"))?;
+        .map_err(|e| CliError::new(ExitCode::Transition, e.to_string()).with_hint("ank context"))?;
     task.status = TaskStatus::Open;
     let released = Entity::Task(task);
     // The transition first and the entry after it, which is the order every
@@ -2047,7 +2099,7 @@ pub fn release(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Writ
             inv.style().landed("open")
         );
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 /// Serialised form of an entity, for anyone wanting to see what `new` writes
@@ -2225,7 +2277,12 @@ mod tests {
             ],
         ] {
             let err = t.call(&argv, "claude-code@ank").unwrap_err();
-            assert_eq!(err.code, 7, "{argv:?}: {}", err.message);
+            assert_eq!(
+                err.code,
+                ExitCode::Prerequisite,
+                "{argv:?}: {}",
+                err.message
+            );
             assert!(err.message.contains("scope is required"), "{}", err.message);
             assert!(err.hint.unwrap().contains("--scope"), "{argv:?}");
         }
@@ -2236,7 +2293,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
 
         // And an unparseable glob is refused rather than stored.
         let err = t
@@ -2252,7 +2309,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(t.store().list_ids().unwrap().is_empty(), "nothing written");
     }
 
@@ -2415,7 +2472,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.message.contains("--constraint"), "{}", err.message);
     }
 
@@ -2463,12 +2520,12 @@ mod tests {
         // Unknown now rather than in `check`, where nobody can attribute it to
         // the act that caused it.
         let err = an_adr("Bad", &["--supersedes", "ADR-ffffffffffff"]).unwrap_err();
-        assert_eq!(err.code, 2, "{}", err.message);
+        assert_eq!(err.code, ExitCode::NotFound, "{}", err.message);
 
         // An ADR superseding a task is not a chain `accept` can make sense of.
         let a_task_id = a_task(&t, "A task");
         let err = an_adr("Wrong kind", &["--supersedes", &a_task_id.to_string()]).unwrap_err();
-        assert_eq!(err.code, 1, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Generic, "{}", err.message);
         assert!(err.message.contains("not of kind adr"), "{}", err.message);
     }
 
@@ -2494,7 +2551,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 1, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Generic, "{}", err.message);
         assert!(err.message.contains("--supersedes"), "{}", err.message);
         assert!(err.hint.unwrap().contains("--blocked-by"), "the way in");
         assert_eq!(t.tasks().len(), 1, "nothing was written");
@@ -2543,7 +2600,7 @@ mod tests {
                 "claude-code@ank",
             )
             .unwrap_err();
-        assert_eq!(err.code, 2, "{}", err.message);
+        assert_eq!(err.code, ExitCode::NotFound, "{}", err.message);
     }
 
     #[test]
@@ -2718,7 +2775,7 @@ mod tests {
         let err = t
             .call(&["log", "something"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
 
         // Somebody else holds it: the log is the holder's register, and if
         // anyone could write to it, it would stop being a reliable trace.
@@ -2726,7 +2783,7 @@ mod tests {
         let err = t
             .call(&["log", "something"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert!(t.log(&id).is_empty());
 
         // The holder can.
@@ -2777,7 +2834,7 @@ mod tests {
         t.claim_it(&id, "claude-code@ank", 1800);
 
         let err = t.call(&["log", "   "], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 1, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Generic, "{}", err.message);
         assert!(t.log(&id).is_empty());
 
         // The redundant form works when it matches.
@@ -2790,7 +2847,7 @@ mod tests {
         let err = t
             .call(&["log", &other.to_string(), "elsewhere"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
     }
 
     // -----------------------------------------------------------------------
@@ -2805,7 +2862,7 @@ mod tests {
 
         // A silent release is exactly the gap this verb exists to close.
         let err = t.call(&["release"], "claude-code@ank").unwrap_err();
-        assert_eq!(err.code, 7, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
         assert!(err.message.contains("--reason"), "{}", err.message);
         assert!(
             err.hint.unwrap().contains("--reason"),
@@ -2850,7 +2907,7 @@ mod tests {
         let err = t
             .call(&["release", "--reason", "not mine"], "claude-code@ank")
             .unwrap_err();
-        assert_eq!(err.code, 6, "{}", err.message);
+        assert_eq!(err.code, ExitCode::Transition, "{}", err.message);
         assert_eq!(t.task(&id).status, TaskStatus::InProgress);
         assert!(claim::read(&t.0, &id).unwrap().is_some(), "the ref stands");
     }
@@ -2883,7 +2940,7 @@ mod tests {
         let empty =
             crate::config::parse(&crate::config::default_yaml(), Path::new("config.yml")).unwrap();
         let err = check_verifiers(&["nope".to_string()], &empty).unwrap_err();
-        assert_eq!(err.code, 7);
+        assert_eq!(err.code, ExitCode::Prerequisite);
         assert_eq!(
             err.hint.as_deref(),
             Some("ank config verifiers.nope.run \"<command>\""),

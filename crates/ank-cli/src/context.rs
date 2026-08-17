@@ -32,6 +32,7 @@ use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::Store;
 use crate::style::Style;
+use ank_contract::ExitCode;
 use ank_core::{Entity, EntityId, EntityKind, ScopeSet};
 use std::collections::HashMap;
 use std::io::Write;
@@ -388,7 +389,7 @@ pub(crate) fn normalised(raw: &str, repo: &Repo, usage: &str) -> Result<String> 
         .map(|rel| format!("{usage} {rel}"))
         .unwrap_or_else(|| format!("{usage} <inside the repository>"));
     Err(CliError::new(
-        1,
+        ExitCode::Generic,
         format!("'{raw}' does not name a path in this repository"),
     )
     .with_hint(hint))
@@ -426,7 +427,7 @@ pub(crate) fn normalised_globs(raw: &[String], repo: &Repo, usage: &str) -> Resu
         let normal = normalised(g, repo, usage)?;
         if normal.is_empty() {
             return Err(CliError::new(
-                7,
+                ExitCode::Prerequisite,
                 format!("'{g}' names the repository root, which is not a pattern"),
             )
             .with_hint(format!("{usage} \"**\"")));
@@ -435,8 +436,10 @@ pub(crate) fn normalised_globs(raw: &[String], repo: &Repo, usage: &str) -> Resu
             out.push(normal);
         }
     }
-    ank_core::scope::validate_globs(&out)
-        .map_err(|e| CliError::new(7, format!("{e}")).with_hint(format!("{usage} \"src/**\"")))?;
+    ank_core::scope::validate_globs(&out).map_err(|e| {
+        CliError::new(ExitCode::Prerequisite, format!("{e}"))
+            .with_hint(format!("{usage} \"src/**\""))
+    })?;
     Ok(out)
 }
 
@@ -875,7 +878,10 @@ fn build_execution(
     // directory only where a corpus has not been migrated yet (§3).
     let log_entries = crate::entries::about(store, index, &loaded.entity)?;
     let Entity::Task(task) = loaded.entity else {
-        return Err(CliError::new(1, format!("{id} is not a task")));
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{id} is not a task"),
+        ));
     };
 
     // A constraint withheld in silence is worse than one that binds wrongly:
@@ -897,7 +903,7 @@ fn build_execution(
     let mut constraints = Vec::new();
     for (adr_id, text) in applicable {
         let parsed = EntityId::parse(&adr_id)
-            .map_err(|_| CliError::new(1, format!("unreadable adr id {adr_id}")))?;
+            .map_err(|_| CliError::new(ExitCode::Generic, format!("unreadable adr id {adr_id}")))?;
         let scope = by_id
             .get(&adr_id)
             .map(|r| r.scope.clone())
@@ -1566,11 +1572,14 @@ pub fn run(
     cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
-) -> Result<i32> {
+) -> Result<ExitCode> {
     let limit = match inv.value("--limit") {
         Some(v) => Some(v.parse::<usize>().map_err(|_| {
-            CliError::new(1, format!("--limit expects a number, got '{v}'"))
-                .with_hint("ank context --limit 10")
+            CliError::new(
+                ExitCode::Generic,
+                format!("--limit expects a number, got '{v}'"),
+            )
+            .with_hint("ank context --limit 10")
         })?),
         None => None,
     };
@@ -1592,7 +1601,7 @@ pub fn run(
         let _ = write!(out, "{}", render(&view, cfg.context_budget, inv.style()));
     }
     // No ready task is a normal state, not an error (§5).
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 #[cfg(test)]

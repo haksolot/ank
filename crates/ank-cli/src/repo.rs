@@ -13,6 +13,7 @@
 use crate::cli::CliError;
 use crate::config::Config;
 use crate::store::Store;
+use ank_contract::ExitCode;
 use ank_core::SCHEMA_VERSION;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -41,7 +42,11 @@ impl Repo {
 }
 
 fn missing(from: &Path) -> CliError {
-    CliError::new(1, format!("no {ANK_DIR}/ found from {}", from.display())).with_hint("ank init")
+    CliError::new(
+        ExitCode::Generic,
+        format!("no {ANK_DIR}/ found from {}", from.display()),
+    )
+    .with_hint("ank init")
 }
 
 /// Walks up from `start` to the first directory containing `.ank/`.
@@ -371,7 +376,7 @@ mod tests {
         // The walk up may reach a real Ank repository depending on where temp
         // lives; we only assert when resolution does fail.
         if let Err(err) = discover(&empty) {
-            assert_eq!(err.code, 1);
+            assert_eq!(err.code, ExitCode::Generic);
             assert_eq!(err.hint.as_deref(), Some("ank init"));
         }
         let _ = fs::remove_dir_all(&empty);

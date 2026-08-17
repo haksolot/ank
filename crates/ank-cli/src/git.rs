@@ -11,6 +11,7 @@
 //! with the exact command to run.
 
 use crate::cli::CliError;
+use ank_contract::ExitCode;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -79,7 +80,7 @@ fn verb_of<'a>(args: &'a [&'a str]) -> Option<&'a str> {
 pub type Result<T> = std::result::Result<T, CliError>;
 
 fn env_missing() -> CliError {
-    CliError::new(9, "git not found in PATH").with_hint(INSTALL_URL)
+    CliError::new(ExitCode::Environment, "git not found in PATH").with_hint(INSTALL_URL)
 }
 
 /// Runs git in `cwd` and hands back the raw outcome, exit code included.
@@ -107,7 +108,10 @@ pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
             if e.kind() == std::io::ErrorKind::NotFound {
                 env_missing()
             } else {
-                CliError::new(9, format!("git {}: {e}", args.join(" ")))
+                CliError::new(
+                    ExitCode::Environment,
+                    format!("git {}: {e}", args.join(" ")),
+                )
             }
         })
 }
@@ -117,7 +121,10 @@ pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
 /// still needs one single way to say "git broke", stderr included.
 pub fn failed(args: &[&str], out: &Output) -> CliError {
     let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    CliError::new(9, format!("git {} failed: {stderr}", args.join(" ")))
+    CliError::new(
+        ExitCode::Environment,
+        format!("git {} failed: {stderr}", args.join(" ")),
+    )
 }
 
 /// Runs git in `cwd`. Returns standard output with trailing whitespace
@@ -299,12 +306,16 @@ pub fn version() -> Result<(u32, u32)> {
         if e.kind() == std::io::ErrorKind::NotFound {
             env_missing()
         } else {
-            CliError::new(9, format!("git --version: {e}"))
+            CliError::new(ExitCode::Environment, format!("git --version: {e}"))
         }
     })?;
     let text = String::from_utf8_lossy(&out.stdout);
     parse_version(&text).ok_or_else(|| {
-        CliError::new(9, format!("unreadable git version: {}", text.trim())).with_hint(INSTALL_URL)
+        CliError::new(
+            ExitCode::Environment,
+            format!("unreadable git version: {}", text.trim()),
+        )
+        .with_hint(INSTALL_URL)
     })
 }
 
@@ -327,7 +338,7 @@ pub fn parse_version(text: &str) -> Option<(u32, u32)> {
 pub fn check_version(found: (u32, u32)) -> Result<()> {
     if found < MIN_VERSION {
         return Err(CliError::new(
-            9,
+            ExitCode::Environment,
             format!(
                 "git {}.{} too old, {}.{} required for SSH signing",
                 found.0, found.1, MIN_VERSION.0, MIN_VERSION.1
@@ -348,12 +359,12 @@ pub fn toplevel(cwd: &Path) -> Result<PathBuf> {
             if e.kind() == std::io::ErrorKind::NotFound {
                 env_missing()
             } else {
-                CliError::new(9, format!("git rev-parse: {e}"))
+                CliError::new(ExitCode::Environment, format!("git rev-parse: {e}"))
             }
         })?;
     if !out.status.success() {
         return Err(CliError::new(
-            9,
+            ExitCode::Environment,
             format!("{} is not inside a git repository", cwd.display()),
         )
         .with_hint("git init"));
@@ -492,9 +503,12 @@ pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
         if line.is_empty() {
             continue;
         }
-        let (name, object) = line
-            .split_once('\t')
-            .ok_or_else(|| CliError::new(9, format!("unreadable for-each-ref output: {line}")))?;
+        let (name, object) = line.split_once('\t').ok_or_else(|| {
+            CliError::new(
+                ExitCode::Environment,
+                format!("unreadable for-each-ref output: {line}"),
+            )
+        })?;
         refs.push(AnkRef {
             name: name.to_string(),
             object: object.to_string(),
@@ -568,10 +582,11 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     let commit = format!("{rev}^{{commit}}");
     let verify = ["rev-parse", "--verify", "--quiet", commit.as_str()];
     if !output(cwd, &verify)?.status.success() {
-        return Err(
-            CliError::new(9, format!("branch {rev} not found in this repository"))
-                .with_hint(format!("git fetch origin {rev}")),
-        );
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!("branch {rev} not found in this repository"),
+        )
+        .with_hint(format!("git fetch origin {rev}")));
     }
     let target = format!("{rev}:{path}");
     let out = output(cwd, &["cat-file", "-p", target.as_str()])?;
@@ -1052,7 +1067,7 @@ pub fn resolve_default_branch(
         return Ok(branch.to_string());
     }
     Err(CliError::new(
-        9,
+        ExitCode::Environment,
         "default branch indeterminable (default_branch absent from .ank/config.yml, \
          refs/remotes/origin/HEAD absent)",
     )
@@ -1208,7 +1223,11 @@ mod tests {
         );
 
         let err = is_ancestor(&t.0, "no-such-rev", &second).unwrap_err();
-        assert_eq!(err.code, 9, "an unknown revision is an environment error");
+        assert_eq!(
+            err.code,
+            ExitCode::Environment,
+            "an unknown revision is an environment error"
+        );
         assert!(err.hint.is_some());
     }
 
@@ -1234,7 +1253,8 @@ mod tests {
 
         let err = file_at(&t.0, "no-such-branch", path).unwrap_err();
         assert_eq!(
-            err.code, 9,
+            err.code,
+            ExitCode::Environment,
             "an unresolvable branch must not read as an absent file"
         );
         assert!(err.hint.is_some());
@@ -1259,7 +1279,7 @@ mod tests {
         );
 
         let err = resolve_default_branch(None, None).unwrap_err();
-        assert_eq!(err.code, 9);
+        assert_eq!(err.code, ExitCode::Environment);
         assert!(err.message.contains("default_branch"), "{}", err.message);
         assert!(
             err.message.contains("refs/remotes/origin/HEAD"),
@@ -1305,7 +1325,7 @@ mod tests {
     #[test]
     fn the_version_floor_is_refused_with_code_9_and_the_link() {
         let err = check_version((2, 33)).unwrap_err();
-        assert_eq!(err.code, 9);
+        assert_eq!(err.code, ExitCode::Environment);
         assert!(err.message.contains("2.33"), "{}", err.message);
         assert!(err.message.contains("2.34"), "{}", err.message);
         assert_eq!(err.hint.as_deref(), Some(INSTALL_URL));
@@ -1322,7 +1342,7 @@ mod tests {
         // assert when it does not, otherwise the assertion would be wrong.
         if toplevel(&dir).is_err() {
             let err = toplevel(&dir).unwrap_err();
-            assert_eq!(err.code, 9);
+            assert_eq!(err.code, ExitCode::Environment);
             assert_eq!(err.hint.as_deref(), Some("git init"));
         }
         let _ = std::fs::remove_dir_all(&dir);

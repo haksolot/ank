@@ -18,6 +18,7 @@
 use crate::cli::{CliError, Invocation, Result};
 use crate::store::Store;
 use crate::{config, git, repo};
+use ank_contract::ExitCode;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ pub const GITIGNORE_LINE: &str = ".ank/index.db";
 pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
-pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<i32> {
+pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     // **Refused, and refused before anything is written** (§4, §9). `--repo`
     // names a repository that already carries a `.ank/`, which is what this verb
     // is run to produce, so it is the one verb the flag does not apply to — and
@@ -47,7 +48,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<i32> {
     // answered `no .ank/ found` (TASK-b8a12d60686d).
     if let Some(path) = inv.repo() {
         return Err(CliError::new(
-            1,
+            ExitCode::Generic,
             "--repo names a repository that exists, and init is what makes one",
         )
         .with_hint(format!("ank init {path}")));
@@ -74,7 +75,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<i32> {
             let _ = writeln!(out, "{line}");
         }
     }
-    Ok(0)
+    Ok(ExitCode::Ok)
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -169,7 +170,7 @@ impl Report {
 }
 
 fn io(path: &Path, e: std::io::Error) -> CliError {
-    CliError::new(1, format!("{}: {e}", path.display()))
+    CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
 }
 
 /// Idempotent: re-initialising an already initialised repository must break

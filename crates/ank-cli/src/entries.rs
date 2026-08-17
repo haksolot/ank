@@ -33,6 +33,7 @@
 use crate::cli::{CliError, Result};
 use crate::index::Index;
 use crate::store::Store;
+use ank_contract::ExitCode;
 // Through the module rather than the crate root, which is where the rest of the
 // log lives: `ank_core::log` is public and documented as the log's home, and a
 // re-export is a line in a file this work has no other reason to open.
@@ -159,7 +160,7 @@ pub fn control_refusal(message: &str, verb: &str) -> Option<CliError> {
     let escape = c.escape_debug();
     Some(
         CliError::new(
-            1,
+            ExitCode::Generic,
             format!("a log entry cannot carry {escape} (character {at})"),
         )
         .with_hint(format!(

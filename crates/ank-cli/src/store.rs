@@ -13,6 +13,7 @@
 //!   alone compares nothing: two writers would read the same base version and
 //!   the second would overwrite the first with nothing to signal it.
 
+use ank_contract::ExitCode;
 use ank_core::{
     parse_entity, parse_log, parse_log_file, resolve_prefix, serialize_entity, Entity, EntityId,
     EntityKind, LogEntry,
@@ -90,20 +91,25 @@ pub enum Refusal {
 
 impl StoreError {
     /// Exit code from the table in §4.
-    pub fn code(&self) -> i32 {
+    ///
+    /// This mapping was the model the extraction of `ank-contract` followed
+    /// (TASK-0549e0f960ef): it was the one place in the tool where a code was
+    /// derived from a type rather than written as a literal, and
+    /// [`ExitCode`](ank_contract::ExitCode) is that shape made general.
+    pub fn code(&self) -> ExitCode {
         match self {
             StoreError::NotFound(_)
             | StoreError::AmbiguousPrefix { .. }
-            | StoreError::PrefixTooShort(_) => 2,
-            StoreError::VersionConflict { .. } => 3,
+            | StoreError::PrefixTooShort(_) => ExitCode::NotFound,
+            StoreError::VersionConflict { .. } => ExitCode::Conflict,
             StoreError::FilenameMismatch { .. }
             | StoreError::Parse { .. }
             | StoreError::Io { .. }
-            | StoreError::LockTimeout { .. } => 1,
+            | StoreError::LockTimeout { .. } => ExitCode::Generic,
             // An environment to repair, not work that failed (§4). Same family
             // as a missing git or a directory outside a repository: the agent
             // can do nothing about it, and the person running the tool can.
-            StoreError::LockDenied { .. } => 9,
+            StoreError::LockDenied { .. } => ExitCode::Environment,
         }
     }
 
@@ -818,12 +824,12 @@ mod tests {
         store.create(&task("00000000ffff", "Other")).unwrap();
 
         let err = store.load_prefix("abcd").unwrap_err();
-        assert_eq!(err.code(), 2, "{err}");
+        assert_eq!(err.code(), ExitCode::NotFound, "{err}");
         assert!(matches!(err, StoreError::NotFound(_)));
 
         // "0000" matches both entities: the tool does not guess.
         let err = store.load_prefix("0000").unwrap_err();
-        assert_eq!(err.code(), 2, "{err}");
+        assert_eq!(err.code(), ExitCode::NotFound, "{err}");
         match &err {
             StoreError::AmbiguousPrefix { candidates, .. } => {
                 assert_eq!(candidates.len(), 2, "the candidates are listed: {err}");
@@ -845,7 +851,7 @@ mod tests {
 
         // The latecomer still holds version 1 as its base.
         let err = store.write(&e, 1).unwrap_err();
-        assert_eq!(err.code(), 3, "{err}");
+        assert_eq!(err.code(), ExitCode::Conflict, "{err}");
         assert_eq!(err.hint().as_deref(), Some("ank context"));
         assert_eq!(
             fs::read(&path).unwrap(),
@@ -930,7 +936,11 @@ mod tests {
         assert_eq!(winners, 1, "exactly one winner: {results:?}");
         for r in results.iter().filter(|r| r.is_err()) {
             let err = r.as_ref().unwrap_err();
-            assert_eq!(err.code(), 3, "the losers exit with 3: {err}");
+            assert_eq!(
+                err.code(),
+                ExitCode::Conflict,
+                "the losers exit with 3: {err}"
+            );
         }
 
         // The final file is a valid entity, never truncated and never mixed.
@@ -1029,7 +1039,7 @@ mod tests {
         assert!(err.to_string().contains("/repo/.ank/tasks"));
         assert!(err.hint().unwrap().contains("/repo/.ank/tasks"));
         // An environment to repair, not work that failed.
-        assert_eq!(err.code(), 9);
+        assert_eq!(err.code(), ExitCode::Environment);
     }
 
     /// The happy path does not depend on the platform, and this is the one

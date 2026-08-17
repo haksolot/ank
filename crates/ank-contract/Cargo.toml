@@ -1,0 +1,25 @@
+[package]
+name = "ank-contract"
+version = "0.3.0"
+edition = "2021"
+# The workspace floor, for the reason ank-core's manifest gives: this crate has
+# no dependencies at all and would compile on far less, but the workspace
+# resolves one lockfile and builds as a unit.
+rust-version = "1.95"
+# GPL-3.0-only, and the choice is not a default. ADR-68018cda382c makes
+# `ank-core` and any crate existing "so another program can read or write the
+# format" Apache-2.0. This is not one of them: what it holds is the surface of
+# the tool -- the verbs it dispatches, the flags it accepts, the states it
+# refuses on and the codes it exits with -- and the tool is what the copyleft
+# covers. An outside integrator binds to `ank help --json`, which is data and
+# needs no linking (TASK-af4a6db95aab), and ADR-372b82af1ec7 puts the protocol
+# surface in this workspace rather than outside it. A third-party crate wanting
+# to link this one is a decision to take on its own terms.
+license = "GPL-3.0-only"
+description = "The Ank machine contract: the verb table, the refusals and the exit codes, consumed by every surface."
+
+# Deliberately none, and this is load-bearing rather than tidy. Every surface
+# consumes this crate (ADR-6fd69efb629c), so anything it depends on is depended
+# on by all of them at once. What it holds is `const` data and two enums; a
+# dependency here would buy nothing and cost every consumer.
+[dependencies]
