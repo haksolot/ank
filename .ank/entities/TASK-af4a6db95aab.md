@@ -5,7 +5,7 @@ slug: a-document-states-the-integration-contract-for-s
 title: A document states the integration contract for someone outside this repository
 created: 2026-08-17T05:15:07Z
 author: claude-code/2.1.233+integration-contract
-status: open
+status: in_progress
 scope:
   - docs/integrating.md
   - README.md
@@ -14,7 +14,7 @@ done_criteria: |
   A document in docs/ states the contract for a reader who has never seen this tree: ank help --json as the entry point, the exit code table, the rule that a task's state is the file together with its claim ref, its proof ref and the log entities naming it, the warning that check writes and prunes refs so a poller must not call it, and the golden fixtures offered as the conformance suite. The README links it. Every command it shows is run and its output pasted from the run, not typed.
 criteria_by: creator
 schema: 3
-version: 3
+version: 4
 ---
 
 `docs/getting-started.md` already says the integration surface is two things, an
