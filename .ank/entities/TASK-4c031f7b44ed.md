@@ -5,7 +5,7 @@ slug: a-closed-task-s-dead-scope-is-a-signal-because-a
 title: A closed task's dead scope is a signal, because a closure claimed nothing
 created: 2026-08-17T21:29:22Z
 author: claude-code/2.1.233+exposition
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/**
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   check reports a scope matching no file as a signal on a task whose status is closed, in wording that names the closure rather than reusing the open task's 'work not started'. It stays a fault on a done task and on an ADR. A test drives the binary over both: a closed task whose scope names a path no commit ever carried leaves check at exit 0, and the existing done-task fault still exits 8. cargo test is green and cargo fmt --check passes.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 16e827b
+    criteria: acb6310ec6fd
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 `human.rs` reads the status as `!(Open | InProgress)`, so a `closed` task is
