@@ -1,18 +1,17 @@
 # The file format
 
-For anyone writing a tool that reads or writes `.ank/` — an editor plugin, an
+For anyone writing a tool that reads or writes `.ank/`: an editor plugin, an
 exporter, a linter, a second implementation.
 
 The format is the specification, and the CLI is a reference implementation of
 it rather than a gatekeeper. Nothing here needs `ank` to be installed or asks
 your tool to call it.
 
-**This document is not normative.** Section 3 of the specification is — *The
-data model*, one of the ten `spec` documents in `.ank/` that
-`ank find --type spec` lists — and where the two disagree the
-specification is right and this page is a bug. What you will find here instead
-is the mechanical half a writer has to reproduce exactly — the field order, the
-emission rules, the quoting predicate — which the specification states as
+**This document is not normative.** Section 3 of the specification is: *The data
+model*, one of the ten `spec` documents in `.ank/` that `ank find --type spec`
+lists. Where the two disagree the specification is right and this page is a bug. What you will find here instead
+is the mechanical half a writer has to reproduce exactly, the field order, the
+emission rules and the quoting predicate, which the specification states as
 properties rather than as a list, plus a pointer to the section that argues each
 one.
 
@@ -30,7 +29,7 @@ run against.
       entities/SPEC-<hex>.md
       entities/LOG-<hex>.md  one entry of the work trace, written once
       log/<ID>.md            the previous shape of the trace, read and never written
-      index.db               derived, disposable, belongs in .gitignore — never a source of truth
+      index.db               derived, disposable, belongs in .gitignore, never a source of truth
 
 Flat, deliberately: attachment happens through the `scope` field, not through
 location (§3). A file's name is its id; nothing resolves through the directory
@@ -43,7 +42,7 @@ path is computed from the id with no lookup: every entity is at
 `.ank/entities/<ID>.md`, whatever its kind, log entries included.
 
 **An entity's entries are a query, not a path.** They are the entities of kind
-`log` whose `about` names it — so finding them means reading the directory, or
+`log` whose `about` names it, so finding them means reading the directory, or
 your own index, where the previous shape let you compute one address. That is the
 one thing this layout gives up, and it is deliberate (§3).
 
@@ -57,7 +56,7 @@ flat directory are at `tasks/TASK-<hex>.md` and `adr/ADR-<hex>.md`, with the log
 inside the task body; corpora written between that revision and this one carry
 the trace as one file per entity under `.ank/log/`. A reader **must accept all of
 them**; a writer **must never produce them**. A corpus holding several layouts is
-one corpus, and nothing in it is counted twice — if an id resolves in both, decide
+one corpus, and nothing in it is counted twice: if an id resolves in both, decide
 and document which wins rather than silently preferring one, and an entity's
 entries are the union of the two sources. `ank check` reports a corpus still in a
 previous shape as a signal, not a fault, naming the command that moves it: such a
@@ -69,7 +68,7 @@ but the flat layout.
 
 **Identifiers** are `TASK-`, `ADR-`, `SPEC-` or `LOG-` followed by exactly 12
 hexadecimal characters, lowercase on output and accepted in either case on
-input. They hash the act of creation — timestamp, identity, title, entropy —
+input. They hash the act of creation (timestamp, identity, title, entropy)
 never the content, so they survive every edit (§3). A tool that resolves short
 prefixes must require at least 4 hex characters and must fail on an ambiguous
 one, listing the candidates. Guessing is the one behaviour the format rules out
@@ -103,7 +102,7 @@ alphabetical and not negotiable; it is this.
 A kind is declared **once**, as a row of a registry: the name written in `type`,
 the id prefix, the status values, which fields are required and which optional,
 and the canonical order (§3). The two tables below are that registry written out.
-Reproduce them as data — a table your serializer walks — rather than as one
+Reproduce them as data, a table your serializer walks, rather than as one
 emitter per kind; the order is the single thing most easily lost by rewriting two
 straight-line emitters as a generic loop, and it is what the round-trip rests on.
 
@@ -136,11 +135,11 @@ refusals answer different questions: `priorty:` in a `task` is a typo, and
 A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
 `criteria`, `verifier` and `via`, each omitted when absent. `type` is one of
 `test`, `commit`, `human-review`, `assertion`. `via` is one of `verifier`,
-`attested`, `submitted` — the route by which the entry arrived — and its absence
+`attested`, `submitted`, the route by which the entry arrived, and its absence
 means the entry was written before the field existed, never a fourth route.
 
 A `verified` entry emits `by`, then `at`. Both are required in an entry that
-exists at all — an entry missing either is rejected — while the list itself is
+exists at all, an entry missing either being rejected, while the list itself is
 optional on every kind.
 
 ### ADR
@@ -194,7 +193,7 @@ has no field carrying its authority, so `ratified` is taken over the body and
 `references` names the documents and decisions this one rests on, in the position
 `blocked_by` takes on a task: immediately after the perimeter, before the
 succession. It is a flow list of entity ids and it is **omitted when empty**, not
-written `[]` — a task always states whether it has blockers, and a document that
+written `[]`: a task always states whether it has blockers, and a document that
 cites nothing has nothing to state. A reader resolves each entry against the
 corpus; what a checker then reports of it is §4's business and not the format's,
 and an entry naming a kind other than `spec` or `adr` is a finding there rather
@@ -220,7 +219,7 @@ than a parse error here (§3).
 **No `status`, and that is not an omission**: an entry is written once and has
 nothing to transition to, so the registry declares the kind without one and your
 parser must not require it. `version` stays, and on this kind it is a detector
-rather than a counter — an entry above 1 has been rewritten, which the format
+rather than a counter: an entry above 1 has been rewritten, which the format
 says should not happen.
 
 **Optional fields are omitted, never emitted empty.** An entity with no author
@@ -230,7 +229,7 @@ forbids that.
 
 ### Actors
 
-Every field naming an actor — `author`, and the `by` of a `verified` entry — is
+Every field naming an actor, `author` and the `by` of a `verified` entry, is
 typed: `human:<id>` is a person, `<producer>/<version>` is an agent,
 `process:<id>` is an automated process (§3).
 
@@ -244,7 +243,7 @@ anything.
 
 ## Emission rules
 
-**Literal blocks** carry the multi-line fields — `done_criteria` and
+**Literal blocks** carry the multi-line fields, `done_criteria` and
 `constraint`. Two spaces of indent, and the chomping indicator records whether
 the value ends in a newline: `|` when it does, `|-` when it does not.
 
@@ -266,7 +265,7 @@ the value ends in a newline: `|` when it does, `|-` when it does not.
         at: 2026-07-27T09:40:00Z
 
 **Scalars are emitted bare when that is unambiguous and quoted otherwise**,
-conservatively — when in doubt, quote. The reference implementation emits a
+conservatively: when in doubt, quote. The reference implementation emits a
 scalar bare only when all of these hold: it is non-empty; it contains no
 newline, no `": "` and no `" #"`; it does not end in `:` or a space; it does not
 begin with any of
@@ -282,8 +281,8 @@ writer round-trip.
 
     serialize(parse(x)) == x, byte for byte, when x is in canonical form
 
-Valid but non-canonical input — another acceptable YAML form, superfluous
-quotes, CRLF — is read correctly and **normalised on first rewrite** (§3). That
+Valid but non-canonical input (another acceptable YAML form, superfluous
+quotes, CRLF) is read correctly and **normalised on first rewrite** (§3). That
 is what lets a human or a third-party tool write a file without knowing the
 canonical form, without making that form an authoritative variant.
 
@@ -307,7 +306,7 @@ finds every field it already knew.
 
 The log is what makes that bump necessary, and it is the case the field exists
 for. A reader that does not know the log has left the body opens a task file,
-finds no `## Log` section, and shows an empty history for a task that has one —
+finds no `## Log` section, and shows an empty history for a task that has one,
 silently, with nothing reading anywhere as an error. Refusing on the version says
 the one true thing before any of that happens.
 
@@ -326,9 +325,9 @@ the one true thing: this file is newer than this tool. The argument is in §3.
 rejected naming the kind, which is the same honest refusal by a different
 mechanism, so a tool that does not know `spec` or `log` stops on that entity and
 says which kind stopped it. The `spec` and `log` kinds are therefore readable at
-any version in the range, and the one case no bump could reach — a reader that
+any version in the range, and the one case no bump could reach, a reader that
 opens a task file alone and looks for its entries where an older shape kept them
-— is covered by continuing to read that shape for one window (§6).
+is covered by continuing to read that shape for one window (§6).
 
 ## The log
 
@@ -338,7 +337,7 @@ message in `title`, and what it is about in `about`, and it is written once and
 never modified. A correction is a new entry naming the one it corrects.
 
 The line grammar has not changed, and it is now how an entry is **printed**
-rather than how it is stored — a dash and a space, the timestamp, a space, the
+rather than how it is stored: a dash and a space, the timestamp, a space, the
 identity, a space, an em dash, a space, the message:
 
     - 2026-07-26T14:02Z claude-code/1.4.2 — jwt.verify removed from session.ts
@@ -349,8 +348,8 @@ nothing about it is reinterpreted: only where it lives has moved, twice.
 **A message longer than a line is split across `title` and the body, and the
 split is lossless.** One line of at most **100 characters** is the whole of the
 `title`, and the body is empty. Longer, the title runs to the last space at or
-before character 100 and at or after character 50 — the limit itself where there
-is no such space, and the first newline where one comes earlier — and the body is
+before character 100 and at or after character 50, the limit itself where there
+is no such space and the first newline where one comes earlier, and the body is
 a newline, the remainder verbatim, a newline.
 
 **The message is the exact concatenation of the two.** The separating space
@@ -377,7 +376,7 @@ wherever entities are listed. **So print the head of the message with a trailing
 `…` when there is more**, and let a reader ask for the entry itself to see the
 whole. Machine output carries the whole message: a parser reads no page.
 
-Any kind may be logged against — a task, an ADR, a spec — and **an entity with no
+Any kind may be logged against, whether a task, an ADR or a spec, and **an entity with no
 entries has an empty log, never an error**. Do not write one to record that there
 is nothing to record.
 
@@ -389,7 +388,7 @@ order or anything else outside it.
 resolution, and writing an entry costs a few hundred milliseconds, so several
 entries inside one second is the ordinary case: measured on four entries written
 about one task, 12 runs of 12 put all four in the same second, and 10 of those
-12 came back in the wrong order when the identifier was the only tiebreak — a
+12 came back in the wrong order when the identifier was the only tiebreak: a
 hash of the act of creation, which carries no order at all. An append-only file
 carried insertion order for free; a set of files does not.
 
@@ -397,7 +396,7 @@ carried insertion order for free; a set of files does not.
 see on the entries already about that subject, or 0 if there are none.** That
 requires reading them first, which is a bounded read and the same query you need
 to display them. Two writers who cannot see each other will produce the same
-value; that is correct rather than broken — they were concurrent, `created`
+value; that is correct rather than broken, since they were concurrent, `created`
 separates them when their instants differ, and the identifier settles the rest.
 Never treat equal `seq` as a conflict, and never rewrite an entry to renumber
 it.
@@ -405,7 +404,7 @@ it.
 **An entry read out of one of the previous layouts takes the 0-based index of
 its line in the file**, which is the order that file recorded. Since `created`
 is read first, a file whose lines contradict their own timestamps is reordered
-by the timestamps — measured on the reference corpus, one file of 178 stores its
+by the timestamps: measured on the reference corpus, one file of 178 stores its
 lines newest-first. The guarantee is therefore exact: across distinct instants
 the timestamps order the entries, and within one instant the line order does.
 
@@ -420,7 +419,7 @@ The rule that used to union log sections by timestamp is gone, and the reason
 once recorded for dropping it was wrong: git does not union two appends by
 itself, it conflicts on them, unless a repository configures `merge=union` for
 the path (§7). What has been protecting the corpus all along is one file per
-entity, and an entry that is an entity extends that to the trace — there is no
+entity, and an entry that is an entity extends that to the trace: there is no
 file for two parties to append to.
 
 **One convention lives in the message, and it is where a disproved criterion is
@@ -430,8 +429,8 @@ was measured instead (§3):
 
     - 2026-08-14T18:16Z claude-code/03fd — discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help`
 
-It is a convention on the message and never on the grammar — `released: <reason>`
-is the same kind and older — so it costs no field, no schema bump and no
+It is a convention on the message and never on the grammar, `released: <reason>`
+being the same kind and older, so it costs no field, no schema bump and no
 migration, and every log a corpus already holds stays valid. It changes nothing
 mechanically: the criterion is untouched, its hash still anchors it, and `done`
 still verifies against that hash. A tool that reads the log should surface such
@@ -473,7 +472,7 @@ has two states and the record it points at says which: a `claim` (holder,
 expiry, the frozen criterion hash, the hash of applicable constraints) or a
 `completed` record (commit, branch, identity, timestamp) written by `done`. A
 task that is `in_progress` in the file with no ref behind it is simply one whose
-claim expired — legal, and re-claimable (§7).
+claim expired: legal, and re-claimable (§7).
 
 **The ratification anchor is a commit message.** `accept` writes `ratified:` into
 the entity *and* produces a commit whose subject is `ratify <id>` and whose body
@@ -484,8 +483,8 @@ entity's own path history with `--full-history` and takes the first such commit
 
 **The key names what was hashed**, and there are two because there are two kinds
 that carry an anchor: `constraint+scope: <hash>` on an ADR, `body+scope: <hash>`
-on a spec. A spec declares no `constraint` — that absence is what justifies the
-kind — so the authority is carried by the whole document, and a commit claiming
+on a spec. A spec declares no `constraint`, that absence being what justifies the
+kind, so the authority is carried by the whole document, and a commit claiming
 `constraint+scope` over one would name a field the file does not have. A reader
 accepts either key; a writer writes the one its kind carries.
 
@@ -500,7 +499,7 @@ from each line, trailing blank lines are removed.
 
 - **The criterion freeze**, recorded by `claim`: `hash(normalize(done_criteria))`.
 - **The ratification anchor**, recorded by `accept`: the normalised anchored
-  text, a newline, then each `scope` glob trimmed and followed by a newline —
+  text, a newline, then each `scope` glob trimmed and followed by a newline,
   hashed as one buffer. The anchored text is an ADR's `constraint` and a spec's
   body, which is the one place the two anchors differ and what the commit key
   above says.
@@ -512,7 +511,7 @@ any file; what it cannot do is make the recorded hash agree afterwards.
 
 `version` is an integer incremented on every write, and it is an intra-tree
 compare-and-swap: read, compare, write, under a file lock, with the write done
-atomically (write-then-rename). It protects one working tree — a human and an
+atomically (write-then-rename). It protects one working tree: a human and an
 agent sharing a checkout. Between clones, git's own compare-and-swap at push
 time is what arbitrates (§7).
 
@@ -521,7 +520,7 @@ time is what arbitrates (§7).
 `crates/ank-core/tests/golden/` is a reusable suite, and it is small enough to
 port in an afternoon:
 
-- `valid/` — every file must parse, and re-serialising it must reproduce the
+- `valid/`: every file must parse, and re-serialising it must reproduce the
   input byte for byte **once line endings are normalised**. One file,
   `TASK-c71f0e5a9b23.md`, is in CRLF on purpose and must come back in LF; that
   is the only file for which the assertion is against the normalised input
@@ -529,9 +528,9 @@ port in an afternoon:
   stay: a file written before a field existed must survive a rewrite unchanged,
   and if one of them moves, the version bump has silently become a migration.
   Every kind carries one: a log entry is an ordinary entity fixture like any
-  other, and a fixture in the previous shape — a whole log keyed by the id of
-  the entity it belongs to — stays for as long as that shape is read.
-- `invalid/` — every file must be **rejected with the right error**, not merely
+  other, and a fixture in the previous shape, a whole log keyed by the id of
+  the entity it belongs to, stays for as long as that shape is read.
+- `invalid/`: every file must be **rejected with the right error**, not merely
   rejected. Each case names a distinct failure: no frontmatter, a bad id, an
   unknown schema, an unknown kind, an unknown field inside a known kind, a bad
   status, a type mismatch, an empty scope, an invalid glob, `criteria_by`
@@ -554,4 +553,4 @@ writes still looks fine until something else reads it.
   body which sections it carries: §3 for the data model and
   canonical form, §6 for storage, §7 for the coordination plane, §8 for identity
   and ratification. `ank show <id>` prints one whole.
-- [getting-started.md](getting-started.md) — if you also want to use the tool.
+- [getting-started.md](getting-started.md): if you also want to use the tool.

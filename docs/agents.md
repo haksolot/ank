@@ -1,7 +1,7 @@
 # Handing ank to an agent
 
 The skill says *how* to use ank; it does not install the binary. Those are two
-separate acts, and this page covers both — the routes that reach an agent, and
+separate acts, and this page covers both: the routes that reach an agent, and
 the binary channels the two commands in the README do not cover.
 
 If you only want the short version, it is in the README: `npm install -g
@@ -12,7 +12,7 @@ Everything below is for the cases those two do not fit.
 
 One plain markdown file, [`../skill/SKILL.md`](../skill/SKILL.md). It is the only
 copy that exists in git, and every route below points at it rather than holding
-one of its own — so no route can fall behind it.
+one of its own, so no route can fall behind it.
 
 It teaches one page: why ank is shaped as it is, then the loop
 `context -> claim -> show -> log -> done`, the three off-loop verbs `new`,
@@ -24,19 +24,19 @@ content is deliberately small and growing it costs an ADR.
 below is `~58 tok` always-on, and that is the skill's `name` and `description`;
 the body is read when the skill is invoked. The ceiling on the body is kept
 anyway, because the by-hand route at the end of this page copies the whole file
-into whatever a harness loads, and some harnesses load all of it every session —
+into whatever a harness loads, and some harnesses load all of it every session,
 so it bounds the worst route rather than the measured one.
 
 One convention it carries is worth knowing before you watch an agent follow it:
 **`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
 `ank show`, `ank find` and `ank context`; writing goes through the verbs. The CLI
-knows what the files do not — the context budget, the frozen criterion, who holds
+knows what the files do not: the context budget, the frozen criterion, who holds
 which claim. A human with an editor keeps every power they had.
 
 ### The `skills` CLI
 
-Detects what you run — Claude Code, Codex, Cursor, OpenCode and some thirty more
-— and links each one to a single copy. Ask it what it found before you let it
+Detects what you run (Claude Code, Codex, Cursor, OpenCode and some thirty more)
+and links each one to a single copy. Ask it what it found before you let it
 install:
 
     $ npx skills add haksolot/ank --list
@@ -54,8 +54,8 @@ install:
 Drop `--list` to install it.
 
 This is the widest route and the least anchored one. It finds the skill through
-its own recursive scan rather than through a manifest — `skill/` is not one of
-the directories it looks in by name — so it works because the fallback works. If
+its own recursive scan rather than through a manifest, `skill/` not being one of
+the directories it looks in by name, so it works because the fallback works. If
 a future version of that CLI narrows its search, this is the route that breaks
 first, and the hand copy below is the answer.
 
@@ -98,7 +98,7 @@ routes below.
 
 The skill is one file with nothing generated in it. Where none of the routes
 above fits your harness, copy `skill/SKILL.md` into whatever that harness loads
-and you have lost nothing — the routes exist to save you a copy, not to add
+and you have lost nothing: the routes exist to save you a copy, not to add
 anything to it.
 
 ## The binary
@@ -109,9 +109,9 @@ repository rather than by a satellite somebody keeps in step
 (ADR-782a3556cf2d): the tap, the bucket and the apt index all live here, and
 each is derived from a published release rather than updated by hand.
 
-**A release binary.** Every release carries a static binary for three targets —
+**A release binary.** Every release carries a static binary for three targets,
 `x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`
-— each with a `.sha256` beside it. Take the archive for your platform from the
+each with a `.sha256` beside it. Take the archive for your platform from the
 [releases page](https://github.com/haksolot/ank/releases/latest), check the hash,
 unpack it, and put `ank` on your `PATH`.
 
@@ -156,13 +156,13 @@ downloading a bare executable but lets the registry through:
     npx @haksolot/ank --version
     npm install -g @haksolot/ank
 
-The binary is inside the package — one package per platform, installed through
+The binary is inside the package: one package per platform, installed through
 `optionalDependencies`, and no `postinstall` fetches anything. A `postinstall`
 download would die behind the very firewall this channel exists to cross, and
 would do it after the install looked like it had worked.
 
-It covers `linux x64`, `darwin arm64` and `win32 x64`. On anything else — an
-Intel Mac, a linux arm64 box — the wrapper exits 9 and names `cargo install`,
+It covers `linux x64`, `darwin arm64` and `win32 x64`. On anything else, an
+Intel Mac or a linux arm64 box, the wrapper exits 9 and names `cargo install`,
 which is the honest answer rather than a silent failure.
 
 **From source:**
@@ -174,8 +174,8 @@ It is `--git` because nothing publishes to crates.io. That puts `ank` in
 
 **What is not a way to install ank yet**, named here so you do not go looking.
 `winget install Haksolot.Ank` does not work: the manifest is derived from the
-release and proved on every run of the pipeline — validated and installed from
-on a Windows runner — but it reaches `microsoft/winget-pkgs` only when a release
+release and proved on every run of the pipeline, validated and installed from
+on a Windows runner, but it reaches `microsoft/winget-pkgs` only when a release
 is next published, and the registry reviews it after that. Arch is not served at
 all.
 
@@ -194,7 +194,7 @@ in history, and nothing forces them to be the same one.
 
 ## One agent, one working tree, one identity
 
-The nominal case is a tree per agent — a clone or a `git worktree` — each on its
+The nominal case is a tree per agent, a clone or a `git worktree`, each on its
 own branch.
 
 `$ANK_AGENT` names the session, and falls back to `<user>@<hostname>`. That
@@ -208,7 +208,7 @@ should have been given.
 Several agents in one tree runs, and it is a degraded mode rather than the
 design. What arbitrates properly is a `git worktree` per agent, because every
 worktree of a repository shares `refs/ank/`, so the compare-and-swap settles
-them. Separate clones are arbitrated only when there is a remote — that is what
+them. Separate clones are arbitrated only when there is a remote, which is what
 the push carries.
 
 Identity here is declared, not proved. `$ANK_AGENT` is set by the caller, so it
@@ -232,7 +232,7 @@ prints the DAG when you want the shape rather than the next move.
 
 **One branch per task.** Each agent claims its task, works in its own tree on
 its own branch, and finishes there. `ank done` proves the task in the working
-tree it ran in — the verifiers ran against those files and the proof records
+tree it ran in: the verifiers ran against those files and the proof records
 their hash. It does not prove the change merges, or that the combined system
 works. That gap is held by the refs, not by convention: `done` turns the claim
 ref into a completion record naming the commit and the branch, every other tree
@@ -243,7 +243,7 @@ branch says the task is done.
 **Integration is a task.** When several tasks form one change, the whole is
 verified the way the parts were: an ordinary task, `blocked_by` each part, with
 its own criterion and its own verifiers. This is the spec's model rather than a
-workaround — `blocked_by` is a DAG with no rollup precisely because a parent
+workaround: `blocked_by` is a DAG with no rollup precisely because a parent
 that completes when its children do is completion without proof, and the seam
 between the parts is exactly where integration regressions live. The
 integration task becomes ready when the last part finishes; whoever claims it
@@ -267,9 +267,9 @@ nowhere else.
 
 ## Where to go next
 
-- [getting-started.md](getting-started.md) — install to a first finished task,
+- [getting-started.md](getting-started.md): install to a first finished task,
   with real output, including the refusals a fresh repository will give you.
-- [format.md](format.md) — the file format, for anyone writing a tool that reads
+- [format.md](format.md): the file format, for anyone writing a tool that reads
   or writes `.ank/`.
 - The specification, the source of truth for everything above, which lives as
   ten `spec` documents in `.ank/`: `ank find --type spec` lists them and

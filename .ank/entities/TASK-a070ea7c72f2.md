@@ -5,7 +5,7 @@ slug: no-em-dash-in-the-prose-a-human-reads
 title: No em dash in the prose a human reads
 created: 2026-08-17T22:14:29Z
 author: claude-code/2.1.233+docs
-status: open
+status: in_progress
 scope:
   - README.md
   - docs/**
@@ -17,7 +17,7 @@ done_criteria: |
   grep finds no em dash in README.md, in any docs/*.md, in CONTRIBUTING.md, in SECURITY.md, in npm/README.md or in npm/ank/README.md. Each was rewritten in context rather than substituted: no bare hyphen stands where an em dash did unless the sentence reads correctly with one. skill/SKILL.md and .ank/ are untouched, proven by their counts being unchanged.
 criteria_by: creator
 schema: 3
-version: 2
+version: 3
 ---
 
 232 of them across the prose a person reads.

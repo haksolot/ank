@@ -12,8 +12,8 @@ Three consequences are worth naming out loud, because each one looks like a
 hole to anyone who assumed otherwise.
 
 **The roles in `.ank/config.yml` are advisory.** They declare intent where a
-reader can see it, and an unknown identity — including `$ANK_AGENT` being
-absent — falls back to the least-privileged role. What they never do is make
+reader can see it, and an unknown identity, including `$ANK_AGENT` being
+absent, falls back to the least-privileged role. What they never do is make
 the CLI refuse. A refusal derived from `$ANK_AGENT` would be a refusal the
 caller lifts by exporting a different string, and shipping that as a guarantee
 is worse than shipping no guarantee at all. Declaring yourself `human` in the
@@ -22,8 +22,8 @@ config confers no authority; the signature is what carries it.
 **The CLI is a reference implementation, not a gatekeeper.** The format is the
 specification, so any tool can read and write `.ank/`. Immutability is
 therefore *verifiable, not defended*: every freeze is anchored by a hash in an
-artifact the file's editor does not control — the claim record, the
-ratification commit, the proof entry — and `ank check` is what compares. A
+artifact the file's editor does not control (the claim record, the
+ratification commit, the proof entry) and `ank check` is what compares. A
 direct edit is not prevented. It is noticed.
 
 **Enforcement, where it is real, lives outside ank.** A harness `PreToolUse`
@@ -46,7 +46,7 @@ An agent running on a developer machine whose git signing is configured and
 unlocked can produce a valid signed commit. The defence against that case is
 operational rather than cryptographic: keep the ratification key behind a
 passphrase or hardware touch-to-sign, distinct from the everyday commit key if
-needed. That limitation is consistent with section 1 — drift, not an adversary.
+needed. That limitation is consistent with section 1: drift, not an adversary.
 
 **With no signing configured at all, the hard line is gone and nothing replaces
 it.** Roles were already advisory, and the ratification anchor becomes a hash
@@ -54,7 +54,7 @@ in a commit message anyone can write. `ank check` displays that rather than
 hiding it, and it distinguishes a fault from a signal: a signature present with
 no local public key is reported as *not verified, and not refused*, because a
 clone without the key is a correct repository on an incomplete machine. The
-rule underneath is the one to remember when reading any ank output — **a
+rule underneath is the one to remember when reading any ank output: **a
 verification that degrades to success is not a verification**.
 
 ## 3. Verifiers run only what the repository accepted
@@ -70,7 +70,7 @@ code review like any other change.
 Editing `config.yml` to replace a verifier with `true` remains possible, and
 two mechanisms make it visible rather than impossible. The proof records a hash
 of the definition that actually ran, so a verifier weakened before or after the
-`done` — in the same commit or another — is detectable. And `check` reports the
+`done`, in the same commit or another, is detectable. And `check` reports the
 pattern directly: a verifier modified inside the task's activity window, or a
 proof hash diverging from the definition in force at the `done` commit.
 
@@ -86,7 +86,7 @@ ship in the next release rather than in a backport.
 | Version | Supported |
 |---|---|
 | 0.1.2 (latest) | yes |
-| earlier 0.1.x | no — upgrade |
+| earlier 0.1.x | no, upgrade |
 
 Ank requires **git 2.34 or newer** and checks at startup.
 

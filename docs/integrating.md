@@ -6,7 +6,7 @@ seen this repository.
 [getting-started.md](getting-started.md) already covers the **pipeline** case,
 and covers it well: run `ank check`, route on the exit code, parse `--json`. If
 that is what you are building, read the "Running ank in a pipeline" section there
-and stop. This document is for what a pipeline does not need — a board, an
+and stop. This document is for what a pipeline does not need: a board, an
 editor plugin, a dashboard, an agent harness, anything that reads a corpus and
 shows it to somebody.
 
@@ -57,9 +57,9 @@ It leads every `--json` document, and it is the field to read before deciding yo
 can read the rest.
 
 Within one version a document may **gain** a field, and may never lose, rename or
-retype one. So parse leniently — an unknown field is not a breaking change and
-your parser must not refuse one — and treat a change of this number as the signal
-to look again.
+retype one. So parse leniently, because an unknown field is not a breaking change
+and your parser must not refuse one, and treat a change of this number as the
+signal to look again.
 
 It is not the version of the binary. `ank --version` says which build is in hand;
 this says which shapes came out of it, and a release that changes no document
@@ -75,7 +75,7 @@ are stable, and `ank help --json` publishes which verb returns which.
 | 0 | ok |
 | 1 | generic error |
 | 2 | entity not found, or an ambiguous prefix |
-| 3 | version conflict — re-read and retry |
+| 3 | version conflict, re-read and retry |
 | 4 | the task is unavailable: held by another agent, or finished on another branch |
 | 5 | a proof is missing or invalid |
 | 6 | the act is illegal from the state the entity is in, or a frozen field diverged |
@@ -87,7 +87,7 @@ Two of them are the ones a loop must handle. **3** means "somebody moved, read
 again". **4** means "take something else".
 
 **6 and 7 are two codes on purpose.** In 6 the state forbids what you asked; in 7
-the thing you asked for is legal and something it depends on is absent — `accept`
+the thing you asked for is legal and something it depends on is absent. `accept`
 off the default branch is a 7, because the promotion is legal and the place is
 not. A client that conflates them reacts wrongly to one of the two.
 
@@ -114,11 +114,11 @@ under-reports **silently**.
 The file is the entity. The *state* is the file together with three things that
 are not in it:
 
-- `refs/ank/claims/<id>` — who holds the task and until when. A claim lives in a
+- `refs/ank/claims/<id>`, who holds the task and until when. A claim lives in a
   git ref and never in the file, so two clones arbitrate through the remote
   rather than through a field somebody has to merge.
-- `refs/ank/proof/<id>` — proofs a pipeline attested without making a commit.
-- the **log entities** whose `about` names the task — one file per entry, stored
+- `refs/ank/proof/<id>`, proofs a pipeline attested without making a commit.
+- the **log entities** whose `about` names the task, one file per entry, stored
   beside the entities and not inside them:
 
       $ cat .ank/entities/LOG-bc49fad834f1.md
@@ -170,8 +170,8 @@ the file, byte for byte, so nothing is lost by going through the verb.
 a reader that walks `.ank/` is reading one of the three sources and will report a
 held task as free.
 
-If you do read the files — a viewer with no binary to call, a parser in another
-language — then read all three, and read the refs correctly: most of them are in
+If you do read the files, whether from a viewer with no binary to call or a parser
+in another language, then read all three, and read the refs correctly: most of them are in
 `.git/packed-refs` rather than under `.git/refs/`, and a reader that walks only
 the loose ones finds almost none of them.
 
@@ -192,22 +192,22 @@ A dashboard refreshing every thirty seconds must not call it. `ank status`,
 pipeline runs deliberately.
 
 **Two planes, and only one of them is precious.** What `check` prunes is the
-**coordination** plane — the refs that say who holds what — and losing a ref
+**coordination** plane, the refs that say who holds what, and losing a ref
 there loses a fact nothing else carries. Separately, every verb that reads the
 corpus may write a **disposable** one: a SQLite index beside the files, which
 stores a content hash per file and reindexes whatever diverged when it is opened.
 That is why an entity edited by hand or arrived through `git checkout` shows up
 on the next read with no reindex command to forget. Deleting that index is always
-safe, and it is never the source of truth — but it does mean a "read" verb
+safe, and it is never the source of truth. But it does mean a "read" verb
 touches the disk, which is worth knowing before you point twenty pollers at one
 working tree.
 
-It is also one of the two verbs that walk git history — `review` is the other,
-and they share the inspection — to say where a dead scope went. That makes both
+It is also one of the two verbs that walk git history, `review` being the other
+and sharing the same inspection, to say where a dead scope went. That makes both
 of them slower than a read, and it is a second reason not to put either on a
 timer. Only `check` prunes, so only `check` writes; but neither is a poll.
 
-Exit 8 is findings — faults. Signals leave it 0, and that is deliberate:
+Exit 8 is findings, meaning faults. Signals leave it 0, and that is deliberate:
 reddening a build over an observation teaches a team to stop reading `check`.
 
     $ ank check --json
@@ -216,16 +216,16 @@ reddening a build over an observation teaches a team to stop reading `check`.
 ## The conformance suite is offered to you
 
 Two sets of fixtures in this repository are yours to reuse. The first says so in
-its own header — "any third-party tool that claims to read or write the format
-can reuse the `tests/golden/` directory" — and the second is offered here, which
+its own header ("any third-party tool that claims to read or write the format
+can reuse the `tests/golden/` directory") and the second is offered here, which
 is the only place it is said:
 
-- **`crates/ank-core/tests/golden/`** — the file format. Valid files that must
+- **`crates/ank-core/tests/golden/`**: the file format. Valid files that must
   round-trip byte for byte in canonical form, and invalid ones with the error
   each must produce. If you are writing a parser in another language, this is
   what tells you it is right, and [format.md](format.md) is what it is checking
   against.
-- **`crates/ank-cli/tests/golden-json/`** — the machine surface. One fixture per
+- **`crates/ank-cli/tests/golden-json/`**: the machine surface. One fixture per
   document the CLI returns, captured from the process rather than from a
   function, so what they pin is what leaves the binary. If you are writing a
   client, these are the exact bytes to write it against.
