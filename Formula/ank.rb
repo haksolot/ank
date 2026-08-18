@@ -23,25 +23,25 @@
 class Ank < Formula
   desc "Tasks and architecture decisions in your repo, behind one CLI agents can call"
   homepage "https://github.com/haksolot/ank"
-  version "0.3.0"
+  version "0.4.0"
   license "Apache-2.0"
 
   on_macos do
     on_arm do
-      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-aarch64-apple-darwin.tar.gz"
-      sha256 "d135438816247679324d6b41dfdad3cfd915ccded76b855cd57e50665e833c78"
+      url "https://github.com/haksolot/ank/releases/download/v0.4.0/ank-0.4.0-aarch64-apple-darwin.tar.gz"
+      sha256 "d5465e9fccebac6c9bffd7a8d7c401874477eb5fc8eebfc0ff477fcee8237fab"
     end
 
     on_intel do
-      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-x86_64-apple-darwin.tar.gz"
-      sha256 "90f118195f76384d50966ca9f82706e4f065ed9365e3b139df0e9dbe9451b854"
+      url "https://github.com/haksolot/ank/releases/download/v0.4.0/ank-0.4.0-x86_64-apple-darwin.tar.gz"
+      sha256 "baa5d8f221973a5cf5f1972a8360ec94deed45bfb89a8dc48662889e0af40a7c"
     end
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/haksolot/ank/releases/download/v0.3.0/ank-0.3.0-x86_64-unknown-linux-musl.tar.gz"
-      sha256 "d4a79967dc156deffd4ad94c2545837381843f432ab0e1592aad524705fe7b6a"
+      url "https://github.com/haksolot/ank/releases/download/v0.4.0/ank-0.4.0-x86_64-unknown-linux-musl.tar.gz"
+      sha256 "54903683df786819b34f295fb88c11dc586f4908514f2800f673983535b1b298"
     end
   end
 
