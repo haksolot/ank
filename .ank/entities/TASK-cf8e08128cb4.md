@@ -5,7 +5,7 @@ slug: ank-is-installable-from-the-aur
 title: ank is installable from the AUR
 created: 2026-08-16T03:36:21Z
 author: claude-code/opus-5
-status: open
+status: closed
 scope:
   - packaging/aur/**
   - .github/workflows/publish-aur.yml
@@ -14,7 +14,7 @@ done_criteria: |
   packaging/aur carries a PKGBUILD template rendered from a tag, naming the released archive and the sha256 the release publishes. A workflow triggered on a published release renders it, regenerates .SRCINFO, and pushes both to the AUR under an SSH key held in Actions secrets. A CI job in an Arch container builds the rendered package with makepkg, installs it with pacman -U, and asserts ank --version prints the released version. Nothing in packaging/aur is edited by hand between releases: the job derives the file. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 3
+version: 4
 ---
 
 **This task exists because of ADR-782a3556cf2d and must not be claimed before it
