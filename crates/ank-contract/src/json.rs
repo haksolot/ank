@@ -93,7 +93,7 @@ impl Obj {
     /// conformance test walks every fixture in `tests/golden-json/` and there is
     /// one per verb, so a verb that forgot is a verb whose golden fails.
     pub fn document() -> Obj {
-        Obj::new().num("contract", ank_contract::CONTRACT_VERSION)
+        Obj::new().num("contract", crate::CONTRACT_VERSION)
     }
 
     fn key(&mut self, key: &str) {

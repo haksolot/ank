@@ -19,7 +19,11 @@ mod config;
 mod git;
 mod identity;
 mod init;
-mod json;
+// The one writer and the one escaper, which now live in `ank-contract` so the
+// protocol surface shares them rather than growing a second pair
+// (TASK-e819448560e7). Re-exported under the path every call site already
+// names: `crate::json::Obj` is what twenty-six documents are built with.
+pub use ank_contract::json;
 mod paint;
 mod repo;
 mod store;

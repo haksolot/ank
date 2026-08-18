@@ -1,0 +1,27 @@
+[package]
+name = "ank-mcp"
+version = "0.3.0"
+edition = "2021"
+# The workspace floor, for the reason ank-core's manifest gives: one lockfile,
+# one build.
+rust-version = "1.95"
+# Apache-2.0, like the whole tree (ADR-9f03438f5422).
+license = "Apache-2.0"
+description = "The Ank protocol surface: every verb the CLI dispatches, over MCP, generated from one table."
+
+[[bin]]
+name = "ank-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# The table this surface is generated from, and the writer it shares with the
+# CLI (ADR-6fd69efb629c). A verb the table does not carry is a verb neither
+# surface has, which is the whole condition ADR-372b82af1ec7 set.
+ank-contract = { path = "../ank-contract" }
+# **No new crate enters the tree for this.** JSON-RPC has to be *read*, and
+# nothing here wrote a parser before: `ank-contract::json` writes and does not
+# read. `serde_yaml` is already a dependency of `ank-core` and `ank-cli`, and
+# YAML 1.2 is a superset of JSON, so a request on one line parses as flow YAML.
+# §13 spends a dependency only on necessity, and the same reasoning already
+# carries the conformance test that reads the JSON goldens.
+serde_yaml = "0.9"

@@ -44,6 +44,7 @@
 pub const CONTRACT_VERSION: u32 = 1;
 
 pub mod exit;
+pub mod json;
 pub mod renews;
 pub mod shape;
 pub mod verbs;
