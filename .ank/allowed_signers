@@ -10,5 +10,15 @@
 # load-bearing, and that trade was weighed and declined: it would change the
 # signature of every commit in the repository, not only the ratifications.
 #
+# A second key was declared on 2026-08-18: an ssh key held on the maintainer's
+# VPS, where the gpg key above is not. `ank check` reads this file itself and
+# judges whichever key signed against it, so the declaration is load-bearing
+# for ank whatever the format. git's own `verify-commit` is unchanged: it
+# resolves the gpg entry through the keyring, and would need
+# `gpg.ssh.allowedSignersFile` pointed here to judge the ssh one. The trade
+# declined above is still declined -- nothing here changes the signature of
+# ordinary commits.
+#
 # Layout follows git's allowed-signers file: principal, then the key.
 sean.lamet@dekrow.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A
+sean.lamet@dekrow.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIERwF3UDr0Cf26Xg5fxAtxqzmV67AK72bnw2s8I3QGI6
