@@ -41,6 +41,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ank-mcp"
+version = "0.3.0"
+dependencies = [
+ "ank-contract",
+ "serde_yaml",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
