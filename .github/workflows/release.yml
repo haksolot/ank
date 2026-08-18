@@ -14,8 +14,11 @@ on:
       - "v*"
   workflow_dispatch:
 
-# Read everywhere except the one job that publishes. `build` never needs write:
-# if it is ever compromised, it cannot reach the release.
+# Read everywhere, including the job that publishes. The release is created
+# under RELEASE_TOKEN and not under the default token (see `publish` below), so
+# there is no job left in this workflow whose `GITHUB_TOKEN` can write: the one
+# write capability here is a secret named in one step's `env`, and `build` --
+# the job that runs code from the tree on four machines -- cannot reach it.
 permissions:
   contents: read
 
@@ -59,6 +62,34 @@ jobs:
             exit 0
           fi
           bash .github/scripts/check-version.sh "${GITHUB_REF_NAME#v}"
+
+      # Checked here rather than in `publish`, for the reason the job itself
+      # exists: a credential missing at the end has already spent the matrix,
+      # and the release would then either fail with the tag gone or -- worse --
+      # succeed under the default token and start nothing. The secret is never
+      # printed; `-n` on a masked value tests presence and reveals nothing.
+      - name: the release credential is present
+        env:
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          if [ "${GITHUB_REF_TYPE:-branch}" != "tag" ]; then
+            echo "no tag on this run: nothing will be published, so nothing needs the token."
+            exit 0
+          fi
+          if [ -z "$RELEASE_TOKEN" ]; then
+            echo "RELEASE_TOKEN is not set on this repository."
+            echo "the release would be created under the default token, and GitHub starts"
+            echo "no workflow run from an event that token produced -- so publish-brew,"
+            echo "publish-scoop, publish-apt and publish-winget would never fire."
+            echo
+            echo "  gh secret set RELEASE_TOKEN"
+            echo
+            echo "a fine-grained PAT on this repository, Contents: write, and nothing else."
+            exit 1
+          fi
+          echo "RELEASE_TOKEN is set."
 
   build:
     name: ${{ matrix.os }}
@@ -421,8 +452,10 @@ jobs:
     # And only for a tag. A dispatch run builds and stops there.
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    # No `contents: write`, deliberately, where this job used to carry it: the
+    # release is created under RELEASE_TOKEN, so the default token in this job
+    # has nothing left to write with. Granting it write as well would leave a
+    # capability nothing uses.
 
     steps:
       # Checked out for one file: the dist-tag derivation of §9, which decides
@@ -438,9 +471,23 @@ jobs:
       # `gh` is on the runner already. A third-party release action would be
       # one more supply-chain dependency for a call this short -- the same
       # reasoning that keeps a toolchain action out of ci.yml.
+      # `RELEASE_TOKEN` and not `github.token`, which is the whole of
+      # TASK-2078ab116f63: GitHub does not start a workflow run from an event
+      # the default token produced -- the rule that stops a workflow triggering
+      # itself. So a release created under it publishes eight files and starts
+      # none of publish-brew, publish-scoop, publish-apt or publish-winget,
+      # which is what happened on v0.3.0 and had to be undone by hand with a
+      # draft toggle from the maintainer's own token. Those four trigger only on
+      # `release: published`, and only a credential that is not the default one
+      # produces that event.
+      #
+      # A fine-grained PAT scoped to this repository with `Contents: write`.
+      # The `version` job refuses the tag when it is missing, so this step is
+      # never reached without it and never falls back to the default token: a
+      # fallback would republish the exact defect, silently and green.
       - name: publish
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
           set -e
@@ -460,3 +507,102 @@ jobs:
             --generate-notes \
             $prerelease \
             dist/*.tar.gz dist/*.zip dist/*.sha256
+
+  # The release's only product downstream of this workflow is four runs, and
+  # until now their absence was invisible: v0.3.0 was green end to end while
+  # none of the four had started. So the run that publishes is also the run that
+  # says whether publishing reached anything -- the same shape as ADR-af53, a
+  # write whose only product is elsewhere failing when it does not arrive.
+  #
+  # It cannot undo the release and does not try to: the tag is spent either way.
+  # What it changes is that the next time the trigger breaks, a red release run
+  # names it on the day it happens instead of a channel being noticed months
+  # later at the version it stopped at.
+  channels:
+    name: channels
+    needs: publish
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # `actions: read` is what listing runs needs, and it is the only thing this
+    # job reads. It publishes nothing, so it holds no write of any kind.
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      # The criterion of TASK-2078ab116f63 in as many words: one run each of the
+      # four, whose event is `release`, on this tag.
+      #
+      # Asked as three `gh run list` filters rather than as one `--jq`
+      # expression over the whole listing. Both would answer, and only one can
+      # be exercised anywhere but here: `--workflow`, `--event` and `--branch`
+      # are flags with fixtures behind them, where a jq program filtering on
+      # `.event` is a string this file would be the first and only place to run.
+      # `--branch` takes the tag: a `release` event runs at the ref it
+      # published, which is the same fact TASK-1674d5b73761 recorded from the
+      # other side.
+      #
+      # `--workflow <file>.yml` and not the display name: the file name is what
+      # this repository controls, and a `name:` renamed upstairs would make this
+      # job green by looking for a workflow that no longer exists.
+      #
+      # Polled rather than read once: GitHub queues the four asynchronously and
+      # `gh release create` returns before they appear. Five minutes is far past
+      # what queuing costs and well short of anything a human would wait for.
+      - name: the four channels started on this release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -e
+          expected="publish-brew publish-scoop publish-apt publish-winget"
+          deadline=$((SECONDS + 300))
+          while :; do
+            missing=""
+            for w in $expected; do
+              # `[]` and not an empty string: gh prints an empty JSON array when
+              # nothing matches, and a `--json` that failed would print nothing
+              # at all -- so comparing against `[]` cannot read a broken call as
+              # a run that started.
+              found=$(gh run list --workflow "$w.yml" --event release \
+                --branch "$GITHUB_REF_NAME" --limit 1 --json databaseId)
+              if [ "$found" = "[]" ]; then
+                missing="$missing $w"
+              fi
+            done
+            if [ -z "$missing" ]; then
+              echo "all four started on $GITHUB_REF_NAME with event=release."
+              exit 0
+            fi
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "missing after $((SECONDS))s:$missing"
+              echo
+              # Which of the two failures this is. A run that started on the
+              # wrong ref and a run that never started are the same silence
+              # through the filters above, and they have opposite fixes -- one
+              # is this file, the other is the token. So the same question is
+              # asked once more without `--branch`, as a diagnostic and never as
+              # a verdict: the criterion is about runs on this tag.
+              for w in $missing; do
+                anywhere=$(gh run list --workflow "$w.yml" --event release \
+                  --limit 1 --json databaseId)
+                if [ "$anywhere" = "[]" ]; then
+                  echo "  $w: no release-event run at all"
+                else
+                  echo "  $w: a release-event run exists but not on $GITHUB_REF_NAME"
+                fi
+              done
+              echo
+              echo "the release was published and the channels it exists to feed did not run."
+              echo "the usual cause is the release having been created under the default token,"
+              echo "which starts no workflow run at all. check that the secret the publish job"
+              echo "above reads is a fine-grained PAT on this repository with Contents: write:"
+              echo
+              echo "  gh secret list"
+              echo "  gh run view $GITHUB_RUN_ID --log"
+              exit 1
+            fi
+            echo "waiting on:$missing"
+            sleep 15
+          done
