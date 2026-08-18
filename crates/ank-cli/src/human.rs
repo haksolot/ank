@@ -2171,6 +2171,40 @@ fn check_authorship(
         ));
     }
 
+    // A decision whose ratification names the actor that wrote it
+    // (TASK-5d38636bb4e5). `accept` records the actor that ran it as a reading
+    // (§3), and this is the one shape that reading exists to make legible:
+    // self-ratification is what the human act is there to prevent, and until
+    // the reading existed nothing in the corpus could say it had happened.
+    //
+    // **A signal and never a fault**, which is not a hedge. A solo maintainer
+    // writes the ADR and ratifies it, legitimately and every time; a rule that
+    // reddened over it would redden this corpus wholesale and be silenced
+    // within a week. What is worth reporting is that the two identities are the
+    // same, and the reader is who decides what that is worth.
+    //
+    // Derived from what the fields state and nothing further. The reading says
+    // an actor stands behind this entity and the anchor says it is ratified;
+    // together they are the statement below, and neither is asked to prove it
+    // — an actor value can be set to anything, exactly as ADR-6b3f19e08a24
+    // already concedes for every freeze in the system.
+    for e in &created_deliberately {
+        let Some(view) = Anchored::of(e) else {
+            continue;
+        };
+        if view.status != AdrStatus::Accepted || view.ratified.is_none() {
+            continue;
+        }
+        let Some(author) = author_of(e) else { continue };
+        if !readings_of(e).iter().any(|v| v.by == author) {
+            continue;
+        }
+        report.findings.push(Finding::signal(
+            e.id(),
+            format!("ratified by its own author ({author})"),
+        ));
+    }
+
     // Burst creation by a single identity (§3, §4). §3 accepts task flooding
     // without a quota, on the argument that the defence is visibility rather
     // than restriction. This is that visibility, and nothing more: a burst is
@@ -3275,7 +3309,7 @@ pub fn accept(
     // an ADR that stayed `proposed`. Neither test reached this line — both
     // assert refusals — which is the shape CLAUDE.md warns about, found by a
     // test that finally ran the commit.
-    promote(&mut entity, anchor.clone());
+    promote(&mut entity, anchor.clone(), identity);
 
     let mut paths = Vec::new();
 
@@ -3365,20 +3399,48 @@ fn succession_command(id: &EntityId) -> String {
     format!("ank new {} --supersedes {id}", id.kind().as_str())
 }
 
-/// Writes the promotion `accept` has just authorised.
+/// Writes the promotion `accept` has just authorised, and the reading that
+/// records who ran it.
 ///
 /// The two arms are the two kinds that carry an anchor, and nothing else about
 /// them differs here: the status is the same enum and the anchor is the same
 /// hash, computed over the text [`Anchored`] named.
-fn promote(entity: &mut Entity, anchor: String) {
+///
+/// **The reading is the record §8 was missing** (TASK-5d38636bb4e5). The
+/// signature on the ratification commit says *this key authorised it*, which is
+/// true of an agent typing under a cached passphrase as much as of a human at a
+/// keyboard, and the entity itself said nothing at all about the act: `ratified`
+/// holds a hash, `author` names whoever ran `new`. Three ratifications in this
+/// corpus were performed by an agent at the maintainer's instruction, and the
+/// corpus read back as three decisions a human stood behind.
+///
+/// It goes into `verified` rather than into a field of its own, and the choice
+/// is the field's own definition rather than an economy: `verified` records that
+/// an actor read this entity and stands behind it (§3), which is what a
+/// ratification *is*, and its `by` carries the typed-actor convention
+/// (ADR-3877fef1d662) — so `human:marie` and `claude-code/opus-5` are
+/// distinguishable, which is the whole of what this buys.
+///
+/// **It is a record and not a defence**, on the same bargain ADR-6b3f19e08a24
+/// makes everywhere else: `$ANK_AGENT` is declared and never proved, so an agent
+/// can write `human:` in front of its own name. What it buys is that an honest
+/// ratification leaves a trace, and that a reader can tell the two cases apart
+/// instead of being told they are identical.
+fn promote(entity: &mut Entity, anchor: String, by: &str) {
+    let reading = Verified {
+        by: by.to_string(),
+        at: claim::now_utc(),
+    };
     match entity {
         Entity::Adr(a) => {
             a.status = AdrStatus::Accepted;
             a.ratified = Some(anchor);
+            a.verified.push(reading);
         }
         Entity::Spec(s) => {
             s.status = AdrStatus::Accepted;
             s.ratified = Some(anchor);
+            s.verified.push(reading);
         }
         // `Anchored::of` refused these before anything was read, and stating it
         // is cheaper than a silent no-op if that ever stops being true.

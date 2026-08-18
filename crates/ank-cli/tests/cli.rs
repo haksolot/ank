@@ -981,6 +981,180 @@ fn a_ratification_commit_stripped_of_its_signature_is_a_fault_through_the_binary
     );
 }
 
+/// An ADR written through the binary, so it carries the `author` the signals
+/// under test read.
+///
+/// `seed_adr` writes a schema 1 file with no author at all, which is the corpus
+/// that predates the field — and every actor signal skips it by design (§3). A
+/// fixture for *who ratified what* cannot be built out of entities that say
+/// nobody wrote them, so this one goes through `new` and lets the verb resolve
+/// `$ANK_AGENT` the way a real write does.
+fn new_adr(r: &Repo, author: &str, constraint: &str) -> String {
+    let out = r.ank(
+        author,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A decision",
+            "--scope",
+            "src/**",
+            "--constraint",
+            constraint,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string()
+}
+
+/// A repository whose `src/**` exists and whose signing key is declared, which
+/// is the ground every ratification fixture below needs: a scope matching
+/// nothing is a fault of its own, and an undeclared key puts §8 in advisory
+/// mode where no signature is judged at all.
+fn ready_to_ratify() -> Repo {
+    let r = Repo::new();
+    r.enable_signing();
+    declare_signing_key(&r);
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r
+}
+
+/// The hole TASK-5d38636bb4e5 names, closed: a ratification records the actor
+/// that ran it, and the record is in the corpus rather than only in the commit.
+///
+/// Three ratifications in this project's own corpus were typed by an agent
+/// under a passphrase the maintainer's gpg-agent had cached, at the
+/// maintainer's instruction. Every mechanism in §8 reported exactly what it was
+/// built to report, and none of them could say that: the signature says *this
+/// key authorised it*, and a cached passphrase makes that true of an agent's
+/// keystroke as well as of a human's.
+///
+/// Through the binary because that is where the identity comes from. The record
+/// is whatever `$ANK_AGENT` resolved to in the process that ran `accept`, and
+/// no unit test over `promote` reaches an environment variable.
+#[test]
+fn a_ratification_by_a_human_is_recorded_as_a_human_reading() {
+    let r = ready_to_ratify();
+    let id = new_adr(&r, "claude-code/opus-5", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = r.adr_text(&id);
+    assert!(
+        text.contains("verified:\n  - by: human:marie\n    at: "),
+        "the actor that ran accept is on the entity, typed: {text}"
+    );
+
+    // The record survives a read through the binary, which is the half that
+    // makes it a record rather than a byte in a file nobody is allowed to open.
+    let out = r.ank("claude-code/opus-5", &["show", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("by: human:marie"), "{}", stdout(&out));
+
+    // And it is not the self-ratification case: an agent wrote the decision, a
+    // human ratified it, and that is the shape §8 exists to produce.
+    let out = r.ank("claude-code/opus-5", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !stdout(&out).contains("ratified by its own author"),
+        "{}",
+        stdout(&out)
+    );
+
+    // The reading a human left is also what silences the signal that says an
+    // agent wrote this and nobody read it — because now somebody has.
+    assert!(
+        !stdout(&out).contains("read by no human"),
+        "a human ratification is a human reading: {}",
+        stdout(&out)
+    );
+}
+
+/// The other half of the same distinction: an agent ratifying leaves a record
+/// that says so, and it does not pass for a human one.
+///
+/// This is the case that was invisible. The commit is signed, `check` verifies
+/// it against `.ank/allowed_signers`, and the corpus used to read back as a
+/// decision a human stood behind — because the only thing recorded was the
+/// signature, and the key is not the hand that typed.
+///
+/// **The record is not a defence and this test does not pretend otherwise.**
+/// `$ANK_AGENT` is declared and never proved, so the agent below could have
+/// written `human:` in front of its own name, exactly as ADR-6b3f19e08a24
+/// already concedes for every freeze in the system. What is asserted is that an
+/// honest ratification leaves a trace a reader can tell apart.
+#[test]
+fn a_ratification_by_an_agent_is_recorded_as_an_agent_reading() {
+    let r = ready_to_ratify();
+    let id = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("claude-code/opus-5", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = r.adr_text(&id);
+    assert!(
+        text.contains("verified:\n  - by: claude-code/opus-5\n    at: "),
+        "the agent that ran accept is named as one: {text}"
+    );
+    assert!(
+        !text.contains("by: human:"),
+        "nothing turns an agent's keystroke into a human act: {text}"
+    );
+
+    // The signature is real and declared, so §8 is satisfied and says nothing.
+    // That is the point: the ratification is valid, and the record is what
+    // distinguishes it from the one above rather than what refuses it.
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert!(!stdout(&out).contains("not signed"), "{}", stdout(&out));
+}
+
+/// Self-ratification: the entity's author is the actor that ratified it, and
+/// `check` says so as a signal.
+///
+/// **A signal and never a fault**, and the reason is in the corpus rather than
+/// in a preference. A solo maintainer writes the decision and ratifies it,
+/// legitimately and every time; a rule that reddened over it would redden this
+/// project's own corpus wholesale and be silenced within a week. What is worth
+/// reporting is that the one act meant to come from outside the entity came
+/// from inside it, and the reader is who decides what that is worth.
+#[test]
+fn ratifying_your_own_decision_is_a_signal_and_never_a_fault() {
+    let r = ready_to_ratify();
+    let id = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a signal is not a finding that reddens: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    assert!(
+        said.contains(&format!(
+            "signal: {id}: ratified by its own author (human:marie)"
+        )),
+        "the signal names the entity and the actor: {said}"
+    );
+}
+
 /// `ank status` answers where am I, in one command (TASK-15336a0012d5).
 ///
 /// The four scenarios the task names, in order: orientation with no claim,

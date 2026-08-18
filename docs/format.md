@@ -481,6 +481,16 @@ copy in the file is written by whoever writes the file. A verifier walks the
 entity's own path history with `--full-history` and takes the first such commit
 (§3).
 
+**`accept` also records who ran it**, as a `verified` entry naming the typed
+actor and the instant. The signature on the ratification commit says that a key
+authorised the act, which is true of an agent typing under a cached passphrase as
+much as of a human at a keyboard, so the entity carries the actor as well. It is
+a record and not a defence: an actor value is declared and never proved, exactly
+as `author` is, and what it buys is that an honest ratification leaves a trace a
+reader can tell apart. `ank check` reports a decision whose ratifying actor is
+its own author as a signal, never as a fault, because a solo maintainer does that
+legitimately.
+
 **The key names what was hashed**, and there are two because there are two kinds
 that carry an anchor: `constraint+scope: <hash>` on an ADR, `body+scope: <hash>`
 on a spec. A spec declares no `constraint`, that absence being what justifies the
