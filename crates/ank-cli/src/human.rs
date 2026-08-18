@@ -6932,6 +6932,44 @@ mod tests {
         format!("test@ank.local {}", pub_key.trim())
     }
 
+    /// The defect of TASK-01cc22478782, end to end, on whatever ssh-keygen the
+    /// platform ships.
+    ///
+    /// The `gpg` entry goes first, which is the order the corpus's own file
+    /// uses: a parser that stops at the line it has no keytype for never
+    /// reaches the key below it. That is what CI run 32191115856 measured --
+    /// `G` on ubuntu and macos, `U` on windows, one signature, one declared
+    /// key, three answers.
+    ///
+    /// It will pass with or without the filter on a machine whose ssh-keygen
+    /// merely warns and reads on, which is exactly why it belongs to the suite
+    /// that runs on three runners rather than to the one that ran here.
+    #[test]
+    fn a_gpg_entry_does_not_hide_the_ssh_key_beside_it() {
+        let t = Temp::new();
+        t.enable_signing();
+        declare(
+            &t,
+            &format!(
+                "test@ank.local gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A\n{}\n",
+                signing_principal(&t)
+            ),
+        );
+
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        assert_eq!(
+            signature_state(&t.repo(), &t.adr_at("00000000aaaa")),
+            Some(Signature::Trusted),
+            "an entry only ank reads must not cost the key beside it its verdict"
+        );
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
+    }
+
     /// The hole this task was filed for, end to end and through `check`. An
     /// ordinary unsigned commit whose subject reads `ratify <id>` used to be
     /// accepted as a ratification: `rev-list` found it, the subject matched,
