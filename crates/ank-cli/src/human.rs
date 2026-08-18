@@ -704,6 +704,68 @@ pub fn parse_signers(text: &str) -> Vec<Signer> {
         .collect()
 }
 
+/// The lines of `allowed_signers` git is able to parse, and only those.
+///
+/// The file serves two readers (§12), and they do not read the same thing. Under
+/// `gpg.format = ssh` git opens it and decides the allowlist itself; under
+/// OpenPGP git never opens it at all, so `check` matches the fingerprint here
+/// against `gpg <fingerprint>` entries. Those entries are ank's own extension
+/// and ssh-keygen has no keytype for them: it reports `invalid key` on the line,
+/// and how much of the rest of the file it goes on to read afterwards is a
+/// property of its version rather than of this repository. Measured on CI run
+/// 32191115856, where the same SSH-signed ratification was `G` on two runners
+/// and `U` on the third.
+///
+/// So git is handed what git can read. Lines are filtered and never rewritten:
+/// an entry may carry options between the principal and the key,
+/// `parse_signers` drops them, and re-rendering from what it returns would
+/// quietly change what the file permits. A comment survives because ssh-keygen
+/// skips it, and a line neither parser can make sense of is dropped, which is
+/// the one case where dropping is the conservative act.
+pub fn git_readable_signers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let keep = if trimmed.is_empty() || trimmed.starts_with('#') {
+            true
+        } else {
+            match trimmed.split_whitespace().collect::<Vec<_>>().as_slice() {
+                [_principal, .., keytype, _key] => !keytype.eq_ignore_ascii_case("gpg"),
+                _ => false,
+            }
+        };
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// The path to hand git, which is the file itself whenever git can read all of
+/// it and a filtered copy otherwise.
+///
+/// Returning the source unchanged in the ordinary case matters: a corpus that
+/// declares only SSH keys writes nothing anywhere, and the file git verifies
+/// against is the file under review. The copy is named after a hash of its own
+/// content, so repeated calls over one corpus write it once and two corpora
+/// never collide.
+fn signers_for_git(source: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(source).ok()?;
+    let readable = git_readable_signers(&text);
+    if readable == text {
+        return Some(source.to_path_buf());
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    std::hash::Hash::hash(&readable, &mut hasher);
+    let digest = std::hash::Hasher::finish(&hasher);
+    let path = std::env::temp_dir().join(format!("ank-signers-{digest:016x}"));
+    if std::fs::read_to_string(&path).ok().as_deref() != Some(readable.as_str()) {
+        std::fs::write(&path, &readable).ok()?;
+    }
+    Some(path)
+}
+
 /// What a ratification commit's signature is worth.
 ///
 /// Six states and not three, because collapsing any two of them loses the
@@ -3734,7 +3796,11 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
     // `check_adr` says nothing about — so a machine where the signature could
     // not be read looked exactly like a corpus that declared no key at all
     // (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
-    match git::signature_of(&repo.root, &sha, Some(&signers)) {
+    // The file git is pointed at, which is the reviewed one unless it carries
+    // entries only ank reads. Falling back to the source on a failure to write
+    // keeps the behaviour this had before the filter existed.
+    let for_git = signers_for_git(&signers).unwrap_or_else(|| signers.clone());
+    match git::signature_of(&repo.root, &sha, Some(&for_git)) {
         Ok(facts) => {
             // Asked only where the answer can change the verdict: every other
             // status already says whether a signature was there.
@@ -6675,6 +6741,78 @@ mod tests {
         assert_eq!(parsed[1].key, "AAAAC3NzaC1lZDI1");
     }
 
+    /// What git is handed carries nothing ssh-keygen would reject, and carries
+    /// everything ssh-keygen would accept unchanged (TASK-01cc22478782).
+    ///
+    /// The `gpg` entry is ank's own extension and the reason the filter exists.
+    /// The line with an option in the middle is the reason it filters rather
+    /// than re-renders: `parse_signers` drops that option, so a copy built from
+    /// what it returns would hand git a permission the reviewed file does not
+    /// grant.
+    #[test]
+    fn git_is_handed_no_line_ssh_keygen_would_reject() {
+        let source = "# a comment\n\
+             \n\
+             sean@example.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A\n\
+             marie@laptop namespaces=\"git\" ssh-ed25519 AAAAC3NzaC1lZDI1\n\
+             nonsense\n";
+        let out = git_readable_signers(source);
+
+        for line in out.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with('#') {
+                continue;
+            }
+            let fields: Vec<&str> = t.split_whitespace().collect();
+            assert!(
+                matches!(fields.as_slice(), [_, .., keytype, _] if !keytype.eq_ignore_ascii_case("gpg")),
+                "ssh-keygen has no keytype for this line: {line:?}"
+            );
+        }
+        assert!(
+            !out.contains("739A603FB05F9F2F7D3C8D50624FCFCC1482554A"),
+            "the gpg entry is ank's own and git cannot read it: {out:?}"
+        );
+        assert!(
+            out.contains("marie@laptop namespaces=\"git\" ssh-ed25519 AAAAC3NzaC1lZDI1"),
+            "an entry git can read survives whole, options included: {out:?}"
+        );
+        assert!(
+            !out.contains("nonsense"),
+            "a line neither parser can read is not handed on: {out:?}"
+        );
+        assert!(out.contains("# a comment"), "{out:?}");
+    }
+
+    /// The other half, and the one that says the filter costs nothing where it
+    /// is not needed: a file git can read whole is handed to git as itself, so
+    /// what verifies the corpus is the file under review and not a copy.
+    #[test]
+    fn a_file_git_can_read_whole_is_handed_over_untouched() {
+        let source = "marie@laptop ssh-ed25519 AAAAC3NzaC1lZDI1\n";
+        assert_eq!(git_readable_signers(source), source);
+
+        let dir = std::env::temp_dir().join(format!("ank-signers-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("allowed_signers");
+        std::fs::write(&file, source).unwrap();
+        assert_eq!(
+            signers_for_git(&file).as_deref(),
+            Some(file.as_path()),
+            "no copy is written when none is needed"
+        );
+
+        std::fs::write(&file, format!("sean@example.com gpg 739A60\n{source}")).unwrap();
+        let handed = signers_for_git(&file).unwrap();
+        assert_ne!(
+            handed, file,
+            "a file carrying an ank-only entry needs a copy"
+        );
+        assert_eq!(std::fs::read_to_string(&handed).unwrap(), source);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn gpg_signer(key: &str) -> Vec<Signer> {
         vec![Signer {
             principal: "sean@example.com".into(),
@@ -6792,6 +6930,44 @@ mod tests {
     fn signing_principal(t: &Temp) -> String {
         let pub_key = std::fs::read_to_string(t.0.join("signing-key.pub")).unwrap();
         format!("test@ank.local {}", pub_key.trim())
+    }
+
+    /// The defect of TASK-01cc22478782, end to end, on whatever ssh-keygen the
+    /// platform ships.
+    ///
+    /// The `gpg` entry goes first, which is the order the corpus's own file
+    /// uses: a parser that stops at the line it has no keytype for never
+    /// reaches the key below it. That is what CI run 32191115856 measured --
+    /// `G` on ubuntu and macos, `U` on windows, one signature, one declared
+    /// key, three answers.
+    ///
+    /// It will pass with or without the filter on a machine whose ssh-keygen
+    /// merely warns and reads on, which is exactly why it belongs to the suite
+    /// that runs on three runners rather than to the one that ran here.
+    #[test]
+    fn a_gpg_entry_does_not_hide_the_ssh_key_beside_it() {
+        let t = Temp::new();
+        t.enable_signing();
+        declare(
+            &t,
+            &format!(
+                "test@ank.local gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A\n{}\n",
+                signing_principal(&t)
+            ),
+        );
+
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        assert_eq!(
+            signature_state(&t.repo(), &t.adr_at("00000000aaaa")),
+            Some(Signature::Trusted),
+            "an entry only ank reads must not cost the key beside it its verdict"
+        );
+        let r = t.report();
+        assert_eq!(r.faults(), 0, "{:?}", r.findings);
     }
 
     /// The hole this task was filed for, end to end and through `check`. An

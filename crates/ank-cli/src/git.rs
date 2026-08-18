@@ -1017,7 +1017,20 @@ pub fn signature_of(
     // collapses "no signature" and "cannot check it" into the same failure,
     // and those two are precisely the states this must keep apart. The
     // placeholders are git's documented pretty-format interface.
-    let signers = allowed_signers.map(|p| format!("gpg.ssh.allowedSignersFile={}", p.display()));
+    // Forward slashes on Windows. A `-c name=value` pair goes through git's
+    // config parser, where a backslash opens an escape sequence, so an absolute
+    // Windows path arrives as something other than the path that was meant.
+    // Git reads forward slashes on every platform it runs on, and the
+    // conversion is guarded because a backslash is an ordinary character in a
+    // POSIX filename and rewriting one there would break a path that worked.
+    let signers = allowed_signers.map(|p| {
+        let path = p.display().to_string();
+        let path = match cfg!(windows) {
+            true => path.replace('\\', "/"),
+            false => path,
+        };
+        format!("gpg.ssh.allowedSignersFile={path}")
+    });
     let mut args: Vec<&str> = Vec::new();
     if let Some(cfg) = signers.as_deref() {
         args.push("-c");
