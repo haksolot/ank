@@ -1,1 +1,1 @@
-{"contract":1,"corpus":"<SHA>","branch":"main","default_branch":"main","identity":{"value":"claude-code/1.0.0","source":"env"},"claim":null,"drift":{"branch":"main","entities":0},"also_held":[],"remote":false,"elsewhere":[],"constraints":0,"queue":1,"unmerged":0,"faults":0,"signals":2}
+{"contract":1,"corpus":"<SHA>","branch":"main","default_branch":"main","identity":{"value":"claude-code/1.0.0","source":"env"},"claim":null,"drift":{"branch":"main","entities":0},"also_held":[],"remote":false,"elsewhere":[],"constraints":1,"queue":1,"unmerged":0,"faults":0,"signals":2}
