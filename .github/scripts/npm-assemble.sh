@@ -79,15 +79,36 @@ done
 cp ../../LICENSE LICENSE
 
 # pi reads a package's skills from its pi.skills path, and its convention is
-# skills/<name>/SKILL.md. The source is skill/SKILL.md at the repository root,
-# where the freeze lives: build.rs hashes it into `ank --version` and
-# tests/skill.rs holds the file to that hash. A second copy committed beside it
-# would have no such anchor and would drift with nothing turning red, which is
-# what ADR-e3cb36646d77 refuses. So the copy is made here, from the one file, on
-# every run, and .gitignore keeps it out of the tree -- the same arrangement as
-# LICENSE on the line above. The release smoke job is what checks it arrived.
-mkdir -p skills/ank
-cp ../../skill/SKILL.md skills/ank/SKILL.md
+# skills/<name>/SKILL.md. The sources are skill/SKILL.md at the repository root
+# and every skill/<dir>/SKILL.md beside it: the contract and one policy per
+# activity (ADR-91b77f036884). Each is anchored where it lives -- build.rs
+# hashes the contract into `ank --version`, tests/skill.rs holds every skill to
+# its declared revision -- and a copy committed beside them would have no such
+# anchor and would drift with nothing turning red, which is what
+# ADR-e3cb36646d77 refuses. So the copies are made here, from the one file per
+# skill, on every run, and .gitignore keeps them out of the tree, the same
+# arrangement as LICENSE on the line above. The release smoke job is what checks
+# they arrived.
+#
+# The destination is the name the skill declares in its own frontmatter, not the
+# directory it sits in: `ank-plan` lives in `skill/plan/`, and pi installs what
+# the frontmatter calls it. Deriving it from the file means a skill added later
+# is packaged by existing, with nothing here to remember.
+skill_name() {
+  sed -n 's/^name:[[:space:]]*//p' "$1" | head -n 1
+}
+
+for src in ../../skill/SKILL.md ../../skill/*/SKILL.md; do
+  [ -f "$src" ] || continue
+  name="$(skill_name "$src")"
+  if [ -z "$name" ]; then
+    echo "$src declares no name: in its frontmatter" >&2
+    exit 1
+  fi
+  mkdir -p "skills/$name"
+  cp "$src" "skills/$name/SKILL.md"
+  echo "packaged skill $name from ${src#../../}"
+done
 
 npm pack --silent > /dev/null
 echo "assembled npm/ank at $version"

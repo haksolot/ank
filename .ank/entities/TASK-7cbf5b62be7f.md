@@ -5,7 +5,7 @@ slug: the-npm-and-pi-channels-ship-every-skill-not-one
 title: The npm and pi channels ship every skill, not one
 created: 2026-08-19T04:49:46Z
 author: claude-code/2.0
-status: open
+status: in_progress
 scope:
   - .github/**
   - npm/**
@@ -15,7 +15,7 @@ done_criteria: |
   npm-assemble.sh copies skill/SKILL.md and every skill/*/SKILL.md into the wrapper package under skills/<name>/SKILL.md, the release smoke job checks all four arrived, and docs/agents.md describes the by-hand route for all four skills.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 The wrapper package assembles skills/ank/SKILL.md from skill/SKILL.md at pack
