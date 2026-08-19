@@ -693,6 +693,123 @@ fn the_skill_says_which_revision_it_is() {
 }
 
 // ---------------------------------------------------------------------------
+// The siblings, anchored the same way (ADR-91b77f036884, TASK-e26516d35da9)
+// ---------------------------------------------------------------------------
+
+/// The sibling skills beside the contract: every `skill/<dir>/SKILL.md`, as
+/// `(dir, content)`. Discovered rather than listed, so a skill added later is
+/// anchored by the tests below without anyone remembering to enrol it.
+fn sibling_skills() -> Vec<(String, String)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../skill");
+    let mut found = Vec::new();
+    for entry in fs::read_dir(&root).expect("skill/ must exist") {
+        let path = entry.expect("skill/ must be readable").path();
+        let md = path.join("SKILL.md");
+        if path.is_dir() && md.is_file() {
+            found.push((
+                path.file_name()
+                    .expect("a directory has a name")
+                    .to_string_lossy()
+                    .to_string(),
+                fs::read_to_string(&md).unwrap_or_else(|e| panic!("{}: {e}", md.display())),
+            ));
+        }
+    }
+    found.sort();
+    found
+}
+
+/// The three activities ADR-91b77f036884 names. A sibling beyond these is
+/// allowed and anchored like the rest; one of these missing is the skill
+/// system shipping a contract without its policies.
+#[test]
+fn the_three_sibling_skills_exist() {
+    let names: Vec<String> = sibling_skills().into_iter().map(|(n, _)| n).collect();
+    for expected in ["drift", "loop", "plan"] {
+        assert!(
+            names.contains(&expected.to_string()),
+            "skill/{expected}/SKILL.md is missing: ADR-91b77f036884 names it as \
+             one of the three policies beside the contract"
+        );
+    }
+}
+
+/// Each sibling is anchored exactly as the contract is: a declared revision the
+/// test recomputes, because TASK-b495234f192c measured what an unanchored
+/// installed copy costs and the failure does not care which file it happens to.
+#[test]
+fn every_sibling_skill_says_which_revision_it_is() {
+    for (name, text) in sibling_skills() {
+        let (front, body) = split_skill(&text);
+        let declared = declared_revision(&front)
+            .unwrap_or_else(|| panic!("skill/{name}/SKILL.md declares no metadata.revision"));
+        let actual = ank_core::freeze_hash_short(&body);
+        assert_eq!(
+            declared, actual,
+            "skill/{name}/SKILL.md was edited without its revision: set \
+             metadata.revision to \"{actual}\""
+        );
+    }
+}
+
+/// The ceiling of ADR-91b77f036884 is per skill, for the by-hand route where a
+/// harness loads whole files.
+#[test]
+fn every_sibling_skill_stays_within_one_page() {
+    for (name, text) in sibling_skills() {
+        let lines = text.lines().count();
+        let words = text.split_whitespace().count();
+        assert!(
+            lines <= 180,
+            "skill/{name}/SKILL.md is {lines} lines, over the 180 ceiling"
+        );
+        assert!(
+            words <= 1500,
+            "skill/{name}/SKILL.md is {words} words, over the 1500 ceiling"
+        );
+    }
+}
+
+/// A sibling states the contract applies and adds its own policy; it never
+/// restates the rules, and it never shows the one command that is not an
+/// agent's to run. Two files teaching one rule drift, and the drift between an
+/// installed skill and a ratified decision is the measured failure this whole
+/// suite exists around.
+#[test]
+fn every_sibling_defers_to_the_contract_and_never_invites_accept() {
+    for (name, text) in sibling_skills() {
+        assert!(
+            text.contains("contract"),
+            "skill/{name}/SKILL.md never says the contract applies: a policy \
+             that restates the rules is a second copy waiting to drift"
+        );
+        assert!(
+            !text.contains("ank accept"),
+            "skill/{name}/SKILL.md shows `ank accept`: described, never invited \
+             holds in every skill that mentions it (ADR-91b77f036884)"
+        );
+    }
+}
+
+/// The plugin manifest is how a harness finds the skills, so a sibling the
+/// manifest does not list ships to nobody.
+#[test]
+fn the_plugin_manifest_lists_every_skill_directory() {
+    let manifest = repo_file(".claude-plugin/plugin.json");
+    assert!(
+        manifest.contains("\"./skill\""),
+        ".claude-plugin/plugin.json does not list ./skill, the contract"
+    );
+    for (name, _) in sibling_skills() {
+        assert!(
+            manifest.contains(&format!("\"./skill/{name}\"")),
+            ".claude-plugin/plugin.json does not list ./skill/{name}: the \
+             sibling exists and no harness will find it"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Whether the two halves agree (TASK-ecda4070354f)
 // ---------------------------------------------------------------------------
 
