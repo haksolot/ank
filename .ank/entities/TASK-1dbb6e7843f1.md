@@ -5,7 +5,7 @@ slug: a-ratification-that-could-not-be-committed-leave
 title: A ratification that could not be committed leaves nothing behind
 created: 2026-08-18T18:34:43Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
@@ -14,7 +14,7 @@ done_criteria: |
   When the ratification commit fails, accept leaves the entity byte-for-byte as it found it: status, ratified and verified unchanged, and the exit code and message name what failed. Tested through the binary with signing configured to a key accept cannot use, asserting the file is identical before and after and that a second accept -- once signing works -- still ratifies. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Measured on 2026-08-18, ratifying ADR-768374fe6076 on this machine, where the

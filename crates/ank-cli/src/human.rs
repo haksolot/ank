@@ -3385,36 +3385,65 @@ pub fn accept(
     // test that finally ran the commit.
     promote(&mut entity, anchor.clone(), identity);
 
+    // Every path this ratification will touch, named before any of them is
+    // written, so the snapshot below is of the corpus as `accept` found it.
     let mut paths = Vec::new();
-
-    // The target first, and the order is the argument. Between the two writes
-    // the corpus holds a target marked `superseded` whose superseder is still
-    // `proposed` — which `check_adr` calls clean in both directions, because the
-    // proposal does name it. The reverse order leaves an accepted superseder
-    // over an unmarked target, which is precisely the fault.
-    //
-    // A `Recorded` succession skips this write and keeps the commit line: the
-    // file already says what the commit is about to say, and rewriting it would
-    // bump a version to record nothing.
     if let Succession::Pending(target) = &replaced {
-        let mut target = target.clone();
-        let target_base = version_of(&target);
-        supersede(&mut target);
         paths.extend(entity_rel_paths_to_stage(repo, target.id()));
-        store.write(&target, target_base)?;
     }
     paths.extend(entity_rel_paths_to_stage(repo, &id));
-    store.write(&entity, base_version)?;
 
-    // One commit for both writes. The succession is a single act, and two
-    // commits would leave a window in which history says the constraint binds
-    // while the one it replaced still binds too.
     let replaces = match replaced.target() {
-        Some(t) => format!("supersedes: {}\n", t.id()),
+        Some(t) => format!(
+            "supersedes: {}
+",
+            t.id()
+        ),
         None => String::new(),
     };
-    let message = format!("ratify {id}\n\n{anchor_key}: {anchor}\n{replaces}by: {identity}\n");
-    let commit = commit_signed(&repo.root, &paths, &message)?;
+    let message = format!(
+        "ratify {id}
+
+{anchor_key}: {anchor}
+{replaces}by: {identity}
+"
+    );
+
+    // **The commit is the act, so a commit that does not happen leaves nothing
+    // behind** (TASK-1dbb6e7843f1). Measured on this corpus: a signing key
+    // nothing could decrypt made `git commit` fail after the entity had been
+    // written, and it came out `accepted` carrying the anchor of a ratification
+    // that does not exist. `check` reports that as a signal, generously, and
+    // `accept` will not repair it — an existing anchor is the one thing this
+    // verb refuses to overwrite, because overwriting one is how a constraint
+    // edited in place would be re-anchored (ADR-6b3f19e08a24). So the corpus was
+    // left claiming a binding decision anchored to nothing, with `ank edit` the
+    // only route out and no message naming it.
+    //
+    // Written and then rolled back rather than committed before writing, because
+    // the commit is *of* these files: git takes what is on disk, and there is no
+    // order in which the write comes second. What the rollback owes is stated in
+    // the criterion — byte for byte, `version` included, so a failed `accept`
+    // leaves nothing for the next attempt's compare-and-swap to trip over.
+    //
+    // The same argument ADR-af53d0b62a5c makes for a write whose only product is
+    // a ref, and the same one the refusal above rests on.
+    let before = snapshot(repo, &paths);
+    let commit = match write_and_commit(
+        &store,
+        repo,
+        &replaced,
+        &entity,
+        base_version,
+        &paths,
+        &message,
+    ) {
+        Ok(commit) => commit,
+        Err(e) => {
+            undo(repo, &before, &paths);
+            return Err(e);
+        }
+    };
 
     if inv.json() {
         let superseded = replaced.target().map(|t| t.id().to_string());
@@ -3884,6 +3913,98 @@ pub fn ratification_anchor(text: &str, scope: &[String]) -> String {
 /// neither has a plumbing equivalent worth rewriting, and ADR-b8884edcebe3's
 /// rule is about parsing output — nothing here is parsed but the resulting sha,
 /// which `rev-parse` supplies.
+/// The two writes and the commit that makes them binding, as one fallible step.
+///
+/// Grouped so that `accept` has a single error path to undo: a `Pending`
+/// succession writes two files, and the failure that leaves a half-performed
+/// succession behind is the one this verb has no second pass to repair.
+fn write_and_commit(
+    store: &Store,
+    repo: &Repo,
+    replaced: &Succession,
+    entity: &Entity,
+    base_version: u64,
+    paths: &[String],
+    message: &str,
+) -> Result<String> {
+    // The target first, and the order is the argument. Between the two writes
+    // the corpus holds a target marked `superseded` whose superseder is still
+    // `proposed` — which `check_adr` calls clean in both directions, because the
+    // proposal does name it. The reverse order leaves an accepted superseder
+    // over an unmarked target, which is precisely the fault.
+    //
+    // A `Recorded` succession skips this write and keeps the commit line: the
+    // file already says what the commit is about to say, and rewriting it would
+    // bump a version to record nothing.
+    if let Succession::Pending(target) = replaced {
+        let mut target = target.clone();
+        let target_base = version_of(&target);
+        supersede(&mut target);
+        store.write(&target, target_base)?;
+    }
+    store.write(entity, base_version)?;
+
+    // One commit for both writes. The succession is a single act, and two
+    // commits would leave a window in which history says the constraint binds
+    // while the one it replaced still binds too.
+    commit_signed(&repo.root, paths, message)
+}
+
+/// The bytes of every path a ratification is about to write, as they stand now.
+///
+/// `None` is a path that does not exist, which is the ordinary case for one of
+/// the two candidates `entity_rel_paths_to_stage` names: a corpus is in one
+/// layout or the other, never both.
+fn snapshot(repo: &Repo, paths: &[String]) -> Vec<(PathBuf, Option<Vec<u8>>)> {
+    paths
+        .iter()
+        .map(|rel| {
+            let abs = repo.root.join(rel);
+            let bytes = std::fs::read(&abs).ok();
+            (abs, bytes)
+        })
+        .collect()
+}
+
+/// Puts back what [`snapshot`] recorded, and unstages what `git add` staged.
+///
+/// Best-effort by construction, and it has to be: this runs on an error path,
+/// and a failure to restore cannot replace the failure the caller is already
+/// carrying — reporting the second would hide the first, which is the one that
+/// says what to fix. What it must never do is let the caller report success.
+///
+/// The reset names the same paths and no others, so anything else the caller
+/// had staged before running `accept` stays staged.
+fn undo(repo: &Repo, before: &[(PathBuf, Option<Vec<u8>>)], paths: &[String]) {
+    for (abs, bytes) in before {
+        match bytes {
+            Some(bytes) => {
+                let _ = std::fs::write(abs, bytes);
+            }
+            None => {
+                let _ = std::fs::remove_file(abs);
+            }
+        }
+    }
+    // `git add` ran before `git commit` refused, so the index still holds the
+    // write. Staged again rather than reset, and the two are the same operation
+    // read from opposite ends: what is on disk is now what was there before, so
+    // staging it puts the index back where it was — a tracked path matches HEAD
+    // again, and a path the write created is dropped from the index by the same
+    // `-A` that added it. `reset` would be the porcelain saying the same thing,
+    // with a second failure mode when there is no HEAD to reset to.
+    //
+    // Through a `Command` of its own, as `commit_signed` does below and for the
+    // same reason: this is an act on the repository, not a read of it, so it
+    // does not belong on the plumbing path whose contract is its output.
+    let mut args = vec!["add", "-A", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    let _ = std::process::Command::new("git")
+        .current_dir(&repo.root)
+        .args(&args)
+        .output();
+}
+
 fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> {
     use std::process::Command;
     let run = |args: &[&str]| -> Result<()> {
