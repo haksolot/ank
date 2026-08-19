@@ -1,15 +1,19 @@
 name: install
 
-# install.sh is the channel for the machine that has no package manager anyone
-# packages ank for, and it is the one channel that runs arbitrary code off the
-# network on the caller's machine. So it is tested on the three platforms it
-# claims to install, and the two things it must never do -- unpack an archive
-# whose hash does not match, and end in silence on a platform it has no archive
-# for -- are asserted rather than assumed.
+# install.sh and install.ps1 are the two channels that run arbitrary code off
+# the network on the caller's machine -- one for Linux and macOS, one for
+# Windows (ADR-221aa5da440a). So each is tested on the platforms it claims to
+# install, and the two things neither may ever do -- unpack an archive whose
+# hash does not match, and end in silence on a platform it has no archive for --
+# are asserted rather than assumed.
 #
 # Its own workflow rather than a job in ci.yml: this one runs on
 # macos-15-intel, which ci.yml's matrix does not carry, and it tests a released
 # artefact rather than the tree.
+#
+# Two jobs and not one matrix with a fourth row: every step below the first is
+# shell script, and a Windows row would share the row's name and none of its
+# steps. The two jobs assert the same properties in the two languages.
 
 on:
   push:
@@ -27,7 +31,7 @@ env:
   STAGED_PORT: "8731"
 
 jobs:
-  install:
+  install-unix:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -288,3 +292,275 @@ jobs:
             test ! -e "$PWD/real-bin/ank" || { echo "it refused and installed something anyway"; exit 1; }
             echo "$tag carries no $archive, and the script said so rather than failing silently"
           fi
+
+  # The Windows half of the same claim. It asserts the same four properties the
+  # job above does -- it explains itself, it refuses a platform by name, it
+  # refuses a tampered archive before unpacking, and the real release installs
+  # and answers with its version -- in the language Windows actually has.
+  #
+  # Both shells, and that is the point of the last two steps: install.ps1 claims
+  # Windows PowerShell 5.1 as its floor because that is what a clean Windows
+  # ships, and pwsh 7 is what a developer machine is likelier to have. A script
+  # proved on only one of them is proved on the shell the caller does not have.
+  install-windows:
+    name: windows-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v5
+
+      # Parsed by the PowerShell parser itself, which is the analogue of
+      # `sh -n`: a syntax error in a file whose advertised form is `irm | iex`
+      # is found by the caller's session otherwise.
+      - name: it parses as PowerShell
+        run: |
+          $errors = $null
+          $tokens = $null
+          [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors) {
+            $errors | ForEach-Object { "$($_.Extent.StartLineNumber): $($_.Message)" }
+            exit 1
+          }
+          "install.ps1 parses"
+
+      - name: it explains itself
+        run: |
+          & ./install.ps1 -Help
+          $out = (& ./install.ps1 -Help *>&1 | Out-String)
+          foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh') {
+            if ($out -notmatch [regex]::Escape($needle)) {
+              "-Help does not name $needle"
+              exit 1
+            }
+          }
+          "-Help names the target, the environment and the other script"
+
+      # The first of the two failures that matter. The architecture is read out
+      # of the environment precisely so this is testable on a machine that is
+      # not the architecture being refused: the variable below is the real code
+      # path, not a flag that bypasses it.
+      - name: an unsupported platform is refused by name
+        run: |
+          $env:PROCESSOR_ARCHITECTURE = 'x86'
+          $env:PROCESSOR_ARCHITEW6432 = $null
+          # Seeded, because a script that returns without calling `exit` leaves
+          # $LASTEXITCODE at whatever the last native command set: unseeded, a
+          # success would be read as whatever ran before it.
+          $LASTEXITCODE = 0
+          $out = (& ./install.ps1 -Dir "$PWD/nowhere" *>&1 | Out-String)
+          $code = $LASTEXITCODE
+          $out
+          "exit $code"
+
+          if ($code -ne 2) { "expected exit 2 for an unsupported platform"; exit 1 }
+          # It has to name what it saw. "unsupported platform" on its own leaves
+          # the caller with nothing to act on.
+          if ($out -notmatch 'Windows/X86') { "the refusal does not name the pair it saw"; exit 1 }
+          if ($out -notmatch 'x86_64-pc-windows-msvc') { "the refusal does not name what exists"; exit 1 }
+          # Refusing and installing something anyway would be the worst of both.
+          if (Test-Path "$PWD/nowhere") { "it created the install directory anyway"; exit 1 }
+          "refused, named the pair, listed what exists, installed nothing"
+          exit 0
+
+      # A release the script has never seen, served from localhost, in the
+      # layout release.yml packages: one directory inside the .zip, named after
+      # the archive, and the checksum in sha256sum's own format beside it.
+      #
+      # The payload is a stand-in and not a real binary, deliberately. What is
+      # under test here is the script; whether a real binary runs is release.yml's
+      # question, and the step further down answers it against the real release.
+      - name: stage a release and serve it
+        run: |
+          $name = "ank-$env:STAGED_VERSION-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Path "stage/pack/$name" -Force | Out-Null
+          Set-Content -Path "stage/pack/$name/ank.exe" -Value 'staged stand-in for ank' -NoNewline
+          Set-Content -Path "stage/pack/$name/README.md" -Value 'staged'
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path 'stage/pack'), (Join-Path $PWD "stage/$name.zip"))
+
+          $hash = (Get-FileHash -Path "stage/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "stage/$name.zip.sha256" -Value "$hash  $name.zip"
+
+          New-Item -ItemType Directory -Path "stage/srv/v$env:STAGED_VERSION" -Force | Out-Null
+          Copy-Item "stage/$name.zip", "stage/$name.zip.sha256" "stage/srv/v$env:STAGED_VERSION/"
+
+          Start-Process -FilePath 'python' `
+            -ArgumentList '-m', 'http.server', $env:STAGED_PORT, '--bind', '127.0.0.1' `
+            -WorkingDirectory (Resolve-Path 'stage/srv') -WindowStyle Hidden
+
+          # Polled rather than slept: a fixed sleep is either wasted or too
+          # short, and too short here fails the next step for a reason that has
+          # nothing to do with the script.
+          $url = "http://127.0.0.1:$env:STAGED_PORT/v$env:STAGED_VERSION/$name.zip.sha256"
+          foreach ($attempt in 1..10) {
+            try {
+              Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile (Join-Path $env:TEMP 'probe') | Out-Null
+              "serving on $env:STAGED_PORT"
+              exit 0
+            } catch {
+              Start-Sleep -Seconds 1
+            }
+          }
+          "the staged release never came up"
+          exit 1
+
+      - name: the staged release installs what the archive carried
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          $LASTEXITCODE = 0
+          & ./install.ps1 -Version $env:STAGED_VERSION -Dir "$PWD/staged-bin"
+          if ($LASTEXITCODE -ne 0) { "the staged install failed"; exit 1 }
+          $got = Get-Content "$PWD/staged-bin/ank.exe" -Raw
+          "installed content: $got"
+          if ($got -ne 'staged stand-in for ank') {
+            "the installed file is not what the archive carried"
+            exit 1
+          }
+          "installed exactly what the staged archive carried"
+          exit 0
+
+      # The second of the two failures that matter, and the reason the .sha256
+      # is published at all. Bytes appended to the archive, the checksum left as
+      # it was: the script must refuse before unpacking and leave the install
+      # directory as it found it.
+      - name: a tampered archive is refused before unpacking
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          $name = "ank-$env:STAGED_VERSION-x86_64-pc-windows-msvc"
+          Add-Content -Path "stage/srv/v$env:STAGED_VERSION/$name.zip" -Value 'tamper'
+
+          # Pre-created and marked, so "nothing was installed" is an assertion
+          # about a directory that exists rather than about one that never did.
+          New-Item -ItemType Directory -Path "$PWD/tamper-bin" -Force | Out-Null
+          Set-Content -Path "$PWD/tamper-bin/.marker" -Value ''
+
+          $LASTEXITCODE = 0
+          $out = (& ./install.ps1 -Version $env:STAGED_VERSION -Dir "$PWD/tamper-bin" *>&1 | Out-String)
+          $code = $LASTEXITCODE
+          $out
+          "exit $code"
+
+          if ($code -ne 4) { "expected exit 4 for a checksum mismatch"; exit 1 }
+          if ($out -notmatch 'checksum mismatch') {
+            "the refusal does not say the checksum did not match"
+            exit 1
+          }
+          if (Test-Path "$PWD/tamper-bin/ank.exe") {
+            "it installed the binary despite the mismatch"
+            exit 1
+          }
+          "refused, and installed nothing"
+          exit 0
+
+      # The real release, which is the claim the caller actually cares about,
+      # run through `iex` because that is the form the one-liner uses and the
+      # form in which `exit` would take the caller's session with it.
+      #
+      # The text comes from the checkout rather than from the raw URL the
+      # one-liner names: fetching that URL would test whatever main already
+      # carries, which on a pull request is the version without the change under
+      # review. The execution mode is what matters and it is identical -- a
+      # scriptblock built from the file's text, with no $PSCommandPath -- so the
+      # step below asserts the URL separately.
+      - name: the raw URL the one-liner names is this repository
+        run: |
+          $pattern = '^\$Repo = ''(.+)''$'
+          $line = Select-String -Path ./install.ps1 -Pattern $pattern | Select-Object -First 1
+          if (-not $line) { "could not read the repository out of install.ps1"; exit 1 }
+          $repo = $line.Matches[0].Groups[1].Value
+          "install.ps1 installs from: $repo"
+          if ($repo -ne $env:GITHUB_REPOSITORY) {
+            "install.ps1 names $repo and this is $env:GITHUB_REPOSITORY"
+            exit 1
+          }
+          exit 0
+
+      - name: the latest release installs under pwsh, or says why it cannot
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = gh release view --json tagName --jq .tagName
+          $version = $tag -replace '^v', ''
+          $archive = "ank-$version-x86_64-pc-windows-msvc.zip"
+          "latest release: $tag"
+
+          # @() because a single asset comes back as one string, and -contains
+          # on a string asks whether it equals the archive rather than whether
+          # it holds it.
+          $assets = @(gh release view $tag --json assets --jq '.assets[].name')
+          $carried = $assets -contains $archive
+          "carried by ${tag}: $carried"
+
+          $env:ANK_INSTALL_DIR = "$PWD/real-bin"
+          # Not redirected into a variable: the diagnosis is written to the host
+          # stream, and capturing it would hide it from this log in exactly the
+          # case worth reading -- the one where the install threw.
+          $failed = $false
+          $reason = ''
+          try {
+            Get-Content ./install.ps1 -Raw | Invoke-Expression
+          } catch {
+            $failed = $true
+            $reason = "$_"
+            "threw: $reason"
+          }
+
+          if ($carried) {
+            if ($failed) { "the latest release carries $archive and the install failed"; exit 1 }
+            $got = & "$PWD/real-bin/ank.exe" --version
+            "ank --version: $got"
+            if ($got -notmatch "^ank $([regex]::Escape($version))") {
+              "expected ank --version to start with: ank $version"
+              exit 1
+            }
+            "the binary answers with the released version"
+          } else {
+            if (-not $failed) { "$tag does not carry $archive, so the script had to refuse"; exit 1 }
+            if ($reason -notmatch 'code 3') { "the refusal is not the download code"; exit 1 }
+            "$tag carries no $archive, and the script said so rather than failing silently"
+          }
+          exit 0
+
+      # The same claim on the shell a clean Windows actually ships. Windows
+      # PowerShell 5.1 is the floor install.ps1 declares, and it is a different
+      # runtime rather than an older build of the same one: it defaults to TLS
+      # versions GitHub refuses and it resolves modules differently, which is
+      # why this file avoids the cmdlets that live in them.
+      - name: the latest release installs under Windows PowerShell 5.1
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $PSVersionTable.PSVersion.ToString()
+          if ($PSVersionTable.PSVersion.Major -ne 5) {
+            "this step is meant to run on Windows PowerShell 5.1"
+            exit 1
+          }
+
+          $tag = gh release view --json tagName --jq .tagName
+          $version = $tag -replace '^v', ''
+          $archive = "ank-$version-x86_64-pc-windows-msvc.zip"
+          $assets = @(gh release view $tag --json assets --jq '.assets[].name')
+          if (-not ($assets -contains $archive)) {
+            "$tag carries no $archive; the pwsh step above owns that branch"
+            exit 0
+          }
+
+          $env:ANK_INSTALL_DIR = "$PWD/real-bin-51"
+          Get-Content ./install.ps1 -Raw | Invoke-Expression
+          $got = & "$PWD/real-bin-51/ank.exe" --version
+          "ank --version: $got"
+          if ($got -notmatch "^ank $([regex]::Escape($version))") {
+            "expected ank --version to start with: ank $version"
+            exit 1
+          }
+          "5.1 installs the released binary and it answers with the released version"
+          exit 0
