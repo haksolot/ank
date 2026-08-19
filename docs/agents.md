@@ -136,54 +136,12 @@ and keep the contract, which stands alone.
 ## The binary
 
 The README names npm because it is the shortest line that works on most
-machines. Several others exist, and every one of them is carried by this
-repository rather than by a satellite somebody keeps in step
-(ADR-782a3556cf2d): the tap, the bucket and the apt index all live here, and
-each is derived from a published release rather than updated by hand.
+machines. Three routes install ank and no more (ADR-221aa5da440a): each is a
+command served from this repository and derived from a published release, and
+none of them owes anything to a registry with a gatekeeper of its own.
 
-**A release binary.** Every release carries a static binary for three targets,
-`x86_64-unknown-linux-musl`, `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`
-each with a `.sha256` beside it. Take the archive for your platform from the
-[releases page](https://github.com/haksolot/ank/releases/latest), check the hash,
-unpack it, and put `ank` on your `PATH`.
-
-**`curl | sh`**, for the machine no package manager on this list serves:
-
-    curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh
-
-It reads your platform from `uname`, fetches the archive and the `.sha256`
-published beside it, and refuses before unpacking if the two disagree. On a
-platform no release carries it refuses by name and lists what does exist, rather
-than ending in silence.
-
-**Homebrew**, on macOS and Linux. This repository is its own tap, so the URL is
-part of the command:
-
-    brew tap haksolot/ank https://github.com/haksolot/ank
-    brew install haksolot/ank/ank
-
-**Scoop**, on Windows, for the same reason and in the same shape:
-
-    scoop bucket add ank https://github.com/haksolot/ank
-    scoop install ank/ank
-
-**apt**, on Debian and Ubuntu, from a repository this project hosts on its own
-GitHub Pages:
-
-    sudo install -d -m 0755 /etc/apt/keyrings
-    curl -fsSL https://haksolot.github.io/ank/deb/ank-archive-keyring.asc |
-      sudo tee /etc/apt/keyrings/ank-archive-keyring.asc > /dev/null
-    echo "deb [signed-by=/etc/apt/keyrings/ank-archive-keyring.asc] https://haksolot.github.io/ank/deb stable main" |
-      sudo tee /etc/apt/sources.list.d/ank.list > /dev/null
-    sudo apt-get update
-    sudo apt-get install -y ank
-
-`amd64` only, which is the release matrix rather than a decision about apt. The
-key that signs the index is a distribution key and never this project's
-ratification key.
-
-**npm**, which is the channel to reach for on a machine whose firewall blocks
-downloading a bare executable but lets the registry through:
+**npm**, on any machine that has node, and the one to reach for behind a
+firewall that blocks downloading a bare executable but lets a registry through:
 
     npx @haksolot/ank --version
     npm install -g @haksolot/ank
@@ -197,21 +155,41 @@ It covers `linux x64`, `darwin arm64` and `win32 x64`. On anything else, an
 Intel Mac or a linux arm64 box, the wrapper exits 9 and names `cargo install`,
 which is the honest answer rather than a silent failure.
 
-**From source:**
+**`curl | sh`**, on Linux and macOS:
+
+    curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh
+
+It reads your platform from `uname`, fetches the archive and the `.sha256`
+published beside it, and refuses before unpacking if the two disagree. On a
+platform no release carries it refuses by name and lists what does exist, rather
+than ending in silence.
+
+**A PowerShell one-liner**, on Windows, the same shape as the line above it:
+
+    irm https://raw.githubusercontent.com/haksolot/ank/main/install.ps1 | iex
+
+It verifies the `.sha256` the same way, runs under Windows PowerShell 5.1 as
+well as PowerShell 7, and moves an `ank.exe` that is currently running aside
+instead of failing to overwrite it, so an upgrade works from a shell that
+already has ank on its `PATH`.
+
+Neither of the two below is a route this project offers; both are named because
+they are the honest answer when none of the three fits. The [releases
+page](https://github.com/haksolot/ank/releases/latest) carries the archives the
+two installers fetch, one per target with a `.sha256` beside it, and unpacking
+one by hand is exactly what those installers do for you. And the tree builds:
 
     cargo install --git https://github.com/haksolot/ank ank-cli
 
-It is `--git` because nothing publishes to crates.io. That puts `ank` in
+`--git` because nothing publishes to crates.io. That puts `ank` in
 `~/.cargo/bin`, and needs Rust 1.95 or newer and a C compiler.
 
-**What is not a way to install ank yet**, named here so you do not go looking.
-`winget install Haksolot.Ank` does not work: the manifest is derived from the
-release and proved on every run of the pipeline, validated and installed from
-on a Windows runner, but it reaches `microsoft/winget-pkgs` only when a release
-is next published, and the registry reviews it after that. Arch is not served at
-all.
+No package manager ships ank. Homebrew, Scoop, apt, winget and the AUR each
+carried a channel here or an attempt at one, and every one of them was
+withdrawn: the measurements are in ADR-221aa5da440a, and putting one back is a
+supersession of that decision rather than an addition beside it.
 
-Either way, check it answers:
+Whichever you took, check it answers:
 
     $ ank --version
     ank <version> (<commit>, skill <revision>)
