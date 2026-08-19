@@ -214,9 +214,15 @@ pub fn run(
         })
         .count();
 
+    // Both kinds `accept` promotes, for the reason `review` states at the loop
+    // that builds the same queue (TASK-73e81a8a804d): a proposed spec is
+    // waiting for the same signature, and a count that omitted it reported an
+    // empty queue over a document sitting in one. The constraints line above
+    // stays ADR-only, because it counts what binds this perimeter and a spec
+    // declares no constraint.
     let queue = rows
         .iter()
-        .filter(|r| r.kind == EntityKind::Adr && r.status == "proposed")
+        .filter(|r| matches!(r.kind, EntityKind::Adr | EntityKind::Spec) && r.status == "proposed")
         .count();
 
     // Finished on a branch the default has not caught up with. `inspect` has
