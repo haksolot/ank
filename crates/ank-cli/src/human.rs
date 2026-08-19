@@ -3132,7 +3132,19 @@ pub fn review(
     let mut live = Vec::new();
     let mut proposed = Vec::new();
     for row in index.all()? {
-        if row.kind != EntityKind::Adr {
+        // **Both kinds `accept` promotes, because the queue is the set of
+        // documents waiting for a signature** (TASK-73e81a8a804d). A spec goes
+        // through `accept` and no other verb, over the same anchor and the same
+        // signed commit, so a proposed one is waiting exactly as a proposed ADR
+        // is. Filtering this loop on `Adr` alone told a maintainer their queue
+        // was empty while a document sat in it, which is the one answer this
+        // verb exists to give.
+        //
+        // The live section below stays ADR-only, and that is a separate
+        // question rather than an oversight: it counts the files a constraint
+        // binds, and a spec declares no constraint and binds nothing, so it has
+        // nothing to count and no line to occupy there.
+        if !matches!(row.kind, EntityKind::Adr | EntityKind::Spec) {
             continue;
         }
         // The third copy of this matching, now gone the way of the other two:
@@ -3148,7 +3160,7 @@ pub fn review(
             // dropping it from the queue would hide the one entry most in need
             // of the answer. Its dead scope is reported in its own section.
             "proposed" => proposed.push(row),
-            "accepted" => {
+            "accepted" if row.kind == EntityKind::Adr => {
                 if dead.contains(&row.id.to_string()) {
                     continue;
                 }

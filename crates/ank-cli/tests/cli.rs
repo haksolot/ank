@@ -11945,6 +11945,156 @@ fn review_prints_the_ratification_queue_it_is_described_by() {
     );
 }
 
+/// **A proposed spec waits in the queue a human actually reads**
+/// (TASK-73e81a8a804d).
+///
+/// `accept` promotes a spec and an ADR through the same verb, over the same
+/// anchor and the same signed commit, so both are documents waiting for a
+/// signature. `review` and `status` built their queue by filtering on
+/// `EntityKind::Adr`, so a corpus holding a proposed spec was told its queue
+/// was empty by the one verb whose stated job is the queue, while `find --type
+/// spec --status proposed` named the document and `check` reported it twice.
+///
+/// Measured on this repository on 2026-08-19, which is what turned a log entry
+/// into this test: two specs sat proposed after a supersession, `review` said
+/// `nothing proposed for ratification`, and the maintainer had to be handed the
+/// two `accept` lines by hand.
+///
+/// Through the binary, because the claim is about what the two commands print
+/// on a corpus: the filter under test is reached by the render, and a unit test
+/// on the row set would pass over a surface that never printed it.
+///
+/// Three corpora, because the criterion asks for three and each one can fail
+/// alone: a spec by itself proves the kind is admitted, an ADR by itself proves
+/// nothing was traded away for it, and the pair proves the count is a sum
+/// rather than a branch.
+#[test]
+fn a_proposed_spec_alone_waits_where_review_and_status_look() {
+    const DOC: &str = "SPEC-00000000e0e0";
+
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(DOC, "proposed", &[], None);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(
+        text.contains("PROPOSED (1)") && text.contains(DOC),
+        "a proposed spec is waiting for a signature and review must name it: {text}"
+    );
+    assert!(
+        !text.contains("nothing proposed for ratification"),
+        "the queue is not empty: {text}"
+    );
+    assert!(
+        text.contains("LIVE CONSTRAINTS (0)"),
+        "a spec declares no constraint and binds nothing, so it has no line \
+         among the live ones: {text}"
+    );
+
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        status.contains("queue 1 proposal(s)"),
+        "status and review answer one corpus: {status}"
+    );
+
+    let out = r.ank("claude-code@ank", &["review", "--json"]);
+    assert_json_only(&out, "ank review --json");
+    let json = stdout(&out);
+    assert!(
+        json.contains(&format!("\"proposed\":[{{\"id\":\"{DOC}\"")),
+        "a caller parsing review gets the spec as data too: {json}"
+    );
+    assert!(
+        json.contains("\"live\":[]"),
+        "and it is not laundered into the constraints: {json}"
+    );
+}
+
+/// The other kind alone, which is what says the fix widened the queue rather
+/// than moving it. This passed before TASK-73e81a8a804d and has to keep
+/// passing: a change that admitted specs by dropping ADRs would satisfy the
+/// test above and break the verb.
+#[test]
+fn a_proposed_adr_alone_still_waits_where_it_always_did() {
+    const DECISION: &str = "ADR-00000000e1e1";
+
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_adr(DECISION, "Do not do X.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(
+        text.contains("PROPOSED (1)") && text.contains(DECISION),
+        "{text}"
+    );
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(status.contains("queue 1 proposal(s)"), "{status}");
+}
+
+/// Both kinds in one corpus: the queue is their sum, and ratifying the spec
+/// leaves the live section exactly where it was.
+///
+/// That last assertion is the one keeping this fix inside its perimeter. The
+/// criterion says the live section is unchanged, and the way to measure it is
+/// not to read the code but to promote the spec and watch the constraints: a
+/// spec that had leaked into that section would appear the moment it was
+/// accepted, and the count would read 1 instead of 0.
+#[test]
+fn a_corpus_holding_both_kinds_queues_both_and_keeps_the_live_section() {
+    const DECISION: &str = "ADR-00000000e2e2";
+    const DOC: &str = "SPEC-00000000e2e2";
+
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_docs();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_adr(DECISION, "Do not do X.", "src/**");
+    r.seed_spec(DOC, "proposed", &[], None);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(
+        text.contains("PROPOSED (2)"),
+        "the queue is the sum of both kinds, not one of them: {text}"
+    );
+    assert!(text.contains(DECISION) && text.contains(DOC), "{text}");
+    assert!(
+        text.contains("LIVE CONSTRAINTS (0)"),
+        "neither is accepted yet: {text}"
+    );
+
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(status.contains("queue 2 proposal(s)"), "{status}");
+
+    let json = stdout(&r.ank("claude-code@ank", &["review", "--json"]));
+    assert!(json.contains(DECISION) && json.contains(DOC), "{json}");
+
+    // Ratify the spec alone. The queue loses it, and the constraints do not
+    // gain it: promoting a spec adds nothing to what binds a perimeter.
+    let out = r.ank("marie@laptop", &["accept", DOC]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = stdout(&r.ank("claude-code@ank", &["review"]));
+    assert!(
+        text.contains("PROPOSED (1)") && text.contains(DECISION) && !text.contains(DOC),
+        "ratifying takes the spec out of the queue: {text}"
+    );
+    assert!(
+        text.contains("LIVE CONSTRAINTS (0)"),
+        "an accepted spec still declares no constraint, so the live section is \
+         unchanged by its ratification: {text}"
+    );
+    let status = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(status.contains("queue 1 proposal(s)"), "{status}");
+}
+
 // ---------------------------------------------------------------------------
 // A proof that lives in a ref (ADR-493471d64ba0)
 // ---------------------------------------------------------------------------
