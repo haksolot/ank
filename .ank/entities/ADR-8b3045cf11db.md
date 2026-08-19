@@ -5,7 +5,7 @@ slug: the-skill-has-one-source-and-every-channel-is-se
 title: The skill has one source, and every channel is served from this repository
 created: 2026-08-19T16:19:52Z
 author: claude-code/5
-status: proposed
+status: accepted
 scope:
   - npm/**
   - skill/**
@@ -17,8 +17,9 @@ scope:
 constraint: |
   Every distribution channel ank offers is carried by this repository. No satellite repository holds a skill, a plugin manifest, a marketplace catalogue or a package manifest. skill/SKILL.md is the single source: a channel either points at it by path, or receives a copy produced at release time by an assembly script and excluded from git. A second copy of the skill committed to the tree is a finding. A registry a release is pushed into is not a satellite: npm is an address, and what it holds is derived from a tag by the pipeline rather than kept in step by hand. What stays forbidden is the second repository somebody maintains.
 supersedes: ADR-782a3556cf2d
+ratified: 8579b23df9eb
 schema: 3
-version: 1
+version: 2
 ---
 
 ## Context
