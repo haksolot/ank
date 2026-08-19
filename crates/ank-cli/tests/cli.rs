@@ -2112,6 +2112,92 @@ fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
     );
 }
 
+/// A ratification git refused to commit leaves nothing behind
+/// (TASK-1dbb6e7843f1).
+///
+/// Measured on this corpus on 2026-08-18, ratifying ADR-768374fe6076 on a
+/// machine whose ratification key was protected by a passphrase nothing
+/// supplied. `git commit` failed, `accept` exited 9 carrying git's message, and
+/// the ADR came out `accepted` carrying the anchor of a commit that does not
+/// exist. `check` calls that a signal, which is right for the bootstrap case
+/// the clause was written for and generous here; `accept` will not repair it,
+/// an existing anchor being the one thing it refuses to overwrite; so the only
+/// route out was `ank edit`, which no message names.
+///
+/// The lever is the `gpg.format` git rejects, the same one the test above uses
+/// and surgical for the same reason: every other question git is asked here
+/// still answers, and only the signing fails.
+///
+/// Through the binary, because what is under test is what the process leaves on
+/// disk. A unit test would be asserting about a call `accept` made rather than
+/// about a file, which is the shape CLAUDE.md warns about and the shape that let
+/// this defect through in the first place.
+#[test]
+fn a_ratification_that_could_not_be_committed_leaves_the_entity_untouched() {
+    const ADR: &str = "ADR-00000000dbb1";
+    let r = Repo::new();
+    r.enable_signing();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    declare_signing_key(&r);
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let path = r.0.join(".ank/entities").join(format!("{ADR}.md"));
+    // Read as text, and compared as text: the bytes are the assertion, and a
+    // failure printing two byte arrays says nothing a reader can act on.
+    // `read_to_string` translates no newline on any platform, so it is the same
+    // comparison spelled legibly.
+    let before = std::fs::read_to_string(&path).unwrap();
+    let head = r.git(&["rev-parse", "HEAD"]);
+
+    r.git(&["config", "gpg.format", "bogus"]);
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    let said = stderr(&out);
+    assert_ne!(code(&out), 0, "a ratification that did not happen: {said}");
+    assert!(
+        said.contains("gpg.format"),
+        "and the message names what failed, in git's own words: {said}"
+    );
+
+    // The criterion, in as many words: byte for byte, `version` included.
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        after, before,
+        "the entity is what it was before the accept that failed"
+    );
+    assert!(after.contains("status: proposed"), "{after}");
+    assert!(!after.contains("ratified:"), "{after}");
+    assert!(!after.contains("verified:"), "{after}");
+    assert_eq!(
+        head,
+        r.git(&["rev-parse", "HEAD"]),
+        "and no commit was made"
+    );
+
+    // Nothing is left staged either: `git add` ran before `git commit` refused,
+    // and an index holding the write would commit it under the next commit
+    // anybody makes in this repository, which is the same corpus by another
+    // route.
+    assert_eq!(
+        r.git(&["diff", "--cached", "--name-only"]),
+        "",
+        "the write git refused to commit is not left in the index"
+    );
+
+    // And the failure cost the caller nothing but the failure: with signing
+    // working, the same command still ratifies. This is what the byte-for-byte
+    // restore buys — a `version` bumped by the failed attempt would have left
+    // the compare-and-swap of the next one refusing.
+    r.git(&["config", "gpg.format", "ssh"]);
+    let out = r.ank("marie@laptop", &["accept", ADR]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("status: accepted"), "{text}");
+    assert!(text.contains("ratified:"), "{text}");
+}
+
 /// A claim is not an orphan just because this checkout is too old to have
 /// heard of the task (TASK-52fbffbfdf65).
 ///
