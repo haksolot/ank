@@ -266,24 +266,39 @@ jobs:
         shell: bash
         run: bash .github/scripts/npm-assemble.sh "0.0.0-smoke" "${{ matrix.package }}"
 
-      # The wrapper is also the pi package, and a pi package is its skill: with
+      # The wrapper is also the pi package, and a pi package is its skills: with
       # skills/ank/SKILL.md missing, `pi install npm:@haksolot/ank` installs a
       # binary and teaches nothing, while every other assertion in this job
-      # still passes. The copy is made at assembly time and never committed
-      # (npm-assemble.sh), so nothing else in the repository can notice it went
+      # still passes. The copies are made at assembly time and never committed
+      # (npm-assemble.sh), so nothing else in the repository can notice one went
       # missing. Read out of the tarball rather than off the disk, because the
       # tarball is what the registry receives -- a `files` entry that stopped
       # matching would leave the file on disk and out of the package.
-      - name: the wrapper carries the skill
+      #
+      # Every skill, not only the contract (ADR-91b77f036884): an install that
+      # receives `ank` and none of `ank-plan`, `ank-drift`, `ank-loop` teaches
+      # the rules and none of the activities. The list is walked from the tree
+      # rather than written here, so a skill added later is checked by existing,
+      # and the count is asserted so that a walk finding nothing cannot pass as
+      # a walk finding everything.
+      - name: the wrapper carries every skill
         shell: bash
         run: |
           set -e
           tgz=$(ls npm/ank/*.tgz | head -n 1)
-          packed=$(tar -xzOf "$tgz" package/skills/ank/SKILL.md | sha256sum | cut -d' ' -f1)
-          source=$(sha256sum skill/SKILL.md | cut -d' ' -f1)
-          echo "packed: $packed"
-          echo "source: $source"
-          test "$packed" = "$source"
+          checked=0
+          for src in skill/SKILL.md skill/*/SKILL.md; do
+            [ -f "$src" ] || continue
+            name=$(sed -n 's/^name:[[:space:]]*//p' "$src" | head -n 1)
+            packed=$(tar -xzOf "$tgz" "package/skills/${name}/SKILL.md" | sha256sum | cut -d' ' -f1)
+            source=$(sha256sum "$src" | cut -d' ' -f1)
+            echo "  ${name}: packed $packed"
+            echo "  ${name}: source $source"
+            test "$packed" = "$source"
+            checked=$((checked + 1))
+          done
+          echo "$checked skills carried"
+          test "$checked" -ge 4
 
       # The argument publish-npm passes, run on every dispatch and every tag,
       # with the one flag that stops short of the registry. This is the step
