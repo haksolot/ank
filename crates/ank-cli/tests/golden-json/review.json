@@ -1,1 +1,1 @@
-{"contract":1,"proposed":[{"id":"ADR-0000000000ba","title":"A decision"}],"live":[{"id":"ADR-0000000000ab","title":"A decision","files":1}],"dead":0,"faults":0,"signals":2}
+{"contract":1,"proposed":[{"id":"ADR-0000000000ba","title":"A decision"}],"live":[{"id":"ADR-0000000000ab","title":"A decision","files":1}],"dead":0,"faults":0,"signals":4}
