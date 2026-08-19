@@ -5,7 +5,7 @@ slug: the-skill-teaches-investigation-too-and-says-why
 title: The skill teaches investigation too, and says why before how
 created: 2026-08-15T19:04:57Z
 author: claude-code/opus-5
-status: accepted
+status: superseded
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -36,7 +36,7 @@ constraint: |
 supersedes: ADR-f61e2d2c75e8
 ratified: de6c15af28bb
 schema: 3
-version: 2
+version: 3
 ---
 
 ## Context
