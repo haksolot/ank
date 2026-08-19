@@ -5,7 +5,7 @@ slug: skill-md-becomes-the-contract-and-the-hub
 title: SKILL.md becomes the contract and the hub
 created: 2026-08-19T05:49:01Z
 author: claude-code/2.0
-status: in_progress
+status: done
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   skill/SKILL.md keeps its frontmatter description byte-identical, names the three sibling skills and the activity each carries, teaches the verbs one line each with flag detail deferred to ank help, keeps the mental model and the non-negotiable rules, contains no em dash, stays within 180 lines and 1500 words with metadata.revision regenerated, and cargo test is green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 5b91e425d11e9cf0be4845dfe45c41f162efb5c8
+    criteria: d8b40f8467f8
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 ADR-91b77f036884 lifted the content freeze and made the skill plural. The
