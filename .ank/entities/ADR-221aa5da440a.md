@@ -5,7 +5,7 @@ slug: distribution-is-three-commands-npm-curl-sh-and-p
 title: "Distribution is three commands: npm, curl | sh, and PowerShell"
 created: 2026-08-19T16:19:26Z
 author: claude-code/5
-status: proposed
+status: accepted
 scope:
   - install.*
   - npm/**
@@ -13,8 +13,9 @@ scope:
   - docs/**
 constraint: |
   ank installs by exactly three official routes: npm install -g @haksolot/ank on any OS, curl | sh from install.sh on Linux and macOS, and a PowerShell one-liner from install.ps1 on Windows. No package-manager channel ships: no Homebrew tap, no Scoop bucket, no apt repository, no winget manifest, no AUR package. A workflow, manifest, formula or directory whose purpose is to feed a package manager is a finding. A new channel is a supersession of this decision, never an addition beside it.
+ratified: 3c2d4e664c18
 schema: 3
-version: 1
+version: 2
 ---
 
 ## Context
