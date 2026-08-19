@@ -149,6 +149,29 @@ jobs:
             cp "target/${{ matrix.target }}/release/ank" "dist/${name}/"
           fi
           cp README.md LICENSE "dist/${name}/"
+          # The contract alone, and not the three activity policies beside
+          # it. Deliberate, and stated here because here is where the copy
+          # is made (TASK-6704242b47f3).
+          #
+          # SKILL.md says of itself that everything below its skills
+          # section "suffices on its own to execute work", and it names
+          # ank-plan, ank-drift and ank-loop without naming a path to any
+          # of them. So an archive carrying the contract alone hands its
+          # reader nothing that points at a file the archive does not
+          # contain. What the three would add is a policy per activity,
+          # loaded when that activity fires, which is something a harness
+          # does and not something a human unpacking a tarball does.
+          #
+          # npm and pi ship all four (TASK-7cbf5b62be7f) and are right to:
+          # they hand skills to a harness that loads them by name, where
+          # this archive hands files to whoever unpacked it. The routes
+          # differ because what they deliver to differs.
+          #
+          # What would overturn this: the contract ceasing to stand alone.
+          # The day SKILL.md needs a sibling to execute work, this line
+          # becomes a copy of skill/ entire, and install.sh and install.ps1
+          # stop describing the archive as the binary beside README.md,
+          # LICENSE and SKILL.md.
           cp skill/SKILL.md "dist/${name}/"
           cd dist
           if [ "${{ matrix.archive }}" = "zip" ]; then
