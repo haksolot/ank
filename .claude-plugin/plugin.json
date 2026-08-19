@@ -16,5 +16,5 @@
     "coordination",
     "agent"
   ],
-  "skills": ["./skill"]
+  "skills": ["./skill", "./skill/plan", "./skill/drift", "./skill/loop"]
 }
