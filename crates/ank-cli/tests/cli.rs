@@ -6129,6 +6129,160 @@ fn help_does_not_offer_init_the_global_it_refuses() {
     );
 }
 
+/// Every refusal the table declares is on the page of the verb that declares
+/// it, with its code, and a verb declaring none says nothing about refusals.
+///
+/// §9 gives `ank help <verb>` the job of carrying "the state conditions on which
+/// it refuses, each with its exit code", and until TASK-106dccc7f71c seven verbs
+/// declared none, so nothing connected the field to the rendering for most of
+/// the table. This walks the whole table rather than a sample: a row added to
+/// any verb is on its page or this is red, which is what makes the declaration
+/// reach a caller instead of only the JSON.
+///
+/// Through the binary, because the claim is about what a caller reads. A unit
+/// test on the renderer would pass over a page the process never printed.
+#[test]
+fn every_declared_refusal_is_printed_on_the_page_that_declares_it() {
+    for spec in ank_contract::COMMANDS {
+        let page = stdout(&ank_command().args(["help", spec.name]).output().unwrap());
+        // `refuses:` is the last block of the page, so everything from it to the
+        // end is the block. Taken as a whole because a row wraps onto a
+        // continuation line, and a per-line search would miss a long one.
+        let block: String = page
+            .lines()
+            .skip_while(|l| !l.trim_start().starts_with("refuses:"))
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        if spec.refuses.is_empty() {
+            assert!(
+                block.is_empty(),
+                "`ank help {}` prints a refusals block for a verb that declares none:
+{page}",
+                spec.name
+            );
+            continue;
+        }
+
+        for row in spec.refuses {
+            assert!(
+                block.contains(row.when),
+                "`ank help {}` does not state a refusal the table declares:
+                 declared: {}
+page:
+{page}",
+                spec.name,
+                row.when
+            );
+            assert!(
+                block.contains(&format!("({})", row.code.code())),
+                "`ank help {}` states {:?} without the code a caller reacts to:
+{page}",
+                spec.name,
+                row.when
+            );
+        }
+    }
+}
+
+/// The seven readers exit with the codes their pages now declare, and `status`
+/// answers where the other six refuse.
+///
+/// This is the measurement TASK-106dccc7f71c was opened for, kept as a test so
+/// it stays true. Six of the seven refused on states they declared nowhere; the
+/// declaration is now in the table, and what binds the two is asserting the
+/// observed code **against the row**, never against a number written here. A
+/// row whose code is corrected and whose behaviour is not turns this red.
+///
+/// Through the binary, because an exit code exists only once there is a process
+/// (§4).
+#[test]
+fn the_readers_exit_with_the_codes_their_pages_declare() {
+    let r = Repo::new();
+
+    // The invocation, and the row it is the measurement of. `../outside` climbs
+    // above the root on every platform: `normalize_path` pops nothing and
+    // answers `None`, where an absolute path would have to be spelled twice.
+    let cases: &[(&str, &[&str], &str)] = &[
+        (
+            "context",
+            &["context", "../outside"],
+            "the path names nothing inside this repository",
+        ),
+        (
+            "context",
+            &["context", "--limit", "soon"],
+            "--limit is not a number",
+        ),
+        (
+            "find",
+            &["find", "--type", "nope"],
+            "--type names a kind the registry does not declare",
+        ),
+        (
+            "find",
+            &["find", "--scope", "../outside"],
+            "--scope names nothing inside this repository",
+        ),
+        (
+            "review",
+            &["review", "../outside"],
+            "the path names nothing inside this repository",
+        ),
+        (
+            "graph",
+            &["graph", "../outside"],
+            "the path names nothing inside this repository",
+        ),
+        (
+            "scope",
+            &["scope"],
+            "no path given, and this verb answers about one",
+        ),
+        (
+            "scope",
+            &["scope", "../outside"],
+            "the path names nothing inside this repository",
+        ),
+        (
+            "check",
+            &["check", "../outside"],
+            "the path names nothing inside this repository",
+        ),
+    ];
+
+    for (verb, args, when) in cases {
+        let declared = ank_contract::spec_of(verb)
+            .unwrap_or_else(|| panic!("no verb named {verb}"))
+            .refuses
+            .iter()
+            .find(|row| row.when == *when)
+            .unwrap_or_else(|| panic!("`{verb}` declares no refusal reading {when:?}"))
+            .code
+            .code();
+        let out = r.ank(AGENT, args);
+        assert_eq!(
+            code(&out),
+            declared,
+            "{args:?} does not exit with the code `ank help {verb}` promises for              {when:?}: {}",
+            stderr(&out)
+        );
+    }
+
+    // The other half of the comparison, and the reason `status` keeps an empty
+    // array: it refuses on nothing, and a `--status` value naming no status is a
+    // listing of nothing rather than a refusal.
+    for args in [&["status"][..], &["find", "--status", "nope"][..]] {
+        let out = r.ank(AGENT, args);
+        assert_eq!(
+            code(&out),
+            0,
+            "{args:?} refuses where the table declares no refusal: {}",
+            stderr(&out)
+        );
+    }
+}
+
 /// §6 calls the index derived, disposable and gitignored. The first two were
 /// true of what `init` produced; the third was true of no repository it had
 /// ever produced, because it wrote no ignore rule at all. This repository was
@@ -15102,14 +15256,20 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // claims under one identity and one under another, and a constraint heavy
     // enough for the budget to charge it.
     //
-    // `help.verbs[].refuses` is not a fixture problem. Seven verbs — `context`,
-    // `find`, `status`, `review`, `graph`, `scope` and `check` — declare no
-    // refusal at all, and what a verb declares comes from the table in
-    // `ank-contract` rather than from any corpus: no seeding makes one of those
-    // arrays carry a row. Emptying this list therefore means those seven
-    // declaring the states they refuse on, which is a change to the surface and
-    // a question for the specification, not a fixture to write. Named here so
-    // the next reader knows which of the two kinds of gap this is.
+    // `help.verbs[].refuses` is not a fixture problem, and it is now down to one
+    // verb (TASK-106dccc7f71c). Seven declared no refusal; six of them performed
+    // refusals they declared nowhere — a path naming nothing inside the
+    // repository, `context --limit` given something that is not a number,
+    // `find --type` given a kind the registry does not declare — and those rows
+    // are in the table above. **`status` is the last empty array, and it is
+    // empty because the verb is honest**: it takes no path, parses no value of
+    // its own, and answers an unreachable origin with a warning rather than a
+    // refusal, so the vacuous case §9 allows is the true one. The row stays
+    // listed here because this walk reports a path once per empty instance, not
+    // once per shape — the twenty-one other verbs carry rows in this same
+    // fixture, so the element shape *is* exercised — and the honest way to empty
+    // this list is to make the walk say that, never to invent a refusal for a
+    // verb that has none.
     unverified.sort();
     unverified.dedup();
     assert_eq!(

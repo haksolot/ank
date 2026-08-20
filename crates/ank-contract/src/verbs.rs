@@ -320,6 +320,20 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
     Refusal { code, when }
 }
 
+/// The refusal every path-taking verb performs, declared once and named six
+/// times.
+///
+/// SPEC-4eff92fd80ce states it for all of them at once — a path naming nothing
+/// inside the repository, because it is absolute or because it climbs above the
+/// root, is refused with the command to run next and never answered — and the
+/// six verbs reach it through one helper, `context::normalised`. One sentence
+/// here for one code path there: six literals would be six chances for the same
+/// refusal to be described six ways, which is the fourth surface §9 refuses.
+const OUTSIDE_THE_REPOSITORY: Refusal = refuses(
+    ExitCode::Generic,
+    "the path names nothing inside this repository",
+);
+
 /// Global flags, deliberately limited to three (§4). `--json` is available on
 /// every command without exception: full scriptability is an invariant, not an
 /// option — hence adding them mechanically to each command's surface rather
@@ -492,7 +506,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit")],
-        refuses: &[],
+        refuses: &[
+            OUTSIDE_THE_REPOSITORY,
+            refuses(ExitCode::Generic, "--limit is not a number"),
+        ],
         notes: &["a constraint is never truncated in execution mode; a cut is always announced"],
         refuses_globals: &[],
         output: &[one(CONTEXT_OUT)],
@@ -639,7 +656,10 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--scope"),
             switch("--free"),
         ],
-        refuses: &[],
+        refuses: &[
+            refuses(ExitCode::Generic, "--type names a kind the registry does not declare"),
+            refuses(ExitCode::Generic, "--scope names nothing inside this repository"),
+        ],
         notes: &[
             "--status filters on the stored status; a claimed row still displays as [claimed:who]",
             "a listing counts the open rows a claim would refuse, and names --free",
@@ -662,6 +682,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--remote")],
+        // **Empty, and measured rather than assumed** (TASK-106dccc7f71c). This
+        // verb takes no path, parses no value of its own, and raises no refusal
+        // anywhere in `status.rs`: `--remote` reads an unreachable origin as a
+        // warning and answers on the local plane, which is the paragraph above.
+        // So the vacuous case §9 allows is the true one here, and the empty
+        // array is a fact about the verb rather than a gap nobody looked at.
         refuses: &[],
         // `coordinates` stays false, and the flag does not change that: without
         // it `status` pays for no network at all, and with it an unreachable
@@ -684,7 +710,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[],
+        refuses: &[OUTSIDE_THE_REPOSITORY],
         // `review` shares `check`'s report and therefore its exit code, and for
         // a long time it said so nowhere: a caller reading 8 as "check found
         // something" met it from a verb whose page promised nothing of the
@@ -834,7 +860,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[],
+        refuses: &[OUTSIDE_THE_REPOSITORY],
         notes: &[],
         refuses_globals: &[],
         output: &[one(&[f("path", Type::Str), f("tasks", Type::Array(&[f("id", Type::Str), f("short", Type::Str), f("status", Type::Str), f("title", Type::Str)])), f("edges", Type::Array(&[f("task", Type::Str), f("blocked_by", Type::Str)]))])],
@@ -850,7 +876,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<path>",
         flags: &[],
-        refuses: &[],
+        refuses: &[
+            refuses(ExitCode::Generic, "no path given, and this verb answers about one"),
+            OUTSIDE_THE_REPOSITORY,
+        ],
         notes: &[],
         refuses_globals: &[],
         output: &[one(&[f("path", Type::Str), f("total", Type::Num), f("adr", Type::Array(ROW)), f("specs", Type::Array(ROW)), f("tasks", Type::Array(ROW))])],
@@ -870,7 +899,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[],
+        refuses: &[OUTSIDE_THE_REPOSITORY],
         notes: &[
             "exit 8 means findings; a signal alone leaves it 0",
             "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
