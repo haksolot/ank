@@ -12386,6 +12386,66 @@ fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
     );
 }
 
+/// **An entity the branch and the tree agree on is read from the tree, and one
+/// they disagree on is read from the branch** (TASK-2ba2619b90e2).
+///
+/// `check` read every entity as the default branch carries it -- 3.9 MB on this
+/// repository -- to answer, among other things, whether a task finished there
+/// or only here. Where the object names agree the bytes agree, so the branch's
+/// copy is the file already on disk, and moving it through the object store
+/// answers a question about hashes by shipping the corpus.
+///
+/// The two directions are what this asserts, because the seeding can break
+/// either way. A task `done` in the tree and not on the branch must not read as
+/// finished; a task `done` on the branch and edited in the tree must still read
+/// as finished. The second is the one seeding gets wrong if it trusts the local
+/// file when the names differ.
+#[test]
+fn a_task_done_on_the_branch_is_read_from_the_branch_whatever_the_tree_says() {
+    const ID: &str = "TASK-00000000d0d0";
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // Done on the branch, and committed there.
+    let out = r.ank(AGENT, &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank(AGENT, &["done", "--proof", "commit:HEAD"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "done on the branch"]);
+
+    let settled = stdout(&r.ank(AGENT, &["check"]));
+
+    // Now the tree disagrees with the branch about this entity: same id, other
+    // bytes, so the object names differ and the branch's copy is the only one
+    // that answers what the branch carries.
+    let path = r.0.join(".ank/entities").join(format!("{ID}.md"));
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(
+        &path,
+        text.replace("A verifiable criterion.", "Another one."),
+    )
+    .unwrap();
+
+    let after = stdout(&r.ank(AGENT, &["check"]));
+    assert!(
+        after.contains("differ from"),
+        "an edited entity is a corpus that differs from the branch: {after}"
+    );
+    // The freeze finding is what says the criterion moved under a claim that is
+    // gone; what matters here is that neither reading invented a task the
+    // branch does not carry.
+    assert!(
+        !after.contains("finished on another branch"),
+        "the branch and the tree hold the same task, edited: {after}
+before:
+{settled}"
+    );
+}
+
 /// **The cost of `check` stops growing with the corpus itself**
 /// (TASK-5f05e0c22f7b).
 ///
