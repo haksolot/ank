@@ -705,7 +705,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "shape the work",
         renews: Renews::Never,
         coordinates: false,
-        summary: "the ratification queue and the health of the corpus: what is proposed, and which scopes have gone dead",
+        summary: "the ratification queue and the health of the corpus: what is proposed, who may ratify it, and which scopes have gone dead",
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
@@ -715,9 +715,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         // a long time it said so nowhere: a caller reading 8 as "check found
         // something" met it from a verb whose page promised nothing of the
         // kind. Found while pinning the goldens for TASK-2c12b027f805.
-        notes: &["exit 8 means findings, as it does for check; a signal alone leaves it 0"],
+        notes: &[
+            "exit 8 means findings, as it does for check; a signal alone leaves it 0",
+            "the signers are what .ank/allowed_signers declares; this is where they are read, since ADR-01b6dd05f0db closes that file to a direct read",
+        ],
         refuses_globals: &[],
-        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
+        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {
