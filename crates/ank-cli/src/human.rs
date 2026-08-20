@@ -524,12 +524,17 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // three hundred starts to learn what one call answers. A failure here is not
     // reported and not fatal: `file_at` falls back to asking git per path, which
     // is what it did before.
+    //
+    // **And what is read is only what differs** (TASK-2ba2619b90e2). git records
+    // the blob of every file in the tree and `hash-object` gives the same for
+    // the working copy; where the two agree the bytes agree, so the branch's
+    // copy is the file already on disk and reading it back out of the object
+    // store would be moving the corpus to answer a question about hashes. On a
+    // checkout level with the default branch that is every entity, and the
+    // batch reads nothing.
     if let (true, Some(Ok(branch))) = (has_git, default_branch.as_ref()) {
-        let paths: Vec<String> = entities
-            .iter()
-            .flat_map(|(_, e)| entity_rel_paths(repo, e.id()))
-            .collect();
-        let _ = git::preload_at(&repo.root, branch, &paths);
+        let entries = branch_entries(repo, branch, &here, &entities);
+        let _ = git::preload_at(&repo.root, branch, &entries);
     }
 
     for (_, entity) in &entities {
@@ -2788,6 +2793,58 @@ fn corpus_drift(repo: &Repo, branch: &str, here: &BTreeMap<String, PathBuf>, rep
     }
 }
 
+/// Each entity path at `branch`, paired with its content where this checkout
+/// already holds the same bytes.
+///
+/// The pairing is decided on object names: [`corpus_at`] reads the blob git
+/// records for every entity on the branch, [`blobs_here`] hashes the working
+/// copies, and an entity whose two names agree is one whose branch content is
+/// the file on disk. Reading that back through git would move the corpus to
+/// learn what is already local (TASK-2ba2619b90e2).
+///
+/// A failure on either side seeds nothing and pairs every path with `None`,
+/// which is what this did before: the batch reads them all, and the answer is
+/// the same at a price this task exists to stop paying.
+fn branch_entries(
+    repo: &Repo,
+    branch: &str,
+    here: &BTreeMap<String, PathBuf>,
+    entities: &[(PathBuf, Entity)],
+) -> Vec<(String, Option<String>)> {
+    let agreed: BTreeMap<String, ()> = match (corpus_at(repo, branch), blobs_here(repo, here)) {
+        (Ok(there), Ok(mine)) => there
+            .iter()
+            .filter(|(id, blob)| mine.get(*id) == Some(*blob))
+            .map(|(id, _)| (id.clone(), ()))
+            .collect(),
+        _ => BTreeMap::new(),
+    };
+    let mut out = Vec::new();
+    for (_, entity) in entities {
+        let id = entity.id().to_string();
+        for path in entity_rel_paths(repo, entity.id()) {
+            // The canonical path only: an entity still sitting in the previous
+            // layout has two candidate paths and the agreement was decided on
+            // the id, not on which of them the branch carries. Seeding the wrong
+            // one would answer about a file the branch does not have there.
+            let same = agreed.contains_key(&id)
+                && here.get(&id).is_some_and(|p| {
+                    p.strip_prefix(&repo.root)
+                        .unwrap_or(p)
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        == path
+                });
+            let known = match same {
+                true => here.get(&id).and_then(|p| std::fs::read_to_string(p).ok()),
+                false => None,
+            };
+            out.push((path, known));
+        }
+    }
+    out
+}
+
 /// The entity files `branch` carries, keyed by id, with the blob each name
 /// points at.
 ///
@@ -2800,6 +2857,28 @@ fn corpus_drift(repo: &Repo, branch: &str, here: &BTreeMap<String, PathBuf>, rep
 /// resolves a single entity: the branch and the working tree need not agree on
 /// where entities live (§6).
 fn corpus_at(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
+    // **Read once per process.** Two readers ask for this -- the drift
+    // comparison and the seeding of the branch preload -- and asking twice put
+    // nine git processes back on the profile the batching had removed
+    // (TASK-2ba2619b90e2). Held only for the process, on the reasoning
+    // `preload_at` gives: a branch moves, and a map kept across a commit would
+    // call a corpus level with something it is no longer level with. Only a
+    // success is kept; a failure is a state the caller reports and asks about
+    // again.
+    thread_local! {
+        static SEEN: std::cell::RefCell<HashMap<(PathBuf, String), BTreeMap<String, String>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    let key = (repo.root.clone(), branch.to_string());
+    if let Some(hit) = SEEN.with(|c| c.borrow().get(&key).cloned()) {
+        return Ok(hit);
+    }
+    let read = corpus_at_uncached(repo, branch)?;
+    SEEN.with(|c| c.borrow_mut().insert(key, read.clone()));
+    Ok(read)
+}
+
+fn corpus_at_uncached(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
     let rel = ank_relative(repo);
     let mut dirs = vec![format!("{rel}/{}", Store::ENTITIES_DIR)];
     for kind in [EntityKind::Task, EntityKind::Adr] {
@@ -2853,6 +2932,27 @@ fn corpus_at(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
 /// allows it, chunked below a length every platform accepts — a corpus is not
 /// bounded, and a command line is.
 fn blobs_here(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<String, String>> {
+    // Read once per process, for the reason [`corpus_at`] gives. Keyed on the
+    // set of paths as well as the repository: a caller asking about a different
+    // corpus is asking a different question, and the tests do exactly that
+    // inside one process.
+    thread_local! {
+        static SEEN: std::cell::RefCell<HashMap<(PathBuf, Vec<String>), BTreeMap<String, String>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    let key = (repo.root.clone(), here.keys().cloned().collect::<Vec<_>>());
+    if let Some(hit) = SEEN.with(|c| c.borrow().get(&key).cloned()) {
+        return Ok(hit);
+    }
+    let read = blobs_here_uncached(repo, here)?;
+    SEEN.with(|c| c.borrow_mut().insert(key, read.clone()));
+    Ok(read)
+}
+
+fn blobs_here_uncached(
+    repo: &Repo,
+    here: &BTreeMap<String, PathBuf>,
+) -> Result<BTreeMap<String, String>> {
     /// Well under the shortest limit of the three platforms, and far above what
     /// a corpus of a few hundred entities needs.
     const BUDGET: usize = 6000;

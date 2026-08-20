@@ -728,8 +728,18 @@ pub fn cat_file_batch(cwd: &Path, objects: &[String]) -> Result<HashMap<String, 
 ///
 /// Keyed on the revision as well as the repository, because the whole point of
 /// reading here is that the default branch and the working tree disagree (§7).
-pub fn preload_at(cwd: &Path, rev: &str, paths: &[String]) -> Result<()> {
-    if paths.is_empty() {
+/// `entries` pairs a path with what the caller already knows its content to be
+/// at `rev`. A `Some` is taken as the answer and git is never asked for it; the
+/// `None`s are what the batch goes and reads.
+///
+/// **The caller knows because the object names agree** (TASK-2ba2619b90e2).
+/// git records the blob of every file in a tree, and `hash-object` gives the
+/// same for the working copy: where the two match, the bytes match, and reading
+/// them out of the object store to learn what is already on disk is moving the
+/// corpus to answer a question about hashes. On a checkout level with the
+/// default branch, every entry is seeded and the batch reads nothing at all.
+pub fn preload_at(cwd: &Path, rev: &str, entries: &[(String, Option<String>)]) -> Result<()> {
+    if entries.is_empty() {
         return Ok(());
     }
     // **Reloaded on every call, never reused across one.** A branch moves: a
@@ -741,16 +751,32 @@ pub fn preload_at(cwd: &Path, rev: &str, paths: &[String]) -> Result<()> {
     // of per entity.
     let key = (cwd.to_path_buf(), rev.to_string());
     let memo = PRELOADED.get_or_init(|| Mutex::new(HashMap::new()));
-    let names: Vec<String> = paths.iter().map(|p| format!("{rev}:{p}")).collect();
-    let answers = cat_file_batch_ordered(cwd, &names)?;
     let mut found: HashMap<String, Option<String>> = HashMap::new();
+    let asked: Vec<&String> = entries
+        .iter()
+        .filter(|(_, known)| known.is_none())
+        .map(|(path, _)| path)
+        .collect();
+    let names: Vec<String> = asked.iter().map(|p| format!("{rev}:{p}")).collect();
+    let answers = cat_file_batch_ordered(cwd, &names)?;
     // A short answer means the framing was misread, and a half-filled map would
     // report entities as absent from the branch that carries them -- which is a
     // task called unfinished, not a slow tool. Nothing is stored in that case
     // and every caller falls back to asking git itself.
-    if answers.len() == paths.len() {
-        for (path, answer) in paths.iter().zip(answers) {
-            found.insert(path.clone(), answer);
+    if answers.len() != asked.len() {
+        if let Ok(mut seen) = memo.lock() {
+            seen.insert(key, found);
+        }
+        return Ok(());
+    }
+    for (path, answer) in asked.into_iter().zip(answers) {
+        found.insert(path.clone(), answer);
+    }
+    // The seeded ones last, and they cannot collide with the read ones: a path
+    // is in exactly one of the two lists.
+    for (path, known) in entries {
+        if let Some(text) = known {
+            found.insert(path.clone(), Some(text.clone()));
         }
     }
     if let Ok(mut seen) = memo.lock() {
