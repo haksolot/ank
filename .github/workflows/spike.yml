@@ -53,7 +53,12 @@ jobs:
       - name: measure
         shell: bash
         run: |
+          # Named exactly, with the one suffix that varies. A glob here matched
+          # the `.d` dependency file as well and handed the spike a second
+          # argument, which it read as the repository to measure.
+          bin=spike/target/release/ank-git-library-spike
+          if [ -f "$bin.exe" ]; then bin="$bin.exe"; fi
           echo "--- cold"
-          ./spike/target/release/ank-git-library-spike* .
+          "$bin" .
           echo "--- warm"
-          ./spike/target/release/ank-git-library-spike* .
+          "$bin" .
