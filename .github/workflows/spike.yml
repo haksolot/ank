@@ -1,0 +1,59 @@
+name: spike
+
+# The measurement of TASK-a8054da67947, and nothing else. It runs on a push
+# that touches the spike and on demand, never on every pull request: it builds
+# `gix`, which is a large dependency this repository does not otherwise carry,
+# and paying that on unrelated work would be spending CI on a question already
+# answered.
+#
+# The job publishes no artefact and gates nothing. Its product is the number in
+# the log, which an ADR is written against.
+on:
+  push:
+    paths:
+      - "spike/**"
+      - ".github/workflows/spike.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # A missing platform is the information we came for: the whole question
+      # is whether the answer differs by platform, so one row failing must not
+      # cancel the others.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      # Full history and no shallow clone: the spike reads objects, and a
+      # depth-1 checkout would measure a repository that is not this one.
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: versions
+        shell: bash
+        run: |
+          git --version
+          rustc --version
+
+      - name: build the spike
+        shell: bash
+        run: cargo build --release --manifest-path spike/Cargo.toml
+
+      # Twice, and the second is what counts. The first pays for a cold object
+      # cache on both sides, which is a property of the runner rather than of
+      # either reader.
+      - name: measure
+        shell: bash
+        run: |
+          echo "--- cold"
+          ./spike/target/release/ank-git-library-spike* .
+          echo "--- warm"
+          ./spike/target/release/ank-git-library-spike* .
