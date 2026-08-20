@@ -5,7 +5,7 @@ slug: every-ratification-is-verified-by-gpg-on-every-r
 title: Every ratification is verified by gpg on every run, and the verdict cannot change
 created: 2026-08-20T18:31:47Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -15,8 +15,13 @@ blocked_by: []
 done_criteria: |
   A signature verdict already computed for a commit is not computed again: check run twice on an unchanged corpus starts gpg on the second run for no ratification it verified on the first, measured through the binary. The verdict is keyed on the commit and on the content of .ank/allowed_signers, so declaring a key changes every key that depends on it. A cache that cannot be read or that does not match its key is recomputed and never trusted, and no cached state can turn a signature check into a pass it did not earn: the four outcomes SPEC-199de7ac4730 lists are reported from a cache exactly as they are from git. cargo test --workspace and ank check stay green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 8466ba2c35034c9f1c06512dc3c5a0f353e002e2
+    criteria: bf70f021aee1
+    via: submitted
 schema: 3
-version: 1
+version: 3
 ---
 
 Measured on 2026-08-20, after TASK-1b3d7b61dc8f batched the calls: the whole
