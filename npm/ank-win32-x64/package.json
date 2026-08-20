@@ -1,6 +1,6 @@
 {
   "name": "@haksolot/ank-win32-x64",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "The ank binary for Windows x86_64.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/haksolot/ank",
