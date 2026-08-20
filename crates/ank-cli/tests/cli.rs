@@ -12305,6 +12305,113 @@ fn review_prints_the_ratification_queue_it_is_described_by() {
     );
 }
 
+/// **`review` names who may ratify, and nothing else can** (TASK-8a80b590b356).
+///
+/// ADR-01b6dd05f0db closes `.ank/` to a direct read by an agent, and
+/// `allowed_signers` is not an entity, so `show`, `find` and `config` all pass
+/// over it: before this, the one file the format asks a human to edit by hand
+/// was the one file no command could show. `review` is where the answer belongs
+/// -- §4 calls it the ratification queue, and who may ratify is the standing
+/// half of that question.
+///
+/// Through the binary and on both renderings, because the claim is that a
+/// *caller* can learn this without opening the file. Two entries under one
+/// principal, which is the shape this repository's own file has: a person with a
+/// gpg key and an ssh key is one identity and two rows, so a listing keyed on
+/// the principal would silently drop one of them.
+#[test]
+fn review_names_the_signers_no_other_verb_serves() {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::write(
+        r.0.join(".ank/allowed_signers"),
+        "# a comment, which is not a signer
+         marie@laptop gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A
+         marie@laptop ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let text = stdout(&r.ank(AGENT, &["review"]));
+    assert!(
+        text.contains("MAY RATIFY (2)"),
+        "the two rows are two signers, and the comment is not a third: {text}"
+    );
+    assert!(
+        text.contains("marie@laptop") && text.contains("gpg") && text.contains("ssh-ed25519"),
+        "the principal and the key type of each are what the caller came for: {text}"
+    );
+
+    // Parsed rather than substring-matched: the order of the two rows is the
+    // order of the file, and a `contains` would pass on a document that had
+    // swapped them or attached the key type to the wrong principal.
+    let json = stdout(&r.ank(AGENT, &["review", "--json"]));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&json).unwrap();
+    let rows = doc["signers"].as_sequence().expect("an array");
+    assert_eq!(rows.len(), 2, "{json}");
+    assert_eq!(
+        rows[0]["principal"].as_str(),
+        Some("marie@laptop"),
+        "{json}"
+    );
+    assert_eq!(rows[0]["keytype"].as_str(), Some("gpg"), "{json}");
+    assert_eq!(rows[1]["keytype"].as_str(), Some("ssh-ed25519"), "{json}");
+}
+
+/// **A corpus that declares no key says so, in the sentence `check` uses.**
+///
+/// §8 gives that state a defined behaviour: there is no allowlist, so `check`
+/// judges no signature at all. An empty section would report the opposite --
+/// "declared, and nobody yet" -- to a reader who never opened the file, which is
+/// exactly the reader this section exists for.
+///
+/// The two surfaces are compared against **each other** and never against a
+/// string written here: the sentence lives once in the source, and a test that
+/// spelled it a fourth time would go on passing the day the two drifted apart.
+#[test]
+fn no_declared_key_is_said_in_words_and_never_as_an_empty_section() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let checked = stdout(&r.ank(AGENT, &["check"]));
+    let said = checked
+        .lines()
+        .find(|l| l.contains("no ratification key declared"))
+        .unwrap_or_else(|| {
+            panic!(
+                "check must report the advisory mode:
+{checked}"
+            )
+        })
+        .trim()
+        .trim_start_matches("signal: allowed_signers:")
+        .trim()
+        .to_string();
+
+    let text = stdout(&r.ank(AGENT, &["review"]));
+    assert!(
+        text.contains(&said),
+        "review must say what check says, to the byte:
+check: {said}
+review:
+{text}"
+    );
+    assert!(
+        !text.contains("MAY RATIFY"),
+        "a header over nothing is the reading this refuses: {text}"
+    );
+
+    let json = stdout(&r.ank(AGENT, &["review", "--json"]));
+    assert!(
+        json.contains("\"signers\":[]"),
+        "the key stays, so a parser reads one shape rather than two: {json}"
+    );
+}
+
 /// **A proposed spec waits in the queue a human actually reads**
 /// (TASK-73e81a8a804d).
 ///

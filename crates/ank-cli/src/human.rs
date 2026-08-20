@@ -683,6 +683,49 @@ pub struct Signer {
     pub key: String,
 }
 
+/// Whether a field names a key type rather than an option or a comment.
+///
+/// Recognised from the front and by prefix: every SSH type is `ssh-`, `ecdsa-`,
+/// `sk-` or `webauthn-`, certificate forms included, since a
+/// `-cert-v01@openssh.com` suffix leaves the prefix alone. `gpg` is ank's own
+/// extension (§8) and the one exact match.
+///
+/// The options that may precede it -- `cert-authority`, `namespaces="git"`,
+/// `valid-after=...` -- match none of these, which is what makes reading from
+/// the front safe where reading from the end was not.
+fn is_keytype(field: &str) -> bool {
+    let lower = field.to_ascii_lowercase();
+    lower == "gpg"
+        || ["ssh-", "ecdsa-", "sk-", "webauthn-"]
+            .iter()
+            .any(|p| lower.starts_with(p))
+}
+
+/// One entry split into the three fields that matter, or `None` for a line
+/// neither reader can make sense of.
+///
+/// **Read from the front, and this used to read from the end** — the key as the
+/// last field and its type as the one before. That is right for
+/// `principal [options] keytype key` and wrong for the line everybody actually
+/// writes, because an SSH public key carries a trailing comment: pasting
+/// `id_ed25519.pub` after a principal yields four fields, and the last two are
+/// the key and the comment. The type then read as base64 and the key as an
+/// email address (TASK-8a80b590b356, measured on the golden corpus the moment
+/// `review` first printed the field: `ssh-ed25519` came out as `ank`).
+///
+/// It stayed invisible because nothing displayed these fields and because git,
+/// not ank, decides the allowlist under `gpg.format = ssh`. Under OpenPGP it did
+/// not stay invisible: [`declares`] compares the fingerprint against `key`, and
+/// against a comment it can only ever answer no.
+fn split_entry(line: &str) -> Option<(&str, &str, &str)> {
+    let mut fields = line.split_whitespace();
+    let principal = fields.next()?;
+    let mut rest = fields.skip_while(|f| !is_keytype(f));
+    let keytype = rest.next()?;
+    let key = rest.next()?;
+    Some((principal, keytype, key))
+}
+
 /// Parses `allowed_signers`. Unreadable lines are dropped rather than reported:
 /// this file is versioned and reviewed, and a check that refuses to start over a
 /// stray line is a check that stops answering the question it exists for.
@@ -690,16 +733,11 @@ pub fn parse_signers(text: &str) -> Vec<Signer> {
     text.lines()
         .map(str::trim)
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .filter_map(|l| {
-            let fields: Vec<&str> = l.split_whitespace().collect();
-            match fields.as_slice() {
-                [principal, .., keytype, key] => Some(Signer {
-                    principal: (*principal).to_string(),
-                    keytype: keytype.to_lowercase(),
-                    key: (*key).to_string(),
-                }),
-                _ => None,
-            }
+        .filter_map(split_entry)
+        .map(|(principal, keytype, key)| Signer {
+            principal: principal.to_string(),
+            keytype: keytype.to_lowercase(),
+            key: key.to_string(),
         })
         .collect()
 }
@@ -729,9 +767,13 @@ pub fn git_readable_signers(text: &str) -> String {
         let keep = if trimmed.is_empty() || trimmed.starts_with('#') {
             true
         } else {
-            match trimmed.split_whitespace().collect::<Vec<_>>().as_slice() {
-                [_principal, .., keytype, _key] => !keytype.eq_ignore_ascii_case("gpg"),
-                _ => false,
+            // The same reading as `parse_signers`, and through the same
+            // helper: two ways of locating the key type in one file is two
+            // chances to disagree about which lines git may be handed, and a
+            // `gpg` line let through is the failure TASK-01cc22478782 closed.
+            match split_entry(trimmed) {
+                Some((_, keytype, _)) => !keytype.eq_ignore_ascii_case("gpg"),
+                None => false,
             }
         };
         if keep {
@@ -884,15 +926,23 @@ fn declared_signers(repo: &Repo) -> Vec<Signer> {
     parse_signers(&text)
 }
 
+/// What §8's advisory mode says, in one sentence and in one place.
+///
+/// Two surfaces state it: `check` as a signal, `review` where the section of
+/// signers would otherwise have been. One string, because two would be two
+/// things to keep true, and because the state they describe is one a reader
+/// must not be able to mistake for "declared, and nobody yet".
+pub const NO_RATIFICATION_KEY: &str =
+    "no ratification key declared: permissions are advisory, not enforced (§8)";
+
 /// §8: with no signing configured, permissions are advisory. Displayed rather
 /// than hidden, and once rather than once per entity.
 fn check_signers(repo: &Repo, report: &mut Report) {
     let keys = declared_signers(repo).len();
     if keys == 0 {
-        report.findings.push(Finding::signal(
-            "allowed_signers",
-            "no ratification key declared: permissions are advisory, not enforced (§8)",
-        ));
+        report
+            .findings
+            .push(Finding::signal("allowed_signers", NO_RATIFICATION_KEY));
     }
 }
 
@@ -3119,6 +3169,17 @@ pub fn review(
     let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
     let files = tracked_files(&repo.root);
+    // Who may ratify, read here because nowhere else serves it: `.ank/` is
+    // closed to a direct read (ADR-01b6dd05f0db) and `allowed_signers` is not
+    // an entity, so before this the one file the format asks a human to edit by
+    // hand was the one file no verb could show (TASK-8a80b590b356). It belongs
+    // on this verb rather than on a new one: §4 calls `review` the ratification
+    // queue, and who may ratify is the standing half of that question.
+    //
+    // Never filtered by the perimeter. A signer is a fact about the repository
+    // and not about a path, and narrowing `review docs/` to some subset of the
+    // keys would answer a question nobody asked.
+    let signers = declared_signers(repo);
 
     // Filtered by live scopes: a decision matching no file is reviewed as dead,
     // not as binding (§11).
@@ -3203,8 +3264,18 @@ pub fn review(
                     .finish()
             })
             .collect();
+        let allowed: Vec<String> = signers
+            .iter()
+            .map(|s| {
+                Obj::new()
+                    .str("principal", &s.principal)
+                    .str("keytype", &s.keytype)
+                    .finish()
+            })
+            .collect();
         let doc = Obj::document()
             .array("proposed", waiting)
+            .array("signers", allowed)
             .array("live", items)
             .num("dead", dead.len())
             .num("faults", report.faults())
@@ -3233,6 +3304,25 @@ pub fn review(
             );
             for r in &proposed {
                 let _ = writeln!(out, "  {}  {}", style.id(&r.id.to_string()), r.title);
+            }
+        }
+        let _ = writeln!(out);
+        // Beside the queue, because it answers about the same act: what is
+        // waiting, and who may sign it. A corpus that declares nothing says so
+        // in the sentence `check` uses, rather than rendering a section with no
+        // rows -- an empty list reads as "nobody yet", and §8's advisory mode is
+        // not that state: there is no allowlist at all, and `check` therefore
+        // judges no signature.
+        if signers.is_empty() {
+            let _ = writeln!(out, "{}", style.key(NO_RATIFICATION_KEY));
+        } else {
+            let _ = writeln!(
+                out,
+                "{}",
+                style.header(&format!("MAY RATIFY ({})", signers.len()))
+            );
+            for s in &signers {
+                let _ = writeln!(out, "  {}  {}", s.principal, style.key(&s.keytype));
             }
         }
         let _ = writeln!(out);
@@ -6872,6 +6962,56 @@ mod tests {
             "the option in the middle must not be mistaken for the key type"
         );
         assert_eq!(parsed[1].key, "AAAAC3NzaC1lZDI1");
+    }
+
+    /// **A public key carries a comment, and that is the line everybody
+    /// writes** (TASK-8a80b590b356).
+    ///
+    /// `ssh-keygen` puts one at the end of `id_ed25519.pub`, and declaring a
+    /// signer is pasting that line after a principal. Read from the end, the
+    /// four fields made the base64 the key type and the comment the key; the
+    /// golden corpus, whose fixture generates a key with `-C "ank test"`, is
+    /// where it surfaced the moment `review` printed a type at all.
+    ///
+    /// A comment with a space in it is the case that matters, since it is two
+    /// fields and not one: a rule that only skipped a single trailing field
+    /// would pass this test's first half and fail here.
+    #[test]
+    fn a_trailing_comment_is_not_the_key_and_its_key_is_not_the_type() {
+        let parsed = parse_signers(
+            "test@ank.local ssh-ed25519 AAAAC3NzaC1lZDI1 ank test
+             sean@example.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A a note
+             marie@laptop namespaces=\"git\" ssh-ed25519 AAAAC3Other marie@laptop
+",
+        );
+        assert_eq!(parsed.len(), 3, "{parsed:?}");
+        assert_eq!(parsed[0].keytype, "ssh-ed25519", "{parsed:?}");
+        assert_eq!(parsed[0].key, "AAAAC3NzaC1lZDI1", "{parsed:?}");
+        assert_eq!(parsed[1].keytype, "gpg", "{parsed:?}");
+        assert_eq!(
+            parsed[1].key, "739A603FB05F9F2F7D3C8D50624FCFCC1482554A",
+            "a fingerprint read as a comment is a fingerprint `declares` can              never match: {parsed:?}"
+        );
+        assert_eq!(parsed[2].keytype, "ssh-ed25519", "{parsed:?}");
+        assert_eq!(parsed[2].key, "AAAAC3Other", "{parsed:?}");
+    }
+
+    /// The filter git is handed reads the entry the same way, so a `gpg` line
+    /// with a comment is still withheld from ssh-keygen.
+    ///
+    /// Read from the end, that line's type was the fingerprint, `gpg` matched
+    /// nothing, and the entry went to a parser with no keytype for it -- which
+    /// is exactly the state TASK-01cc22478782 closed and a comment quietly
+    /// reopened.
+    #[test]
+    fn a_gpg_entry_with_a_comment_is_still_withheld_from_ssh_keygen() {
+        let handed = git_readable_signers(
+            "sean@example.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A a note
+             test@ank.local ssh-ed25519 AAAAC3NzaC1lZDI1 ank test
+",
+        );
+        assert!(!handed.contains("gpg"), "{handed}");
+        assert!(handed.contains("ssh-ed25519"), "{handed}");
     }
 
     /// What git is handed carries nothing ssh-keygen would reject, and carries
