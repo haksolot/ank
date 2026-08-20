@@ -1,7 +1,4 @@
 /target
-# The spike of TASK-a8054da67947 is excluded from the workspace, so it builds
-# into a target of its own that the rule above does not reach.
-/spike/target
 .ank/index.db
 # Windows Explorer writes this into any folder it has been asked to display
 # differently, `.ank/` included. No slash, so it is caught wherever it lands.

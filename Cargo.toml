@@ -1,9 +1,3 @@
 [workspace]
 members = ["crates/ank-core", "crates/ank-contract", "crates/ank-cli", "crates/ank-mcp"]
 resolver = "2"
-# The spike of TASK-a8054da67947 is excluded and not a member, which is the
-# whole point of it: it depends on `gix`, and `gix` cannot enter this lockfile
-# while `serde` is pinned at `=1.0.210`. Excluded means its own lockfile, so a
-# measurement can be taken without the product's dependency graph moving an
-# inch. It builds nothing this binary ships and nothing dispatches to it.
-exclude = ["spike"]
