@@ -513,6 +513,126 @@ impl Repo {
         .unwrap();
     }
 
+    /// The golden corpus's own seeders (TASK-e89613d66284).
+    ///
+    /// Schema 3 and an author on every one, where the shared helpers above write
+    /// schema 1 and no author: this corpus is a published example, and a fixture
+    /// demonstrating a layout the store no longer writes teaches the wrong thing
+    /// to whoever reads it.
+    fn seed_golden_adr(&self, id: &str) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: adr\nslug: example\ntitle: A decision\n\
+                 created: 2026-07-20T00:00:00Z\nauthor: human:marie\nstatus: proposed\n\
+                 scope:\n  - src/**\nconstraint: |\n\
+                 {constraint}\nschema: 3\nversion: 1\n---\n\nWhy.\n",
+                constraint = GOLDEN_CONSTRAINT
+            ),
+        )
+        .unwrap();
+    }
+
+    /// Scoped `src/**` and not `docs/**` as [`Repo::seed_spec`] is: `scope.specs`
+    /// and `context.specs` are what a perimeter rests on, and both fixtures ask
+    /// about the source tree.
+    fn seed_golden_spec(&self, id: &str) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: spec\nslug: a-document\ntitle: A document\n\
+                 created: 2026-08-01T00:00:00Z\nauthor: human:marie\nstatus: proposed\n\
+                 scope:\n  - src/**\nschema: 3\nversion: 1\n---\n\
+                 \nThe document itself.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn seed_golden_task(&self, id: &str, title: &str, blocked_by: &[&str]) {
+        let blocked_by = format!("blocked_by: [{}]\n", blocked_by.join(", "));
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: task\nslug: example\ntitle: {title}\n\
+                 created: 2026-07-28T00:00:00Z\nauthor: human:marie\nstatus: open\n\
+                 scope:\n  - src/**\n{blocked_by}\
+                 done_criteria: |\n  A verifiable criterion.\ncriteria_by: creator\n\
+                 schema: 3\nversion: 1\n---\n\nFree body.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A second live claim under one identity, forged.
+    ///
+    /// `claim` refuses one (TASK-a548c95261a5), and rightly: `status.also_held`
+    /// exists for two machines pushing under one identity, which is a state the
+    /// refs can hold and this binary will not produce. So the record is written
+    /// the way that state arrives, by another clone updating the ref.
+    fn forge_claim(&self, id: &str, from: &str) {
+        let record = self
+            .claim_ref(from)
+            .expect("the claim being copied has to exist")
+            .replace(&format!("task: {from}"), &format!("task: {id}"));
+        self.write_ref(&format!("refs/ank/claims/{id}"), &record);
+    }
+
+    /// A detached proof, forged for the same reason.
+    ///
+    /// `attest --detached` refuses when the remote is unreachable, the ref being
+    /// the whole product, and this corpus has no remote: a fixture that grew one
+    /// would be pinning a clone rather than a document. The record is the one
+    /// `serialize_record` writes.
+    fn forge_detached_proof(&self, id: &str) {
+        let record = format!(
+            "state: proof{n}task: {id}{n}proofs:{n}- identity: process:github-actions{n}  \
+             attested: '2026-07-30T00:00:00Z'{n}  proof:{n}    type: test{n}    \
+             ref: ci-run-4242{n}",
+            n = "\n"
+        );
+        self.write_ref(&format!("refs/ank/proof/{id}"), &record);
+    }
+
+    /// Writes `content` as a blob and points `name` at it, which is how a record
+    /// arrives on a ref from anywhere but this process.
+    fn write_ref(&self, name: &str, content: &str) {
+        let mut child = git_command(&self.0)
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(content.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(out.status.success(), "hash-object: {}", stderr(&out));
+        let blob = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        self.git(&["update-ref", name, &blob]);
+    }
+
+    /// A log entity, for `show.log` and `log-read.entries`.
+    ///
+    /// Written as a file rather than made with `ank log`, which would need a
+    /// live claim: a claim in this corpus is a decision of its own, and the
+    /// coordination fixtures make it deliberately further down.
+    fn seed_golden_log(&self, id: &str, about: &str) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: log\ntitle: what the last holder learned\n\
+                 created: 2026-07-29T00:00:00Z\nauthor: human:marie\n\
+                 scope:\n  - src/**\nabout: {about}\n\
+                 seq: 0\nschema: 3\nversion: 1\n---\n\nThe entry itself.\n"
+            ),
+        )
+        .unwrap();
+    }
+
     /// A file under `docs/`, so that a seeded spec's scope names something and
     /// the dead-scope machinery stays out of the fixture under test.
     fn seed_docs(&self) {
@@ -14598,17 +14718,107 @@ fn golden(name: &str, actual: &str) {
 /// instants `seed_*` write, so that what survives redaction is the shape and
 /// not the run.
 fn golden_repo() -> Repo {
-    const ADR: &str = "ADR-0000000000ab";
     let r = Repo::new();
+    // A budget the constraint above can be measured against. Half of it is the
+    // limit an over-constrained perimeter passes, and 400 is what makes one
+    // constraint of ordinary length enough: a fixture needs the finding, and a
+    // corpus needing five constraints to produce it would be pinning a pile
+    // rather than a shape.
+    std::fs::write(
+        r.0.join(".ank/config.yml"),
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\ncontext_budget: 400\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(r.0.join("src")).unwrap();
     std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     r.seed_docs();
-    r.seed_adr(ADR, "Do not do X.", "src/**");
-    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // Written here rather than through the shared `seed_*` helpers, and every
+    // field is deliberate. This corpus is the sample the conformance test at the
+    // end of this section draws from, so an array left empty here is an element
+    // shape whose declaration nothing confronts (TASK-e89613d66284) — and those
+    // helpers are shared with two hundred other tests, where the same enrichment
+    // would be noise.
+    //
+    // `human:marie` throughout, and it buys two things. ADR-3877fef1d662 makes
+    // an entity written by an agent and read by no human a signal, and this
+    // corpus has to carry no signal it did not ask for; and the fixtures are
+    // read by clients as examples, where an author naming this suite would be an
+    // example of nothing.
+    r.seed_golden_adr(GOLDEN_ADR);
+    // The one `accept`'s own fixture ratifies. Two ADRs and not one, because
+    // the corpus needs a ratified decision for `context.constraints` and
+    // `accept` needs an unratified one: over the first it would refuse with
+    // code 7, which is the right refusal and the wrong fixture.
+    r.seed_golden_adr(GOLDEN_ADR_PROPOSED);
+    r.seed_golden_spec(GOLDEN_SPEC);
+    // The chain is what `show.blocked_by`, `show.unblocks` and `graph.edges`
+    // are: one task blocked by a second and blocking a third, so the document
+    // `show ID` returns carries a row on either side.
+    r.seed_golden_task(GOLDEN_READY, "A task that blocks", &[]);
+    r.seed_golden_task(ID, "Example task", &[GOLDEN_READY]);
+    r.seed_golden_task(GOLDEN_BLOCKED, "A task that waits", &[ID]);
+    r.seed_golden_task(GOLDEN_UNRELATED, "A task apart", &[]);
+    r.seed_golden_log(GOLDEN_LOG, ID);
+
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "seed"]);
+
+    // Ratified for real, and not forged. `context.constraints` carries what
+    // binds a perimeter, and only an accepted ADR binds one; an `accepted`
+    // status over an anchor written by hand is `altered since ratification`,
+    // which is a fault and not a fixture. So the corpus declares a key and
+    // `accept` makes the commit the anchor names.
+    r.forge_detached_proof(ID);
+    r.enable_signing();
+    declare_signing_key(&r);
+
+    // `human:jean` and not `human:marie`, who wrote them: an entity ratified by
+    // its own author is a signal, and this corpus carries no signal it did not
+    // ask for — `check.findings[].charge` is the breakdown of an
+    // over-constrained perimeter, and it is only exercised if every finding in
+    // the fixture is one that carries a breakdown.
+    for id in [GOLDEN_ADR, GOLDEN_SPEC] {
+        let out = r.ank("human:jean", &["accept", id]);
+        assert_eq!(
+            code(&out),
+            0,
+            "the golden corpus needs a real ratification of {id}: {}",
+            stderr(&out)
+        );
+    }
     r
 }
+
+/// The identifiers the golden corpus is built from, zero-prefixed so that
+/// [`redact`] leaves them alone: they are seeded and deterministic, where an
+/// identifier the binary minted is named away.
+/// Long enough to be measured against a budget, and that is the point of its
+/// length rather than a taste for prose: `check.findings[].charge` is the
+/// breakdown of an over-constrained perimeter, and a perimeter is
+/// over-constrained when the characters of constraint binding it pass half of
+/// `context_budget`. A one-line `Do not do X.` could only produce one against a
+/// budget so small that every other fixture would be reading a corpus nobody
+/// would configure.
+const GOLDEN_CONSTRAINT: &str = concat!(
+    "  Nothing under src/ reaches the network at import time. A module that\n",
+    "  opens a socket, reads an environment variable naming a host, or resolves\n",
+    "  a name while it is being loaded makes the import order a fact about the\n",
+    "  machine rather than about the program, and the failure it produces names\n",
+    "  the importer instead of the line that reached out.",
+);
+
+const GOLDEN_ADR: &str = "ADR-0000000000ab";
+const GOLDEN_ADR_PROPOSED: &str = "ADR-0000000000ba";
+const GOLDEN_SPEC: &str = "SPEC-0000000000cd";
+/// The one task in this corpus nothing blocks, and therefore the one the
+/// writing verbs act on: `claim` refuses a task waiting on an open blocker, so
+/// the task `show` is interesting about and the task `claim` can take cannot be
+/// the same one.
+const GOLDEN_READY: &str = "TASK-000000000002";
+const GOLDEN_BLOCKED: &str = "TASK-000000000003";
+const GOLDEN_LOG: &str = "LOG-0000000000ef";
+const GOLDEN_UNRELATED: &str = "TASK-000000000004";
 
 const AGENT: &str = "claude-code/1.0.0";
 
@@ -14624,7 +14834,6 @@ fn json_golden_reading_verbs() {
         ("scope", &["scope", "src/main.rs", "--json"][..]),
         ("check", &["check", "--json"][..]),
         ("review", &["review", "src/**", "--json"][..]),
-        ("status", &["status", "--json"][..]),
         ("context", &["context", "src/**", "--json"][..]),
         ("config-read", &["config", "claim_ttl_max", "--json"][..]),
         ("log-read", &["log", ID, "--json"][..]),
@@ -14637,6 +14846,26 @@ fn json_golden_reading_verbs() {
         );
         golden(name, &stdout(&out));
     }
+}
+
+/// `status`, which is the one reading verb that needs a corpus of its own.
+///
+/// `also_held` and `elsewhere` are facts about the coordination plane, and the
+/// first of them needs two live claims under the caller's own identity. A claim
+/// held by `AGENT` in the shared corpus would put `context` into execution mode
+/// and re-value every fixture around a state only this one is about — and the
+/// orientation shape, which is what a first reader of `context` needs, would
+/// stop being exercised at all.
+#[test]
+fn json_golden_status() {
+    let r = golden_repo();
+    r.ank(AGENT, &["claim", GOLDEN_READY]);
+    r.forge_claim(GOLDEN_BLOCKED, GOLDEN_READY);
+    let out = r.ank("human:marie", &["claim", GOLDEN_UNRELATED]);
+    assert_eq!(code(&out), 0, "a claim by somebody else: {}", stderr(&out));
+    let out = r.ank(AGENT, &["status", "--json"]);
+    assert_eq!(code(&out), 0, "status: {}", stderr(&out));
+    golden("status", &stdout(&out));
 }
 
 /// The verbs that write. One fixture each: a document that depended on the
@@ -14663,7 +14892,7 @@ fn json_golden_writing_verbs() {
 
     // claim, then the verbs that need a live claim
     let r = golden_repo();
-    let out = r.ank(AGENT, &["claim", ID, "--json"]);
+    let out = r.ank(AGENT, &["claim", GOLDEN_READY, "--json"]);
     golden("claim", &stdout(&out));
     let out = r.ank(AGENT, &["log", "what I learned", "--json"]);
     golden("log-write", &stdout(&out));
@@ -14676,7 +14905,7 @@ fn json_golden_writing_verbs() {
     // done, over a claim and a proof the caller holds
     let r = golden_repo();
     let head = r.head();
-    r.ank(AGENT, &["claim", ID]);
+    r.ank(AGENT, &["claim", GOLDEN_READY]);
     let out = r.ank(
         AGENT,
         &["done", "--proof", &format!("commit:{head}"), "--json"],
@@ -14684,15 +14913,20 @@ fn json_golden_writing_verbs() {
     golden("done", &stdout(&out));
 
     // attest, on the task that proof now names
-    let out = r.ank(AGENT, &["attest", ID, "--proof", "test:12345", "--json"]);
-    golden("attest", &stdout(&out));
-
-    // amend and close, on a corpus that never claimed
-    let r = golden_repo();
-    r.seed_task("TASK-000000000002", Some("Another criterion."));
     let out = r.ank(
         AGENT,
-        &["amend", ID, "--blocked-by", "TASK-000000000002", "--json"],
+        &["attest", GOLDEN_READY, "--proof", "test:12345", "--json"],
+    );
+    golden("attest", &stdout(&out));
+
+    // amend and close, on a corpus that never claimed. A fourth task, because
+    // the corpus already blocks ID on GOLDEN_BLOCKER: a blocker the task
+    // already carries is nothing to amend, and the fixture would pin an empty
+    // document.
+    let r = golden_repo();
+    let out = r.ank(
+        AGENT,
+        &["amend", ID, "--blocked-by", GOLDEN_UNRELATED, "--json"],
     );
     golden("amend", &stdout(&out));
     let out = r.ank(
@@ -14711,10 +14945,10 @@ fn json_golden_writing_verbs() {
 /// previous layout to migrate, and a directory with no corpus in it yet.
 #[test]
 fn json_golden_verbs_needing_their_own_environment() {
-    // accept, which is the one verb that commits
+    // accept, which is the one verb that commits. The corpus already declares a
+    // key and already ratified one ADR; this is the other one.
     let r = golden_repo();
-    r.enable_signing();
-    let out = r.ank(AGENT, &["accept", "ADR-0000000000ab", "--json"]);
+    let out = r.ank(AGENT, &["accept", GOLDEN_ADR_PROPOSED, "--json"]);
     assert_eq!(code(&out), 0, "accept: {}", stderr(&out));
     golden("accept", &stdout(&out));
 
@@ -14860,26 +15094,27 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // to be acknowledged, instead of quietly shrinking a number nobody watches —
     // and it means the gap is legible to a reader of the test rather than a
     // property they have to go and measure.
+    //
+    // **One row, and it is the one no corpus can reach** (TASK-e89613d66284).
+    // Thirteen of the fourteen this list used to carry were fixture problems and
+    // are fixed above: the golden corpus now holds a blocking chain, a spec and
+    // an ADR over the perimeter it asks about, a log entry, a detached proof, two
+    // claims under one identity and one under another, and a constraint heavy
+    // enough for the budget to charge it.
+    //
+    // `help.verbs[].refuses` is not a fixture problem. Seven verbs — `context`,
+    // `find`, `status`, `review`, `graph`, `scope` and `check` — declare no
+    // refusal at all, and what a verb declares comes from the table in
+    // `ank-contract` rather than from any corpus: no seeding makes one of those
+    // arrays carry a row. Emptying this list therefore means those seven
+    // declaring the states they refuse on, which is a change to the surface and
+    // a question for the specification, not a fixture to write. Named here so
+    // the next reader knows which of the two kinds of gap this is.
     unverified.sort();
     unverified.dedup();
     assert_eq!(
         unverified,
-        [
-            "check.findings[].charge",
-            "context.constraints",
-            "context.specs",
-            "graph.edges",
-            "help.verbs[].refuses",
-            "log-read.entries",
-            "review.live",
-            "scope.specs",
-            "show.blocked_by",
-            "show.detached_proofs",
-            "show.log",
-            "show.unblocks",
-            "status.also_held",
-            "status.elsewhere",
-        ],
+        ["help.verbs[].refuses"],
         "the element shapes the fixtures do not exercise have moved"
     );
 }
