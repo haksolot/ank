@@ -1,9 +1,0 @@
-[package]
-name = "ank-git-library-spike"
-version = "0.0.0"
-edition = "2021"
-publish = false
-description = "Measures what reading this repository through a Rust git library would cost, against the same reads through the git binary. Decides nothing (TASK-a8054da67947)."
-
-[dependencies]
-gix = "0.86"
