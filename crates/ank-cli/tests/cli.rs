@@ -12386,6 +12386,60 @@ fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
     );
 }
 
+/// **The cost of `check` stops growing with the corpus itself**
+/// (TASK-5f05e0c22f7b).
+///
+/// The other half of what a per-item question costs. `check` read one file per
+/// entity off the default branch and one ref per claim, two process starts
+/// each, so the price rose with every task written -- 616 starts on this
+/// repository, of which 391 were these two questions asked over and over.
+///
+/// Two corpora differing only in how many tasks they hold, each task claimed so
+/// that it carries a ref: what is varied is exactly what the criterion names,
+/// entities and refs under `refs/ank/`.
+#[test]
+fn checks_git_cost_does_not_grow_with_the_number_of_entities() {
+    fn corpus(tasks: usize) -> usize {
+        let r = Repo::new();
+        r.seed_docs();
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "seed"]);
+        for i in 0..tasks {
+            let id = format!("TASK-0000000{i:05x}");
+            r.seed_task(&id, Some("A verifiable criterion."));
+            r.git(&["add", "-A"]);
+            r.git(&["commit", "-qm", "one more task"]);
+            // Claimed under its own identity, so each task leaves a ref under
+            // `refs/ank/` and the one-live-claim rule does not refuse the
+            // second. Through the binary, which is also how a real corpus grows
+            // its coordination plane.
+            let out = r.ank(&format!("claude-code/agent-{i}"), &["claim", &id]);
+            assert_eq!(code(&out), 0, "{}", stderr(&out));
+        }
+        let trace = r.0.join("trace.json");
+        let out = ank_command()
+            .args(["check", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", AGENT)
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert!(code(&out) <= 8, "{}", stderr(&out));
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let starts = text.matches("\"event\":\"start\"").count();
+        assert!(starts > 0, "this test measures nothing: {text:.300}");
+        starts
+    }
+
+    let few = corpus(2);
+    let many = corpus(12);
+    assert_eq!(
+        few, many,
+        "twelve claimed tasks cost what two do, or a file or a ref is being read          one at a time again: {few} against {many}"
+    );
+}
+
 /// **Every ratification signature is verified in one process, whatever the
 /// corpus holds** (TASK-1b3d7b61dc8f).
 ///

@@ -5,7 +5,7 @@ slug: check-reads-one-file-and-one-ref-per-entity-and
 title: check reads one file and one ref per entity, and each is a process
 created: 2026-08-20T18:22:03Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -16,7 +16,7 @@ done_criteria: |
   The number of git subprocesses check spawns no longer grows with the number of entities or with the number of refs under refs/ank, measured through the binary with GIT_TRACE2_EVENT on two corpora differing only in entity count. The findings check, review and status report are identical to what they report before the change, subject by subject, level by level and message by message. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Measured while closing TASK-1b3d7b61dc8f, which bounded what grows with dead

@@ -586,6 +586,13 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     // cached, the error is not -- an unresolvable revision is raised every time
     // it is asked about, so a caller that ignores the first refusal is refused
     // again rather than silently served.
+    // Read from the batch when one was loaded for this revision, and asked of
+    // git when it was not (TASK-5f05e0c22f7b). An accelerator and never the
+    // authority: a path the batch does not carry is a path git is asked about,
+    // which is also what keeps a caller outside `check` answering correctly.
+    if let Some(hit) = preloaded(cwd, rev, path) {
+        return Ok(hit);
+    }
     if !resolves(cwd, rev)? {
         return Err(CliError::new(
             ExitCode::Environment,
@@ -639,6 +646,178 @@ pub fn output_with_stdin(cwd: &Path, args: &[&str], input: &[u8]) -> Result<Outp
         let _ = sink.write_all(input);
     }
     child.wait_with_output().map_err(fail)
+}
+
+/// Reads many objects in one process.
+///
+/// **One `cat-file --batch` where there was one `cat-file -p` per object**
+/// (TASK-5f05e0c22f7b). The coordination plane holds one ref per claim and per
+/// proof, and reading them one at a time cost a process each -- 95 of them on
+/// this repository, at 61 ms a start, paid by `check`, `find`, `graph`, `scope`
+/// and `status` alike.
+///
+/// **The framing is a size, never a separator**, which is the whole reason this
+/// mode exists: git answers `<name> <type> <size>` on one line, then exactly
+/// that many bytes, then a newline. A record therefore cannot be confused with
+/// content that happens to look like a header, and content containing a newline
+/// -- which every record here does -- is read exactly as long as it is. The
+/// lesson was paid for in TASK-1b3d7b61dc8f, where a separator a record could
+/// contain silently swallowed every ratification after the first commit with no
+/// body.
+///
+/// A name git cannot resolve comes back as `<name> missing` and is simply
+/// absent from the answer, which is what every caller already means by a lookup
+/// that found nothing.
+///
+/// Bytes and not text: the size is a byte count, so slicing a lossily decoded
+/// string would cut in the wrong place the first time an object carried
+/// something that is not UTF-8. The values are decoded one at a time, after the
+/// framing has done its work.
+pub fn cat_file_batch(cwd: &Path, objects: &[String]) -> Result<HashMap<String, String>> {
+    let mut found = HashMap::new();
+    if objects.is_empty() {
+        return Ok(found);
+    }
+    let mut input = String::new();
+    for o in objects {
+        input.push_str(o);
+        input.push('\n');
+    }
+    let out = output_with_stdin(cwd, &["cat-file", "--batch"], input.as_bytes())?;
+    if !out.status.success() {
+        return Ok(found);
+    }
+    let body = out.stdout;
+    let mut at = 0usize;
+    while at < body.len() {
+        let Some(eol) = body[at..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&body[at..at + eol]).to_string();
+        at += eol + 1;
+        let mut parts = header.split_whitespace();
+        let Some(name) = parts.next() else { continue };
+        let (Some(_kind), Some(size)) = (parts.next(), parts.next()) else {
+            // `<name> missing`, and the caller learns it by absence.
+            continue;
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            break;
+        };
+        if at + size > body.len() {
+            break;
+        }
+        let value = String::from_utf8_lossy(&body[at..at + size]).to_string();
+        // The size, then git's own trailing newline.
+        at += size + 1;
+        found.insert(name.to_string(), value);
+    }
+    Ok(found)
+}
+
+/// Every entity file the default branch carries, read in one process and kept
+/// for the process.
+///
+/// **A path lookup cannot be keyed on what git echoes back.** For an object
+/// named by sha, `--batch` repeats the name it was given; for `<rev>:<path>` it
+/// answers with the blob's own object name, which is not what was asked. So the
+/// alignment here is positional, and it is safe for the one reason that makes
+/// positional alignment ever safe: git emits **exactly one response per input
+/// line, in order**, and a path it cannot resolve still emits one, echoing the
+/// input followed by `missing`. The count is asserted rather than assumed.
+///
+/// Keyed on the revision as well as the repository, because the whole point of
+/// reading here is that the default branch and the working tree disagree (§7).
+pub fn preload_at(cwd: &Path, rev: &str, paths: &[String]) -> Result<()> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    // **Reloaded on every call, never reused across one.** A branch moves: a
+    // test commits between two inspections, `done` writes and reads back. The
+    // map is only ever right for the tip it was read at, so keeping it would
+    // serve a task as finished on the default branch when it is not -- the one
+    // direction this must never be wrong in. Refreshing costs one process per
+    // inspection, which is the price this whole task exists to pay once instead
+    // of per entity.
+    let key = (cwd.to_path_buf(), rev.to_string());
+    let memo = PRELOADED.get_or_init(|| Mutex::new(HashMap::new()));
+    let names: Vec<String> = paths.iter().map(|p| format!("{rev}:{p}")).collect();
+    let answers = cat_file_batch_ordered(cwd, &names)?;
+    let mut found: HashMap<String, Option<String>> = HashMap::new();
+    // A short answer means the framing was misread, and a half-filled map would
+    // report entities as absent from the branch that carries them -- which is a
+    // task called unfinished, not a slow tool. Nothing is stored in that case
+    // and every caller falls back to asking git itself.
+    if answers.len() == paths.len() {
+        for (path, answer) in paths.iter().zip(answers) {
+            found.insert(path.clone(), answer);
+        }
+    }
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(key, found);
+    }
+    Ok(())
+}
+
+type Preloaded = OnceLock<Mutex<HashMap<(PathBuf, String), HashMap<String, Option<String>>>>>;
+static PRELOADED: Preloaded = OnceLock::new();
+
+/// What [`preload_at`] holds for this path, or `None` when it was never asked
+/// to hold it.
+fn preloaded(cwd: &Path, rev: &str, path: &str) -> Option<Option<String>> {
+    let memo = PRELOADED.get()?;
+    let seen = memo.lock().ok()?;
+    seen.get(&(cwd.to_path_buf(), rev.to_string()))?
+        .get(path)
+        .cloned()
+}
+
+/// The same batch as [`cat_file_batch`], answered in the order it was asked.
+///
+/// Split out rather than folded in, because the two callers key differently and
+/// the difference is not cosmetic: a caller naming objects by sha reads the
+/// answer back by name, and a caller naming `<rev>:<path>` cannot.
+fn cat_file_batch_ordered(cwd: &Path, names: &[String]) -> Result<Vec<Option<String>>> {
+    let mut out = Vec::with_capacity(names.len());
+    if names.is_empty() {
+        return Ok(out);
+    }
+    let mut input = String::new();
+    for name in names {
+        input.push_str(name);
+        input.push('\n');
+    }
+    let answered = output_with_stdin(cwd, &["cat-file", "--batch"], input.as_bytes())?;
+    if !answered.status.success() {
+        return Ok(out);
+    }
+    let body = answered.stdout;
+    let mut at = 0usize;
+    while at < body.len() {
+        let Some(eol) = body[at..].iter().position(|b| *b == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&body[at..at + eol]).to_string();
+        at += eol + 1;
+        let mut parts = header.split_whitespace();
+        let _name = parts.next();
+        let (Some(_kind), Some(size)) = (parts.next(), parts.next()) else {
+            // `<input> missing`, which is a response and keeps the alignment.
+            out.push(None);
+            continue;
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            break;
+        };
+        if at + size > body.len() {
+            break;
+        }
+        out.push(Some(
+            String::from_utf8_lossy(&body[at..at + size]).to_string(),
+        ));
+        at += size + 1;
+    }
+    Ok(out)
 }
 
 /// Whether `rev` names a commit in this repository, asked once per revision.

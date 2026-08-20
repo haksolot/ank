@@ -511,6 +511,20 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         &detached,
     );
 
+    // Every entity file the default branch carries, in one process
+    // (TASK-5f05e0c22f7b). `done_on` and the three readers beside it each asked
+    // `cat-file` about one entity at a time, so a corpus of three hundred paid
+    // three hundred starts to learn what one call answers. A failure here is not
+    // reported and not fatal: `file_at` falls back to asking git per path, which
+    // is what it did before.
+    if let (true, Some(Ok(branch))) = (has_git, default_branch.as_ref()) {
+        let paths: Vec<String> = entities
+            .iter()
+            .flat_map(|(_, e)| entity_rel_paths(repo, e.id()))
+            .collect();
+        let _ = git::preload_at(&repo.root, branch, &paths);
+    }
+
     for (_, entity) in &entities {
         if !in_scope(entity) {
             continue;
@@ -632,7 +646,14 @@ type Plane = (
 fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
     let mut map = HashMap::new();
     let mut proofs: HashMap<EntityId, Vec<claim::AttestedProof>> = HashMap::new();
-    for r in git::ank_refs(cwd)? {
+    let refs = git::ank_refs(cwd)?;
+    // Every record in one process (TASK-5f05e0c22f7b). `read_at` resolves the
+    // ref and then reads the object, two starts each, and `for-each-ref` has
+    // already named the object -- so the resolution was a question whose answer
+    // was in hand and the read was the only one left to ask.
+    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
+    let records = git::cat_file_batch(cwd, &objects).unwrap_or_default();
+    for r in refs {
         // One walk over both namespaces. `check` asks the same question of
         // every ref under `refs/ank/`, and two loops would be free to disagree
         // about which of them a given ref belongs to.
@@ -652,7 +673,19 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
                 .push(Finding::fault(&r.name, "ref name is not an identifier"));
             continue;
         };
-        match claim::read_at(cwd, &r.name) {
+        let read = match records.get(&r.object) {
+            Some(text) => claim::parse_record(text, &r.name).map(|record| {
+                Some(claim::Held {
+                    object: r.object.clone(),
+                    record,
+                })
+            }),
+            // A ref `for-each-ref` named and `cat-file` could not read is the
+            // same nothing `read_at` answered with, and the caller below already
+            // has a verdict for it.
+            None => Ok(None),
+        };
+        match read {
             Ok(Some(held)) => match (held.record, proof_ns) {
                 (Record::Proof(p), true) => {
                     proofs.insert(id, p.proofs);

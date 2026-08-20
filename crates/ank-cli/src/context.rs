@@ -127,7 +127,13 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
     if !git::usable_here(cwd) {
         return Ok(plane);
     }
-    for r in git::ank_refs(cwd)? {
+    let refs = git::ank_refs(cwd)?;
+    // Every record in one process rather than one each (TASK-5f05e0c22f7b).
+    // `for-each-ref` already named the objects, so the second half of the
+    // question was the only one still being asked ref by ref.
+    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
+    let records = git::cat_file_batch(cwd, &objects).unwrap_or_default();
+    for r in refs {
         // The address decides which question the record answers, and a record
         // whose state contradicts its namespace is reported rather than
         // coerced: a proof blob on a claim ref would read as a free task, which
@@ -143,14 +149,13 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
         let Ok(id) = EntityId::parse(rest) else {
             continue;
         };
-        let args = ["cat-file", "-p", r.object.as_str()];
-        let out = git::output(cwd, &args)?;
-        if !out.status.success() {
+        // Absent from the batch is what unreadable was before: git was asked
+        // about the object and had nothing to give back.
+        let Some(text) = records.get(&r.object) else {
             warnings.push(format!("unreadable coordination ref {}", r.name));
             continue;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let record = match claim::parse_record(&text, &r.name) {
+        };
+        let record = match claim::parse_record(text, &r.name) {
             Ok(record) => record,
             Err(e) => {
                 // The ref is not appended: `corrupt` already names it, and it
