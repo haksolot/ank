@@ -35,9 +35,9 @@ use std::path::{Path, PathBuf};
 /// Bumped whenever the schema changes. An index carrying anything else is
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
-/// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`: nothing
-/// migrated any of those times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 4;
+/// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, and to 5 by
+/// `signatures`: nothing migrated any of those times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 5;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -120,6 +120,13 @@ CREATE VIRTUAL TABLE entities_fts USING fts5(
     criteria,
     tokenize = 'unicode61'
 );
+CREATE TABLE signatures (
+    commit_sha  TEXT NOT NULL,
+    signers     TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (commit_sha, signers)
+);
 ";
 
 /// The searchable columns, in the order the FTS table declares them, because
@@ -167,11 +174,11 @@ fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
 fn tables_present_in(conn: &Connection) -> rusqlite::Result<bool> {
     let found: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master \
-         WHERE type = 'table' AND name IN ('meta', 'files', 'entities')",
+         WHERE type = 'table' AND name IN ('meta', 'files', 'entities', 'signatures')",
         [],
         |r| r.get(0),
     )?;
-    Ok(found == 3)
+    Ok(found == 4)
 }
 
 fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
@@ -647,6 +654,57 @@ impl Index {
 
     /// Every entity, ordered by id so that two reads of an unchanged corpus
     /// never differ — the property the disposability test rests on.
+    /// The verdict already reached for this commit under this allowed-signers
+    /// file, if one was.
+    ///
+    /// **A ratification commit is immutable**, so the answer to "is this object
+    /// signed by a declared key" cannot change while the commit and the
+    /// allowlist stay as they are. Both are in the key: the sha, and a hash of
+    /// the file's bytes, so declaring a key invalidates every verdict that
+    /// depended on the old list rather than leaving stale ones behind
+    /// (TASK-dbef284a166c).
+    ///
+    /// **Every failure here is a miss.** Unreadable row, absent table, a
+    /// database that will not open: all of them mean ask git, and none of them
+    /// means assume the last answer. The thing being cached is the one anchor §8
+    /// says holds when everything else can be forged, so a cache that guesses is
+    /// worse than no cache at all.
+    pub fn signature(&self, commit: &str, signers: &str) -> Option<(char, String)> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT status, fingerprint FROM signatures                  WHERE commit_sha = ?1 AND signers = ?2",
+                params![commit, signers],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()
+            .ok()??;
+        let status = row.0.chars().next()?;
+        Some((status, row.1))
+    }
+
+    /// Records a verdict git reached, so the next run does not start gpg for it.
+    ///
+    /// **`E` is never written, and that is what keeps the cache honest about the
+    /// one outcome that depends on this machine.** §8's four outcomes include
+    /// "signature present, no local public key", which is a fact about the
+    /// keyring rather than about the commit -- and the keyring is the one input
+    /// not in the key. Refusing to store it means importing the key changes the
+    /// answer on the very next run, instead of leaving a reader to wonder why a
+    /// signature they can now verify still reads as unchecked.
+    ///
+    /// A write that fails is not an error: the cache is an accelerator, and the
+    /// next run recomputes.
+    pub fn remember_signature(&self, commit: &str, signers: &str, status: char, fp: &str) {
+        if status == 'E' {
+            return;
+        }
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO signatures (commit_sha, signers, status, fingerprint)              VALUES (?1, ?2, ?3, ?4)",
+            params![commit, signers, status.to_string(), fp],
+        );
+    }
+
     pub fn all(&self) -> Result<Vec<Row>> {
         self.query(&format!("{SELECT_ROW} ORDER BY id"), params![])
     }

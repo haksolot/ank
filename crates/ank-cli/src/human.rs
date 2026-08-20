@@ -4018,8 +4018,33 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
     // entries only ank reads. Falling back to the source on a failure to write
     // keeps the behaviour this had before the filter existed.
     let for_git = signers_for_git(&signers).unwrap_or_else(|| signers.clone());
+
+    // **The verdict already reached for this commit, under this allowlist**
+    // (TASK-dbef284a166c). gpg is 4.0 of the 7.1 seconds `check` costs on this
+    // repository, one verification per ratification inside a single `rev-list`,
+    // and batching cannot make a signature cheaper. It never needs doing twice:
+    // a ratification commit is immutable, and the allowlist is hashed into the
+    // key, so declaring a key invalidates every verdict that rested on the old
+    // one.
+    //
+    // A miss recomputes and never passes. Every failure below -- no index, no
+    // row, a status that will not read -- lands in the same place as a corpus
+    // seen for the first time, which is git being asked.
+    let cached = signature_cache(repo, |index, key| index.signature(&sha, key)).flatten();
+    if let Some((status, fingerprint)) = cached {
+        let facts = git::SignatureFacts {
+            status,
+            fingerprint,
+        };
+        let carries = facts.status == 'N' && commit_carries_signature(&repo.root, &sha);
+        return Some(classify_signature(&facts, &declared, carries));
+    }
+
     match git::signature_of(&repo.root, &sha, Some(&for_git)) {
         Ok(facts) => {
+            signature_cache(repo, |index, key| {
+                index.remember_signature(&sha, key, facts.status, &facts.fingerprint);
+            });
             // Asked only where the answer can change the verdict: every other
             // status already says whether a signature was there.
             let carries = facts.status == 'N' && commit_carries_signature(&repo.root, &sha);
@@ -4029,6 +4054,81 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
             reason: e.to_string(),
         }),
     }
+}
+
+/// The signing configuration git would use, as one string, read once per
+/// process.
+///
+/// Empty when git cannot be asked, which is a miss like any other: an empty key
+/// is still a key, and it changes the moment git can answer again.
+fn gpg_config(root: &Path) -> String {
+    thread_local! {
+        static SEEN: std::cell::RefCell<HashMap<PathBuf, String>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    SEEN.with(|cell| {
+        if let Some(hit) = cell.borrow().get(root) {
+            return hit.clone();
+        }
+        let read = git::output(root, &["config", "--get-regexp", r"^gpg\."])
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+            .unwrap_or_default();
+        cell.borrow_mut().insert(root.to_path_buf(), read.clone());
+        read
+    })
+}
+
+/// The index this repository's verdicts live in, and the key the allowlist
+/// contributes to them.
+///
+/// `None` whenever the cache cannot be reached, which every caller reads as a
+/// miss: §6 calls the index derived and disposable, and that is exactly the
+/// standing a signature cache may have -- losing it costs a recomputation and
+/// never a wrong answer.
+///
+/// The key is a hash of the file's **bytes** and not of the parsed entries: a
+/// comment is not a signer, but a file that changed is a file worth re-reading,
+/// and hashing the bytes cannot be wrong in the direction that matters.
+fn signature_cache<T>(repo: &Repo, with: impl FnOnce(&Index, &str) -> T) -> Option<T> {
+    thread_local! {
+        // **The connection is kept and the key never is.** Opening sqlite once
+        // per ratification made `check` slower than the gpg calls it was
+        // replacing, so the connection is held; but the first draft held the
+        // allowlist hash beside it, and then declaring a key changed nothing --
+        // the verdict cached under the old list went on being served. A test
+        // caught it, and it is the exact failure this cache must not have.
+        // Hashing a small file per lookup is the price of that, and it is
+        // nothing beside a signature.
+        //
+        // Keyed on the path because one process serves many corpora in the
+        // tests.
+        static OPEN: std::cell::RefCell<HashMap<PathBuf, Index>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    let text = std::fs::read(repo.ank.join("allowed_signers")).ok()?;
+    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
+    sha2::Digest::update(&mut hasher, &text);
+    // **The signing configuration is in the key too**, and a test that already
+    // existed is what said it had to be: `gpg.format` set to something git
+    // cannot use turns a readable signature into one it refuses to answer
+    // about, and a cache keyed on the commit and the allowlist alone went on
+    // reporting the old verdict on a machine that could no longer reach it
+    // (`a_signature_git_cannot_read_is_reported_rather_than_passed_over`).
+    //
+    // Every `gpg.*` key, taken whole rather than named one by one: which of
+    // them matters depends on the format in use, and a list written here would
+    // be a fourth surface to keep true.
+    sha2::Digest::update(&mut hasher, gpg_config(&repo.root).as_bytes());
+    let key = format!("{:x}", sha2::Digest::finalize(hasher));
+    OPEN.with(|cell| {
+        let mut open = cell.borrow_mut();
+        if !open.contains_key(&repo.ank) {
+            open.insert(repo.ank.clone(), Index::open(&repo.ank).ok()?);
+        }
+        let index = open.get(&repo.ank)?;
+        Some(with(index, &key))
+    })
 }
 
 /// Whether the commit object holds a signature header at all, whatever git was
@@ -7334,6 +7434,61 @@ mod tests {
     /// ordinary unsigned commit whose subject reads `ratify <id>` used to be
     /// accepted as a ratification: `rev-list` found it, the subject matched,
     /// the hashes agreed, and the freeze was reported intact.
+    #[test]
+    /// **A verdict cached under one allowlist does not survive another**
+    /// (TASK-dbef284a166c).
+    ///
+    /// The commit does not move, so a cache keyed on the commit alone would go
+    /// on answering `Trusted` about a signature nobody declares any more. The
+    /// allowlist is hashed into the key for exactly this, and the third act --
+    /// declaring the original key again -- is what says the key is the file's
+    /// content rather than the bare fact that it changed once.
+    #[test]
+    fn declaring_another_key_changes_the_verdict_a_cache_already_holds() {
+        let t = Temp::new();
+        t.enable_signing();
+        declare(&t, &signing_principal(&t));
+
+        t.write(&adr("00000000aaaa", AdrStatus::Proposed, &["src/**"]));
+        t.commit("seed");
+        t.call(&["accept", "ADR-00000000aaaa"], "marie@laptop")
+            .unwrap();
+
+        // The first reading is what fills the cache, and it must be the right
+        // one or the rest of this proves nothing.
+        let repo = t.repo();
+        assert_eq!(
+            signature_state(&repo, &t.adr_at("00000000aaaa")),
+            Some(Signature::Trusted),
+            "the key that signed it is the key declared"
+        );
+
+        // Now the allowlist names somebody else. The commit has not moved, so a
+        // cache keyed on the commit alone would go on answering `Trusted` about
+        // a signature nobody declares any more -- which is the cache lying about
+        // the one anchor §8 says holds when everything else can be forged.
+        declare(
+            &t,
+            "someone@else ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINotTheKey",
+        );
+        assert!(
+            matches!(
+                signature_state(&repo, &t.adr_at("00000000aaaa")),
+                Some(Signature::Undeclared { .. })
+            ),
+            "a verdict cached under the old allowlist must not survive it"
+        );
+
+        // And declaring the real key again brings the first answer back, which
+        // says the key is the allowlist's content and not the mere fact that it
+        // changed once.
+        declare(&t, &signing_principal(&t));
+        assert_eq!(
+            signature_state(&repo, &t.adr_at("00000000aaaa")),
+            Some(Signature::Trusted)
+        );
+    }
+
     #[test]
     fn an_unsigned_ratification_commit_is_refused_as_a_ratification() {
         let t = Temp::new();
