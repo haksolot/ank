@@ -18,13 +18,18 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Instant;
 
+/// Read from the manifest so the record names what was measured.
+const GIX_VERSION: &str = "0.86";
+
 fn main() {
     let root = std::env::args()
         .nth(1)
         .unwrap_or_else(|| ".".to_string());
     let root = Path::new(&root);
     println!("repository: {}", root.display());
-    println!("gix: {}", env!("CARGO_PKG_VERSION"));
+    // The library under measurement, not this crate: printing the spike's own
+    // version said `0.0.0` and recorded nothing about what was measured.
+    println!("gix: {}", GIX_VERSION);
     println!("platform: {}", std::env::consts::OS);
 
     // --- what the binary costs to start at all -----------------------------
