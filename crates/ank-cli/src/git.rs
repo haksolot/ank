@@ -579,9 +579,14 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     // The revision is checked first because git answers both cases with the
     // same exit code, and telling them apart from stderr would be exactly the
     // fragility the plumbing rule exists to avoid.
-    let commit = format!("{rev}^{{commit}}");
-    let verify = ["rev-parse", "--verify", "--quiet", commit.as_str()];
-    if !output(cwd, &verify)?.status.success() {
+    // **Asked once per revision and not once per file** (TASK-1b3d7b61dc8f).
+    // A branch does not move under a running process, and `check` reads one
+    // file per entity from the same one: 99 of the 447 git starts on this
+    // repository were this question, re-asked, at 61 ms each. The answer is
+    // cached, the error is not -- an unresolvable revision is raised every time
+    // it is asked about, so a caller that ignores the first refusal is refused
+    // again rather than silently served.
+    if !resolves(cwd, rev)? {
         return Err(CliError::new(
             ExitCode::Environment,
             format!("branch {rev} not found in this repository"),
@@ -596,6 +601,70 @@ pub fn file_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<String>> {
     Ok(Some(String::from_utf8_lossy(&out.stdout).to_string()))
 }
 
+/// The same call as [`output`], with bytes handed to git on stdin.
+///
+/// One command reading what another produced is the shape `diff-tree --stdin`
+/// wants, and doing it in-process rather than through a pipeline keeps §13's
+/// rule that no shell stands between ank and git.
+pub fn output_with_stdin(cwd: &Path, args: &[&str], input: &[u8]) -> Result<Output> {
+    use std::io::Write as _;
+    debug_assert!(
+        verb_of(args)
+            .map(|a| PLUMBING.contains(&a))
+            .unwrap_or(false),
+        "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
+    );
+    let fail = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            env_missing()
+        } else {
+            CliError::new(
+                ExitCode::Environment,
+                format!("git {}: {e}", args.join(" ")),
+            )
+        }
+    };
+    let mut child = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(fail)?;
+    // Written before the output is collected, and the result is deliberately
+    // ignored: git closing stdin early is how it says it has read enough, and a
+    // broken pipe there is an answer rather than a failure.
+    if let Some(mut sink) = child.stdin.take() {
+        let _ = sink.write_all(input);
+    }
+    child.wait_with_output().map_err(fail)
+}
+
+/// Whether `rev` names a commit in this repository, asked once per revision.
+///
+/// Split out and memoised rather than inlined: the question is about the
+/// repository and the answer cannot change while one process runs, so asking it
+/// again is a process start bought for nothing.
+fn resolves(cwd: &Path, rev: &str) -> Result<bool> {
+    static SEEN: OnceLock<Mutex<HashMap<(PathBuf, String), bool>>> = OnceLock::new();
+    let memo = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (cwd.to_path_buf(), rev.to_string());
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(&key) {
+            return Ok(*hit);
+        }
+    }
+    let commit = format!("{rev}^{{commit}}");
+    let verified = output(cwd, &["rev-parse", "--verify", "--quiet", commit.as_str()])?
+        .status
+        .success();
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(key, verified);
+    }
+    Ok(verified)
+}
+
 /// Where a path went, when the commit that removed it recorded a rename.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rename {
@@ -603,6 +672,195 @@ pub struct Rename {
     pub to: String,
     /// The commit that moved it, abbreviated for a reader to paste back.
     pub sha: String,
+}
+
+/// Every commit `HEAD` reaches, newest first, with the records
+/// `--name-status` gives for each.
+///
+/// **One walk answers what used to be two plumbing calls per dead scope**
+/// (TASK-1b3d7b61dc8f). `rev-list -1 HEAD -- <path>` followed by `diff-tree`
+/// answers one path, and a corpus with a hundred dead scopes paid two hundred
+/// process starts for it: 25 of the 44 seconds `check` took on this repository,
+/// measured on 2026-08-20, because a process start costs 100 to 200 ms here and
+/// each `rev-list` walks history until it finds its path, or all of it when git
+/// never knew that path. The same records come out of one `git log` in 339 ms,
+/// and the count no longer grows with the corpus.
+///
+/// The records are kept as the **bytes git emitted** rather than as a parsed
+/// structure, so every question below is answered by the same pure readers that
+/// read `diff-tree` before: [`records`], [`rename_target`], [`moved_prefix`] and
+/// [`deletes`] are untouched, and the alignment rule they encode is not
+/// reimplemented here.
+#[derive(Debug, Default)]
+pub struct History {
+    /// The sha and the `--name-status -z` records of each commit, newest first.
+    commits: Vec<(String, String)>,
+}
+
+/// Reads the whole history in one call.
+///
+/// `--format=%x00%H` frames it: `-z` terminates the format with a NUL of its
+/// own, so a commit arrives as an **empty field followed by its sha**, and an
+/// empty field is a frame no path can forge. A path is never empty, where a path
+/// of forty hexadecimal characters is perfectly possible.
+///
+/// **No pathspec and no `--full-history`**, which is what keeps this the same
+/// question the per-path calls asked: default simplification walks to the commit
+/// that made a change rather than to the merges that carried it, and a merge is
+/// a commit `--name-status` prints nothing for.
+pub fn history(cwd: &Path) -> Result<History> {
+    let listed = output(cwd, &["rev-list", "HEAD"])?;
+    if !listed.status.success() {
+        return Ok(History::default());
+    }
+    let shas = String::from_utf8_lossy(&listed.stdout).to_string();
+    if shas.trim().is_empty() {
+        return Ok(History::default());
+    }
+    let args = ["diff-tree", "--stdin", "-r", "-M", "-z", "--name-status"];
+    let out = output_with_stdin(cwd, &args, shas.as_bytes())?;
+    // A repository with no HEAD has no history to read, and that is not an error
+    // here: the caller reports the dead scope either way and only loses the
+    // explanation, which is what `None` means throughout this file.
+    if !out.status.success() {
+        return Ok(History::default());
+    }
+    Ok(History::parse(&String::from_utf8_lossy(&out.stdout)))
+}
+
+impl History {
+    /// Splits the walk into commits, keeping each one's records as git wrote
+    /// them.
+    ///
+    /// The newline is the one wrinkle: git puts one between the format and the
+    /// first record, so the first status arrives as `\nA` and would fail the
+    /// `R`/`C` test that decides whether a record carries one path or two,
+    /// misaligning every record after it. That is exactly how an answer becomes
+    /// wrong for a path nobody asked about.
+    fn parse(text: &str) -> History {
+        let is_sha = |f: &str| f.len() == 40 && f.bytes().all(|b| b.is_ascii_hexdigit());
+        let mut commits: Vec<(String, String)> = Vec::new();
+        let mut current: Option<(String, Vec<String>)> = None;
+        let mut fields = text.split('\0').filter(|f| !f.is_empty());
+        while let Some(field) = fields.next() {
+            if is_sha(field) {
+                if let Some((sha, records)) = current.take() {
+                    commits.push((sha, joined(&records)));
+                }
+                current = Some((field.to_string(), Vec::new()));
+                continue;
+            }
+            // One record, taken whole: a status carries one path, or two when it
+            // is `R` or `C`. Consuming it here rather than field by field is what
+            // keeps a path out of the commit test above -- a path is never at a
+            // record boundary, which is the whole reason that test is safe.
+            let pair = field.starts_with('R') || field.starts_with('C');
+            let mut record = vec![field.to_string()];
+            for _ in 0..(1 + usize::from(pair)) {
+                match fields.next() {
+                    Some(path) => record.push(path.to_string()),
+                    None => break,
+                }
+            }
+            if let Some((_, records)) = current.as_mut() {
+                records.extend(record);
+            }
+        }
+        if let Some((sha, records)) = current.take() {
+            commits.push((sha, joined(&records)));
+        }
+        History { commits }
+    }
+
+    /// The newest commit whose records touch `path`, and those records.
+    ///
+    /// The pathspec rule git applies, stated once: `-- <path>` matches the path
+    /// itself and everything beneath it, which is what lets one function serve
+    /// both a file and the literal prefix of a glob. Both sides of a rename
+    /// count, because a commit that moved a file *to* this path changed it just
+    /// as much as one that moved it away.
+    fn last_change(&self, path: &str) -> Option<(&str, &str)> {
+        let under = format!("{path}/");
+        let touches = |p: &str| p == path || p.starts_with(under.as_str());
+        self.commits
+            .iter()
+            .find(|(_, diff)| {
+                records(diff).any(|(_, src, dst)| touches(src) || dst.is_some_and(touches))
+            })
+            .map(|(sha, diff)| (sha.as_str(), diff.as_str()))
+    }
+
+    /// The rename that killed `path`, or `None` when git cannot name one
+    /// (ADR-97beaf55e73a).
+    ///
+    /// `None` is the honest answer for everything this cannot explain: a
+    /// deletion, a move under git's similarity threshold, a path renamed by a
+    /// merge, a shallow clone, a repository with no `HEAD`. The caller must
+    /// never render any of them as a claim about what happened to the file.
+    pub fn rename_of(&self, path: &str) -> Option<Rename> {
+        let (sha, diff) = self.last_change(path)?;
+        rename_target(diff, path).map(|to| Rename {
+            to,
+            sha: sha.chars().take(12).collect(),
+        })
+    }
+
+    /// Where a *directory* went, when the commit that emptied it recorded its
+    /// files as renamed into one other directory.
+    ///
+    /// What serves a glob, which [`History::rename_of`] cannot: git answers
+    /// about a path and has none for `src/**`, so the caller asks about the
+    /// literal prefix and this reads the answer back as a directory.
+    pub fn directory_rename_of(&self, prefix: &str) -> Option<Rename> {
+        let (sha, diff) = self.last_change(prefix)?;
+        moved_prefix(diff, prefix).map(|to| Rename {
+            to,
+            sha: sha.chars().take(12).collect(),
+        })
+    }
+
+    /// The commit that removed `path`, when the last change git records to it is
+    /// a deletion.
+    ///
+    /// Asked after [`History::rename_of`] and never instead of it: a commit that
+    /// removes a file and adds a similar one is recorded as a rename, and the
+    /// rename is the better answer because it names a place the reader can
+    /// follow.
+    pub fn deletion_of(&self, path: &str) -> Option<String> {
+        let (sha, diff) = self.last_change(path)?;
+        deletes(diff, path).then(|| sha.chars().take(12).collect())
+    }
+
+    /// The last commit to touch `prefix`, and the paths under it that commit
+    /// deleted.
+    ///
+    /// The paths are returned rather than reduced to a yes, and that is the
+    /// whole difference from [`History::deletion_of`]. A prefix is not the
+    /// scope: `src/**/*.rs` asks about `src`, and a commit that deleted
+    /// `src/notes.md` there says nothing about the scope that died. Only the
+    /// caller holds the glob, so only the caller can say whether a deleted path
+    /// is one this scope covered.
+    pub fn deletions_under(&self, prefix: &str) -> Option<(String, Vec<String>)> {
+        let (sha, diff) = self.last_change(prefix)?;
+        let under = format!("{prefix}/");
+        let deleted: Vec<String> = records(diff)
+            .filter(|(status, src, _)| status.starts_with('D') && src.starts_with(under.as_str()))
+            .map(|(_, src, _)| src.to_string())
+            .collect();
+        Some((sha.chars().take(12).collect(), deleted))
+    }
+}
+
+/// The records of one commit, back in the shape `diff-tree` handed the readers
+/// below: NUL-terminated fields, so nothing downstream has to know which of the
+/// two commands produced them.
+fn joined(records: &[String]) -> String {
+    let mut out = String::new();
+    for r in records {
+        out.push_str(r);
+        out.push('\0');
+    }
+    out
 }
 
 /// The rename that killed `path`, or `None` when git cannot name one
@@ -926,15 +1184,126 @@ pub fn ratification_at(cwd: &Path, id: &str, paths: &[String]) -> Result<Option<
             return Ok(hit.clone());
         }
     }
-    let mut found = None;
-    for path in paths {
-        found = ratification_uncached(cwd, id, path)?;
-        if found.is_some() {
-            break;
+    // `paths` is unused now and kept in the signature deliberately: the walk
+    // finds a ratification by the subject its own verb wrote, which is a fact
+    // about the commit and not about where the entity file sits, so the layout
+    // question the argument answers no longer arises. Removing it would move
+    // that reasoning out of the caller's sight.
+    // **The walk is an accelerator and never the authority.** It is read once
+    // and kept for the process, so a commit made after it -- `accept` ratifying
+    // and then reading back, a test staging a second ratification -- is not in
+    // it. A miss therefore falls back to the search this replaced, which asks
+    // git again and answers from the history as it stands now. The fast path
+    // carries every ratification that existed when the process started, which is
+    // all of them in the case this was written for.
+    let mut found = all_ratifications(cwd)?.get(id).cloned();
+    if found.is_none() {
+        for path in paths {
+            found = ratification_uncached(cwd, id, path)?;
+            if found.is_some() {
+                break;
+            }
         }
     }
     if let Ok(mut seen) = memo.lock() {
         seen.insert(key, found.clone());
+    }
+    Ok(found)
+}
+
+/// Every ratification in the history, read in one walk and kept for the process.
+///
+/// **This replaced a search per entity** (TASK-1b3d7b61dc8f). Each one ran
+/// `rev-list --full-history HEAD -- <path>` and then `cat-file commit` on the
+/// commits it returned until a subject matched, so a corpus with thirty
+/// ratified decisions paid 58 `rev-list` and 113 `cat-file` process starts,
+/// measured on this repository with `GIT_TRACE2_EVENT`. One `git log` carrying
+/// the subject and the body answers all of them, and the count stops growing
+/// with the corpus.
+///
+/// **The subject is the key, and it is what `accept` writes.** The old search
+/// was restricted to the entity's own paths, which was how it found a
+/// ratification made before the flat layout; a subject is independent of the
+/// path, so the same commit is found without knowing where the file sat.
+///
+/// `--full-history` here and nowhere else in this file, for the reason the
+/// per-entity search gave: the target is one specific commit identified by its
+/// subject, and simplification dropping it would lose the anchor.
+fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
+    static WALKED: OnceLock<Mutex<HashMap<PathBuf, HashMap<String, Ratification>>>> =
+        OnceLock::new();
+    let memo = WALKED.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(cwd) {
+            return Ok(hit.clone());
+        }
+    }
+    // NUL between the fields and two NULs between commits: a subject cannot
+    // contain one, and a body ending in a newline is left exactly as git wrote
+    // it. `%x00` rather than a text marker, which a commit message could forge.
+    // `rev-list` and not `log`: the walker is plumbing and the pretty format is
+    // the same machinery, where `log` is the porcelain ADR-b8884edcebe3 refuses
+    // by name. `--format` makes `rev-list` print a `commit <sha>` line of its
+    // own before each record, which is what the reader below steps past.
+    let args = [
+        "rev-list",
+        "--full-history",
+        "--format=%H%x00%s%x00%b%x00",
+        "HEAD",
+    ];
+    let out = output(cwd, &args)?;
+    let mut found: HashMap<String, Ratification> = HashMap::new();
+    if out.status.success() {
+        let text = String::from_utf8_lossy(&out.stdout);
+        // **Three fields per commit, counted, and never a separator between
+        // them.** A double NUL to end each record reads perfectly until a
+        // commit has no body: `%b` is then empty, the record ends in three NULs,
+        // and the split lands one NUL early -- from there every subject is read
+        // as a body and every ratification after the first bodyless commit
+        // disappears. Measured, and by a test that already existed: an unsigned
+        // ratification came back as no ratification at all, which is the one
+        // verdict `check` says nothing about.
+        //
+        // An empty field is a field, so counting is what a separator could not
+        // do.
+        let fields: Vec<&str> = text.split('\0').collect();
+        for record in fields.chunks_exact(3) {
+            let sha = record[0];
+            // `--format` implies `--pretty`, whose own `commit <sha>` line
+            // precedes the format output. `%H` is the last line of this field
+            // and is the same object name said twice; reading the header's
+            // instead would rest on the two never disagreeing.
+            let sha = sha.lines().next_back().unwrap_or_default().trim();
+            let Some(id) = record[1].trim().strip_prefix("ratify ") else {
+                continue;
+            };
+            let body = record[2];
+            // Newest first, and the newest wins: `rev-list` returned the same
+            // order and the search took the first match, so a decision ratified
+            // twice answers with the same commit it answered with before.
+            if found.contains_key(id) {
+                continue;
+            }
+            // Either key, and read as a key rather than as a prefix: which one a
+            // commit carries is a fact about the kind that was ratified, and a
+            // reader that knew only one would report every spec unverifiable.
+            let anchor = body.lines().find_map(|l| {
+                let (key, hash) = l.trim().split_once(": ")?;
+                matches!(key, ANCHOR_CONSTRAINT | ANCHOR_BODY).then(|| hash.trim().to_string())
+            });
+            if let Some(anchor) = anchor {
+                found.insert(
+                    id.to_string(),
+                    Ratification {
+                        sha: sha.to_string(),
+                        anchor,
+                    },
+                );
+            }
+        }
+    }
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(cwd.to_path_buf(), found.clone());
     }
     Ok(found)
 }
@@ -1023,20 +1392,24 @@ pub fn signature_of(
     // Git reads forward slashes on every platform it runs on, and the
     // conversion is guarded because a backslash is an ordinary character in a
     // POSIX filename and rewriting one there would break a path that worked.
-    let signers = allowed_signers.map(|p| {
-        let path = p.display().to_string();
-        let path = match cfg!(windows) {
-            true => path.replace('\\', "/"),
-            false => path,
-        };
-        format!("gpg.ssh.allowedSignersFile={path}")
-    });
+    let signers = signers_config(allowed_signers);
     let mut args: Vec<&str> = Vec::new();
     if let Some(cfg) = signers.as_deref() {
         args.push("-c");
         args.push(cfg);
     }
     args.extend_from_slice(&["rev-list", "--max-count=1", "--format=%G?%n%GF", sha]);
+
+    // **Every ratification at once, on the first ask** (TASK-1b3d7b61dc8f).
+    // `check` puts this question once per ratified entity, and each call starts
+    // git, which starts gpg: 43 processes and 5.9 of the 31.5 seconds git spent
+    // on this repository. The shas are known before any of them is asked about
+    // -- they are the ratifications the walk above already found -- so one call
+    // answers all of them, and what remains is gpg's own work rather than
+    // process starts.
+    if let Some(facts) = batched(cwd, sha, allowed_signers) {
+        return Ok(facts);
+    }
 
     let out = output(cwd, &args)?;
     if !out.status.success() {
@@ -1057,6 +1430,99 @@ pub fn signature_of(
     Ok(SignatureFacts {
         status,
         fingerprint,
+    })
+}
+
+/// The signature of every ratification, read in one call and kept for the
+/// process.
+///
+/// `None` when the batch cannot answer for this sha, and the caller then asks
+/// about it alone: a commit that is not a ratification is a question this map
+/// was never built to answer, and inventing a verdict for it is the one thing a
+/// signature check may never do.
+///
+/// The commits are read back from the `commit <sha>` header rather than from the
+/// order they were given, because `--no-walk` sorts by commit date unless told
+/// otherwise, and an answer aligned by position would be aligned wrongly.
+fn batched(cwd: &Path, sha: &str, allowed_signers: Option<&Path>) -> Option<SignatureFacts> {
+    type Facts = HashMap<(PathBuf, String), HashMap<String, SignatureFacts>>;
+    static SEEN: OnceLock<Mutex<Facts>> = OnceLock::new();
+    let memo = SEEN.get_or_init(|| Mutex::new(HashMap::new()));
+    let signers = allowed_signers
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    let key = (cwd.to_path_buf(), signers);
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(&key) {
+            return hit.get(sha).cloned();
+        }
+    }
+    let shas: Vec<String> = all_ratifications(cwd)
+        .ok()?
+        .values()
+        .map(|r| r.sha.clone())
+        .collect();
+    let mut facts: HashMap<String, SignatureFacts> = HashMap::new();
+    if !shas.is_empty() {
+        let config = signers_config(allowed_signers);
+        let mut args: Vec<&str> = Vec::new();
+        if let Some(cfg) = config.as_deref() {
+            args.push("-c");
+            args.push(cfg);
+        }
+        args.extend_from_slice(&["rev-list", "--no-walk", "--format=%G?%n%GF"]);
+        for sha in &shas {
+            args.push(sha.as_str());
+        }
+        if let Ok(out) = output(cwd, &args) {
+            if out.status.success() {
+                let text = String::from_utf8_lossy(&out.stdout);
+                let mut lines = text.lines();
+                while let Some(header) = lines.next() {
+                    let Some(named) = header.strip_prefix("commit ") else {
+                        continue;
+                    };
+                    let status = lines
+                        .next()
+                        .and_then(|l| l.trim().chars().next())
+                        .unwrap_or('N');
+                    let fingerprint = lines.next().unwrap_or_default().trim().to_string();
+                    facts.insert(
+                        named.trim().to_string(),
+                        SignatureFacts {
+                            status,
+                            fingerprint,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    let answer = facts.get(sha).cloned();
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(key, facts);
+    }
+    answer
+}
+
+/// The `-c` pair that points git at an allowed-signers file, or `None` when
+/// there is none to point at.
+///
+/// One rule for the two callers, and the Windows clause is why it is worth a
+/// function rather than a repeated block: a `-c name=value` pair goes through
+/// git's config parser, where a backslash opens an escape sequence, so an
+/// absolute Windows path arrives as something other than the path that was
+/// meant. Git reads forward slashes on every platform it runs on, and the
+/// conversion is guarded because a backslash is an ordinary character in a POSIX
+/// filename and rewriting one there would break a path that worked.
+fn signers_config(allowed_signers: Option<&Path>) -> Option<String> {
+    allowed_signers.map(|p| {
+        let path = p.display().to_string();
+        let path = match cfg!(windows) {
+            true => path.replace('\\', "/"),
+            false => path,
+        };
+        format!("gpg.ssh.allowedSignersFile={path}")
     })
 }
 

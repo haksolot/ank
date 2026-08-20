@@ -12305,6 +12305,130 @@ fn review_prints_the_ratification_queue_it_is_described_by() {
     );
 }
 
+/// **The cost of `check` stops growing with the corpus** (TASK-1b3d7b61dc8f).
+///
+/// What is counted is git **processes**, and not seconds. The cost being
+/// removed is the process start -- 61 ms each on the machine this was measured
+/// on, and 31.5 of the 44 seconds `check` took on this repository -- so a count
+/// measures the thing itself. It is also the same number on the three platforms
+/// CI runs, where a clock is not: a loaded runner would redden correct code, and
+/// a timing test that cries wolf is one people learn to skip.
+///
+/// Counted with `GIT_TRACE2_EVENT`, which git writes itself, one `start` record
+/// per process. No shim on `PATH`: Rust's `Command` appends `.exe` and never
+/// consults `PATHEXT`, so a `git.cmd` ahead of the real one is never found on
+/// Windows and the test would pass by measuring nothing.
+///
+/// **Two corpora differing only in how many scopes are dead**, on the same
+/// number of entities, so nothing but the property under test moves. Before the
+/// walk, each dead scope paid `rev-list -1 HEAD -- <path>` and then `diff-tree`,
+/// and one entity with eight dead globs paid sixteen process starts where one
+/// with a single dead glob paid two.
+#[test]
+fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
+    fn dead_scopes(count: usize) -> (Repo, usize) {
+        let r = Repo::new();
+        r.seed_docs();
+        // Real files, committed and then removed, so the scopes are dead the way
+        // a corpus's scopes actually die: git has a deletion to name, which is
+        // the answer the walk is there to find. A path git never knew would
+        // exercise the cheaper half of the question.
+        let scopes: Vec<String> = (0..count).map(|i| format!("gone/file-{i}.txt")).collect();
+        std::fs::create_dir_all(r.0.join("gone")).unwrap();
+        for path in &scopes {
+            std::fs::write(r.0.join(path), "content\n").unwrap();
+        }
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "the files these scopes name"]);
+        let quoted: Vec<&str> = scopes.iter().map(String::as_str).collect();
+        let mut args: Vec<&str> = vec!["new", "task", "--title", "Scoped at what is about to go"];
+        for path in &quoted {
+            args.push("--scope");
+            args.push(path);
+        }
+        args.push("--criteria");
+        args.push("A verifiable criterion.");
+        let out = r.ank(AGENT, &args);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        // `done`, because §4 makes a dead scope a fault on a finished task and a
+        // signal on an open one: both walk history, and the finished shape is
+        // the one a reader meets.
+        std::fs::remove_dir_all(r.0.join("gone")).unwrap();
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "and now they are gone"]);
+
+        let trace = r.0.join("trace.json");
+        let out = ank_command()
+            .args(["check", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", AGENT)
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert!(code(&out) <= 8, "{}", stderr(&out));
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let starts = text.matches("\"event\":\"start\"").count();
+        assert!(
+            starts > 0,
+            "the trace records no git process at all, so this test measures \
+             nothing: {text:.400}"
+        );
+        (r, starts)
+    }
+
+    let (_one, few) = dead_scopes(1);
+    let (_many, lots) = dead_scopes(8);
+    assert_eq!(
+        few, lots,
+        "eight dead scopes cost what one does, or the walk is being made once \
+         per scope again: {few} against {lots}"
+    );
+}
+
+/// **Every ratification signature is verified in one process, whatever the
+/// corpus holds** (TASK-1b3d7b61dc8f).
+///
+/// The other half of the criterion, and it is asked of the real corpus rather
+/// than of a fixture: this repository carries the ratifications, the signing key
+/// and the allowed-signers file, and seeding a second corpus with several signed
+/// ratifications would be rebuilding it. `check` asked `rev-list --format=%G?`
+/// once per ratified entity and each call started gpg -- 43 processes and 5.9 of
+/// the 31.5 seconds git spent here.
+///
+/// The assertion is on the shape of the argv rather than on a total, because
+/// the total is a property of this corpus on the day it is read, where "at most
+/// one call carries the signature format" is the property the batching claims.
+#[test]
+fn every_ratification_signature_is_verified_in_one_call() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("the workspace root is two levels up from this crate");
+    let trace = std::env::temp_dir().join(format!("ank-sig-trace-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&trace);
+    let out = ank_command()
+        .args(["check", "--repo"])
+        .arg(root)
+        .env("ANK_AGENT", AGENT)
+        .env("GIT_TRACE2_EVENT", &trace)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    assert!(code(&out) <= 8, "{}", stderr(&out));
+    let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+    // `%G?` reaches git as the argument that asks for the signature, so a call
+    // carrying it is a call that verifies one. The trace quotes the argv, and
+    // the question mark is not escaped in JSON.
+    let verifying = text.matches("%G?").count();
+    assert!(
+        verifying <= 1,
+        "the signature format reached git {verifying} times, so it is being \
+         asked once per ratification again"
+    );
+    let _ = std::fs::remove_file(&trace);
+}
+
 /// **`review` names who may ratify, and nothing else can** (TASK-8a80b590b356).
 ///
 /// ADR-01b6dd05f0db closes `.ank/` to a direct read by an agent, and

@@ -43,6 +43,7 @@ use ank_core::{
     SpecStatus, Task, TaskStatus, Verified,
 };
 use ank_core::{log::ELLIPSIS, CriteriaBy, ProofType, ProofVia, ScopeSet};
+use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -461,6 +462,9 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
     let files = tracked_files(&repo.root);
+    // One history walk for every dead scope this pass finds, read the first
+    // time one is found and never before (TASK-1b3d7b61dc8f).
+    let walked: OnceCell<git::History> = OnceCell::new();
 
     // From here the inspection has two halves, and one of them can be absent
     // (ADR-9307e5d214a7). Everything above is the corpus — parse, canonical
@@ -524,6 +528,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 entity,
                 &files,
                 has_git.then_some(repo.root.as_path()),
+                &walked,
                 &mut report,
             );
         }
@@ -989,6 +994,7 @@ fn check_scope_alive(
     entity: &Entity,
     files: &[String],
     git_root: Option<&Path>,
+    walked: &OnceCell<git::History>,
     report: &mut Report,
 ) {
     let globs = entity.scope();
@@ -1057,7 +1063,15 @@ fn check_scope_alive(
         // glob that already matches nothing. A healthy corpus reaches this line
         // no times.
         let mut note = match git_root {
-            Some(root) => scope_moved(entity, glob, root),
+            // Read once for the whole corpus and only where something is
+            // already dead: a healthy corpus reaches this line no times and
+            // starts no process, which is the cost clause of ADR-97beaf55e73a
+            // kept intact while the per-glob price it allowed goes away
+            // (TASK-1b3d7b61dc8f).
+            Some(root) => {
+                let history = walked.get_or_init(|| git::history(root).unwrap_or_default());
+                scope_moved(entity, glob, history)
+            }
             None => Vec::new(),
         };
         // The severity rule, and it only ever lowers. A dead scope git can
@@ -1129,7 +1143,7 @@ fn check_scope_alive(
 /// a truncated history and a typo that never named a real file all produce the
 /// same nothing, so no wording below may suggest which — the reader is left
 /// exactly where they stand today, and the finding above says all that is known.
-fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
+fn scope_moved(entity: &Entity, glob: &str, history: &git::History) -> Vec<String> {
     // A git failure is not a corpus fault and must never become one: the scope
     // is dead either way, and that is already reported. What is lost is the
     // explanation, which is exactly what `None` means everywhere else here.
@@ -1145,14 +1159,14 @@ fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
     };
     let directory = !tail.is_empty();
     let moved = match directory {
-        false => git::rename_of(root, &asked),
-        true => git::directory_rename_of(root, &asked),
+        false => history.rename_of(&asked),
+        true => history.directory_rename_of(&asked),
     };
     // The rename is asked first, and a deletion is only ever the answer git gave
     // when it recorded no rename: a commit that removed a file and added a
     // similar one is a rename, and the rename is the more useful of the two —
     // it names a place the reader can follow.
-    if let Ok(Some(moved)) = moved {
+    if let Some(moved) = moved {
         let to = format!("{}{tail}", moved.to);
         let mut note = vec![format!(
             "git records {asked} renamed to {} in {}",
@@ -1161,7 +1175,7 @@ fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
         note.extend(repair(entity, glob, &to));
         return note;
     }
-    scope_deleted(glob, &asked, directory, root)
+    scope_deleted(glob, &asked, directory, history)
 }
 
 /// The same note for the other death git records: the commit that deleted the
@@ -1176,9 +1190,9 @@ fn scope_moved(entity: &Entity, glob: &str, root: &Path) -> Vec<String> {
 /// Empty for everything git still cannot explain — a path that never existed, a
 /// move under the similarity threshold, a shallow clone — and the caller goes on
 /// reporting those as a fault. **Silence here is still not evidence.**
-fn scope_deleted(glob: &str, asked: &str, directory: bool, root: &Path) -> Vec<String> {
+fn scope_deleted(glob: &str, asked: &str, directory: bool, history: &git::History) -> Vec<String> {
     if !directory {
-        let Ok(Some(sha)) = git::deletion_of(root, asked) else {
+        let Some(sha) = history.deletion_of(asked) else {
             return Vec::new();
         };
         return vec![format!("git records {asked} deleted in {sha}")];
@@ -1188,7 +1202,7 @@ fn scope_deleted(glob: &str, asked: &str, directory: bool, root: &Path) -> Vec<S
     // the deleted paths are confronted with the glob itself, and a commit that
     // touched the prefix without removing anything the scope matched explains
     // nothing.
-    let Ok(Some((sha, deleted))) = git::deletions_under(root, asked) else {
+    let Some((sha, deleted)) = history.deletions_under(asked) else {
         return Vec::new();
     };
     let one = [glob.to_string()];
