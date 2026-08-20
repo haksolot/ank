@@ -12543,6 +12543,79 @@ fn every_ratification_signature_is_verified_in_one_call() {
     let _ = std::fs::remove_file(&trace);
 }
 
+/// **A repository with no signing key ratifies, and the corpus says it did so
+/// unsigned** (TASK-507660c3ebc4, ADR-964be4d940b2).
+///
+/// `accept` passed `-S` unconditionally and exited 9 naming
+/// `git config user.signingkey`, so a corpus running the advisory mode §8
+/// defines -- no key declared, no signature judged -- could not produce a
+/// ratification at all. `check` had a regime `accept` refused to work in.
+///
+/// Both halves are asserted, because the repair is only honest with the second:
+/// the ratification lands, **and** the corpus states the regime rather than
+/// letting an unsigned decision read as a verified one.
+#[test]
+fn a_repository_with_no_signing_key_ratifies_and_says_it_was_unsigned() {
+    const ADR: &str = "ADR-00000000c0c0";
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_adr(ADR, "Do not do X.", "src/**");
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        "fn main() {}
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // No `enable_signing`, no `declare_signing_key`: this repository cannot
+    // sign and declares nobody, which is the state that used to be a dead end.
+    let out = r.ank(AGENT, &["accept", ADR]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a corpus with no key must still be able to ratify: {}",
+        stderr(&out)
+    );
+
+    // The decision is binding, which is what ratifying is for.
+    let shown = stdout(&r.ank(AGENT, &["show", ADR]));
+    assert!(shown.contains("accepted"), "{shown}");
+
+    // And the regime is stated rather than implied by silence. The sentence is
+    // taken from `check` and matched in `review`, so the two surfaces are
+    // compared against each other and never against a string written here.
+    let checked = stdout(&r.ank(AGENT, &["check"]));
+    let said = checked
+        .lines()
+        .find(|l| l.contains("no ratification key declared"))
+        .unwrap_or_else(|| {
+            panic!(
+                "check must state the advisory regime:
+{checked}"
+            )
+        })
+        .trim()
+        .trim_start_matches("signal: allowed_signers:")
+        .trim()
+        .to_string();
+    let reviewed = stdout(&r.ank(AGENT, &["review"]));
+    assert!(
+        reviewed.contains(&said),
+        "review must say what check says:
+check: {said}
+review:
+{reviewed}"
+    );
+    assert!(
+        !checked.contains("ratified by") || !checked.contains("verified"),
+        "nothing may read as a verified ratification here: {checked}"
+    );
+    assert!(code(&out) == 0, "{}", stderr(&out));
+}
+
 /// **`review` names who may ratify, and nothing else can** (TASK-8a80b590b356).
 ///
 /// ADR-01b6dd05f0db closes `.ank/` to a direct read by an agent, and
