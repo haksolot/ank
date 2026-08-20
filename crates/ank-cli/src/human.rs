@@ -462,6 +462,13 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
     let files = tracked_files(&repo.root);
+    // Every scope entry in the corpus confronted with every tracked file, in
+    // one compiled set and one walk (TASK-097883a2c09f). It was one set per
+    // glob and one walk each, which is the only phase of this inspection that
+    // grows faster than the corpus: globs and files both grow, so their product
+    // grows twice as fast as either. Keyed on the pattern rather than on the
+    // entity, so two entities scoping one path are answered once.
+    let verdicts = scope_verdicts(&entities, &files);
     // One history walk for every dead scope this pass finds, read the first
     // time one is found and never before (TASK-1b3d7b61dc8f).
     let walked: OnceCell<git::History> = OnceCell::new();
@@ -540,7 +547,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         if entity.id().kind() != EntityKind::Log {
             check_scope_alive(
                 entity,
-                &files,
+                &verdicts,
                 has_git.then_some(repo.root.as_path()),
                 &walked,
                 &mut report,
@@ -1013,6 +1020,37 @@ fn tracked_files(root: &Path) -> Vec<String> {
     out
 }
 
+/// Every distinct scope pattern in the corpus, and whether any tracked file
+/// matches it.
+///
+/// **Keyed on the pattern and not on the entity**, which is the second saving:
+/// this corpus carries 462 scope entries and far fewer distinct patterns, and a
+/// pattern answered once is answered for every entity that declares it.
+///
+/// A pattern that does not compile is absent from the map, and the caller
+/// reports it as the fault it is rather than as a scope matching nothing.
+fn scope_verdicts(entities: &[(PathBuf, Entity)], files: &[String]) -> HashMap<String, bool> {
+    let mut patterns: Vec<String> = Vec::new();
+    for (_, entity) in entities {
+        for glob in entity.scope() {
+            let compiled = crate::repo::peer_ref(glob)
+                .map(|(_, under)| under.to_string())
+                .unwrap_or_else(|| glob.clone());
+            if !patterns.contains(&compiled) {
+                patterns.push(compiled);
+            }
+        }
+    }
+    let (alive, invalid) = ank_core::scope::live_globs(&patterns, files);
+    let mut out = HashMap::new();
+    for (i, p) in patterns.into_iter().enumerate() {
+        if !invalid[i] {
+            out.insert(p, alive[i]);
+        }
+    }
+    out
+}
+
 /// Structural death (§11): a scope matching no file. Verifiable, unlike
 /// temporal decay — a three-year-old constraint can be vital. Never acted on
 /// automatically: the code may simply have moved.
@@ -1025,7 +1063,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
 /// ask would be noise.
 fn check_scope_alive(
     entity: &Entity,
-    files: &[String],
+    verdicts: &HashMap<String, bool>,
     git_root: Option<&Path>,
     walked: &OnceCell<git::History>,
     report: &mut Report,
@@ -1081,14 +1119,16 @@ fn check_scope_alive(
         let compiled = cross
             .map(|(_, under)| under.to_string())
             .unwrap_or_else(|| glob.clone());
-        let Ok(one) = ScopeSet::new(std::slice::from_ref(&compiled)) else {
+        // Absent from the verdicts is a glob the one pass could not compile,
+        // which is the fault this used to raise by compiling it here.
+        let Some(alive) = verdicts.get(&compiled) else {
             report.findings.push(Finding::fault(
                 entity.id(),
                 format!("invalid glob '{glob}'"),
             ));
             continue;
         };
-        if cross.is_some() || files.iter().any(|f| one.matches(f)) {
+        if cross.is_some() || *alive {
             continue;
         }
         // The cost clause of ADR-97beaf55e73a, and the reason this sits here

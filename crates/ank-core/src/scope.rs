@@ -91,9 +91,98 @@ impl ScopeSet {
     }
 }
 
+/// Which of `globs` match at least one of `paths`, decided in one pass.
+///
+/// **One compiled set and one walk of the files, where it was one set per glob
+/// and one walk each** (TASK-097883a2c09f). Confronting every glob with every
+/// path is the one phase of `check` that grows faster than the corpus: this
+/// repository carries 462 scope entries against about 1100 tracked files, and
+/// both halves grow together, so a corpus twice the size costs four times as
+/// much. A `GlobSet` answers which globs a path matched, so the files are
+/// walked once and every glob learns its answer from that walk.
+///
+/// The two returned lists are aligned with `globs` by index. A glob that does
+/// not compile is marked and never silently treated as matching nothing, which
+/// would report a typo and a broken pattern the same way: the caller reports
+/// them differently and needs to tell them apart.
+pub fn live_globs(globs: &[String], paths: &[String]) -> (Vec<bool>, Vec<bool>) {
+    let mut alive = vec![false; globs.len()];
+    let mut invalid = vec![false; globs.len()];
+    let mut b = GlobSetBuilder::new();
+    // The index a glob has in the compiled set is not its index here, because
+    // the ones that do not compile are absent from it. Kept explicitly rather
+    // than derived, since deriving it is exactly the off-by-one that would
+    // report one entity's answer against another entity's glob.
+    let mut compiled: Vec<usize> = Vec::with_capacity(globs.len());
+    for (i, g) in globs.iter().enumerate() {
+        match Glob::new(g) {
+            Ok(glob) => {
+                b.add(glob);
+                compiled.push(i);
+            }
+            Err(_) => invalid[i] = true,
+        }
+    }
+    let Ok(set) = b.build() else {
+        // A set that will not build says nothing about any single glob, and
+        // answering "nothing is alive" would turn every scope in the corpus
+        // dead at once. The caller falls back to asking one glob at a time.
+        return (alive, invalid);
+    };
+    for path in paths {
+        for hit in set.matches(path.trim_end_matches('/')) {
+            if let Some(&at) = compiled.get(hit) {
+                alive[at] = true;
+            }
+        }
+    }
+    (alive, invalid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One pass answers what one set per glob answered, including for a glob
+    /// that does not compile (TASK-097883a2c09f).
+    ///
+    /// The invalid one sits **between** two valid globs on purpose: it is
+    /// absent from the compiled set, so every index after it shifts, and a
+    /// reader that derived the alignment instead of keeping it would credit
+    /// `docs/**`'s answer to `src/**`.
+    #[test]
+    fn one_pass_answers_every_glob_and_keeps_them_aligned() {
+        let globs = vec![
+            "src/**".to_string(),
+            "src/[".to_string(),
+            "docs/**".to_string(),
+            "nothing/**".to_string(),
+        ];
+        let paths = vec!["docs/guide.md".to_string(), "README.md".to_string()];
+        let (alive, invalid) = live_globs(&globs, &paths);
+        assert_eq!(alive, vec![false, false, true, false], "{alive:?}");
+        assert_eq!(invalid, vec![false, true, false, false], "{invalid:?}");
+    }
+
+    /// Every glob agrees with what `ScopeSet` answers for it alone, which is
+    /// the property the one-pass reading has to preserve.
+    #[test]
+    fn one_pass_agrees_with_one_set_per_glob() {
+        let globs: Vec<String> = ["src/**", "docs/*.md", "README.md", "a/b/**/*.rs"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let paths: Vec<String> = ["src/main.rs", "docs/guide.md", "a/b/c/d.rs", "other.txt"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let (alive, _) = live_globs(&globs, &paths);
+        for (i, g) in globs.iter().enumerate() {
+            let one = ScopeSet::new(std::slice::from_ref(g)).unwrap();
+            let expected = paths.iter().any(|p| one.matches(p));
+            assert_eq!(alive[i], expected, "{g}");
+        }
+    }
 
     /// The forms a shell actually produces, and the one answer they all name.
     /// `docs\` is the one that mattered: it used to survive into the match and
