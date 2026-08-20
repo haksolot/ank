@@ -15162,11 +15162,18 @@ fn json_golden_verbs_needing_their_own_environment() {
 /// that is wrong reads exactly like a description that is right.
 ///
 /// **The fixtures are the sample, and their limits are stated rather than
-/// papered over.** An empty array in a fixture cannot show the shape of its
-/// elements, so the rows underneath it go unverified here; the declaration for
-/// those comes from the builders in the source, and it becomes verified the day
-/// a fixture exercises one. The check says how many it could not see, so the
-/// number cannot quietly grow.
+/// papered over.** An array with no rows cannot show the shape of its elements,
+/// so a declaration the fixtures reach only through empty arrays goes unverified
+/// here; it rests on the builders in the source, and it becomes verified the day
+/// one instance carries a row. The limit is named rather than counted, so it
+/// cannot quietly grow.
+///
+/// **The question is about a declaration, not about an instance.** One shape is
+/// met once per array the walk descends into — `verbs[].refuses` is one
+/// declaration met twenty-two times — and a single row anywhere shows it. So the
+/// walk records both sides and subtracts, where it used to record only the empty
+/// one and report a shape as unseen because some other instance of it happened
+/// to be empty (TASK-fbdf25e30058).
 ///
 /// Parsed with `serde_yaml`, which is already a dependency and reads JSON
 /// because YAML 1.2 is a superset of it. §13 spends a dependency only on
@@ -15176,7 +15183,8 @@ fn json_golden_verbs_needing_their_own_environment() {
 fn every_golden_conforms_to_the_shape_its_verb_declares() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN_DIR);
     let mut checked = 0;
-    let mut unverified: Vec<String> = Vec::new();
+    let mut empty: Vec<String> = Vec::new();
+    let mut filled: Vec<String> = Vec::new();
 
     for entry in std::fs::read_dir(&dir).expect("the goldens must exist") {
         let path = entry.unwrap().path();
@@ -15198,7 +15206,7 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
         // The failure is reported against every candidate, because "it matched
         // none" without saying how is the report that sends a reader guessing.
         let mut failures = Vec::new();
-        let mut seen: Vec<String> = Vec::new();
+        let mut seen = Arrays::default();
         let matched =
             spec.output
                 .iter()
@@ -15218,7 +15226,18 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
         // *which* declaration is unexercised rather than which row happened to
         // be empty. `context.log` and `show.log` are two different fields, and a
         // list keyed on the path alone would have hidden one behind the other.
-        for path in seen {
+        // Dropping the indices is also what lets the two sides meet:
+        // `verbs[0].refuses` and `verbs[7].refuses` are one declaration, and
+        // they have to normalise to one key for the second to answer about the
+        // first.
+        //
+        // **The fixture stays in the key, so the subtraction is per document.**
+        // A verb with several documents declares several shapes, and a field of
+        // one name in two of them is two declarations; `config-read` filling an
+        // array would then be read as showing the shape `config-write` declares
+        // under that name, which is the conflation the stem is here to prevent.
+        // Within one document it is one shape by construction.
+        let key = |path: &str| {
             let mut normalised = String::with_capacity(path.len());
             let mut in_index = false;
             for c in path.chars() {
@@ -15235,48 +15254,65 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
                     _ => normalised.push(c),
                 }
             }
-            unverified.push(format!("{stem}.{normalised}"));
-        }
+            format!("{stem}.{normalised}")
+        };
+        empty.extend(seen.empty.iter().map(|p| key(p)));
+        filled.extend(seen.filled.iter().map(|p| key(p)));
         checked += 1;
     }
 
     assert_eq!(checked, 26, "one fixture per document the surface returns");
-    // Named rather than counted, and pinned rather than merely reported. These
-    // are the element shapes no fixture reaches, so their declarations rest on
-    // the builders in the source and on nothing this test can see. Writing the
-    // list out means a fixture that starts exercising one turns this red and has
-    // to be acknowledged, instead of quietly shrinking a number nobody watches —
-    // and it means the gap is legible to a reader of the test rather than a
-    // property they have to go and measure.
+    // **A declaration is unexercised when no instance of it anywhere carries a
+    // row**, which is the reading this list is about (TASK-fbdf25e30058). It
+    // used to be one instance at a time: a path went on the list every time the
+    // walk met it empty, so `help.verbs[].refuses` was reported as unseen
+    // because `status` declares no refusal, while the twenty-one other verbs
+    // carried rows in that same document and the walk parsed those rows itself
+    // one line further down. Subtracting what was filled from what was empty is
+    // what turns instances back into shapes.
     //
-    // **One row, and it is the one no corpus can reach** (TASK-e89613d66284).
-    // Thirteen of the fourteen this list used to carry were fixture problems and
-    // are fixed above: the golden corpus now holds a blocking chain, a spec and
-    // an ADR over the perimeter it asks about, a log entry, a detached proof, two
-    // claims under one identity and one under another, and a constraint heavy
-    // enough for the budget to charge it.
+    // Named rather than counted, and pinned rather than merely reported. A shape
+    // still on this list rests on the builders in the source and on nothing this
+    // test can see, so writing the list out means a fixture that starts
+    // exercising one turns this red and has to be acknowledged, instead of
+    // quietly shrinking a number nobody watches.
     //
-    // `help.verbs[].refuses` is not a fixture problem, and it is now down to one
-    // verb (TASK-106dccc7f71c). Seven declared no refusal; six of them performed
-    // refusals they declared nowhere — a path naming nothing inside the
-    // repository, `context --limit` given something that is not a number,
-    // `find --type` given a kind the registry does not declare — and those rows
-    // are in the table above. **`status` is the last empty array, and it is
-    // empty because the verb is honest**: it takes no path, parses no value of
-    // its own, and answers an unreachable origin with a warning rather than a
-    // refusal, so the vacuous case §9 allows is the true one. The row stays
-    // listed here because this walk reports a path once per empty instance, not
-    // once per shape — the twenty-one other verbs carry rows in this same
-    // fixture, so the element shape *is* exercised — and the honest way to empty
-    // this list is to make the walk say that, never to invent a refusal for a
-    // verb that has none.
-    unverified.sort();
-    unverified.dedup();
-    assert_eq!(
-        unverified,
-        ["help.verbs[].refuses"],
-        "the element shapes the fixtures do not exercise have moved"
+    // **It is empty, and getting there took two tasks.** Thirteen of the
+    // fourteen shapes it once carried were fixture problems, fixed by seeding a
+    // golden corpus that holds a blocking chain, a spec and an ADR over the
+    // perimeter it asks about, a log entry, a detached proof, two claims under
+    // one identity and one under another, and a constraint heavy enough for the
+    // budget to charge it (TASK-e89613d66284). The fourteenth was
+    // `help.verbs[].refuses`, and it was two faults wearing one symptom: six
+    // verbs performed refusals they declared nowhere, which is the table's
+    // problem and was fixed there (TASK-106dccc7f71c), and the last empty array
+    // is `status`, which refuses on nothing and whose empty declaration is a
+    // fact about the verb rather than a gap. Nothing was invented for it; the
+    // walk was taught to read shapes.
+    empty.sort();
+    empty.dedup();
+    filled.sort();
+    filled.dedup();
+    let unverified: Vec<&String> = empty.iter().filter(|p| !filled.contains(p)).collect();
+    assert!(
+        unverified.is_empty(),
+        "the fixtures reach no instance of these declarations, so nothing here \
+         verifies them: {unverified:?}"
     );
+}
+
+/// Every array path the walk met, split by whether that instance carried a row.
+///
+/// Two lists and not one, because the question asked of them is about a shape
+/// and the walk meets instances: `help.verbs[].refuses` is one declaration met
+/// twenty-two times, and it is exercised if any one of those instances has a row
+/// in it. Subtracting `filled` from `empty` is what turns instances back into
+/// shapes; keeping only `empty` answered a question nobody asked
+/// (TASK-fbdf25e30058).
+#[derive(Default)]
+struct Arrays {
+    empty: Vec<String>,
+    filled: Vec<String>,
 }
 
 /// One document against one declared shape, recursively.
@@ -15289,7 +15325,7 @@ fn conforms(
     value: &serde_yaml::Value,
     fields: &[ank_contract::shape::Field],
     path: &str,
-    unverified: &mut Vec<String>,
+    arrays: &mut Arrays,
 ) -> Result<(), String> {
     use ank_contract::shape::Type;
     use serde_yaml::Value;
@@ -15341,7 +15377,7 @@ fn conforms(
             Type::Num if v.is_number() => {}
             Type::Bool if v.as_bool().is_some() => {}
             Type::Strings | Type::Array(_) if v.as_sequence().is_some() => {}
-            Type::Object(inner) => conforms(v, inner, &here, unverified)?,
+            Type::Object(inner) => conforms(v, inner, &here, arrays)?,
             _ => {
                 return Err(format!(
                     "{here}: declared {}, found {}",
@@ -15362,11 +15398,17 @@ fn conforms(
         }
         if let Type::Array(inner) = field.ty {
             let rows = v.as_sequence().unwrap();
-            if rows.is_empty() {
-                unverified.push(here.clone());
+            // Both answers are recorded, never only the empty one: the question
+            // upstream is about the *shape*, and an instance carrying rows is
+            // what shows it. Reporting the empty side alone made an exercised
+            // shape read as unexercised because some other instance of it
+            // happened to be empty (TASK-fbdf25e30058).
+            match rows.is_empty() {
+                true => arrays.empty.push(here.clone()),
+                false => arrays.filled.push(here.clone()),
             }
             for (i, row) in rows.iter().enumerate() {
-                conforms(row, inner, &format!("{here}[{i}]"), unverified)?;
+                conforms(row, inner, &format!("{here}[{i}]"), arrays)?;
             }
         }
     }

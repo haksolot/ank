@@ -5,15 +5,20 @@ slug: the-shape-walk-counts-empty-instances-so-an-exer
 title: The shape walk counts empty instances, so an exercised shape reads as unexercised
 created: 2026-08-20T05:00:48Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-cli/tests/**
 blocked_by: []
 done_criteria: |
   every_golden_conforms_to_the_shape_its_verb_declares reports an array path as unexercised only when no instance of that path, in any fixture it walks, carries a row; a path some instance fills is not listed because another instance is empty. A path no instance anywhere fills is still named, and the pinned list is asserted as whatever that reading produces rather than loosened to a count or a subset. The comment beside the assertion says which of the two readings it is and why. cargo test --workspace and ank check stay green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: b101d7230c900e10b827b8662e47d30365988957
+    criteria: 2b1137657cf9
+    via: submitted
 schema: 3
-version: 1
+version: 3
 ---
 
 Measured while closing TASK-106dccc7f71c, which declared the refusals six verbs
