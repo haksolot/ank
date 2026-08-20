@@ -5,7 +5,7 @@ slug: check-spawns-one-git-process-per-dead-scope-and
 title: check spawns one git process per dead scope and per ratified entity
 created: 2026-08-20T07:30:15Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -15,7 +15,7 @@ done_criteria: |
   The number of git subprocesses check spawns is bounded by a constant and no longer grows with the number of dead scopes or of ratified entities, measured through the binary with a counting git ahead of the real one on PATH, on a corpus seeded with several of each so that a per-item cost is visible as a difference. The findings check, review and status report on this repository are identical to what they report before the change, subject by subject, level by level and message by message. cargo test --workspace and ank check stay green.
 criteria_by: creator
 schema: 3
-version: 1
+version: 2
 ---
 
 Measured on 2026-08-20, on this repository, with the release binary:
