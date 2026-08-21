@@ -126,6 +126,8 @@ struct LogFm {
     about: String,
     seq: u64,
     #[serde(default)]
+    records: Option<String>,
+    #[serde(default)]
     verified: Vec<Verified>,
     schema: u32,
     version: u64,
@@ -414,6 +416,7 @@ fn parse_log_fm(fm: &str, body: &str) -> Result<Log> {
         scope: raw.scope,
         about,
         seq: raw.seq,
+        records: raw.records,
         verified: raw.verified,
         schema: raw.schema,
         version: raw.version,

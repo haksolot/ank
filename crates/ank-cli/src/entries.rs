@@ -50,6 +50,10 @@ use ank_core::{message_fields, Entity, EntityId, EntityKind, Log, LogEntry};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: Option<EntityId>,
+    /// What the entry records, when it records something other than work
+    /// (ADR-16813b3bcf37). `None` is the work trace, which is what a reader
+    /// means by the log and what every line of the previous layout is.
+    pub records: Option<String>,
     /// The rank of §3: the entry's own `seq`, and the line's index in the file
     /// for one read out of the previous layout — which is the order that file
     /// recorded and the only one it had.
@@ -68,6 +72,25 @@ impl Entry {
     fn order_key(&self) -> (&str, u64, Option<&EntityId>) {
         (&self.line.timestamp, self.seq, self.id.as_ref())
     }
+
+    /// Whether this entry is machinery rather than something a holder wrote.
+    pub fn is_machinery(&self) -> bool {
+        self.records.is_some()
+    }
+}
+
+/// The work trace and the machinery, in that order, each keeping the order it
+/// had.
+///
+/// **The split is at the reader and never at the source.** `about` answers with
+/// every entry, because an entry is an entity and a listing that dropped some
+/// of them would be a corpus that reads differently through two verbs. What
+/// changes is the presentation: `ank log` is what an agent reads before
+/// repeating what a previous holder already tried, and an entity edited eight
+/// times would answer that question with eight mechanical lines
+/// (ADR-16813b3bcf37).
+pub fn split(entries: Vec<Entry>) -> (Vec<Entry>, Vec<Entry>) {
+    entries.into_iter().partition(|e| !e.is_machinery())
 }
 
 /// Every entry about an entity, **oldest first**.
@@ -95,6 +118,7 @@ pub fn about(store: &Store, index: &Index, subject: &Entity) -> Result<Vec<Entry
         };
         out.push(Entry {
             id: Some(entry.id.clone()),
+            records: entry.records.clone(),
             seq: entry.seq,
             line: LogEntry::of(&entry),
         });
@@ -112,6 +136,9 @@ pub fn about(store: &Store, index: &Index, subject: &Entity) -> Result<Vec<Entry
         // and it is the order `migrate` will give them (§3).
         .map(|(n, line)| Entry {
             id: None,
+            // A line the previous layout holds predates the field entirely, so
+            // it is work, which is also the only thing that layout ever held.
+            records: None,
             seq: n as u64,
             line,
         })
@@ -242,6 +269,10 @@ pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> L
         scope: subject.scope().to_vec(),
         about: subject.id().clone(),
         seq,
+        // Both callers write work: `ank log` is a holder saying what they
+        // learned, and a migration carries a line a holder wrote. Machinery is
+        // written elsewhere and says so (ADR-16813b3bcf37).
+        records: None,
         verified: Vec::new(),
         schema: ank_core::SCHEMA_VERSION,
         version: 1,

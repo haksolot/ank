@@ -139,6 +139,7 @@ static LOG_FIELDS: &[FieldSpec] = &[
     req("scope"),
     req("about"),
     req("seq"),
+    opt("records"),
     opt("verified"),
     req("schema"),
     req("version"),
@@ -377,6 +378,9 @@ impl Fields for Log {
             // order: a timestamp alone is not a total order over entries, so
             // the rank is a field or it does not exist (§3).
             "seq" => Bare(self.seq.to_string()),
+            // Absent is a work entry, so an entry that records nothing but work
+            // is written exactly as it was before this field existed.
+            "records" => Scalar(self.records.as_deref()?),
             "verified" => {
                 if self.verified.is_empty() {
                     return None;

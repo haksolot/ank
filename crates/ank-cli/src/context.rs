@@ -881,7 +881,13 @@ fn build_execution(
     let loaded = store.load(&id)?;
     // The entries about this task, from the corpus, and from the previous log
     // directory only where a corpus has not been migrated yet (§3).
-    let log_entries = crate::entries::about(store, index, &loaded.entity)?;
+    // The work trace alone. This view is served under a budget to an agent
+    // about to work, and what it is for is what previous holders learned; a
+    // mechanical line here would spend that budget on saying that a field
+    // moved (ADR-16813b3bcf37). The machinery is reachable through `ank log`
+    // and `ank show`, which are the verbs a reader asks that question with.
+    let (log_entries, _machinery) =
+        crate::entries::split(crate::entries::about(store, index, &loaded.entity)?);
     let Entity::Task(task) = loaded.entity else {
         return Err(CliError::new(
             ExitCode::Generic,

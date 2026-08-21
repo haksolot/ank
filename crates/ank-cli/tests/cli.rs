@@ -633,6 +633,27 @@ impl Repo {
         .unwrap();
     }
 
+    /// An entry that records machinery rather than work, which is what
+    /// `show.machinery` and `log-read.machinery` are (ADR-16813b3bcf37).
+    ///
+    /// Written by hand and at schema 4, because no verb writes one yet: the
+    /// verbs that will are TASK-3c12e0ced2c0, and a declaration no fixture
+    /// reaches is a declaration nothing verifies, which the conformance test at
+    /// the end of this file refuses by name.
+    fn seed_golden_machinery(&self, id: &str, about: &str) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: log\n\
+                 title: \"constraint, body: 1 -> 2, was 6f1d9c04a7b2\"\n\
+                 created: 2026-07-29T00:00:01Z\nauthor: human:marie\n\
+                 scope:\n  - src/**\nabout: {about}\n\
+                 seq: 1\nrecords: edit\nschema: 4\nversion: 1\n---\n\nThe entry itself.\n"
+            ),
+        )
+        .unwrap();
+    }
+
     /// A file under `docs/`, so that a seeded spec's scope names something and
     /// the dead-scope machinery stays out of the fixture under test.
     fn seed_docs(&self) {
@@ -15332,6 +15353,9 @@ fn golden_repo() -> Repo {
     r.seed_golden_task(GOLDEN_BLOCKED, "A task that waits", &[ID]);
     r.seed_golden_task(GOLDEN_UNRELATED, "A task apart", &[]);
     r.seed_golden_log(GOLDEN_LOG, ID);
+    // Both kinds about one entity, which is what makes the split visible: the
+    // work trace answers with one entry and the machinery with the other.
+    r.seed_golden_machinery(GOLDEN_EDIT, ID);
 
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "seed"]);
@@ -15390,6 +15414,7 @@ const GOLDEN_SPEC: &str = "SPEC-0000000000cd";
 const GOLDEN_READY: &str = "TASK-000000000002";
 const GOLDEN_BLOCKED: &str = "TASK-000000000003";
 const GOLDEN_LOG: &str = "LOG-0000000000ef";
+const GOLDEN_EDIT: &str = "LOG-0000000000fe";
 const GOLDEN_UNRELATED: &str = "TASK-000000000004";
 
 const AGENT: &str = "claude-code/1.0.0";
@@ -16152,4 +16177,156 @@ fn the_corpus_named_as_its_own_work_tree_answers_identically() {
     assert_eq!(stdout(&alone), stdout(&named));
     assert_eq!(stderr(&alone), stderr(&named));
     assert_eq!(code(&alone), code(&named));
+}
+
+// ---------------------------------------------------------------------------
+// The work trace and the machinery (ADR-16813b3bcf37, TASK-027a429aad2e)
+// ---------------------------------------------------------------------------
+
+/// One entry about `about`, written by hand because no verb writes machinery
+/// yet: the verbs that will are TASK-3c12e0ced2c0. `records` absent is a work
+/// entry, which is what every entry written before the field existed is.
+fn seed_entry(r: &Repo, id: &str, about: &str, seq: u64, title: &str, records: Option<&str>) {
+    let records = records
+        .map(|v| format!("records: {v}\n"))
+        .unwrap_or_default();
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        format!(
+            "---\nid: {id}\ntype: log\ntitle: {title}\n\
+             created: 2026-07-29T00:00:0{seq}Z\nauthor: human:marie\n\
+             scope:\n  - src/**\nabout: {about}\n\
+             seq: {seq}\n{records}schema: 4\nversion: 1\n---\n\nThe entry itself.\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// The work trace holds what a holder wrote, and nothing else.
+///
+/// The count is half the assertion and not a detail. `ank log` is what an agent
+/// reads before repeating what a previous holder already tried, and an entity
+/// edited eight times answering "8 of 8" has already told that reader something
+/// false about how much there is to learn.
+#[test]
+fn a_machinery_entry_is_in_neither_the_work_trace_nor_its_count() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    seed_entry(
+        &r,
+        "LOG-00000000ab01",
+        ID,
+        0,
+        "what the last holder learned",
+        None,
+    );
+    seed_entry(
+        &r,
+        "LOG-00000000ab02",
+        ID,
+        1,
+        "constraint and body rewritten, was 6f1d9c04a7b2",
+        Some("edit"),
+    );
+
+    let shown = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&shown), 0, "{}", both_streams(&shown));
+    let text = stdout(&shown);
+    let (trace, edits) = text
+        .split_once("EDITS")
+        .expect("the machinery has a section of its own");
+    assert!(
+        trace.contains("what the last holder learned"),
+        "the work trace holds what a holder wrote: {trace}"
+    );
+    assert!(
+        !trace.contains("was 6f1d9c04a7b2"),
+        "and does not hold the machinery: {trace}"
+    );
+    assert!(
+        edits.contains("was 6f1d9c04a7b2"),
+        "which is printed under it instead: {edits}"
+    );
+    assert!(
+        trace.contains("LOG (1 of 1)"),
+        "the count is the trace's, not the corpus's: {trace}"
+    );
+
+    let logged = r.ank("claude-code@ank", &["log", ID]);
+    assert_eq!(code(&logged), 0, "{}", both_streams(&logged));
+    let text = stdout(&logged);
+    let (trace, edits) = text
+        .split_once("EDITS")
+        .expect("the machinery has a section of its own here too");
+    assert!(trace.contains("what the last holder learned"), "{trace}");
+    assert!(!trace.contains("was 6f1d9c04a7b2"), "{trace}");
+    assert!(edits.contains("was 6f1d9c04a7b2"), "{edits}");
+}
+
+/// A parser reads it, `check` judges it.
+///
+/// The direction matters: a value refused at parse time would make the entry
+/// disappear from a corpus written by a newer build, which is the failure the
+/// reader range exists to prevent. What a reader is told is that this build
+/// does not know the word, never that the word is wrong.
+#[test]
+fn an_unknown_records_value_is_a_finding_and_never_a_parse_error() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    seed_entry(
+        &r,
+        "LOG-00000000ab03",
+        ID,
+        0,
+        "something a later release writes",
+        Some("rename"),
+    );
+
+    let checked = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(
+        code(&checked),
+        0,
+        "an unknown word is a signal and never a fault: {}",
+        both_streams(&checked)
+    );
+    let said = both_streams(&checked);
+    assert!(
+        said.contains("LOG-00000000ab03 records 'rename'"),
+        "the finding names the entry and the word: {said}"
+    );
+
+    // Read, not refused: the entry is still there, and it is machinery, because
+    // a word this build does not know is still a word.
+    let shown = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&shown), 0, "{}", both_streams(&shown));
+    assert!(
+        stdout(&shown).contains("something a later release writes"),
+        "{}",
+        stdout(&shown)
+    );
+}
+
+/// An entity with no machinery reads exactly as it did before the field
+/// existed, section and all.
+#[test]
+fn an_entity_with_no_machinery_grows_no_section() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    seed_entry(
+        &r,
+        "LOG-00000000ab04",
+        ID,
+        0,
+        "what the last holder learned",
+        None,
+    );
+
+    let shown = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&shown), 0, "{}", both_streams(&shown));
+    assert!(!stdout(&shown).contains("EDITS"), "{}", stdout(&shown));
+    assert!(
+        stdout(&shown).contains("LOG (1 of 1)"),
+        "{}",
+        stdout(&shown)
+    );
 }
