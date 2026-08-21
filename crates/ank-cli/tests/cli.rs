@@ -16330,3 +16330,199 @@ fn an_entity_with_no_machinery_grows_no_section() {
         stdout(&shown)
     );
 }
+
+// ---------------------------------------------------------------------------
+// A named edit, and the editor it does not replace (ADR-5bd8257dfeac)
+// ---------------------------------------------------------------------------
+
+/// The two paths meet the freeze at the same place, in the same words.
+///
+/// This is the assertion the whole design rests on. A second entry point that
+/// refused differently would be a second surface, and §4 has one; the risk is
+/// not the flags but the refusals growing apart behind them, so the test
+/// compares them rather than checking each against a sentence written here.
+#[test]
+fn a_named_edit_and_the_editor_meet_the_freeze_in_the_same_words() {
+    let r = ready_to_ratify();
+    let id = new_adr(&r, "claude-code/opus-5", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let accepted = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&accepted), 0, "{}", stderr(&accepted));
+
+    // The same change, expressed twice: once as a field, once as the whole file
+    // a person would have saved out of an editor.
+    let named = r.ank(
+        "claude-code@ank",
+        &["edit", &id, "--constraint", "Do not do Y."],
+    );
+    let saved = entity_text(&r, &id).replace("Do not do X.", "Do not do Y.");
+    let editor = r.editor_saving(&saved);
+    let typed = r.ank_edit("claude-code@ank", &["edit", &id], Some(&editor));
+
+    assert_eq!(
+        code(&named),
+        6,
+        "a ratified constraint is a transition refusal: {}",
+        stderr(&named)
+    );
+    assert_eq!(
+        code(&named),
+        code(&typed),
+        "the two paths refuse with one code"
+    );
+    assert!(
+        stderr(&named).contains("is ratified: constraint and scope are anchored"),
+        "{}",
+        stderr(&named)
+    );
+    // One sentence, and the editor path adds where it kept what was typed.
+    // That tail is the one thing the two paths may not share, and it is right
+    // that they do not: a refusal after an editor has run must not discard the
+    // twenty minutes around the typo, and a flag value is still in the caller's
+    // shell. So the refusal is compared as a prefix, and the remainder is
+    // asserted to be exactly that note and nothing else.
+    let refusal = stderr(&named);
+    let refusal = refusal.lines().next().expect("a refusal is a line");
+    let typed_line = stderr(&typed);
+    let typed_line = typed_line.lines().next().expect("a refusal is a line");
+    assert!(
+        typed_line.starts_with(refusal),
+        "one sentence, differing only in its tail:\n  {refusal}\n  {typed_line}"
+    );
+    assert!(
+        typed_line[refusal.len()..].starts_with(" (the edited text is kept at "),
+        "and the tail is where the typed text was kept: {typed_line}"
+    );
+}
+
+/// A flag the addressed kind has no field for is refused by name.
+///
+/// Never dropped in silence: a caller who typed `--constraint` on a task
+/// believes they changed something, and a verb answering `edited` to that would
+/// be lying about the corpus.
+#[test]
+fn a_field_the_kind_does_not_carry_is_refused_by_name() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = entity_text(&r, ID);
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["edit", ID, "--constraint", "Do not do X."],
+    );
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--constraint is not a field of a task"),
+        "{}",
+        stderr(&out)
+    );
+    assert_eq!(
+        entity_text(&r, ID),
+        before,
+        "and the entity is left exactly as it was"
+    );
+}
+
+/// Only what is named is written, and the rest of the file reaches disk
+/// untouched.
+#[test]
+fn a_named_edit_writes_only_the_field_it_names() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["edit", ID, "--title", "A sharper title"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("title"),
+        "the change is named: {}",
+        stdout(&out)
+    );
+    let after = entity_text(&r, ID);
+    assert!(after.contains("title: A sharper title"), "{after}");
+    assert!(
+        after.contains("A verifiable criterion."),
+        "the criterion is untouched: {after}"
+    );
+    assert!(after.contains("scope:"), "and so is the scope: {after}");
+}
+
+/// A named edit that changes nothing is the no-op the editor path reports, and
+/// not a version bump.
+#[test]
+fn a_named_edit_that_changes_nothing_bumps_no_version() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    // Through the binary first, so the file on disk is in canonical form: a
+    // seeded file is not necessarily, and rewriting it into canonical form is a
+    // real change that this test would otherwise mistake for a defect.
+    let out = r.ank("claude-code@ank", &["edit", ID, "--title", "Settled"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let before = entity_text(&r, ID);
+
+    let again = r.ank("claude-code@ank", &["edit", ID, "--title", "Settled"]);
+    assert_eq!(code(&again), 0, "{}", stderr(&again));
+    assert!(
+        stdout(&again).starts_with(&format!("unchanged {ID}")),
+        "{}",
+        stdout(&again)
+    );
+    assert_eq!(entity_text(&r, ID), before, "the file did not move");
+}
+
+/// A named field never looks for an editor, so an unset `$EDITOR` is not an
+/// environment failure for a caller who did not want one.
+#[test]
+fn a_named_edit_needs_no_editor() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["edit", ID, "--title", "A sharper title"],
+        None,
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "no editor is needed when the field is named: {}",
+        stderr(&out)
+    );
+}
+
+/// The body from stdin, the way `ank new --body -` already reads one.
+#[test]
+fn a_named_edit_reads_the_body_from_stdin() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    let mut child = ank_command()
+        .args(["edit", ID, "--body", "-"])
+        .arg("--repo")
+        .arg(&r.0)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must have been built");
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin is piped")
+        .write_all(b"The reasoning, piped in.\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let after = entity_text(&r, ID);
+    assert!(after.contains("The reasoning, piped in."), "{after}");
+    assert!(
+        after.contains("A verifiable criterion."),
+        "and nothing else moved: {after}"
+    );
+}

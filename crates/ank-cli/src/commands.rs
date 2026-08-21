@@ -156,7 +156,7 @@ pub fn new(
                 verified: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: body_of(inv, kind)?,
+                body: body_of(inv, &flag_form(kind))?,
             })
         }
         EntityKind::Adr => {
@@ -203,7 +203,7 @@ pub fn new(
                 verified: Vec::new(),
                 schema: SCHEMA_VERSION,
                 version: 1,
-                body: body_of(inv, kind)?,
+                body: body_of(inv, &flag_form(kind))?,
             })
         }
         EntityKind::Spec => {
@@ -231,7 +231,7 @@ pub fn new(
                 // criterion, so this is the whole of what it says, and
                 // `--body -` is the channel a document of that size arrives
                 // through.
-                body: body_of(inv, kind)?,
+                body: body_of(inv, &flag_form(kind))?,
             })
         }
     };
@@ -431,7 +431,7 @@ fn skeleton(
             verified: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
-            body: body_of(inv, kind)?,
+            body: body_of(inv, &flag_form(kind))?,
         }),
         EntityKind::Adr => Entity::Adr(Adr {
             id: id.clone(),
@@ -452,7 +452,7 @@ fn skeleton(
             verified: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
-            body: body_of(inv, kind)?,
+            body: body_of(inv, &flag_form(kind))?,
         }),
         EntityKind::Spec => Entity::Spec(Spec {
             id: id.clone(),
@@ -472,7 +472,7 @@ fn skeleton(
             verified: Vec::new(),
             schema: SCHEMA_VERSION,
             version: 1,
-            body: body_of(inv, kind)?,
+            body: body_of(inv, &flag_form(kind))?,
         }),
         EntityKind::Log => not_created_by_new(kind.as_str()),
     })
@@ -872,7 +872,7 @@ fn required(inv: &Invocation, flag: &str, what: &str) -> Result<String> {
     }
 }
 
-fn ensure_newline(text: &str) -> String {
+pub(crate) fn ensure_newline(text: &str) -> String {
     let t = text.trim_end();
     format!("{t}\n")
 }
@@ -1001,11 +1001,11 @@ fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
 /// and the two spellings have to produce the same file or the channel would be
 /// visible in the corpus. Everything inside survives byte for byte — blank
 /// lines, quotes of both kinds, indentation.
-fn body_of(inv: &Invocation, kind: EntityKind) -> Result<String> {
+pub(crate) fn body_of(inv: &Invocation, hint_command: &str) -> Result<String> {
     let piped;
     let text = match inv.value("--body") {
         Some("-") => {
-            piped = read_body_from_stdin(kind)?;
+            piped = read_body_from_stdin(hint_command)?;
             piped.as_str()
         }
         Some(text) => text,
@@ -1029,8 +1029,8 @@ fn body_of(inv: &Invocation, kind: EntityKind) -> Result<String> {
 /// Code 9 for both, as `$EDITOR` unset is (§4): the prose channel the caller
 /// named is unavailable, which is not a fault in the task and not a fault in the
 /// corpus. One code, because there is one fix.
-fn read_body_from_stdin(kind: EntityKind) -> Result<String> {
-    let hint = format!("printf '%s' \"<the body>\" | {} --body -", flag_form(kind));
+fn read_body_from_stdin(hint_command: &str) -> Result<String> {
+    let hint = format!("printf '%s' \"<the body>\" | {hint_command} --body -");
     if std::io::stdin().is_terminal() {
         return Err(CliError::new(
             ExitCode::Environment,

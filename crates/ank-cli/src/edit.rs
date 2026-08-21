@@ -51,6 +51,27 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
     let original = std::fs::read_to_string(&loaded.path)
         .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", loaded.path.display())))?;
 
+    // **A named field never opens an editor**, and this stands ahead of the
+    // search for one: a caller who said which field they are changing has no
+    // use for `$EDITOR` being unset (ADR-5bd8257dfeac). What it produces is
+    // text, handed to the same [`write_back`] the editor path uses, so the two
+    // meet every refusal at the same place and in the same words.
+    if let Some(edited) = named(inv, &loaded.entity)? {
+        if edited == original {
+            report_unchanged(inv, &id, base_version, out);
+            return Ok(ExitCode::Ok);
+        }
+        return write_back(
+            inv,
+            repo,
+            &store,
+            &loaded.entity,
+            &edited,
+            base_version,
+            out,
+        );
+    }
+
     // Before anything is written anywhere: an unset `$EDITOR` is an environment
     // failure, not a task failure (§4), and the id is already resolved so the
     // hint can name the exact invocation to retry.
@@ -99,6 +120,76 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
         }
         Err(e) => Err(editor::kept(e, &scratch)),
     }
+}
+
+/// The entity with the named fields changed, rendered as text, or `None`
+/// where the caller named none and the editor is what they meant.
+///
+/// **Only what is named is written.** The entity is cloned, the named fields
+/// are set on the clone, and everything else reaches the file exactly as it
+/// left it. That is the whole difference with the editor path, where what
+/// comes back is whatever the caller typed and every field is in play.
+///
+/// **A field the kind does not carry is refused by name**, never dropped: an
+/// `--constraint` on a task is a caller who believes they changed something,
+/// and a verb that answered `edited` to that would be lying about the corpus.
+fn named(inv: &Invocation, before: &Entity) -> Result<Option<String>> {
+    let title = inv.value("--title");
+    let constraint = inv.value("--constraint");
+    let body_named = inv.value("--body").is_some();
+    if title.is_none() && constraint.is_none() && !body_named {
+        return Ok(None);
+    }
+
+    let mut after = before.clone();
+    if let Some(title) = title {
+        let title = title.trim();
+        if title.is_empty() {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                "--title is empty, and every kind requires one",
+            )
+            .with_hint(format!("ank edit {} --title \"<t>\"", before.id())));
+        }
+        match &mut after {
+            Entity::Task(t) => t.title = title.to_string(),
+            Entity::Adr(a) => a.title = title.to_string(),
+            Entity::Spec(s) => s.title = title.to_string(),
+            Entity::Log(l) => l.title = title.to_string(),
+        }
+    }
+    if let Some(constraint) = constraint {
+        let Entity::Adr(a) = &mut after else {
+            return Err(no_such_field(before, "--constraint"));
+        };
+        a.constraint = crate::commands::ensure_newline(constraint);
+    }
+    if body_named {
+        // The same reader `new --body -` uses, so a body piped in reaches the
+        // corpus through one implementation and not two.
+        let body = crate::commands::body_of(inv, &format!("ank edit {}", before.id()))?;
+        match &mut after {
+            Entity::Task(t) => t.body = body,
+            Entity::Adr(a) => a.body = body,
+            Entity::Spec(s) => s.body = body,
+            Entity::Log(l) => l.body = body,
+        }
+    }
+    Ok(Some(ank_core::serialize_entity(&after)))
+}
+
+/// The refusal for a flag the addressed kind has no field for, naming the
+/// kind and the fields it does carry.
+fn no_such_field(before: &Entity, flag: &str) -> CliError {
+    let kind = before.id().kind().as_str();
+    CliError::new(
+        ExitCode::Generic,
+        format!("{flag} is not a field of a {kind}"),
+    )
+    .with_hint(format!(
+        "ank edit {} --title <v> | --body <v>, or no flag to open $EDITOR",
+        before.id()
+    ))
 }
 
 /// Parses the result, refuses what may not be written, and writes the rest.
