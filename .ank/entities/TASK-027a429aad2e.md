@@ -5,7 +5,7 @@ slug: a-log-entry-says-what-kind-of-entry-it-is-and-th
 title: A log entry says what kind of entry it is, and the work trace stops carrying machinery
 created: 2026-08-21T20:44:14Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-core/src/model.rs
   - crates/ank-core/src/parse.rs
@@ -16,8 +16,13 @@ blocked_by: []
 done_criteria: |
   A log entry may carry a field naming what it is, optional and absent by default, so that every entry already in the corpus stays valid and nothing is migrated. An entry that does not carry it is a work entry, which is what a reader means by the log. ank show and ank log present the two apart: the work trace holds only what a previous holder wrote, and a test drives the binary on an entity carrying both kinds and asserts the mechanical one appears in neither the work trace nor the count beside it. The round trip holds on the new field, canonical form included, and an unknown value in it is a check finding and never a parse error, on the terms ADR-3877fef1d662 already sets for a typed actor. A spec superseding SPEC-acee5d9cb21b carries the field in the log registry, on the optional side. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 99d1bfc
+    criteria: 0a0aa94cdb88
+    via: submitted
 schema: 3
-version: 2
+version: 3
 ---
 
 ADR-16813b3bcf37 puts the record of an edit in a log entry, which costs nothing
