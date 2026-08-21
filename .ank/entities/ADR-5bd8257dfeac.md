@@ -5,13 +5,17 @@ slug: an-edit-may-name-the-field-it-changes-and-the-ed
 title: An edit may name the field it changes, and the editor stays the road for the rest
 created: 2026-08-21T20:43:35Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   ank edit accepts the content field it changes by name and writes only what is named. With no field named it opens EDITOR exactly as it did, which remains the road for an edit touching several fields or none in particular. A named edit is refused on the states the editor path is refused on and on no others: the surface changes how a change is expressed, never what may be changed. The frozen fields are compared against their anchors on both paths, and the result is parsed before it reaches the corpus on both paths.
+ratified: b5ce23e4b8b7
+verified:
+  - by: claude-code/opus-5
+    at: 2026-08-21T20:51:39Z
 schema: 3
-version: 1
+version: 2
 ---
 
 `edit` hands `$EDITOR` a scratch copy and reads back text. It therefore knows
