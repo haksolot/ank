@@ -35,7 +35,7 @@ pub use log::{
 };
 pub use model::{
     Adr, AdrStatus, CriteriaBy, Entity, Log, Proof, ProofType, ProofVia, Spec, SpecStatus, Task,
-    TaskStatus, Verified, MIN_SCHEMA, SCHEMA_VERSION,
+    TaskStatus, Verified, MIN_SCHEMA, RECORDS_KINDS, SCHEMA_VERSION,
 };
 pub use parse::{
     has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_log_entity, parse_spec,

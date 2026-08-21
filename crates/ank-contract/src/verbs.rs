@@ -56,6 +56,9 @@ const LOG_ENTRY: &[Field] = &[
     f("timestamp", Type::Str),
     f("who", Type::Str),
     f("message", Type::Str),
+    // Absent on the work trace, which is what an entry is unless it says
+    // otherwise (ADR-16813b3bcf37). Present, it names what the entry records.
+    opt("records", Type::Str),
 ];
 
 /// An entity row as `scope` and `find` render one.
@@ -75,6 +78,7 @@ const SHOW_TASK: &[Field] = &[
     f("log_total", Type::Num),
     f("log_shown", Type::Num),
     f("log", Type::Array(LOG_ENTRY)),
+    f("machinery", Type::Array(LOG_ENTRY)),
     f("content", Type::Str),
 ];
 
@@ -85,6 +89,7 @@ const SHOW_OTHER: &[Field] = &[
     f("log_total", Type::Num),
     f("log_shown", Type::Num),
     f("log", Type::Array(LOG_ENTRY)),
+    f("machinery", Type::Array(LOG_ENTRY)),
     f("content", Type::Str),
 ];
 
@@ -574,7 +579,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(ExitCode::Transition, "writing with no claim held by this agent")],
         notes: &[],
         refuses_globals: &[],
-        output: &[when("reading, `ank log <id>`", &[f("about", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("entries", Type::Array(LOG_ENTRY))]), when("appending, `ank log <id> <message>`", &[f("about", Type::Str), f("entry", Type::Str), f("logged", Type::Bool), f("warnings", Type::Strings)])],
+        output: &[when("reading, `ank log <id>`", &[f("about", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("entries", Type::Array(LOG_ENTRY)), f("machinery", Type::Array(LOG_ENTRY))]), when("appending, `ank log <id> <message>`", &[f("about", Type::Str), f("entry", Type::Str), f("logged", Type::Bool), f("warnings", Type::Strings)])],
         owner_task: None,
     },
     CommandSpec {

@@ -1778,6 +1778,11 @@ fn log_read(
     // The entries of the corpus, and the previous log directory only where a
     // corpus has not been migrated yet (§3).
     let all = entries::about(store, &Index::open(&repo.ank)?, &loaded.entity)?;
+    // This verb *is* the work trace: it is what an agent reads before repeating
+    // what a previous holder already tried (ADR-16813b3bcf37). The machinery is
+    // listed under it, addressable like every other row, and it is charged no
+    // budget against the trace.
+    let (all, machinery) = entries::split(all);
     let total = all.len();
     // The title line and the blank line under it are all this page spends
     // before the log, so the rest of the budget is the log's.
@@ -1799,17 +1804,35 @@ fn log_read(
                     .str("timestamp", &e.line.timestamp)
                     .str("who", &e.line.who)
                     .str("message", &e.line.message)
+                    .opt_str("records", e.records.as_deref())
                     .finish()
             })
             .collect();
         // `total` and `shown` beside the entries, the two numbers `find --json`
         // already carries: a parser handed a truncated list and no count cannot
         // tell a short log from a cut one.
+        let machinery_items: Vec<String> = machinery
+            .iter()
+            .map(|e| {
+                Obj::new()
+                    .opt_str("id", e.id.as_ref().map(|i| i.to_string()).as_deref())
+                    .str("timestamp", &e.line.timestamp)
+                    .str("who", &e.line.who)
+                    .str("message", &e.line.message)
+                    .opt_str("records", e.records.as_deref())
+                    .finish()
+            })
+            .collect();
+        // `total` and `shown` count the trace, which is what `entries` holds
+        // and what this verb answers about. The machinery is a list of its own
+        // and is never cut: it is short by construction, one row per write, and
+        // a parser that wanted it truncated would have to say so.
         let doc = Obj::document()
             .str("about", &id.to_string())
             .num("total", total)
             .num("shown", shown)
             .array("entries", items)
+            .array("machinery", machinery_items)
             .finish();
         let _ = writeln!(out, "{doc}");
         return Ok(ExitCode::Ok);
@@ -1819,7 +1842,7 @@ fn log_read(
     }
 
     let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), title);
-    if entries.is_empty() {
+    if entries.is_empty() && machinery.is_empty() {
         // Named rather than left blank: an empty answer and an answer about the
         // wrong entity look identical otherwise.
         let _ = writeln!(out, "\nno log entry yet");
@@ -1866,6 +1889,34 @@ fn log_read(
             "+{cut} earlier entries, ank config context_budget {} prints them",
             budget_for_whole_log(&all, spent)
         );
+    }
+    // Under the trace, and never cut: one row per write, addressable like every
+    // other row, so a reader who wants to know what an edit did has an id to
+    // hand to `ank show`.
+    if !machinery.is_empty() {
+        let _ = writeln!(
+            out,
+            "
+{}",
+            inv.style().header(&format!("EDITS ({})", machinery.len()))
+        );
+        for e in &machinery {
+            let addressed = match &e.id {
+                Some(entry_id) => format!(
+                    "{}  ",
+                    inv.style().id(shorts
+                        .get(entry_id)
+                        .map(String::as_str)
+                        .unwrap_or(&entry_id.to_string()))
+                ),
+                None => String::new(),
+            };
+            let _ = writeln!(
+                out,
+                "{addressed}{}",
+                crate::paint::log_line(&e.line, inv.style())
+            );
+        }
     }
     Ok(ExitCode::Ok)
 }

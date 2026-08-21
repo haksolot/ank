@@ -1,0 +1,488 @@
+---
+id: SPEC-a89ba4f755e9
+type: spec
+slug: the-data-model
+title: The data model
+created: 2026-08-21T22:17:06Z
+author: claude-code/opus-5
+status: proposed
+scope:
+  - crates/ank-core/**
+  - docs/format.md
+references: [SPEC-183d297253ac, SPEC-de1a21a05cc6, SPEC-88e1ba60a95d]
+supersedes: SPEC-acee5d9cb21b
+schema: 4
+version: 1
+---
+
+One of the ten documents that carry the Ank specification (ADR-5a690829388d).
+This one carries **§3 entire and undivided**: the two planes, the common base,
+canonical form, identifier allocation, the kind registry, the four kinds and the
+typed-actor convention.
+
+## Why this document is not split, although it is the largest
+
+It is the largest of the ten and the one a section-shaped decomposition would
+have cut first — a document per kind, four entities where there is one subject.
+The test refuses it outright: **a document that cannot be read without holding
+another one open is not a document**, and a `Task` section without the common
+base above it is exactly that. The registry declares every kind in one table,
+each kind's section is written against fields the base defines, and the
+strictness rule that closes the registry governs all four at once. Cutting
+between them would leave four fragments and one table none of them owns.
+
+The same answer holds for the boundary a reader is likeliest to propose inside
+it. **The claim TTL, renewal, return after expiry and the two-live-claims
+resolution stay here**, although they read like coordination and coordination is
+another document. They are the task's own lifecycle — what its status means, when
+it may move, what a lease is a property of — and the plane that enforces them is
+described in §7. Moving them would put a state machine in one document and its
+states in another, which is the fragmentation this decomposition exists not to
+commit.
+
+What did **not** stay is the proof half. `proof` is a field of a task and its
+table is here, but what a proof entry is *worth* is in the anchoring document
+(§4, §8), because the trust hierarchy is read by the data model and by
+synchronisation alike, and a passage two documents depend on should not be buried
+inside a third.
+
+## What it rests on
+
+- **The CLI surface** — the fields here are read by verbs and reported by
+  `check`'s catalogue, which states the signals this document only names.
+- **Proof, anchoring and authority** — what a `proof` entry guarantees, and what
+  a ratification commit anchors.
+- **Synchronisation** — where a claim lives, since §3 states that the claim is
+  never in the file and defers the whole of the plane.
+
+---
+
+## 3. Data model
+
+### Two orthogonal planes, not a pyramid
+
+Ank does not model a decision → epic → task chain. Constraints and work are **two independent planes, joined only by scope**.
+
+This is the property that separates Ank from a tracker: an agent receives what constrains it without traversing any hierarchy, and a constraint applies to work that did not exist when it was written. A pyramid would force every task to hang off a parent decision — factually wrong, and expensive to traverse when building context.
+
+### Where precision lives
+
+Ank lets you plan precisely, but the precision is about **the specification of the work**, not its placement on a calendar. Four fields carry it: `scope` (where), `done_criteria` (what proves it is finished), `constraint` (under which rules), `blocked_by` (in which order).
+
+Deliberately absent: estimates, points, declared priorities, cycles, deadlines. Those are instruments for coordinating human teams over time. They do not help an agent work correctly, and they are the slope that leads straight to reimplementing Linear.
+
+### Grouping happens by scope
+
+There is no epic, no milestone, no label. "Everything about the auth migration" is answered by `ank context src/auth/`.
+
+Scope is a better grouping axis than a label for one precise reason: it is **verifiable**. A label is declarative, it drifts, and nobody cleans it up; a glob is confronted with the filesystem. That is also what guarantees a grouping does not silently go stale when the code moves.
+
+### Common base
+
+Every Ank object is a markdown file with YAML frontmatter. Shared fields:
+
+| Field | Role |
+|---|---|
+| `id` | Canonical identifier, immutable, generated without coordination |
+| `type` | The entity kind, declared in the registry below. `task` \| `adr` \| `spec` \| `log` today. An unknown kind is rejected by name, never ignored. |
+| `slug` | Cosmetic, never used for resolution |
+| `created` | ISO 8601 timestamp of the act of creation, **always in UTC** (`Z` suffix): the ordering of §5 must not depend on a timezone. Immutable. This is what makes task ordering deterministic without depending on git, and what gives `check` a basis for the burst-creation and plausibility signals. |
+| `author` | The identity that ran `new`, in the form `$ANK_AGENT` resolves to (§8). Optional, immutable, and written by `new` on every entity it creates. Together with `created` it is what makes two of §4's signals computable at all: an authorless corpus cannot say who created a burst, nor whether a blocker was written by the agent that would benefit from it. |
+| `scope` | List of globs. Source of truth for context routing. **Mandatory**: without a scope an entity appears in no `context` and becomes invisible. `new` fails rather than create a silent orphan. |
+| `status` | Lifecycle, typed per entity. A kind with no lifecycle carries none, and the registry is what says which — a field with one legal value records nothing and would have to be written anyway. |
+| `verified` | Optional list of readings, each naming a typed actor and an instant: the record that somebody read this entity and stands behind it. Any kind may carry it, its absence is never a fault, and no verb requires it (see *Typed actors* below). |
+| `version` | Integer, incremented on every write. Intra-tree compare-and-swap (§7). |
+
+### Canonical form and round-trip
+
+The format has a **canonical form**: fixed field order, literal blocks for multi-line fields, flow lists for references, UTF-8 without BOM, LF line endings.
+
+The guarantee is exactly this: **`serialize(parse(x))` is byte-for-byte identical to `x` when `x` is in canonical form**. Valid but non-canonical input — another acceptable YAML form, superfluous quotes, CRLF line endings — is read correctly and **normalised on first rewrite**. That is what lets a third-party tool or a human hand write a file without knowing the canonical form, without making that form an authoritative variant, and it is what guarantees that a command which reads then rewrites never produces a spurious diff (§12).
+
+CRLF line endings are therefore **read, never written**. The parser accepts them; `check` reports the entity as non-canonical form — a finding, not a fatal error — with a diagnostic that **names the line endings** and gives the fix command. Never a syntax message that sends the reader to the wrong place: a `---\r\n` diagnosed as "missing frontmatter" costs the user an hour down the wrong path. `ank init` writes a `.gitattributes` (`.ank/** text eol=lf`): on Windows `core.autocrlf=true` is the default, and without this git would convert back on checkout whatever the tool has just normalised, on every clone.
+
+### Identifier allocation
+
+Borrowed directly from git, with one adaptation.
+
+Git derives the ID from content, which presupposes immutability. A task mutates (status, log, title): an ID derived from content would change on every edit and break every reference already written. Ank therefore hashes **the act of creation** — timestamp, agent identity, initial title, randomness — which is immutable. The ID is stable for life and generated without coordination, which is indispensable offline-first.
+
+- **12 hexadecimal characters** stored. Below 8, birthday collisions arrive within the first thousand entities.
+- **Short prefixes accepted** on input, four characters minimum (`TASK-8f3a`).
+- **Ambiguity is an error.** A prefix matching two entities fails with the list of candidates. The tool never guesses.
+- **A short form the tool prints is unambiguous in the corpus it was printed from**, and its length is therefore computed rather than fixed. It is the shortest prefix naming exactly one entity: four characters where four suffice, one more for each collision, never past the twelve stored.
+
+**The displayed length is measured, not declared** — git's answer, and for git's reason. Four characters is 65536 values, so a corpus of a few hundred entities already collides with double-digit probability, and the probability grows with the square of the corpus. A fixed four therefore prints, eventually and without warning, an identifier the tool itself refuses one command later: the rule above says ambiguity is an error, and the caller has no way to know the id they were handed is unusable until they use it. Reporting the collision afterwards — a `check` finding over a fixed four — was rejected: it names after the fact something the display could have avoided, and leaves every printed id unusable meanwhile. The cost of measuring is that the displayed length is no longer constant, which is a column-alignment question in §4 and nothing more.
+
+**Measured against the set resolution searches, and never against the rows a verb returned.** That set is every `<ID>.md` present on disk, which is what prefix resolution walks (§6) — including the entities a listing left out because this binary could not read them (§4). A prefix unique among four search results and ambiguous in the repository is a prefix that stops working when the query changes, and a prefix unique among the entities that parsed is one that stops working when a corpus is written by a newer release. Kinds are measured apart, since the printed form carries `TASK-` or `ADR-` and prefix resolution filters on it: two entities of different kinds sharing four hex characters lengthen neither.
+
+### Entity kinds are a registry
+
+A kind is **declared once, in a table**, and never restated per layer (ADR-c9f9d0d6f05d). The table gives, for each kind: the name written in `type`, the id prefix, the status values, which fields are required and which are optional, and the **canonical field order**. Adding a kind is an entry in that table, a golden fixture and a section here — never a second serializer, a second parser branch, and never a second directory.
+
+| Kind | `type` | Id prefix | `status` |
+|---|---|---|---|
+| Task | `task` | `TASK-` | `open` \| `in_progress` \| `done` \| `closed` |
+| ADR | `adr` | `ADR-` | `proposed` \| `accepted` \| `superseded` |
+| Spec | `spec` | `SPEC-` | `proposed` \| `accepted` \| `superseded` |
+| Log entry | `log` | `LOG-` | none: an entry is written once and has nothing to transition to |
+
+| Kind | Required, in canonical order | Optional, in canonical order |
+|---|---|---|
+| Task | `id`, `type`, `title`, `created`, `status`, `scope`, `blocked_by`, `schema`, `version` | `slug`, `author`, `done_criteria`, `criteria_by`, `verify`, `proof`, `verified` |
+| ADR | `id`, `type`, `title`, `created`, `status`, `scope`, `constraint`, `schema`, `version` | `slug`, `author`, `see`, `supersedes`, `ratified`, `verified` |
+| Spec | `id`, `type`, `title`, `created`, `status`, `scope`, `schema`, `version` | `slug`, `author`, `supersedes`, `ratified`, `verified` |
+| Log entry | `id`, `type`, `title`, `created`, `scope`, `about`, `seq`, `schema`, `version` | `slug`, `author`, `records`, `verified` |
+
+The canonical order interleaves the two lists and is fixed; it is written out per kind in the sections that follow, and reproduced as a numbered table in [format.md](format.md). `blocked_by` is required in the sense that matters to a serializer: it is always emitted, as `[]` when empty. Every optional field is **omitted when absent, never emitted empty** — that is what lets a file written before a field existed survive a rewrite unchanged.
+
+**Strictness does not move.** The registry makes a kind cheap to add; it never makes the format permissive. Inside a known kind, an unknown field is still rejected rather than preserved, and an **unknown kind is rejected naming the kind** — not naming the first field that kind happens to carry. The two refusals answer different questions and a reader sent to the wrong one loses an hour: `priorty:` inside a `task` is a typo, and `type: epic` is a document this tool does not know how to read.
+
+What this deliberately does not do is import the extensibility of a knowledge-interchange format, where `type` is the only required field and unknown keys are preserved. That is the right trade for sharing documents between organisations and the wrong one here: Ank's value is that a criterion is frozen and a proof is anchored, and neither survives a reader that must accept whatever it is handed. The shape is borrowed, the permissiveness is not.
+
+### Task
+
+`.ank/entities/TASK-8f3a91c2d4e7.md`
+
+```yaml
+---
+id: TASK-8f3a91c2d4e7
+type: task
+slug: migrate-auth-sessions
+title: Migrate auth to opaque sessions
+created: 2026-07-25T09:14:00Z
+author: claude-code/1.4.2    # the identity that ran `new`, typed (below). Optional: a corpus predates it.
+status: in_progress          # open | in_progress | done | closed   (blocked is derived)
+scope:
+  - src/auth/**
+  - src/middleware/session.ts
+blocked_by: [TASK-51c2a7f0]  # DAG. Empty = ready to be claimed.
+done_criteria: |             # required to claim, frozen by hash afterwards
+  Auth integration tests pass, and no reference to
+  jwt.verify remains in src/auth/
+criteria_by: creator         # creator | claimer — set by the tool, a signal for check
+verify: [auth-tests, no-jwt] # list of verifiers from config.yml, all must pass
+proof:                       # append-only list, required for done
+  - type: test               # test | commit | human-review | assertion
+    ref: local/9c1f4a@a3f9c21
+    tree: scope/4be2d10c     # hash of the scope files' content at execution time
+    criteria: 7d1e2a90b4c3   # hash of the frozen done_criteria, recorded by done
+    verifier: auth-tests@1f2e3d4c   # hash of the definition that ran (§4)
+    via: verifier            # the route: verifier | attested | submitted (§4)
+  - type: test
+    ref: local/e51b22@a3f9c21
+    tree: scope/4be2d10c
+    verifier: no-jwt@9ab0c1d2
+    via: verifier
+verified:                    # optional; a reading, not a run
+  - by: human:marie
+    at: 2026-07-27T09:40:00Z
+schema: 3
+version: 7
+---
+
+Free-form context, notes, links.
+```
+
+**A proof records the route by which it arrived** (ADR-b6b69053a47b). `via` is `verifier` when Ank ran a declared verifier itself, `attested` when the entry reached the task on `refs/ank/proof/<id>` (§7), and `submitted` when a caller passed it to `done --proof` or `attest --proof`. The field is optional and its absence is not a fourth value: it means the entry was written before the distinction existed, and §4 reads such an entry exactly as it was read then. What the route is *for* is the trust hierarchy, and it lives there.
+
+**The log is no part of the entity file, and an entry is an entity of its own**, of kind `log` (ADR-ff294eff4d1a, then ADR-25f977377fa0). What a reader sees is unchanged, and it is what it always was — one entry, one instant, one identity, one message, printed a dash, the timestamp, the identity, an em dash, the message:
+
+```
+- 2026-07-26T14:02Z claude-code/1.4.2 — jwt.verify removed from session.ts
+- 2026-07-26T14:31Z claude-code/1.4.2 — released: needs access to the staging Redis store
+```
+
+That grammar is now the **rendering** and no longer the storage. An entry carries the instant in `created`, the identity in `author`, the message in `title`, and the entity it is about in `about`; the field table is in the registry above and the kind is described below. **Any kind carries entries**, an ADR included, and an entity with none is an entity nobody has logged against — never an error.
+
+The move happened in two steps, and the second is not a reversal of the first. **The original decision put the log at the end of the task file**, and its argument was that appending at the end is a one-line git diff, which preserves the recovery property (§12), while a separate file would double the number of objects to resolve. The first half is right and is better served by leaving the body: a file that only ever grows produces an append with no context lines drawn from anything else. The second half is the real cost and it is paid — what doubles is the number of files on disk, not the number of decisions a reader makes, because resolution never went through the directory.
+
+Three costs sat on the other side and none of them was weighed, two of them not existing yet. **The file that must be most stable was the one that churned most**: a task file carries `done_criteria`, whose hash is frozen in the claim record, and 123 of 132 tasks in the reference corpus carry a log, so the one artifact the freeze exists to make observable was the one rewritten most often. **The merge driver loses the rule that only the shared file required**: §7 fixed two rules for a future `.ank/` driver, `version` = max + 1 and the log unioned by timestamp, and the second existed only because the log shared a file with fields that cannot be unioned. The reason given for dropping it was wrong — git's own three-way merge conflicts on two appends rather than unioning them, unless the repository says `merge=union` itself (§7) — and the rule stops being something to automate anyway, because after the second step there is no file two parties append to. **A second party had nowhere to append**: a pipeline recording that it ran, a reviewer noting why a task was handed back, a second agent in the same tree, each had to rewrite durable state carrying a frozen field to add one line of trace.
+
+Hence, and this is what the first step bought: **a task file changes only on a real transition.** Writing a log entry writes no frontmatter on the entity it is about, bumps no `version` of it, and touches no file carrying a frozen field.
+
+**The second step is that ADR-ff294eff4d1a decided between a section of the entity body and a file of its own, and never considered an entity per entry.** Nothing in it is overturned here — there is no argument to overturn, only one that was never made. An entity carries `version`, incremented on every write under compare-and-swap, so making the *log* an entity would turn every append back into a transition, which is exactly what the first step removed; making an *entry* one does not, because an entry is written once and never modified. Append-only then stops being a convention the format asks for and becomes a property of the storage: there is no file to append to, two concurrent entries are two new files, and the conflict does not arise instead of being asserted away. A correction is a new entry naming the one it corrects, never an edit.
+
+What it costs is written here rather than discovered later. The entries of an entity become **a query and no longer an address**: the previous shape computed `.ank/log/<ID>.md` from the entity's own id with no lookup, and that arithmetic goes. The flat directory grows by one file per entry, which on the reference corpus is 487 of them against roughly 210 entities. Both are accepted deliberately. What is bought is that an entry has an id, an author, an instant and a scope like anything else, so it is indexed, reachable through `find`, and able to cross a repository boundary (§7) — where the previous shape was reachable by no query at all.
+
+The log stays a **work trace, not proof**: nothing authoritative is anchored in it — freezes and proofs have their own hash anchors — and a rewritten past entry is a git diff visible in review like any other falsification of history. That is why a chained log hash, considered, was rejected: it would weigh the format down to defend a surface that carries no authority. It is also what makes an append by a second party harmless.
+
+Rejected alongside: **a log in a git ref**, which would take the log out of the tree, where it is read by humans looking at a diff and by anyone who clones without the `refs/ank/*` refspec — the log is durable state and travels with the code, and only the coordination plane belongs in refs. And **one log file for the whole corpus**, where every append would contend with every other, which is the same mistake as a single claim ref.
+
+**The claim is not in the file.** It lives exclusively in the ephemeral coordination plane (§7). Recording it here would produce a git diff on every task pickup, which is precisely what separating the two planes exists to avoid. A task that is `in_progress` with no active claim and no completion ref is simply a task whose TTL expired: it can be picked up again, and its log says where the previous holder stopped.
+
+**`schema`** carries the format version, with explicit migration and never a silent break. It is the counterpart of the promise "the format is the specification": a third-party tool must be able to cleanly refuse a file it does not know how to read.
+
+A tool therefore declares a **range of versions it reads**, not a single one, and refuses anything outside it naming the version rather than the symptom. The distinction is not academic, and adding `author` is what made it concrete. The frontmatter rejects unknown fields — that is what lets a typo like `priorty:` be an error instead of a silent loss — so a tool that read only its own version would report a file one version newer as *unknown field `author`*, while the file plainly declares the schema that explains it. The reader would go looking for a typo. Refusing on the version says the one true thing: this file is newer than this tool.
+
+The rule is asymmetric on purpose. Reading **older** versions is a promise the format keeps: a corpus is never migrated by a tool that refuses to read it, so every field introduced after version 1 is optional at parse time, and its absence means "written before this existed" rather than "invalid". Reading **newer** versions is refused, because the fields a tool does not know about are exactly the ones it would silently drop on the next rewrite.
+
+**The current version is 4**, and the reader range is **1 to 4**. The lower bound does not move, and there is no version at which it will: every field introduced after version 1 is optional at parse time, so a schema 1 file parses and re-serialises byte-identically under a schema 4 reader, and dropping the bound would be migrating a corpus by refusing to read it. Version 4 carries one field, `records` on a log entry, and it is a bump for the reason version 3 was one: a reader that does not know the field drops it on the next rewrite, and the entry silently rejoins the trace it was written to stay out of.
+
+Version 3 carries two changes: the **log leaving the entity body**, and the **`verified` list** with the typed-actor convention it names. The layout change of the same revision — entities in one flat directory (§6) — carries no bump, because it moves files rather than fields, and a reader that finds the file finds every field it knew before.
+
+The log is what makes the bump necessary, and the case is the one the version field exists for. A reader that does not know the log has left the body opens a task file, finds no `## Log` section, and shows an **empty history for a task that has one** — silently, and nothing anywhere reads as an error. Refusing on the version says the one true thing before any of that happens. `verified` on its own would not have earned a bump; it is an optional field whose absence already means "nobody recorded a reading", which is exactly what an older reader would conclude. It ships in the same version because splitting the two would move the corpus twice.
+
+**`via` does not earn one either, and the second reason is the decisive one.** The first is `verified`'s: an older reader that does not know the field reads a proof entry as it always read one — a type and a reference — and concludes nothing false from its absence, because before the field there was nothing to conclude. What it loses is a distinction it never drew, which is not the log's case, where the older reader showed an empty history for a task that had one.
+
+The second is what a bump would actually do to a live corpus. `attest` appends to a task that already exists, and every task in an existing corpus declares the version it was written at. A bump would leave that verb two choices: write `via` into a file still declaring the older version, which is a file contradicting its own header, or raise the header on append, which is a migration performed by a write — and the conformance suite holds older fixtures precisely to catch a rewrite that moves one. Neither is acceptable, and the way out is the rule this document already states: **every field introduced after version 1 is optional at parse time**, so a proof entry carrying `via` is readable at any version in the range and one without it means the entry predates the distinction. A bump is for a reader that would be *wrong*, never for a field that is merely new.
+
+**A new kind does not earn one either**, and the argument is the same one read from the other side. An entity of a kind a reader does not know is **rejected by name** — that is the strictness rule of the registry, and it is the honest refusal a version bump exists to produce, delivered by a mechanism already in place: a reader meeting a `spec` or a `log` it cannot read stops on that entity and says which kind stopped it. The one case that would be silent is narrower and no bump could reach it: a reader that opens a task file alone, and looks for its entries where the previous shape kept them, sees an empty history for a task that has one. Nothing written into that file would tell it otherwise, because the entries move without a byte of the task file changing, and raising its header on that occasion would be a migration performed by a write — refused just above. That case is covered where it can actually be covered, by continuing to read the previous shape for one window (§6), and it is named here rather than left to be met.
+
+**Lifecycle.** `open` → `in_progress` (via `claim`) → `done` (via `done`, proof mandatory). There is no separate `claimed` status: a successful claim puts the task directly into work. **`claim` on an `in_progress` task with no active claim is a legal transition** — that is pickup after expiry, not an anomaly. The single exception is a task carrying a **completion ref**: it was finished on another branch, and `claim` refuses with code 4, naming the commit and the branch (§7). That is precisely the case the file's status cannot express, since a `done` lives in the durable state of the branch that produced it and exists nowhere else before the merge. After `done`, the only legal write is **appending** a proof to the `proof` list; any other modification is reported by `check`.
+
+**A bug discovered in a `done` task yields a new task.** Never a reopening, never a re-edit of the code under cover of the finished task. This case is permanent, not exceptional: a task is finished when its criterion is proven, not when its code is perfect, and proving a criterion never meant nothing was left to fix. Reopening would dissolve the proof — a `proof` entry anchors a state of the tree at a point in time, and that content would change underneath it with nothing to signal the fact, which is exactly the falsification anchoring exists to make visible. The new task carries its own scope and its own criterion, and cites the one whose work it corrects. First example in this repository: `TASK-dc87e0ecfb6c` corrects the lock-retry strategy written by `TASK-244a842bc0cc`, which stays `done` with its proof intact.
+
+**`closed` is ratified abandonment.** Terminal, reachable from `open` and `in_progress` through `ank close <id> --reason <r>`, with the reason mandatory and going into the log. The verb is outside the loop SKILL.md teaches (§4) rather than closed to agents: what makes the abandonment ratified is the reason left in the record, not the identity of whoever typed it. It is the answer to an active corpus ageing: the dead scopes and orphan tasks `check` detects must be closable explicitly, never automatically, and never by deleting the file (deleting would break other tasks' `blocked_by` references, whereas `closed` preserves them). **`closed` does not unblock**: a closed task was not done, so its dependents stay blocked, and `check` reports "blocked by a closed task" so a human decides — close down the chain, or rewrite the dependency. Two operational points: `claim` refuses a task one of whose `blocked_by` is `closed` (code 7, naming the closed blocker, as for any active blocker), and `close` on an `in_progress` task revokes the active claim in the same operation — the ref is deleted, and the holding agent learns this at its next `log` (code 6, the task is no longer in work).
+
+**`blocked` is not a status, it is a derived property.** A task is blocked if and only if it has at least one unfinished `blocked_by`. Nothing is entered by hand, so nothing can go stale. `claim` refuses a blocked task and names the blocker.
+
+**`blocked_by` is the only relation between tasks.** A DAG, not a tree: no parent/child, no rollup, no cascade. Three reasons, in order of importance.
+
+*Rollup is completion without proof.* "The parent is finished when the children are finished" is structurally the same hole as `assertion:`, hidden in the topology instead of written in a field. With a DAG, when the blockers are finished the task is **unblocked, not finished**: it still goes through its own `done` with its own proof. The parent verifies the whole, not the sum of the parts — and that is exactly where integration regressions live.
+
+*Decomposition is discovered, not planned.* A human breaks an epic down from the top. An agent discovers mid-course that its task requires another. That is ordering, not containment: forcing a tree would require deciding on parentage at the moment when only an order is known.
+
+*The same work often serves two tasks.* "Add the Redis adapter" blocks both the auth migration and the session cleanup. A tree forbids that; a DAG represents it without duplication.
+
+Cycles are refused on write and reported by `check`.
+
+**Blocking defers the obligation, it does not release it.** An agent may create blockers after claiming, which is the legitimate case of discovered subtasks — but it is also a possible escape hatch for an agent in difficulty. The guardrail is not to forbid the act but to remove its payoff: the `done_criteria` stays frozen, the task stays to be finished, and creating a blocker costs the price of a real task (scope and verifiable criterion mandatory), so a fake blocker is visible to the naked eye. `check` reports the pattern "blockers created by the same agent after claiming" as a signal, not a fault. Faking must cost more than doing.
+
+**`done_criteria` is required in order to `claim`, and its freeze is anchored by hash.** The freeze cannot happen later: a task created without a criterion would then become permanently uncriteriable once claimed. `claim` therefore fails if the field is empty, with the exact command to set it and claim in the same call.
+
+The freeze mechanism accounts for the CLI not being a gatekeeper: any tool can rewrite the file. The freeze is therefore **verifiable, not defended**: `claim` records the hash of the `done_criteria` in the claim record (§7), `done` checks that the current criterion matches that hash before executing anything, and writes the hash into the proof. A criterion modified between claim and done makes `done` fail with code 6, and `check` reports the case. Editing the file unblocks nothing.
+
+The freeze prevents weakening a criterion *after the fact*; it does not prevent setting a lenient criterion *at claim time*. That is why the `criteria_by` field records who set the criterion: a task created by a human carries its criterion from creation (`creator`), and `check` reports "criterion set by the claimer" as a signal — the same logic as self-created blockers, visible without being forbidden.
+
+**A criterion proved wrong in part is recorded, and the record is a log entry.** The freeze holds against the case it was built for, an agent weakening what it must prove. It also catches a case nobody designed it for: a criterion written on a premise the work then disproves. Three sessions in this repository met it inside a fortnight. One carried a clause requiring that a file stop instructing something it had never instructed — unsatisfiable as written, one clause of four, the other three met. One demanded a fixture a binding ADR forbids. One asserted that a test file would pass untouched, and it did not, because two tests there read the very surface the task was changing. In each of the three the criterion was mostly right and locally false, and the tool offered two exits, both wrong: edit the criterion, which is the failure the hash exists to make visible, or `release`, which hands back work that is otherwise correct.
+
+The third exit is to **record the discrepancy and keep the criterion**. It is a `log` entry whose message opens with `discrepancy:`, followed by what the criterion assumes and what was measured against it:
+
+```
+- 2026-08-14T18:16Z claude-code/03fd — discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help` and one asserts the clause this ADR supersedes
+```
+
+**It changes nothing mechanically, and that is the design rather than a limit of it.** `done_criteria` is not touched, so the hash `claim` recorded still anchors it and `done` still verifies the criterion it froze, whole. The record is never a condition of `done`, never an input `done` reads, and never a reason to accept less: a criterion genuinely unmet is unmet whatever the log says, and a task whose criterion has moved fails `done` with code 6 exactly as before. What the record buys is that the disagreement sits in the corpus instead of in a pull request comment nobody reopens — and that the next reader of the finished task sees, beside the proof, what the agent that produced it did not believe.
+
+**It is not an edit to the criterion**, and the layout is what makes that verifiable rather than merely promised: the record is an entry of its own, and the frozen field lives in a file writing that entry never opens. That is also the reason the log is the record and a new field is not. A field would put the record back into the one file the freeze exists to make observable, which is what ADR-ff294eff4d1a moved the log out of. It would be rewritable in place by whoever edits the file, where a log line is append-only and a rewritten one is a git diff visible in review. It would need a `by` and an `at` to be worth reading, which is the log's grammar restated in frontmatter. And it would be unwritable exactly where it is most needed, since `amend` refuses a `done` task and a criterion is most often disproved while it is being proved. The one thing a field could do that a message cannot is name *which* clause — and `done_criteria` is one block of prose with no addressable clauses, so that pointer would be a quotation, which the message already is.
+
+**It is not a release either, and the two are not ranked.** `release` hands the task and its criterion back to the pool, which is right when the whole task rests on a false premise and wrong when one clause of four does, because it throws away work that is correct. A criterion wrong in part is recorded and the task is carried to `done`; a criterion wrong entire is released, `--reason` mandatory — itself a log entry, on the same line grammar.
+
+**What an entry records is a field, and it is the one case that is not a convention on the message.** `records` is absent on a work entry, which is what every entry a corpus already holds is and what `ank log` means to a reader. A value names machinery: `edit`, written by the verbs that change an entity's content outside a status transition (ADR-16813b3bcf37). The work trace and the machinery are presented apart, and the count beside the trace is the trace's.
+
+**It is a field and not an opening on the message**, unlike the record below, and the two are worth reading together. An opening costs no schema bump, which is why the record below is one. This is not: `check` counts these entries against the version an entity carries, arithmetic wants a field rather than a prefix, and a value the reader can key on survives a message being rewritten around it. **The value is a free string at parse time and a vocabulary at `check` time**, on the terms §8 sets for a typed actor: a word this build does not know is a finding, never a parse error, because a corpus written by a newer build must stay readable.
+
+**The convention is the message, never the grammar.** Nothing in the form above moves: a dash, the timestamp, the identity, an em dash, the message. `released: <reason>` is the same kind of convention and older than this one. A reader that does not know it reads a sentence, a reader that does reads a record, and every log a corpus already holds stays valid — so this costs no schema bump and no migration. `show` needs no rule to display it either: the log prints under the entity as it stands, and the opening is the mark.
+
+`check` reads the log and reports the record as a signal on the task, never as a fault (§4). A judgement somebody wrote down is not a corpus defect, and the criterion that actually moved is the divergence fault above.
+
+**Claim TTL.** Short, 30 minutes by default — the default the repository states through **`claim_ttl_default` in `config.yml`**, itself **capped by `claim_ttl_max`** (2 hours by default), so an agent cannot grant itself 24 hours and hoard. It is **renewed implicitly by working**: working is enough to keep the lock, there is no `heartbeat` verb to memorise.
+
+Two keys and not one, because they answer different questions. The cap stops an agent granting itself a day; the default states what this repository's work actually looks like. Thirty minutes is shorter than a CI run on many repositories — this one included — so the shipped default is wrong for them, and every agent rediscovers `--ttl` by losing a claim first. A repository that can say so once says it once.
+
+**Renewal follows the holder's work, not `log` alone** (ADR-0bb7ea8991bc). The reasoning above is what the mechanism owed and did not deliver: `log` is *reporting*, not working, and the two come apart exactly where it costs. After the design is settled there is often an hour of mechanical fixing during which there is genuinely nothing to log, so the lease lapsed precisely during the stretch where nothing interesting was happening — which is also the stretch where a second agent would most safely take over. The lock was weakest where the work was least interruptible.
+
+The rule is **the holder's verbs against the task it holds**, and it is a rule rather than a list because a list is what goes stale when a verb is added. `ank show` on another task renews nothing. `ank context` in execution mode is about the task in hand and renews. `status` is about the repository and does not. `claim` grants a lease rather than extending one, and `done` and `release` settle it, so none of the three renews under this rule — `log` still does, as its own write. A lapsed claim is not renewed by reading either: taking one back stays the re-acquisition `log` and `done` perform, described below.
+
+The objection is that an agent could then hold a task forever by reading it, and the answer is not new machinery: §4 already has `check` report **repeated claim renewals with no modification to the scope files** as a possible-hoarding signal. Visibility rather than restriction is the standing choice — it is how task flooding is handled, how self-created blockers are handled, and how a criterion set by the claimer is handled. Reading to hold is a lie somebody wrote down, in a corpus that already reports it.
+
+**The TTL is a property of the claim, and a renewal reuses it.** `--ttl` states the rhythm of the work — how long this task goes between signs of life — and that does not change halfway through it. The granted duration is therefore recorded in the claim record (§7) and every renewal recomputes the expiry from it, **re-capped by `claim_ttl_max` at renewal time** so that a lowered cap takes effect on the next renewal rather than at the next claim.
+
+Recorded rather than derived, because it cannot be derived: a renewal moves `expires` and leaves `claimed` where it is — `check` reads `claimed` to report blockers the holder created after taking the task — so the interval between the two stops being the lease the moment the first renewal lands. Measured before it was written down: renewal recomputed the default instead, so an agent that asked for two hours held them once and fell back to thirty minutes at its first `log`, which is the command the loop tells it to run often. That is the flag failing at exactly the case it exists for — a long silent stretch, entered just after a log (TASK-1b45f41e7b99).
+
+Two hours granted and then honoured is not hoarding: `claim_ttl_max` is what bounds it, and it bounds it at every renewal rather than only at the first.
+
+**Return after expiry.** A 40-minute build with no `log` expires the claim; that is normal, not a fault. On expiry the task stays `in_progress` and becomes claimable again. When the original holder returns: if nobody took the task over, `log` and `done` **re-acquire silently** and carry on; if another agent took it over in the meantime, they fail with code 4 and the name of the new holder. Mechanically, "silently" means checking that no active claim exists for the task — the ref `refs/ank/claims/<id>` — then recreating it in the current agent's name, both steps resting on the atomic primitive of a ref update. No data is lost either way — the log says where each holder stopped.
+
+**Two live claims under one identity.** `claim` refuses to create that state (§4) and the CLI is not a gatekeeper, so it remains reachable: a ref written by hand, a claim taken by an earlier binary, a lapse revived. HEAD is then derived from more than one candidate, and what the verbs owe their caller is that **the choice is never silent** — the whole cost of the state is not that it exists but that `log`, `release` and `done` used to resolve it without a word.
+
+HEAD stays derived and the resolution stays deterministic: the lowest task id among the identity's live claims, because the refs are enumerated in refname order and nothing else would be reproducible. On top of that:
+
+- **`log` and `release` act, and say so first.** Before writing anything they name the task they resolved to, every other live claim of the identity with its expiry, the command that names another one explicitly, and the way out of a shared identity. On standard error, so that stdout stays what a parser already reads (§4); under `--json` the same sentences arrive in a `warnings` array, as `claim` already does — the caller that scripts around these verbs is exactly the caller running several sessions.
+- **`done` refuses**, code 6, and refuses **before running a single verifier**. It is the verb whose effect cannot be undone by running it again: an agent that meant the task it claimed a minute ago and got the one it claimed an hour ago finds a task marked `done`, carrying a proof, whose work was never verified. The refusal names every candidate and gives the command for one of them. Code 6 is what `log`, `release` and `done` already answer when HEAD resolves to no task at all; resolving to several is the same fact from the other side.
+
+**The explicit ID is what disambiguates**, which costs the refusal rather than a new flag. It stops meaning "must equal HEAD" and means "must name a task this agent holds a live claim on" — still never a way to act on somebody else's task, and still code 6 when it names one this agent does not hold. With one claim, which is the nominal case, the two readings are the same sentence.
+
+### ADR
+
+`.ank/entities/ADR-3c7e0b9142af.md`
+
+```yaml
+---
+id: ADR-3c7e0b9142af
+type: adr
+slug: opaque-sessions
+title: Opaque sessions rather than stateless JWT
+created: 2026-07-18T11:02:00Z
+author: human:marie          # the identity that ran `new`, typed (below)
+status: accepted             # proposed | accepted | superseded
+scope:
+  - src/auth/**
+constraint: |                # the only field injected into context
+  Do not introduce self-contained JWTs for user auth.
+  Every session goes through the Redis store.
+see: src/auth/session_store.ts    # optional, for positive constraints
+supersedes: ADR-9a12ff03b8e1
+ratified: 4c1e9a20            # hash of constraint+scope at acceptance (set by accept)
+schema: 3
+version: 2
+---
+
+Decision, alternatives rejected, consequences.
+```
+
+**`constraint` is short and imperative.** It alone goes into the agent's context, never the body of the document. A three-page ADR therefore costs about thirty tokens at injection time.
+
+**`see`** answers the fact that a negative constraint ("do not do X") is respected without context, whereas a positive one ("everything goes through adapter X") needs a pointer to the reference code.
+
+**Immutability, anchored like that of tasks.** An `accepted` ADR has `constraint`, `scope` and `status` locked; the body stays editable. The lock is verifiable: the signed ratification commit (§8) records the hash of `constraint` and `scope` at acceptance time, and `check` compares the current state against that hash. An ADR whose constraint has diverged from the ratified hash is reported as **altered** — and its injection into `context` is suspended with an explicit warning, because injecting an altered constraint would amount to letting the editor rewrite the rule.
+
+**How `check` reaches the commit.** `ratified` holds the hash, not the commit — a commit cannot contain its own identifier, so a field naming it could never be written by the single commit `accept` makes (§12). The pointer is the file's own history instead: walking back from `HEAD` over the ADR's path, through `rev-list`, the first commit whose message is the `ratify <id>` of §12 is the ratification, and `cat-file` reads the `constraint+scope` hash out of that message. Comparing against *that* hash is what makes the freeze verifiable at all: the copy in the file is written by whoever writes the file, whereas replacing the one in the commit means producing another signed commit, which is what a ratification key is for.
+
+Three outcomes, and the third must not be confused with the second. The hashes agree, and the constraint is the ratified one. They disagree, and the ADR is **altered**. Or no ratification commit is reachable — a shallow clone, a rewritten history, a corpus moved between repositories — and the honest report is that the freeze **cannot be verified**, never that it was broken. A check that cries divergence over a shallow clone is a check people learn to ignore.
+
+Modifying a decision means creating a new ADR that `supersedes` it. **The `accepted` → `superseded` transition is the only legal write on an accepted ADR**, and it is performed by `accept` of the new ADR, inside the same ratification commit — the replacement and its authorisation are inseparable.
+
+**Ratifying what was accepted by hand.** A corpus holds ADRs that are `accepted` and carry no `ratified` anchor: written before the tool existed, or promoted by editing the file. `check` reports them as a signal and not a violation (§4), because condemning a bootstrap corpus wholesale would block every `done` behind it. `accept` therefore admits one exception to "`proposed` → `accepted` is the only promotion": an `accepted` ADR **carrying no anchor at all** is ratified in place, which writes the anchor and produces the signed commit without changing the status. An ADR that already carries one is refused, and that refusal is the half doing the work — re-anchoring is precisely how an edited constraint would be laundered, and changing a ratified decision stays a succession. Supplying a *first* anchor launders nothing: there was no anchor to diverge from.
+
+The succession such an ADR declares follows the same reasoning. A `supersedes` whose target is already marked `superseded`, with no other accepted ADR claiming that target, is a succession already on record — bootstrap again, or an `accept` interrupted between its two writes — and ratification records it in the commit without rewriting the file. A target still `proposed` was never binding, and remains a refusal.
+
+**Ratification.** An agent creates in `proposed`. Promotion to `accepted` goes through `accept` and through nothing else, and `accept` produces the signed ratification commit (§8, §12): the authority is carried by the signature, verifiable by anyone against `allowed_signers`, not by the identity string of the caller. A `proposed` ADR is visible in orientation mode, **never injected in execution mode**: non-binding means it must not consume the attention budget of an agent that is writing code.
+
+The underlying principle, which explains the asymmetry with tasks: **ratification applies where an artifact commits others, not where it records work.** An ADR constrains every agent that comes after it; a task commits nobody. Hence `new task` without restriction and `new adr` in `proposed`.
+
+The symmetric risk — an agent going off the rails and flooding the repository with tasks — is **accepted, without a quota**. A quota would be unenforceable in this design: the format is the specification, an agent writes files directly, and there is no central arbiter offline-first to do the counting. The defence is visibility, not restriction: every task costs a valid scope, `check` reports burst creation by a single identity (through `created`), and `review` presents creations by author. Flooding is a noisy diff in review, not a silent state.
+
+### Spec
+
+`.ank/entities/SPEC-19c4f0a83b2e.md`
+
+```yaml
+---
+id: SPEC-19c4f0a83b2e
+type: spec
+slug: session-protocol
+title: Session protocol, version 2
+created: 2026-08-15T06:12:00Z
+author: human:marie
+status: accepted             # proposed | accepted | superseded
+scope:
+  - src/auth/**
+references: [SPEC-3f81c9d0a2b7, ADR-19d0e2f4a6b8]   # what this document rests on
+supersedes: SPEC-c07d1b4a92e5
+ratified: 9f2c81b0           # hash of the document and scope at acceptance (set by accept)
+schema: 3
+version: 4
+---
+
+The document itself.
+```
+
+**One entity per document, never one per section**, and §10's refusal is kept entire rather than worked around: a specification's authority comes from being one coherent document, its sections are not independent the way ADRs are, and cutting it into scoped fragments creates the drift one document prevents. A section is reached by reading the document. What fired is the remedy that row offered instead — distilling a section into a scoped ADR — and what it fired against is the vehicle: `constraint` is short by construction and frozen at ratification, orientation serves no rule text at all, and a perimeter is called over-constrained when constraints alone exceed half its budget (§5). A description does not fit through a channel sized for a rule, and §11's model has no sink for it either, every mechanism there being subtractive and presupposing a rule that could in principle be checked.
+
+**`references` is what makes several documents safe, and it is a declared field rather than a sentence** (ADR-5a690829388d). A specification cut into documents drifts unless the coherence between them is verified, and verifying it means the citation has to sit somewhere a parser can reach. So a spec declares what it rests on in a field of its own, `check` resolves every entry against the corpus, and three states are reported. A target the corpus does not hold is a **fault**: the reader following the reference finds nothing, which is exactly what a `blocked_by` naming nothing already is. A target that is not `accepted` is a **signal**, because two documents are legitimately written at once and refusing that would make it impossible to write the second — what it must not do is pass unmentioned. A target that is `superseded` is a **signal naming the successor**, so the repair is a citation update and not an investigation. Each of the three names the command that repairs it, and on the third that is the whole difference between a check that helps and one that scolds: the successor is known, so the message carries it. The field is optional and omitted when empty — a document that cites nothing says nothing, and emitting `[]` on every spec written before the field existed would make each of them non-canonical at the very release that introduced it.
+
+**A reference that follows the chain is not reported.** The finding on a superseded target fires only where the citing document does not also reference the end of that chain: a document that has followed the supersession has already done the thing the finding would ask for. Revising a ratified document *is* a supersession, so this is the state a split corpus produces most often, and a rule that fired anyway would fire on every correct citation the day after any document is revised.
+
+**A citation is not covered by the anchor, so the repair is an `amend` and not a supersession.** `ratified` hashes the body and the `scope`; a reference is neither of them. `amend --reference` and `--drop-reference` therefore reach an accepted document, where `--scope` on the same document is refused. That is what makes the repair each finding names actually available where it fires: revising a ratified document *is* a supersession, so the documents left citing a superseded target are usually accepted themselves, and a verb that refused them would be naming a command it turns down.
+
+**A reference names a `spec` or an `adr`, and no other kind.** A specification resting on a binding decision is ordinary and worth declaring; a task is work that finishes and an entry is a trace of a moment, so a document citing one would be citing something the corpus is designed to retire. The rule is enforced where the act can still be attributed — `new spec --reference`, `amend --reference` — and reported by `check` as a fault where a file arrived some other way. It is deliberately **not** a parse error: the format states shape, and refusing to read a whole corpus over one citation is a worse failure than naming it, which is the reading `about` already gets on a log entry.
+
+**Only what is declared is verified.** A section number written in a sentence is not a reference, and nothing scans a body for one. A check reading citations out of paragraphs would depend on how somebody phrased them, which is the drift this exists to catch, moved into the detector.
+
+**A spec declares no `constraint`, and the absence is what justifies the kind.** A spec describes, an ADR binds. An entity that did both would be an ADR with an unbounded constraint, which restates the ceiling rather than solving it. Nothing in the refusal machinery reads a spec, and a rule that must bind is still an ADR — writing one is what §11 already asks of a rule that has grown teeth.
+
+**What the kind buys is that the document moves the way every other decision does.** Before it, the specification had no status, no supersession, no ratification, no anchor and no version, in a tool whose premise is that a decision should be readable, anchored and verifiable — the premise unapplied to the document stating it. It now carries the lifecycle of §3, is promoted by `accept`, and is anchored by the signed ratification commit like an ADR.
+
+**Immutability is anchored over the whole document**, and that is the one place the anchor differs from an ADR's. `ratified` holds the hash of the body and `scope`, because there is no narrower field carrying the authority; an accepted spec whose body has moved is reported as **altered**, on the same terms and by the same walk (§8). The consequence is deliberate and is the doctrine applied rather than an exception to it: revising an accepted specification is a supersession, and a working draft stays `proposed` while it is one.
+
+**`context` names a spec and never quotes it**, in orientation and in execution alike — id and title, one line, beside the constraints. There is no mode that serves its body: there is no `constraint` to serve, and the body is the document. The proportion is what makes the rule non-negotiable rather than tidy: the specification this repository stores is over two hundred thousand bytes against a budget of eight thousand characters, so a single line of a spec body reaching `context` is the budget gone. `show` is the reader, byte for byte, which is the same split §5 settles for `help` and its per-verb page — what a thing *says* is one `show` away.
+
+The `scope` names **what the document governs, not where the document lives**. A specification of the format scopes the format's implementation; scoping it at the directory holding the file would serve it to the agents editing the prose and to nobody who has to obey it.
+
+The cost is worth writing down. A spec entity is large and every verb walking the corpus walks it; `check` verifies the byte-for-byte round trip on every entity, so the document is parsed and re-serialised on every run. That is accepted and it is not free.
+
+### Log entry
+
+`.ank/entities/LOG-6b0f39d7a4c1.md`
+
+```yaml
+---
+id: LOG-6b0f39d7a4c1
+type: log
+title: jwt.verify removed from session.ts
+created: 2026-07-26T14:02:00Z
+author: claude-code/1.4.2
+scope:
+  - src/auth/**
+about: TASK-8f3a91c2d4e7    # the entity the entry is about
+seq: 0                      # its rank among that entity's entries
+schema: 3
+version: 1
+---
+
+Anything the line cannot hold.
+```
+
+**An entry is written once and never modified**, which is what the kind is for. A correction is a new entry naming the one it corrects, and the previous shape's point that a rewritten past entry is a git diff visible in review still holds — it is now the only way one could happen.
+
+**`about` names the entity the entry is about**, and any kind may be named: a task, an ADR, a spec. This is what the previous shape computed from the id instead, and the trade is stated above — an address becomes a query, and in exchange an entry is indexed and reachable like anything else.
+
+**`seq` is the rank of this entry among the entries about the same entity**, counting from 0: one more than the highest `seq` on any entry its writer could already see about that subject. **The order of an entity's entries is `created`, then `seq`, then the identifier**, and every part of that key is read off the entity itself.
+
+**A timestamp is not an order, and the corpus proves it.** `created` has one-second resolution, and one `ank log` costs a few hundred milliseconds, so several entries inside one second is the ordinary case and not the exotic one: measured on a harness writing four entries about one task, 12 runs of 12 put all four in the same second. With no other key the order between them falls to the identifier, which is a hash of the act of creation and carries no order whatever — 10 of those 12 runs printed the four in the wrong order, in exactly descending identifier. The previous shape never had to answer this: an append-only file carried insertion order for free. **A set of files does not, so the order has to be a field.**
+
+Two alternatives were considered and both are worse. **A finer `created`** would fix new writes and could not recover the past: a corpus migrated from the previous layout carries second-resolution instants, and the only order that ever existed there is the line order of the file — refining those timestamps would be inventing precision that was never recorded, which this section forbids in as many words. `seq` carries the line index instead, which is a fact the file actually holds. And **grinding the entropy of an identifier until the hash sorts in line order** works, costs no field, and makes the identifier carry meaning §3 says it does not: the next reader would have to be told that ids sort, and the first id allocated any other way would break the order in silence.
+
+**What `seq` does not promise is as important as what it does.** It is not a clock and not a lock. Two writers who cannot see each other — two branches, two worktrees — produce the same value, and that is the honest answer rather than a defect: they were concurrent, and there is no order between them to record. `created` separates them when their instants differ, the identifier settles what is left, and the merge is still two new files and still conflict-free, which is the property the kind exists for. A reader must therefore treat the key as a total order and never as a claim that one entry caused another.
+
+**A migrated entry takes the line index of the file it came from**, counting from 0. That is the order the append-only file recorded, and it is what makes the previous layout's history survive the move.
+
+**Where a file's line order contradicts its own timestamps, the timestamps win**, because `created` is read before `seq`. That is a decision and not an oversight. A line order is only evidence of insertion order while every writer appended, and the reference corpus shows that did not hold: of 178 log files, **one** stores its two lines newest-first, so its own order disagrees with the instants each line records. Each entry states its instant; the file states a sequence somebody could get wrong, and did. So the guarantee is exact rather than sweeping — **across distinct instants the timestamps order the entries, and within one instant the file's line order does** — and the second half is the load-bearing one: 6 groups covering 12 entries in that corpus share a second, and for those the line order is the only order there has ever been.
+
+**The message is the `title`, and no field is added for it.** Every entity already carries the field a lister prints, and the message is exactly what a lister must print; a second field would be the same sentence in two places, which is how two fields come to disagree. What will not fit on a line goes in the body, where prose lives on every kind.
+
+**The split is fixed, and it is lossless.** A message of one line and at most **100 characters** is the whole of the `title` and the body is empty. Longer, the title is the message up to the last space at or before character 100 and at or after character 50 — the limit itself where there is no such space, and the first newline where one comes earlier — and the body is `"\n"`, the remainder verbatim, `"\n"`. **The message is the exact concatenation of the two**: the separating space belongs to the remainder, nothing is inserted on the way out and exactly one newline is removed at each end on the way back, never a trim. A reader recovers the message it was given, byte for byte, whatever it contained.
+
+The rule exists because a title is what *every* lister prints, on every kind. Measured on the reference corpus, an entry averages 453 characters and the longest is 2105; a title of that length is emitted as one enormous quoted scalar and printed in full by `find`, `context` and `scope`, wrecking them for kinds that have nothing to do with the log. So **a listing prints the head of the message with a trailing `…` when there is more**, which bounds the line whatever the message is, and `ank show <LOG-id>` prints it whole. `--json` always carries the whole message, because a parser reads no page and spends no budget. The alternative — the message whole in the `title`, elided at each lister — is lossless too and was rejected: it moves one storage rule into five printers, and it leaves the file itself unreadable in a diff.
+
+**The `scope` is the subject's, written when the entry is written.** An entry appears wherever what it is about appears, which is the only placement that makes a trace findable by perimeter, and it records the scope as it stood rather than tracking it — a trace of work is a statement about a moment.
+
+What that costs is stated here rather than discovered later: **the copy does not track.** When a task's scope is amended, or when the code under it moves, every entry already written keeps the perimeter as it stood — so the entries of one task can name several perimeters, and an old entry can name a dead one. Accepted, on two grounds. Tracking would mean rewriting an entity that is written once, which is the property the kind exists for; and the dead-scope machinery of §4 already makes a stale perimeter visible without a rule of its own. **An entry's scope is therefore not confronted with the filesystem by `check`**: every other kind chooses its perimeter and answers for it, an entry copies one it did not choose, and reporting a subject's dead scope once per entry about it is the volume that teaches a reader to stop reading `check`.
+
+**No `status`, and `version` stays**, which is not an inconsistency but the difference between what each would record. An entry has nothing to transition to, so a status would have one legal value and would only ever be copied. `version` is the compare-and-swap counter of §7, and on a kind written once it earns its place by the falsification it makes visible: an entry whose `version` is above 1 has been rewritten, and the format says it should not have been.
+
+Entries are written by `log`, one per call, and by nothing else. `attest --detached` still writes none, and §7 says why that is not an omission.
+
+### Typed actors, and a reading that is recorded
+
+A corpus written mostly by agents had no field that said so. `author` held whatever `$ANK_AGENT` resolved to, and nothing distinguished a person from a model. The distinction the whole authority model rests on was recorded nowhere except in the signed ratification commit (§8), which covers ADRs and only at the moment they are accepted — and the gap was widest exactly where it matters most: a `done_criteria` written by an agent, claimed by an agent and verified by a verifier an agent could edit is the normal case, and `criteria_by` says which *position* wrote the criterion, never what kind of actor.
+
+**An identity written into an entity is typed** (ADR-3877fef1d662):
+
+| Form | Actor |
+|---|---|
+| `human:<id>` | A person |
+| `<producer>/<version>` | An agent |
+| `process:<id>` | An automated process |
+
+The convention binds `author` and every later field that names an actor — today, the `by` of a `verified` entry. It is what makes the trust tiers fall out mechanically: no reading is *unverified*, a reading by a non-human actor is *machine-confirmed*, a reading by a `human:` is *human-reviewed*.
+
+**A value that does not match the convention is a `check` finding and never a parse error.** This is not a detail of severity: making it a parse error would lock every file written before the convention out of its own format, and those files mean what they meant. The corpus is not migrated by a rule it predates. `check` reports the pre-convention set **once for the corpus and never per file** — the same choice already made for the entities predating `author` entirely, and for the same reason: one line per file teaches a reader to stop reading `check`.
+
+**`verified` records a reading.** It is an optional list, each entry naming a typed actor and an ISO 8601 instant in UTC:
+
+```yaml
+verified:
+  - by: human:marie
+    at: 2026-07-27T09:40:00Z
+```
+
+`proof` anchors that something *ran*; `verified` anchors that somebody *read* and stands behind it. Those are different claims, and a corpus written by agents needs the second more than a corpus written by people did. It is optional on every kind, its absence is never a fault, and **no verb requires it** — a required trust field is a field filled in to make the tool stop complaining, at which point it records nothing.
+
+`check` derives what the fields state and nothing further: an entity whose `author` is an agent and which carries no reading by a `human:` is a **signal**. No score, no confidence, no ranking. The signals are recorded and the reader judges — the same reason §11 refuses temporal decay.
+
+**The convention is a signal and not a wall**, knowingly. ADR-9ede1ffd04e2 abolished the agent/human split in the CLI on the observation that a wall whose bricks are self-declared identity is a sign and not a wall; this adds a sign. Nothing prevents an agent from writing `human:` in front of its own name, any more than anything prevents it from setting `$ANK_AGENT` to a colleague's. What the convention buys is that the honest case becomes legible and the dishonest one becomes a lie somebody wrote down. Nothing in the refusal machinery consults these fields.
+
+Rejected: **`generated: {by, at}`**, redundant with `author` and `created`, and `created` is hashed into the identifier, so it is anchored in a way a new field would not be — two fields answering one question are two fields that eventually disagree. And **`stale_after`**, an absolute expiry, which §11 already argues against: a three-year-old constraint can be vital, and what Ank detects is structural death, not the calendar.

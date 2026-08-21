@@ -2267,6 +2267,41 @@ fn check_entries(
         );
     }
 
+    // A `records` value this build does not know. **A signal and never a parse
+    // error**, which is the whole reason the field is a free string in the
+    // model: ADR-3877fef1d662 settles it for a typed actor and the argument is
+    // the same one — a corpus written by a newer build must stay readable, and
+    // a value refused at parse time would make an entry disappear instead of
+    // being reported. What a reader is told is that this build does not know
+    // the word, never that the word is wrong.
+    let mut unknown: Vec<String> = entities
+        .iter()
+        .filter(|(_, e)| in_scope(e))
+        .filter_map(|(_, e)| match e {
+            Entity::Log(l) => match l.records.as_deref() {
+                Some(v) if !ank_core::RECORDS_KINDS.contains(&v) => {
+                    Some(format!("{} records '{v}'", l.id))
+                }
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect();
+    if !unknown.is_empty() {
+        unknown.sort();
+        let total = unknown.len();
+        unknown.truncate(5);
+        report.findings.push(
+            Finding::signal(
+                "corpus",
+                format!(
+                    "{total} log entries record a word this build does not know: read as machinery and kept out of the work trace"
+                ),
+            )
+            .with_note(unknown),
+        );
+    }
+
     let present: HashSet<&EntityId> = entities.iter().map(|(_, e)| e.id()).collect();
     let mut orphans: Vec<String> = entities
         .iter()
@@ -5408,14 +5443,24 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     if body_carries_its_own_log(&loaded.entity) {
         log.retain(|e| e.id.is_some());
     }
+    // The work trace and the machinery part here (ADR-16813b3bcf37). What the
+    // budget below is spent on is the trace, because that is what a reader came
+    // for; the machinery is listed under it, out of what is left, and an entity
+    // edited eight times therefore does not answer "what did the last holder
+    // learn" with eight mechanical lines.
+    let (mut log, machinery) = crate::entries::split(log);
     // What the budget has left once the entity is paid for, which is the whole
     // point of charging the entity first: it is never cut, so it is never the
     // section competing for room.
-    let (log, log_cut) = crate::commands::newest_that_fit(
-        &log,
-        cfg.context_budget.saturating_sub(text.chars().count()),
-    );
+    let spent = text.chars().count();
+    let (log, log_cut) =
+        crate::commands::newest_that_fit(&log, cfg.context_budget.saturating_sub(spent));
     let log_total = log.len() + log_cut;
+    let (machinery, machinery_cut) = crate::commands::newest_that_fit(
+        &machinery,
+        cfg.context_budget
+            .saturating_sub(spent + log.iter().map(|e| e.line.message.len()).sum::<usize>()),
+    );
 
     if inv.json() {
         let state = match claim::read(&repo.corpus, loaded.entity.id())?.map(|h| h.record) {
@@ -5445,6 +5490,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
             .num("log_total", log_total)
             .num("log_shown", log.len())
             .raw("log", &log_json(log))
+            .raw("machinery", &log_json(machinery))
             .str("content", &text)
             .finish();
         let _ = writeln!(out, "{doc}");
@@ -5460,6 +5506,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         // the failure the version bump exists to prevent (§3). Under the entity
         // and not inside it: what is above stays byte for byte the file.
         log_section(out, loaded.entity.id(), log, log_cut, inv.style());
+        machinery_section(out, machinery, machinery_cut, inv.style());
         if let Some((blocked_by, unblocks)) = &edges {
             edge_section(out, "BLOCKED BY", blocked_by, inv.style());
             edge_section(out, "UNBLOCKS", unblocks, inv.style());
@@ -5497,10 +5544,52 @@ fn log_json(entries: &[crate::entries::Entry]) -> String {
                 .str("timestamp", &e.line.timestamp)
                 .str("who", &e.line.who)
                 .str("message", &e.line.message)
+                .opt_str("records", e.records.as_deref())
                 .finish()
         })
         .collect();
     crate::json::array(items)
+}
+
+/// The machinery, printed under the work trace and never mixed into it.
+///
+/// **A section of its own, and not a filter.** ADR-16813b3bcf37 asks that an
+/// edit leave a record a reader can find, which a record nobody prints does not
+/// satisfy; and TASK-027a429aad2e asks that the work trace stop carrying it,
+/// which mixing the two does not satisfy either. Two sections answer both, and
+/// the reader chooses which question they are asking.
+///
+/// **Silent when there is none**, so `show` on the ordinary entity is exactly
+/// what it was before this existed.
+fn machinery_section(
+    out: &mut dyn Write,
+    entries: &[crate::entries::Entry],
+    cut: usize,
+    style: crate::style::Style,
+) {
+    if entries.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        out,
+        "
+{}",
+        style.header(&format!("EDITS ({})", entries.len() + cut))
+    );
+    for (i, e) in entries.iter().enumerate() {
+        let connector = if i + 1 == entries.len() {
+            crate::style::glyph::LAST
+        } else {
+            crate::style::glyph::BRANCH
+        };
+        let _ = writeln!(
+            out,
+            "{connector}{} {} — {}",
+            e.line.timestamp,
+            e.line.who,
+            e.line.shown_message()
+        );
+    }
 }
 
 /// The entity's log, printed under it and never inside it.

@@ -2,17 +2,39 @@ use crate::error::{Error, Result};
 use crate::id::EntityId;
 use serde::{Deserialize, Serialize};
 
+/// The values [`Log::records`] is known to take.
+///
+/// A vocabulary and not an enum, deliberately: the field parses as a free
+/// string so that an entry written by a newer build is read rather than
+/// refused, and this list is what `check` compares against to say that a word
+/// is unknown to *this* build (ADR-3877fef1d662).
+pub const RECORDS_KINDS: &[&str] = &["edit"];
+
 /// Format version this crate **writes**, and the newest it reads.
 ///
-/// 3 carries two changes: the log leaving the entity body, and [`Verified`]
+/// 3 carried two changes: the log leaving the entity body, and [`Verified`]
 /// with the typed-actor convention it names (§3). The flat layout of the same
-/// revision carries no bump — it moves files rather than fields, and a reader
+/// revision carried no bump — it moves files rather than fields, and a reader
 /// that finds the file finds every field it already knew.
 ///
-/// The log is what makes the bump necessary, and it is the case this constant
+/// The log is what made that bump necessary, and it is the case this constant
 /// exists for: a reader that does not know the log has left the body shows an
 /// empty history for a task that has one, silently.
-pub const SCHEMA_VERSION: u32 = 3;
+///
+/// 4 carries one change, [`Log::records`], and it is the same case again. An
+/// entry marked as machinery is kept out of the work trace a reader reads
+/// (ADR-16813b3bcf37); a reader that does not know the field drops it on the
+/// next rewrite, and the entry silently rejoins the trace it was written to
+/// stay out of. Silently is the word that decides it, here as at 3.
+///
+/// **The cost is paid by binaries already distributed**, and it is worth
+/// stating where the number lives. Every entity a verb writes carries this
+/// value, so a corpus edited by a build at 4 becomes progressively unreadable
+/// to a build at 3, one entity at a time, with `schema_ahead` warning once and
+/// every listing then answering as if those entities were not there. That is
+/// the designed behaviour of this constant and not a side effect, but it is a
+/// real price and the field that triggers it is used by one kind.
+pub const SCHEMA_VERSION: u32 = 4;
 
 /// Oldest format version this crate reads.
 ///
@@ -454,6 +476,18 @@ pub struct Log {
     /// they were concurrent. `created` separates them when their instants
     /// differ and the identifier settles what is left.
     pub seq: u64,
+    /// What this entry records, when it records something other than work.
+    ///
+    /// **Absent means a work entry**, which is what `ank log` means to a reader
+    /// and what every entry written before this field existed is. A value names
+    /// machinery: `edit`, written by the verbs that change an entity's content
+    /// outside a status transition (ADR-16813b3bcf37).
+    ///
+    /// **A free string at parse time, a vocabulary at `check` time**, on the
+    /// terms ADR-3877fef1d662 sets for a typed actor: a value the tool does not
+    /// know is a finding and never a parse error, because a corpus written by a
+    /// newer build must stay readable rather than become unparseable.
+    pub records: Option<String>,
     /// Readings, optional and empty by default (§3).
     pub verified: Vec<Verified>,
     pub schema: u32,
