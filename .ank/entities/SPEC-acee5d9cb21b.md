@@ -9,10 +9,10 @@ status: accepted
 scope:
   - crates/ank-core/**
   - docs/format.md
-references: [SPEC-183d297253ac, SPEC-199de7ac4730, SPEC-4eff92fd80ce]
+references: [SPEC-183d297253ac, SPEC-de1a21a05cc6, SPEC-88e1ba60a95d]
 ratified: 682f1beb2a78
 schema: 3
-version: 6
+version: 8
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).

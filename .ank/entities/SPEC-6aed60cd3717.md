@@ -8,10 +8,10 @@ author: claude-code/opus-5
 status: accepted
 scope:
   - crates/ank-cli/src/context.rs
-references: [SPEC-acee5d9cb21b, SPEC-4eff92fd80ce]
+references: [SPEC-acee5d9cb21b, SPEC-de1a21a05cc6]
 ratified: e4c935f01222
 schema: 3
-version: 5
+version: 6
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
