@@ -1,6 +1,6 @@
 {
   "name": "@haksolot/ank",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "The stupid coordination tool: tasks and architecture decisions in your repo, behind one CLI any coding agent can call.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/haksolot/ank",
@@ -39,8 +39,8 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "@haksolot/ank-darwin-arm64": "0.4.1",
-    "@haksolot/ank-linux-x64-musl": "0.4.1",
-    "@haksolot/ank-win32-x64": "0.4.1"
+    "@haksolot/ank-darwin-arm64": "0.5.0",
+    "@haksolot/ank-linux-x64-musl": "0.5.0",
+    "@haksolot/ank-win32-x64": "0.5.0"
   }
 }
