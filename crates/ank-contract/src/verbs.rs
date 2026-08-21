@@ -338,7 +338,16 @@ const OUTSIDE_THE_REPOSITORY: Refusal = refuses(
 /// every command without exception: full scriptability is an invariant, not an
 /// option — hence adding them mechanically to each command's surface rather
 /// than declaring them per command, which would leave room to forget one.
-pub const GLOBAL_FLAGS: &[FlagSpec] = &[switch("--json"), switch("--quiet"), flag("--repo")];
+pub const GLOBAL_FLAGS: &[FlagSpec] = &[
+    switch("--json"),
+    switch("--quiet"),
+    flag("--repo"),
+    // The second half of an address (ADR-9e56318631f3). `--repo` says which
+    // corpus; this says which tree that corpus is anchored to. Long form only:
+    // §4 gives `-w` to nothing, and a short form is an addition to that table
+    // rather than a consequence of declaring a flag here.
+    flag("--worktree"),
+];
 
 /// The short forms of §4 (ADR-962c25797569), and the whole of them.
 ///

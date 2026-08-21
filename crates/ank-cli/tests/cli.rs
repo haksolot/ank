@@ -15844,3 +15844,312 @@ fn kind_of(v: &serde_yaml::Value) -> &'static str {
         serde_yaml::Value::Tagged(_) => "a tagged value",
     }
 }
+
+// ---------------------------------------------------------------------------
+// Two roots: the corpus, and the tree it is anchored to (ADR-9e56318631f3)
+// ---------------------------------------------------------------------------
+//
+// Every test below drives the binary with both halves of the address, `--repo`
+// naming the corpus and `--worktree` naming the tree it is anchored to, and
+// each one pins one of the four questions the decision sorts. They are written
+// as pairs wherever the pair is affordable: the anchored run beside the same
+// run without the flag, because "the flag moved it" is the claim, and only the
+// second half of a pair can establish it.
+
+/// A tree of code with no corpus in it: a git repository, two tracked files,
+/// one commit. `only-in-the-code` is the marker a verifier looks for, and its
+/// name is the whole of the assertion it carries.
+fn code_tree(tag: &str) -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let p = std::env::temp_dir().join(format!(
+        "ank-cli-code-{}-{}-{}",
+        tag,
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&p);
+    std::fs::create_dir_all(p.join("src")).unwrap();
+    std::fs::write(p.join("src/main.rs"), "fn main() {}\n").unwrap();
+    std::fs::write(p.join("only-in-the-code"), "x\n").unwrap();
+    for args in [
+        vec!["init", "-q", "-b", "main"],
+        vec!["config", "user.email", "test@ank.local"],
+        vec!["config", "user.name", "Test"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["add", "-A"],
+        vec!["commit", "-qm", "code"],
+    ] {
+        let out = git_command(&p).args(&args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    p
+}
+
+/// The invocation with both halves of the address, run from neither directory
+/// so that nothing about the answer can come from the current one.
+fn ank_anchored(corpus: &Path, worktree: &Path, agent: &str, args: &[&str]) -> Output {
+    ank_command()
+        .args(args)
+        .arg("--repo")
+        .arg(corpus)
+        .arg("--worktree")
+        .arg(worktree)
+        .env("ANK_AGENT", agent)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built")
+}
+
+fn both_streams(out: &Output) -> String {
+    format!("{}{}", stdout(out), stderr(out))
+}
+
+/// The glob is confronted with the work tree, and the corpus is not a stand-in
+/// for it.
+///
+/// The pair is the point. Unanchored, `src/**` is held against a directory that
+/// holds `.ank/` and nothing else, and `check` reports it as work not started
+/// or a typo, which is what a detached corpus would say about every scope it
+/// carries. Anchored, the same glob meets the tree that has the file.
+#[test]
+fn a_scope_is_confronted_with_the_work_tree() {
+    let r = Repo::new();
+    r.seed_task_scoped(ID, "src/**");
+    let code_at = code_tree("scope");
+
+    let alone = r.ank("claude-code@ank", &["check"]);
+    assert!(
+        both_streams(&alone).contains("matches no file yet"),
+        "the corpus has no src/, so unanchored the scope is dead: {}",
+        both_streams(&alone)
+    );
+
+    let anchored = ank_anchored(&r.0, &code_at, "claude-code@ank", &["check"]);
+    assert!(
+        !both_streams(&anchored).contains("matches no file yet"),
+        "anchored to the tree that holds src/main.rs, the scope is alive: {}",
+        both_streams(&anchored)
+    );
+}
+
+/// An absolute path of the work tree is refused, and named back relative to it.
+///
+/// The refusal itself does not move: `normalize_path` refuses an absolute path
+/// whatever the roots are. What moves is the one thing the caller can act on,
+/// the hint, which can only name the relative form if it knows which tree the
+/// path was absolute in.
+#[test]
+fn an_absolute_path_is_named_back_relative_to_the_work_tree() {
+    let r = Repo::new();
+    r.seed_task_scoped(ID, "src/**");
+    let code_at = code_tree("path");
+    let abs = code_at.join("src").join("main.rs");
+    let abs = abs.to_str().unwrap();
+
+    let anchored = ank_anchored(&r.0, &code_at, "claude-code@ank", &["context", abs]);
+    assert_eq!(code(&anchored), 1, "{}", both_streams(&anchored));
+    assert!(
+        stderr(&anchored).contains("ank context src/main.rs"),
+        "the hint names the path relative to the work tree: {}",
+        stderr(&anchored)
+    );
+
+    let alone = r.ank("claude-code@ank", &["context", abs]);
+    assert!(
+        stderr(&alone).contains("<inside the repository>"),
+        "unanchored, the corpus cannot recognise a path of the code: {}",
+        stderr(&alone)
+    );
+}
+
+/// A verifier runs in the work tree, where the code it tests is.
+#[test]
+fn a_verifier_runs_in_the_work_tree() {
+    let r = Repo::new().with_verifiers("verifiers:\n  here:\n    run: test -f only-in-the-code\n");
+    r.seed_task_with(ID, Some("A criterion."), &["here"]);
+    let code_at = code_tree("verify");
+
+    let claimed = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&claimed), 0, "{}", both_streams(&claimed));
+    let alone = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(
+        code(&alone),
+        5,
+        "unanchored the verifier runs in the corpus, where the file is not: {}",
+        both_streams(&alone)
+    );
+
+    let anchored = ank_anchored(&r.0, &code_at, "claude-code@ank", &["done"]);
+    assert_eq!(
+        code(&anchored),
+        0,
+        "anchored, the same verifier runs where the file is: {}",
+        both_streams(&anchored)
+    );
+}
+
+/// A `commit:` proof names a commit of the code, is looked up there, and the
+/// ref it produces is written in the corpus.
+///
+/// The two halves of ADR-9e56318631f3 meet in this one verb and pull in
+/// opposite directions: the proof is read from the work tree, the record of it
+/// is written to the corpus. `for-each-ref` on both repositories says so.
+#[test]
+fn a_commit_proof_is_read_in_the_work_tree_and_recorded_in_the_corpus() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    // The completion ref records the corpus commit and branch it was written
+    // from, which is a fact about the coordination plane and stays there
+    // (ADR-9e56318631f3 assigns refs/ank/* to the corpus). A corpus with no
+    // commit therefore has nothing to record, so the fixture gives it one.
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "corpus"]);
+    let code_at = code_tree("proof");
+    let head = String::from_utf8_lossy(
+        &git_command(&code_at)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let proof = format!("commit:{head}");
+
+    let out = ank_anchored(&r.0, &code_at, "claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = ank_anchored(
+        &r.0,
+        &code_at,
+        "claude-code@ank",
+        &["done", "--proof", &proof],
+    );
+    assert_eq!(
+        code(&out),
+        0,
+        "the commit is in the work tree, which is where it is looked up: {}",
+        both_streams(&out)
+    );
+
+    assert!(
+        r.git(&["for-each-ref", "refs/ank"]).contains(ID),
+        "the record of the proof is written in the corpus"
+    );
+    let in_the_code = String::from_utf8_lossy(
+        &git_command(&code_at)
+            .args(["for-each-ref", "refs/ank"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .to_string();
+    assert!(
+        in_the_code.trim().is_empty(),
+        "and the work tree keeps no ank ref at all: {in_the_code}"
+    );
+}
+
+/// The same proof, unanchored, cannot be looked up at all.
+#[test]
+fn a_commit_of_the_code_is_unfindable_from_the_corpus_alone() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    // The completion ref records the corpus commit and branch it was written
+    // from, which is a fact about the coordination plane and stays there
+    // (ADR-9e56318631f3 assigns refs/ank/* to the corpus). A corpus with no
+    // commit therefore has nothing to record, so the fixture gives it one.
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "corpus"]);
+    let code_at = code_tree("unfindable");
+    let head = String::from_utf8_lossy(
+        &git_command(&code_at)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .trim()
+    .to_string();
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", "--proof", &format!("commit:{head}")],
+    );
+    assert_eq!(code(&out), 5, "{}", both_streams(&out));
+    assert!(
+        stderr(&out).contains("not found in this repository"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// A work tree that is no git repository is refused by name, and the corpus is
+/// never quietly used instead.
+#[test]
+fn a_work_tree_that_is_no_repository_is_refused_by_name() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    let plain = std::env::temp_dir().join(format!("ank-cli-plain-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&plain);
+    std::fs::create_dir_all(&plain).unwrap();
+
+    let out = ank_anchored(&r.0, &plain, "claude-code@ank", &["claim", ID]);
+    assert_eq!(
+        code(&out),
+        0,
+        "claim reaches only the corpus, and asks nothing of the work tree: {}",
+        both_streams(&out)
+    );
+
+    let out = ank_anchored(
+        &r.0,
+        &plain,
+        "claude-code@ank",
+        &["done", "--proof", "commit:abc"],
+    );
+    assert_eq!(code(&out), 9, "{}", both_streams(&out));
+    let err = stderr(&out);
+    assert!(err.contains("work tree"), "{err}");
+    let named = plain.file_name().unwrap().to_string_lossy().to_string();
+    assert!(
+        err.contains(&named),
+        "the refusal names which root is the problem: {err}"
+    );
+    let _ = std::fs::remove_dir_all(&plain);
+}
+
+/// `--worktree` naming something that is not a directory is refused before any
+/// verb runs.
+#[test]
+fn a_work_tree_that_is_not_a_directory_is_refused() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    let out = ank_anchored(
+        &r.0,
+        Path::new("no/such/tree"),
+        "claude-code@ank",
+        &["check"],
+    );
+    assert_eq!(code(&out), 1, "{}", both_streams(&out));
+    assert!(
+        stderr(&out).contains("is not a directory"),
+        "{}",
+        stderr(&out)
+    );
+}
+
+/// The degenerate case, pinned: naming the corpus as its own work tree is what
+/// every invocation without the flag already does, byte for byte.
+#[test]
+fn the_corpus_named_as_its_own_work_tree_answers_identically() {
+    let r = Repo::new();
+    r.seed_task_scoped(ID, "src/**");
+    let alone = r.ank("claude-code@ank", &["check"]);
+    let root = r.0.clone();
+    let named = ank_anchored(&r.0, &root, "claude-code@ank", &["check"]);
+    assert_eq!(stdout(&alone), stdout(&named));
+    assert_eq!(stderr(&alone), stderr(&named));
+    assert_eq!(code(&alone), code(&named));
+}

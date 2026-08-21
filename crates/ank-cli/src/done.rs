@@ -120,11 +120,19 @@ pub fn run(
 ) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
 
+    // Everything this verb anchors is in the code and not in the corpus
+    // (ADR-9e56318631f3): the verifiers run in the work tree, the scope hash is
+    // taken there, and the `commit:` proof names a commit of it. Asked here, so
+    // that a work tree that is no repository is refused before a verifier has
+    // run rather than after, and named as the work tree rather than reported as
+    // a corpus that is plainly a repository.
+    crate::git::ensure_worktree_usable(repo)?;
+
     // HEAD is derived: the task this agent holds a live claim on. An explicit
     // id is allowed but redundant, and must match — it is never a way to act on
     // somebody else's task (§4).
     let (id, held) = resolve_head(
-        &repo.root,
+        &repo.corpus,
         &store,
         inv.positionals.first(),
         identity,
@@ -165,7 +173,12 @@ pub fn run(
             command: "ank done".to_string(),
             purpose: format!("move {id} to done"),
         };
-        vec![submitted_proof(inv, &repo.root, &usage, Some(&criteria))?]
+        vec![submitted_proof(
+            inv,
+            &repo.worktree,
+            &usage,
+            Some(&criteria),
+        )?]
     } else {
         if inv.value("--proof").is_some() {
             return Err(CliError::new(
@@ -207,7 +220,7 @@ pub fn run(
         &done_message(&proofs),
     )?;
 
-    let (completed, sync) = claim::complete(&repo.root, &id, identity)?;
+    let (completed, sync) = claim::complete(&repo.corpus, &id, identity)?;
     // A completion that did not reach the remote closes the window it exists
     // for in this clone only (§7). On standard error, beside the constraint
     // drift warning and for the same reason: it is not the answer, and `done
@@ -439,8 +452,8 @@ fn run_verifiers(
     id: &EntityId,
     style: crate::style::Style,
 ) -> Result<Vec<Proof>> {
-    let head = git::run(&repo.root, &["rev-parse", "HEAD"]).unwrap_or_default();
-    let tree = scope_hash(&repo.root, scope);
+    let head = git::run(&repo.worktree, &["rev-parse", "HEAD"]).unwrap_or_default();
+    let tree = scope_hash(&repo.worktree, scope);
     let criteria_hash = freeze_hash_short(criteria);
     let mut proofs = Vec::new();
 
@@ -454,7 +467,7 @@ fn run_verifiers(
             )
             .with_hint(format!("ank config verifiers.{name}.run \"<command>\"")));
         };
-        let outcome = verify::run(&repo.root, name, def)?;
+        let outcome = verify::run(&repo.worktree, name, def)?;
         // Progress, and therefore standard error: it is not part of the answer,
         // and §4 requires `--json` to leave stdout byte-for-byte what a
         // caller's parser reads. This line used to precede the JSON document on
@@ -654,7 +667,8 @@ mod tests {
 
         fn repo(&self) -> Repo {
             Repo {
-                root: self.0.clone(),
+                corpus: self.0.clone(),
+                worktree: self.0.clone(),
                 ank: self.0.join(".ank"),
             }
         }

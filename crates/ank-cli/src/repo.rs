@@ -24,16 +24,43 @@ pub type Result<T> = std::result::Result<T, CliError>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Repo {
-    /// The directory containing `.ank/`.
-    pub root: PathBuf,
+    /// The directory containing `.ank/`: where the corpus lives, and the
+    /// repository whose refs carry its claims and its proofs
+    /// (ADR-9e56318631f3).
+    pub corpus: PathBuf,
     /// The `.ank/` directory itself.
     pub ank: PathBuf,
+    /// The tree the corpus is anchored to: where a scope glob is confronted,
+    /// where a path argument is resolved, where a verifier runs, and where a
+    /// `commit:` proof is looked up (ADR-9e56318631f3).
+    ///
+    /// Equal to `corpus` unless the caller named it with `--worktree`, which is
+    /// the nominal layout and the one every corpus written before this field
+    /// existed is in.
+    pub worktree: PathBuf,
 }
 
 impl Repo {
-    fn at(root: PathBuf) -> Repo {
-        let ank = root.join(ANK_DIR);
-        Repo { root, ank }
+    fn at(corpus: PathBuf) -> Repo {
+        let ank = corpus.join(ANK_DIR);
+        let worktree = corpus.clone();
+        Repo {
+            corpus,
+            ank,
+            worktree,
+        }
+    }
+
+    /// The same corpus, anchored to a tree the caller named.
+    ///
+    /// **Never derived.** `--repo` alone leaves the two roots equal, which is
+    /// what keeps the layout §6 describes as usable actually usable: a single
+    /// `.ank/` above several checkouts, with scopes written `repoA/src/**`, is
+    /// a corpus whose work tree is its own directory. A rule reading the work
+    /// tree off the caller's current directory would kill that layout without
+    /// anybody deciding to.
+    fn anchored(self, worktree: PathBuf) -> Repo {
+        Repo { worktree, ..self }
     }
 
     pub fn config_path(&self) -> PathBuf {
@@ -77,12 +104,43 @@ pub fn at(path: &Path) -> Result<Repo> {
 }
 
 /// Full resolution: `--repo` if given, otherwise the walk up from the current
-/// directory.
-pub fn resolve(repo_flag: Option<&str>, cwd: &Path) -> Result<Repo> {
-    match repo_flag {
-        Some(p) => at(Path::new(p)),
-        None => discover(cwd),
+/// directory, then the anchor `--worktree` named if it named one.
+///
+/// The two flags answer two questions and neither implies the other
+/// (ADR-9e56318631f3): `--repo` says which corpus, `--worktree` says which tree
+/// that corpus is anchored to. Absent the second, the anchor is the corpus's
+/// own directory, which is what every corpus written before this flag existed
+/// resolves to and why no existing invocation moves.
+pub fn resolve(repo_flag: Option<&str>, worktree_flag: Option<&str>, cwd: &Path) -> Result<Repo> {
+    let repo = match repo_flag {
+        Some(p) => at(Path::new(p))?,
+        None => discover(cwd)?,
+    };
+    match worktree_flag {
+        None => Ok(repo),
+        Some(p) => Ok(repo.anchored(anchor(Path::new(p))?)),
     }
+}
+
+/// The work tree `--worktree` names, checked for the one property resolution
+/// itself needs: that it is a directory.
+///
+/// **Git is not asked here**, and that is ADR-9307e5d214a7 rather than an
+/// oversight: git is required per verb and never at startup, so `show`, `find`
+/// and `graph` anchored to a directory that is no repository answer exactly
+/// what they always answered. The verb that needs git in the work tree refuses
+/// there, naming the work tree, which is the difference between a refusal a
+/// caller can act on and a startup that turns away every verb over a
+/// requirement most of them do not have.
+fn anchor(path: &Path) -> Result<PathBuf> {
+    if path.is_dir() {
+        return Ok(path.to_path_buf());
+    }
+    Err(CliError::new(
+        ExitCode::Generic,
+        format!("--worktree {} is not a directory", path.display()),
+    )
+    .with_hint("--worktree names the tree the corpus is anchored to, not its corpus"))
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +205,7 @@ fn declared_root(from: &Repo, declared: &str) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        from.root.join(p)
+        from.corpus.join(p)
     }
 }
 
@@ -259,7 +317,7 @@ impl Peer {
     pub fn binds(&self, name: &str, reader: &Repo) -> bool {
         match self.config.peers.get(name) {
             Some(declared) if !declared.is_empty() => {
-                same_corpus(&declared_root(&self.repo, declared), &reader.root)
+                same_corpus(&declared_root(&self.repo, declared), &reader.corpus)
             }
             _ => false,
         }
@@ -400,7 +458,7 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
 
         let repo = discover(&deep).unwrap();
-        assert_eq!(repo.root, t.0);
+        assert_eq!(repo.corpus, t.0);
         assert_eq!(repo.ank, t.0.join(ANK_DIR));
     }
 
@@ -420,16 +478,16 @@ mod tests {
     #[test]
     fn explicit_repo_accepts_the_root_and_the_ank_dir() {
         let t = Temp::new();
-        assert_eq!(at(&t.0).unwrap().root, t.0);
-        assert_eq!(at(&t.0.join(ANK_DIR)).unwrap().root, t.0);
+        assert_eq!(at(&t.0).unwrap().corpus, t.0);
+        assert_eq!(at(&t.0.join(ANK_DIR)).unwrap().corpus, t.0);
     }
 
     #[test]
     fn the_repo_flag_short_circuits_the_walk_up() {
         let t = Temp::new();
         let elsewhere = std::env::temp_dir();
-        let via_flag = resolve(Some(t.0.to_str().unwrap()), &elsewhere).unwrap();
-        assert_eq!(via_flag.root, t.0);
+        let via_flag = resolve(Some(t.0.to_str().unwrap()), None, &elsewhere).unwrap();
+        assert_eq!(via_flag.corpus, t.0);
     }
 
     /// Writes an entity declaring `schema`, with `extra` appended to the body.
@@ -523,7 +581,7 @@ mod tests {
         assert_eq!(peers.len(), 1);
         let bee = &peers[0];
         assert_eq!(bee.name, "bee");
-        assert!(same_corpus(&bee.repo.root, &b.0));
+        assert!(same_corpus(&bee.repo.corpus, &b.0));
 
         // The name is resolved through the peer's own declarations, so `ay`
         // written in B points back at A -- and a name B does not declare points

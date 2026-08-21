@@ -41,16 +41,16 @@ pub fn run(
     // repository with no commit yet, or one whose default branch is
     // indeterminable. Collapsing them would print "unborn, no commit yet" at a
     // caller who has no repository at all.
-    let coordinated = git::usable_here(&repo.root);
+    let coordinated = git::usable_here(&repo.corpus);
     let branch = if coordinated {
-        Some(git::current_branch(&repo.root)?)
+        Some(git::current_branch(&repo.corpus)?)
     } else {
         None
     };
     let default = if coordinated {
         Some(git::resolve_default_branch(
             cfg.default_branch.as_deref(),
-            git::origin_head(&repo.root)?.as_deref(),
+            git::origin_head(&repo.corpus)?.as_deref(),
         ))
     } else {
         None
@@ -70,7 +70,7 @@ pub fn run(
     // reader scans over, so the state is spelled out in words. Nothing here is
     // carried by a date the reader has to compare against the clock.
     let standing = if coordinated {
-        crate::claim::on_task(&repo.root, identity)?
+        crate::claim::on_task(&repo.corpus, identity)?
     } else {
         None
     };
@@ -105,7 +105,7 @@ pub fn run(
     // case worth naming is the one where they are not.
     let also_held = match &standing {
         Some(s) => {
-            crate::claim::live_claims_of(&repo.root, identity, &s.id, crate::claim::now_secs())?
+            crate::claim::live_claims_of(&repo.corpus, identity, &s.id, crate::claim::now_secs())?
         }
         None => Vec::new(),
     };
@@ -121,7 +121,7 @@ pub fn run(
     // Read through the same `coordination` map every listing verb uses, not a
     // second enumeration of the refs: one plane, one reading, and a second one
     // would be free to disagree with the first.
-    let plane = context::coordination(&repo.root, &mut Vec::new())?;
+    let plane = context::coordination(&repo.corpus, &mut Vec::new())?;
     let mut elsewhere: Vec<Held> = plane
         .iter()
         .filter_map(|(id, state)| match state {
@@ -154,7 +154,7 @@ pub fn run(
     // underneath everybody else, which is the rule the whole module already
     // follows with `prune: false`.
     let remote = if inv.has("--remote") {
-        remote_claims(&repo.root, coordinated)
+        remote_claims(&repo.corpus, coordinated)
     } else {
         Remote::NotAsked
     };
@@ -307,7 +307,7 @@ pub fn run(
         // which two worktrees of one repository disagree about and two clones on
         // two machines can share. `null` for a tree with no history, which is
         // the one corpus that cannot be named and says so.
-        let corpus = crate::repo::identity(&repo.root);
+        let corpus = crate::repo::identity(&repo.corpus);
         let doc = Obj::document()
             .opt_str("corpus", corpus.as_deref())
             // Both collapse to null, and legitimately: a parser asking for the

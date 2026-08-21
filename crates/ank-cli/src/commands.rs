@@ -370,7 +370,7 @@ fn new_interactive(
 
     let store = Store::new(&repo.ank);
     let outcome = (|| -> Result<ExitCode> {
-        editor::open(&editor, &repo.root, &scratch, &hint)?;
+        editor::open(&editor, &repo.corpus, &scratch, &hint)?;
         let filled = std::fs::read_to_string(&scratch).map_err(|e| {
             CliError::new(
                 ExitCode::Environment,
@@ -1147,7 +1147,7 @@ pub fn find(
     // One read of the coordination plane for the whole verb: `--free` filters
     // on it, and the listing below marks its rows from it. Two reads would be
     // two chances to disagree about which claims were live.
-    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    let coord = crate::context::coordination(&repo.corpus, &mut Vec::new())?;
     // The ground every live claim covers, taken while the whole corpus is still
     // in hand: a claimed task need not match the query, so this cannot be
     // derived from the hits.
@@ -1492,7 +1492,7 @@ pub fn scope(
     let style = inv.style();
     // One read, both answers, exactly as in `find`: the two listings print the
     // same rows and must print them with the same words.
-    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    let coord = crate::context::coordination(&repo.corpus, &mut Vec::new())?;
     let held = crate::context::held_in(&coord, identity);
     for (label, group) in [
         ("ADR", &adrs),
@@ -1923,8 +1923,14 @@ fn log_write(
         }
     }
 
-    let (id, witness, record, warnings) =
-        acting_on(&repo.root, store, given, identity, "log", " \"<message>\"")?;
+    let (id, witness, record, warnings) = acting_on(
+        &repo.corpus,
+        store,
+        given,
+        identity,
+        "log",
+        " \"<message>\"",
+    )?;
     warn_before_acting(inv, &warnings);
 
     let loaded_for_log = store.load(&id)?;
@@ -1952,7 +1958,7 @@ fn log_write(
     // agent that asked for two hours held them once and fell back to thirty
     // minutes at its first `log` — the command the loop tells it to run often —
     // so the flag failed at exactly the case it exists for (TASK-1b45f41e7b99).
-    let renewed = claim::renew(&repo.root, &id, &witness, &record, cfg.claim_ttl_max)?;
+    let renewed = claim::renew(&repo.corpus, &id, &witness, &record, cfg.claim_ttl_max)?;
     // What the write turned up, as opposed to what was known before it. Said
     // after, because none of it could have been said before.
     //
@@ -2042,7 +2048,7 @@ pub fn release(
 
     let store = Store::new(&repo.ank);
     let (id, _, _, warnings) = acting_on(
-        &repo.root,
+        &repo.corpus,
         &store,
         inv.positionals.first(),
         identity,
@@ -2080,7 +2086,7 @@ pub fn release(
     // The file first, the ref second. A ref deleted over a task still marked
     // in_progress would read as claimable and as in progress at the same time;
     // the reverse merely waits for the TTL.
-    claim::delete(&repo.root, &id)?;
+    claim::delete(&repo.corpus, &id)?;
 
     if inv.json() {
         let doc = Obj::document()
@@ -2152,7 +2158,8 @@ mod tests {
 
         fn repo(&self) -> Repo {
             Repo {
-                root: self.0.clone(),
+                corpus: self.0.clone(),
+                worktree: self.0.clone(),
                 ank: self.0.join(".ank"),
             }
         }

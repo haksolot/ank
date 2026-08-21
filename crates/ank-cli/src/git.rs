@@ -386,6 +386,34 @@ pub fn ensure_usable(cwd: &Path) -> Result<PathBuf> {
     toplevel(cwd)
 }
 
+/// The work tree, refused by name when a verb needs git there.
+///
+/// `done` and `attest` reach the code through the work tree, not through the
+/// corpus (ADR-9e56318631f3): a `commit:` proof is looked up there and the
+/// scope hash is taken there. Where the two roots are one directory this is
+/// [`ensure_usable`] and nothing more. Where they are not, the refusal has to
+/// say *which* root is the problem, because "not inside a git repository" about
+/// a corpus that plainly is one is the kind of message that sends a reader to
+/// look in the wrong place.
+pub fn ensure_worktree_usable(repo: &crate::repo::Repo) -> Result<PathBuf> {
+    if repo.worktree == repo.corpus {
+        return ensure_usable(&repo.corpus);
+    }
+    ensure_usable(&repo.worktree).map_err(|e| {
+        if e.code != ExitCode::Environment {
+            return e;
+        }
+        CliError::new(
+            ExitCode::Environment,
+            format!(
+                "the work tree {} is not inside a git repository, and the corpus is not a substitute for it",
+                repo.worktree.display()
+            ),
+        )
+        .with_hint("git init in the work tree, or drop --worktree to anchor the corpus to itself")
+    })
+}
+
 /// Whether a coordinating operation could run here: git present, recent enough,
 /// and a repository around `cwd`.
 ///
