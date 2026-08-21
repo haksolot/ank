@@ -4231,6 +4231,37 @@ fn signature_cache<T>(repo: &Repo, with: impl FnOnce(&Index, &str) -> T) -> Opti
     })
 }
 
+/// Whether this repository is configured to produce a signature at all.
+///
+/// A key to sign with, or `commit.gpgsign` asking for one: either is enough,
+/// and neither is required. §8's advisory mode is a regime a corpus may run in,
+/// and a corpus in it ratifies without a signature rather than not at all
+/// (ADR-964be4d940b2).
+///
+/// Read once per repository. Git is asked rather than guessed at, and a git
+/// that cannot answer means no signature -- which is the safe direction: an
+/// unsigned ratification is reported as one, where a `-S` that fails is a
+/// ratification that never happens.
+fn can_sign(cwd: &Path) -> bool {
+    thread_local! {
+        static SEEN: std::cell::RefCell<HashMap<PathBuf, bool>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    if let Some(hit) = SEEN.with(|c| c.borrow().get(cwd).copied()) {
+        return hit;
+    }
+    let value = |key: &str| {
+        git::output(cwd, &["config", "--get", key])
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_lowercase())
+            .unwrap_or_default()
+    };
+    let signs = !value("user.signingkey").is_empty() || value("commit.gpgsign") == "true";
+    SEEN.with(|c| c.borrow_mut().insert(cwd.to_path_buf(), signs));
+    signs
+}
+
 /// Whether the commit object holds a signature header at all, whatever git was
 /// able to make of it.
 ///
@@ -4401,7 +4432,12 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
                 ExitCode::Environment,
                 format!("git {} failed: {stderr}", args.join(" ")),
             )
-            .with_hint("git config user.signingkey <key> && git config commit.gpgsign true"));
+            // The hint no longer prescribes signing: `accept` reaches this only
+            // when git refused the commit for some other reason, since a
+            // repository with no key is not asked to sign at all
+            // (ADR-964be4d940b2). Naming a signing key here would send a
+            // maintainer to configure the one thing that was not the problem.
+            .with_hint("git status --short"));
         }
         Ok(())
     };
@@ -4416,7 +4452,20 @@ fn commit_signed(cwd: &Path, paths: &[String], message: &str) -> Result<String> 
     add.extend_from_slice(&refs);
     run(&add)?;
 
-    let mut commit = vec!["commit", "-S", "-q", "-m", message, "--"];
+    // **`-S` where this repository can sign, and a plain commit where it
+    // cannot** (ADR-964be4d940b2). This passed `-S` unconditionally and exited
+    // 9 naming `git config user.signingkey`, so a corpus running the advisory
+    // mode §8 defines could not produce a ratification at all -- `check` had a
+    // regime `accept` refused to work in, and nobody chose that asymmetry.
+    //
+    // Signing when it is possible rather than only when `commit.gpgsign` asks
+    // for it: a maintainer who signs selectively still means a ratification to
+    // be signed, and taking their key away because a default says otherwise
+    // would be the tool overriding them in the direction that loses the anchor.
+    let mut commit = vec!["commit", "-q", "-m", message, "--"];
+    if can_sign(cwd) {
+        commit.insert(1, "-S");
+    }
     commit.extend_from_slice(&refs);
     run(&commit)?;
 
