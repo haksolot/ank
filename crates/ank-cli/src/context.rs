@@ -387,7 +387,7 @@ pub(crate) fn normalised(raw: &str, repo: &Repo, usage: &str) -> Result<String> 
     // command when the path is simply the absolute form of one inside the
     // repository, which is the way this is usually typed.
     let hint = std::path::Path::new(raw)
-        .strip_prefix(&repo.root)
+        .strip_prefix(&repo.worktree)
         .ok()
         .map(|rel| rel.to_string_lossy().replace('\\', "/"))
         .filter(|rel| !rel.is_empty())
@@ -496,12 +496,12 @@ pub fn build(
     let store = Store::new(&repo.ank);
     let index = Index::open(&repo.ank)?;
     let mut warnings = Vec::new();
-    let coord = coordination(&repo.root, &mut warnings)?;
+    let coord = coordination(&repo.corpus, &mut warnings)?;
 
     // The default branch is resolved for the warning alone: `context` prunes
     // nothing, so an unresolvable branch changes no output but that one line
     // (§7). Read once, warned once.
-    let origin = git::origin_head(&repo.root).unwrap_or(None);
+    let origin = git::origin_head(&repo.corpus).unwrap_or(None);
     if git::resolve_default_branch(cfg.default_branch.as_deref(), origin.as_deref()).is_err() {
         warnings.push(
             "default branch indeterminable, completion refs kept as they are \
@@ -854,7 +854,7 @@ fn peer_lines(
                 "peer '{}': {unreadable} entities this build cannot read, \
                  answered without them (ank --repo {} check)",
                 peer.name,
-                peer.repo.root.display()
+                peer.repo.corpus.display()
             ));
         }
     }
@@ -865,7 +865,7 @@ fn unreadable_peer(peer: &crate::repo::Peer) -> String {
     format!(
         "peer '{}' could not be listed, answered without it (ank --repo {} check)",
         peer.name,
-        peer.repo.root.display()
+        peer.repo.corpus.display()
     )
 }
 
@@ -1703,7 +1703,8 @@ After a blank one."
 
         fn repo(&self) -> Repo {
             Repo {
-                root: self.0.clone(),
+                corpus: self.0.clone(),
+                worktree: self.0.clone(),
                 ank: self.0.join(".ank"),
             }
         }

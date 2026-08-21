@@ -70,7 +70,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
     })?;
 
     let outcome = (|| -> Result<ExitCode> {
-        editor::open(&editor, &repo.root, &scratch, &hint)?;
+        editor::open(&editor, &repo.corpus, &scratch, &hint)?;
         let edited = std::fs::read_to_string(&scratch).map_err(|e| {
             CliError::new(
                 ExitCode::Environment,
@@ -225,7 +225,7 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
             // on identity (ADR-c656cbcc33a9). An expired claim is not in force
             // and freezes nothing, which is the same reading `log` and `done`
             // already apply to it.
-            let Some(anchor) = live_claim_anchor(&repo.root, id)? else {
+            let Some(anchor) = live_claim_anchor(&repo.corpus, id)? else {
                 return Ok(());
             };
             let matches_anchor = a

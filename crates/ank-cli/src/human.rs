@@ -461,7 +461,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // One walk of the tree, reused by every dead-scope test: reading the
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
-    let files = tracked_files(&repo.root);
+    let files = tracked_files(&repo.worktree);
     // Every scope entry in the corpus confronted with every tracked file, in
     // one compiled set and one walk (TASK-097883a2c09f). It was one set per
     // glob and one walk each, which is the only phase of this inspection that
@@ -488,12 +488,26 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // `None` is the half never asked for, and it is distinct from `Some(Err)` —
     // a repository whose default branch cannot be resolved. The two produce one
     // line each and must not produce two between them.
-    let has_git = git::usable_here(&repo.root);
+    let has_git = git::usable_here(&repo.corpus);
+    // The same question asked of the other root, and it is a different question
+    // (ADR-9e56318631f3). The coordination half above is the corpus: refs,
+    // signatures, the default branch. What follows this line and reaches for
+    // history is the code: which commit killed a dead scope, and whether a
+    // `commit:` proof is reachable at all. Where the two roots are one
+    // directory this is the same answer and costs one extra call; where they
+    // are not, a corpus whose tree is no repository still confronts its scopes,
+    // because the confrontation is a walk of the filesystem and only the
+    // explanation needs a history.
+    let has_worktree_git = if repo.worktree == repo.corpus {
+        has_git
+    } else {
+        git::usable_here(&repo.worktree)
+    };
     let (coord, detached, default_branch) = if has_git {
-        let (coord, detached) = coordination(&repo.root, &mut report)?;
+        let (coord, detached) = coordination(&repo.corpus, &mut report)?;
         let branch = git::resolve_default_branch(
             cfg.default_branch.as_deref(),
-            git::origin_head(&repo.root)?.as_deref(),
+            git::origin_head(&repo.corpus)?.as_deref(),
         );
         check_signers(repo, &mut report);
         (coord, detached, Some(branch))
@@ -512,7 +526,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // because the answer costs a git process and a per-task question would cost
     // one each.
     let detached_commits = detached_commit_proofs(
-        has_git.then_some(repo.root.as_path()),
+        has_worktree_git.then_some(repo.worktree.as_path()),
         &entities,
         &in_scope,
         &detached,
@@ -534,7 +548,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // batch reads nothing.
     if let (true, Some(Ok(branch))) = (has_git, default_branch.as_ref()) {
         let entries = branch_entries(repo, branch, &here, &entities);
-        let _ = git::preload_at(&repo.root, branch, &entries);
+        let _ = git::preload_at(&repo.corpus, branch, &entries);
     }
 
     for (_, entity) in &entities {
@@ -553,7 +567,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             check_scope_alive(
                 entity,
                 &verdicts,
-                has_git.then_some(repo.root.as_path()),
+                has_worktree_git.then_some(repo.worktree.as_path()),
                 &walked,
                 &mut report,
             );
@@ -2746,7 +2760,7 @@ fn corpus_drift(repo: &Repo, branch: &str, here: &BTreeMap<String, PathBuf>, rep
         // rendering that as a corpus that has not moved is the single answer
         // this signal must never give.
         Err(_) => {
-            if has_commit(&repo.root) {
+            if has_commit(&repo.corpus) {
                 report.findings.push(Finding::signal(
                     "corpus",
                     format!(
@@ -2829,7 +2843,7 @@ fn branch_entries(
             // one would answer about a file the branch does not have there.
             let same = agreed.contains_key(&id)
                 && here.get(&id).is_some_and(|p| {
-                    p.strip_prefix(&repo.root)
+                    p.strip_prefix(&repo.corpus)
                         .unwrap_or(p)
                         .to_string_lossy()
                         .replace('\\', "/")
@@ -2869,7 +2883,7 @@ fn corpus_at(repo: &Repo, branch: &str) -> Result<BTreeMap<String, String>> {
         static SEEN: std::cell::RefCell<HashMap<(PathBuf, String), BTreeMap<String, String>>> =
             std::cell::RefCell::new(HashMap::new());
     }
-    let key = (repo.root.clone(), branch.to_string());
+    let key = (repo.corpus.clone(), branch.to_string());
     if let Some(hit) = SEEN.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
@@ -2888,7 +2902,7 @@ fn corpus_at_uncached(repo: &Repo, branch: &str) -> Result<BTreeMap<String, Stri
     }
     let mut found: BTreeMap<String, String> = BTreeMap::new();
     for dir in dirs {
-        let Some(listing) = git::file_at(&repo.root, branch, &dir)? else {
+        let Some(listing) = git::file_at(&repo.corpus, branch, &dir)? else {
             continue;
         };
         // `<mode> SP <type> SP <object>TAB<name>`, git's tree format, which has
@@ -2940,7 +2954,10 @@ fn blobs_here(repo: &Repo, here: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<
         static SEEN: std::cell::RefCell<HashMap<(PathBuf, Vec<String>), BTreeMap<String, String>>> =
             std::cell::RefCell::new(HashMap::new());
     }
-    let key = (repo.root.clone(), here.keys().cloned().collect::<Vec<_>>());
+    let key = (
+        repo.corpus.clone(),
+        here.keys().cloned().collect::<Vec<_>>(),
+    );
     if let Some(hit) = SEEN.with(|c| c.borrow().get(&key).cloned()) {
         return Ok(hit);
     }
@@ -2961,7 +2978,7 @@ fn blobs_here_uncached(
     let paths: Vec<String> = here
         .values()
         .map(|p| {
-            p.strip_prefix(&repo.root)
+            p.strip_prefix(&repo.corpus)
                 .unwrap_or(p)
                 .to_string_lossy()
                 .replace('\\', "/")
@@ -2978,7 +2995,7 @@ fn blobs_here_uncached(
             args.push(&paths[i]);
             i += 1;
         }
-        let text = git::run(&repo.root, &args)?;
+        let text = git::run(&repo.corpus, &args)?;
         let objects: Vec<&str> = text
             .lines()
             .map(str::trim)
@@ -3047,7 +3064,7 @@ fn maintain(
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     if prune {
-                        claim::delete(&repo.root, id)?;
+                        claim::delete(&repo.corpus, id)?;
                         report.pruned.push(claim::claim_ref(id));
                     } else {
                         report
@@ -3085,7 +3102,7 @@ fn maintain(
         if settled {
             // The information the ref carried is now where everybody reads it.
             if prune {
-                claim::delete(&repo.root, id)?;
+                claim::delete(&repo.corpus, id)?;
                 report.pruned.push(claim::claim_ref(id));
             }
         } else if matches!(record, Record::Completed(_)) {
@@ -3140,7 +3157,7 @@ fn maintain_proofs(
             // the ref exists for: a task finished on a branch nobody merged.
             if !statuses.contains_key(id) {
                 if prune {
-                    claim::delete_at(&repo.root, &claim::proof_ref(id))?;
+                    claim::delete_at(&repo.corpus, &claim::proof_ref(id))?;
                     report.pruned.push(claim::proof_ref(id));
                 } else {
                     report
@@ -3169,7 +3186,7 @@ fn maintain_proofs(
             })
         });
         if settled && prune {
-            claim::delete_at(&repo.root, &claim::proof_ref(id))?;
+            claim::delete_at(&repo.corpus, &claim::proof_ref(id))?;
             report.pruned.push(claim::proof_ref(id));
         }
     }
@@ -3180,7 +3197,7 @@ fn maintain_proofs(
 /// wants it. Usually `.ank`, but the tree need not be laid out that way.
 fn ank_relative(repo: &Repo) -> String {
     repo.ank
-        .strip_prefix(&repo.root)
+        .strip_prefix(&repo.corpus)
         .map(|p| p.to_string_lossy().replace('\\', "/"))
         .unwrap_or_else(|_| ".ank".to_string())
 }
@@ -3223,7 +3240,7 @@ fn entity_rel_paths(repo: &Repo, id: &EntityId) -> Vec<String> {
 fn file_at_branch(repo: &Repo, branch: &str, id: &EntityId) -> Result<Option<String>> {
     let mut failure = None;
     for path in entity_rel_paths(repo, id) {
-        match git::file_at(&repo.root, branch, &path) {
+        match git::file_at(&repo.corpus, branch, &path) {
             Ok(Some(text)) => return Ok(Some(text)),
             Ok(None) => {}
             Err(e) => failure = Some(e),
@@ -3355,7 +3372,7 @@ pub fn review(
     let path = crate::context::perimeter(inv, repo)?;
     let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
-    let files = tracked_files(&repo.root);
+    let files = tracked_files(&repo.worktree);
     // Who may ratify, read here because nowhere else serves it: `.ank/` is
     // closed to a direct read (ADR-01b6dd05f0db) and `allowed_signers` is not
     // an entity, so before this the one file the format asks a human to edit by
@@ -3581,9 +3598,9 @@ pub fn accept(
     // somebody switching branches over a configuration problem.
     let default_branch = git::resolve_default_branch(
         cfg.default_branch.as_deref(),
-        git::origin_head(&repo.root)?.as_deref(),
+        git::origin_head(&repo.corpus)?.as_deref(),
     )?;
-    let current = git::current_branch(&repo.root)?;
+    let current = git::current_branch(&repo.corpus)?;
     if current.as_deref() != Some(default_branch.as_str()) {
         let here = current.as_deref().unwrap_or("a detached HEAD");
         return Err(CliError::new(
@@ -4083,7 +4100,7 @@ fn ratification_of(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
     // it had then. The candidates go in together rather than one call each,
     // because the memo is keyed on the entity and a first miss would be cached.
     let paths = entity_rel_paths(repo, view.id);
-    git::ratification_at(&repo.root, &view.id.to_string(), &paths).unwrap_or(None)
+    git::ratification_at(&repo.corpus, &view.id.to_string(), &paths).unwrap_or(None)
 }
 
 /// The signature on the commit the anchor was read from, or `None` when there
@@ -4136,18 +4153,18 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
             status,
             fingerprint,
         };
-        let carries = facts.status == 'N' && commit_carries_signature(&repo.root, &sha);
+        let carries = facts.status == 'N' && commit_carries_signature(&repo.corpus, &sha);
         return Some(classify_signature(&facts, &declared, carries));
     }
 
-    match git::signature_of(&repo.root, &sha, Some(&for_git)) {
+    match git::signature_of(&repo.corpus, &sha, Some(&for_git)) {
         Ok(facts) => {
             signature_cache(repo, |index, key| {
                 index.remember_signature(&sha, key, facts.status, &facts.fingerprint);
             });
             // Asked only where the answer can change the verdict: every other
             // status already says whether a signature was there.
-            let carries = facts.status == 'N' && commit_carries_signature(&repo.root, &sha);
+            let carries = facts.status == 'N' && commit_carries_signature(&repo.corpus, &sha);
             Some(classify_signature(&facts, &declared, carries))
         }
         Err(e) => Some(Signature::Unreadable {
@@ -4219,7 +4236,7 @@ fn signature_cache<T>(repo: &Repo, with: impl FnOnce(&Index, &str) -> T) -> Opti
     // Every `gpg.*` key, taken whole rather than named one by one: which of
     // them matters depends on the format in use, and a list written here would
     // be a fourth surface to keep true.
-    sha2::Digest::update(&mut hasher, gpg_config(&repo.root).as_bytes());
+    sha2::Digest::update(&mut hasher, gpg_config(&repo.corpus).as_bytes());
     let key = format!("{:x}", sha2::Digest::finalize(hasher));
     OPEN.with(|cell| {
         let mut open = cell.borrow_mut();
@@ -4355,7 +4372,7 @@ fn write_and_commit(
     // One commit for both writes. The succession is a single act, and two
     // commits would leave a window in which history says the constraint binds
     // while the one it replaced still binds too.
-    commit_signed(&repo.root, paths, message)
+    commit_signed(&repo.corpus, paths, message)
 }
 
 /// The bytes of every path a ratification is about to write, as they stand now.
@@ -4367,7 +4384,7 @@ fn snapshot(repo: &Repo, paths: &[String]) -> Vec<(PathBuf, Option<Vec<u8>>)> {
     paths
         .iter()
         .map(|rel| {
-            let abs = repo.root.join(rel);
+            let abs = repo.corpus.join(rel);
             let bytes = std::fs::read(&abs).ok();
             (abs, bytes)
         })
@@ -4408,7 +4425,7 @@ fn undo(repo: &Repo, before: &[(PathBuf, Option<Vec<u8>>)], paths: &[String]) {
     let mut args = vec!["add", "-A", "--"];
     args.extend(paths.iter().map(String::as_str));
     let _ = std::process::Command::new("git")
-        .current_dir(&repo.root)
+        .current_dir(&repo.corpus)
         .args(&args)
         .output();
 }
@@ -4542,7 +4559,7 @@ pub fn close(
     store.write(&closed, base_version)?;
     record_entry(&store, repo, &closed, identity, format!("closed: {reason}"))?;
 
-    let revoked = claim::delete(&repo.root, &id)?;
+    let revoked = claim::delete(&repo.corpus, &id)?;
     if inv.json() {
         let doc = Obj::document()
             .str("task", &id.to_string())
@@ -4620,6 +4637,10 @@ pub fn attest(
     };
     let id = task.id.clone();
 
+    // The proof below names a commit of the code, so git is needed in the work
+    // tree and not only in the corpus (ADR-9e56318631f3).
+    crate::git::ensure_worktree_usable(repo)?;
+
     // A prerequisite, not a transition: nothing about the status changes here.
     // The verb that applies to an unfinished task is `done`, and the refusal
     // says so rather than leaving the reader to guess.
@@ -4639,7 +4660,7 @@ pub fn attest(
         purpose: format!("attest {id}"),
     };
     let mut proof =
-        crate::done::submitted_proof(inv, &repo.root, &usage, task.done_criteria.as_deref())?;
+        crate::done::submitted_proof(inv, &repo.worktree, &usage, task.done_criteria.as_deref())?;
     let kind = proof.proof_type.as_str().to_string();
     let reference = proof.reference.clone();
 
@@ -4671,7 +4692,7 @@ pub fn attest(
     // locally and never fetched: `check` reads this plane the same way, and a
     // verb that reached for the network to decide what to write would be
     // deciding on whether the caller happened to be online.
-    if claim::detached_proofs(&repo.root, &id)
+    if claim::detached_proofs(&repo.corpus, &id)
         .iter()
         .any(|a| a.proof.proof_type == proof.proof_type && a.proof.reference == proof.reference)
     {
@@ -4742,7 +4763,7 @@ fn detached(
 ) -> Result<ExitCode> {
     let kind = proof.proof_type.as_str();
     let reference = proof.reference.clone();
-    let (written, entries) = claim::attach_proof(&repo.root, id, proof, identity)?;
+    let (written, entries) = claim::attach_proof(&repo.corpus, id, proof, identity)?;
     if written.cas == claim::Cas::Lost {
         // Two attestations racing on one task. ADR-493471d64ba0 argues this is
         // not a case anybody meets — one ref per task, and pipelines attest
@@ -4967,7 +4988,7 @@ pub fn amend(
             // which this verb exists to make unnecessary, or `claim --criteria`,
             // which recorded a creator's correction as the claimer's.
             if let Some(criteria) = criteria {
-                if let Some(held) = claim::live(&repo.root, &id)? {
+                if let Some(held) = claim::live(&repo.corpus, &id)? {
                     return Err(CliError::new(
                         ExitCode::Transition,
                         format!(
@@ -5005,7 +5026,7 @@ pub fn amend(
             // discovered false mid-task is what produced this verb; allowing it
             // silently would be worse.
             let touched_scope = !add_scope.is_empty() || !drop_scope.is_empty();
-            let holder = match claim::read(&repo.root, &id)?.map(|h| h.record) {
+            let holder = match claim::read(&repo.corpus, &id)?.map(|h| h.record) {
                 Some(Record::Claim(c)) => Some(c.holder),
                 _ => None,
             };
@@ -5372,7 +5393,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     // empty for the great majority of tasks — one `rev-parse` that answers
     // "absent", which is what a task with no attestation costs.
     let detached = match &loaded.entity {
-        Entity::Task(t) => claim::detached_proofs(&repo.root, &t.id),
+        Entity::Task(t) => claim::detached_proofs(&repo.corpus, &t.id),
         // A proof anchors a completion, and only a task completes.
         _ => Vec::new(),
     };
@@ -5397,7 +5418,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     let log_total = log.len() + log_cut;
 
     if inv.json() {
-        let state = match claim::read(&repo.root, loaded.entity.id())?.map(|h| h.record) {
+        let state = match claim::read(&repo.corpus, loaded.entity.id())?.map(|h| h.record) {
             Some(Record::Claim(c)) => Some(format!("claimed by {}", c.holder)),
             Some(Record::Completed(c)) => Some(format!(
                 "finished at {}",
@@ -5653,7 +5674,7 @@ fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     // The same coordination every other listing reads, so a blocker that is
     // claimed says so here too instead of reading `[in_progress]` at a reader
     // who has just been told `[claimed:who]` by `context`.
-    let coord = crate::context::coordination(&repo.root, &mut Vec::new())?;
+    let coord = crate::context::coordination(&repo.corpus, &mut Vec::new())?;
 
     let edge = |id: &EntityId| -> Edge {
         let row = row_of.get(id);
@@ -5782,7 +5803,8 @@ mod tests {
 
         fn repo(&self) -> Repo {
             Repo {
-                root: self.0.clone(),
+                corpus: self.0.clone(),
+                worktree: self.0.clone(),
                 ank: self.0.join(".ank"),
             }
         }
@@ -7904,7 +7926,8 @@ mod tests {
             .unwrap();
         let repo = Repo {
             ank: root.join(".ank"),
-            root,
+            corpus: root.clone(),
+            worktree: root,
         };
         let store = Store::new(&repo.ank);
         let mut judged = 0;
@@ -7932,7 +7955,7 @@ mod tests {
         // on any full clone, nothing judged means the wiring is broken.
         if judged == 0 {
             let shallow = Command::new("git")
-                .current_dir(&repo.root)
+                .current_dir(&repo.corpus)
                 .args(["rev-parse", "--is-shallow-repository"])
                 .output()
                 .unwrap();

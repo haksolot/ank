@@ -89,7 +89,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
     let style = inv.style();
     // Read once for the whole forest, never per node: a task claimed by someone
     // reads the same here as it does under `context`, `find` and `scope`.
-    let coord = context::coordination(&repo.root, &mut Vec::new())?;
+    let coord = context::coordination(&repo.corpus, &mut Vec::new())?;
     let mut drawn: HashSet<&EntityId> = HashSet::new();
     for root in &roots {
         draw(

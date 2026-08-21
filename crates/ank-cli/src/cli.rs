@@ -169,6 +169,12 @@ impl Invocation {
         self.value("--repo")
     }
 
+    /// The tree the corpus is anchored to, where the caller named one
+    /// (ADR-9e56318631f3). Absent, the corpus anchors to its own directory.
+    pub fn worktree(&self) -> Option<&str> {
+        self.value("--worktree")
+    }
+
     pub fn style(&self) -> crate::style::Style {
         self.style
     }
@@ -825,13 +831,13 @@ fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &
         return;
     }
     let here = crate::git::common_dir(cwd);
-    let root = crate::git::common_dir(&repo.root);
+    let root = crate::git::common_dir(&repo.corpus);
     if !crate::git::crosses_repository(here.as_deref(), root.as_deref()) {
         return;
     }
     let style = inv.style().on_stderr();
     let tag = style.yellow("warning:");
-    let root_display = repo.root.display();
+    let root_display = repo.corpus.display();
     match here {
         Some(_) => eprintln!(
             "{tag} .ank/ resolved to {root_display}, outside the git repository holding {}",
@@ -881,7 +887,7 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
 }
 
 fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
-    let repo = crate::repo::resolve(inv.repo(), cwd)?;
+    let repo = crate::repo::resolve(inv.repo(), inv.worktree(), cwd)?;
     // git is required by the verbs that coordinate, and never at startup
     // (ADR-9307e5d214a7, superseding ADR-b8884edcebe3). The gate used to stand
     // in front of the dispatch rather than in front of the operation, so `show`,
@@ -892,7 +898,7 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     // Repository resolution never needed git and does not gain it here:
     // `repo::discover` walks up for `.ank/` exactly as it always has.
     if spec_of(inv.command).is_some_and(|s| s.coordinates) {
-        crate::git::ensure_usable(&repo.root)?;
+        crate::git::ensure_usable(&repo.corpus)?;
     }
     warn_if_outside_repository(inv, &repo, cwd);
     warn_if_schema_ahead(inv, &repo);
@@ -974,7 +980,7 @@ fn dispatch(
         return help(&inv, out);
     }
     if inv.command == "config" {
-        let repo = crate::repo::resolve(inv.repo(), cwd)?;
+        let repo = crate::repo::resolve(inv.repo(), inv.worktree(), cwd)?;
         // The same hazard, and it reaches this verb too: a `config` run from a
         // nested checkout edits the outer repository's configuration. `git` is
         // unchecked here, which costs nothing — `common_dir` answers `None`

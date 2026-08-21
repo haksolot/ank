@@ -1103,7 +1103,7 @@ fn renewed_by_working(
     if renews == Renews::Never {
         return Ok(false);
     }
-    let Some(standing) = on_task(&repo.root, identity)? else {
+    let Some(standing) = on_task(&repo.corpus, identity)? else {
         return Ok(false);
     };
     if standing.lapsed {
@@ -1123,7 +1123,7 @@ fn renewed_by_working(
         }
     }
     renew(
-        &repo.root,
+        &repo.corpus,
         &standing.id,
         &standing.object,
         &standing.record,
@@ -1768,7 +1768,7 @@ pub fn run(
     };
 
     let ttl = resolve_ttl(inv.value("--ttl"), cfg)?;
-    let ready = other_ready_task(&repo.root, &store, &task).map(|id| id.to_string());
+    let ready = other_ready_task(&repo.corpus, &store, &task).map(|id| id.to_string());
 
     // Preconditions first, in the order of §3: no ref is touched by a claim
     // that was never going to be legal.
@@ -1819,9 +1819,9 @@ pub fn run(
     // its holder named rather than taken here and unwound by a rejected push
     // (§7). Silent when there is no remote, and silent when there is one and it
     // cannot be reached — that is the write's news to break, not the read's.
-    sync_from_remote(&repo.root, &task.id)?;
+    sync_from_remote(&repo.corpus, &task.id)?;
 
-    check_blockers(&repo.root, &store, &task, ready.as_deref())?;
+    check_blockers(&repo.corpus, &store, &task, ready.as_deref())?;
     task.status
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| {
@@ -1833,11 +1833,11 @@ pub fn run(
     // on the task asked for; this one refuses on what the caller already holds,
     // and an agent told to hand back its work for a task that would have
     // refused it anyway has paid for nothing.
-    already_holding(&repo.root, identity, &task.id, now_secs())?;
+    already_holding(&repo.corpus, identity, &task.id, now_secs())?;
 
     let constraints = constraints_hash(&applicable_constraints(&store, repo, &task)?);
     let acquired = acquire(
-        &repo.root,
+        &repo.corpus,
         &task,
         identity,
         ttl,
@@ -1861,7 +1861,7 @@ pub fn run(
     // the ref is taken and the transition is written, so a refusal at this
     // point would refuse a claim the agent holds. `status` says the same thing
     // for as long as the state lasts (TASK-38b384543551).
-    let also_held = live_claims_of(&repo.root, identity, &acquired.id, now_secs())?;
+    let also_held = live_claims_of(&repo.corpus, identity, &acquired.id, now_secs())?;
     // What somebody else is holding that covers the same files
     // (ADR-052accd6e3b2). Named and never refused: scope overlap is coarse
     // enough that refusing on it would turn a glob into a mutex, and would push
@@ -1869,7 +1869,7 @@ pub fn run(
     // after the ref is taken because it is a signal about the work, not a
     // precondition of the claim -- the task is already held by the time this is
     // read, and the criterion says the exit code is 0.
-    let clashes = scope_clashes(&repo.root, &store, &task, identity, now_secs())?;
+    let clashes = scope_clashes(&repo.corpus, &store, &task, identity, now_secs())?;
     let warnings: Vec<String> = also_held
         .iter()
         .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
@@ -2132,7 +2132,8 @@ mod tests {
 
         fn repo(&self) -> Repo {
             Repo {
-                root: self.0.clone(),
+                corpus: self.0.clone(),
+                worktree: self.0.clone(),
                 ank: self.0.join(".ank"),
             }
         }
@@ -2973,7 +2974,8 @@ mod tests {
 
     fn run_verb(t: &Temp, inv: &Invocation) -> Result<ExitCode> {
         let repo = Repo {
-            root: t.0.clone(),
+            corpus: t.0.clone(),
+            worktree: t.0.clone(),
             ank: t.0.join(".ank"),
         };
         let mut out = Vec::new();
