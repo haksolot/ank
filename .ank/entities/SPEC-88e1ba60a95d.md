@@ -10,14 +10,14 @@ scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/verify.rs
   - .ank/allowed_signers
-references: [SPEC-acee5d9cb21b, SPEC-183d297253ac, SPEC-93531977642f]
+references: [SPEC-183d297253ac, SPEC-93531977642f, SPEC-a89ba4f755e9]
 supersedes: SPEC-199de7ac4730
 ratified: cb6c19085887
 verified:
   - by: seanl@sean-laptop
     at: 2026-08-21T00:08:25Z
 schema: 3
-version: 2
+version: 3
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
