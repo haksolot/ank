@@ -886,8 +886,27 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
     eprintln!("  -> {next}");
 }
 
+/// The corpus, and whatever resolving it had to say.
+///
+/// **The note is printed here and never inside the resolution**, on the split
+/// ADR-0c8ab846d262 draws: what a reader is told is presentation, and a
+/// resolver that printed would be a second place deciding what `--quiet` means.
+/// Standard error, because stdout is a parser's input (§4) and a declaration
+/// answering instead of the tree changes no answer, only where it came from.
+fn resolved(inv: &Invocation, cwd: &std::path::Path) -> Result<crate::repo::Repo> {
+    let mut notes = Vec::new();
+    let repo = crate::repo::resolve(inv.repo(), inv.worktree(), cwd, &mut notes)?;
+    if !inv.quiet() {
+        let style = inv.style().on_stderr();
+        for note in notes {
+            eprintln!("{} {note}", style.yellow("warning:"));
+        }
+    }
+    Ok(repo)
+}
+
 fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
-    let repo = crate::repo::resolve(inv.repo(), inv.worktree(), cwd)?;
+    let repo = resolved(inv, cwd)?;
     // git is required by the verbs that coordinate, and never at startup
     // (ADR-9307e5d214a7). The gate used to stand
     // in front of the dispatch rather than in front of the operation, so `show`,
@@ -980,7 +999,7 @@ fn dispatch(
         return help(&inv, out);
     }
     if inv.command == "config" {
-        let repo = crate::repo::resolve(inv.repo(), inv.worktree(), cwd)?;
+        let repo = resolved(&inv, cwd)?;
         // The same hazard, and it reaches this verb too: a `config` run from a
         // nested checkout edits the outer repository's configuration. `git` is
         // unchecked here, which costs nothing — `common_dir` answers `None`

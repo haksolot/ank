@@ -8221,6 +8221,319 @@ fn a_corpus_wider_than_a_command_line_is_hashed_correctly() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// A corpus declared outside the tree (ADR-96174f1ac2b7, TASK-88bff140d416)
+// ---------------------------------------------------------------------------
+//
+// Driven with the environment set rather than by calling the function that
+// reads it, because the home directory is `%APPDATA%` on one platform and
+// `$XDG_CONFIG_HOME` or `$HOME` on the other two, and CLAUDE.md is explicit
+// that OS-dependent behaviour is not verified until it has run on all three.
+// All three variables are set to one directory, so the file lands at
+// `<home>/ank/corpora.yml` whichever rule the binary applied.
+
+/// A tree with history and no corpus of its own, a corpus outside it, and a
+/// home this test owns.
+struct Declared {
+    home: PathBuf,
+    tree: PathBuf,
+    corpus: PathBuf,
+    identity: String,
+}
+
+impl Declared {
+    fn new() -> Declared {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "ank-declared-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let (home, tree, corpus) = (root.join("home"), root.join("tree"), root.join("corpus"));
+        std::fs::create_dir_all(home.join("ank")).unwrap();
+        std::fs::create_dir_all(&tree).unwrap();
+
+        let d = Declared {
+            home,
+            tree,
+            corpus,
+            identity: String::new(),
+        };
+        d.git(&["init", "-q", "-b", "main"]);
+        d.git(&["config", "user.email", "test@ank.local"]);
+        d.git(&["config", "user.name", "Test"]);
+        d.git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(d.tree.join("a.txt"), "hi\n").unwrap();
+        d.git(&["add", "-A"]);
+        d.git(&["commit", "-qm", "seed"]);
+        // The identity a reader keys on, read the way `status --json` prints
+        // it: the oldest root of HEAD.
+        let identity = d.git(&["rev-list", "--max-parents=0", "--reverse", "HEAD"]);
+        let identity = identity.lines().next().expect("a root commit").to_string();
+
+        // The corpus, written by hand: `ank init` refuses outside a git
+        // repository, and creating a detached one is the *writing* half
+        // (TASK-49fc7e1e0e0e). This task is the reading half and seeds what it
+        // reads.
+        Declared { identity, ..d }.with_corpus()
+    }
+
+    fn with_corpus(self) -> Declared {
+        std::fs::create_dir_all(self.corpus.join(".ank/entities")).unwrap();
+        std::fs::write(
+            self.corpus.join(".ank/config.yml"),
+            "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+        )
+        .unwrap();
+        std::fs::write(
+            self.corpus.join(".ank/entities/TASK-000000000001.md"),
+            "---\nid: TASK-000000000001\ntype: task\nslug: example\n\
+             title: Declared corpus task\ncreated: 2026-07-28T00:00:00Z\nstatus: open\n\
+             scope:\n  - a.txt\nblocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+             criteria_by: creator\nschema: 1\nversion: 1\n---\n\nFree body.\n",
+        )
+        .unwrap();
+        self
+    }
+
+    fn git(&self, args: &[&str]) -> String {
+        let out = git_command(&self.tree)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// Writes the map this reader declares. `keys` is what goes in it verbatim,
+    /// so a test can hand it something that is not an identity.
+    fn declare(&self, keys: &[(&str, &str)]) {
+        let mut text = String::from("schema: 1\ncorpora:\n");
+        for (key, path) in keys {
+            text.push_str(&format!("  \"{key}\": \"{}\"\n", path.replace('\\', "/")));
+        }
+        std::fs::write(self.home.join("ank").join("corpora.yml"), text).unwrap();
+    }
+
+    /// A corpus in the tree as well, so that both roots exist.
+    fn corpus_in_tree(&self) {
+        std::fs::create_dir_all(self.tree.join(".ank/entities")).unwrap();
+        std::fs::write(
+            self.tree.join(".ank/config.yml"),
+            "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+        )
+        .unwrap();
+        std::fs::write(
+            self.tree.join(".ank/entities/TASK-00000000000f.md"),
+            "---\nid: TASK-00000000000f\ntype: task\nslug: in-tree\n\
+             title: In-tree task\ncreated: 2026-07-28T00:00:00Z\nstatus: open\n\
+             scope:\n  - a.txt\nblocked_by: []\ndone_criteria: |\n  A verifiable criterion.\n\
+             criteria_by: creator\nschema: 1\nversion: 1\n---\n\nFree body.\n",
+        )
+        .unwrap();
+    }
+
+    /// The binary, run inside `at` with this test's home in the environment.
+    fn ank_at(&self, at: &Path, args: &[&str]) -> Output {
+        ank_command()
+            .args(args)
+            .env("ANK_AGENT", "claude-code/1.0")
+            // All three, so one fixture serves the three platforms: the binary
+            // reads whichever its own rule names and the file is at the same
+            // place either way.
+            .env("APPDATA", &self.home)
+            .env("XDG_CONFIG_HOME", &self.home)
+            .env("HOME", &self.home)
+            .current_dir(at)
+            .output()
+            .expect("the binary must have been built")
+    }
+
+    fn ank(&self, args: &[&str]) -> Output {
+        self.ank_at(&self.tree.clone(), args)
+    }
+}
+
+/// The whole of the surface: no flag, and the corpus the reader declared
+/// answers, anchored to the tree they are standing in.
+#[test]
+fn a_declared_corpus_answers_with_no_flag_and_anchors_to_the_tree() {
+    let d = Declared::new();
+    d.declare(&[(&d.identity, &d.corpus.to_string_lossy())]);
+
+    let out = d.ank(&["find"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        stdout(&out).contains("Declared corpus task"),
+        "the declared corpus did not answer: {}",
+        both_streams(&out)
+    );
+
+    // **Anchored to the tree, not to the corpus** (ADR-9e56318631f3), and from a
+    // subdirectory, which is where an agent is actually launched. `a.txt` lives
+    // in the tree and nowhere near the corpus, so a scope that matches it can
+    // only have been confronted against the tree.
+    let deep = d.tree.join("deep").join("er");
+    std::fs::create_dir_all(&deep).unwrap();
+    let out = d.ank_at(&deep, &["scope", "a.txt"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        stdout(&out).contains("Declared corpus task"),
+        "the glob was confronted somewhere other than the tree: {}",
+        both_streams(&out)
+    );
+}
+
+/// Both roots exist: the declaration answers, both are named, and what a parser
+/// reads does not move.
+#[test]
+fn a_declaration_wins_over_a_corpus_in_the_tree_and_names_both() {
+    let d = Declared::new();
+    d.declare(&[(&d.identity, &d.corpus.to_string_lossy())]);
+
+    // What the same corpus answers reached the way that was always available.
+    let by_flag = d.ank_at(&d.tree, &["find", "--repo", &d.corpus.to_string_lossy()]);
+    assert_eq!(code(&by_flag), 0, "{}", both_streams(&by_flag));
+
+    d.corpus_in_tree();
+    let out = d.ank(&["find"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    // The declaration answered, and the tree's corpus did not.
+    assert!(
+        stdout(&out).contains("Declared corpus task"),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stdout(&out).contains("In-tree task"), "{}", stdout(&out));
+
+    // Both roots named, on standard error, because stdout is a parser's input.
+    let said = stderr(&out);
+    assert!(said.contains("warning:"), "{said}");
+    assert!(
+        said.contains(&d.corpus.to_string_lossy().replace('\\', "/")),
+        "the declaration is named: {said}"
+    );
+    assert!(
+        said.contains("also carries one"),
+        "the tree's corpus is named too: {said}"
+    );
+
+    // Byte for byte what the same corpus answers without any declaration at
+    // all, which is the half that says the note is a note and not an answer.
+    assert_eq!(stdout(&out), stdout(&by_flag), "the answer moved");
+
+    // `--quiet` silences it like every other note, and `--json` never carries
+    // it: a parser handed a warning on stdout would be a parser handed a
+    // syntax error.
+    let quiet = d.ank(&["find", "--quiet"]);
+    assert!(!stderr(&quiet).contains("warning:"), "{}", stderr(&quiet));
+    let json = d.ank(&["find", "--json"]);
+    let by_flag_json = d.ank_at(
+        &d.tree,
+        &["find", "--json", "--repo", &d.corpus.to_string_lossy()],
+    );
+    assert!(
+        stdout(&json).trim_start().starts_with('{'),
+        "{}",
+        stdout(&json)
+    );
+    assert_eq!(stdout(&json), stdout(&by_flag_json), "the document moved");
+}
+
+/// A key that is not an identity is refused by name, and the refusal names the
+/// command that prints the right one.
+///
+/// Behaviour and not commentary: the request this comes from proposed a
+/// directory named by the slugified remote URL, so this map will be handed
+/// slugs, paths and URLs. A wrong key that merely matched nothing would leave
+/// the corpus quietly not found, which is the one outcome worse than a refusal.
+#[test]
+fn a_key_that_is_not_an_identity_is_refused_by_name() {
+    let d = Declared::new();
+    for key in [
+        "git@github.com:acme/thing.git",
+        "https://github.com/acme/thing",
+        "acme-thing",
+        "/home/someone/code/thing",
+        // The identity with one character too few: a near miss is still a miss,
+        // and it is the shape a hand-typed key actually takes.
+        &d.identity[..39],
+    ] {
+        d.declare(&[(key, &d.corpus.to_string_lossy())]);
+        let out = d.ank(&["find"]);
+        assert_ne!(code(&out), 0, "{key} was accepted: {}", both_streams(&out));
+        let said = both_streams(&out);
+        assert!(said.contains(key), "the refusal names the key: {said}");
+        assert!(
+            said.contains("is not a repository identity"),
+            "and says what is wrong with it: {said}"
+        );
+        assert!(
+            said.contains("ank status --json"),
+            "and names the command that prints the right one: {said}"
+        );
+    }
+}
+
+/// A declaration naming a path that holds no corpus is a refusal naming the
+/// path, and never a fallback to the walk.
+///
+/// The tree carries a corpus here on purpose: falling back would find it, and
+/// a typo in the map would then be indistinguishable from having no map at all.
+#[test]
+fn a_declaration_naming_no_corpus_is_a_refusal_and_never_the_walk() {
+    let d = Declared::new();
+    d.corpus_in_tree();
+    let absent = d.corpus.with_extension("nowhere");
+    d.declare(&[(&d.identity, &absent.to_string_lossy())]);
+
+    let out = d.ank(&["find"]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    let said = both_streams(&out);
+    assert!(
+        said.contains(&absent.to_string_lossy().replace('\\', "/")),
+        "the refusal names the path it was sent to: {said}"
+    );
+    assert!(
+        !said.contains("In-tree task"),
+        "it fell back to the walk, so a typo reads as no map at all: {said}"
+    );
+}
+
+/// With no declaration the walk is what it always was, and a tree with neither
+/// is the refusal it always was.
+#[test]
+fn with_no_declaration_the_walk_is_unchanged() {
+    let d = Declared::new();
+
+    // Neither: the refusal that already existed, naming `ank init`.
+    let out = d.ank(&["find"]);
+    assert_eq!(code(&out), 1, "{}", both_streams(&out));
+    let said = both_streams(&out);
+    assert!(said.contains("no .ank/ found"), "{said}");
+    assert!(said.contains("ank init"), "{said}");
+
+    // A corpus in the tree and still no declaration: the walk finds it, and
+    // nothing is said about a declaration nobody made.
+    d.corpus_in_tree();
+    let out = d.ank(&["find"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(stdout(&out).contains("In-tree task"), "{}", stdout(&out));
+    assert!(!stderr(&out).contains("warning:"), "{}", stderr(&out));
+
+    // And an empty map is the same as no map: a reader who has declared nothing
+    // is a reader who walks.
+    d.declare(&[]);
+    let out = d.ank(&["find"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(stdout(&out).contains("In-tree task"), "{}", stdout(&out));
+}
+
 /// The workspace root: two levels above this crate's manifest.
 ///
 /// Derived rather than configured, so a crate added to the workspace is walked
