@@ -5,14 +5,18 @@ slug: a-reference-names-a-document-and-the-reader-foll
 title: A reference names a document, and the reader follows its succession
 created: 2026-08-21T23:53:42Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   A specification is several documents, one entity each, and each is ratified and anchored on its own. Coherence between them is verified rather than assumed: a reference from one document to another is a declared field, and changing a ratified document is a supersession that leaves a chain. A reference names a document and not a revision of it, so a reference to a superseded entity resolves through that chain to the entity at its end, and check reports one naming an entity that is absent, of a kind a specification does not cite, not yet accepted, or superseded with no successor to follow. Nothing is rewritten to make a reference resolve: the file keeps the identifier its author wrote, and the resolution belongs to the reader. A document that cannot be read alone is not a document, and the decomposition is argued in the corpus rather than derived from section numbers.
 supersedes: ADR-5a690829388d
+ratified: d55fd5cf73fa
+verified:
+  - by: seanl@sean-laptop
+    at: 2026-08-22T00:10:27Z
 schema: 4
-version: 1
+version: 2
 ---
 
 This changes one clause of ADR-5a690829388d and carries the rest of it word for
