@@ -1,9 +1,9 @@
 //! The Ank protocol surface: every verb, over MCP, generated from one table.
 //!
 //! ADR-372b82af1ec7 permits this and permits nothing else: a full-surface
-//! passthrough or no surface at all. It supersedes ADR-1713af205186, whose
-//! refusal is kept whole as the shape of what is now allowed. The proposal that
-//! ADR rejected exposed four verbs out of twenty-two, which rebuilt under a
+//! passthrough or no surface at all. It supersedes an earlier refusal, kept
+//! whole as the shape of what is now allowed. The proposal that refusal rejected
+//! exposed four verbs out of twenty-two, which rebuilt under a
 //! second protocol the agent-surface split that had been abolished once already,
 //! and rebuilt the worse half of it: a caller reached through the protocol could
 //! not amend, could not propose an ADR, could not check the corpus.

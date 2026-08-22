@@ -58,7 +58,7 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         Some(p) => PathBuf::from(p),
         None => cwd.to_path_buf(),
     };
-    // git is a hard dependency (ADR-b8884edcebe3): we fail before writing
+    // git is a hard dependency (ADR-9307e5d214a7): we fail before writing
     // anything rather than leave a half-placed `.ank/` in a directory that is
     // not a repository.
     git::ensure_usable(&target)?;

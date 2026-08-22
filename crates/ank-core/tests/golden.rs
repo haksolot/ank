@@ -308,7 +308,7 @@ fn a_spec_carries_a_lifecycle_and_declares_no_constraint() {
 }
 
 /// A spec declares what it rests on in a field, and the format does no more
-/// than read it (§3, ADR-5a690829388d).
+/// than read it (§3, ADR-c88f99e1c16e).
 ///
 /// The two halves are one decision. A citation has to be a field or the
 /// coherence between documents cannot be verified at all; and it has to stay a

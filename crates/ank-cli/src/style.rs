@@ -1,4 +1,4 @@
-//! ANSI styling, and the whole of it (§4, ADR-962c25797569).
+//! ANSI styling, and the whole of it (§4, ADR-0c8ab846d262).
 //!
 //! Every escape sequence this binary can emit is written here, in one table of
 //! eight codes. That is deliberate: color is presentation, and presentation

@@ -3,7 +3,7 @@
 //! Ank calls the git binary, never a library: `accept` and `check` rest on
 //! signing, and `git commit -S` / `git verify-commit` are three lines where a
 //! cryptographic reimplementation would be a project. The counterpart is the
-//! discipline imposed by ADR-b8884edcebe3: **plumbing only**, never porcelain,
+//! discipline imposed by ADR-9307e5d214a7: **plumbing only**, never porcelain,
 //! whose output offers no stability contract across versions.
 //!
 //! A broken git environment is not a failure of the agent's work: absence, too
@@ -23,7 +23,7 @@ pub const MIN_VERSION: (u32, u32) = (2, 34);
 const INSTALL_URL: &str = "https://git-scm.com/downloads";
 
 /// Allowed plumbing subcommands. The rule is the criterion carried by
-/// ADR-b8884edcebe3 — a command is usable only if its output is stable by
+/// ADR-9307e5d214a7 — a command is usable only if its output is stable by
 /// contract across git versions — and this list is its application, kept
 /// explicit so that reaching for porcelain is a visible act in review rather
 /// than an oversight. A closed list goes stale at every new need; the
@@ -98,7 +98,7 @@ pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
         verb_of(args)
             .map(|a| PLUMBING.contains(&a))
             .unwrap_or(false),
-        "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
+        "porcelain forbidden (ADR-9307e5d214a7): {args:?}"
     );
     Command::new("git")
         .current_dir(cwd)
@@ -195,7 +195,7 @@ pub enum Pushed {
 ///
 /// **A refused push is distinguished from an unreachable remote by asking, not
 /// by reading stderr.** Push says "rejected" in prose written for people, and
-/// parsing it would be the fragility ADR-b8884edcebe3 exists to prevent. So a
+/// parsing it would be the fragility ADR-9307e5d214a7 exists to prevent. So a
 /// failure is followed by one `ls-remote` of the same ref: an answer means the
 /// remote is there and the swap genuinely lost, and no answer at all means the
 /// remote is what failed. It costs a round trip on the failing path only.
@@ -230,7 +230,7 @@ pub fn push_ref(
 /// which kind of failure it just had.
 ///
 /// One line per ref, `<oid>\t<refname>`, which is what makes `ls-remote`
-/// admissible under ADR-b8884edcebe3.
+/// admissible under ADR-9307e5d214a7.
 pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
     let args = ["ls-remote", "origin", refname];
     let out = output(cwd, &args)?;
@@ -647,7 +647,7 @@ pub fn output_with_stdin(cwd: &Path, args: &[&str], input: &[u8]) -> Result<Outp
         verb_of(args)
             .map(|a| PLUMBING.contains(&a))
             .unwrap_or(false),
-        "porcelain forbidden (ADR-b8884edcebe3): {args:?}"
+        "porcelain forbidden (ADR-9307e5d214a7): {args:?}"
     );
     let fail = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::NotFound {
@@ -1024,7 +1024,7 @@ impl History {
     }
 
     /// The rename that killed `path`, or `None` when git cannot name one
-    /// (ADR-97beaf55e73a).
+    /// (ADR-3094538d831e).
     ///
     /// `None` is the honest answer for everything this cannot explain: a
     /// deletion, a move under git's similarity threshold, a path renamed by a
@@ -1097,7 +1097,7 @@ fn joined(records: &[String]) -> String {
 }
 
 /// The rename that killed `path`, or `None` when git cannot name one
-/// (ADR-97beaf55e73a).
+/// (ADR-3094538d831e).
 ///
 /// Two plumbing calls and no porcelain. `rev-list -1 HEAD -- <path>` is the
 /// last commit that touched the path, and `diff-tree` on that commit is what
@@ -1475,7 +1475,7 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
     // contain one, and a body ending in a newline is left exactly as git wrote
     // it. `%x00` rather than a text marker, which a commit message could forge.
     // `rev-list` and not `log`: the walker is plumbing and the pretty format is
-    // the same machinery, where `log` is the porcelain ADR-b8884edcebe3 refuses
+    // the same machinery, where `log` is the porcelain ADR-9307e5d214a7 refuses
     // by name. `--format` makes `rev-list` print a `commit <sha>` line of its
     // own before each record, which is what the reader below steps past.
     let args = [
@@ -1830,7 +1830,7 @@ mod tests {
             t
         }
 
-        /// Porcelain is forbidden to the tool (ADR-b8884edcebe3), not to the
+        /// Porcelain is forbidden to the tool (ADR-9307e5d214a7), not to the
         /// harness that builds the fixture: `init` and `commit` have no
         /// plumbing equivalent worth rewriting here.
         fn porcelain(&self, args: &[&str]) {
@@ -2160,7 +2160,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Rename detection (ADR-97beaf55e73a)
+    // Rename detection (ADR-3094538d831e)
     // -----------------------------------------------------------------------
 
     /// The shapes of `--name-status -z`, asserted on the bytes rather than

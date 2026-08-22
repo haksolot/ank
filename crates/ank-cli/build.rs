@@ -2,7 +2,7 @@
 //! `skill/SKILL.md` it was built alongside (§4).
 //!
 //! `rev-parse` and `symbolic-ref`, and nothing else: both are on the list of
-//! commands ADR-b8884edcebe3 allows, their output is a sha or a path and stable
+//! commands ADR-9307e5d214a7 allows, their output is a sha or a path and stable
 //! by contract, and no porcelain is parsed here any more than in the binary
 //! itself.
 //!

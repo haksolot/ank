@@ -1,7 +1,7 @@
 //! check, review, accept, close, attest, amend and show (§4, §8, §11).
 //!
 //! **This is a file, not a side.** The CLI exposes one surface
-//! (ADR-c656cbcc33a9): every verb here is available to every caller, and what
+//! (ADR-91b77f036884): every verb here is available to every caller, and what
 //! the module holds is what grew together rather than what a class of caller
 //! was allowed to run. Successive headers described this as the human half, the
 //! side that may grow freely, the half outside the loop — each true when
@@ -1125,7 +1125,7 @@ fn scope_verdicts(entities: &[(PathBuf, Entity)], files: &[String]) -> HashMap<S
 ///
 /// `git_root` is `Some` only where there is a repository to ask, and it is what
 /// turns "the scope matches nothing" into "the file moved here, and this is the
-/// command that follows it" (ADR-97beaf55e73a). Where it is `None` the walk is
+/// command that follows it" (ADR-3094538d831e). Where it is `None` the walk is
 /// skipped in silence: a corpus outside a repository already says so once, in
 /// the coordination line, and a second sentence about a question nobody could
 /// ask would be noise.
@@ -1199,14 +1199,14 @@ fn check_scope_alive(
         if cross.is_some() || *alive {
             continue;
         }
-        // The cost clause of ADR-97beaf55e73a, and the reason this sits here
+        // The cost clause of ADR-3094538d831e, and the reason this sits here
         // rather than above the loop: two git processes per glob, paid only by a
         // glob that already matches nothing. A healthy corpus reaches this line
         // no times.
         let mut note = match git_root {
             // Read once for the whole corpus and only where something is
             // already dead: a healthy corpus reaches this line no times and
-            // starts no process, which is the cost clause of ADR-97beaf55e73a
+            // starts no process, which is the cost clause of ADR-3094538d831e
             // kept intact while the per-glob price it allowed goes away
             // (TASK-1b3d7b61dc8f).
             Some(root) => {
@@ -1273,7 +1273,7 @@ fn check_scope_alive(
 }
 
 /// The note under a dead scope: what git says happened to the path, and what
-/// repairs the entity (ADR-97beaf55e73a).
+/// repairs the entity (ADR-3094538d831e).
 ///
 /// Two deaths git records, and it is asked about both: a rename, which names
 /// where the path went and what moves the scope after it, and a deletion, which
@@ -2014,7 +2014,7 @@ fn check_spec(
     );
 }
 
-/// What a spec's `references` owe (§4, ADR-5a690829388d).
+/// What a spec's `references` owe (§4, ADR-c88f99e1c16e).
 ///
 /// This is the mechanism that decision rests on: splitting a specification is
 /// safe because the drift it risks is **detected** rather than deprecated, and
@@ -2613,7 +2613,7 @@ fn check_authorship(
     // Skipped, and said so once. `None` means the entity predates the field and
     // never that nobody wrote it: the author of a file that already exists
     // cannot be recovered, since git would name whoever committed it — a
-    // different fact about a possibly different person — and ADR-b8884edcebe3
+    // different fact about a possibly different person — and ADR-9307e5d214a7
     // forbids the porcelain that would ask.
     let authorless = considered.iter().filter(|e| author_of(e).is_none()).count();
     if authorless > 0 {
@@ -4632,7 +4632,7 @@ pub fn ratification_anchor(text: &str, scope: &[String]) -> String {
 /// moment where both constraints bind.
 ///
 /// `add` and `commit` are porcelain, and this is the documented exception:
-/// neither has a plumbing equivalent worth rewriting, and ADR-b8884edcebe3's
+/// neither has a plumbing equivalent worth rewriting, and ADR-9307e5d214a7's
 /// rule is about parsing output — nothing here is parsed but the resulting sha,
 /// which `rev-parse` supplies.
 /// The two writes and the commit that makes them binding, as one fallible step.
@@ -5462,7 +5462,7 @@ pub fn amend(
             // fires on accepted documents, since revising one is a supersession
             // and a supersession is what leaves the citations behind. Refusing
             // the whole verb here would name a repair the verb turns down
-            // (ADR-5a690829388d).
+            // (ADR-c88f99e1c16e).
             let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
             if touches_anchor && spec.status != SpecStatus::Proposed {
                 return Err(CliError::new(
@@ -5560,7 +5560,7 @@ fn amend_references(
         }
         // The kind rule, at the point of the write and in the words `check`
         // uses for the same state. Both readings come from one function
-        // (ADR-5a690829388d).
+        // (ADR-c88f99e1c16e).
         if !crate::commands::citable(r.kind()) {
             return Err(
                 CliError::new(ExitCode::Generic, crate::commands::not_citable(r))
@@ -5944,7 +5944,7 @@ fn log_section(
         // The command that actually answers, and not a flag that does not
         // exist: `log` prints the same budget with no entity charged against
         // it, so it has strictly more room than this page had. Naming a
-        // command that would refuse is the failure ADR-97beaf55e73a and §5 both
+        // command that would refuse is the failure ADR-3094538d831e and §5 both
         // single out.
         let _ = writeln!(out, "+{cut} earlier entries, ank log {id}");
     } else if entries

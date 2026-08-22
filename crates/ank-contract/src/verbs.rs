@@ -328,7 +328,7 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
 /// The refusal every path-taking verb performs, declared once and named six
 /// times.
 ///
-/// SPEC-f353359663d5 states it for all of them at once — a path naming nothing
+/// SPEC-c937ff8fa70a states it for all of them at once — a path naming nothing
 /// inside the repository, because it is absolute or because it climbs above the
 /// root, is refused with the command to run next and never answered — and the
 /// six verbs reach it through one helper, `context::normalised`. One sentence
@@ -354,7 +354,7 @@ pub const GLOBAL_FLAGS: &[FlagSpec] = &[
     flag("--worktree"),
 ];
 
-/// The short forms of §4 (ADR-962c25797569), and the whole of them.
+/// The short forms of §4 (ADR-0c8ab846d262), and the whole of them.
 ///
 /// One table rather than a letter beside each declaration: `--scope` and
 /// `--criteria` are declared in three [`CommandSpec`]s each, and three
@@ -402,7 +402,7 @@ pub fn long_of(c: char) -> Option<&'static str> {
 pub struct CommandSpec {
     pub name: &'static str,
     /// **When** the verb is reached for, which is the heading `ank help` prints
-    /// it under (ADR-f61e2d2c75e8). One of [`GROUPS`], and never a claim about
+    /// it under (ADR-91b77f036884). One of [`GROUPS`], and never a claim about
     /// who may run it: `check` sits under keeping the corpus honest whether a
     /// human or an agent types it, and the refusal machinery consults no caller.
     ///
@@ -482,10 +482,10 @@ pub struct CommandSpec {
 }
 
 /// The moments a verb is reached for, in the order `ank help` prints them
-/// (ADR-f61e2d2c75e8).
+/// (ADR-91b77f036884).
 ///
 /// A group says **when** a verb is used and never **who** may use it. The
-/// layering ADR-c656cbcc33a9 removed was the residue of an agent surface and a
+/// layering ADR-91b77f036884 removed was the residue of an agent surface and a
 /// human surface — headings that told a caller which verbs were theirs, behind
 /// a wall built from `$ANK_AGENT`, which the caller sets itself. Nothing here
 /// reopens that: the distinction is the one between a map and a gate.
@@ -506,7 +506,7 @@ pub const GROUPS: &[&str] = &[
 /// **The order is the specification's, and it is load-bearing**: §4 puts the
 /// loop first — `context claim show log done`, then `release new find` — and
 /// the rest after it. `help` groups this table by [`GROUPS`] and keeps this
-/// order inside each group (ADR-f61e2d2c75e8): the grouping is a second axis
+/// order inside each group (ADR-91b77f036884): the grouping is a second axis
 /// laid over §4's order, not a re-sort, so a verb never moves relative to its
 /// neighbours and sorting this list would still erase what §4 says.
 pub const COMMANDS: &[CommandSpec] = &[
