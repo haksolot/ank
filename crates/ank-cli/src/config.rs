@@ -258,6 +258,131 @@ identities: {}
 }
 
 // ---------------------------------------------------------------------------
+// The reader's declarations, outside every repository (ADR-96174f1ac2b7)
+// ---------------------------------------------------------------------------
+//
+// **Outside the repository is the whole promise.** A pointer committed in the
+// code repository would be the more useful design for a team wanting shared
+// context, and it is precisely the trace the request refuses. So this file is
+// the reader's, one entry per repository identity, and the code repository
+// keeps not one byte it did not already have.
+//
+// **Declared, never discovered.** Nothing here walks a filesystem looking for a
+// corpus and nothing reads a git remote, for the reason ADR-a1de673043b4 gives
+// about peers: inference is how a corpus starts depending on where somebody
+// happened to check something out.
+
+/// The reader's map of repository identity to corpus, under [`user_dir`].
+pub const CORPORA_FILE: &str = "corpora.yml";
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CorporaFile {
+    schema: u32,
+    #[serde(default)]
+    corpora: BTreeMap<String, String>,
+}
+
+/// Where this reader's declarations live, or `None` where the environment names
+/// no home.
+///
+/// **The environment and the standard library, and no third-party crate.** The
+/// rule is three lines of platform difference and a dependency for it would be
+/// a supply chain for a `getenv`.
+///
+/// `%APPDATA%\ank` on Windows; `$XDG_CONFIG_HOME/ank` elsewhere, falling back to
+/// `$HOME/.config/ank`, which is the same order every other tool on those two
+/// platforms applies. An empty value counts as unset: a shell that exports a
+/// variable to nothing has said nothing, and joining onto it would name a
+/// relative path under the current directory.
+pub fn user_dir() -> Option<std::path::PathBuf> {
+    let var = |key: &str| {
+        std::env::var_os(key)
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+    };
+    if cfg!(windows) {
+        return var("APPDATA").map(|p| p.join("ank"));
+    }
+    if let Some(xdg) = var("XDG_CONFIG_HOME") {
+        return Some(xdg.join("ank"));
+    }
+    var("HOME").map(|p| p.join(".config").join("ank"))
+}
+
+/// The declarations file, wherever this reader's home is.
+pub fn corpora_path() -> Option<std::path::PathBuf> {
+    user_dir().map(|d| d.join(CORPORA_FILE))
+}
+
+/// A repository identity as ADR-621a7fd96ce1 defines it: the root commit, and
+/// therefore forty lowercase hex characters.
+fn is_identity(key: &str) -> bool {
+    key.len() == 40
+        && key
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// Every corpus this reader has declared, keyed on repository identity.
+///
+/// **An empty map for a file that is not there**, which is the ordinary case
+/// and not a failure: a reader who has declared nothing gets the walk, and the
+/// walk is what every corpus written before this existed resolves through.
+///
+/// **A key that is not an identity is refused by name**, and that is behaviour
+/// rather than commentary. The request this comes from proposed a directory
+/// named by the slugified remote URL, so this map will be handed slugs, paths
+/// and URLs by people who read that thread. Each of them fails the test
+/// ADR-96174f1ac2b7 states -- one clone over ssh and one over https key
+/// differently, a fork keys differently from its upstream, a rename on the
+/// forge silently orphans the declaration -- and a wrong key that merely
+/// matched nothing would leave the corpus quietly not found, which is the one
+/// outcome worse than a refusal.
+pub fn declarations() -> Result<BTreeMap<String, String>> {
+    let Some(path) = corpora_path() else {
+        return Ok(BTreeMap::new());
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) => {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!("{}: {e}", path.display()),
+            ))
+        }
+    };
+    let file: CorporaFile = serde_yaml::from_str(&text).map_err(|e| {
+        CliError::new(ExitCode::Environment, format!("{}: {e}", path.display()))
+            .with_hint("schema: 1 and a corpora: map of repository identity to path")
+    })?;
+    if file.schema != SUPPORTED_SCHEMA {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!(
+                "{}: schema {} is not {SUPPORTED_SCHEMA}",
+                path.display(),
+                file.schema
+            ),
+        ));
+    }
+    for key in file.corpora.keys() {
+        if !is_identity(key) {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!("{}: '{key}' is not a repository identity", path.display()),
+            )
+            .with_hint(
+                "a key is the root commit, never a path, a remote or a slug: \
+                 ank status --json prints it under \"corpus\"",
+            ));
+        }
+    }
+    Ok(file.corpora)
+}
+
+// ---------------------------------------------------------------------------
 // `ank config` (§4, ADR-e64dfaafd578)
 // ---------------------------------------------------------------------------
 //

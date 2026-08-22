@@ -111,15 +111,98 @@ pub fn at(path: &Path) -> Result<Repo> {
 /// that corpus is anchored to. Absent the second, the anchor is the corpus's
 /// own directory, which is what every corpus written before this flag existed
 /// resolves to and why no existing invocation moves.
-pub fn resolve(repo_flag: Option<&str>, worktree_flag: Option<&str>, cwd: &Path) -> Result<Repo> {
+pub fn resolve(
+    repo_flag: Option<&str>,
+    worktree_flag: Option<&str>,
+    cwd: &Path,
+    notes: &mut Vec<String>,
+) -> Result<Repo> {
     let repo = match repo_flag {
         Some(p) => at(Path::new(p))?,
-        None => discover(cwd)?,
+        // **Four cases and this is the order** (ADR-96174f1ac2b7): the flag,
+        // which short-circuits everything as it always did; a declaration
+        // matching this repository's identity, which wins over the tree and
+        // says so; the walk, unchanged; and the refusal that already existed.
+        None => match declared(cwd, notes)? {
+            Some(repo) => repo,
+            None => discover(cwd)?,
+        },
     };
     match worktree_flag {
         None => Ok(repo),
         Some(p) => Ok(repo.anchored(anchor(Path::new(p))?)),
     }
+}
+
+/// The corpus this reader has declared for the repository `cwd` sits in, if
+/// there is one (ADR-96174f1ac2b7).
+///
+/// **Nothing is asked of git until a declaration exists to match.** An empty
+/// map is the answer for every reader who has declared nothing, and it costs a
+/// file that is not there. Only past that does this ask for the identity, which
+/// is a git process — and its absence is not a refusal: a directory that is no
+/// repository has no identity, matches no declaration, and falls through to the
+/// walk. That is what keeps ADR-9307e5d214a7 true here, where a startup that
+/// required git would turn away every verb that does not need it.
+///
+/// **A declaration that names no corpus is a refusal, never a fallback.**
+/// Falling back to the walk would make a typo in the map indistinguishable from
+/// having no map at all, which is the failure the whole design is arranged
+/// against.
+fn declared(cwd: &Path, notes: &mut Vec<String>) -> Result<Option<Repo>> {
+    let map = crate::config::declarations()?;
+    if map.is_empty() {
+        return Ok(None);
+    }
+    let Some(id) = identity(cwd) else {
+        return Ok(None);
+    };
+    let Some(declared) = map.get(&id) else {
+        return Ok(None);
+    };
+    let root = Path::new(declared);
+    let repo = at(root).map_err(|_| {
+        CliError::new(
+            ExitCode::Generic,
+            format!("the corpus declared for {id} is not at {declared}"),
+        )
+        .with_hint(format!(
+            "ank init --at {declared}, or correct the entry in {}",
+            crate::config::corpora_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| crate::config::CORPORA_FILE.to_string())
+        ))
+    })?;
+
+    // **Both roots named, and no verb fails.** A corpus in the tree under a
+    // declaration is a reader who has one of each, and which one answered is
+    // the single fact they need. It goes to standard error because stdout is a
+    // parser's input (§4), and `--quiet` silences it like every other note.
+    if let Ok(in_tree) = discover(cwd) {
+        notes.push(format!(
+            "corpus declared at {declared}, and {} also carries one: the \
+             declaration answers",
+            in_tree.corpus.display()
+        ));
+    }
+    // Anchored to the tree the caller is standing in, which is what the corpus
+    // is a corpus *of* (ADR-9e56318631f3). `--worktree` still overrides it, on
+    // the same terms it overrides the nominal layout.
+    Ok(Some(repo.anchored(worktree_of(cwd))))
+}
+
+/// The top of the work tree `cwd` sits in, or `cwd` itself where git cannot
+/// say.
+///
+/// A scope glob is confronted from the root of the tree and not from wherever
+/// the agent happened to run, so resolving it to `cwd` would make `src/**` mean
+/// something different in every subdirectory.
+fn worktree_of(cwd: &Path) -> PathBuf {
+    crate::git::run(cwd, &["rev-parse", "--show-toplevel"])
+        .ok()
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+        .unwrap_or_else(|| cwd.to_path_buf())
 }
 
 /// The work tree `--worktree` names, checked for the one property resolution
@@ -530,7 +613,13 @@ mod tests {
     fn the_repo_flag_short_circuits_the_walk_up() {
         let t = Temp::new();
         let elsewhere = std::env::temp_dir();
-        let via_flag = resolve(Some(t.0.to_str().unwrap()), None, &elsewhere).unwrap();
+        let via_flag = resolve(
+            Some(t.0.to_str().unwrap()),
+            None,
+            &elsewhere,
+            &mut Vec::new(),
+        )
+        .unwrap();
         assert_eq!(via_flag.corpus, t.0);
     }
 
