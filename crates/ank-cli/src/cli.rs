@@ -881,7 +881,7 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
         return;
     };
     let style = inv.style().on_stderr();
-    let (what, next) = ahead.lines();
+    let (what, next) = ahead.lines(crate::repo::released_schema());
     eprintln!("{} {what}", style.yellow("warning:"));
     eprintln!("  -> {next}");
 }

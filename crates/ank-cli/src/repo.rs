@@ -342,26 +342,70 @@ pub struct SchemaAhead {
     pub entities: usize,
 }
 
+/// The entity schema a published release reads, as it stood when this build was
+/// made, or `None` where the build had no tag to ask (TASK-7a2c9d1b13a0).
+///
+/// Stamped by the build script from the newest tag's own source, so nothing here
+/// is remembered and nothing is guessed. `None` is *not known*, never *does not
+/// exist*, and the wording below keeps that difference.
+pub fn released_schema() -> Option<u32> {
+    option_env!("ANK_RELEASED_SCHEMA")
+        .filter(|value| !value.is_empty())
+        .and_then(|value| value.parse().ok())
+}
+
 impl SchemaAhead {
     /// The two lines the caller prints, warning first, next step second.
     ///
     /// Built here rather than at the printing site so that the wording is
     /// asserted where the numbers are, and so that a second caller cannot
     /// phrase the same fact differently.
-    pub fn lines(&self) -> (String, String) {
+    ///
+    /// **The next step has to resolve the state the first line describes**, and
+    /// the one it used to name did not. Measured in use: a corpus at schema 4
+    /// against a binary reading 3, and the install it named would have fetched
+    /// the very build that had just refused — schema 4 had landed on the default
+    /// branch after the tag, so no published version read that corpus at all,
+    /// and the two copies even printed the same version string. §4 asks for the
+    /// command to run next; naming one that returns the caller where they were
+    /// is worse than naming none, because the remedy visibly does nothing and
+    /// the reader concludes the tool is broken rather than that their copy is
+    /// old (TASK-7a2c9d1b13a0).
+    ///
+    /// So there are two roads and the build knows which one it can name.
+    /// `released` is what a published version reads, derived at build time from
+    /// the newest tag: at or above what the corpus declares, reinstalling is the
+    /// answer; anything else — including not knowing — and the answer is the
+    /// tree or a wait, which is always true and never circular.
+    ///
+    /// What both keep is `ank --version`. Naming the build with its commit is
+    /// what let two copies claiming the same version be told apart at all, and
+    /// the count of entities left out is what makes the warning actionable
+    /// rather than vague.
+    pub fn lines(&self, released: Option<u32>) -> (String, String) {
         let entities = if self.entities == 1 {
             "1 entity".to_string()
         } else {
             format!("{} entities", self.entities)
+        };
+        let next = match released {
+            Some(released) if released >= self.found => {
+                "the binary is older than the corpus: ank --version names the build, \
+                 npm install -g @haksolot/ank replaces it"
+                    .to_string()
+            }
+            _ => format!(
+                "no release is known to read schema {}: ank --version names the build, \
+                 build from the tree or wait for a release",
+                self.found
+            ),
         };
         (
             format!(
                 "corpus at schema {}, this binary reads {}: {entities} left out of every listing",
                 self.found, self.supported
             ),
-            "the binary is older than the corpus: ank --version names the build, \
-             npm install -g @haksolot/ank replaces it"
-                .to_string(),
+            next,
         )
     }
 }
@@ -628,14 +672,20 @@ mod tests {
         assert_eq!(schema_ahead(&Repo::at(t.0.clone())), None);
     }
 
-    #[test]
-    fn the_message_counts_in_words_the_reader_can_check() {
-        let one = SchemaAhead {
+    /// One `SchemaAhead` for the wording tests: a corpus at 4 against a build
+    /// that reads 3, which is the state measured in use.
+    fn ahead() -> SchemaAhead {
+        SchemaAhead {
             found: 4,
             supported: 3,
             entities: 1,
-        };
-        let (what, next) = one.lines();
+        }
+    }
+
+    #[test]
+    fn the_message_counts_in_words_the_reader_can_check() {
+        let one = ahead();
+        let (what, next) = one.lines(None);
         assert!(
             what.contains("schema 4") && what.contains("reads 3"),
             "{what}"
@@ -645,9 +695,59 @@ mod tests {
 
         let many = SchemaAhead { entities: 2, ..one };
         assert!(
-            many.lines().0.contains("2 entities left"),
+            many.lines(None).0.contains("2 entities left"),
             "{}",
-            many.lines().0
+            many.lines(None).0
         );
+    }
+
+    /// A release reads the corpus, so reinstalling is the answer and the message
+    /// says so (TASK-7a2c9d1b13a0).
+    #[test]
+    fn a_release_that_reads_the_corpus_is_the_install_command() {
+        let (_, next) = ahead().lines(Some(4));
+        assert!(
+            next.contains("npm install -g @haksolot/ank"),
+            "the road that resolves it is named: {next}"
+        );
+        assert!(!next.contains("build from the tree"), "{next}");
+
+        // Above the corpus is the same case: a release that reads 5 reads 4.
+        let (_, next) = ahead().lines(Some(5));
+        assert!(next.contains("npm install -g @haksolot/ank"), "{next}");
+    }
+
+    /// No release reads it, so the install is the one command that must not be
+    /// named: it fetches the build that has just refused, and a reader who
+    /// follows it concludes the tool is broken rather than that their copy is
+    /// old.
+    #[test]
+    fn no_release_that_reads_the_corpus_names_the_tree_and_never_the_install() {
+        for released in [None, Some(0), Some(3)] {
+            let (_, next) = ahead().lines(released);
+            assert!(
+                !next.contains("npm install"),
+                "{released:?} sent the reader to reinstall the build that refused: {next}"
+            );
+            assert!(
+                next.contains("build from the tree or wait for a release"),
+                "{released:?}: {next}"
+            );
+            assert!(
+                next.contains("no release is known to read schema 4"),
+                "{next}"
+            );
+            assert!(next.contains("ank --version"), "{next}");
+        }
+    }
+
+    /// **Not known is not the same as does not exist**, and the wording carries
+    /// the difference: a build with no tag to ask says what it knows and names
+    /// the road that works either way.
+    #[test]
+    fn an_unknown_release_schema_claims_nothing_about_a_release() {
+        let (_, next) = ahead().lines(None);
+        assert!(next.contains("no release is known"), "{next}");
+        assert!(!next.contains("no release exists"), "{next}");
     }
 }
