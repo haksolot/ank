@@ -39,8 +39,8 @@ use ank_contract::ExitCode;
 // re-export is a line in a file this work has no other reason to open.
 use ank_core::log::control_character;
 use ank_core::{
-    freeze_hash_short, message_fields, serialize_entity, Entity, EntityId, EntityKind, Log,
-    LogEntry, RECORDS_EDIT,
+    freeze_hash_short, message_fields, serialize_entity, AdrStatus, Entity, EntityId, EntityKind,
+    Log, LogEntry, SpecStatus, TaskStatus, RECORDS_EDIT,
 };
 
 /// One entry as a reader receives it: the line, and the entity that carries it.
@@ -314,6 +314,53 @@ pub fn replaced_hash(before: &Entity) -> String {
     freeze_hash_short(&serialize_entity(before))
 }
 
+/// The hash of an entity's **content**: every field a transition does not write
+/// (ADR-f7dc76886db2).
+///
+/// **This is what makes the accounting survive a claim.** `status`, `proof`,
+/// `ratified` and `verified` are written by transitions and `version` by the
+/// store; everything else is content, and only the three verbs that leave a
+/// machinery entry write it. So an entity claimed, released, claimed again and
+/// finished hashes the same throughout, and a value differing from the one the
+/// last entry recorded says that something other than those three verbs moved
+/// the content.
+///
+/// **Neutralised rather than skipped**, which is why this clones and resets
+/// instead of assembling a string field by field: the entity is rendered by the
+/// one serialiser the corpus has, so a field added to a kind is inside this hash
+/// the day it exists, and a reader of this function has one rule to remember
+/// instead of a list to keep in step.
+pub fn content_hash(entity: &Entity) -> String {
+    let mut of = entity.clone();
+    match &mut of {
+        Entity::Task(t) => {
+            t.status = TaskStatus::Open;
+            t.proof.clear();
+            t.verified.clear();
+            t.version = 0;
+        }
+        Entity::Adr(a) => {
+            a.status = AdrStatus::Proposed;
+            a.ratified = None;
+            a.verified.clear();
+            a.version = 0;
+        }
+        Entity::Spec(s) => {
+            s.status = SpecStatus::Proposed;
+            s.ratified = None;
+            s.verified.clear();
+            s.version = 0;
+        }
+        // An entry is written once, so it has no transition to neutralise and
+        // nothing here would ever be compared against it.
+        Entity::Log(l) => {
+            l.verified.clear();
+            l.version = 0;
+        }
+    }
+    freeze_hash_short(&serialize_entity(&of))
+}
+
 /// The message a machinery entry carries, in one grammar and in one place:
 ///
 /// ```text
@@ -330,15 +377,28 @@ pub fn replaced_hash(before: &Entity) -> String {
 /// **The version transition rides in the message and not in a field of its
 /// own.** An entry is an entity written once, and a field for this would put a
 /// column on every log entry in the corpus to serve one value of `records`.
-/// The grammar is what `check` will count against (TASK-dfe5a1bb0857), and
-/// that is the only reader it will ever have.
-pub fn edit_message(changed: &[String], from: u64, to: u64, replaced: &str) -> String {
+/// The grammar is what `check` reads (TASK-dfe5a1bb0857), and that is the only
+/// reader it will ever have.
+///
+/// **`produced` is the clause added by ADR-f7dc76886db2**, and it is appended
+/// rather than inserted so that an entry written before it parses exactly as it
+/// did — which is the whole of the bootstrap that decision rests on. `replaced`
+/// is the state that went and `produced` is the content that came, and the two
+/// answer different questions: the first lets a reader check a past state
+/// described to them, the second lets `check` compare the present one.
+pub fn edit_message(
+    changed: &[String],
+    from: u64,
+    to: u64,
+    replaced: &str,
+    produced: &str,
+) -> String {
     let what = if changed.is_empty() {
         "canonical form".to_string()
     } else {
         changed.join(", ")
     };
-    format!("{what} (version {from} to {to}, replaced {replaced})")
+    format!("{what} (version {from} to {to}, replaced {replaced}, produced {produced})")
 }
 
 /// The version transition a machinery entry states, read back out of its
@@ -347,12 +407,16 @@ pub fn edit_message(changed: &[String], from: u64, to: u64, replaced: &str) -> S
 /// The other direction of [`edit_message`], and the pair is why the grammar is
 /// written in one place: the writer and the only reader sit beside each other,
 /// so a change to one is a change a test on the other catches.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accounted {
     /// The version the write moved from.
     pub from: u64,
     /// The version it moved to.
     pub to: u64,
+    /// The hash of the content the write produced, where the entry carries one
+    /// (ADR-f7dc76886db2). `None` for an entry written before the clause
+    /// existed, which is silent rather than suspicious.
+    pub produced: Option<String>,
 }
 
 /// The transition an entry states, or `None` where the message does not carry
@@ -370,14 +434,24 @@ pub fn parse_edit_message(message: &str) -> Option<Accounted> {
     const OPEN: &str = " (version ";
     let at = message.rfind(OPEN)?;
     let tail = message[at + OPEN.len()..].strip_suffix(')')?;
-    let (versions, replaced) = tail.split_once(", replaced ")?;
+    let (versions, rest) = tail.split_once(", replaced ")?;
+    // The clause that may or may not be there, and its absence is not a defect:
+    // an entry written before ADR-f7dc76886db2 ends at the hash it replaced.
+    let (replaced, produced) = match rest.split_once(", produced ") {
+        Some((replaced, produced)) => (replaced, Some(produced)),
+        None => (rest, None),
+    };
     if replaced.is_empty() || replaced.contains(' ') {
+        return None;
+    }
+    if produced.is_some_and(|p| p.is_empty() || p.contains(' ')) {
         return None;
     }
     let (from, to) = versions.split_once(" to ")?;
     Some(Accounted {
         from: from.parse().ok()?,
         to: to.parse().ok()?,
+        produced: produced.map(str::to_string),
     })
 }
 
@@ -432,14 +506,33 @@ mod tests {
     #[test]
     fn the_grammar_reads_back_what_it_wrote() {
         let fields = ["title".to_string(), "body".to_string()];
-        let message = edit_message(&fields, 7, 8, "4e0e2f1a9b3c");
+        let message = edit_message(&fields, 7, 8, "4e0e2f1a9b3c", "aa11bb22cc33");
         assert_eq!(
             message,
-            "title, body (version 7 to 8, replaced 4e0e2f1a9b3c)"
+            "title, body (version 7 to 8, replaced 4e0e2f1a9b3c, produced aa11bb22cc33)"
         );
         assert_eq!(
             parse_edit_message(&message),
-            Some(Accounted { from: 7, to: 8 })
+            Some(Accounted {
+                from: 7,
+                to: 8,
+                produced: Some("aa11bb22cc33".to_string()),
+            })
+        );
+    }
+
+    /// The bootstrap ADR-f7dc76886db2 rests on: an entry written before the
+    /// clause existed parses exactly as it did, and says nothing about the
+    /// content.
+    #[test]
+    fn an_entry_without_a_produced_hash_reads_and_claims_nothing() {
+        assert_eq!(
+            parse_edit_message("title (version 1 to 2, replaced 4e0e2f1a9b3c)"),
+            Some(Accounted {
+                from: 1,
+                to: 2,
+                produced: None,
+            })
         );
     }
 
@@ -447,14 +540,18 @@ mod tests {
     /// says which one.
     #[test]
     fn a_normalisation_accounts_for_itself() {
-        let message = edit_message(&[], 1, 2, "000000000000");
+        let message = edit_message(&[], 1, 2, "000000000000", "111111111111");
         assert_eq!(
             message,
-            "canonical form (version 1 to 2, replaced 000000000000)"
+            "canonical form (version 1 to 2, replaced 000000000000, produced 111111111111)"
         );
         assert_eq!(
             parse_edit_message(&message),
-            Some(Accounted { from: 1, to: 2 })
+            Some(Accounted {
+                from: 1,
+                to: 2,
+                produced: Some("111111111111".to_string()),
+            })
         );
     }
 
@@ -464,10 +561,14 @@ mod tests {
     #[test]
     fn the_head_may_hold_the_opening_word() {
         let fields = ["+scope docs/ (version 1 to 2)/**".to_string()];
-        let message = edit_message(&fields, 3, 4, "abcdefabcdef");
+        let message = edit_message(&fields, 3, 4, "abcdefabcdef", "fedcbafedcba");
         assert_eq!(
             parse_edit_message(&message),
-            Some(Accounted { from: 3, to: 4 })
+            Some(Accounted {
+                from: 3,
+                to: 4,
+                produced: Some("fedcbafedcba".to_string()),
+            })
         );
     }
 
@@ -481,6 +582,8 @@ mod tests {
             "title (version 1 to two, replaced abcdefabcdef)",
             "title (version 1 to 2, replaced )",
             "title (version 1 to 2)",
+            "title (version 1 to 2, replaced abcdefabcdef, produced )",
+            "title (version 1 to 2, replaced abcdefabcdef, produced two words)",
             "",
         ] {
             assert_eq!(parse_edit_message(message), None, "{message}");

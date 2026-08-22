@@ -1888,7 +1888,13 @@ fn record_edit_entry(
         after,
         identity,
         &claim::now_utc(),
-        &crate::entries::edit_message(changed, from, to, &crate::entries::replaced_hash(before)),
+        &crate::entries::edit_message(
+            changed,
+            from,
+            to,
+            &crate::entries::replaced_hash(before),
+            &crate::entries::content_hash(after),
+        ),
     )
 }
 
@@ -2405,7 +2411,8 @@ fn evidenced_writes(entity: &Entity) -> Option<u64> {
     }
 }
 
-/// An entity against the versions its entries account for (ADR-16813b3bcf37).
+/// An entity against what its entries say of it: the content the last write
+/// produced, and the versions they account for (ADR-f7dc76886db2).
 ///
 /// **The first entry opens the regime, and everything before it is forgiven.**
 /// That is what makes this affordable at all: no schema moves, no corpus is
@@ -2452,10 +2459,42 @@ fn check_accounting(
         if !in_scope(e) {
             continue;
         }
-        let Some(transitions) = evidenced_writes(e) else {
+        let Some(rows) = machinery.get(e.id()) else {
             continue;
         };
-        let Some(rows) = machinery.get(e.id()) else {
+
+        // **The content, compared against what the last write produced**
+        // (ADR-f7dc76886db2). The newest entry and not the newest that carries
+        // a produced hash: an entry written after one that has none says the
+        // content moved since, and reaching past it to an older hash would
+        // report a difference the corpus already explains.
+        let newest = rows
+            .last()
+            .and_then(|l| crate::entries::parse_edit_message(&l.message()));
+        if let Some(produced) = newest.as_ref().and_then(|a| a.produced.as_deref()) {
+            let now = crate::entries::content_hash(e);
+            if now != produced {
+                report.findings.push(Finding::signal(
+                    e.id(),
+                    format!(
+                        "content is {now} where the last write left {produced}: it was \
+                         edited outside the CLI, which is legal and leaves no entry"
+                    ),
+                ));
+                // One finding per entity: the count below would be saying the
+                // same thing about the same write, in weaker terms.
+                continue;
+            }
+        }
+
+        // **The count, kept where it closes.** A task's `claim` and `release`
+        // leave no durable record naming a version, so a task claimed and
+        // released five times carries ten versions no reader can evidence —
+        // which is why `evidenced_writes` answers `None` for one and why the
+        // hash above is what accounts for it. For an ADR and a spec the count
+        // still catches the one case a hash cannot: a version moved and nothing
+        // else.
+        let Some(transitions) = evidenced_writes(e) else {
             continue;
         };
         let Some(opened) = rows

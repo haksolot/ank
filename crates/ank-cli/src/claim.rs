@@ -1880,6 +1880,7 @@ pub fn run(
                 base_version,
                 version,
                 &crate::entries::replaced_hash(&before),
+                &crate::entries::content_hash(&claimed),
             ),
         )?;
     }
