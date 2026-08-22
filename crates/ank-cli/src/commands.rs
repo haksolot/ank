@@ -2853,35 +2853,108 @@ mod tests {
         assert_eq!(entries[0].message, "removed jwt.verify");
     }
 
-    /// Writing is the heartbeat: a `log` pushes the expiry out to *now* plus
-    /// the lease the claim was granted.
+    /// A short lease, well under the default, so that a renewal falling back to
+    /// the default is visible rather than plausible.
+    const LEASE: u64 = 60;
+
+    /// The claim record on the ref, or a panic naming what was there instead.
+    fn claim_record(t: &Temp, id: &EntityId) -> claim::ClaimRecord {
+        match claim::read(&t.0, id).unwrap().unwrap().record {
+            Record::Claim(c) => c,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Whether a renewal recomputed from the lease the claim was granted.
     ///
-    /// Stated as a recomputation rather than as `after > before`, which is what
-    /// it used to assert. That comparison passed for the wrong reason — the
-    /// renewal ignored the granted lease and always wrote the thirty-minute
-    /// default, so a claim taken with sixty seconds saw its expiry leap
-    /// (TASK-1b45f41e7b99). Now that the lease is honoured, `before` and
-    /// `after` sit sixty seconds from two instants that are usually the same
-    /// second, and the old assertion would be deciding on clock granularity.
+    /// **Two recorded values and no wall clock**, which is the whole of
+    /// TASK-53ed7978621b. `renew` writes `expires = <the instant of the write> +
+    /// <the granted lease>` and stores that lease beside it, so both halves of
+    /// what it did are on the ref and neither has to be inferred from how long
+    /// anything took:
+    ///
+    /// - `ttl` is the granted lease, and a renewal that fell back to the default
+    ///   writes the default here — which is exactly the regression
+    ///   TASK-1b45f41e7b99 fixed and what this test exists to hold;
+    /// - `expires - ttl` is the instant of the write, and the caller brackets it
+    ///   by reading the clock either side of the call. The bracket widens with
+    ///   whatever the machine was doing, so a loaded runner makes the assertion
+    ///   looser rather than false.
+    ///
+    /// The assertion it replaces subtracted the clock at the moment of reading
+    /// and required the difference to sit within two seconds of the lease. That
+    /// put the rest of the verb, two git spawns and the runner's other work
+    /// inside a two-second budget, and it lost one job in `f290c42` while a
+    /// rerun of the same commit went green. The doc comment on that assertion
+    /// already recorded that the one *it* replaced was deciding on clock
+    /// granularity; it moved the threshold rather than the method.
+    fn renewed_from_granted_lease(
+        record: &claim::ClaimRecord,
+        granted: u64,
+        from: i64,
+        to: i64,
+    ) -> bool {
+        record.ttl == granted
+            && claim::parse_utc(&record.expires)
+                .is_some_and(|expires| (from..=to).contains(&(expires - granted as i64)))
+    }
+
+    /// Writing is the heartbeat: a `log` pushes the expiry out to the instant of
+    /// the write plus the lease the claim was granted.
     #[test]
     fn log_renews_the_ttl_because_working_is_what_keeps_the_lock() {
         let t = Temp::new();
         let id = a_task(&t, "A task");
-        // A short lease, well under the default, so that a renewal falling
-        // back to the default is visible rather than plausible.
-        const LEASE: i64 = 60;
-        t.claim_it(&id, "claude-code@ank", LEASE as u64);
+        t.claim_it(&id, "claude-code@ank", LEASE);
 
+        let before = claim::now_secs();
         t.call(&["log", "still going"], "claude-code@ank").unwrap();
-        let after = match claim::read(&t.0, &id).unwrap().unwrap().record {
-            Record::Claim(c) => claim::parse_utc(&c.expires).unwrap(),
-            other => panic!("{other:?}"),
-        };
-        let from_now = after - claim::now_secs();
+        let after = claim::now_secs();
+
+        let record = claim_record(&t, &id);
         assert!(
-            (LEASE - 2..=LEASE + 2).contains(&from_now),
-            "the renewal did not recompute from the granted lease: {from_now}s \
-             from now, where the claim was granted {LEASE}s"
+            renewed_from_granted_lease(&record, LEASE, before, after),
+            "the renewal did not recompute from the granted lease: ttl {}, \
+             expires {}, and the write happened between {before} and {after}",
+            record.ttl,
+            record.expires
+        );
+    }
+
+    /// The falsification, driven through the real renewal rather than described.
+    ///
+    /// A record carrying no granted lease is the shape the pre-TASK-1b45f41e7b99
+    /// renewal produced, and `renewal_ttl` answers it with the default — so this
+    /// is the fallback happening for real, in the code the test above is about.
+    /// What must be true is that the assertion turns it down; a test that could
+    /// not fail on the defect it names is not holding anything.
+    #[test]
+    fn a_renewal_that_fell_back_to_the_default_is_turned_down() {
+        let t = Temp::new();
+        let id = a_task(&t, "A task");
+        t.claim_it(&id, "claude-code@ank", LEASE);
+
+        // The granted lease dropped from the ref, and nothing else touched.
+        let held = claim::read(&t.0, &id).unwrap().unwrap();
+        let Record::Claim(mut record) = held.record else {
+            panic!("a claim")
+        };
+        record.ttl = 0;
+        claim::put(&t.0, &id, &Record::Claim(record), Some(&held.object)).unwrap();
+
+        let before = claim::now_secs();
+        t.call(&["log", "still going"], "claude-code@ank").unwrap();
+        let after = claim::now_secs();
+
+        let record = claim_record(&t, &id);
+        assert_eq!(
+            record.ttl,
+            claim::DEFAULT_TTL.as_secs(),
+            "the fallback is what just ran"
+        );
+        assert!(
+            !renewed_from_granted_lease(&record, LEASE, before, after),
+            "the assertion accepted a renewal that dropped the granted lease"
         );
     }
 
