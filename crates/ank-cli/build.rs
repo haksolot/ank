@@ -37,10 +37,18 @@ use std::process::Command;
 /// The skill whose revision is stamped in, relative to this package.
 const SKILL: &str = "../../skill/SKILL.md";
 
+/// Where `SCHEMA_VERSION` is declared, as git addresses it: repository-relative,
+/// which is what `cat-file` takes whatever directory the build runs in.
+const MODEL: &str = "crates/ank-core/src/model.rs";
+
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".into());
     println!("cargo:rustc-env=ANK_COMMIT={}", commit(&dir));
     println!("cargo:rustc-env=ANK_SKILL={}", skill_revision(&dir));
+    println!(
+        "cargo:rustc-env=ANK_RELEASED_SCHEMA={}",
+        released_schema(&dir)
+    );
     if PathBuf::from(&dir).join(SKILL).is_file() {
         println!("cargo:rerun-if-changed={SKILL}");
     }
@@ -103,6 +111,49 @@ fn skill_revision(dir: &str) -> String {
         .find("\n---\n")
         .unwrap_or_else(|| panic!("{}: frontmatter must be closed", path.display()));
     ank_core::freeze_hash_short(&rest[end + "\n---\n".len()..])
+}
+
+/// The entity schema the newest release reads, or empty where there is nothing
+/// to ask (TASK-7a2c9d1b13a0).
+///
+/// **Derived and never typed**, which is the whole of why it is here rather
+/// than a constant in the source. A number kept by hand is true only while
+/// somebody remembers to bump it at the tag, and the message it feeds would
+/// then be confident and wrong — which is the defect this value exists to
+/// repair, reproduced one level down.
+///
+/// The newest tag by version order, and `SCHEMA_VERSION` as that tag's tree
+/// declares it. Both reads are plumbing: `for-each-ref` takes the format it
+/// prints, and `cat-file blob` hands back a file.
+///
+/// **Empty degrades to the safe road.** A tarball, a clone fetched without
+/// tags, a spelling of the constant this parser does not know: each answers
+/// empty, and the reader is then told to build from the tree rather than told
+/// something unverified about a release. Silence about a release is a worse
+/// answer than none only when it sends somebody in a circle, and this one does
+/// not.
+fn released_schema(dir: &str) -> String {
+    let Some(tag) = git(
+        dir,
+        &[
+            "for-each-ref",
+            "--sort=-v:refname",
+            "--count=1",
+            "--format=%(refname:short)",
+            "refs/tags/v*",
+        ],
+    ) else {
+        return String::new();
+    };
+    let Some(source) = git(dir, &["cat-file", "blob", &format!("{tag}:{MODEL}")]) else {
+        return String::new();
+    };
+    source
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("pub const SCHEMA_VERSION: u32 = "))
+        .and_then(|value| value.trim().trim_end_matches(';').parse::<u32>().ok())
+        .map(|schema| schema.to_string())
+        .unwrap_or_default()
 }
 
 /// The files whose change can change the answer, and no others.

@@ -69,6 +69,21 @@ first:
 
 It warns and still answers, because the entities this build does understand are worth
 having, and a corpus mid-migration is a real state rather than a broken one.
+
+**The second line is one of two, and which one depends on whether a release can
+help.** The schema a published version reads is stamped into the binary at build
+time, from the newest tag's own source, so the message names the road that
+actually resolves the state rather than the one that sounds like it does. Where
+no release reads the corpus -- a schema that landed on the default branch after
+the last tag, which is the ordinary case for a contributor -- it says so and
+sends you to the tree instead:
+
+      -> no release is known to read schema 4: ank --version names the build, build from the tree or wait for a release
+
+Naming the install there would fetch the build that had just refused, and a
+reader who follows advice that visibly does nothing concludes the tool is broken
+rather than that their copy is old.
+
 The other half, an old binary reading an old corpus, is not detectable: nothing
 in the files says a newer format exists. That one is `--version` and the
 paragraphs above.

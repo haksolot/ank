@@ -11255,10 +11255,31 @@ fn a_corpus_one_schema_ahead_is_named_by_every_verb_that_reads_it() {
         );
         // And what to do, which is not a migration: the corpus is fine and the
         // binary is old.
+        //
+        // **Asserted against whichever case holds, never against today's**
+        // (TASK-7a2c9d1b13a0). There are two roads and the build knows which one
+        // it can name: a release that reads the corpus makes the install the
+        // answer, and anything else makes it the tree or a wait. Pinning one of
+        // them here would pin the tag history of whoever runs the suite, and
+        // pinning neither is what let the wrong one ship. So: exactly one road,
+        // the right sentence for it, and the half that works in both.
         assert!(
-            err.contains("ank --version") && err.contains("npm install -g @haksolot/ank"),
-            "{args:?} left the reader with no next step: {err}"
+            err.contains("ank --version"),
+            "{args:?} stopped naming the build, which is what tells two copies \
+             claiming one version apart: {err}"
         );
+        let install = err.contains("npm install -g @haksolot/ank");
+        let tree = err.contains("build from the tree or wait for a release");
+        assert!(
+            install ^ tree,
+            "{args:?} named both roads or neither: {err}"
+        );
+        if tree {
+            assert!(
+                err.contains(&format!("no release is known to read schema {ahead}")),
+                "{args:?} sent the reader to the tree without saying why: {err}"
+            );
+        }
     }
 
     // The half that makes the warning necessary. `find` answers, exits zero,
@@ -11345,7 +11366,11 @@ fn the_guide_carries_the_warning_the_binary_prints_about_a_newer_corpus() {
     let err = erred(&r.ank("claude-code@ank", &["find"]));
     let warned: Vec<&str> = err
         .lines()
-        .filter(|l| l.contains("warning:") || l.trim_start().starts_with("-> the binary"))
+        // The next step is one of two sentences since TASK-7a2c9d1b13a0, and
+        // which one a build names depends on its tags. Matching the arrow rather
+        // than either opening is what keeps this test asserting that the guide
+        // carries what the binary said, whichever that was.
+        .filter(|l| l.contains("warning:") || l.trim_start().starts_with("->"))
         .collect();
     assert_eq!(warned.len(), 2, "the warning is two lines: {err}");
 
