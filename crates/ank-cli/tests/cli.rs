@@ -8296,6 +8296,46 @@ impl Declared {
         self
     }
 
+    /// The corpus directory as a git repository of its own, which is where a
+    /// detached corpus's claims and proofs land (ADR-9e56318631f3).
+    fn corpus_repository(&self) -> &Declared {
+        std::fs::create_dir_all(&self.corpus).unwrap();
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["config", "user.email", "test@ank.local"][..],
+            &["config", "user.name", "Test"][..],
+            &["config", "commit.gpgsign", "false"][..],
+        ] {
+            let out = git_command(&self.corpus)
+                .args(args)
+                .output()
+                .expect("git must be installed");
+            assert!(out.status.success(), "git {args:?}");
+        }
+        std::fs::write(self.corpus.join("seed.txt"), "x\n").unwrap();
+        for args in [&["add", "-A"][..], &["commit", "-qm", "seed"][..]] {
+            let out = git_command(&self.corpus)
+                .args(args)
+                .output()
+                .expect("git must be installed");
+            assert!(out.status.success(), "git {args:?}");
+        }
+        self
+    }
+
+    /// Every `refs/ank/*` a repository carries.
+    fn ank_refs(&self, at: &Path) -> String {
+        let out = git_command(at)
+            .args(["for-each-ref", "refs/ank"])
+            .output()
+            .expect("git must be installed");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    fn map_text(&self) -> String {
+        std::fs::read_to_string(self.home.join("ank").join("corpora.yml")).unwrap_or_default()
+    }
+
     fn git(&self, args: &[&str]) -> String {
         let out = git_command(&self.tree)
             .args(args)
@@ -8532,6 +8572,242 @@ fn with_no_declaration_the_walk_is_unchanged() {
     let out = d.ank(&["find"]);
     assert_eq!(code(&out), 0, "{}", both_streams(&out));
     assert!(stdout(&out).contains("In-tree task"), "{}", stdout(&out));
+}
+
+// ---------------------------------------------------------------------------
+// init --at, and the declaration it writes (TASK-49fce8b49d00)
+// ---------------------------------------------------------------------------
+
+/// **The promise, turned into something that fails.**
+///
+/// Everything before this proves a piece; this proves the whole of it. A corpus
+/// created outside the tree in one gesture, a task claimed, logged and finished
+/// with its proof anchored — and `git for-each-ref refs/ank` in the code
+/// repository printing nothing at all. That last assertion is the requirement
+/// in its original words, leave no traces, and it is the reason this test
+/// exists rather than four smaller ones.
+#[test]
+fn a_detached_corpus_is_created_declared_and_worked_without_touching_the_tree() {
+    let d = Declared::new();
+    d.corpus_repository();
+
+    let out = d.ank(&["init", "--at", &d.corpus.to_string_lossy()]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    // Never silent about the one thing it wrote outside the directory named.
+    assert!(
+        stdout(&out).contains("declared in"),
+        "the declaration is reported: {}",
+        stdout(&out)
+    );
+    assert!(
+        d.map_text().contains(&d.identity),
+        "keyed on the repository identity: {}",
+        d.map_text()
+    );
+
+    // **The tree gained no file.** Not a pointer, not a gitignore line, not a
+    // comment: the moment it does, the promise is gone and the design is the
+    // committed pointer this plan refused.
+    assert_eq!(
+        d.git(&["status", "--porcelain"]),
+        "",
+        "the tree was written to"
+    );
+    assert!(
+        !d.tree.join(".ank").exists(),
+        "a corpus was left in the tree"
+    );
+
+    // And a verb afterwards resolves it with no flag, and says nothing about a
+    // corpus outside the repository: the reader named this one.
+    let out = d.ank(&[
+        "new",
+        "task",
+        "--title",
+        "Rotate secrets",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "The rotation runs.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        !stderr(&out).contains("outside the git repository"),
+        "a declared corpus was reported as an accident: {}",
+        stderr(&out)
+    );
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    // The loop, whole.
+    assert_eq!(code(&d.ank(&["claim", &id])), 0);
+    assert_eq!(code(&d.ank(&["log", "made progress"])), 0);
+    let head = d.git(&["rev-parse", "HEAD"]);
+    let out = d.ank(&["done", "--proof", &format!("commit:{head}")]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    // **The assertion the task was filed for.** Claims are refs, and under a
+    // declaration they land in the corpus's repository and never in the one
+    // holding the code.
+    assert_eq!(
+        d.ank_refs(&d.tree),
+        "",
+        "the code repository carries an ank ref, so the tree was traced after all"
+    );
+    assert!(
+        d.ank_refs(&d.corpus).contains(&id),
+        "the corpus repository carries nothing about the task: {}",
+        d.ank_refs(&d.corpus)
+    );
+    assert_eq!(
+        d.git(&["status", "--porcelain"]),
+        "",
+        "the tree was written to by the loop"
+    );
+}
+
+/// `--at` refuses everything that would make the detachment not one.
+#[test]
+fn at_refuses_a_target_that_is_not_detached() {
+    let d = Declared::new();
+    d.corpus_repository();
+
+    // Inside the tree is not a detached corpus; it is `ank init` with a
+    // declaration promising something it does not deliver.
+    let inside = d.tree.join("elsewhere");
+    std::fs::create_dir_all(&inside).unwrap();
+    let out = d.ank(&["init", "--at", &inside.to_string_lossy()]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        both_streams(&out).contains("is meant to stay out of"),
+        "{}",
+        both_streams(&out)
+    );
+    assert_eq!(d.map_text(), "", "a refusal wrote a declaration");
+
+    // Two directories named is a caller who means one of them.
+    let out = d.ank(&[
+        "init",
+        "--at",
+        &d.corpus.to_string_lossy(),
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        both_streams(&out).contains("two different directories"),
+        "{}",
+        both_streams(&out)
+    );
+}
+
+/// `ank config --user` keeps the discipline the repository file has.
+#[test]
+fn config_user_edits_the_declaration_with_the_same_discipline() {
+    let d = Declared::new();
+
+    // No default is materialised by a read, and no file is created to answer
+    // one: a tool asked a question does not leave a trace on the machine.
+    let out = d.ank(&["config", "--user", &format!("corpora.{}", d.identity)]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        !d.home.join("ank").join("corpora.yml").exists(),
+        "a read wrote the file"
+    );
+
+    // A write creates it, and reads back.
+    let out = d.ank(&[
+        "config",
+        "--user",
+        &format!("corpora.{}", d.identity),
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = d.ank(&["config", "--user", &format!("corpora.{}", d.identity)]);
+    // What the caller typed, byte for byte: the surgery stores a value and never
+    // normalises one, here as everywhere else in this file.
+    assert!(
+        stdout(&out).contains(&*d.corpus.to_string_lossy()),
+        "{}",
+        stdout(&out)
+    );
+
+    // **Comments and key order survive byte for byte outside the line named.**
+    let hand_written = format!(
+        "# my corpora\nschema: 1\ncorpora:\n  # the one that matters\n  {}: /old/place\n",
+        d.identity
+    );
+    std::fs::write(d.home.join("ank").join("corpora.yml"), &hand_written).unwrap();
+    let out = d.ank(&[
+        "config",
+        "--user",
+        &format!("corpora.{}", d.identity),
+        "/new/place",
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert_eq!(
+        d.map_text(),
+        hand_written.replace("/old/place", "/new/place"),
+        "the write moved a byte outside the line it named"
+    );
+
+    // An unknown key is refused by name, with the set it knows.
+    let out = d.ank(&["config", "--user", "peers.front", "/somewhere"]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    let said = both_streams(&out);
+    assert!(said.contains("unknown key 'peers.front'"), "{said}");
+    assert!(said.contains("corpora.<identity>"), "{said}");
+
+    // And a key that is not an identity is refused here too, on the terms the
+    // map itself applies: the surfaces cannot disagree about what a key is.
+    let out = d.ank(&["config", "--user", "corpora.acme-thing", "/somewhere"]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        both_streams(&out).contains("is not a repository identity"),
+        "{}",
+        both_streams(&out)
+    );
+
+    // `--unset` removes the declaration, which is what makes making one
+    // reversible.
+    let out = d.ank(&[
+        "config",
+        "--user",
+        "--unset",
+        &format!("corpora.{}", d.identity),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(!d.map_text().contains(&d.identity), "{}", d.map_text());
+}
+
+/// A write that would leave the file unreadable is refused, and the file is
+/// what it was.
+#[test]
+fn config_user_refuses_a_write_that_would_leave_the_file_unreadable() {
+    let d = Declared::new();
+    let broken = "schema: 1\ncorpora:\n  not: [a, scalar\n";
+    std::fs::write(d.home.join("ank").join("corpora.yml"), broken).unwrap();
+
+    // The file already does not parse, so the write is *performed*: this verb
+    // exists for exactly that file, and refusing here would name a repair the
+    // verb turns down.
+    let out = d.ank(&["config", "--user", "schema", "1"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    // On a file that does parse, a value that would break it is refused and the
+    // bytes are untouched.
+    let good = format!("schema: 1\ncorpora:\n  {}: /a/place\n", d.identity);
+    std::fs::write(d.home.join("ank").join("corpora.yml"), &good).unwrap();
+    let out = d.ank(&["config", "--user", "schema", "[not, a, number"]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        both_streams(&out).contains("would leave"),
+        "{}",
+        both_streams(&out)
+    );
+    assert_eq!(d.map_text(), good, "a refused write moved the file");
 }
 
 /// The workspace root: two levels above this crate's manifest.
@@ -9884,6 +10160,16 @@ fn every_flag_the_help_offers_can_be_given_to_the_verb() {
         ("help", &["find"]),
     ];
 
+    // **A flag that selects a different act, rather than a different way of
+    // reporting the same one.** The sweep's premise is that a flag the help
+    // offers leaves the verb's exit code where it was, which holds for every
+    // flag that refines what a verb does and cannot hold for one that changes
+    // what it does: `ank init --at <path>` refuses on the state of the target,
+    // which is a statement about that path and not about whether the help lies.
+    // Listed rather than skipped by a rule, so adding a second one is a
+    // decision somebody writes down (TASK-49fce8b49d00).
+    const SELECTS_AN_ACT: [(&str, &str); 1] = [("init", "--at")];
+
     let mut walked = 0;
     for (verb, positionals) in verbs {
         walked += 1;
@@ -9896,6 +10182,9 @@ fn every_flag_the_help_offers_can_be_given_to_the_verb() {
         let baseline = code(&r.ank_env("claude-code@ank", &base_args, &env));
 
         for (flag, takes_value) in &flags {
+            if SELECTS_AN_ACT.contains(&(verb, flag.as_str())) {
+                continue;
+            }
             let mut args = base_args.clone();
             args.push(flag);
             if *takes_value {
@@ -10816,6 +11105,17 @@ const MACHINE_POSITIONALS: [&str; 1] = ["init"];
 
 /// Flag values matched against scopes, or stored as one.
 const PATH_FLAGS: [(&str, &str); 1] = [("find", "--scope")];
+
+/// The flags naming a path that must **not** be normalised against this
+/// repository, because being outside it is the whole of what they mean.
+///
+/// A third category rather than a hole in the first two, and there is exactly
+/// one member: `ank init --at` names where a corpus goes for a tree that must
+/// stay untouched (ADR-96174f1ac2b7). `context::normalised` refuses a path
+/// outside the repository, which is the correct answer for a scope and the
+/// wrong one here — running it would refuse the only value this flag is ever
+/// given.
+const OUTSIDE_THE_REPOSITORY: [(&str, &str); 1] = [("init", "--at")];
 const GLOB_FLAGS: [(&str, &str); 3] = [
     ("new", "--scope"),
     ("amend", "--scope"),
@@ -10828,7 +11128,10 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 22] = [
+const NOT_A_PATH: [&str; 23] = [
+    // A scope and not a path: it says *which* file of declarations, and there
+    // is one (ADR-96174f1ac2b7).
+    "--user",
     // Entity ids, both of them: what a document rests on is another entity of
     // this corpus, never a file (ADR-c88f99e1c16e). The scope is what names
     // paths on a spec, and it is in GLOB_FLAGS.
@@ -10889,7 +11192,8 @@ fn every_argument_on_the_surface_is_classified_as_carrying_a_path_or_not() {
         );
 
         for flag in flags {
-            let known = PATH_FLAGS.contains(&(verb.as_str(), flag.as_str()))
+            let known = OUTSIDE_THE_REPOSITORY.contains(&(verb.as_str(), flag.as_str()))
+                || PATH_FLAGS.contains(&(verb.as_str(), flag.as_str()))
                 || GLOB_FLAGS.contains(&(verb.as_str(), flag.as_str()))
                 || NOT_A_PATH.contains(&flag.as_str());
             assert!(

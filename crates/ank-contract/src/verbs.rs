@@ -968,7 +968,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 2,
         positional_help: "<key> [<value>]",
-        flags: &[switch("--unset")],
+        flags: &[switch("--unset"), switch("--user")],
         refuses: &[
             refuses(
                 ExitCode::Generic,
@@ -980,6 +980,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "keys: schema context_budget claim_ttl_max claim_ttl_default default_branch peers.<name> verifiers.<name>.run verifiers.<name>.timeout",
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
+            "--user reads and writes the reader's corpora.yml instead, whose only key is corpora.<identity>",
         ],
         refuses_globals: &[],
         output: &[when("reading, `ank config <key>`", &[f("key", Type::Str), opt("value", Type::Str), f("source", Type::Str)]), when("writing, `ank config <key> <value>`", &[f("key", Type::Str), opt("previous", Type::Str), opt("value", Type::Str), f("changed", Type::Bool)])],
@@ -994,12 +995,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
-        flags: &[],
+        flags: &[flag("--at")],
         refuses: &[refuses(
             ExitCode::Generic,
             "--repo: it names a repository that exists, and this verb makes one; the target is positional",
         )],
-        notes: &["a target elsewhere is ank init <path>; with no argument it initialises the current directory"],
+        notes: &[
+            "a target elsewhere is ank init <path>; with no argument it initialises the current directory",
+            "--at <path> puts the corpus outside this tree and declares it, so the tree gains no file",
+        ],
         refuses_globals: &["--repo"],
         output: &[one(&[f("created", Type::Strings), f("wrote", Type::Strings), f("added", Type::Strings), f("changed", Type::Bool)])],
         owner_task: None,

@@ -134,6 +134,34 @@ pub fn resolve(
     }
 }
 
+/// Whether `corpus` is what this reader declared for the repository `cwd` sits
+/// in (ADR-96174f1ac2b7).
+///
+/// **Asked of the map and never remembered from the resolution**, because the
+/// caller that needs it is not the caller that resolved: `warn_if_outside_
+/// repository` runs after `startup` and holds a `Repo`, which carries where the
+/// corpus is and not how it was found. Reading the file again costs a file that
+/// is not there for every reader who has declared nothing, and one that is for
+/// the rest.
+///
+/// Silent on every error. A map that cannot be read is a map that declares
+/// nothing here, and a warning is not the place to report it: the resolution
+/// above already refuses on a file it cannot parse, so by the time anything
+/// asks this, the file has been read once and answered.
+pub fn is_declared(corpus: &Path, cwd: &Path) -> bool {
+    let Ok(map) = crate::config::declarations() else {
+        return false;
+    };
+    if map.is_empty() {
+        return false;
+    }
+    let Some(id) = identity(cwd) else {
+        return false;
+    };
+    map.get(&id)
+        .is_some_and(|declared| same_corpus(Path::new(declared), corpus))
+}
+
 /// The corpus this reader has declared for the repository `cwd` sits in, if
 /// there is one (ADR-96174f1ac2b7).
 ///
