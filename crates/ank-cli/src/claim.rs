@@ -28,6 +28,7 @@ use crate::config::{self, Config};
 use crate::git;
 use crate::human::Freeze;
 use crate::identity::ENV_AGENT;
+use crate::index::Index;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_contract::ExitCode;
@@ -1760,6 +1761,9 @@ pub fn run(
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let base_version = crate::store::version_of(&loaded.entity);
+    // What a `--criteria` that writes one would replace, kept before the
+    // destructuring consumes it (ADR-16813b3bcf37).
+    let before = loaded.entity.clone();
     let Entity::Task(mut task) = loaded.entity else {
         return Err(
             CliError::new(ExitCode::Generic, format!("{prefix} is not a task"))
@@ -1849,7 +1853,36 @@ pub fn run(
     // Durable state last, and it carries the transition alone: no holder, no
     // expiry, no TTL ever reaches a task file (ADR-4e7c25b1f639).
     task.status = TaskStatus::InProgress;
-    store.write(&Entity::Task(task.clone()), base_version)?;
+    let claimed = Entity::Task(task.clone());
+    let version = store.write(&claimed, base_version)?;
+
+    // **The criterion this call wrote, accounted for** (ADR-16813b3bcf37).
+    // `claim` is on the list of three because `--criteria` writes a
+    // `done_criteria` the task did not have, which is content, and the whole
+    // authority model then rests on it. The status this same write moved is a
+    // transition, which the claim ref already records and which earns no entry:
+    // a plain `claim` writes none, and a test on `done` says the same of the
+    // other direction.
+    // Asked of the two states rather than remembered from the branch above:
+    // what earns an entry is content that moved, and the field is where that
+    // is legible.
+    let wrote_criteria =
+        matches!(&before, Entity::Task(t) if t.done_criteria != task.done_criteria);
+    if wrote_criteria {
+        crate::entries::record_edit(
+            &store,
+            &Index::open(&repo.ank)?,
+            &claimed,
+            identity,
+            &now_utc(),
+            &crate::entries::edit_message(
+                &["done_criteria".to_string(), "criteria_by".to_string()],
+                base_version,
+                version,
+                &crate::entries::replaced_hash(&before),
+            ),
+        )?;
+    }
 
     // Read a second time, after the ref is taken, and what it can still find is
     // the race `already_holding` cannot close: two sessions of one identity

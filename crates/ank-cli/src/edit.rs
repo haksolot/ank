@@ -25,7 +25,9 @@
 use crate::claim;
 use crate::cli::{CliError, Invocation, Result};
 use crate::editor;
+use crate::entries;
 use crate::human::{self, Freeze};
+use crate::index::Index;
 use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::{version_of, Store};
@@ -34,7 +36,7 @@ use ank_core::{freeze, parse_entity, Entity, EntityId};
 use std::io::Write;
 use std::path::Path;
 
-pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCode> {
+pub fn run(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -> Result<ExitCode> {
     let prefix = inv.positionals.first().ok_or_else(|| {
         CliError::new(ExitCode::Generic, "edit expects an id").with_hint("ank edit <id>")
     })?;
@@ -68,6 +70,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
             &loaded.entity,
             &edited,
             base_version,
+            identity,
             out,
         );
     }
@@ -109,6 +112,7 @@ pub fn run(inv: &Invocation, repo: &Repo, out: &mut dyn Write) -> Result<ExitCod
             &loaded.entity,
             &edited,
             base_version,
+            identity,
             out,
         )
     })();
@@ -196,6 +200,7 @@ fn no_such_field(before: &Entity, flag: &str) -> CliError {
 ///
 /// Split out so that the caller owns the scratch file's fate: every path
 /// through here that fails is a path on which the text has to survive.
+#[allow(clippy::too_many_arguments)]
 fn write_back(
     inv: &Invocation,
     repo: &Repo,
@@ -203,6 +208,7 @@ fn write_back(
     before: &Entity,
     edited: &str,
     base_version: u64,
+    identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
     let id = before.id();
@@ -234,6 +240,30 @@ fn write_back(
     // is that a person spent that time typing. The scratch file is named by the
     // caller, on this path like every other.
     let version = store.write(&after, base_version)?;
+
+    // **The version this write just moved, accounted for** (ADR-16813b3bcf37).
+    // `edit` changes content and never a status, so it is one of the three
+    // verbs the decision names, and the entry is written after the write it
+    // records: a write that failed must leave no trace behind, and a write with
+    // no trace is merely incomplete.
+    //
+    // Written on every path through here, including the one where `changed` is
+    // empty: the store moved `version`, so an entity that accounted for nothing
+    // would read as edited by something other than the tool.
+    let fields: Vec<String> = changed.iter().map(|f| f.to_string()).collect();
+    entries::record_edit(
+        store,
+        &Index::open(&repo.ank)?,
+        &after,
+        identity,
+        &claim::now_utc(),
+        &entries::edit_message(
+            &fields,
+            base_version,
+            version,
+            &entries::replaced_hash(before),
+        ),
+    )?;
 
     if inv.json() {
         let doc = Obj::document()
@@ -426,6 +456,7 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
             note("criteria_by", a.criteria_by != b.criteria_by);
             note("verify", a.verify != b.verify);
             note("proof", a.proof != b.proof);
+            note("verified", a.verified != b.verified);
             note("schema", a.schema != b.schema);
             note("body", a.body != b.body);
         }
@@ -440,9 +471,44 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
             note("see", a.see != b.see);
             note("supersedes", a.supersedes != b.supersedes);
             note("ratified", a.ratified != b.ratified);
+            note("verified", a.verified != b.verified);
             note("schema", a.schema != b.schema);
             note("body", a.body != b.body);
         }
+        // The two kinds that used to fall through here, and the fall-through
+        // was a hole rather than a decision: a spec whose body an edit rewrote
+        // reported no field at all, so the line said `canonical form` and the
+        // machinery entry would have said it too (ADR-16813b3bcf37). Every kind
+        // the parser resolves is named, in the order §3 lists its fields.
+        (Entity::Spec(a), Entity::Spec(b)) => {
+            note("slug", a.slug != b.slug);
+            note("title", a.title != b.title);
+            note("created", a.created != b.created);
+            note("author", a.author != b.author);
+            note("status", a.status != b.status);
+            note("scope", a.scope != b.scope);
+            note("references", a.references != b.references);
+            note("supersedes", a.supersedes != b.supersedes);
+            note("ratified", a.ratified != b.ratified);
+            note("verified", a.verified != b.verified);
+            note("schema", a.schema != b.schema);
+            note("body", a.body != b.body);
+        }
+        (Entity::Log(a), Entity::Log(b)) => {
+            note("slug", a.slug != b.slug);
+            note("title", a.title != b.title);
+            note("created", a.created != b.created);
+            note("author", a.author != b.author);
+            note("scope", a.scope != b.scope);
+            note("about", a.about != b.about);
+            note("seq", a.seq != b.seq);
+            note("records", a.records != b.records);
+            note("verified", a.verified != b.verified);
+            note("schema", a.schema != b.schema);
+            note("body", a.body != b.body);
+        }
+        // Unreachable: the kind comes from the id, and [`check_id`] has already
+        // refused a result whose id moved. Stated rather than assumed.
         _ => {}
     }
     v

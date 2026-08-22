@@ -1014,7 +1014,7 @@ fn dispatch(
         "accept" => crate::human::accept(&inv, &s.repo, &s.config, &s.identity, out),
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
         "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
-        "edit" => crate::edit::run(&inv, &s.repo, out),
+        "edit" => crate::edit::run(&inv, &s.repo, &s.identity, out),
         "amend" => crate::human::amend(&inv, &s.repo, &s.identity, out),
         "show" => crate::human::show(&inv, &s.repo, &s.config, out),
         _ => Err(not_implemented(spec)),

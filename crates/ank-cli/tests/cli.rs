@@ -464,6 +464,32 @@ impl Repo {
         ids
     }
 
+    /// The machinery entries about an entity, oldest first, as the messages
+    /// they carry (ADR-16813b3bcf37).
+    ///
+    /// Read off the files rather than through the binary, on the same reasoning
+    /// `log_text` is: what has to be true is the state of the corpus, and a
+    /// helper that asked the tool would be asking the writer whether it wrote.
+    fn machinery_of(&self, id: &str) -> Vec<String> {
+        let mut rows: Vec<(u64, String)> = Vec::new();
+        for entry in std::fs::read_dir(self.0.join(".ank/entities"))
+            .into_iter()
+            .flatten()
+            .flatten()
+        {
+            let Ok(text) = std::fs::read_to_string(entry.path()) else {
+                continue;
+            };
+            if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+                if l.about.to_string() == id && l.records.is_some() {
+                    rows.push((l.seq, l.message()));
+                }
+            }
+        }
+        rows.sort();
+        rows.into_iter().map(|(_, m)| m).collect()
+    }
+
     fn task_text(&self, id: &str) -> String {
         std::fs::read_to_string(self.0.join(".ank/entities").join(format!("{id}.md"))).unwrap()
     }
@@ -7264,9 +7290,12 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     );
     assert!(text.contains("  - src/**\n  - docs/**"), "{text}");
     assert!(text.contains("version: 2"), "the write increments: {text}");
+    // The record of an amend is machinery since TASK-3c12e0ced2c0, so it names
+    // the fields alone and the `amended:` opening is gone. What it gained is
+    // the version transition and the hash of the state replaced, which is what
+    // makes the entry account for the write (ADR-16813b3bcf37).
     assert!(
-        r.log_text(ID)
-            .contains("amended: +blocked_by TASK-000000000002"),
+        r.log_text(ID).contains("+blocked_by TASK-000000000002"),
         "the log says what changed: {}",
         r.log_text(ID)
     );
@@ -7365,7 +7394,8 @@ fn a_criterion_under_no_claim_is_amended_and_stays_the_creators() {
         "the correction was recorded as somebody else's: {text}"
     );
     assert!(
-        r.log_text(ID).contains("amended: done_criteria"),
+        r.log_text(ID)
+            .contains("done_criteria (version 1 to 2, replaced "),
         "the log is what records the amend: {}",
         r.log_text(ID)
     );
@@ -16328,6 +16358,429 @@ fn an_entity_with_no_machinery_grows_no_section() {
         stdout(&shown).contains("LOG (1 of 1)"),
         "{}",
         stdout(&shown)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A write of content accounts for the version it moved
+// (ADR-16813b3bcf37, TASK-3c12e0ced2c0)
+// ---------------------------------------------------------------------------
+//
+// Through the binary throughout, and the criterion says so for a reason that
+// outlives it: what these tests are about is a file written beside another
+// file, by a verb, in the order the two writes happen.
+
+/// The hash a machinery entry must carry for a state, computed the way any
+/// reader holding that revision would.
+///
+/// Over the entity and not over the bytes, which is the doctrine every other
+/// freeze in this corpus follows: a ratification anchors `constraint` and
+/// `scope`, a claim anchors `done_criteria`, and none of them hashes a file.
+fn replaced_hash_of(text: &str) -> String {
+    ank_core::freeze_hash_short(&ank_core::serialize_entity(
+        &ank_core::parse_entity(text).expect("the fixture parses"),
+    ))
+}
+
+/// The three verbs ADR-16813b3bcf37 names, and the two doors `edit` has.
+///
+/// One test over the four because the property is one property: whichever door
+/// the write came through, the entity ends up accounting for the version it
+/// moved, in one grammar. Split four ways it would be four chances to write the
+/// message four ways.
+#[test]
+fn every_door_that_changes_content_writes_one_entry_that_accounts_for_it() {
+    // --- edit, on the path that names its field -----------------------------
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let was = r.task_text(ID);
+
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["edit", ID, "--title", "A better title"],
+        None,
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let entries = r.machinery_of(ID);
+    assert_eq!(entries.len(), 1, "one write, one entry: {entries:?}");
+    assert_eq!(
+        entries[0],
+        format!(
+            "title (version 1 to 2, replaced {})",
+            replaced_hash_of(&was)
+        ),
+        "the fields, the transition and the state replaced"
+    );
+
+    // --- edit, on the path that opens $EDITOR -------------------------------
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let was = r.task_text(ID);
+    let editor = r.editor_saving(EDITED_TASK);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let entries = r.machinery_of(ID);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(
+        entries[0],
+        format!(
+            "title, body (version 1 to 2, replaced {})",
+            replaced_hash_of(&was)
+        ),
+        "the two paths write one grammar, not two"
+    );
+
+    // --- amend --------------------------------------------------------------
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let was = r.task_text(ID);
+
+    let out = r.ank("claude-code@ank", &["amend", ID, "--scope", "docs/**"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let entries = r.machinery_of(ID);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(
+        entries[0],
+        format!(
+            "+scope docs/** (version 1 to 2, replaced {})",
+            replaced_hash_of(&was)
+        )
+    );
+    // And the work trace never sees it, which is the half TASK-027a429aad2e
+    // bought: `ank log` is what an agent reads before repeating what a previous
+    // holder tried, and an amend is not something a previous holder learned.
+    let logged = r.ank("claude-code@ank", &["log", ID]);
+    let said = stdout(&logged);
+    let (trace, edits) = said.split_once("EDITS").expect("a section of its own");
+    assert!(!trace.contains("+scope docs/**"), "{trace}");
+    assert!(edits.contains("+scope docs/**"), "{edits}");
+
+    // --- claim --criteria ---------------------------------------------------
+    let r = Repo::new();
+    r.seed_task(ID, None);
+    let was = r.task_text(ID);
+
+    let out = r.ank(
+        "claude-code@ank",
+        &["claim", ID, "--criteria", "A verifiable criterion."],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let entries = r.machinery_of(ID);
+    assert_eq!(entries.len(), 1, "{entries:?}");
+    assert_eq!(
+        entries[0],
+        format!(
+            "done_criteria, criteria_by (version 1 to 2, replaced {})",
+            replaced_hash_of(&was)
+        ),
+        "the criterion the whole authority model then rests on"
+    );
+}
+
+/// A claim that writes no criterion moves `status` and nothing else, and a
+/// status transition has records of its own.
+#[test]
+fn a_status_transition_writes_none_of_this() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // The claim: a transition, and the claim ref is what records it.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    assert!(
+        r.machinery_of(ID).is_empty(),
+        "a plain claim is a transition: {:?}",
+        r.machinery_of(ID)
+    );
+
+    // And the other direction, which the criterion names: `done` writes a proof
+    // and a completion ref, and tracing it again would say nothing the corpus
+    // does not already say.
+    let head = r.head();
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", "--proof", &format!("commit:{head}")],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        r.task_text(ID).contains("status: done"),
+        "{}",
+        r.task_text(ID)
+    );
+    assert!(
+        r.machinery_of(ID).is_empty(),
+        "done writes a proof, never machinery: {:?}",
+        r.machinery_of(ID)
+    );
+    // And the work trace is untouched by any of it: `done` still logs what it
+    // did, where a holder reads it.
+    assert!(
+        r.log_text(ID).contains("done, proof commit:"),
+        "{}",
+        r.log_text(ID)
+    );
+}
+
+/// Nothing moved, nothing written. A version is what an entry accounts for, so
+/// a call that moved none owes none.
+#[test]
+fn a_verb_that_changes_nothing_writes_no_entry() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+
+    // The editor saved the file back exactly as it opened it.
+    let editor = r.editor_saving(&before);
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(stdout(&out).starts_with("unchanged"), "{}", stdout(&out));
+
+    // The named path, handed the title the entity already carries.
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["edit", ID, "--title", "Example task"],
+        None,
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(stdout(&out).starts_with("unchanged"), "{}", stdout(&out));
+
+    // And an amend asking for what is already there is refused outright.
+    let out = r.ank("claude-code@ank", &["amend", ID, "--scope", "src/**"]);
+    assert_ne!(code(&out), 0, "{}", both_streams(&out));
+
+    assert_eq!(r.task_text(ID), before, "no write, so no version moved");
+    assert!(
+        r.machinery_of(ID).is_empty(),
+        "and nothing to account for: {:?}",
+        r.machinery_of(ID)
+    );
+}
+
+/// The end-to-end clause: created through the binary, edited twice through it,
+/// read back through it.
+#[test]
+fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
+    let r = Repo::new();
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Rotate secrets",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The rotation runs.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    // The state each edit replaces, captured before it happens: the entry has
+    // to be checkable by somebody holding that revision, and this is that
+    // somebody.
+    let at_one = r.task_text(&id);
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["edit", &id, "--title", "Rotate the secrets"],
+        None,
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    let at_two = r.task_text(&id);
+    let out = r.ank_edit(
+        "claude-code@ank",
+        &["edit", &id, "--body", "A body written second."],
+        None,
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    assert!(
+        r.task_text(&id).contains("version: 3"),
+        "two writes on top of the creation: {}",
+        r.task_text(&id)
+    );
+
+    let entries = r.machinery_of(&id);
+    assert_eq!(entries.len(), 2, "one per write: {entries:?}");
+    assert_eq!(
+        entries[0],
+        format!(
+            "title (version 1 to 2, replaced {})",
+            replaced_hash_of(&at_one)
+        )
+    );
+    assert_eq!(
+        entries[1],
+        format!(
+            "body (version 2 to 3, replaced {})",
+            replaced_hash_of(&at_two)
+        ),
+        "the hash is of the state that write replaced, and of no other"
+    );
+
+    // Read back through the verb, which is where a reader meets them: a section
+    // of their own, in order, each naming its fields and its transition.
+    let logged = r.ank("claude-code@ank", &["log", &id]);
+    assert_eq!(code(&logged), 0, "{}", both_streams(&logged));
+    let said = stdout(&logged);
+    let (_, edits) = said.split_once("EDITS").expect("a section of its own");
+    let printed: Vec<&str> = edits.lines().filter(|l| l.contains("version ")).collect();
+    assert_eq!(printed.len(), 2, "{edits}");
+    assert!(printed[0].contains("title (version 1 to 2"), "{edits}");
+    assert!(
+        printed[1].contains(&format!(
+            "body (version 2 to 3, replaced {})",
+            replaced_hash_of(&at_two)
+        )),
+        "{edits}"
+    );
+}
+
+/// The same page with the machinery section taken out of it.
+///
+/// The section is what `show` and `log` grew for these entries, so its going is
+/// the display doing what it is for. Everything else on the page is the answer,
+/// and the answer is what must not have moved.
+fn without_edits(text: &str) -> String {
+    let mut kept: Vec<&str> = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("EDITS (") {
+            // And the blank line that opened the section with it, so what is
+            // left reads as a page that never had one.
+            kept.pop();
+            inside = true;
+            continue;
+        }
+        if inside {
+            if !line.is_empty() {
+                continue;
+            }
+            inside = false;
+        }
+        kept.push(line);
+    }
+    kept.join("\n").trim_end().to_string()
+}
+
+/// A trace and not an anchor: deleting every machinery entry changes no exit
+/// code and no answer.
+///
+/// **Asserted by deletion rather than by a comment**, which is what the
+/// criterion asks and what ADR-ff294eff4d1a requires of the log: nothing
+/// authoritative is anchored in it. A verb that had quietly started consulting
+/// one of these entries would answer differently here, whatever its author
+/// believed.
+///
+/// The two verbs that *print* the entries are compared on what they answer
+/// about the entity rather than on the section that holds them: `show` and
+/// `log` have one for exactly this, which is the whole of TASK-027a429aad2e.
+///
+/// **The identity is typed, and that is the one arrangement in the fixture.**
+/// An entry is an entity (ADR-25f977377fa0), so `check`'s census of authors
+/// counts it like anything else and removing three files moves that number,
+/// which is a count of the corpus and not a judgement about the entity the
+/// entries are about. Typing the identity takes the census out of the
+/// comparison and leaves the judgements in it, which is what the clause is
+/// about.
+#[test]
+fn deleting_every_machinery_entry_changes_no_answer() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_adr("ADR-00000000aa01", "Do not do X.", "src/**");
+    // A work entry beside them, so that what `ank log` answers is a trace in
+    // both readings. Without one the verb would go from printing a section to
+    // saying there is no entry at all, which is the display moving and not the
+    // answer, and it would drown the assertion this test is making.
+    seed_entry(
+        &r,
+        "LOG-00000000ac01",
+        ID,
+        0,
+        "what the last holder learned",
+        None,
+    );
+    assert_eq!(
+        code(&r.ank_edit(
+            "claude-code/1.0",
+            &["edit", ID, "--title", "A better title"],
+            None
+        )),
+        0
+    );
+    assert_eq!(
+        code(&r.ank("claude-code/1.0", &["amend", ID, "--scope", "docs/**"])),
+        0
+    );
+    assert_eq!(
+        code(&r.ank(
+            "claude-code/1.0",
+            &["amend", "ADR-00000000aa01", "--scope", "docs/**"]
+        )),
+        0
+    );
+    assert_eq!(r.machinery_of(ID).len(), 2, "{:?}", r.machinery_of(ID));
+    assert_eq!(r.machinery_of("ADR-00000000aa01").len(), 1);
+
+    let asked: [&[&str]; 6] = [
+        &["check"],
+        &["status"],
+        &["context", "src"],
+        &["scope", "src"],
+        &["graph"],
+        &["show", ID],
+    ];
+    let before: Vec<(i32, String)> = asked
+        .iter()
+        .map(|a| {
+            let o = r.ank("claude-code/1.0", a);
+            (code(&o), stdout(&o))
+        })
+        .collect();
+    let logged_before = r.ank("claude-code/1.0", &["log", ID]);
+
+    // Every one of them, by hand: the corpus is writable by anything, and what
+    // is under test is what the tool answers about a corpus that lost them.
+    let mut deleted = 0;
+    for entry in std::fs::read_dir(r.0.join(".ank/entities"))
+        .unwrap()
+        .flatten()
+    {
+        let path = entry.path();
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+            if l.records.is_some() {
+                std::fs::remove_file(&path).unwrap();
+                deleted += 1;
+            }
+        }
+    }
+    assert_eq!(deleted, 3, "every such entry, and only those");
+
+    for (a, was) in asked.iter().zip(before) {
+        let now = r.ank("claude-code/1.0", a);
+        assert_eq!(code(&now), was.0, "ank {a:?} moved its exit code");
+        assert_eq!(
+            without_edits(&stdout(&now)),
+            without_edits(&was.1),
+            "ank {a:?} moved its answer"
+        );
+    }
+
+    let logged_now = r.ank("claude-code/1.0", &["log", ID]);
+    assert_eq!(code(&logged_now), code(&logged_before));
+    assert_eq!(
+        without_edits(&stdout(&logged_now)),
+        without_edits(&stdout(&logged_before)),
+        "the work trace never held them and does not miss them"
     );
 }
 

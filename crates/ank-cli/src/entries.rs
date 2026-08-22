@@ -38,7 +38,10 @@ use ank_contract::ExitCode;
 // log lives: `ank_core::log` is public and documented as the log's home, and a
 // re-export is a line in a file this work has no other reason to open.
 use ank_core::log::control_character;
-use ank_core::{message_fields, Entity, EntityId, EntityKind, Log, LogEntry};
+use ank_core::{
+    freeze_hash_short, message_fields, serialize_entity, Entity, EntityId, EntityKind, Log,
+    LogEntry, RECORDS_EDIT,
+};
 
 /// One entry as a reader receives it: the line, and the entity that carries it.
 ///
@@ -219,6 +222,49 @@ pub fn record(
     created: &str,
     message: &str,
 ) -> Result<EntityId> {
+    write_entry(store, index, subject, identity, created, message, None)
+}
+
+/// The same write, marked as machinery rather than as work
+/// (ADR-16813b3bcf37).
+///
+/// **The word is the only difference**, and that is deliberate: an entry an
+/// agent wrote and an entry a verb wrote are the same kind of entity, written
+/// once, addressable, ordered by the same key and carried by the same code.
+/// What separates them is `records`, which is what a reader splits on and what
+/// no verb consults.
+///
+/// The message is [`edit_message`]'s, and the two are never built apart: one
+/// grammar, one place that writes it.
+pub fn record_edit(
+    store: &Store,
+    index: &Index,
+    subject: &Entity,
+    identity: &str,
+    created: &str,
+    message: &str,
+) -> Result<EntityId> {
+    write_entry(
+        store,
+        index,
+        subject,
+        identity,
+        created,
+        message,
+        Some(RECORDS_EDIT),
+    )
+}
+
+/// The one door, whatever the entry records.
+fn write_entry(
+    store: &Store,
+    index: &Index,
+    subject: &Entity,
+    identity: &str,
+    created: &str,
+    message: &str,
+    records: Option<&str>,
+) -> Result<EntityId> {
     // **The one door, so every verb that writes an entry is covered**
     // (TASK-f3910718320a). `log`, `done`, `release --reason` and the human
     // verbs all record through this function and through nothing else, and a
@@ -241,8 +287,58 @@ pub fn record(
         &crate::commands::entropy(),
     );
     let seq = next_seq(store, index, subject)?;
-    store.create(&Entity::Log(from_line(id.clone(), subject, seq, &line)))?;
+    let mut entry = from_line(id.clone(), subject, seq, &line);
+    entry.records = records.map(str::to_string);
+    store.create(&Entity::Log(entry))?;
     Ok(id)
+}
+
+/// The hash a machinery entry carries: the state the write replaced
+/// (ADR-16813b3bcf37).
+///
+/// **The whole entity and never the field that moved.** What the entry hands a
+/// reader is a claim about how an entity *read* at a version, and a hash over
+/// one field could not settle it. The entity as the corpus serialises it is
+/// that state, and the value is reproducible by anybody holding the revision:
+/// check the commit out, run this over the file, read the same twelve
+/// characters.
+///
+/// **The normalisation every other freeze in this corpus uses**, so a trailing
+/// newline gained on the way through an editor does not read as a different
+/// past.
+///
+/// It anchors nothing, which is what ADR-ff294eff4d1a requires of the log: no
+/// verb consults it, no hash chains over it, and deleting the entry that
+/// carries it changes no answer the tool gives.
+pub fn replaced_hash(before: &Entity) -> String {
+    freeze_hash_short(&serialize_entity(before))
+}
+
+/// The message a machinery entry carries, in one grammar and in one place:
+///
+/// ```text
+/// <fields> (version <from> to <to>, replaced <hash>)
+/// ```
+///
+/// `<fields>` is what the verb reported as changed, comma separated, and
+/// `canonical form` where the write moved no parsed field. A normalisation is
+/// still a version, and an entity that could not account for it would read as
+/// edited behind the tool's back — so the entry is written and says what it
+/// was. It is also the word `edit` already prints for that case, so the line
+/// the caller saw and the entry the corpus keeps say the same thing.
+///
+/// **The version transition rides in the message and not in a field of its
+/// own.** An entry is an entity written once, and a field for this would put a
+/// column on every log entry in the corpus to serve one value of `records`.
+/// The grammar is what `check` will count against (TASK-dfe5a1bb0857), and
+/// that is the only reader it will ever have.
+pub fn edit_message(changed: &[String], from: u64, to: u64, replaced: &str) -> String {
+    let what = if changed.is_empty() {
+        "canonical form".to_string()
+    } else {
+        changed.join(", ")
+    };
+    format!("{what} (version {from} to {to}, replaced {replaced})")
 }
 
 /// One entry, built from a line the previous layout stored and the entity it
@@ -269,9 +365,10 @@ pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> L
         scope: subject.scope().to_vec(),
         about: subject.id().clone(),
         seq,
-        // Both callers write work: `ank log` is a holder saying what they
-        // learned, and a migration carries a line a holder wrote. Machinery is
-        // written elsewhere and says so (ADR-16813b3bcf37).
+        // Work unless the caller says otherwise: `ank log` is a holder saying
+        // what they learned and a migration carries a line a holder wrote, and
+        // neither is machinery. [`record_edit`] is the one caller that sets the
+        // word, on the entry this function has just built (ADR-16813b3bcf37).
         records: None,
         verified: Vec::new(),
         schema: ank_core::SCHEMA_VERSION,
