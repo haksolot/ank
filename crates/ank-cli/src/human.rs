@@ -458,6 +458,53 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     report.tasks = statuses.len();
     report.adrs = adr_ids.len();
 
+    // **Every file this build could not read, by the id its name carries.**
+    //
+    // Not an empty set on a corpus a newer release has written into, and
+    // everything below that resolves an identifier has to know it: a target
+    // that is merely unreadable is not a target that is absent, and the
+    // difference is the difference between a finding and a false accusation.
+    // Measured before this existed: nine unreadable files produced ten extra
+    // faults, eight of them prescribing `--drop-reference` against citations
+    // that were correct, and a reader following one left the corpus worse
+    // than they found it (TASK-5c7aae69a4c0).
+    //
+    // `here` is keyed on the file name and `seen` on what parsed, so the
+    // difference is exactly the files that exist and did not read. Each of
+    // them already carries a fault of its own saying why; what this set buys
+    // is that the *consequences* of their absence stop being reported as
+    // facts about the corpus.
+    let unread: BTreeSet<String> = here
+        .keys()
+        .filter(|id| !seen.contains(*id))
+        .cloned()
+        .collect();
+    if !unread.is_empty() {
+        let ahead = unread
+            .iter()
+            .filter_map(|id| here.get(id))
+            .filter_map(|p| crate::repo::declared_schema(p))
+            .any(|s| s > ank_core::SCHEMA_VERSION);
+        let why = if ahead {
+            ": they declare a schema this build does not read, and the build is what \
+             moves"
+        } else {
+            ", each reported above with the reason it did not"
+        };
+        report.findings.push(
+            Finding::signal(
+                "corpus",
+                format!(
+                    "resolution is incomplete: {} entity file(s) could not be read{why}. \
+                     A reference, a blocker, an entry or a succession naming one of them \
+                     is left unjudged rather than called missing",
+                    unread.len()
+                ),
+            )
+            .with_note(unread.iter().take(5).cloned().collect::<Vec<_>>()),
+        );
+    }
+
     // One walk of the tree, reused by every dead-scope test: reading the
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
@@ -577,6 +624,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 t,
                 repo,
                 &statuses,
+                &unread,
                 &coord,
                 detached.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 cfg,
@@ -586,8 +634,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &detached_commits,
                 &mut report,
             ),
-            Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &mut report),
-            Entity::Spec(s) => check_spec(s, repo, &spec_ids, &entities, &mut report),
+            Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &unread, &mut report),
+            Entity::Spec(s) => check_spec(s, repo, &spec_ids, &entities, &unread, &mut report),
             // A log entry's are checked where they can be: `about` is validated
             // against the corpus below, once, with a count rather than one line
             // per entry — there are five hundred of them. What is checked here
@@ -597,7 +645,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             Entity::Log(_) => {}
         }
     }
-    check_entries(&entities, &in_scope, &mut report);
+    check_entries(&entities, &in_scope, &unread, &mut report);
 
     check_cycles(&entities, &mut report);
     check_authorship(&entities, &coord, &in_scope, &mut report);
@@ -1377,6 +1425,7 @@ fn check_task(
     t: &Task,
     repo: &Repo,
     statuses: &HashMap<EntityId, TaskStatus>,
+    unread: &BTreeSet<String>,
     coord: &HashMap<EntityId, Record>,
     detached: &[claim::AttestedProof],
     cfg: &Config,
@@ -1398,6 +1447,9 @@ fn check_task(
         .collect();
     for b in &t.blocked_by {
         match statuses.get(b) {
+            // Absent from what was read is not absent from the corpus when
+            // something did not read (TASK-5c7aae69a4c0).
+            None if unread.contains(&b.to_string()) => {}
             None => report.findings.push(Finding::fault(
                 &t.id,
                 format!("blocked_by names {b}, which does not exist"),
@@ -1889,10 +1941,11 @@ fn check_adr(
     repo: &Repo,
     adr_ids: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
+    unread: &BTreeSet<String>,
     report: &mut Report,
 ) {
     let view = Anchored::from(a);
-    check_succession(&view, adr_ids, entities, report);
+    check_succession(&view, adr_ids, entities, unread, report);
     check_anchor(&view, repo, "its constraint is no longer injected", report);
     if a.constraint.trim().is_empty() {
         report
@@ -1913,11 +1966,12 @@ fn check_spec(
     repo: &Repo,
     spec_ids: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
+    unread: &BTreeSet<String>,
     report: &mut Report,
 ) {
     let view = Anchored::from(s);
-    check_succession(&view, spec_ids, entities, report);
-    check_references(s, entities, report);
+    check_succession(&view, spec_ids, entities, unread, report);
+    check_references(s, entities, unread, report);
     check_anchor(
         &view,
         repo,
@@ -1970,7 +2024,12 @@ fn check_spec(
 /// not a reference, and scanning bodies for citations would make the check
 /// depend on how somebody phrased a paragraph — which is the drift this exists
 /// to catch, moved into the detector.
-fn check_references(s: &Spec, entities: &[(PathBuf, Entity)], report: &mut Report) {
+fn check_references(
+    s: &Spec,
+    entities: &[(PathBuf, Entity)],
+    unread: &BTreeSet<String>,
+    report: &mut Report,
+) {
     if s.status == SpecStatus::Superseded {
         return;
     }
@@ -1991,6 +2050,13 @@ fn check_references(s: &Spec, entities: &[(PathBuf, Entity)], report: &mut Repor
             continue;
         }
         let Some(entity) = find(target) else {
+            // **The repair here deletes**, which is why this guard is not a
+            // nicety. A citation of something merely unreadable is correct,
+            // and a reader who followed `--drop-reference` on it would leave
+            // the corpus worse than they found it (TASK-5c7aae69a4c0).
+            if unread.contains(&target.to_string()) {
+                continue;
+            }
             report.findings.push(Finding::fault(
                 &s.id,
                 format!(
@@ -2032,6 +2098,12 @@ fn check_references(s: &Spec, entities: &[(PathBuf, Entity)], report: &mut Repor
                         // `check_succession`. Here it means the citation has
                         // nowhere to follow to, and saying so is more use than
                         // naming a successor that does not exist.
+                        //
+                        // Reached only when the whole corpus was read: a chain
+                        // whose next link is a file that did not parse leads
+                        // somewhere this build cannot see, which is not the
+                        // same as leading nowhere (TASK-5c7aae69a4c0).
+                        None if !unread.is_empty() => continue,
                         None => format!(
                             "references {target}, which is superseded and names no successor \
                              (ank show {target})"
@@ -2083,11 +2155,18 @@ fn check_succession(
     view: &Anchored,
     peers: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
+    unread: &BTreeSet<String>,
     report: &mut Report,
 ) {
+    // **A claim about the whole corpus cannot be made while part of it is
+    // unread.** The last finding here says nothing supersedes this entity,
+    // and the successor may be one of the files that did not parse. No
+    // target id is in hand to test, so the guard is the emptiness of the set
+    // rather than a lookup in it (TASK-5c7aae69a4c0).
+    let whole_corpus_read = unread.is_empty();
     let kind = view.id.kind();
     if let Some(target) = view.supersedes {
-        if !peers.contains(target) {
+        if !peers.contains(target) && !unread.contains(&target.to_string()) {
             report.findings.push(Finding::fault(
                 view.id,
                 format!("supersedes {target}, which does not exist"),
@@ -2122,7 +2201,8 @@ fn check_succession(
             }
         }
     }
-    if view.status == AdrStatus::Superseded
+    if whole_corpus_read
+        && view.status == AdrStatus::Superseded
         && !entities
             .iter()
             .any(|(_, e)| Anchored::of_kind(e, kind).is_some_and(|v| v.supersedes == Some(view.id)))
@@ -2238,6 +2318,7 @@ const BURST_WINDOW: i64 = 3600;
 fn check_entries(
     entities: &[(PathBuf, Entity)],
     in_scope: &dyn Fn(&Entity) -> bool,
+    unread: &BTreeSet<String>,
     report: &mut Report,
 ) {
     // An entry above version 1 has been rewritten, and the format says it
@@ -2307,7 +2388,9 @@ fn check_entries(
         .iter()
         .filter(|(_, e)| in_scope(e))
         .filter_map(|(_, e)| match e {
-            Entity::Log(l) if !present.contains(&l.about) => {
+            Entity::Log(l)
+                if !present.contains(&l.about) && !unread.contains(&l.about.to_string()) =>
+            {
                 Some(format!("{} is about {}", l.id, l.about))
             }
             _ => None,
@@ -5448,7 +5531,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     // for; the machinery is listed under it, out of what is left, and an entity
     // edited eight times therefore does not answer "what did the last holder
     // learn" with eight mechanical lines.
-    let (mut log, machinery) = crate::entries::split(log);
+    let (log, machinery) = crate::entries::split(log);
     // What the budget has left once the entity is paid for, which is the whole
     // point of charging the entity first: it is never cut, so it is never the
     // section competing for room.

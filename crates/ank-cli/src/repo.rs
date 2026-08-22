@@ -374,7 +374,7 @@ impl SchemaAhead {
 /// failure the question exists to explain. Reading stops at the closing `---`,
 /// so a `schema:` in a body is never mistaken for the field, and only the head
 /// of each file is ever touched.
-fn declared_schema(path: &Path) -> Option<u32> {
+pub fn declared_schema(path: &Path) -> Option<u32> {
     let mut lines = BufReader::new(std::fs::File::open(path).ok()?).lines();
     // The frontmatter opens on the first line; anything else is not an entity
     // and has no schema to declare.

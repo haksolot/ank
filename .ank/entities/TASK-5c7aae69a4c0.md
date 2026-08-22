@@ -5,7 +5,7 @@ slug: a-check-that-cannot-read-an-entity-prescribes-de
 title: A check that cannot read an entity prescribes deleting the citations that name it
 created: 2026-08-22T00:06:32Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   Where a corpus holds entities this build cannot read, no finding concludes that an entity does not exist and no repair proposes removing a citation, a reference or a succession that names one. What is said instead names the cause once: resolution is incomplete because N entities declare a schema this build does not read, with the command that resolves it. A test builds a corpus where a readable entity references, is blocked by, and is superseded by entities one schema ahead of SCHEMA_VERSION, drives the binary, and asserts that no finding contains drop-reference and none says does not exist or names a succession as missing. The findings that rest on a target this build did read are unchanged, and a case asserts each still fires. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: fa09da7
+    criteria: a7ed46b82abc
+    via: submitted
 schema: 4
-version: 1
+version: 3
 ---
 
 Measured on this corpus with the released binary, against the same corpus this

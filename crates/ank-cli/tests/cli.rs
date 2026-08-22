@@ -16526,3 +16526,142 @@ fn a_named_edit_reads_the_body_from_stdin() {
         "and nothing else moved: {after}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Unreadable is not absent (TASK-5c7aae69a4c0)
+// ---------------------------------------------------------------------------
+
+/// An entity file one schema past what this build reads, written by hand
+/// because no build writes one: what it stands for is a corpus a newer release
+/// has already written into, which is the state every installed copy of ank is
+/// in between a schema bump landing and a release carrying it.
+fn seed_one_schema_ahead(r: &Repo, id: &str, kind: &str, supersedes: Option<&str>) {
+    let supersedes = supersedes
+        .map(|s| format!("supersedes: {s}\n"))
+        .unwrap_or_default();
+    let body = match kind {
+        "spec" => format!("status: accepted\nscope:\n  - docs/**\nreferences: []\n{supersedes}"),
+        "task" => "status: open\nscope:\n  - src/**\nblocked_by: []\n".to_string(),
+        other => panic!("no fixture for {other}"),
+    };
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        format!(
+            "---\nid: {id}\ntype: {kind}\nslug: one-ahead\ntitle: One schema ahead\n\
+             created: 2026-08-01T00:00:00Z\nauthor: human:marie\n{body}\
+             schema: 99\nversion: 1\n---\n\nA document a newer release wrote.\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Nothing that rests on a file this build could not read is reported as
+/// missing, and no repair proposes a deletion.
+///
+/// The measurement this pins: nine unreadable files on the real corpus produced
+/// ten extra faults, eight of them `--drop-reference` against citations that
+/// were correct. A reader following one leaves the corpus worse than they found
+/// it, which is the one thing a finding in this tool may never do.
+#[test]
+fn an_unreadable_entity_is_never_reported_as_one_that_does_not_exist() {
+    let r = Repo::new();
+    r.seed_docs();
+    // Readable, and pointing at what this build cannot read in all three ways
+    // an identifier can point: a citation, a blocker, and a succession.
+    seed_one_schema_ahead(&r, "SPEC-00000000aa01", "spec", Some("SPEC-00000000aa02"));
+    r.seed_spec(
+        "SPEC-00000000aa02",
+        "superseded",
+        &["SPEC-00000000aa01"],
+        None,
+    );
+    seed_one_schema_ahead(&r, "TASK-00000000aa03", "task", None);
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.blocked(ID, &["TASK-00000000aa03"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = both_streams(&out);
+
+    assert!(
+        !said.contains("--drop-reference"),
+        "no repair deletes a citation of something merely unreadable:\n{said}"
+    );
+    assert!(
+        !said.contains("does not exist"),
+        "and nothing unreadable is called absent:\n{said}"
+    );
+    assert!(
+        !said.contains("marked superseded but no"),
+        "nor is a succession called broken when its successor is the unreadable \
+         file:\n{said}"
+    );
+    // Said once, with the cause, rather than once per consequence.
+    assert!(
+        said.contains("resolution is incomplete"),
+        "the incompleteness is named:\n{said}"
+    );
+    assert!(
+        said.contains("2 entity file(s) could not be read"),
+        "and counted:\n{said}"
+    );
+}
+
+/// The same findings still fire where the target is one this build did read.
+///
+/// Removing a finding is easy to do too widely, and this is the half that says
+/// the guard did not take the honest cases with it.
+#[test]
+fn a_target_that_is_genuinely_absent_is_still_a_fault() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(
+        "SPEC-00000000bb01",
+        "accepted",
+        &["SPEC-00000000bb99"],
+        None,
+    );
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.blocked(ID, &["TASK-00000000bb98"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = both_streams(&out);
+
+    assert_eq!(
+        code(&out),
+        8,
+        "a corpus with dangling ids is faulty: {said}"
+    );
+    assert!(
+        said.contains("references SPEC-00000000bb99, which does not exist"),
+        "{said}"
+    );
+    assert!(
+        said.contains("--drop-reference SPEC-00000000bb99"),
+        "{said}"
+    );
+    assert!(
+        said.contains("blocked_by names TASK-00000000bb98, which does not exist"),
+        "{said}"
+    );
+    assert!(
+        !said.contains("resolution is incomplete"),
+        "and nothing was unreadable, so nothing is excused:\n{said}"
+    );
+}
+
+/// A succession that leads nowhere is still a fault when the whole corpus was
+/// read.
+#[test]
+fn a_succession_with_no_successor_is_still_a_fault_when_everything_was_read() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec("SPEC-00000000cc01", "superseded", &[], None);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = both_streams(&out);
+    assert_eq!(code(&out), 8, "{said}");
+    assert!(
+        said.contains("SPEC-00000000cc01: marked superseded but no spec supersedes it"),
+        "{said}"
+    );
+}
