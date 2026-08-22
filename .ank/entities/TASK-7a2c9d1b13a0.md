@@ -5,7 +5,7 @@ slug: the-stale-binary-hint-names-an-install-that-rein
 title: The stale-binary hint names an install that reinstalls the same build
 created: 2026-08-21T23:59:29Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/tests/cli.rs
@@ -16,8 +16,13 @@ blocked_by: []
 done_criteria: |
   The next step a corpus-ahead-of-binary warning names is one that resolves the state it describes, and where no released version carries the schema found, it does not send the reader to reinstall the version they already have. The message distinguishes the two cases it can be in and says which: a release exists that reads the corpus, and the install command is the answer; or none does, and the answer is to build from the tree or wait for a release, said in those words. A test drives the binary on a corpus one schema ahead and asserts the sentence against both cases rather than against whichever holds today. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 4bc38aa
+    criteria: 694ac130937d
+    via: submitted
 schema: 4
-version: 3
+version: 4
 ---
 
 Found in use, not by reading. `ank show` on this corpus printed:
