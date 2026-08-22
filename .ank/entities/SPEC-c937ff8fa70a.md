@@ -5,13 +5,17 @@ slug: the-cli-surface
 title: The CLI surface
 created: 2026-08-22T17:02:51Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 references: [SPEC-a89ba4f755e9, SPEC-89070ce7f3b8, SPEC-6aed60cd3717, SPEC-88e1ba60a95d]
 supersedes: SPEC-bc1c5a31884c
+ratified: fbb72dfd9bf9
+verified:
+  - by: claude-code/opus-5
+    at: 2026-08-22T17:45:52Z
 schema: 4
-version: 1
+version: 2
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
