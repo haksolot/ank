@@ -326,7 +326,7 @@ pub struct Task {
     /// `None` means the entity predates the field, never that nobody wrote it:
     /// schema 1 had no such thing, and the author of a file that already exists
     /// cannot be recovered — `git log` would say who committed it, and
-    /// ADR-b8884edcebe3 forbids porcelain. The signals that need it skip those
+    /// ADR-9307e5d214a7 forbids porcelain. The signals that need it skip those
     /// entities and `check` says so once for the corpus.
     pub author: Option<String>,
     pub status: TaskStatus,
@@ -416,7 +416,7 @@ pub struct Spec {
     pub author: Option<String>,
     pub status: SpecStatus,
     pub scope: Vec<String>,
-    /// The documents and decisions this one rests on (§3, ADR-5a690829388d).
+    /// The documents and decisions this one rests on (§3, ADR-c88f99e1c16e).
     ///
     /// A declared field and never a sentence: a specification cut into documents
     /// drifts unless the coherence between them is verified, and verifying it

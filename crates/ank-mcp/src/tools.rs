@@ -3,8 +3,8 @@
 //! **Nothing here names a verb.** The list is [`COMMANDS`] walked, so a verb the
 //! table gains reaches this surface with no edit in this crate, and a verb it
 //! does not carry is a verb this surface does not have. That is the condition
-//! ADR-1713af205186 wrote for itself and ADR-372b82af1ec7 answered: not a
-//! curated subset, not parity kept by review, generated.
+//! ADR-372b82af1ec7 answered, on terms the refusal it replaced had written for
+//! itself: not a curated subset, not parity kept by review, generated.
 //!
 //! What a tool advertises is what the table already knows: the summary as the
 //! description, the positionals and flags as the input schema, the refusals with

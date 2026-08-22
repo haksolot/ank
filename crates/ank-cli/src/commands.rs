@@ -143,7 +143,7 @@ pub fn new(
                 // The identity that ran this, recorded at the only moment it is
                 // knowable. Nothing recovers it afterwards: git would say who
                 // committed the file, which is a different fact and a different
-                // person, and ADR-b8884edcebe3 forbids the porcelain anyway.
+                // person, and ADR-9307e5d214a7 forbids the porcelain anyway.
                 author: Some(identity.to_string()),
                 status: TaskStatus::Open,
                 scope,
@@ -931,7 +931,7 @@ fn supersedes_of(inv: &Invocation, store: &Store, kind: EntityKind) -> Result<Op
     Ok(Some(id))
 }
 
-/// Whether a specification may cite this kind (§3, ADR-5a690829388d).
+/// Whether a specification may cite this kind (§3, ADR-c88f99e1c16e).
 ///
 /// A spec and an ADR, and nothing else. A document resting on a binding decision
 /// is ordinary and worth declaring; a task is work that finishes and a log entry
@@ -961,7 +961,7 @@ pub(crate) fn not_citable(id: &EntityId) -> String {
 /// `check`, as a corpus fault nobody can attribute to the act that caused it.
 /// What `check` is left to report is the corpus moving underneath a citation
 /// that was good when it was written — a target deleted, promoted or superseded
-/// since — which is the drift ADR-5a690829388d exists to catch.
+/// since — which is the drift ADR-c88f99e1c16e exists to catch.
 fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
     let mut out: Vec<EntityId> = Vec::new();
     for raw in inv.values("--reference") {
@@ -2414,7 +2414,7 @@ mod tests {
     /// The only moment the author is knowable is the one that writes the file.
     /// Nothing recovers it afterwards: git names whoever committed the entity,
     /// which is a different fact about a possibly different person, and
-    /// ADR-b8884edcebe3 forbids the porcelain that would ask.
+    /// ADR-9307e5d214a7 forbids the porcelain that would ask.
     ///
     /// Asserted on the bytes on disk and not on the returned model, because a
     /// field set on the struct and dropped by the serializer would pass every

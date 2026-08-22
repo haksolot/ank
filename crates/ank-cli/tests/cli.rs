@@ -2282,7 +2282,7 @@ fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
 /// A ratification git refused to commit leaves nothing behind
 /// (TASK-1dbb6e7843f1).
 ///
-/// Measured on this corpus on 2026-08-18, ratifying ADR-768374fe6076 on a
+/// Measured on this corpus on 2026-08-18, ratifying ADR-24e306277bd4 on a
 /// machine whose ratification key was protected by a passphrase nothing
 /// supplied. `git commit` failed, `accept` exited 9 carrying git's message, and
 /// the ADR came out `accepted` carrying the anchor of a commit that does not
@@ -2918,7 +2918,7 @@ fn inside_a_repository_the_coordination_half_still_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// References between documents (TASK-50dd8f9b565c, ADR-5a690829388d)
+// References between documents (TASK-50dd8f9b565c, ADR-c88f99e1c16e)
 // ---------------------------------------------------------------------------
 
 const CITING: &str = "SPEC-00000000a001";
@@ -2950,7 +2950,7 @@ fn findings_about(said: &str, id: &str) -> Vec<String> {
 }
 
 /// **`check` resolves what a specification declares it rests on**
-/// (ADR-5a690829388d, TASK-50dd8f9b565c).
+/// (ADR-c88f99e1c16e, TASK-50dd8f9b565c).
 ///
 /// This is the mechanism that decision rests on. It argues that cutting a
 /// specification into documents is safe because the drift it risks is
@@ -3245,7 +3245,7 @@ fn retired_citer_fixture() -> Repo {
 /// (TASK-a6c643216f51).
 ///
 /// Measured the first time a spec was replaced: three live documents followed
-/// the chain, which is ADR-5a690829388d working as designed, and the fourth had
+/// the chain, which is ADR-c88f99e1c16e working as designed, and the fourth had
 /// been retired in the same operation. What the finding asked of it was that a
 /// document nobody reads any more be edited to cite one written after it was
 /// retired — and the repair it named would have worked, bumping the `version` of
@@ -3684,8 +3684,8 @@ default_branch: main
 /// files, a `closed` one claimed nothing.
 ///
 /// The perimeter names a directory no commit ever carried, so neither
-/// ADR-97beaf55e73a's rename walk nor ADR-3094538d831e's deletion clause has
-/// anything to lower a severity with. That is the case with no way out, and it is
+/// ADR-3094538d831e's rename walk nor its deletion clause has anything to lower
+/// a severity with. That is the case with no way out, and it is
 /// the one that used to redden a corpus for good: `amend` refuses a finished task,
 /// so the fault could never be cleared.
 #[test]
@@ -3911,7 +3911,7 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
 }
 
 // ---------------------------------------------------------------------------
-// Short forms (TASK-f3e92656b5df, ADR-962c25797569)
+// Short forms (TASK-f3e92656b5df, ADR-0c8ab846d262)
 // ---------------------------------------------------------------------------
 
 /// The short form is the long form, and the output proves it byte for byte.
@@ -4017,7 +4017,7 @@ fn a_short_flag_the_verb_does_not_take_names_the_flag_it_stands_for() {
 ///
 /// The second half is the one worth a test. The listing carries one line per
 /// verb, and a second spelling of every flag is exactly the kind of addition
-/// that arrives looking like an improvement. Grouping it (ADR-f61e2d2c75e8)
+/// that arrives looking like an improvement. Grouping it (ADR-91b77f036884)
 /// changed what stands between the lines and nothing on them.
 #[test]
 fn help_shows_both_forms_for_one_verb_and_leaves_the_listing_lines_alone() {
@@ -4913,7 +4913,8 @@ fn status_names_every_live_claim_of_this_identity() {
 /// The ADR it supersedes created the completion ref so that a task finished on
 /// an unmerged branch would not look free everywhere else, and named this gap
 /// without settling it -- on the ground that `close` is "a human act and a rare
-/// one", which ADR-e17e1bbd93ff retired by dissolving the human side entirely.
+/// one", which the skill decision retired by dissolving the human side entirely
+/// (ADR-91b77f036884).
 /// That is history, and `.ank/` carries it (TASK-78326e2e3e89). The code has
 /// behaved this way throughout; what it lacked was a decision saying so and a
 /// test holding it.
@@ -7768,7 +7769,7 @@ fn help_from_nowhere(args: &[&str]) -> Output {
 ///
 /// The trailer is the block opening with `global:` at column 0, and it is what
 /// bounds the listing now that a blank line no longer does. The listing is
-/// grouped (ADR-f61e2d2c75e8), so an empty line is a boundary *between* groups
+/// grouped (ADR-91b77f036884), so an empty line is a boundary *between* groups
 /// -- a parser that stopped at the first one would read `run the loop`, find six
 /// verbs, and call that the whole surface. A folded description is indented and
 /// so can never be mistaken for the trailer.
@@ -7856,7 +7857,7 @@ fn help_answers_outside_a_repository_and_lists_every_verb() {
     }
 
     // Grouped by the moment a verb is used, and never by who uses it
-    // (ADR-f61e2d2c75e8). These four headings sorted callers -- agent loop,
+    // (ADR-91b77f036884). These four headings sorted callers -- agent loop,
     // agent off-loop, human -- which is the two-surface model speaking through
     // the output an agent reads, and a CLI that refuses on state and never on
     // identity has no such grouping to print. That refusal is untouched: what
@@ -7930,7 +7931,7 @@ fn help_for_one_verb_answers_and_an_unknown_one_is_a_two() {
     assert!(text.contains("--criteria"), "{text}");
     assert!(
         !text.contains("audience"),
-        "the audience line is what ADR-c656cbcc33a9 removes, and it is the \
+        "the audience line is what ADR-91b77f036884 removes, and it is the \
          line an agent reads about itself:\n{text}"
     );
     assert!(
@@ -8024,7 +8025,7 @@ fn help_json_reaches_the_process_intact() {
 }
 
 /// Every verb of the table appears exactly once in the grouped listing, under a
-/// heading, and in the table's order inside it (ADR-f61e2d2c75e8).
+/// heading, and in the table's order inside it (ADR-91b77f036884).
 ///
 /// Through the binary, against `ank help --json`: the same table read out of the
 /// same process, so the assertion is that the two renderings agree rather than
@@ -8099,7 +8100,7 @@ fn the_grouped_listing_prints_every_verb_exactly_once() {
 }
 
 /// Every verb carries a non-empty group, and every group is a heading the
-/// listing prints (ADR-f61e2d2c75e8).
+/// listing prints (ADR-91b77f036884).
 ///
 /// This is what stops a twenty-second verb from being added with no home and
 /// disappearing off the end unnoticed. The test above would pass on such a verb
@@ -8139,7 +8140,7 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
              heading:\n{listing}"
         );
         // And a group says when a verb is used, never who may use it: the wall
-        // ADR-c656cbcc33a9 pulled down was built out of exactly these words.
+        // ADR-91b77f036884 pulled down was built out of exactly these words.
         for who in ["agent", "human", "caller", "you"] {
             assert!(
                 !group.split_whitespace().any(|w| w == who),
@@ -8160,67 +8161,211 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
 }
 
 // ---------------------------------------------------------------------------
-// Dead constraints in the prose (ADR-c656cbcc33a9)
+// Dead constraints in the prose (ADR-91b77f036884)
 // ---------------------------------------------------------------------------
 
-/// A comment citing a superseded ADR as the reason for a design is worse than
-/// no comment: it hands the next reader a constraint that binds nobody, with
-/// the authority of a decision record. Two of them went on asserting a frozen
-/// agent surface -- at seven verbs in one, at eight in the other -- in module
-/// headers and doc comments, long after the split they protected had been
-/// dissolved and while the file around them had already stopped obeying it.
+/// The workspace root: two levels above this crate's manifest.
 ///
-/// The needles are assembled from fragments so this file does not defeat its
-/// own assertion by containing what it forbids. It reads as an affectation
-/// until you picture the test failing on itself.
-///
-/// The third arrived the same way and is the reason the list is worth keeping:
-/// thirteen comments, across six modules and this file, explained the
-/// completion ref by the ADR that created it, and a human ratified its
-/// successor on the default branch. The citations were right until that
-/// signature and wrong the instant after, which is why re-pointing them is a
-/// task of its own (TASK-d9d364bad929) and why the list holds the result rather
-/// than a reader's memory.
-///
-/// This is not a general ban on naming a superseded ADR: history is worth
-/// writing down, and `.ank/` is where it is written. It is a ban on these three,
-/// which have no live claim left to make anywhere in this crate.
-#[test]
-fn no_superseded_adr_is_cited_in_the_crate() {
-    const DEAD: [&str; 3] = [
-        concat!("ADR-", "2f8a61c04b7d"),
-        concat!("ADR-", "3859eb46bdc3"),
-        concat!("ADR-", "bcf222a31525"),
-    ];
+/// Derived rather than configured, so a crate added to the workspace is walked
+/// by the guard below without anybody wiring it in — which is the same property
+/// the dead set gains from being asked of the corpus.
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("crates/<name> sits two levels under the workspace root")
+        .to_path_buf()
+}
 
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let mut walked = 0usize;
-    for dir in ["src", "tests"] {
-        for entry in std::fs::read_dir(root.join(dir)).expect("the crate has this directory") {
-            let path = entry.expect("a readable entry").path();
-            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+/// Every source file and manifest of every crate in the workspace.
+fn workspace_sources(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![root.join("crates")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                // Build output is not source, and it is large.
+                if path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                    continue;
+                }
+                stack.push(path);
                 continue;
             }
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            for dead in DEAD {
-                assert!(
-                    !text.contains(dead),
-                    "{} cites {dead}, which is superseded: name the ADR that \
-                     binds today, or drop the citation",
-                    path.display()
-                );
+            if matches!(
+                path.extension().and_then(|e| e.to_str()),
+                Some("rs") | Some("toml")
+            ) {
+                out.push(path);
             }
-            walked += 1;
         }
     }
-    // A walk that quietly found nothing would pass forever, which is the one
-    // way a test like this fails at being a test.
-    assert!(walked >= 8, "only {walked} source files walked");
+    out.sort();
+    out
+}
 
-    let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("a readable manifest");
-    for dead in DEAD {
-        assert!(!manifest.contains(dead), "Cargo.toml cites {dead}");
+/// The number a `--json` document carries under `name`.
+fn json_number(text: &str, name: &str) -> u64 {
+    let at = text
+        .find(name)
+        .unwrap_or_else(|| panic!("{name} is in the document: {text}"));
+    text[at + name.len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .expect("a number")
+}
+
+/// The identifiers of every superseded document in a corpus, asked of the
+/// binary (ADR-01b6dd05f0db: `.ank/` is reached only through the CLI).
+///
+/// **Derived and never transcribed.** A list in this file protects the cases
+/// somebody remembered and no fourth: superseding an entity does not add to it,
+/// so the guard goes quiet on exactly the citation that has just gone stale.
+/// The corpus already knows what is superseded, and a test that asks it needs
+/// nobody to remember.
+fn superseded_ids(repo: &Path) -> Vec<String> {
+    let out = ank_command()
+        .args(["find", "--status", "superseded", "--json"])
+        .arg("--repo")
+        .arg(repo)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let said = stdout(&out);
+    // A listing the budget cut would be read as a shorter corpus, and the guard
+    // would go quiet on whatever it dropped. The document carries both numbers
+    // for exactly this.
+    assert_eq!(
+        json_number(&said, "\"shown\":"),
+        json_number(&said, "\"total\":"),
+        "the listing was cut, so the set is not the whole one: {said}"
+    );
+    let mut ids = Vec::new();
+    let mut rest = said.as_str();
+    while let Some(at) = rest.find("\"id\":\"") {
+        rest = &rest[at + "\"id\":\"".len()..];
+        let end = rest.find('"').expect("a closed string");
+        ids.push(rest[..end].to_string());
+        rest = &rest[end..];
     }
+    ids
+}
+
+/// Every citation of one of `dead` in `files`, as the line a reader would fix.
+fn stale_citations(files: &[PathBuf], dead: &[String]) -> Vec<String> {
+    let mut found = Vec::new();
+    for path in files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for (n, line) in text.lines().enumerate() {
+            for id in dead {
+                if line.contains(id.as_str()) {
+                    found.push(format!("{}:{}: {id}", path.display(), n + 1));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A comment citing a superseded document as the reason for a design is worse
+/// than no comment: it hands the next reader a constraint that binds nobody,
+/// with the authority of a decision record. Two of them went on asserting a
+/// frozen agent surface -- at seven verbs in one, at eight in the other -- in
+/// module headers and doc comments, long after the split they protected had been
+/// dissolved and while the file around them had already stopped obeying it.
+///
+/// **This is not a ban on writing history down.** It is a ban on writing it in
+/// the source, because `.ank/` is where the corpus keeps it and `ank show
+/// <successor>` carries `supersedes:`. A comment says what binds today; the
+/// chain behind it is one command away and does not have to be pasted into a
+/// module header where nothing will ever notice it going stale.
+///
+/// **The set is asked of the corpus and the walk covers the workspace**
+/// (TASK-7a1c92961465). Both were holes and each on its own was enough. The
+/// list used to be three identifiers transcribed by whoever last remembered, so
+/// superseding an entity protected nothing new; and the walk used to be this
+/// crate's `src` and `tests`, so `ank-contract`, `ank-core` and `ank-mcp` were
+/// never read. The citation that prompted this was in one of the three, which is
+/// not a coincidence: the guard had never looked there, so nothing there had
+/// ever been kept honest. Re-pointing what the wider walk then found came to a
+/// hundred and six citations across eighteen files.
+#[test]
+fn no_superseded_document_is_cited_in_the_workspace() {
+    let root = workspace_root();
+    let dead = superseded_ids(&root);
+    // A corpus that answered with nothing would make this pass forever, which is
+    // the one way a test like this fails at being a test.
+    assert!(dead.len() >= 30, "only {} superseded documents", dead.len());
+
+    let files = workspace_sources(&root);
+    // The same guard for the walk, and the number rose with it: this crate's
+    // `src` and `tests` alone were eight.
+    assert!(
+        files.len() >= 40,
+        "only {} source files walked",
+        files.len()
+    );
+    assert!(
+        files
+            .iter()
+            .any(|p| p.components().any(|c| c.as_os_str() == "ank-core")),
+        "the walk never left ank-cli: {files:?}"
+    );
+
+    let stale = stale_citations(&files, &dead);
+    assert!(
+        stale.is_empty(),
+        "these cite a superseded document: name the one that binds today, or \
+         drop the citation and leave the history to `ank show`:\n{}",
+        stale.join("\n")
+    );
+}
+
+/// The falsification, and it is the hole the task was filed for: a citation
+/// planted in a crate that is not this one is found.
+///
+/// The identifier comes from the corpus rather than from a literal, because a
+/// literal written here would be a citation in this very file and the guard
+/// above would fail on it. That is the same reason the old list was assembled
+/// out of `concat!` fragments, arrived at from the other end.
+#[test]
+fn the_walk_reaches_a_crate_that_is_not_this_one() {
+    let root = workspace_root();
+    let dead = superseded_ids(&root);
+    let planted = dead.first().expect("the corpus has superseded documents");
+
+    let tree = std::env::temp_dir().join(format!("ank-guard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tree);
+    for crate_name in ["ank-cli", "ank-other"] {
+        std::fs::create_dir_all(tree.join("crates").join(crate_name).join("src")).unwrap();
+    }
+    std::fs::write(
+        tree.join("crates/ank-cli/src/lib.rs"),
+        "// nothing stale here\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tree.join("crates/ank-other/src/lib.rs"),
+        format!("//! A design justified by {planted}.\n"),
+    )
+    .unwrap();
+
+    let files = workspace_sources(&tree);
+    assert_eq!(files.len(), 2, "{files:?}");
+    let stale = stale_citations(&files, &dead);
+    assert_eq!(stale.len(), 1, "{stale:?}");
+    assert!(
+        stale[0].contains("ank-other") && stale[0].contains(planted),
+        "the finding names the file and the identifier: {}",
+        stale[0]
+    );
+
+    let _ = std::fs::remove_dir_all(&tree);
 }
 
 // ---------------------------------------------------------------------------
@@ -9106,7 +9251,7 @@ fn a_blocker_that_does_not_exist_is_refused_at_creation() {
 }
 
 // ---------------------------------------------------------------------------
-// Color: the guarantee is negative (§4, ADR-962c25797569)
+// Color: the guarantee is negative (§4, ADR-0c8ab846d262)
 // ---------------------------------------------------------------------------
 
 /// Every verb worth styling, exercised against a corpus that actually has
@@ -9155,7 +9300,7 @@ fn color_fixture() -> Repo {
 ///
 /// A spawned process writes to a pipe, so this suite *is* the piped case — the
 /// same shape an agent shelling out to `ank` sees. An escape byte anywhere in
-/// either stream is the defect ADR-962c25797569 forbids, and `--json` is
+/// either stream is the defect ADR-0c8ab846d262 forbids, and `--json` is
 /// checked beside the plain form because it is the one surface that must stay
 /// clean even at a terminal.
 #[test]
@@ -10259,7 +10404,7 @@ fn surface() -> Vec<(String, String, Vec<String>)> {
     for line in listing_body(&text) {
         // The listing is `<usage>` padded, then the description. Its folded
         // continuation lines are indented and open no verb (TASK-fe130d2b732c),
-        // and a group heading opens none either (ADR-f61e2d2c75e8).
+        // and a group heading opens none either (ADR-91b77f036884).
         let Some(rest) = line.strip_prefix("ank ") else {
             continue;
         };
@@ -10315,7 +10460,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// a correction of.
 const NOT_A_PATH: [&str; 22] = [
     // Entity ids, both of them: what a document rests on is another entity of
-    // this corpus, never a file (ADR-5a690829388d). The scope is what names
+    // this corpus, never a file (ADR-c88f99e1c16e). The scope is what names
     // paths on a spec, and it is in GLOB_FLAGS.
     "--reference",
     "--drop-reference",
@@ -11543,7 +11688,7 @@ fn the_takeover_warnings_of_log_and_amend_are_on_standard_error() {
 }
 
 // ---------------------------------------------------------------------------
-// A dead scope, and where git says the file went (ADR-97beaf55e73a)
+// A dead scope, and where git says the file went (ADR-3094538d831e)
 // ---------------------------------------------------------------------------
 
 const DEAD_ADR: &str = "ADR-00000000aaaa";
@@ -11603,7 +11748,7 @@ fn proposal(text: &str) -> Option<Vec<String>> {
 /// agreeing with each other, and neither half proves the answer reached
 /// standard output carrying the other.
 ///
-/// **The proposed command is run, not merely matched.** ADR-97beaf55e73a
+/// **The proposed command is run, not merely matched.** ADR-3094538d831e
 /// requires a command that will not refuse on the spot, and the only way to
 /// assert that is to spend it: the text is split back into arguments and handed
 /// to the binary, which must exit 0 and leave the scope alive.
@@ -11648,7 +11793,7 @@ fn a_renamed_file_names_where_it_went_and_the_command_that_repairs_it() {
     );
 
     // Spent rather than read. A command that refuses here is the exact defect
-    // ADR-97beaf55e73a names, and no amount of matching on the string sees it.
+    // ADR-3094538d831e names, and no amount of matching on the string sees it.
     let args: Vec<String> = command
         .split_whitespace()
         .skip(1)
@@ -12109,7 +12254,7 @@ fn a_shallow_clone_cannot_explain_a_dead_scope_and_says_so_instead_of_faulting()
 
 /// No repository, no walk, and no line saying so.
 ///
-/// The cost clause of ADR-97beaf55e73a has a silence clause beside it, and the
+/// The cost clause of ADR-3094538d831e has a silence clause beside it, and the
 /// silence is the part a test has to hold: `check` already says once that the
 /// coordination half was skipped, and a second sentence about a question that
 /// could not be asked is noise in the one output an agent reads whole.

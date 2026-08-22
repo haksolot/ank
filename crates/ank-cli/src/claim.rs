@@ -455,7 +455,7 @@ fn live_claims_where(
 /// is a different question, answered by the transition check and by `acquire`,
 /// and this refusal has no business intercepting it.
 ///
-/// Refusing on state and never on identity (ADR-c656cbcc33a9): what is read is
+/// Refusing on state and never on identity (ADR-91b77f036884): what is read is
 /// the coordination plane — which refs exist and who holds them — and the
 /// answer is the same for every caller. A lapsed claim is not a live one, so
 /// pickup after expiry (§3) passes through untouched.
@@ -513,7 +513,7 @@ pub fn read_at(cwd: &Path, name: &str) -> Result<Option<Held>> {
 ///
 /// The one place that spawns git without going through [`git::output`], because
 /// the record is fed on stdin and that runner does not pipe one. `hash-object`
-/// is in the plumbing ADR-b8884edcebe3 allows; what is lost here is the debug
+/// is in the plumbing ADR-9307e5d214a7 allows; what is lost here is the debug
 /// assertion that guards the list, not the rule it enforces.
 fn write_blob(cwd: &Path, record: &Record) -> Result<String> {
     use std::io::Write as _;
@@ -1143,7 +1143,7 @@ fn renewed_by_working(
 /// freezes nothing, which is the reading `log` and `done` already apply.
 ///
 /// Any live claim, not this agent's: refusals are on state and never on identity
-/// (ADR-c656cbcc33a9).
+/// (ADR-91b77f036884).
 pub fn live(cwd: &Path, id: &EntityId) -> Result<Option<ClaimRecord>> {
     let Some(Record::Claim(c)) = read(cwd, id)?.map(|h| h.record) else {
         return Ok(None);
@@ -2101,8 +2101,9 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
 
 /// Anchors the ADRs whose constraint applies here, so that a reader of this
 /// module lands on them: claims in refs (ADR-4e7c25b1f639), the ref's second
-/// state (ADR-6d8736c04cfa), plumbing by criterion (ADR-b8884edcebe3), freeze
-/// by hash (ADR-6b3f19e08a24), one surface (ADR-c656cbcc33a9).
+/// state (ADR-6d8736c04cfa), git per verb and plumbing by criterion
+/// (ADR-9307e5d214a7), freeze by hash (ADR-6b3f19e08a24), one surface
+/// (ADR-91b77f036884).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2142,7 +2143,7 @@ mod tests {
             t
         }
 
-        /// Porcelain is forbidden to the tool (ADR-b8884edcebe3), not to the
+        /// Porcelain is forbidden to the tool (ADR-9307e5d214a7), not to the
         /// harness that builds the fixture.
         fn porcelain(&self, args: &[&str]) {
             let st = Command::new("git")
@@ -2276,7 +2277,7 @@ mod tests {
     fn a_ref_can_point_at_a_blob_which_is_what_a_record_is() {
         // If this ever fails, nothing below is worth reading: the record would
         // have to become a tag object, and `mktag` is not in the plumbing list
-        // that ADR-b8884edcebe3 allows.
+        // that ADR-9307e5d214a7 allows.
         let t = Temp::new_repo();
         let id = EntityId::parse("TASK-000000000001").unwrap();
         let record = Record::Claim(ClaimRecord {
