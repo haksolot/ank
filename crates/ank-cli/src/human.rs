@@ -646,6 +646,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
     }
     check_entries(&entities, &in_scope, &unread, &mut report);
+    check_accounting(&entities, &in_scope, &mut report);
 
     check_cycles(&entities, &mut report);
     check_authorship(&entities, &coord, &in_scope, &mut report);
@@ -2332,6 +2333,120 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
 /// costs nothing to ignore — which is what makes it safe to leave unadjustable.
 const BURST_COUNT: usize = 10;
 const BURST_WINDOW: i64 = 3600;
+
+/// The writes an entity's own fields evidence, or `None` where the count is not
+/// derivable from them.
+///
+/// **The whole of the accounting's reach is this function**, so it is worth
+/// stating what is in it and why the two absences are absences and not
+/// oversights.
+///
+/// An ADR and a spec are written by exactly two things: the verbs that change
+/// content, each of which leaves an entry, and `accept`. `accept` writes twice
+/// at most and both writes leave a field behind — `ratified` on the entity it
+/// ratifies, `status: superseded` on the target of a succession — so the count
+/// closes exactly. It is counted whether the transition fell before or after
+/// the first entry, which can only make the total generous: the comparison is
+/// one-sided, so generosity is silence and never a false accusation.
+///
+/// **A task is not derivable, and that is a property of the corpus rather than
+/// a shortcut taken here.** `claim` and `release` each write the file and
+/// leave nothing durable behind, so a task claimed and released five times
+/// carries ten versions that no reader can evidence afterwards. Measured on
+/// TASK-3c12e0ced2c0, the first entity in this repository to carry a machinery
+/// entry: version 4, one entry covering 2 to 3, the other two versions being
+/// the claim and the `done`. A rule counting those would fire on its own first
+/// subject and on every task ever amended, which §11 names as the volume that
+/// teaches a reader to stop reading `check`.
+///
+/// A log entry is left out too: it is written once, and an entry above version
+/// 1 already has a signal of its own that would otherwise say the same thing
+/// twice.
+fn evidenced_writes(entity: &Entity) -> Option<u64> {
+    match entity {
+        Entity::Adr(a) => {
+            Some(u64::from(a.ratified.is_some()) + u64::from(a.status == AdrStatus::Superseded))
+        }
+        Entity::Spec(s) => {
+            Some(u64::from(s.ratified.is_some()) + u64::from(s.status == SpecStatus::Superseded))
+        }
+        Entity::Task(_) | Entity::Log(_) => None,
+    }
+}
+
+/// An entity against the versions its entries account for (ADR-16813b3bcf37).
+///
+/// **The first entry opens the regime, and everything before it is forgiven.**
+/// That is what makes this affordable at all: no schema moves, no corpus is
+/// migrated, and the thousand entities written before any of this existed stay
+/// silent until the CLI next edits one. The baseline is the `from` of the first
+/// entry rather than 1, so a proposal drafted by hand and then edited through
+/// the tool is accounted for from the edit onwards and never asked about the
+/// life it had before.
+///
+/// **A signal and never a fault**, and the exit code is the whole argument: an
+/// entity whose arithmetic does not close was written outside the CLI, which is
+/// legal, is what a human with an editor does, and is what ADR-01b6dd05f0db
+/// permits a human while asking it of no agent. What the signal says is that it
+/// happened, not that it was wrong.
+///
+/// **A message this build cannot read is not a finding.** An entry is written
+/// once and one marked as machinery by another writer is entitled to a message
+/// of its own shape; the accounting steps aside rather than reporting on prose
+/// it does not own.
+fn check_accounting(
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    report: &mut Report,
+) {
+    // Grouped from the corpus already parsed, like every other reading in this
+    // walk: `check` has every file in hand, and a second reader over the same
+    // directory is a second chance to disagree about what is there.
+    let mut machinery: HashMap<&EntityId, Vec<&ank_core::Log>> = HashMap::new();
+    for (_, e) in entities {
+        if let Entity::Log(l) = e {
+            // The word this build knows, and only it. An entry recording
+            // something else is already a signal of its own, and counting a
+            // word whose meaning is unknown would be guessing at arithmetic.
+            if l.records.as_deref() == Some(ank_core::RECORDS_EDIT) {
+                machinery.entry(&l.about).or_default().push(l);
+            }
+        }
+    }
+    for rows in machinery.values_mut() {
+        rows.sort_by(|a, b| a.order_key().cmp(&b.order_key()));
+    }
+
+    for (_, e) in entities {
+        if !in_scope(e) {
+            continue;
+        }
+        let Some(transitions) = evidenced_writes(e) else {
+            continue;
+        };
+        let Some(rows) = machinery.get(e.id()) else {
+            continue;
+        };
+        let Some(opened) = rows
+            .first()
+            .and_then(|l| crate::entries::parse_edit_message(&l.message()))
+        else {
+            continue;
+        };
+        let accounted = opened.from + rows.len() as u64 + transitions;
+        let carried = version_of(e);
+        if carried <= accounted {
+            continue;
+        }
+        report.findings.push(Finding::signal(
+            e.id(),
+            format!(
+                "version {carried}, and its entries account for {accounted}: a write \
+                 reached it outside the CLI, which is legal and leaves no entry"
+            ),
+        ));
+    }
+}
 
 /// What a log entry owes: `about` names an entity this corpus holds, and the
 /// entry has not been rewritten (§3, ADR-25f977377fa0).
