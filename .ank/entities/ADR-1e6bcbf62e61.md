@@ -5,13 +5,17 @@ slug: an-identifier-written-in-prose-is-not-a-referenc
 title: An identifier written in prose is not a reference, and one that names nothing is a signal
 created: 2026-08-22T20:50:30Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   check reads entity identifiers out of the prose it stores -- a log entry's message, a task's done_criteria, an entity's body -- and reports, once for the corpus and never once per mention, those that name an entity the corpus does not hold. A signal and never a fault: the prose is not wrong, it points at nothing. An identifier that resolves is silent whatever its status, superseded included, because prose is where history is written and because a frozen criterion cannot be repaired. Nothing is refused at write time and nothing in prose confers, orders or is followed: an identifier in prose is not a reference, which is the rule ADR-c88f99e1c16e states and this one does not touch.
+ratified: 583a92484162
+verified:
+  - by: claude-code/opus-5
+    at: 2026-08-22T20:55:54Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on this corpus on 2026-08-22, before deciding: 1087 distinct entity
