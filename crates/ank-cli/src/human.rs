@@ -1858,6 +1858,39 @@ fn record_entry(
     )
 }
 
+/// The machinery entry a write of content owes (ADR-16813b3bcf37).
+///
+/// **Beside [`record_entry`] and never inside it.** The two write the same kind
+/// of entity through the same door, and what separates them is one word and the
+/// grammar of the message — both of which live in `entries`, so a verb here
+/// chooses which record it is writing and never how it is spelled.
+///
+/// `before` is what the write replaced and `after` is what it wrote: the hash
+/// is of the first and the entry hangs off the second, because an entry copies
+/// the scope of what it is about and the scope that matters is the one the
+/// entity now carries.
+#[allow(clippy::too_many_arguments)]
+fn record_edit_entry(
+    store: &Store,
+    repo: &Repo,
+    before: &Entity,
+    after: &Entity,
+    identity: &str,
+    changed: &[String],
+    from: u64,
+    to: u64,
+) -> Result<EntityId> {
+    let index = Index::open(&repo.ank)?;
+    crate::entries::record_edit(
+        store,
+        &index,
+        after,
+        identity,
+        &claim::now_utc(),
+        &crate::entries::edit_message(changed, from, to, &crate::entries::replaced_hash(before)),
+    )
+}
+
 /// Why a task's log yielded nothing, and at what severity `check` says so.
 enum LogUnread {
     /// A merge left half done. The walk of the log directory has already
@@ -4989,6 +5022,10 @@ pub fn amend(
     let loaded = store.load_prefix(prefix)?;
     let base_version = version_of(&loaded.entity);
     let id = loaded.entity.id().clone();
+    // The state every arm below replaces, kept before the match consumes it:
+    // the machinery entry hashes it, and the hash is of what was there and not
+    // of what the amend produced (ADR-16813b3bcf37).
+    let before = loaded.entity.clone();
 
     // Both normalised, and both for the same reason `new --scope` is: one is
     // written into the entity, and the other is compared against what is
@@ -5150,13 +5187,22 @@ pub fn amend(
             };
 
             let amended = Entity::Task(task);
-            store.write(&amended, base_version)?;
-            record_entry(
+            let version = store.write(&amended, base_version)?;
+            // Machinery rather than work, since TASK-3c12e0ced2c0: an amend is a
+            // change of content outside a status transition, which is the case
+            // ADR-16813b3bcf37 names. The line it used to write into the work
+            // trace said the same thing in a place `ank log` reads for what a
+            // previous holder learned, and an entity amended eight times made
+            // that verb answer with eight of these.
+            record_edit_entry(
                 &store,
                 repo,
+                &before,
                 &amended,
                 identity,
-                format!("amended: {}", changes.join(", ")),
+                &changes,
+                base_version,
+                version,
             )?;
 
             report_amend(inv, &id, &changes, out);
@@ -5218,9 +5264,23 @@ pub fn amend(
                 )
                 .with_hint(format!("ank show {id}")));
             }
-            // An ADR has no log section, so the change is recorded by `version`
-            // and by the diff, which is what every other write to an ADR does.
-            store.write(&Entity::Adr(adr), base_version)?;
+            // Recorded by an entry of its own, on the same terms a task's
+            // amend is: any kind may carry entries (ADR-25f977377fa0), and
+            // ADR-16813b3bcf37 asks for one per write of content whatever the
+            // kind. It used to be `version` and the diff alone, which said
+            // nothing a reader could reach without git.
+            let amended = Entity::Adr(adr);
+            let version = store.write(&amended, base_version)?;
+            record_edit_entry(
+                &store,
+                repo,
+                &before,
+                &amended,
+                identity,
+                &changes,
+                base_version,
+                version,
+            )?;
             report_amend(inv, &id, &changes, out);
         }
         Entity::Spec(mut spec) => {
@@ -5284,8 +5344,19 @@ pub fn amend(
                 )
                 .with_hint(format!("ank show {id}")));
             }
-            // Recorded by `version` and by the diff, as an ADR's amend is.
-            store.write(&Entity::Spec(spec), base_version)?;
+            // An entry of its own, as an ADR's amend now writes.
+            let amended = Entity::Spec(spec);
+            let version = store.write(&amended, base_version)?;
+            record_edit_entry(
+                &store,
+                repo,
+                &before,
+                &amended,
+                identity,
+                &changes,
+                base_version,
+                version,
+            )?;
             report_amend(inv, &id, &changes, out);
         }
         // Declared in the registry, and not reachable from this verb. A refusal
