@@ -5,7 +5,7 @@ slug: a-task-cannot-account-for-its-versions-and-the-a
 title: A task cannot account for its versions, and the accounting is silent about it
 created: 2026-08-22T16:44:55Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/claim.rs
@@ -16,7 +16,7 @@ done_criteria: |
   ank check reports a task whose version exceeds what its records account for, on the same terms it reports an adr today: a signal naming both numbers, never a fault, and not one finding on a corpus that predates the regime. What accounts for a transition is decided and written down before the code, since a claim and a release leave nothing durable behind as things stand. Driven through the binary: a task claimed, released, claimed again, amended and finished answers check with no finding from this rule, and the same task with its file rewritten by hand and its version bumped is reported with both counts. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 The half of ADR-16813b3bcf37 that TASK-dfe5a1bb0857 could not deliver, and the

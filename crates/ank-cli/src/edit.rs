@@ -262,6 +262,7 @@ fn write_back(
             base_version,
             version,
             &entries::replaced_hash(before),
+            &entries::content_hash(&after),
         ),
     )?;
 

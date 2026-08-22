@@ -17355,6 +17355,191 @@ fn an_entity_with_no_machinery_grows_no_section() {
 // outlives it: what these tests are about is a file written beside another
 // file, by a verb, in the order the two writes happen.
 
+// ---------------------------------------------------------------------------
+// An entity accounts for its content by hash (ADR-f7dc76886db2,
+// TASK-cbc6963fd0ef)
+// ---------------------------------------------------------------------------
+
+/// **A task's whole life, and not one word from this rule.**
+///
+/// This is the case the count could never answer. `claim` and `release` each
+/// write the file and leave no durable record naming a version, so a task
+/// claimed, released and claimed again carries three versions nobody can
+/// evidence — and a rule that counted them would fire here, on the most
+/// ordinary sequence in the corpus. The content hash is blind to all of it,
+/// because a transition writes `status` and `proof` and the hash covers
+/// neither.
+#[test]
+fn a_task_that_was_only_claimed_released_and_finished_is_silent() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    for dir in ["src", "docs"] {
+        std::fs::create_dir_all(r.0.join(dir)).unwrap();
+        std::fs::write(r.0.join(dir).join("a.md"), "x\n").unwrap();
+    }
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // One content write, so the regime is open and the rule has something to
+    // compare against.
+    assert_eq!(
+        code(&r.ank("claude-code/1.0", &["amend", ID, "--scope", "docs/**"])),
+        0
+    );
+    // And then nothing but transitions.
+    assert_eq!(code(&r.ank("claude-code/1.0", &["claim", ID])), 0);
+    assert_eq!(
+        code(&r.ank(
+            "claude-code/1.0",
+            &["release", "--reason", "changed my mind"]
+        )),
+        0
+    );
+    assert_eq!(code(&r.ank("claude-code/1.0", &["claim", ID])), 0);
+    let head = r.head();
+    let out = r.ank(
+        "claude-code/1.0",
+        &["done", "--proof", &format!("commit:{head}")],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    let text = r.task_text(ID);
+    assert!(
+        text.contains("version: 6"),
+        "six writes and one entry, which is the whole difficulty: {text}"
+    );
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert_eq!(code(&checked), 0, "{}", both_streams(&checked));
+    let said = both_streams(&checked);
+    assert!(!said.contains("content is"), "{said}");
+    assert!(!said.contains(NOT_ACCOUNTED), "{said}");
+}
+
+/// The same task, edited by hand, and the version left exactly where it was.
+///
+/// **This is the hand edit a count cannot see at all.** `version` is machinery
+/// a human has no reason to touch, so the likelier edit leaves it alone — and a
+/// rule that only ever compared numbers would call that corpus intact.
+#[test]
+fn content_edited_by_hand_is_reported_with_both_hashes() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/a.md"), "x\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(
+        code(&r.ank("claude-code/1.0", &["amend", ID, "--scope", "docs/**"])),
+        0
+    );
+
+    let before = r.task_text(ID);
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert!(
+        !both_streams(&checked).contains("content is"),
+        "silent while intact"
+    );
+
+    std::fs::write(
+        r.flat_task_path(ID),
+        before.replace("title: Example task", "title: Retitled by hand"),
+    )
+    .unwrap();
+    assert!(
+        r.task_text(ID).contains("version: 2"),
+        "the version did not move, which is the point: {}",
+        r.task_text(ID)
+    );
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    // A signal and never a fault: editing the file is legal, and what the
+    // finding says is that it happened.
+    assert_eq!(code(&checked), 0, "{}", both_streams(&checked));
+    let said = both_streams(&checked);
+    let line = said
+        .lines()
+        .find(|l| l.contains("content is"))
+        .unwrap_or_else(|| panic!("the rule fires: {said}"));
+    assert!(line.starts_with("signal:"), "{line}");
+    assert!(line.contains(ID), "the subject is named whole: {line}");
+    assert!(
+        line.contains(&content_hash_of(&r.task_text(ID)))
+            && line.contains(&content_hash_of(&before)),
+        "both hashes, so a reader can see which state is which: {line}"
+    );
+
+    // Reverted, and the corpus is quiet again: the hash is of the content and
+    // of nothing else, so restoring it restores the agreement.
+    std::fs::write(r.flat_task_path(ID), &before).unwrap();
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert!(
+        !both_streams(&checked).contains("content is"),
+        "{}",
+        both_streams(&checked)
+    );
+}
+
+/// An entry written before the clause existed says nothing about content, and
+/// an entity carrying none says nothing at all.
+///
+/// The bootstrap, and it is the same one ADR-16813b3bcf37 already rested on: no
+/// corpus is migrated by a rule it predates.
+#[test]
+fn an_entry_without_a_produced_hash_leaves_the_entity_silent() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A criterion."));
+    // The grammar as TASK-3c12e0ced2c0 shipped it, before the clause.
+    seed_entry(
+        &r,
+        "LOG-00000000cb01",
+        ID,
+        0,
+        "title (version 1 to 2, replaced 6f1d9c04a7b2)",
+        Some("edit"),
+    );
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert_eq!(code(&checked), 0, "{}", both_streams(&checked));
+    assert!(
+        !both_streams(&checked).contains("content is"),
+        "an entry that claims nothing about content was read as claiming something: {}",
+        both_streams(&checked)
+    );
+}
+
+/// The content hash a machinery entry records, computed the way any reader
+/// holding the file would (ADR-f7dc76886db2).
+///
+/// **Recomputed here rather than asked of the binary**, which is what makes it
+/// an assertion: the entity with every field a transition writes neutralised,
+/// rendered by the corpus's own serialiser and hashed by its own freeze.
+fn content_hash_of(text: &str) -> String {
+    use ank_core::{AdrStatus, Entity, SpecStatus, TaskStatus};
+    let mut of = ank_core::parse_entity(text).expect("the fixture parses");
+    match &mut of {
+        Entity::Task(t) => {
+            t.status = TaskStatus::Open;
+            t.proof.clear();
+            t.verified.clear();
+            t.version = 0;
+        }
+        Entity::Adr(a) => {
+            a.status = AdrStatus::Proposed;
+            a.ratified = None;
+            a.verified.clear();
+            a.version = 0;
+        }
+        Entity::Spec(s) => {
+            s.status = SpecStatus::Proposed;
+            s.ratified = None;
+            s.verified.clear();
+            s.version = 0;
+        }
+        Entity::Log(l) => {
+            l.verified.clear();
+            l.version = 0;
+        }
+    }
+    ank_core::freeze_hash_short(&ank_core::serialize_entity(&of))
+}
+
 /// The hash a machinery entry must carry for a state, computed the way any
 /// reader holding that revision would.
 ///
@@ -17391,10 +17576,11 @@ fn every_door_that_changes_content_writes_one_entry_that_accounts_for_it() {
     assert_eq!(
         entries[0],
         format!(
-            "title (version 1 to 2, replaced {})",
-            replaced_hash_of(&was)
+            "title (version 1 to 2, replaced {}, produced {})",
+            replaced_hash_of(&was),
+            content_hash_of(&r.task_text(ID))
         ),
-        "the fields, the transition and the state replaced"
+        "the fields, the transition, the state replaced and the content produced"
     );
 
     // --- edit, on the path that opens $EDITOR -------------------------------
@@ -17410,8 +17596,9 @@ fn every_door_that_changes_content_writes_one_entry_that_accounts_for_it() {
     assert_eq!(
         entries[0],
         format!(
-            "title, body (version 1 to 2, replaced {})",
-            replaced_hash_of(&was)
+            "title, body (version 1 to 2, replaced {}, produced {})",
+            replaced_hash_of(&was),
+            content_hash_of(&r.task_text(ID))
         ),
         "the two paths write one grammar, not two"
     );
@@ -17428,8 +17615,9 @@ fn every_door_that_changes_content_writes_one_entry_that_accounts_for_it() {
     assert_eq!(
         entries[0],
         format!(
-            "+scope docs/** (version 1 to 2, replaced {})",
-            replaced_hash_of(&was)
+            "+scope docs/** (version 1 to 2, replaced {}, produced {})",
+            replaced_hash_of(&was),
+            content_hash_of(&r.task_text(ID))
         )
     );
     // And the work trace never sees it, which is the half TASK-027a429aad2e
@@ -17456,8 +17644,9 @@ fn every_door_that_changes_content_writes_one_entry_that_accounts_for_it() {
     assert_eq!(
         entries[0],
         format!(
-            "done_criteria, criteria_by (version 1 to 2, replaced {})",
-            replaced_hash_of(&was)
+            "done_criteria, criteria_by (version 1 to 2, replaced {}, produced {})",
+            replaced_hash_of(&was),
+            content_hash_of(&r.task_text(ID))
         ),
         "the criterion the whole authority model then rests on"
     );
@@ -17596,15 +17785,18 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
     assert_eq!(
         entries[0],
         format!(
-            "title (version 1 to 2, replaced {})",
-            replaced_hash_of(&at_one)
-        )
+            "title (version 1 to 2, replaced {}, produced {})",
+            replaced_hash_of(&at_one),
+            content_hash_of(&at_two)
+        ),
+        "what the first write produced is what the second one found"
     );
     assert_eq!(
         entries[1],
         format!(
-            "body (version 2 to 3, replaced {})",
-            replaced_hash_of(&at_two)
+            "body (version 2 to 3, replaced {}, produced {})",
+            replaced_hash_of(&at_two),
+            content_hash_of(&r.task_text(&id))
         ),
         "the hash is of the state that write replaced, and of no other"
     );
@@ -17620,8 +17812,9 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
     assert!(printed[0].contains("title (version 1 to 2"), "{edits}");
     assert!(
         printed[1].contains(&format!(
-            "body (version 2 to 3, replaced {})",
-            replaced_hash_of(&at_two)
+            "body (version 2 to 3, replaced {}, produced {})",
+            replaced_hash_of(&at_two),
+            content_hash_of(&r.task_text(&id))
         )),
         "{edits}"
     );
@@ -17684,10 +17877,14 @@ fn an_entity_that_cannot_account_for_a_version_is_reported_with_both_counts() {
 
     // The third write, by hand and past the tool: the corpus is writable by
     // anything, which is the premise the whole mechanism rests on.
+    //
+    // **The version and nothing else**, which is what the count still catches
+    // after ADR-f7dc76886db2 and the one thing the content hash cannot see:
+    // `version` is machinery, and a hash of the content is deliberately blind
+    // to it.
     std::fs::write(
         r.0.join(".ank/entities").join(format!("{id}.md")),
-        text.replace("Rewritten.", "Rewritten again, by hand.")
-            .replace("version: 3", "version: 4"),
+        text.replace("version: 3", "version: 4"),
     )
     .unwrap();
 
