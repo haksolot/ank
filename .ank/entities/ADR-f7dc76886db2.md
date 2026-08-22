@@ -5,14 +5,18 @@ slug: an-entity-accounts-for-its-content-by-hash-and-t
 title: An entity accounts for its content by hash, and the count is kept where it closes
 created: 2026-08-22T20:17:11Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   A verb that changes an entity's content outside a status transition writes a log entry recording the fields it changed, the version it moved from and the version it moved to, the hash of the state it replaced, and the hash of the content it produced. The entry anchors nothing: no authority rests on it and no verb refuses on it, which is what ADR-ff294eff4d1a requires of the log. The hashes exist so that a reader handed a claim about a past state can check it, and so that check can compare the present one. Content is every field a transition does not write: status, proof, ratified and verified belong to a transition and version belongs to the store, and the rest is content. check compares the newest produced hash an entity's entries carry against the entity as it stands, and reports a signal naming both when they differ. An entity carrying at least one such entry is accounted for that way. The version count is kept for the kinds whose transitions their own fields evidence, and is not attempted for a task, whose claim and release leave no durable record naming a version. An entry carrying no produced hash is silent, and an entity carrying no entry is silent, because the corpus is not migrated by a rule it predates. Nothing here refuses an edit: what the trace buys is that the ordinary case becomes legible, not that the dishonest case becomes impossible.
 supersedes: ADR-16813b3bcf37
+ratified: 32efe0ddc23b
+verified:
+  - by: claude-code/opus-5
+    at: 2026-08-22T20:39:47Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ADR-16813b3bcf37 asked an entity to account for the versions it carries, and
