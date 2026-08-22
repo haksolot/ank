@@ -8164,6 +8164,63 @@ fn every_verb_carries_a_group_and_no_group_goes_unprinted() {
 // Dead constraints in the prose (ADR-91b77f036884)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Hashing the working copy (TASK-2e2bac895056)
+// ---------------------------------------------------------------------------
+
+/// A corpus wider than any single command line, hashed in one process.
+///
+/// **The width is the assertion.** The paths used to be packed onto command
+/// lines under a 6000-character budget, a number chosen conservatively enough
+/// for the shortest limit of the three platforms; `--stdin-paths` has no limit
+/// to be conservative about, and this seeds a corpus past the shortest one to
+/// say so. Windows takes 32767 characters on a command line, which is the bar
+/// here because it is the low one — the same corpus is far inside what Linux
+/// and macOS accept, and the test is about the door that no longer has a limit
+/// rather than about any platform's.
+///
+/// **What it observes is the hashing, through the one finding that rests on
+/// it.** Every entity is committed, so the working copy and the branch agree
+/// file for file and `check` must report no drift. A hash mispaired with a path
+/// — the framing read wrong, the order not the order git wrote — would make
+/// every one of them look different at once, which is the loudest possible
+/// failure and the reason this is worth a slow test.
+#[test]
+fn a_corpus_wider_than_a_command_line_is_hashed_correctly() {
+    /// Chosen so the paths outrun the shortest command line of the three
+    /// platforms, and no further: every entity here is a file written and read.
+    const ENTITIES: usize = 1000;
+    const PATH_WIDTH: usize = ".ank/entities/TASK-000000000000.md".len() + 1;
+
+    let r = Repo::new();
+    for n in 0..ENTITIES {
+        r.seed_task(&format!("TASK-{n:012x}"), Some("A verifiable criterion."));
+    }
+    assert!(
+        ENTITIES * PATH_WIDTH > 32_767,
+        "the fixture is inside a Windows command line, so it asserts nothing: {}",
+        ENTITIES * PATH_WIDTH
+    );
+
+    // Committed, so the working copy and the branch carry the same bytes: the
+    // drift count is then a statement about the hashing and about nothing else.
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&out);
+    assert!(
+        !said.contains("differ from main"),
+        "the working copy hashed to something the branch does not carry: {said}"
+    );
+    // And the corpus was actually read, rather than skipped by a failure that
+    // left the comparison with nothing to disagree about.
+    assert!(
+        said.contains(&format!("{ENTITIES} tasks")),
+        "the walk did not reach the corpus: {said}"
+    );
+}
+
 /// The workspace root: two levels above this crate's manifest.
 ///
 /// Derived rather than configured, so a crate added to the workspace is walked

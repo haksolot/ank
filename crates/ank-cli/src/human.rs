@@ -3267,10 +3267,6 @@ fn blobs_here_uncached(
     repo: &Repo,
     here: &BTreeMap<String, PathBuf>,
 ) -> Result<BTreeMap<String, String>> {
-    /// Well under the shortest limit of the three platforms, and far above what
-    /// a corpus of a few hundred entities needs.
-    const BUDGET: usize = 6000;
-
     let ids: Vec<&String> = here.keys().collect();
     let paths: Vec<String> = here
         .values()
@@ -3281,38 +3277,64 @@ fn blobs_here_uncached(
                 .replace('\\', "/")
         })
         .collect();
-    let mut out = BTreeMap::new();
-    let mut i = 0;
-    while i < paths.len() {
-        let start = i;
-        let mut args: Vec<&str> = vec!["hash-object", "--"];
-        let mut budget = 0usize;
-        while i < paths.len() && (i == start || budget + paths[i].len() < BUDGET) {
-            budget += paths[i].len() + 1;
-            args.push(&paths[i]);
-            i += 1;
-        }
-        let text = git::run(&repo.corpus, &args)?;
-        let objects: Vec<&str> = text
-            .lines()
-            .map(str::trim)
-            .filter(|l| !l.is_empty())
-            .collect();
-        if objects.len() != i - start {
-            return Err(CliError::new(
-                ExitCode::Environment,
-                format!(
-                    "git hash-object answered {} object(s) for {} file(s)",
-                    objects.len(),
-                    i - start
-                ),
-            ));
-        }
-        for (n, object) in objects.into_iter().enumerate() {
-            out.insert(ids[start + n].to_string(), object.to_string());
-        }
+    // No paths, no process. `hash-object --stdin-paths` handed an empty stream
+    // answers nothing and costs a spawn to do it.
+    if paths.is_empty() {
+        return Ok(BTreeMap::new());
     }
-    Ok(out)
+
+    // **One process, whatever the corpus weighs** (TASK-2e2bac895056). This
+    // used to pack the paths onto command lines under a 6000-character budget,
+    // which is a number chosen conservatively enough for the shortest limit of
+    // the three platforms — and 1064 entity paths became seven invocations
+    // costing 190 ms, on a run where twenty git spawns were 40 percent of the
+    // whole. `--stdin-paths` takes them on standard input, where no argument
+    // limit applies at all, so the budget goes along with the loop it existed
+    // for and the corpus can be any size.
+    //
+    // One path per line, which is what `--stdin-paths` reads without `-z`. An
+    // entity path is an identifier under a directory this tool names, so it
+    // holds no newline to confuse the framing; a corpus that carried one would
+    // have a file name no verb here can address either.
+    let input = paths.join("\n") + "\n";
+    let out = git::output_with_stdin(
+        &repo.corpus,
+        &["hash-object", "--stdin-paths"],
+        input.as_bytes(),
+    )?;
+    if !out.status.success() {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!(
+                "git hash-object --stdin-paths: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ),
+        ));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let objects: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    // One object per path, in the order they were written. git guarantees the
+    // order and the count; a disagreement means the stream was framed wrong,
+    // and pairing on it anyway would attribute one file's hash to another.
+    if objects.len() != paths.len() {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!(
+                "git hash-object answered {} object(s) for {} file(s)",
+                objects.len(),
+                paths.len()
+            ),
+        ));
+    }
+    Ok(objects
+        .into_iter()
+        .enumerate()
+        .map(|(n, object)| (ids[n].to_string(), object.to_string()))
+        .collect())
 }
 
 /// Whether this repository carries any commit at all.
