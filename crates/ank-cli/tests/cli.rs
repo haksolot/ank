@@ -2985,33 +2985,21 @@ fn check_resolves_the_references_a_spec_declares_to_another() {
     assert!(about[0].contains("not accepted"), "{said}");
     assert!(about[0].contains(&format!("ank accept {DRAFT}")), "{said}");
 
-    // Superseded: a signal naming the successor, so the repair is a citation
-    // update and not an investigation.
-    let about: Vec<String> = findings_about(&said, REPLACED)
-        .into_iter()
-        .filter(|l| l.contains(CITING))
-        .collect();
-    assert_eq!(about.len(), 1, "{said}");
-    assert!(about[0].starts_with("signal:"), "{said}");
+    // Superseded: nothing at all, because the reference resolves
+    // (ADR-c88f99e1c16e, TASK-e2da6b0cc817). A reference names a document and
+    // not a revision of it, so the chain is followed by the reader and the
+    // citation is left exactly as its author wrote it.
     assert!(
-        about[0].contains(&format!("superseded by {SUCCESSOR}")),
-        "{said}"
-    );
-    assert!(
-        about[0].contains(&format!(
-            "ank amend {CITING} --reference {SUCCESSOR} --drop-reference {REPLACED}"
-        )),
-        "the successor is known, so the message carries it: {said}"
+        findings_about(&said, REPLACED)
+            .iter()
+            .all(|l| !l.contains(CITING)),
+        "a reference that resolves through its chain was reported: {said}"
     );
 
-    // The chain followed is not reported at all. A document citing both the
-    // replaced one and its successor has already done what the finding would
-    // ask of it, and a rule firing anyway would fire on every correct citation
-    // the day after any document is revised.
-    assert!(
-        findings_about(&said, FOLLOWER).is_empty(),
-        "a reference that followed its chain was reported: {said}"
-    );
+    // And the document that had already spelled the resolution out by hand is
+    // silent for the same reason rather than for a special one: the branch that
+    // let it off has become the general rule.
+    assert!(findings_about(&said, FOLLOWER).is_empty(), "{said}");
 
     // The severities reach the process: one fault, so exit 8.
     assert_eq!(code(&out), 8, "{said}");
@@ -3080,6 +3068,162 @@ fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// A reference resolves through its succession (ADR-c88f99e1c16e,
+// TASK-e2da6b0cc817)
+// ---------------------------------------------------------------------------
+
+const FIRST: &str = "SPEC-00000000c101";
+const SECOND: &str = "SPEC-00000000c102";
+const THIRD: &str = "SPEC-00000000c103";
+const PENDING: &str = "SPEC-00000000c104";
+const RETIRED_END: &str = "SPEC-00000000c105";
+const BEHIND: &str = "SPEC-00000000c106";
+const BEHIND_TWO: &str = "SPEC-00000000c107";
+const BEHIND_DEAD: &str = "SPEC-00000000c108";
+
+/// **A citation two hops behind resolves, and nothing is written to make it.**
+///
+/// The length is the point. One hop was already let off by the branch this
+/// replaces, on condition that the citing document also stored the end of the
+/// chain — a reader following a succession, spelled by hand and stored twice.
+/// Two hops is what that branch could never do without the corpus re-pointing
+/// every citation after every revision, which is the churn ADR-c88f99e1c16e
+/// measured: four citations after superseding two documents, nine hours later.
+#[test]
+fn a_citation_two_hops_behind_resolves_and_the_file_is_not_touched() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(FIRST, "superseded", &[], None);
+    r.seed_spec(SECOND, "superseded", &[], Some(FIRST));
+    r.seed_spec(THIRD, "accepted", &[], Some(SECOND));
+    r.seed_spec(BEHIND, "accepted", &[FIRST], None);
+
+    let before = std::fs::read(r.0.join(".ank/entities").join(format!("{BEHIND}.md"))).unwrap();
+
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&out);
+    assert!(
+        findings_about(&said, BEHIND)
+            .iter()
+            .all(|l| !l.contains("references")),
+        "the chain ends on an accepted document, whatever its length: {said}"
+    );
+    assert_eq!(code(&out), 0, "and nothing else is wrong with it: {said}");
+
+    // **Nothing is written to make a reference resolve.** The whole argument
+    // against repairing citations in place was that one `accept` would write to
+    // nine entities and, under ADR-16813b3bcf37, leave nine machinery entries
+    // behind. A read that writes is the same defect one verb further along.
+    let after = std::fs::read(r.0.join(".ank/entities").join(format!("{BEHIND}.md"))).unwrap();
+    assert_eq!(before, after, "check wrote to the citing document");
+    let text = String::from_utf8(after).unwrap();
+    assert!(
+        text.contains("version: 1"),
+        "the version did not move: {text}"
+    );
+    assert!(
+        text.contains(&format!("references: [{FIRST}]")),
+        "the file keeps the identifier its author wrote: {text}"
+    );
+}
+
+/// The chain is followed, and then the ordinary rule applies to where it ends.
+///
+/// A succession ending on a document nobody has ratified is the `not accepted`
+/// signal one link further along, and it names the same command: two
+/// specifications are legitimately drafted at once, and this is that case seen
+/// through a citation written before either.
+#[test]
+fn a_chain_ending_on_a_draft_is_the_unaccepted_signal_one_link_along() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(SECOND, "superseded", &[], None);
+    r.seed_spec(PENDING, "proposed", &[], Some(SECOND));
+    r.seed_spec(BEHIND_TWO, "accepted", &[SECOND], None);
+
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&out);
+    let about: Vec<String> = findings_about(&said, BEHIND_TWO)
+        .into_iter()
+        .filter(|l| l.contains("references"))
+        .collect();
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(about[0].contains("not accepted"), "{said}");
+    assert!(
+        about[0].contains(&format!("ank accept {PENDING}")),
+        "the command names where the chain ends, which is what a reader can act \
+         on: {said}"
+    );
+}
+
+/// A chain leading nowhere keeps the signal it has today, in the same words.
+///
+/// The entity at the end says it was replaced and nothing replaced it, which is
+/// already a fault against that entity. For whoever cites it, the statement is
+/// that the citation has nowhere to follow to — and it is a signal, because the
+/// corpus defect is the other entity's and is reported there.
+#[test]
+fn a_chain_ending_on_a_superseded_entity_that_nothing_replaces_keeps_its_signal() {
+    let r = Repo::new();
+    r.seed_docs();
+    r.seed_spec(RETIRED_END, "superseded", &[], None);
+    r.seed_spec(BEHIND_DEAD, "accepted", &[RETIRED_END], None);
+
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&out);
+    let about: Vec<String> = findings_about(&said, BEHIND_DEAD)
+        .into_iter()
+        .filter(|l| l.contains("references"))
+        .collect();
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(
+        about[0].contains(&format!(
+            "references {RETIRED_END}, which is superseded and names no successor \
+             (ank show {RETIRED_END})"
+        )),
+        "the words are the ones it had: {said}"
+    );
+}
+
+/// The three findings that remain, each in its own case and at its own
+/// severity.
+///
+/// Removing a finding is easy to do too widely, and these three sit beside the
+/// one that went. A change that quietly took a fault down to silence would be
+/// worse than the churn it was meant to end.
+#[test]
+fn the_three_findings_beside_it_keep_their_severity() {
+    let r = cited_fixture();
+    // The task exists, so that the refusal below is about the kind and not
+    // about an id nothing resolves.
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&out);
+
+    // Absent: a fault, and the repair deletes.
+    let about = findings_about(&said, GONE);
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("error:"), "{said}");
+    assert!(about[0].contains("does not exist"), "{said}");
+
+    // Not yet accepted: a signal, naming `ank accept`.
+    let about = findings_about(&said, DRAFT);
+    assert_eq!(about.len(), 1, "{said}");
+    assert!(about[0].starts_with("signal:"), "{said}");
+    assert!(about[0].contains(&format!("ank accept {DRAFT}")), "{said}");
+
+    // A kind a specification may not cite: a fault, refused at every door that
+    // writes one and reported here for a file that arrived some other way.
+    let out = r.ank("claude-code/1.0", &["amend", CITING, "--reference", ID]);
+    assert_eq!(code(&out), 1, "{}", both_streams(&out));
+
+    // The fault reaches the process: the severities are what a pipeline reads.
+    assert_eq!(code(&r.ank("claude-code/1.0", &["check"])), 8, "{said}");
+}
+
 const RETIRED: &str = "SPEC-00000000f006";
 const HEIR: &str = "SPEC-00000000a007";
 
@@ -3138,16 +3282,13 @@ fn a_superseded_document_is_not_asked_to_follow_a_chain() {
         );
         assert!(about[0].contains(CITING), "{said}");
     }
-    let about: Vec<String> = findings_about(&said, REPLACED)
-        .into_iter()
-        .filter(|l| l.contains("references"))
-        .collect();
-    assert_eq!(about.len(), 1, "{said}");
-    assert!(about[0].starts_with("signal:"), "{said}");
-    assert!(about[0].contains(CITING), "{said}");
+    // The superseded target is reported by nobody now, live citer included: it
+    // resolves through its chain to an accepted document (TASK-e2da6b0cc817).
     assert!(
-        about[0].contains(&format!("superseded by {SUCCESSOR}")),
-        "the live case still names the successor: {said}"
+        findings_about(&said, REPLACED)
+            .iter()
+            .all(|l| !l.contains("references")),
+        "{said}"
     );
 
     // The live fault reaches the process. Skipping the retired citer silences a

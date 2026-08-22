@@ -2103,48 +2103,79 @@ fn check_references(
         };
         // Both citable kinds carry the same lifecycle, and the view is what
         // says so once instead of matching on the kind here.
-        let Some(view) = Anchored::of(entity) else {
+        let Some(mut view) = Anchored::of(entity) else {
             continue;
         };
+
+        // **A reference names a document and not a revision of it**
+        // (ADR-c88f99e1c16e), so the entity whose status decides the finding is
+        // the one the succession ends on. The walk was already here and already
+        // called from this line; what changes is that it decides the finding
+        // instead of decorating it.
+        //
+        // **The special case this replaces was the same reader, spelled by
+        // hand.** A citation used to be let off when the citing document also
+        // referenced the end of the chain — the resolution stored twice, and
+        // re-stored on every citing document after every revision. Superseding
+        // two documents left four citations to re-point; doing it again hours
+        // later left nine, and it grows because each replacement is cited by
+        // more of the corpus than the one before.
+        //
+        // Nothing is written to make this resolve. The file keeps the
+        // identifier its author wrote, the version does not move, and no
+        // machinery entry is deposited by a read (ADR-16813b3bcf37).
+        let mut named = target.clone();
+        if view.status == AdrStatus::Superseded {
+            if let Some(head) = chain_head(target, entities) {
+                if let Some(at_head) = find(&head).and_then(Anchored::of) {
+                    view = at_head;
+                    named = head;
+                }
+            }
+        }
+
         match view.status {
+            // The chain ends on an accepted document, whatever its length: the
+            // reference resolves and nothing is owed.
             AdrStatus::Accepted => {}
             AdrStatus::Proposed => report.findings.push(Finding::signal(
                 &s.id,
-                format!("references {target}, which is not accepted (ank accept {target})"),
+                if named == *target {
+                    format!("references {target}, which is not accepted (ank accept {target})")
+                } else {
+                    format!(
+                        "references {target}, whose succession ends on {named}, which is \
+                         not accepted (ank accept {named})"
+                    )
+                },
             )),
-            AdrStatus::Superseded => {
-                let head = chain_head(target, entities);
-                // The chain followed: nothing to say. The document already
-                // cites where the target went.
-                if head.as_ref().is_some_and(|h| s.references.contains(h)) {
-                    continue;
-                }
+            // A superseded entity nothing supersedes is already a fault against
+            // that entity, reported by `check_succession`. Here it means the
+            // citation has nowhere to follow to, and saying so is more use than
+            // naming a successor that does not exist.
+            //
+            // Reached only when the whole corpus was read: a chain whose next
+            // link is a file that did not parse leads somewhere this build
+            // cannot see, which is not the same as leading nowhere
+            // (TASK-5c7aae69a4c0). That guard also covers the head this walk
+            // could not load, which is the same case one link further on.
+            AdrStatus::Superseded if unread.is_empty() => {
                 report.findings.push(Finding::signal(
                     &s.id,
-                    match head {
-                        Some(head) => format!(
-                            "references {target}, which is superseded by {head} \
-                             (ank amend {} --reference {head} --drop-reference {target})",
-                            s.id
-                        ),
-                        // A superseded entity nothing supersedes is already a
-                        // fault against that entity, reported by
-                        // `check_succession`. Here it means the citation has
-                        // nowhere to follow to, and saying so is more use than
-                        // naming a successor that does not exist.
-                        //
-                        // Reached only when the whole corpus was read: a chain
-                        // whose next link is a file that did not parse leads
-                        // somewhere this build cannot see, which is not the
-                        // same as leading nowhere (TASK-5c7aae69a4c0).
-                        None if !unread.is_empty() => continue,
-                        None => format!(
+                    if named == *target {
+                        format!(
                             "references {target}, which is superseded and names no successor \
                              (ank show {target})"
-                        ),
+                        )
+                    } else {
+                        format!(
+                            "references {target}, whose succession ends on {named}, which is \
+                             superseded and names no successor (ank show {named})"
+                        )
                     },
                 ));
             }
+            AdrStatus::Superseded => {}
         }
     }
 }

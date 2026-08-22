@@ -5,7 +5,7 @@ slug: check-follows-a-succession-instead-of-asking-for
 title: check follows a succession instead of asking for the citation to be rewritten
 created: 2026-08-21T23:54:18Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
@@ -13,8 +13,13 @@ blocked_by: []
 done_criteria: |
   check resolves a spec's reference through the succession chain and reports nothing where that chain ends on an accepted entity, whatever its length: a test builds a corpus whose citation is two hops behind and asserts no finding names the citing document. The three findings that remain are unchanged and tested beside it, each in its own case: absent is a fault, a kind a specification may not cite is a fault, and not yet accepted is a signal naming ank accept. A chain ending on a superseded entity that nothing replaces keeps the signal it has today, in the same words. Nothing is written to make a reference resolve: a test asserts the citing document's file is byte for byte what it was before a check that resolved one, and that its version did not move. The check catalogue of a spec superseding SPEC-f353359663d5 states the rule as it now stands, and the clause it replaces is the only prose that changes. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: b421ec9
+    criteria: 094410a61af6
+    via: submitted
 schema: 4
-version: 1
+version: 3
 ---
 
 ADR-c88f99e1c16e is the decision; this is all of the code it costs, and it is
