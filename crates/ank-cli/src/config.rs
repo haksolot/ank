@@ -432,10 +432,17 @@ enum Key {
     /// `verifiers.<name>`: legal for `--unset` alone, which is what makes
     /// declaring a verifier reversible.
     Block { verifier: String },
-    /// `peers.<name>`: one scalar under one mapping, and how a peer corpus is
-    /// declared (§7). One level shallower than a verifier, so the whole key is
-    /// the declaration and `--unset` on it removes the peer outright.
-    Peer { name: String },
+    /// One scalar under one mapping, which is the shape of a declaration: a
+    /// peer corpus under `peers` (§7), and a corpus declared for a repository
+    /// identity under `corpora` (ADR-96174f1ac2b7). One level shallower than a
+    /// verifier, so the whole key is the declaration and `--unset` on it
+    /// removes it outright.
+    ///
+    /// **The mapping is a field and not a literal in the surgery**, because
+    /// there are two of them now and the second arrived in a different file.
+    /// One shape, one implementation, and the name it is written under is what
+    /// the caller supplies.
+    Under { map: &'static str, name: String },
 }
 
 fn unknown_key(path: &str) -> CliError {
@@ -544,7 +551,8 @@ fn resolve_key(path: &str) -> Result<Key> {
                 )
                 .with_hint("ank config peers.<name> <path>"));
             }
-            Ok(Key::Peer {
+            Ok(Key::Under {
+                map: "peers",
                 name: (*name).to_string(),
             })
         }
@@ -877,15 +885,15 @@ fn verifiers_block(lines: &[Line]) -> Option<(usize, Block)> {
 }
 
 /// The `peers:` line and the block under it.
-fn peers_block(lines: &[Line]) -> Option<(usize, Block)> {
-    let i = find_key(lines, 0..lines.len(), 0, "peers")?;
+fn named_block(lines: &[Line], map: &str) -> Option<(usize, Block)> {
+    let i = find_key(lines, 0..lines.len(), 0, map)?;
     let block = block_under(lines, i, 0);
     Some((i, block))
 }
 
-/// The line declaring peer `name`.
-fn locate_peer(lines: &[Line], name: &str) -> Option<usize> {
-    let (_, block) = peers_block(lines)?;
+/// The line declaring `name` under `map`.
+fn locate_under(lines: &[Line], map: &str, name: &str) -> Option<usize> {
+    let (_, block) = named_block(lines, map)?;
     let child = block.indent?;
     find_key(lines, block.range, child, name)
 }
@@ -1040,8 +1048,8 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
         },
         // No default: a peer nobody declared is a peer that does not exist, and
         // there is nothing for the tool to resolve in its place.
-        Key::Peer { name } => match locate_peer(lines, name) {
-            Some(i) => scalar_at(&lines[i], &format!("peers.{name}")),
+        Key::Under { map, name } => match locate_under(lines, map, name) {
+            Some(i) => scalar_at(&lines[i], &format!("{map}.{name}")),
             None => Ok(Value::Unset),
         },
         Key::Field {
@@ -1108,7 +1116,7 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
         Key::Field {
             verifier, field, ..
         } => write_field(lines, verifier, field, value),
-        Key::Peer { name } => write_peer(lines, name, value),
+        Key::Under { map, name } => write_under(lines, map, name, value),
     }
 }
 
@@ -1118,14 +1126,14 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
 /// The `{}` promotion is the same byte and the same reason: a mapping written
 /// empty cannot receive a child, and the parent of the key being written is the
 /// one byte outside the line that a write is allowed to move (§4).
-fn write_peer(lines: &mut Vec<Line>, name: &str, value: &str) -> Result<()> {
+fn write_under(lines: &mut Vec<Line>, map: &'static str, name: &str, value: &str) -> Result<()> {
     let eol = dominant_eol(lines);
     let rendered = render_value(value, false, None);
 
-    let Some(pi) = find_key(lines, 0..lines.len(), 0, "peers") else {
+    let Some(pi) = find_key(lines, 0..lines.len(), 0, map) else {
         terminate_last(lines, &eol);
         lines.push(Line {
-            text: "peers:".to_string(),
+            text: format!("{map}:"),
             eol: eol.clone(),
         });
         lines.push(Line {
@@ -1353,11 +1361,11 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
             }
             Ok(())
         }
-        Key::Peer { name } => {
-            let Some((pi, _)) = peers_block(lines) else {
+        Key::Under { map, name } => {
+            let Some((pi, _)) = named_block(lines, map) else {
                 return Ok(());
             };
-            let Some(i) = locate_peer(lines, name) else {
+            let Some(i) = locate_under(lines, map, name) else {
                 return Ok(());
             };
             remove_lines(lines, i..i + 1);
@@ -1408,6 +1416,252 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
 /// `config.yml` for every other verb, so a file that does not parse fails all
 /// of them, `check` included. A verb that exists to repair the file and is
 /// disabled by exactly the file it repairs is not a verb.
+/// The keys `ank config --user` knows, and the whole of them.
+pub const USER_KEYS: &[&str] = &["schema", "corpora.<identity>"];
+
+fn unknown_user_key(path: &str) -> CliError {
+    CliError::new(ExitCode::Generic, format!("unknown key '{path}'"))
+        .with_hint(format!("keys: {}", USER_KEYS.join(" ")))
+}
+
+/// The same closed key set discipline as the repository file, over the reader's
+/// own (ADR-96174f1ac2b7).
+///
+/// **Repeated rather than assumed.** The declarations file is outside `.ank/`,
+/// so nothing forbids opening it in an editor — and that is exactly why the
+/// surgery has to hold here too: the file is small, hand-edited, and the one
+/// place a stale entry makes a corpus vanish.
+fn resolve_user_key(path: &str) -> Result<Key> {
+    let segs: Vec<&str> = path.split('.').collect();
+    if segs.iter().any(|s| s.is_empty()) {
+        return Err(unknown_user_key(path));
+    }
+    match segs.as_slice() {
+        ["schema"] => Ok(Key::Top {
+            name: "schema",
+            numeric: true,
+            default: None,
+        }),
+        ["corpora", identity] => {
+            if !is_identity(identity) {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!("'{identity}' is not a repository identity"),
+                )
+                .with_hint(
+                    "a key is the root commit, never a path, a remote or a slug: \
+                     ank status --json prints it under \"corpus\"",
+                ));
+            }
+            Ok(Key::Under {
+                map: "corpora",
+                name: (*identity).to_string(),
+            })
+        }
+        ["corpora", _, ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': a declaration is one path, not a block"),
+        )
+        .with_hint("ank config --user corpora.<identity> <path>")),
+        _ => Err(unknown_user_key(path)),
+    }
+}
+
+/// What a declarations file holds before anything has been declared.
+///
+/// **Written only when a write happens**, never by a read: materialising a file
+/// to answer a question about it is how a tool starts leaving traces on
+/// machines whose owners asked it not to.
+fn empty_corpora_yaml() -> String {
+    "schema: 1\ncorpora: {}\n".to_string()
+}
+
+/// `ank config --user`, over the reader's declarations.
+pub fn run_user(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
+    let Some(path) = corpora_path() else {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            "no home directory in the environment, so there is nowhere to declare a corpus",
+        )
+        .with_hint(if cfg!(windows) {
+            "set APPDATA"
+        } else {
+            "set XDG_CONFIG_HOME or HOME"
+        }));
+    };
+    let unset = inv.has("--unset");
+    let Some(raw_key) = inv.positionals.first() else {
+        return Err(CliError::new(ExitCode::Generic, "config expects a key")
+            .with_hint(format!("keys: {}", USER_KEYS.join(" "))));
+    };
+    let key = resolve_user_key(raw_key)?;
+    let value = inv.positionals.get(1);
+    if unset && value.is_some() {
+        return Err(CliError::new(ExitCode::Generic, "--unset takes no value")
+            .with_hint(format!("ank config --user --unset {raw_key}")));
+    }
+
+    // A file that is not there reads as a file with nothing in it. A reader who
+    // has declared nothing is the ordinary case, and refusing them a read would
+    // send them to create a file to be told it is empty.
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!("{}: {e}", path.display()),
+            ))
+        }
+    };
+    let lines = split_lines(&text);
+
+    if !unset && value.is_none() {
+        let before = read_key(&lines, &key)?;
+        if inv.json() {
+            let doc = crate::json::Obj::document()
+                .str("key", raw_key)
+                .raw("value", &before.json())
+                .str("source", before.source())
+                .finish();
+            let _ = writeln!(out, "{doc}");
+        } else if !inv.quiet() {
+            let _ = writeln!(out, "{}", before.display());
+        }
+        return Ok(ExitCode::Ok);
+    }
+
+    // The skeleton, and only on the way to a write. `--unset` on an absent file
+    // has nothing to remove and writes nothing at all.
+    let text = if text.trim().is_empty() && !unset {
+        empty_corpora_yaml()
+    } else {
+        text
+    };
+    let lines = split_lines(&text);
+    let before = observe(&lines, &key)?;
+    let mut edited = lines.clone();
+    match value {
+        Some(v) => write_key(&mut edited, &key, v)?,
+        None => unset_key(&mut edited, &key)?,
+    }
+    let after_text = join_lines(&edited);
+    let after = observe(&edited, &key)?;
+
+    // Differential, exactly as the repository file's is: refused when the write
+    // *introduces* a parse failure, never when it is performed on a file that
+    // already had one.
+    if parse_corpora(&after_text, &path).is_err() && parse_corpora(&text, &path).is_ok() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "refused: the write would leave {} unreadable",
+                path.display()
+            ),
+        )
+        .with_hint(format!("ank config --user {raw_key}")));
+    }
+
+    let changed = after_text != text;
+    if changed {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                CliError::new(ExitCode::Environment, format!("{}: {e}", dir.display()))
+            })?;
+        }
+        std::fs::write(&path, &after_text).map_err(|e| {
+            CliError::new(ExitCode::Environment, format!("{}: {e}", path.display()))
+        })?;
+    }
+
+    if inv.json() {
+        let doc = crate::json::Obj::document()
+            .str("key", raw_key)
+            .raw("previous", &before.json())
+            .raw("value", &after.json())
+            .bool("changed", changed)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        let _ = writeln!(out, "{} {}", raw_key, after.display());
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// Declares `path` as the corpus of the repository `identity`, and answers with
+/// the file it wrote.
+///
+/// **The same surgery `--user` performs**, and deliberately not a serialiser:
+/// this file is hand-edited, and a round trip through `serde_yaml` would
+/// rewrite somebody's comments and key order to add one line. `init --at` is
+/// the gesture that makes a declaration without a text editor and a printed
+/// sha; it is not a licence to reformat the file it lands in.
+pub fn declare_corpus(identity: &str, path: &str) -> Result<std::path::PathBuf> {
+    let Some(file) = corpora_path() else {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            "no home directory in the environment, so there is nowhere to declare a corpus",
+        )
+        .with_hint(if cfg!(windows) {
+            "set APPDATA"
+        } else {
+            "set XDG_CONFIG_HOME or HOME"
+        }));
+    };
+    let text = match std::fs::read_to_string(&file) {
+        Ok(text) if !text.trim().is_empty() => text,
+        Ok(_) => empty_corpora_yaml(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => empty_corpora_yaml(),
+        Err(e) => {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!("{}: {e}", file.display()),
+            ))
+        }
+    };
+    let mut lines = split_lines(&text);
+    let key = Key::Under {
+        map: "corpora",
+        name: identity.to_string(),
+    };
+    write_key(&mut lines, &key, path)?;
+    let after = join_lines(&lines);
+    if parse_corpora(&after, &file).is_err() && parse_corpora(&text, &file).is_ok() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "refused: the write would leave {} unreadable",
+                file.display()
+            ),
+        )
+        .with_hint(format!("ank config --user corpora.{identity}")));
+    }
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| CliError::new(ExitCode::Environment, format!("{}: {e}", dir.display())))?;
+    }
+    std::fs::write(&file, after)
+        .map_err(|e| CliError::new(ExitCode::Environment, format!("{}: {e}", file.display())))?;
+    Ok(file)
+}
+
+/// The declarations file parsed, for the differential refusal above.
+fn parse_corpora(text: &str, path: &Path) -> Result<()> {
+    let file: CorporaFile = serde_yaml::from_str(text)
+        .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
+    if file.schema != SUPPORTED_SCHEMA {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "{}: schema {} is not {SUPPORTED_SCHEMA}",
+                path.display(),
+                file.schema
+            ),
+        ));
+    }
+    Ok(())
+}
+
 pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> Result<ExitCode> {
     let path = repo.config_path();
     let unset = inv.has("--unset");

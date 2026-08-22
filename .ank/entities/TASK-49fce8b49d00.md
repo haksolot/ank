@@ -5,18 +5,21 @@ slug: init-at-creates-a-detached-corpus-and-declares-i
 title: init --at creates a detached corpus and declares it, config --user edits the declaration
 created: 2026-08-21T17:57:49Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/init.rs
   - crates/ank-cli/src/config.rs
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
+  - crates/ank-cli/src/cli.rs
+  - crates/ank-cli/src/repo.rs
+  - crates/ank-contract/src/verbs.rs
 blocked_by: [TASK-88bff140d416]
 done_criteria: |
   ank init --at <path> creates a corpus at that path, outside the working tree and never inside it, and writes the declaration keyed on this repository's identity, so that a verb run afterwards in the same tree resolves it with no flag and the working tree gains no file. ank config gains a --user scope that reads and writes the declaration with the discipline the repository file already has: a closed key set, an unknown key refused by name with the set it knows, comments and key order surviving a write byte for byte outside the line named, no default materialised, and a write that would produce an unparsable file refused with the file left as it was. A test drives the whole route through the binary: init --at, then claim, log and done with a commit proof on a task whose scope names a file of the code, asserting the refs land in the corpus repository and that git for-each-ref in the code repository lists no ank ref at all. SPEC-4eff92fd80ce lists both surfaces. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
 schema: 3
-version: 1
+version: 3
 ---
 
 The writing half. TASK-88bff140d416 makes a declaration resolvable; this makes

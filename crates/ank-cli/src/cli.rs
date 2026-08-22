@@ -830,6 +830,17 @@ fn warn_if_outside_repository(inv: &Invocation, repo: &crate::repo::Repo, cwd: &
     if inv.repo().is_some() || inv.quiet() {
         return;
     }
+    // **A declared corpus was named, and this warning is about an accident.**
+    // It exists for the checkout nested inside another repository, which
+    // resolves the outer corpus without anybody choosing it; `--repo` is exempt
+    // above because it is the caller saying which corpus they mean, and a
+    // declaration keyed on this repository's identity says the same thing once
+    // instead of on every command (ADR-96174f1ac2b7). Left in, it would fire
+    // forever on the one layout the declaration exists to make usable, which is
+    // the failure §6 already names for `--repo`.
+    if crate::repo::is_declared(&repo.corpus, cwd) {
+        return;
+    }
     let here = crate::git::common_dir(cwd);
     let root = crate::git::common_dir(&repo.corpus);
     if !crate::git::crosses_repository(here.as_deref(), root.as_deref()) {
@@ -999,6 +1010,13 @@ fn dispatch(
         return help(&inv, out);
     }
     if inv.command == "config" {
+        // Before the corpus is resolved, and that is the point: the reader's
+        // declarations live outside every repository, so a scope that asked for
+        // one would refuse in the directory where a corpus is being declared
+        // (ADR-96174f1ac2b7).
+        if inv.has("--user") {
+            return crate::config::run_user(&inv, out);
+        }
         let repo = resolved(&inv, cwd)?;
         // The same hazard, and it reaches this verb too: a `config` run from a
         // nested checkout edits the outer repository's configuration. `git` is

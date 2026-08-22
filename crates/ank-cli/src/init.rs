@@ -54,15 +54,35 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         .with_hint(format!("ank init {path}")));
     }
 
-    let target = match inv.positionals.first() {
+    let detached = inv.value("--at");
+    if detached.is_some() && inv.positionals.first().is_some() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--at and a positional target name two different directories",
+        )
+        .with_hint("ank init --at <path>"));
+    }
+    let named = detached.or(inv.positionals.first().map(String::as_str));
+    let target = match named {
         Some(p) => PathBuf::from(p),
         None => cwd.to_path_buf(),
     };
     // git is a hard dependency (ADR-9307e5d214a7): we fail before writing
     // anything rather than leave a half-placed `.ank/` in a directory that is
     // not a repository.
+    if detached.is_some() {
+        // Everything a detached corpus is refused for, before a byte is
+        // written: the identity it will be keyed on, the tree it must stay out
+        // of, and the repository whose refs will carry its claims.
+        detachable(cwd, &target)?;
+    }
     git::ensure_usable(&target)?;
-    let report = init_at(&target)?;
+    let mut report = init_at(&target)?;
+    if detached.is_some() {
+        let identity = repo::identity(cwd).expect("checked by detachable");
+        let file = config::declare_corpus(&identity, &target.to_string_lossy())?;
+        report.declared = Some(file.to_string_lossy().to_string());
+    }
     // `--json` is available on every command without exception (§4), and this
     // verb was the exception: it printed its prose and ignored the flag. The
     // sweep never caught it because a `Repo` fixture already carries a `.ank/`,
@@ -84,6 +104,12 @@ pub struct Report {
     /// not a flag: the flag named both whenever either was missing, so a run
     /// that created one of the two reported creating a directory it found.
     pub created_dirs: Vec<String>,
+    /// The declarations file a `--at` run wrote into (ADR-96174f1ac2b7).
+    ///
+    /// Named rather than silent, and named as a path: it is the one thing this
+    /// verb wrote outside the directory the caller pointed at, and a reader who
+    /// wants to see it or correct it needs its address.
+    pub declared: Option<String>,
     pub wrote_config: bool,
     pub wrote_gitattributes: bool,
     pub wrote_gitignore: bool,
@@ -116,6 +142,9 @@ impl Report {
         // inspect the result needs the address, and the two addresses are of
         // different kinds — a file and a git config key.
         let mut added: Vec<&str> = Vec::new();
+        if let Some(file) = &self.declared {
+            added.push(file.as_str());
+        }
         if self.wrote_agents_pointer {
             added.push("AGENTS.md");
         }
@@ -161,6 +190,11 @@ impl Report {
         }
         if self.added_refspec {
             v.push(format!("refspec added: {REFSPEC}"));
+        }
+        // Last, and never silent: it is the one thing this verb wrote outside
+        // the directory the caller pointed at.
+        if let Some(file) = &self.declared {
+            v.push(format!("declared in {file}"));
         }
         if v.is_empty() {
             v.push("already initialised, nothing to do".to_string());
@@ -210,6 +244,63 @@ pub fn init_at(root: &Path) -> Result<Report> {
     report.added_refspec = ensure_refspec(root)?;
 
     Ok(report)
+}
+
+/// Whether a corpus may be created at `target` for the repository `cwd` sits
+/// in, and every reason it may not (ADR-96174f1ac2b7).
+///
+/// **Inside the tree is refused rather than accepted quietly.** A corpus under
+/// the working tree is not a detached corpus, and `--at .ank` would be a long
+/// way of writing `ank init` while writing a declaration that promises
+/// something it does not deliver. `ank init` is the verb for a corpus that
+/// lives beside its code.
+///
+/// **A tree with no identity is refused too**, because there would be nothing
+/// to key the declaration on. A fallback is not a key: every historyless tree
+/// on a machine would share one, which is the collision ADR-621a7fd96ce1 chose
+/// the root commit to avoid.
+///
+/// **git is not created here.** The corpus repository is where claims and
+/// proofs land (ADR-9e56318631f3), so the target has to be one — but `git init`
+/// is not on the plumbing ADR-9307e5d214a7 allows, and running a verb this tool
+/// has never run to save a caller one command is not a trade this makes on its
+/// own. The refusal names the command, which is what §4 asks of it.
+fn detachable(cwd: &Path, target: &Path) -> Result<()> {
+    let Some(_) = repo::identity(cwd) else {
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            "this tree has no repository identity, so a declaration has nothing to be keyed on",
+        )
+        .with_hint("git commit: the identity is the root commit"));
+    };
+    let tree = git::run(cwd, &["rev-parse", "--show-toplevel"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| cwd.to_path_buf());
+    // Compared after canonicalisation, for the reason `same_corpus` gives:
+    // `..`, symlinks and the case rules of Windows all sit between two spellings
+    // of one directory. A target that does not exist yet is canonicalised
+    // through its parent, since that is the part that already does.
+    let of = |p: &Path| -> PathBuf {
+        std::fs::canonicalize(p).unwrap_or_else(|_| match (p.parent(), p.file_name()) {
+            (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+                .unwrap_or_else(|_| parent.to_path_buf())
+                .join(name),
+            _ => p.to_path_buf(),
+        })
+    };
+    let (tree, target) = (of(&tree), of(target));
+    if target.starts_with(&tree) {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "--at {} is inside {}, which is the tree it is meant to stay out of",
+                target.display(),
+                tree.display()
+            ),
+        )
+        .with_hint("ank init, for a corpus that lives beside its code"));
+    }
+    Ok(())
 }
 
 /// Adds a line to a file if it is not already there. Returns `true` if the
