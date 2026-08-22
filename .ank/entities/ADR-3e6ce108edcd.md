@@ -5,13 +5,17 @@ slug: the-attention-budget-is-the-human-reader-s-and-a
 title: The attention budget is the human reader's, and a listing answers a program whole
 created: 2026-08-22T20:50:52Z
 author: claude-code/opus-5
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   The attention budget cuts what a human is shown and never what a program receives. A listing verb -- find, review, scope, graph -- answers with every row under --json, whatever the budget, and its human output is unchanged, cut notice included. context keeps the budget under --json, because deciding what a reader is handed first is that verb's answer rather than a limit on it. In a --json listing shown and total agree unless a filter removed rows, and hidden names only what a filter withheld. No flag lifts the budget: a caller who has to know to ask is a caller who still gets a short answer.
+ratified: aaf75acd3031
+verified:
+  - by: claude-code/opus-5
+    at: 2026-08-22T20:55:55Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on this corpus on 2026-08-22: `ank find --type adr --json` answers
