@@ -5,7 +5,7 @@ slug: a-verb-that-changes-content-outside-a-transition
 title: A verb that changes content outside a transition writes the entry that accounts for it
 created: 2026-08-21T20:45:08Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/edit.rs
   - crates/ank-cli/src/commands.rs
@@ -20,8 +20,13 @@ blocked_by: [TASK-027a429aad2e, TASK-353036d7972f]
 done_criteria: |
   ank edit on both its paths, ank amend, and ank claim --criteria each write one log entry marked as machinery, naming the fields that changed, the version moved from and to, and freeze_hash_short of the state replaced. A verb that changes nothing writes none. The entry is written once and never revisited, and no verb reads it to decide anything: a test asserts that deleting every such entry changes no exit code and no answer of any other verb, which is what makes it a trace and not an anchor. Driven through the binary end to end: an entity created and then edited twice answers ank log with the two entries in order, each naming its fields and its version transition, and the hash in the first entry matches what freeze_hash_short returns for the state the second entry replaced. A status transition writes none of this, and a test on done asserts it. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 9882b26
+    criteria: 26d23a4c182d
+    via: submitted
 schema: 3
-version: 3
+version: 4
 ---
 
 The writing half of ADR-16813b3bcf37, and it is deliberately the third task
