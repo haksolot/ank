@@ -341,6 +341,46 @@ pub fn edit_message(changed: &[String], from: u64, to: u64, replaced: &str) -> S
     format!("{what} (version {from} to {to}, replaced {replaced})")
 }
 
+/// The version transition a machinery entry states, read back out of its
+/// message (ADR-16813b3bcf37).
+///
+/// The other direction of [`edit_message`], and the pair is why the grammar is
+/// written in one place: the writer and the only reader sit beside each other,
+/// so a change to one is a change a test on the other catches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Accounted {
+    /// The version the write moved from.
+    pub from: u64,
+    /// The version it moved to.
+    pub to: u64,
+}
+
+/// The transition an entry states, or `None` where the message does not carry
+/// the grammar.
+///
+/// **`None` is a message this build cannot read, never a defect it has found.**
+/// An entry is written once and an entry marked as machinery by some other
+/// writer — a newer build, a hand — is entitled to a message of its own shape,
+/// and the accounting that consumes this stays silent rather than inventing a
+/// finding about prose.
+///
+/// Read from the right, so that a field list holding the opening word cannot
+/// move the cut: the tail is fixed and the head is whatever the verb reported.
+pub fn parse_edit_message(message: &str) -> Option<Accounted> {
+    const OPEN: &str = " (version ";
+    let at = message.rfind(OPEN)?;
+    let tail = message[at + OPEN.len()..].strip_suffix(')')?;
+    let (versions, replaced) = tail.split_once(", replaced ")?;
+    if replaced.is_empty() || replaced.contains(' ') {
+        return None;
+    }
+    let (from, to) = versions.split_once(" to ")?;
+    Some(Accounted {
+        from: from.parse().ok()?,
+        to: to.parse().ok()?,
+    })
+}
+
 /// One entry, built from a line the previous layout stored and the entity it
 /// belonged to.
 ///
@@ -374,5 +414,76 @@ pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> L
         schema: ank_core::SCHEMA_VERSION,
         version: 1,
         body,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+//
+// The verbs that write these entries are tested through the binary, where their
+// criteria put them. What is testable in place is the grammar, which has a
+// writer and a reader and no process between them.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_grammar_reads_back_what_it_wrote() {
+        let fields = ["title".to_string(), "body".to_string()];
+        let message = edit_message(&fields, 7, 8, "4e0e2f1a9b3c");
+        assert_eq!(
+            message,
+            "title, body (version 7 to 8, replaced 4e0e2f1a9b3c)"
+        );
+        assert_eq!(
+            parse_edit_message(&message),
+            Some(Accounted { from: 7, to: 8 })
+        );
+    }
+
+    /// A write that moved no parsed field is still a version, and the entry
+    /// says which one.
+    #[test]
+    fn a_normalisation_accounts_for_itself() {
+        let message = edit_message(&[], 1, 2, "000000000000");
+        assert_eq!(
+            message,
+            "canonical form (version 1 to 2, replaced 000000000000)"
+        );
+        assert_eq!(
+            parse_edit_message(&message),
+            Some(Accounted { from: 1, to: 2 })
+        );
+    }
+
+    /// The cut is taken from the right, so a field list holding the opening
+    /// word cannot move it. `amend` writes globs into that half, and a glob can
+    /// hold anything a path can.
+    #[test]
+    fn the_head_may_hold_the_opening_word() {
+        let fields = ["+scope docs/ (version 1 to 2)/**".to_string()];
+        let message = edit_message(&fields, 3, 4, "abcdefabcdef");
+        assert_eq!(
+            parse_edit_message(&message),
+            Some(Accounted { from: 3, to: 4 })
+        );
+    }
+
+    /// A message this build cannot read is not a defect it has found: an entry
+    /// is written once, and one marked as machinery by another writer is
+    /// entitled to a message of its own shape.
+    #[test]
+    fn prose_is_not_a_transition() {
+        for message in [
+            "constraint and body rewritten, was 6f1d9c04a7b2",
+            "title (version 1 to two, replaced abcdefabcdef)",
+            "title (version 1 to 2, replaced )",
+            "title (version 1 to 2)",
+            "",
+        ] {
+            assert_eq!(parse_edit_message(message), None, "{message}");
+        }
     }
 }

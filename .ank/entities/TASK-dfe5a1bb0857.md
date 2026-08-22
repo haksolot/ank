@@ -5,16 +5,22 @@ slug: check-counts-what-an-entity-accounts-for-and-say
 title: check counts what an entity accounts for, and says so when the arithmetic does not close
 created: 2026-08-21T20:45:35Z
 author: claude-code/opus-5
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
+  - crates/ank-cli/src/entries.rs
 blocked_by: [TASK-3c12e0ced2c0]
 done_criteria: |
   An entity carrying at least one machinery entry is accounted for, and check reports a signal naming both numbers when its version exceeds what those entries account for. An entity carrying none is silent, and a test asserts that a corpus of entities written before this existed produces not one finding from this rule. The finding is a signal and never a fault, so the exit code of a corpus whose arithmetic does not close is still 0 and no done is blocked by it. Driven through the binary: an entity edited twice through the CLI and then edited a third time by writing the file directly is reported with its two counts, and the same entity before that third edit is not. The check catalogue of a spec superseding the current CLI surface document describes the finding, what it derives and what it deliberately does not conclude. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 2fc71fa
+    criteria: b0961683797e
+    via: submitted
 schema: 3
-version: 1
+version: 4
 ---
 
 The teeth of ADR-16813b3bcf37, and the reason the trace is worth writing: a

@@ -16642,6 +16642,201 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// An entity accounts for the versions it carries (ADR-16813b3bcf37,
+// TASK-dfe5a1bb0857)
+// ---------------------------------------------------------------------------
+//
+// The falsification is a direct file write, performed rather than described:
+// anything less tests that the arithmetic adds up, which was never in doubt,
+// rather than that it catches what it exists to catch.
+
+/// The line this rule prints, whichever entity it is about.
+const NOT_ACCOUNTED: &str = "and its entries account for";
+
+/// The two counts, and the write that produced the gap is the test's own.
+#[test]
+fn an_entity_that_cannot_account_for_a_version_is_reported_with_both_counts() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let out = r.ank(
+        "claude-code/1.0",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A decision",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do X.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+    for (flag, value) in [("--title", "A better decision"), ("--body", "Rewritten.")] {
+        let out = r.ank_edit("claude-code/1.0", &["edit", &id, flag, value], None);
+        assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    }
+
+    // Before the third write: two entries covering 1 to 2 and 2 to 3, and the
+    // entity at version 3. The arithmetic closes and the rule says nothing.
+    let text = r.adr_text(&id);
+    assert!(text.contains("version: 3"), "{text}");
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert_eq!(code(&checked), 0, "{}", both_streams(&checked));
+    assert!(
+        !both_streams(&checked).contains(NOT_ACCOUNTED),
+        "silent while it adds up: {}",
+        both_streams(&checked)
+    );
+
+    // The third write, by hand and past the tool: the corpus is writable by
+    // anything, which is the premise the whole mechanism rests on.
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        text.replace("Rewritten.", "Rewritten again, by hand.")
+            .replace("version: 3", "version: 4"),
+    )
+    .unwrap();
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    // A signal and never a fault: an entity written outside the CLI is legal,
+    // and exiting 8 over it would redden a pipeline on an act ADR-01b6dd05f0db
+    // permits a human outright.
+    assert_eq!(
+        code(&checked),
+        0,
+        "the arithmetic not closing is a signal: {}",
+        both_streams(&checked)
+    );
+    let said = both_streams(&checked);
+    let line = said
+        .lines()
+        .find(|l| l.contains(NOT_ACCOUNTED))
+        .unwrap_or_else(|| panic!("the rule fires: {said}"));
+    assert!(line.contains(&id), "the subject is named whole: {line}");
+    assert!(
+        line.contains("version 4") && line.contains("account for 3"),
+        "both counts, so a reader can see the size of the gap: {line}"
+    );
+    assert!(line.starts_with("signal:"), "{line}");
+}
+
+/// The negative test, and it is the one that matters most: the regime opens
+/// with an entity's first entry, so a corpus written before any of this existed
+/// is silent everywhere.
+#[test]
+fn a_corpus_that_predates_the_regime_produces_not_one_finding() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.seed_adr("ADR-00000000ab01", "Do not do X.", "src/**");
+    r.seed_spec("SPEC-00000000ab02", "accepted", &[], None);
+    r.seed_task_with_body_log("TASK-000000000b03", "what the last holder learned");
+    seed_entry(
+        &r,
+        "LOG-00000000ab04",
+        ID,
+        0,
+        "what the last holder learned",
+        None,
+    );
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    assert!(
+        !said.contains(NOT_ACCOUNTED),
+        "not one finding from this rule: {said}"
+    );
+}
+
+/// The transition an ADR does have is counted, and this is the false positive
+/// the rule would otherwise fire on every ratified decision in a corpus.
+#[test]
+fn a_ratification_is_a_write_the_entity_evidences() {
+    let r = ready_to_ratify();
+    let id = new_adr(&r, "claude-code/1.0", "Do not do X.");
+    let out = r.ank_edit(
+        "claude-code/1.0",
+        &["edit", &id, "--title", "A better decision"],
+        None,
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("human:marie", &["accept", &id]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    // Version 3: created, edited, ratified. One entry accounts for the edit and
+    // `ratified` accounts for the rest.
+    assert!(
+        r.adr_text(&id).contains("version: 3"),
+        "{}",
+        r.adr_text(&id)
+    );
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert!(
+        !both_streams(&checked).contains(NOT_ACCOUNTED),
+        "a ratification leaves a field behind, so it is counted: {}",
+        both_streams(&checked)
+    );
+}
+
+/// A task carries entries and is never the subject of this rule, and the
+/// silence is derived rather than chosen.
+///
+/// `claim` and `release` each write the file and leave nothing durable behind,
+/// so the versions a task owes to transitions cannot be evidenced by any
+/// reader. Measured on TASK-3c12e0ced2c0, the first entity in this repository
+/// to carry a machinery entry: version 4, one entry covering 2 to 3, the other
+/// two versions being the claim and the `done`. Counting those would fire on
+/// the rule's own first subject.
+#[test]
+fn a_task_is_not_the_subject_of_this_rule() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task(ID, Some("A verifiable criterion."));
+    // Both scopes matching a file, so the only thing left for this fixture to
+    // report is the thing it is about.
+    for dir in ["src", "docs"] {
+        std::fs::create_dir_all(r.0.join(dir)).unwrap();
+        std::fs::write(r.0.join(dir).join("a.md"), "x\n").unwrap();
+    }
+
+    assert_eq!(
+        code(&r.ank("claude-code/1.0", &["amend", ID, "--scope", "docs/**"])),
+        0
+    );
+    assert_eq!(code(&r.ank("claude-code/1.0", &["claim", ID])), 0);
+    let head = r.head();
+    let out = r.ank(
+        "claude-code/1.0",
+        &["done", "--proof", &format!("commit:{head}")],
+    );
+    // The clause the criterion states outright: no `done` is blocked by any of
+    // this, whatever the arithmetic says.
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        r.task_text(ID).contains("version: 4"),
+        "{}",
+        r.task_text(ID)
+    );
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert_eq!(code(&checked), 0, "{}", both_streams(&checked));
+    assert!(
+        !both_streams(&checked).contains(NOT_ACCOUNTED),
+        "the transitions of a task are not derivable, so nothing is derived: {}",
+        both_streams(&checked)
+    );
+}
+
 /// The same page with the machinery section taken out of it.
 ///
 /// The section is what `show` and `log` grew for these entries, so its going is
