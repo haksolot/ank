@@ -5,7 +5,7 @@ slug: the-per-entity-half-of-check-is-374-ms-and-nothi
 title: The per-entity half of check is 374 ms and nothing has looked inside it
 created: 2026-08-22T20:52:22Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   The per-entity phase of check is profiled by sub-phase on this repository's own corpus, release build, warm, and the numbers are recorded on this task: what check_task, check_adr and check_spec each cost, and inside them what the dead-scope confrontation, the freeze state, the signature reading and the proof reading each cost. The measurement is taken with the probes removed afterwards and the tree left as it was, and it is repeated once to say which figures are stable. Whatever the profile names is filed as a task carrying the mechanism, not the intention, and this task names it. No cache is added and no behaviour changes here: cargo test is green, cargo fmt --check passes, ank check reports no fault, and the findings check reports are identical to what it reported before, subject by subject.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 What TASK-2e2bac895056 left, and it is deliberately a measurement rather than a
