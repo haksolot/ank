@@ -4662,6 +4662,160 @@ fn log_refuses_a_message_carrying_a_control_character() {
     );
 }
 
+/// A correction reaches a task that is settled, and the task itself does not
+/// move (TASK-c34392707a7b).
+///
+/// Found in use. `ank close <id> --reason "..."` took a reason naming an
+/// identifier written before the task it meant existed, and the correction had
+/// nowhere to go: `log` answered `no task in progress for this agent`, and a
+/// terminal task cannot be claimed, so the closure reason was wrong
+/// permanently. ADR-25f977377fa0 already says a correction is a new entry
+/// naming the one it corrects; what stood in the way was a claim requirement
+/// arbitrating work on a task where no work is left.
+///
+/// Through the binary on both terminal statuses, because that is the surface
+/// the criterion talks about and because the two are reached by different
+/// verbs: `done` leaves a completion record on the coordination plane and
+/// `close` leaves none (ADR-6d8736c04cfa), so "no claim taken" is a different
+/// assertion on each and neither is covered by the other.
+///
+/// **The task file is compared byte for byte**, not field by field. The
+/// guarantee is that an entry is a file of its own (ADR-ff294eff4d1a) and moves
+/// nothing on the entity it is about — no frontmatter, no `version`, no
+/// `status` — and a field-by-field assertion would pass over exactly the byte
+/// it forgot to name.
+#[test]
+fn a_settled_task_takes_an_entry_without_a_claim_and_does_not_move() {
+    const FINISHED: &str = "TASK-000000000002";
+    const ABANDONED: &str = "TASK-000000000003";
+
+    let r = Repo::new();
+    // `done` reads HEAD to record where the work landed, so the repository
+    // needs one commit before a task can reach a terminal status here.
+    r.git(&["commit", "-qm", "seed", "--allow-empty"]);
+    r.seed_task(FINISHED, Some("A verifiable criterion."));
+    r.seed_task(ABANDONED, Some("Another verifiable criterion."));
+
+    // Both settled by the binary rather than by a hand-written fixture, so
+    // that what is logged against is a task the tool itself produced.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", FINISHED])), 0);
+    let out = r.ank(
+        "claude-code@ank",
+        &["done", FINISHED, "--proof", "test:ci-run-1"],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ABANDONED])), 0);
+    let out = r.ank(
+        "claude-code@ank",
+        &["close", ABANDONED, "--reason", "meant TASK-000000000001"],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    // The correction is written by somebody who holds nothing at all, which is
+    // the case the task exists for: the next reader, not the previous holder.
+    for (id, status) in [(FINISHED, "status: done"), (ABANDONED, "status: closed")] {
+        assert!(r.task_text(id).contains(status), "{}", r.task_text(id));
+
+        let before = std::fs::read(r.flat_task_path(id)).unwrap();
+        let entries_before = r.entry_ids(id);
+        let plane_before = r.claim_ref(id);
+
+        let correction = format!("correction: the reason on {id} names the wrong task");
+        let out = r.ank("marie@laptop", &["log", id, &correction]);
+        assert_eq!(code(&out), 0, "{status}: {}{}", stdout(&out), stderr(&out));
+
+        // The entity the entry is about was never opened for writing.
+        assert_eq!(
+            std::fs::read(r.flat_task_path(id)).unwrap(),
+            before,
+            "{status}: logging moved the task file"
+        );
+        // And no claim was taken to make the write legal. `done` left a
+        // completion record here and `close` left nothing; either way what was
+        // on the plane before the entry is what is on it after.
+        assert_eq!(r.claim_ref(id), plane_before, "{status}: the plane moved");
+
+        // One entry landed, and it is readable through the verb that reads.
+        let written: Vec<String> = r
+            .entry_ids(id)
+            .into_iter()
+            .filter(|e| !entries_before.contains(e))
+            .collect();
+        assert_eq!(written.len(), 1, "{status}: {written:?}");
+        let read = r.ank("marie@laptop", &["log", id]);
+        assert_eq!(code(&read), 0, "{status}: {}", stderr(&read));
+        assert!(
+            stdout(&read).contains(&correction) && stdout(&read).contains("marie@laptop"),
+            "{status}: the correction is not readable: {}",
+            stdout(&read)
+        );
+
+        // The refusals that are not this one's to relax, asserted on the very
+        // door that just opened. An empty message records nothing wherever it
+        // is written, and a control character never reaches the corpus
+        // (TASK-f3910718320a) — both sit outside the claim question and both
+        // still answer 1 here.
+        let out = r.ank("marie@laptop", &["log", id, "   "]);
+        assert_eq!(code(&out), 1, "{status}: {}", stderr(&out));
+        assert!(
+            stderr(&out).contains("an empty log entry records nothing"),
+            "{status}: {}",
+            stderr(&out)
+        );
+        let mangled = format!("walked the corpus with git {}ev-list", '\r');
+        let out = r.ank("marie@laptop", &["log", id, &mangled]);
+        assert_eq!(code(&out), 1, "{status}: {}", stderr(&out));
+        assert!(stderr(&out).contains("\\r"), "{status}: {}", stderr(&out));
+
+        assert_eq!(
+            r.entry_ids(id).len(),
+            entries_before.len() + 1,
+            "{status}: a refused write left an entry behind"
+        );
+        assert_eq!(
+            std::fs::read(r.flat_task_path(id)).unwrap(),
+            before,
+            "{status}: a refused write moved the task file"
+        );
+    }
+
+    // The other half of the rule, tested beside it: where a claim still
+    // arbitrates work, it is asked for exactly as it was. An `open` task with
+    // no claim on it at all, and an `in_progress` one somebody else holds —
+    // both refused to an agent holding nothing, with the code they are refused
+    // with today.
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let out = r.ank("marie@laptop", &["log", ID, "not mine to write"]);
+    assert_eq!(code(&out), 6, "open: {}{}", stdout(&out), stderr(&out));
+    assert!(
+        stderr(&out).contains("no task in progress for this agent"),
+        "open: {}",
+        stderr(&out)
+    );
+    assert!(r.entry_ids(ID).is_empty(), "open: an entry was written");
+
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+    assert!(
+        r.task_text(ID).contains("status: in_progress"),
+        "{}",
+        r.task_text(ID)
+    );
+    let entries_before = r.entry_ids(ID);
+    let out = r.ank("marie@laptop", &["log", ID, "not mine to write"]);
+    assert_eq!(
+        code(&out),
+        6,
+        "in_progress: {}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    assert_eq!(
+        r.entry_ids(ID),
+        entries_before,
+        "in_progress: an entry was written"
+    );
+}
+
 /// The disambiguation of §4, exercised on all three of its branches. It is
 /// stated rather than inferred precisely so that it can be asserted this way:
 /// one question — does the argument resolve — and one answer.
