@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT];
 
 /// The word an entry carries when it records a change of content made outside
-/// a status transition (ADR-16813b3bcf37).
+/// a status transition (ADR-f7dc76886db2).
 ///
 /// Named once and written from one place, so the vocabulary above and the verb
 /// that writes into it cannot drift apart by a typo.
@@ -30,7 +30,7 @@ pub const RECORDS_EDIT: &str = "edit";
 ///
 /// 4 carries one change, [`Log::records`], and it is the same case again. An
 /// entry marked as machinery is kept out of the work trace a reader reads
-/// (ADR-16813b3bcf37); a reader that does not know the field drops it on the
+/// (ADR-f7dc76886db2); a reader that does not know the field drops it on the
 /// next rewrite, and the entry silently rejoins the trace it was written to
 /// stay out of. Silently is the word that decides it, here as at 3.
 ///
@@ -488,7 +488,7 @@ pub struct Log {
     /// **Absent means a work entry**, which is what `ank log` means to a reader
     /// and what every entry written before this field existed is. A value names
     /// machinery: `edit`, written by the verbs that change an entity's content
-    /// outside a status transition (ADR-16813b3bcf37).
+    /// outside a status transition (ADR-f7dc76886db2).
     ///
     /// **A free string at parse time, a vocabulary at `check` time**, on the
     /// terms ADR-3877fef1d662 sets for a typed actor: a value the tool does not
