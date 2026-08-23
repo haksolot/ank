@@ -12,10 +12,13 @@
 //! - **`find`** answers under the same budget as `context` and says what it
 //!   cut. A search command without a cap is a context-explosion vector at least
 //!   as effective as a badly bounded `context`.
-//! - **`log`** requires holding the claim and renews the TTL by writing.
-//!   Working is what keeps the lock; there is no heartbeat verb to memorise.
-//!   Given nothing but an id it reads instead, and then asks for no claim at
-//!   all: `git log` reads, and this is what stops the borrowed name from lying.
+//! - **`log`** requires holding the claim wherever a claim arbitrates work, and
+//!   renews the TTL by writing. Working is what keeps the lock; there is no
+//!   heartbeat verb to memorise. Given nothing but an id it reads instead, and
+//!   then asks for no claim at all: `git log` reads, and this is what stops the
+//!   borrowed name from lying. Given a subject no claim is about — an ADR, a
+//!   spec, or a task already `done` or `closed` — it writes without one, which
+//!   is what gives a correction somewhere to go.
 //! - **`release`** requires a reason, because it is the delegation mechanism
 //!   between agents: the reason reaches the next holder through the log.
 //! - **`scope`** makes glob resolution observable before an entity is written
@@ -1931,6 +1934,47 @@ fn budget_for_whole_log(entries: &[Entry], spent: usize) -> usize {
     spent + cost
 }
 
+/// Whether writing an entry about this entity is a write the claim arbitrates.
+///
+/// **The claim requirement exists to arbitrate work**, and §4 says so in those
+/// terms: the log is a task's anchoring register, and if anyone could write to
+/// it, it would stop being a reliable trace of what the holder did. That
+/// argument has a subject. It holds for a task somebody is or could be working
+/// on, and it holds for nothing else.
+///
+/// It does not hold for an ADR or a spec, which have no claim to hold and no
+/// register to protect — the refusal that named a task by name is gone with the
+/// storage that made it necessary (ADR-25f977377fa0).
+///
+/// **And it does not hold for a task that is `done` or `closed`.** Both are
+/// terminal ([`TaskStatus::transition_allowed`]), so there is no work left to
+/// arbitrate and no holder whose trace could be diluted; what a claim would
+/// protect there is a record nobody is still writing. Meanwhile the entry has
+/// to be able to land, because a correction is a new entry naming the one it
+/// corrects (ADR-25f977377fa0) and a settled task was the one place that had
+/// nowhere to put one: `log` answered `no task in progress for this agent`, and
+/// a terminal task cannot be claimed, so a closure reason naming the wrong
+/// identifier stayed wrong permanently (TASK-c34392707a7b).
+///
+/// **Writing one settles nothing, which is what makes it safe.** An entry is a
+/// file of its own (ADR-ff294eff4d1a): the task file is not opened for writing,
+/// no frontmatter moves, `version` does not bump and `status` does not change.
+/// A closed task stays closed and a done task stays done with its proof intact.
+/// No verb refuses on the log, so nothing downstream reads a new entry as a
+/// state change.
+///
+/// **`open` and `in_progress` are untouched**, which is the other half of the
+/// rule. There the claim is doing exactly the job it was put there for, so the
+/// caller falls through to `acting_on` and is refused today's refusal with
+/// today's code. Nothing here reopens a task, adds a transition, or relaxes the
+/// requirement anywhere it still means something.
+fn claim_arbitrates(entity: &Entity) -> bool {
+    match entity {
+        Entity::Task(t) => matches!(t.status, TaskStatus::Open | TaskStatus::InProgress),
+        _ => false,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn log_write(
     inv: &Invocation,
@@ -1950,17 +1994,17 @@ fn log_write(
     }
     let message = message.trim();
 
-    // **A subject that is not a task asks for no claim** (ADR-25f977377fa0).
-    // §4 makes writing to a task's log a condition on the claim, because the
-    // log is that task's anchoring register; an ADR or a spec has no claim to
-    // hold and no register to protect, and refusing there would be refusing on
-    // the absence of a state rather than on a state. Resolved before
-    // `acting_on`, which answers about the task in progress and would report
-    // "no task in progress" to somebody annotating a decision.
+    // **A subject with no work left to arbitrate asks for no claim**
+    // (ADR-25f977377fa0). §4 makes writing to a task's log a condition on the
+    // claim, because the log is that task's anchoring register; where there is
+    // nothing for a claim to be about, refusing would be refusing on the
+    // absence of a state rather than on a state. Resolved before `acting_on`,
+    // which answers about the task in progress and would report "no task in
+    // progress" to somebody annotating a decision or correcting a closure.
     if let Some(given) = given {
         if let Ok(id) = store.resolve(given) {
-            if id.kind() != EntityKind::Task {
-                let subject = store.load(&id)?;
+            let subject = store.load(&id)?;
+            if !claim_arbitrates(&subject.entity) {
                 let entry = entries::record(
                     store,
                     &Index::open(&repo.ank)?,
