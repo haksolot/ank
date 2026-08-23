@@ -884,7 +884,7 @@ fn build_execution(
     // The work trace alone. This view is served under a budget to an agent
     // about to work, and what it is for is what previous holders learned; a
     // mechanical line here would spend that budget on saying that a field
-    // moved (ADR-16813b3bcf37). The machinery is reachable through `ank log`
+    // moved (ADR-f7dc76886db2). The machinery is reachable through `ank log`
     // and `ank show`, which are the verbs a reader asks that question with.
     let (log_entries, _machinery) =
         crate::entries::split(crate::entries::about(store, index, &loaded.entity)?);

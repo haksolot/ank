@@ -465,7 +465,7 @@ impl Repo {
     }
 
     /// The machinery entries about an entity, oldest first, as the messages
-    /// they carry (ADR-16813b3bcf37).
+    /// they carry (ADR-f7dc76886db2).
     ///
     /// Read off the files rather than through the binary, on the same reasoning
     /// `log_text` is: what has to be true is the state of the corpus, and a
@@ -660,7 +660,7 @@ impl Repo {
     }
 
     /// An entry that records machinery rather than work, which is what
-    /// `show.machinery` and `log-read.machinery` are (ADR-16813b3bcf37).
+    /// `show.machinery` and `log-read.machinery` are (ADR-f7dc76886db2).
     ///
     /// Written by hand and at schema 4, because no verb writes one yet: the
     /// verbs that will are TASK-3c12e0ced2c0, and a declaration no fixture
@@ -3113,7 +3113,7 @@ fn a_citation_two_hops_behind_resolves_and_the_file_is_not_touched() {
 
     // **Nothing is written to make a reference resolve.** The whole argument
     // against repairing citations in place was that one `accept` would write to
-    // nine entities and, under ADR-16813b3bcf37, leave nine machinery entries
+    // nine entities and, under ADR-f7dc76886db2, leave nine machinery entries
     // behind. A read that writes is the same defect one verb further along.
     let after = std::fs::read(r.0.join(".ank/entities").join(format!("{BEHIND}.md"))).unwrap();
     assert_eq!(before, after, "check wrote to the citing document");
@@ -7435,7 +7435,7 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     // The record of an amend is machinery since TASK-3c12e0ced2c0, so it names
     // the fields alone and the `amended:` opening is gone. What it gained is
     // the version transition and the hash of the state replaced, which is what
-    // makes the entry account for the write (ADR-16813b3bcf37).
+    // makes the entry account for the write (ADR-f7dc76886db2).
     assert!(
         r.log_text(ID).contains("+blocked_by TASK-000000000002"),
         "the log says what changed: {}",
@@ -17195,7 +17195,7 @@ fn the_corpus_named_as_its_own_work_tree_answers_identically() {
 }
 
 // ---------------------------------------------------------------------------
-// The work trace and the machinery (ADR-16813b3bcf37, TASK-027a429aad2e)
+// The work trace and the machinery (ADR-f7dc76886db2, TASK-027a429aad2e)
 // ---------------------------------------------------------------------------
 
 /// One entry about `about`, written by hand because no verb writes machinery
@@ -17348,7 +17348,7 @@ fn an_entity_with_no_machinery_grows_no_section() {
 
 // ---------------------------------------------------------------------------
 // A write of content accounts for the version it moved
-// (ADR-16813b3bcf37, TASK-3c12e0ced2c0)
+// (ADR-f7dc76886db2, TASK-3c12e0ced2c0)
 // ---------------------------------------------------------------------------
 //
 // Through the binary throughout, and the criterion says so for a reason that
@@ -17479,7 +17479,7 @@ fn content_edited_by_hand_is_reported_with_both_hashes() {
 /// An entry written before the clause existed says nothing about content, and
 /// an entity carrying none says nothing at all.
 ///
-/// The bootstrap, and it is the same one ADR-16813b3bcf37 already rested on: no
+/// The bootstrap ADR-f7dc76886db2 states in the same breath as the clause: no
 /// corpus is migrated by a rule it predates.
 #[test]
 fn an_entry_without_a_produced_hash_leaves_the_entity_silent() {
@@ -17552,7 +17552,7 @@ fn replaced_hash_of(text: &str) -> String {
     ))
 }
 
-/// The three verbs ADR-16813b3bcf37 names, and the two doors `edit` has.
+/// The three verbs ADR-f7dc76886db2 names, and the two doors `edit` has.
 ///
 /// One test over the four because the property is one property: whichever door
 /// the write came through, the entity ends up accounting for the version it
@@ -17821,8 +17821,8 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
 }
 
 // ---------------------------------------------------------------------------
-// An entity accounts for the versions it carries (ADR-16813b3bcf37,
-// TASK-dfe5a1bb0857)
+// The version count is kept where a transition's own fields evidence it
+// (ADR-f7dc76886db2, TASK-dfe5a1bb0857)
 // ---------------------------------------------------------------------------
 //
 // The falsification is a direct file write, performed rather than described:

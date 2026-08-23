@@ -54,7 +54,7 @@ use ank_core::{
 pub struct Entry {
     pub id: Option<EntityId>,
     /// What the entry records, when it records something other than work
-    /// (ADR-16813b3bcf37). `None` is the work trace, which is what a reader
+    /// (ADR-f7dc76886db2). `None` is the work trace, which is what a reader
     /// means by the log and what every line of the previous layout is.
     pub records: Option<String>,
     /// The rank of §3: the entry's own `seq`, and the line's index in the file
@@ -91,7 +91,7 @@ impl Entry {
 /// changes is the presentation: `ank log` is what an agent reads before
 /// repeating what a previous holder already tried, and an entity edited eight
 /// times would answer that question with eight mechanical lines
-/// (ADR-16813b3bcf37).
+/// (ADR-f7dc76886db2).
 pub fn split(entries: Vec<Entry>) -> (Vec<Entry>, Vec<Entry>) {
     entries.into_iter().partition(|e| !e.is_machinery())
 }
@@ -226,7 +226,7 @@ pub fn record(
 }
 
 /// The same write, marked as machinery rather than as work
-/// (ADR-16813b3bcf37).
+/// (ADR-f7dc76886db2).
 ///
 /// **The word is the only difference**, and that is deliberate: an entry an
 /// agent wrote and an entry a verb wrote are the same kind of entity, written
@@ -294,7 +294,7 @@ fn write_entry(
 }
 
 /// The hash a machinery entry carries: the state the write replaced
-/// (ADR-16813b3bcf37).
+/// (ADR-f7dc76886db2).
 ///
 /// **The whole entity and never the field that moved.** What the entry hands a
 /// reader is a claim about how an entity *read* at a version, and a hash over
@@ -402,7 +402,7 @@ pub fn edit_message(
 }
 
 /// The version transition a machinery entry states, read back out of its
-/// message (ADR-16813b3bcf37).
+/// message (ADR-f7dc76886db2).
 ///
 /// The other direction of [`edit_message`], and the pair is why the grammar is
 /// written in one place: the writer and the only reader sit beside each other,
@@ -482,7 +482,7 @@ pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> L
         // Work unless the caller says otherwise: `ank log` is a holder saying
         // what they learned and a migration carries a line a holder wrote, and
         // neither is machinery. [`record_edit`] is the one caller that sets the
-        // word, on the entry this function has just built (ADR-16813b3bcf37).
+        // word, on the entry this function has just built (ADR-f7dc76886db2).
         records: None,
         verified: Vec::new(),
         schema: ank_core::SCHEMA_VERSION,

@@ -57,7 +57,7 @@ const LOG_ENTRY: &[Field] = &[
     f("who", Type::Str),
     f("message", Type::Str),
     // Absent on the work trace, which is what an entry is unless it says
-    // otherwise (ADR-16813b3bcf37). Present, it names what the entry records.
+    // otherwise (ADR-f7dc76886db2). Present, it names what the entry records.
     opt("records", Type::Str),
 ];
 
@@ -328,7 +328,7 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
 /// The refusal every path-taking verb performs, declared once and named six
 /// times.
 ///
-/// SPEC-c937ff8fa70a states it for all of them at once — a path naming nothing
+/// SPEC-d3adbd77dca9 states it for all of them at once — a path naming nothing
 /// inside the repository, because it is absolute or because it climbs above the
 /// root, is refused with the command to run next and never answered — and the
 /// six verbs reach it through one helper, `context::normalised`. One sentence

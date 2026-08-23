@@ -241,7 +241,7 @@ fn write_back(
     // caller, on this path like every other.
     let version = store.write(&after, base_version)?;
 
-    // **The version this write just moved, accounted for** (ADR-16813b3bcf37).
+    // **The version this write just moved, accounted for** (ADR-f7dc76886db2).
     // `edit` changes content and never a status, so it is one of the three
     // verbs the decision names, and the entry is written after the write it
     // records: a write that failed must leave no trace behind, and a write with
@@ -479,7 +479,7 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
         // The two kinds that used to fall through here, and the fall-through
         // was a hole rather than a decision: a spec whose body an edit rewrote
         // reported no field at all, so the line said `canonical form` and the
-        // machinery entry would have said it too (ADR-16813b3bcf37). Every kind
+        // machinery entry would have said it too (ADR-f7dc76886db2). Every kind
         // the parser resolves is named, in the order §3 lists its fields.
         (Entity::Spec(a), Entity::Spec(b)) => {
             note("slug", a.slug != b.slug);

@@ -1779,7 +1779,7 @@ fn log_read(
     // corpus has not been migrated yet (§3).
     let all = entries::about(store, &Index::open(&repo.ank)?, &loaded.entity)?;
     // This verb *is* the work trace: it is what an agent reads before repeating
-    // what a previous holder already tried (ADR-16813b3bcf37). The machinery is
+    // what a previous holder already tried (ADR-f7dc76886db2). The machinery is
     // listed under it, addressable like every other row, and it is charged no
     // budget against the trace.
     let (all, machinery) = entries::split(all);
