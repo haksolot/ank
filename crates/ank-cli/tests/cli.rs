@@ -19628,3 +19628,204 @@ fn a_closed_task_is_not_asked_to_close_down_a_chain_it_already_closed() {
         "the chain is closed down, and asking again names an act amend refuses: {said}"
     );
 }
+
+/// A checkout inside this one is not this tree, and a scope matching only its
+/// files is dead (TASK-0e5a00f98cfe).
+///
+/// **Measured on this repository before it was written.** `git ls-files`
+/// counted 1360 files and the walk yielded 11852, of which 10490 sat under
+/// `.claude/worktrees/`: eight checkouts of this same repository, 88 percent of
+/// everything `check` read. Two scopes read alive off them, `.claude/**` on
+/// TASK-10b8a29fd853 and TASK-3109a736c255, whose files had been deleted.
+///
+/// **The marker is a `.git` entry and never a name.** A `git worktree` writes
+/// `.git` as a file holding a `gitdir:` line, which is what this fixture builds,
+/// and a clone writes it as a directory; the rule asks only that it exists, so
+/// a vendored dependency or a sibling clone is the same fact under a different
+/// path.
+#[test]
+fn a_scope_matching_only_another_checkout_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(
+        r.0.join("src/lib.rs"),
+        "// x
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        "claude-code/opus-5",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Work over the vendored tree",
+            "--scope",
+            "vendor/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    // Another checkout, placed after the seed commit so the outer repository
+    // never tracks it: what the walk reads is the filesystem, not the index.
+    std::fs::create_dir_all(r.0.join("vendor/lib/src")).unwrap();
+    std::fs::write(
+        r.0.join("vendor/lib/.git"),
+        "gitdir: ../../.git/worktrees/lib
+",
+    )
+    .unwrap();
+    std::fs::write(
+        r.0.join("vendor/lib/src/lib.rs"),
+        "// theirs
+",
+    )
+    .unwrap();
+
+    let out = r.ank("claude-code/opus-5", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!("{id}: scope 'vendor/**' matches no file yet")),
+        "a file in a checkout nobody is working in does not keep a scope alive:          {said}"
+    );
+
+    // The other direction, and it is what keeps this from passing by refusing to
+    // walk at all: the same file, in this tree, does keep it alive.
+    std::fs::create_dir_all(r.0.join("vendor/mine")).unwrap();
+    std::fs::write(
+        r.0.join("vendor/mine/lib.rs"),
+        "// ours
+",
+    )
+    .unwrap();
+    let out = r.ank("claude-code/opus-5", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !said.contains("scope 'vendor/**'"),
+        "a file of this tree under the same glob keeps it alive: {said}"
+    );
+}
+
+/// The orphaned-citation warning names files of this tree, and a corpus is
+/// excluded wherever one sits (TASK-0e5a00f98cfe).
+///
+/// This is what found the walk. Ratifying SPEC-78134d2b3cf8 named seven
+/// citations of the document it superseded, and six were `.ank/` files inside
+/// other agents' checkouts of this same repository. One was real.
+///
+/// Both halves matter and each was a hole of its own: the checkout is skipped by
+/// the walk, and a `.ank/` anywhere is skipped by the warning, because what
+/// excludes a corpus is what a corpus is rather than where it sits
+/// (ADR-1e6bcbf62e61, ADR-9e56318631f3).
+#[test]
+fn the_citation_warning_names_only_this_tree() {
+    let r = ready_to_ratify();
+    let first = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("human:marie", &["accept", &first]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The real citation, and three that are not: one in another checkout, one in
+    // a corpus of that checkout, and one in a corpus sitting somewhere else in
+    // this tree.
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        format!(
+            "//! The shape below is what {first} asks for.
+fn main() {{}}
+"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(r.0.join("vendor/lib/.ank/entities")).unwrap();
+    std::fs::write(
+        r.0.join("vendor/lib/.git"),
+        "gitdir: ../../.git/worktrees/lib
+",
+    )
+    .unwrap();
+    std::fs::write(
+        r.0.join("vendor/lib/src.rs"),
+        format!(
+            "// {first} governs this
+"
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        r.0.join("vendor/lib/.ank/entities/copy.md"),
+        format!(
+            "supersedes: {first}
+"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(r.0.join("elsewhere/.ank")).unwrap();
+    std::fs::write(
+        r.0.join("elsewhere/.ank/notes.md"),
+        format!(
+            "history says {first}
+"
+        ),
+    )
+    .unwrap();
+
+    let out = r.ank(
+        "human:marie",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "The replacement",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do Y.",
+            "--supersedes",
+            &first,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let second = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+    r.git(&["add", "src", ".ank"]);
+    r.git(&[
+        "commit",
+        "-qm",
+        "the successor, and the citation it will orphan",
+    ]);
+
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("src/main.rs:1"),
+        "the citation of this tree is named: {err}"
+    );
+    assert!(
+        !err.contains("vendor"),
+        "another checkout is not this tree, and its corpus is not this corpus: {err}"
+    );
+    assert!(
+        !err.contains("elsewhere"),
+        "a corpus is excluded wherever it sits, not only at the root: {err}"
+    );
+    assert!(
+        err.contains(&second),
+        "and the successor is still named as what to write instead: {err}"
+    );
+}

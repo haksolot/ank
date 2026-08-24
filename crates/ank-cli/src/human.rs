@@ -1082,9 +1082,35 @@ fn check_signers(repo: &Repo, report: &mut Report) {
     }
 }
 
-/// Every file the repository holds, relative and `/`-separated. `.git` and
-/// `target` are skipped: neither is ever in a scope, and both would dominate
-/// the walk.
+/// Every file this tree holds, relative and `/`-separated. `.git` and `target`
+/// are skipped: neither is ever in a scope, and both would dominate the walk.
+///
+/// **A directory carrying a `.git` entry of its own is another checkout, and
+/// this walk stops at it** (TASK-0e5a00f98cfe). Measured on this repository:
+/// `git ls-files` counts 1360 files, and the walk yielded 11852, of which 10490
+/// sat under `.claude/worktrees/` -- eight checkouts of this same repository,
+/// 88 percent of everything it read. `accept` naming six of them as stale
+/// citations of a document it had just superseded is what found it; but this
+/// walk is also what `scope_verdicts` confronts every glob in the corpus with,
+/// so the dead-scope half of `check` was asking its question against eight
+/// stale copies of the tree.
+///
+/// **The rule is the `.git` entry and never the directory's name.**
+/// `.claude/worktrees` is where these happen to sit, and skipping that path
+/// would fix the instance rather than the rule: a sibling clone, a vendored
+/// dependency with a history of its own, a `git worktree` placed anywhere else
+/// are the same fact. The entry is a file in a worktree and a directory in a
+/// clone, so what is asked is that it exists at all.
+///
+/// **Two verdicts in this corpus were wrong**, and narrowing the walk is what
+/// showed them: TASK-10b8a29fd853 and TASK-3109a736c255 both scope
+/// `.claude/**`, whose files were deleted in 264636c406b9, and the checkouts
+/// living under `.claude/worktrees/` made that glob match. Both now report as
+/// signals naming the deletion, which is what TASK-10b8a29fd853's own log entry
+/// predicted when it deleted those files. The hiding came later, when worktrees
+/// started being placed there, and nothing announced it: a scope reads alive on
+/// a file in a checkout nobody is working in, and a corpus loses a finding by
+/// where somebody happened to put a worktree.
 fn tracked_files(root: &Path) -> Vec<String> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize) {
         if depth > 24 {
@@ -1100,6 +1126,11 @@ fn tracked_files(root: &Path) -> Vec<String> {
                 continue;
             }
             if p.is_dir() {
+                // The root is this tree by definition, whatever it carries;
+                // everything below it carrying a `.git` is another one.
+                if p.join(".git").exists() {
+                    continue;
+                }
                 walk(root, &p, out, depth + 1);
             } else if let Ok(rel) = p.strip_prefix(root) {
                 out.push(rel.to_string_lossy().replace('\\', "/"));
@@ -4378,7 +4409,12 @@ fn warn_orphaned_citations(
     let mut sites: Vec<String> = Vec::new();
     let mut files: BTreeSet<String> = BTreeSet::new();
     for rel in tracked_files(&repo.worktree) {
-        if rel == ".ank" || rel.starts_with(".ank/") {
+        // Anchored at the root until a nested corpus was reported as stale
+        // source (TASK-0e5a00f98cfe). What excludes `.ank/` is what a corpus
+        // is, not where one sits: a superseded identifier is legitimate in the
+        // prose of any of them, and a repository may read a corpus that is not
+        // at its root at all (ADR-9e56318631f3).
+        if rel.split('/').any(|part| part == ".ank") {
             continue;
         }
         // A file that is not text answers `Err` and is skipped, which is the
