@@ -5,7 +5,7 @@ slug: the-orientation-budget-cuts-a-page-that-already
 title: The orientation budget cuts a page that already fitted
 created: 2026-08-24T04:20:36Z
 author: claude-code/opus-5-context-budget
-status: open
+status: closed
 scope:
   - crates/ank-cli/src/context.rs
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   On a perimeter whose orientation page fits within context_budget, context cuts nothing on either surface, and a test pins it on the golden corpus at the budget golden_repo declares. A cut that does not reduce the rendered page is not taken. The floor of SPEC-a1234da5449a is unchanged: one constraint and one task always survive, and a page genuinely over budget is still cut. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on the golden corpus of `tests/cli.rs` (one accepted constraint, one
