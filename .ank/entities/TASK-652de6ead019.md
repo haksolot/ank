@@ -5,7 +5,7 @@ slug: find-json-spends-an-attention-budget-on-a-reader
 title: find --json spends an attention budget on a reader that has none
 created: 2026-08-22T20:51:57Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/human.rs
@@ -17,8 +17,13 @@ blocked_by: []
 done_criteria: |
   find, review, scope and graph answer with every row under --json whatever the budget, and a test drives each of the four on a corpus seeded past the budget and asserts that every entity it holds is in the document. shown equals total in those documents unless a filter removed rows, and hidden names only what a filter withheld: a test asserts both on a corpus past the budget with no filter, and on one where --free hid a row. The human output of all four is unchanged, budget and cut notice included, asserted byte for byte against what it prints today. context --json stays budgeted and a test asserts it. The contract version is unchanged and the goldens are blessed with the diff read and stated. The machine surface document of a spec superseding the current CLI surface document states where the budget applies. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 4dbcd963dffb321a42ad7c55e9c86fc629817282
+    criteria: a05a1c05bd16
+    via: submitted
 schema: 4
-version: 4
+version: 5
 ---
 
 ADR-3e6ce108edcd is the decision; this is the code it costs.
