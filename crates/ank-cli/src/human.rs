@@ -519,6 +519,27 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // One history walk for every dead scope this pass finds, read the first
     // time one is found and never before (TASK-1b3d7b61dc8f).
     let walked: OnceCell<git::History> = OnceCell::new();
+    // And narrowed to the paths that walk will be asked about
+    // (TASK-0515cfe21421). The verdicts already say which patterns match no
+    // file, and `scope_moved` below turns each of them into exactly one
+    // question for git, so the questions are known before the walk rather than
+    // discovered one entity at a time. Derived here and not inside the loop
+    // because a pathspec list assembled per entity would be a different walk
+    // per entity, which is the shape TASK-1b3d7b61dc8f removed.
+    //
+    // Every dead pattern is included, including the ones the loop will skip
+    // for a reason of its own -- a cross-corpus entry, a scope ahead of the
+    // code. A pathspec more selects a few commits more and answers the same
+    // question; deriving the skips a second time here would put the rule in
+    // two places, and the two would disagree.
+    let asked: Vec<String> = verdicts
+        .iter()
+        .filter(|(_, alive)| !**alive)
+        .map(|(pattern, _)| match literal_prefix(pattern) {
+            Some((prefix, _)) => prefix,
+            None => pattern.clone(),
+        })
+        .collect();
 
     // From here the inspection has two halves, and one of them can be absent
     // (ADR-9307e5d214a7). Everything above is the corpus — parse, canonical
@@ -616,6 +637,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &verdicts,
                 has_worktree_git.then_some(repo.worktree.as_path()),
                 &walked,
+                &asked,
                 &mut report,
             );
         }
@@ -1135,6 +1157,7 @@ fn check_scope_alive(
     verdicts: &HashMap<String, bool>,
     git_root: Option<&Path>,
     walked: &OnceCell<git::History>,
+    asked: &[String],
     report: &mut Report,
 ) {
     let globs = entity.scope();
@@ -1211,7 +1234,7 @@ fn check_scope_alive(
             // kept intact while the per-glob price it allowed goes away
             // (TASK-1b3d7b61dc8f).
             Some(root) => {
-                let history = walked.get_or_init(|| git::history(root).unwrap_or_default());
+                let history = walked.get_or_init(|| git::history(root, asked).unwrap_or_default());
                 scope_moved(entity, glob, history)
             }
             None => Vec::new(),
