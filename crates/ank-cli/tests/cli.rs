@@ -19304,16 +19304,13 @@ fn the_human_page_of_all_four_listings_is_unchanged() {
 /// output cuts, counts what it cut, and names the query that would show the
 /// rest.
 ///
-/// **The `--json` half of that clause does not hold, and this test does not
-/// pretend otherwise.** Measured on this fixture: `context --json` emits all
-/// twenty-four rows while the page above shows four. `context.rs` reads
+/// **The `--json` half of that clause holds now**, and the test below is where
+/// it is asserted. When this one was written it did not: `context.rs` read
 /// `cfg.context_budget` at exactly one line, the human `render`, and
-/// `render_json` has never taken a budget argument since it was introduced in
-/// 6ec4f70 -- so `context --json` was never budgeted and this change did not
-/// make it so. Nothing is asserted here about the `--json` document in either
-/// direction, deliberately: pinning today's behaviour would cement what the
-/// decision forbids, and pinning the decision's behaviour would fail. The gap is
-/// carried by TASK-ecf0f37f68c9.
+/// `render_json` had never taken a budget argument since it was introduced in
+/// 6ec4f70, so `context --json` emitted all twenty-four rows while the page here
+/// showed four. Nothing was asserted about the document in either direction,
+/// deliberately, and the gap was carried by TASK-ecf0f37f68c9, which closed it.
 #[test]
 fn the_budget_still_governs_the_page_context_serves() {
     let (r, _tasks, _adrs) = past_the_budget();
@@ -19335,5 +19332,72 @@ fn the_budget_still_governs_the_page_context_serves() {
     assert!(
         said.contains("TASK-000000000003") && !said.contains("TASK-000000000004"),
         "the page ends where the budget does: {said}"
+    );
+}
+
+/// `context --json` is served under the budget, and carries what the page
+/// carried and no more (ADR-3e6ce108edcd, TASK-ecf0f37f68c9).
+///
+/// **The asymmetry with the four listings above is the decision's, not an
+/// oversight in it.** A listing is asked *what exists*, and a document that
+/// silently omits rows is wrong about the corpus; `context` is asked *what to
+/// read first*, and there the selection is the answer rather than a limit on it.
+/// A whole `context --json` would not be a fuller answer to that question, it
+/// would hand the fitting back to a caller with no budget, no ordering and no
+/// section 5.
+///
+/// Driven through the binary and compared against the page the binary just
+/// printed, in **both** directions: every row the document carries is on the
+/// page, and every row the page shows is in the document. A count alone would
+/// pass on a document that cut the right number of the wrong rows, which is
+/// exactly what a second fitting decision would produce -- and the fitting is
+/// made once, above both renderers, so that there cannot be one.
+#[test]
+fn the_json_document_of_context_is_served_under_the_same_budget() {
+    let (r, tasks, adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let page = stdout(&out);
+
+    let out = r.ank("claude-code@ank", &["context", "--json"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let doc = stdout(&out);
+
+    // The budget did real work on the page, or this fixture proves nothing.
+    assert!(page.contains("+12 not shown"), "{page}");
+    assert!(page.contains("+8 more tasks"), "{page}");
+
+    let quoted = |id: &String| format!("\"{id}\"");
+    for id in tasks.iter().chain(&adrs) {
+        assert_eq!(
+            page.contains(id.as_str()),
+            doc.contains(&quoted(id)),
+            "{id}: the page and the document disagree.\npage:\n{page}\ndocument:\n{doc}"
+        );
+    }
+
+    // Named rather than merely counted, so a failure says which row moved.
+    let in_doc: Vec<&String> = tasks
+        .iter()
+        .filter(|id| doc.contains(&quoted(id)))
+        .collect();
+    assert_eq!(
+        in_doc.len(),
+        4,
+        "four of twelve tasks, as the page shows: {in_doc:?}\n{doc}"
+    );
+    assert!(
+        !adrs.iter().any(|id| doc.contains(&quoted(id))),
+        "the proposals were cut from the page and belong nowhere in the document:\n{doc}"
+    );
+
+    // The counters stay the perimeter's, exactly as the human headers count what
+    // the perimeter holds and not what survived. A caller reading four rows and
+    // `"ready":12` knows the page was fitted; `"ready":4` would be
+    // indistinguishable from a corpus of four tasks.
+    assert!(
+        doc.contains("\"ready\":12"),
+        "the counters follow the page instead of the perimeter:\n{doc}"
     );
 }

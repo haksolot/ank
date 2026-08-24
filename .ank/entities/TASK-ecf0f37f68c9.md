@@ -5,15 +5,16 @@ slug: context-json-is-not-budgeted-and-adr-3e6ce108edc
 title: context --json is not budgeted, and ADR-3e6ce108edcd says it is
 created: 2026-08-24T02:21:00Z
 author: claude-code/opus-5-json-budget
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/context.rs
+  - crates/ank-cli/tests/cli.rs
 blocked_by: []
 done_criteria: |
   context --json is served under context_budget, the same page the human render already spends, and a test drives the binary on a corpus past the budget and asserts that the --json document carries what the human page carried and no more. The four listing verbs stay whole under --json. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
 schema: 4
-version: 1
+version: 4
 ---
 
 ADR-3e6ce108edcd exempts `context` from the rule it lays on the four listing
