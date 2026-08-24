@@ -1152,76 +1152,193 @@ fn visible_len(s: &str) -> usize {
     n
 }
 
-pub fn render(view: &View, budget: usize, style: Style) -> String {
-    let mut out: Vec<String> = Vec::new();
-    for w in &view.warnings {
-        out.push(format!("{} {w}", style.yellow("warning:")));
+// ---------------------------------------------------------------------------
+// The budget
+// ---------------------------------------------------------------------------
+
+/// What the budget leaves of a view, decided once and spent by both surfaces.
+///
+/// ADR-3e6ce108edcd draws its line at the verb rather than at the flag. A
+/// listing answers a program whole, because a parser reads no page and spends
+/// no budget; `context` keeps the budget under `--json`, because deciding what
+/// a reader is handed first *is* that verb's answer rather than a limit on it.
+/// That asymmetry only means something if there is **one** fitting decision
+/// rather than two, so it lives here, above both renderers, and neither of them
+/// cuts anything of its own. A second copy would be free to disagree with the
+/// first about which rule survives, and the same perimeter would then be
+/// described differently depending on which surface a reader typed.
+///
+/// **Priced in plain style, always.** [`chars`] already ignores SGR sequences,
+/// so a painted page costs a reader exactly what a piped one does. Fitting once
+/// and in plain turns that from a property two renderers happen to share into
+/// one they cannot disagree about, and it is what lets `--json` — which carries
+/// no style at all (ADR-0c8ab846d262) — be served the very rows the terminal
+/// was.
+#[derive(Clone)]
+pub(crate) struct Fitted {
+    pub constraints: Vec<ConstraintLine>,
+    pub proposals: Vec<ConstraintLine>,
+    pub specs: Vec<SpecLine>,
+    pub tasks: Vec<TaskLine>,
+    /// The entries that survived, oldest first and without the page's indent.
+    pub log: Vec<String>,
+    pub cut_constraints: usize,
+    pub cut_proposals: usize,
+    pub cut_specs: usize,
+    pub cut_tasks: usize,
+}
+
+/// The four sections orientation can cut, named so that the cutting loops speak
+/// in §5's order instead of repeating four near-identical branches.
+#[derive(Clone, Copy)]
+enum Section {
+    Proposals,
+    Specs,
+    Tasks,
+    Constraints,
+}
+
+impl Fitted {
+    /// The same page one row lighter in `section`, or `None` where there is no
+    /// row to take: an empty section, or the floor of §5 — **one constraint and
+    /// one task always survive, whatever the budget** — which is a rule about
+    /// what a page must still say and not an arithmetic stopping condition.
+    ///
+    /// Returning the state rather than mutating is what lets a caller ask what a
+    /// cut would cost before taking it, which is the whole of the fix in the two
+    /// loops below.
+    fn without(&self, section: Section) -> Option<Fitted> {
+        let mut next = self.clone();
+        match section {
+            Section::Proposals => {
+                next.proposals.pop()?;
+                next.cut_proposals += 1;
+            }
+            Section::Specs => {
+                next.specs.pop()?;
+                next.cut_specs += 1;
+            }
+            Section::Tasks => {
+                if next.tasks.len() <= 1 {
+                    return None;
+                }
+                next.tasks.pop();
+                next.cut_tasks += 1;
+            }
+            Section::Constraints => {
+                if next.constraints.len() <= 1 {
+                    return None;
+                }
+                next.constraints.pop();
+                next.cut_constraints += 1;
+            }
+        }
+        Some(next)
     }
+}
+
+/// The warnings, which both modes carry and the budget charges before anything
+/// else: a page that is degraded says so in a line, and a shorter page cannot
+/// say it at all.
+fn warning_lines(view: &View, style: Style) -> Vec<String> {
+    view.warnings
+        .iter()
+        .map(|w| format!("{} {w}", style.yellow("warning:")))
+        .collect()
+}
+
+/// Execution mode, everything above the log: the task, the criterion whole, the
+/// constraints never truncated, the specifications named.
+///
+/// Split out because the log is the one section that yields, and the budget has
+/// to price what sits above it before it can decide how much of it survives.
+fn execution_head(view: &View, style: Style) -> Vec<String> {
+    let Mode::Execution {
+        short,
+        title,
+        criteria,
+        ..
+    } = &view.mode
+    else {
+        return Vec::new();
+    };
+    let mut out = vec![String::new(), format!("{}  {title}", style.id(short))];
+    if let Some(c) = criteria {
+        out.push(String::new());
+        out.push(style.header("DONE_CRITERIA"));
+        for line in c.lines() {
+            out.push(format!("  {}", line.trim_end()));
+        }
+    }
+    if !view.constraints.is_empty() {
+        out.push(String::new());
+        out.push(style.header(&format!("CONSTRAINTS ({} active)", view.constraints.len())));
+        // Never truncated here, budget or no budget: an agent that violates a
+        // rule it was never shown is the failure this whole design exists to
+        // prevent.
+        for c in &view.constraints {
+            out.extend(constraint_block(c, style));
+        }
+    }
+    // Named here as in orientation, and never quoted: there is no mode that
+    // serves a spec body, because there is no `constraint` to serve and the
+    // body is the document (§3, §5). Charged before the log, which is what
+    // yields, so a spec line never costs an entry.
+    out.extend(spec_section(&view.specs, 0, ".", style));
+    out
+}
+
+/// The log section of execution mode, over the entries the budget kept.
+///
+/// The header counts the survivors against the total, which is the one place a
+/// truncated section names its own truncation without a `+N` line.
+fn log_section(kept: &[String], total: usize, style: Style) -> Vec<String> {
+    let mut out = vec![
+        String::new(),
+        style.header(&format!("LOG ({} of {total})", kept.len())),
+    ];
+    out.extend(kept.iter().map(|e| format!("  {e}")));
+    out
+}
+
+/// The truncation of §5, made once, for whichever surface is about to print.
+pub(crate) fn fit(view: &View, budget: usize) -> Fitted {
+    let style = crate::style::PLAIN;
+    let mut fitted = Fitted {
+        constraints: view.constraints.clone(),
+        proposals: view.proposals.clone(),
+        specs: view.specs.clone(),
+        tasks: view.tasks.clone(),
+        log: Vec::new(),
+        cut_constraints: 0,
+        cut_proposals: 0,
+        cut_specs: 0,
+        cut_tasks: 0,
+    };
+    let head = chars(&warning_lines(view, style));
 
     match &view.mode {
-        Mode::Execution {
-            short,
-            title,
-            criteria,
-            log,
-            ..
-        } => {
-            out.push(String::new());
-            out.push(format!("{}  {title}", style.id(short)));
-            if let Some(c) = criteria {
-                out.push(String::new());
-                out.push(style.header("DONE_CRITERIA"));
-                for line in c.lines() {
-                    out.push(format!("  {}", line.trim_end()));
-                }
-            }
-            if !view.constraints.is_empty() {
-                out.push(String::new());
-                out.push(style.header(&format!("CONSTRAINTS ({} active)", view.constraints.len())));
-                // Never truncated here, budget or no budget: an agent that
-                // violates a rule it was never shown is the failure this whole
-                // design exists to prevent.
-                for c in &view.constraints {
-                    out.extend(constraint_block(c, style));
-                }
-            }
-            // Named here as in orientation, and never quoted: there is no mode
-            // that serves a spec body, because there is no `constraint` to
-            // serve and the body is the document (§3, §5). Charged before the
-            // log, which is what yields, so a spec line never costs an entry.
-            out.extend(spec_section(&view.specs, 0, ".", style));
+        Mode::Execution { log, .. } => {
+            // The log is what yields: it is the one section whose older half
+            // costs more than it informs. Everything above it is either the
+            // criterion, which is why the mode exists, or a binding rule.
             if !log.is_empty() {
-                // The log is what yields: it is the one section whose older
-                // half costs more than it informs.
-                let used = chars(&out);
-                let mut kept: Vec<String> = Vec::new();
+                let used = head + chars(&execution_head(view, style));
                 let mut room = budget.saturating_sub(used + 16);
                 for entry in log.iter().rev() {
                     let cost = entry.chars().count() + 3;
-                    if cost > room && !kept.is_empty() {
+                    if cost > room && !fitted.log.is_empty() {
                         break;
                     }
                     room = room.saturating_sub(cost);
-                    kept.push(format!("  {entry}"));
+                    fitted.log.push(entry.clone());
                 }
-                kept.reverse();
-                out.push(String::new());
-                out.push(style.header(&format!("LOG ({} of {})", kept.len(), log.len())));
-                out.extend(kept);
+                fitted.log.reverse();
             }
         }
 
         Mode::Orientation { path } => {
             let scope_arg = path.clone().unwrap_or_else(|| ".".to_string());
-            let mut constraints = view.constraints.clone();
-            let mut proposals = view.proposals.clone();
-            let mut specs = view.specs.clone();
-            let mut tasks = view.tasks.clone();
-
-            let mut cut_tasks = 0usize;
-            let mut cut_constraints = 0usize;
-            let mut cut_proposals = 0usize;
-            let mut cut_specs = 0usize;
 
             // §5, first half: constraints take at most a third, and what they
             // do not use goes to the tasks. Charged before anything else is
@@ -1241,77 +1358,117 @@ pub fn render(view: &View, budget: usize, style: Style) -> String {
             // page reduced to one line has to keep the rule rather than the
             // description.
             let share = budget / 3;
-            let priced = |constraints: &[ConstraintLine],
-                          specs: &[SpecLine],
-                          cut_constraints: usize,
-                          cut_specs: usize| {
+            let share_cost = |f: &Fitted| {
                 chars(&constraint_section(
-                    constraints,
-                    cut_constraints,
+                    &f.constraints,
+                    f.cut_constraints,
                     &scope_arg,
                     style,
-                )) + chars(&spec_section(specs, cut_specs, &scope_arg, style))
+                )) + chars(&spec_section(&f.specs, f.cut_specs, &scope_arg, style))
             };
-            while !specs.is_empty()
-                && priced(&constraints, &specs, cut_constraints, cut_specs + 1) > share
-            {
-                specs.pop();
-                cut_specs += 1;
-            }
-            while constraints.len() > 1
-                && priced(&constraints, &specs, cut_constraints + 1, cut_specs) > share
-            {
-                constraints.pop();
-                cut_constraints += 1;
+            // Specs first, then constraints, which is what "specs yield first
+            // inside the share" means.
+            //
+            // **The section is priced as it stands.** This loop used to price
+            // the full list *together with* a `+1 not shown` notice for a row it
+            // had not removed — a state that never exists — and compare that
+            // against the share. On the corpus `golden_repo` builds, the section
+            // as it stood cost 98 against a share of 133 while the hybrid came
+            // to 149, so a section that fitted with thirty-five characters to
+            // spare was cut. Replacing a 24-character row with a 51-character
+            // notice then put the whole page over budget and sent the loop below
+            // down to the floor: 381 characters became 373, with five rows gone
+            // (TASK-345c35a8beba).
+            for section in [Section::Specs, Section::Constraints] {
+                while share_cost(&fitted) > share {
+                    let Some(trial) = fitted.without(section) else {
+                        break;
+                    };
+                    fitted = trial;
+                }
             }
 
             // Second half: the whole page against the whole budget. Tasks are
             // cut last and only once their own share is full, which is the
             // order §5 now states.
-            loop {
-                let size = chars(&orientation_lines(
-                    &constraints,
-                    &proposals,
-                    &specs,
-                    &tasks,
-                    cut_tasks,
-                    cut_proposals,
-                    cut_constraints,
-                    cut_specs,
+            let page = |f: &Fitted| {
+                chars(&orientation_lines(
+                    &f.constraints,
+                    &f.proposals,
+                    &f.specs,
+                    &f.tasks,
+                    f.cut_tasks,
+                    f.cut_proposals,
+                    f.cut_constraints,
+                    f.cut_specs,
                     &scope_arg,
                     view,
                     style,
-                )) + chars(&out);
-                if size <= budget {
+                )) + head
+            };
+            // Cut in §5's order until the page fits, and stop only where
+            // there is no row left to take. **A cut is not required to shrink
+            // the page on its own**, and an earlier revision of this loop got
+            // that backwards: a `+n not shown` notice is longer than the row it
+            // replaces, so the first cut of a section always costs more than it
+            // saves, and refusing it left a page of twelve proposals and twelve
+            // tasks entirely uncut at a budget of 400. The notice is paid once
+            // and every later row of that section is pure saving, so the
+            // arithmetic only works out over the section rather than over one
+            // row.
+            //
+            // What made the page grow was never this loop. It was the share
+            // above handing it a page already inflated by a cut that should not
+            // have happened (TASK-345c35a8beba); priced correctly, this loop is
+            // reached only by a page that genuinely does not fit.
+            loop {
+                if page(&fitted) <= budget {
                     break;
                 }
-                if !proposals.is_empty() {
-                    proposals.pop();
-                    cut_proposals += 1;
-                } else if !specs.is_empty() {
-                    specs.pop();
-                    cut_specs += 1;
-                } else if tasks.len() > 1 {
-                    tasks.pop();
-                    cut_tasks += 1;
-                } else if constraints.len() > 1 {
-                    constraints.pop();
-                    cut_constraints += 1;
-                } else {
-                    // One task and one constraint left. Cutting further would
-                    // buy nothing an agent can use.
-                    break;
+                let taken = [
+                    Section::Proposals,
+                    Section::Specs,
+                    Section::Tasks,
+                    Section::Constraints,
+                ]
+                .into_iter()
+                .find_map(|section| fitted.without(section));
+                match taken {
+                    Some(trial) => fitted = trial,
+                    // The floor of §5: one constraint and one task survive
+                    // whatever the budget, and cutting further would buy
+                    // nothing an agent can use.
+                    None => break,
                 }
             }
+        }
+    }
+    fitted
+}
+
+pub fn render(view: &View, budget: usize, style: Style) -> String {
+    let fitted = fit(view, budget);
+    let mut out = warning_lines(view, style);
+
+    match &view.mode {
+        Mode::Execution { log, .. } => {
+            out.extend(execution_head(view, style));
+            if !log.is_empty() {
+                out.extend(log_section(&fitted.log, log.len(), style));
+            }
+        }
+
+        Mode::Orientation { path } => {
+            let scope_arg = path.clone().unwrap_or_else(|| ".".to_string());
             out.extend(orientation_lines(
-                &constraints,
-                &proposals,
-                &specs,
-                &tasks,
-                cut_tasks,
-                cut_proposals,
-                cut_constraints,
-                cut_specs,
+                &fitted.constraints,
+                &fitted.proposals,
+                &fitted.specs,
+                &fitted.tasks,
+                fitted.cut_tasks,
+                fitted.cut_proposals,
+                fitted.cut_constraints,
+                fitted.cut_specs,
                 &scope_arg,
                 view,
                 style,
@@ -1477,11 +1634,33 @@ fn orientation_lines(
 // JSON
 // ---------------------------------------------------------------------------
 
-pub fn render_json(view: &View) -> String {
+/// **Budgeted, and it is the only `--json` document that is** (ADR-3e6ce108edcd).
+///
+/// The four listing verbs answer a program whole under `--json`, because the
+/// budget is the human reader's and a parser reads no page. `context` is the
+/// exception the same decision names, and the asymmetry is not a lapse in it:
+/// a listing is asked *what exists*, and an answer that silently omits rows is
+/// simply wrong about the corpus, while `context` is asked *what to read
+/// first*, and there the selection is the answer rather than a limit on it. A
+/// `context --json` that returned everything would not be a fuller answer to
+/// the question the verb was asked; it would be a refusal to answer it, handing
+/// the fitting back to a caller that has no budget, no ordering and no §5.
+///
+/// So the rows here are [`fit`]'s, the same ones the terminal was handed at the
+/// same `context_budget`, and nothing is cut a second time.
+///
+/// The three counters are the exception, and they are the perimeter's rather
+/// than the page's: `ready`, `blocked` and `finished_elsewhere` say what the
+/// scope holds, exactly as the human page's `SPECIFICATIONS (n)` and
+/// `PROPOSED (n)` headers count what the perimeter holds and not what survived.
+/// A counter that shrank with the page would leave a caller unable to tell a
+/// perimeter with two ready tasks from a budget that had room for two.
+pub fn render_json(view: &View, budget: usize) -> String {
+    let fitted = fit(view, budget);
     // The peer a constraint came from, `null` for a rule at home. The human
     // surface carries the same fact in the identifier it prints; `--json` has
     // nowhere to put a suffix, so it gets a field of its own.
-    let constraints: Vec<String> = view
+    let constraints: Vec<String> = fitted
         .constraints
         .iter()
         .map(|c| {
@@ -1494,7 +1673,7 @@ pub fn render_json(view: &View) -> String {
                 .finish()
         })
         .collect();
-    let proposals: Vec<String> = view
+    let proposals: Vec<String> = fitted
         .proposals
         .iter()
         .map(|c| {
@@ -1510,7 +1689,7 @@ pub fn render_json(view: &View) -> String {
     // the same rule as the human one — there is no mode that serves a spec
     // body — and a `--json` caller is exactly the one that would pipe two
     // hundred thousand bytes into an agent's context without noticing.
-    let specs: Vec<String> = view
+    let specs: Vec<String> = fitted
         .specs
         .iter()
         .map(|s| {
@@ -1521,7 +1700,7 @@ pub fn render_json(view: &View) -> String {
                 .finish()
         })
         .collect();
-    let tasks: Vec<String> = view
+    let tasks: Vec<String> = fitted
         .tasks
         .iter()
         .map(|t| {
@@ -1552,10 +1731,11 @@ pub fn render_json(view: &View) -> String {
         } => Some(c.clone()),
         _ => None,
     };
-    let log: &[String] = match &view.mode {
-        Mode::Execution { log, .. } => log,
-        Mode::Orientation { .. } => &[],
-    };
+    // The entries the budget kept, which in execution mode is the one section
+    // that yields: the criterion above it is why the mode exists and a
+    // constraint is never cut, so the log is where a `--json` caller and a
+    // terminal see the same page shorten.
+    let log: &[String] = &fitted.log;
 
     Obj::document()
         .str("mode", mode)
@@ -1607,7 +1787,7 @@ pub fn run(
     }
 
     if inv.json() {
-        let _ = writeln!(out, "{}", render_json(&view));
+        let _ = writeln!(out, "{}", render_json(&view, cfg.context_budget));
     } else if !inv.quiet() {
         let _ = write!(out, "{}", render(&view, cfg.context_budget, inv.style()));
     }
@@ -1814,6 +1994,28 @@ After a blank one."
             schema: 1,
             version: 1,
             body: "\nWhy.\n".into(),
+        })
+    }
+
+    fn spec(hex: &str, title: &str, scope: &[&str]) -> Entity {
+        Entity::Spec(ank_core::Spec {
+            id: EntityId::parse(&format!("SPEC-{hex}")).unwrap(),
+            slug: Some("example".into()),
+            title: title.into(),
+            created: "2026-07-20T00:00:00Z".into(),
+            author: None,
+            status: ank_core::SpecStatus::Accepted,
+            scope: scope.iter().map(|s| s.to_string()).collect(),
+            references: vec![],
+            supersedes: None,
+            ratified: None,
+            verified: Vec::new(),
+            schema: 1,
+            version: 1,
+            body: "
+The document.
+"
+            .into(),
         })
     }
 
@@ -2369,7 +2571,7 @@ After a blank one."
             AdrStatus::Accepted,
         ));
         let view = t.view("claude-code@ank", None);
-        let json = render_json(&view);
+        let json = render_json(&view, 8000);
 
         // serde_yaml parses JSON, YAML being a superset: a cheap way to assert
         // the output is well formed without adding a JSON dependency.
@@ -2386,5 +2588,270 @@ After a blank one."
             parsed["constraints"][0]["constraint"].as_str(),
             Some("Line one.\nLine two.")
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The budget, on both surfaces
+    // -----------------------------------------------------------------------
+
+    /// A perimeter past the budget: twelve open tasks and twelve proposed
+    /// decisions on one scope, which is the corpus the measurement recorded in
+    /// TASK-ecf0f37f68c9 was taken on.
+    fn past_the_budget() -> Temp {
+        let t = Temp::new();
+        t.write(&adr(
+            "00000000aaaa",
+            "The one accepted rule",
+            &["src/**"],
+            "Nothing under src/ reaches the network at import time.\n",
+            AdrStatus::Accepted,
+        ));
+        for i in 1..=12u32 {
+            t.write(&task(
+                &format!("0000000000{i:02}"),
+                &format!("Open task number {i}"),
+                &["src/**"],
+                &[],
+                TaskStatus::Open,
+            ));
+            t.write(&adr(
+                &format!("0000000000{i:02}"),
+                &format!("A proposal number {i}"),
+                &["src/**"],
+                "Prefer the idempotent form.\n",
+                AdrStatus::Proposed,
+            ));
+        }
+        t
+    }
+
+    fn parse(json: &str) -> serde_yaml::Value {
+        serde_yaml::from_str(json).unwrap_or_else(|e| panic!("invalid JSON: {e}\n{json}"))
+    }
+
+    /// The `short` of every row of one array, in order.
+    fn shorts_of(doc: &serde_yaml::Value, key: &str) -> Vec<String> {
+        doc[key]
+            .as_sequence()
+            .unwrap_or_else(|| panic!("{key} is not an array"))
+            .iter()
+            .map(|row| row["short"].as_str().expect("a row without a short").into())
+            .collect()
+    }
+
+    /// The `--json` document carries what the page carried, and no more (§5,
+    /// ADR-3e6ce108edcd).
+    ///
+    /// Asserted against the page rather than against a recorded number, in both
+    /// directions: every row the document carries is on the page, and every row
+    /// the page shows is in the document. A count alone would pass on a
+    /// document that cut the right *number* of the wrong rows, which is exactly
+    /// what a second fitting decision would produce.
+    #[test]
+    fn the_json_document_is_served_under_the_page_s_budget() {
+        let t = past_the_budget();
+        let view = t.view("claude-code@ank", None);
+        assert_eq!(view.tasks.len(), 12, "the fixture is past the budget");
+        assert_eq!(view.proposals.len(), 12);
+
+        // The measurement the task was filed on: at 400 the page carried four
+        // task rows and no proposal, and the document carried all twenty-four.
+        let page = render(&view, 400, crate::style::PLAIN);
+        let doc = parse(&render_json(&view, 400));
+
+        let tasks = shorts_of(&doc, "tasks");
+        let proposed = shorts_of(&doc, "proposed");
+        assert!(
+            tasks.len() < view.tasks.len(),
+            "the budget did no work on the tasks: {tasks:?}"
+        );
+        assert!(
+            proposed.len() < view.proposals.len(),
+            "the budget did no work on the proposals: {proposed:?}"
+        );
+
+        for short in tasks.iter().chain(&proposed) {
+            assert!(
+                page.contains(short.as_str()),
+                "the document carries {short}, which the page cut:\n{page}"
+            );
+        }
+        for line in view.tasks.iter().map(|t| &t.short) {
+            assert_eq!(
+                page.contains(line.as_str()),
+                tasks.contains(line),
+                "{line}: the page and the document disagree:\n{page}"
+            );
+        }
+        for line in view.proposals.iter().map(|c| &c.short) {
+            assert_eq!(
+                page.contains(line.as_str()),
+                proposed.contains(line),
+                "{line}: the page and the document disagree:\n{page}"
+            );
+        }
+
+        // The counters are the perimeter's and never the page's, exactly as the
+        // human headers count what the perimeter holds. A caller reading four
+        // rows and `ready: 12` knows the page was fitted; one reading
+        // `ready: 4` could not tell that from a corpus of four tasks.
+        assert_eq!(doc["ready"].as_u64(), Some(12), "{doc:?}");
+    }
+
+    /// **A page that fits is not cut**, even at a budget it barely fits under.
+    ///
+    /// This is the corpus `golden_repo` builds in `tests/cli.rs`, at the
+    /// `context_budget: 400` it declares: one accepted constraint, one proposal,
+    /// one spec and four open tasks over `src/**`. Uncut it renders 381
+    /// characters, eighteen under the budget, so §5 has nothing to do.
+    ///
+    /// It used to cut five rows and hand back 373 characters — shorter by eight
+    /// than the cut it bought. The share loop priced the full spec list
+    /// *together with* a `+1 not shown` notice for a row it had not removed, a
+    /// state that never exists: 149 against a share of 133, where the section as
+    /// it stood cost 98. Cutting the spec then replaced a 24-character row with
+    /// a 51-character notice, which put the page over budget and sent the second
+    /// loop down to the floor (TASK-345c35a8beba).
+    #[test]
+    fn a_page_that_fits_is_not_cut_at_the_budget_it_fits_under() {
+        let t = Temp::new();
+        t.write(&adr(
+            "0000000000ab",
+            "A decision",
+            &["src/**"],
+            "Nothing under src/ reaches the network at import time. A module that
+             opens a socket, reads an environment variable naming a host, or resolves
+             a name while it is being loaded makes the import order a fact about the
+             machine rather than about the program, and the failure it produces names
+             the importer instead of the line that reached out.
+",
+            AdrStatus::Accepted,
+        ));
+        t.write(&adr(
+            "0000000000ba",
+            "A decision",
+            &["src/**"],
+            "A proposal.
+",
+            AdrStatus::Proposed,
+        ));
+        t.write(&spec("0000000000cd", "A document", &["src/**"]));
+        for (hex, title, blocked) in [
+            ("000000000001", "Example task", &["TASK-000000000002"][..]),
+            ("000000000002", "A task that blocks", &[]),
+            ("000000000003", "A task that waits", &["TASK-000000000004"]),
+            ("000000000004", "A task apart", &[]),
+        ] {
+            t.write(&task(hex, title, &["src/**"], blocked, TaskStatus::Open));
+        }
+
+        let view = t.view("claude-code@ank", Some("src/**"));
+        let page = render(&view, 400, crate::style::PLAIN);
+        assert!(
+            page.chars().count() <= 400,
+            "the page does not fit, so this corpus proves nothing: {}",
+            page.chars().count()
+        );
+        assert!(
+            !page.contains("not shown"),
+            "a section was cut:
+{page}"
+        );
+        assert!(
+            !page.contains("more tasks"),
+            "a task was cut:
+{page}"
+        );
+        assert!(page.contains("SPECIFICATIONS (1)"), "{page}");
+        assert!(page.contains("PROPOSED (1, non-binding)"), "{page}");
+        assert!(page.contains("TASKS (4)"), "{page}");
+
+        // And the document says the same, which is what makes this a fact about
+        // the budget rather than about one renderer.
+        let doc = parse(&render_json(&view, 400));
+        assert_eq!(shorts_of(&doc, "tasks").len(), 4);
+        assert_eq!(shorts_of(&doc, "proposed").len(), 1);
+        assert_eq!(shorts_of(&doc, "specs").len(), 1);
+        assert_eq!(shorts_of(&doc, "constraints").len(), 1);
+    }
+
+    /// A budget large enough to hold the perimeter cuts nothing on either
+    /// surface: the fitting is a consequence of the number, not a habit.
+    #[test]
+    fn a_budget_that_fits_cuts_neither_surface() {
+        let t = past_the_budget();
+        let view = t.view("claude-code@ank", None);
+        let doc = parse(&render_json(&view, 100_000));
+        assert_eq!(shorts_of(&doc, "tasks").len(), 12);
+        assert_eq!(shorts_of(&doc, "proposed").len(), 12);
+        assert_eq!(shorts_of(&doc, "constraints").len(), 1);
+    }
+
+    /// Execution mode has one section that yields, and `--json` yields with it.
+    ///
+    /// The criterion is never cut and a constraint is never cut, so the log is
+    /// the only place the two surfaces can be seen shortening together.
+    #[test]
+    fn the_json_log_is_cut_where_the_page_cuts_it() {
+        let t = Temp::new();
+        let mut body = String::from("\nBody.\n\n## Log\n");
+        for i in 1..=20 {
+            body.push_str(&format!(
+                "- 2026-07-28T10:{i:02}Z a@h — entry number {i}, long enough to cost \
+                 something against a small budget\n"
+            ));
+        }
+        let Entity::Task(mut task_entity) = task(
+            "000000000001",
+            "The task",
+            &["src/**"],
+            &[],
+            TaskStatus::Open,
+        ) else {
+            panic!("not a task")
+        };
+        task_entity.body = body;
+        t.write(&Entity::Task(task_entity));
+        t.write(&adr(
+            "00000000aaaa",
+            "A rule",
+            &["src/**"],
+            "Every session goes through the store.\n",
+            AdrStatus::Accepted,
+        ));
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.claim_as(&id, "claude-code@ank");
+
+        let view = t.view("claude-code@ank", None);
+        let Mode::Execution { log, .. } = &view.mode else {
+            panic!("expected execution mode")
+        };
+        assert_eq!(log.len(), 20);
+
+        let page = render(&view, 800, crate::style::PLAIN);
+        let doc = parse(&render_json(&view, 800));
+        let kept: Vec<String> = doc["log"]
+            .as_sequence()
+            .expect("log is not an array")
+            .iter()
+            .map(|e| e.as_str().expect("an entry that is not a string").into())
+            .collect();
+
+        assert!(kept.len() < 20, "the budget did no work: {kept:?}");
+        assert!(!kept.is_empty(), "the floor keeps one entry");
+        assert!(
+            page.contains(&format!("LOG ({} of 20)", kept.len())),
+            "the page kept a different number of entries:\n{page}"
+        );
+        for entry in &kept {
+            assert!(
+                page.contains(entry.as_str()),
+                "{entry} was cut from the page"
+            );
+        }
+        // The oldest are what yields, so the newest entry is on both surfaces
+        // and the first is on neither.
+        assert_eq!(kept.last(), log.last());
+        assert!(!kept.contains(&log[0]), "the oldest survived the cut");
     }
 }
