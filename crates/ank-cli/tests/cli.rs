@@ -19550,3 +19550,81 @@ fn a_ratification_that_orphans_nothing_says_nothing() {
         stderr(&out)
     );
 }
+
+/// A closed task is not asked to close down a chain it already closed
+/// (TASK-a0ec19b32c39).
+///
+/// **Both shapes, because only the pair says anything.** A rule that stopped
+/// asking altogether would pass the second assertion and fail the first, and
+/// the case the finding exists for is the first one: an open task waiting on a
+/// prerequisite somebody abandoned is a decision a human still owes.
+///
+/// What the closed one is offered is an act it may not perform. `amend` refuses
+/// a finished task, so `close down the chain or rewrite it` names a rewrite the
+/// reader is not allowed to make, which is the shape this corpus calls a
+/// finding readers learn to skip.
+///
+/// Through the binary, because the criterion is about what `check` prints.
+#[test]
+fn a_closed_task_is_not_asked_to_close_down_a_chain_it_already_closed() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(
+        r.0.join("src/lib.rs"),
+        "// x
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let new_task = |title: &str, blocked: Option<&str>| -> String {
+        let mut argv = vec![
+            "new",
+            "task",
+            "--title",
+            title,
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The prose says when.",
+        ];
+        if let Some(b) = blocked {
+            argv.push("--blocked-by");
+            argv.push(b);
+        }
+        let out = r.ank("claude-code@ank", &argv);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        stdout(&out)
+            .split_whitespace()
+            .nth(1)
+            .expect("created <id> <slug>")
+            .to_string()
+    };
+
+    let blocker = new_task("The prerequisite", None);
+    let waiting = new_task("Still waiting on it", Some(&blocker));
+    let finished = new_task("Closed down with it", Some(&blocker));
+    for (id, reason) in [
+        (&blocker, "not the road after all"),
+        (&finished, "the chain went with it"),
+    ] {
+        let out = r.ank("claude-code@ank", &["close", id, "--reason", reason]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!(
+            "signal: {waiting}: blocked by {blocker}, which is closed"
+        )),
+        "an open task waiting on an abandoned prerequisite is still asked: {said}"
+    );
+    assert!(
+        !said
+            .lines()
+            .any(|l| l.contains(&format!("{finished}: blocked by"))),
+        "the chain is closed down, and asking again names an act amend refuses: {said}"
+    );
+}

@@ -1481,10 +1481,28 @@ fn check_task(
             )),
             // `closed` does not unblock: the work was not carried out, the
             // dependents stay blocked, and a human decides (§3).
-            Some(TaskStatus::Closed) => report.findings.push(Finding::signal(
-                &t.id,
-                format!("blocked by {b}, which is closed: close down the chain or rewrite it"),
-            )),
+            //
+            // **And a dependent that is itself closed is the chain closed
+            // down** (TASK-a0ec19b32c39). Asking again names an act nobody may
+            // perform: `amend` refuses a finished task, so the one repair the
+            // sentence offers is the one the reader is not allowed to make, and
+            // that is the shape `check_scope_alive` calls a finding readers
+            // learn to skip. The same line the dead-scope rule already draws for
+            // a closed task, where the finding says nothing is owed
+            // (TASK-4c031f7b44ed).
+            //
+            // A `done` dependent keeps the finding, and that is a choice rather
+            // than the condition being lazy: a task recorded as finished whose
+            // prerequisite was abandoned is worth a reader's attention, where a
+            // closed one carries no claim at all. The sentence it gets is the
+            // wrong one for that state, and the right one is not this task's to
+            // invent.
+            Some(TaskStatus::Closed) if t.status != TaskStatus::Closed => {
+                report.findings.push(Finding::signal(
+                    &t.id,
+                    format!("blocked by {b}, which is closed: close down the chain or rewrite it"),
+                ))
+            }
             _ => {}
         }
     }
