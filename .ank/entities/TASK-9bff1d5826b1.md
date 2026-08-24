@@ -32,8 +32,12 @@ proof:
   - type: commit
     ref: e5e0d81
     criteria: 6a7020f9efea
+  - type: commit
+    ref: e5e0d81870a24f76f249fd35c22cef1841cd3a44
+    criteria: 6a7020f9efea
+    via: submitted
 schema: 3
-version: 8
+version: 9
 ---
 
 Last step of the format change, and the one that is irreversible in practice even
