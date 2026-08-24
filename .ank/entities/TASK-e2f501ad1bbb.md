@@ -5,15 +5,20 @@ slug: the-attention-budget-explains-itself-with-a-fact
 title: The attention budget explains itself with a fact the corpus outgrew
 created: 2026-08-24T00:19:56Z
 author: claude-code/opus-5
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/context.rs
 blocked_by: []
 done_criteria: |
   A spec superseding SPEC-6aed60cd3717 states the never-truncated guarantee of execution mode without resting it on how many constraints a claimed perimeter matches, and its body names what a perimeter of one file matches on this corpus, with the date and the command that produced the figure. The threshold, the guarantee and what context serves are unchanged, and no source file changes. It lands proposed: accept is a human act and is no part of this criterion. ank check stays green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: cc96c62
+    criteria: 6f7ad1be2c4a
+    via: submitted
 schema: 4
-version: 2
+version: 3
 ---
 
 SPEC-6aed60cd3717 guarantees that a constraint is never truncated in
