@@ -5,7 +5,7 @@ slug: the-protocol-surface-ships-wherever-the-cli-ship
 title: The protocol surface ships wherever the CLI ships
 created: 2026-08-24T21:57:38Z
 author: claude-code/opus-5+planning
-status: proposed
+status: accepted
 scope:
   - install.sh
   - install.ps1
@@ -14,8 +14,12 @@ scope:
   - docs/**
 constraint: |
   ank-mcp is built, published, installed and documented by every route that carries ank, for the same three platforms and out of the same build. No route carries one without the other, and no route exists for ank-mcp alone: it is freight of the three channels ADR-221aa5da440a names, never a fourth beside them. Where a route places ank, it places ank-mcp next to it. The documentation that teaches installing ank states in the same place how a client reaches the protocol surface, with a configuration a reader can paste.
+ratified: d23338dc3c18
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-24T22:26:35Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-372b82af1ec7 permitted a protocol surface on conditions, and TASK-e819448560e7
