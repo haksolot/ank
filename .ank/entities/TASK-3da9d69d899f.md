@@ -5,7 +5,7 @@ slug: nothing-has-measured-what-consolidating-decision
 title: Nothing has measured what consolidating decisions would return
 created: 2026-08-24T00:19:33Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/claim.rs
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   The task log records, each figure with the command that produces it: how many live constraints an execution-mode perimeter of one file receives on this corpus and what they total in characters; how many of those constraints share an identical scope with at least one other and what each such group totals; and what the same perimeter would receive if every group were stated once at the length of its longest member. The figures are taken on this corpus and are reproducible from the log alone. No source file changes: a probe that ships is a different task.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 The charge a perimeter carries has never gone down, and nothing in the model
