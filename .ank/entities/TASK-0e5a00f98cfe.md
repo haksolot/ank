@@ -5,15 +5,20 @@ slug: the-tree-walk-descends-into-other-checkouts-and
 title: The tree walk descends into other checkouts, and 88 percent of what it reads is not this tree
 created: 2026-08-24T18:50:37Z
 author: claude-code/opus-5-reading
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/human.rs
 blocked_by: []
 done_criteria: |
   tracked_files does not descend into a directory that is a separate git checkout, which is any directory below the root carrying a .git entry of its own, and the exclusion of the corpus directory in accept's citation warning holds wherever a .ank sits rather than only at the root. Measured on this repository before and after, both the file count the walk yields and the wall time of ank check, release build, warm. The findings ank check reports are identical subject by subject except for the dead scopes the wide walk was hiding, which are named in the record: TASK-10b8a29fd853 and TASK-3109a736c255 scope .claude/**, and the checkouts living under .claude/worktrees/ made that glob match. check still exits 0. accept's orphaned-citation warning names only files of this tree. Verified through the binary on a repository carrying a nested checkout. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 2f7d67c42beefaa60802b50e1eb0dc5c6451177c
+    criteria: 5e695ac24a7a
+    via: submitted
 schema: 4
-version: 5
+version: 6
 ---
 
 Found by the warning `accept` printed while ratifying SPEC-78134d2b3cf8, on its
