@@ -5,15 +5,20 @@ slug: section-4-gains-read-and-the-suite-declares-the
 title: Section 4 gains read, and the suite declares the gap until it ships
 created: 2026-08-24T18:16:12Z
 author: claude-code/opus-5-reading
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/tests/skill.rs
 blocked_by: []
 done_criteria: |
   A successor to the spec that carries section 4 exists, created with new spec --supersedes, carrying the predecessor's document whole with read added to the Commands block in the group and position ank help will print it in, and a passage stating what the verb records and what it refuses. NOT_YET_DISPATCHED declares read with this corpus's task id for the implementation, so every_verb_section_4_lists_ships_or_is_declared_unimplemented stays green while the gap exists. cargo test is green, cargo fmt --check passes, and ank check reports no fault. The successor lands proposed: ratifying it is a human act and is not part of this criterion.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: e64a74c1da6e58bc00faa746f4eb245e3f8ab31c
+    criteria: a582e523ab1c
+    via: submitted
 schema: 4
-version: 2
+version: 3
 ---
 
 `read` cannot ship in the landing that puts it in section 4, and the suite says
