@@ -646,6 +646,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
     }
     check_entries(&entities, &in_scope, &unread, &mut report);
+    check_prose_identifiers(&entities, &in_scope, &unread, &mut report);
     check_accounting(&entities, &in_scope, &mut report);
 
     check_cycles(&entities, &mut report);
@@ -2626,6 +2627,134 @@ fn check_entries(
             format!("{total} log entries are about an entity this corpus does not hold"),
         )
         .with_note(orphans),
+    );
+}
+
+/// The prose an entity stores, in the three places §4 says it is read: a log
+/// entry's message, a task's `done_criteria`, and every kind's body.
+///
+/// A constraint and a title are not here, and the omission is the decision
+/// rather than an oversight. A constraint is a declared field the catalogue
+/// already reads as one, and a title is a line a lister prints whole; what this
+/// reads is the free text nobody resolves, which is exactly where an
+/// identifier can name nothing without any verb noticing. A log entry's message
+/// *is* its title (§3), and it is read here because it is the field
+/// `ank log "<message>"` writes and the one that produced the case
+/// ADR-1e6bcbf62e61 was decided on.
+fn prose_of(e: &Entity) -> Vec<&str> {
+    match e {
+        Entity::Task(t) => match &t.done_criteria {
+            Some(c) => vec![t.body.as_str(), c.as_str()],
+            None => vec![t.body.as_str()],
+        },
+        Entity::Adr(a) => vec![a.body.as_str()],
+        Entity::Spec(s) => vec![s.body.as_str()],
+        Entity::Log(l) => vec![l.body.as_str(), l.title.as_str()],
+    }
+}
+
+/// Every identifier this corpus could have minted that a piece of prose names.
+///
+/// **The shape is decided by the corpus's own reader and by no second rule.**
+/// A run of characters is offered to [`EntityId::parse`], which is what every
+/// other surface resolves an identifier with, so what is collected here is
+/// exactly what an `ank new` could have produced: a prefix the registry
+/// declares and twelve hex characters. Everything else is somebody writing
+/// about something else, and reporting it would be the tool having an opinion
+/// about prose. That is what keeps `SPEC-42`, `TASK-abc` and a bare `ADR-6b3f`
+/// short form out of the count: none of them is an identifier this corpus
+/// mints, so none of them is an identifier this corpus can fail to hold.
+///
+/// The split keeps `-` inside a run and cuts on everything else that is not
+/// alphanumeric, which is what gives the boundary on both sides for free:
+/// `(ADR-6b3f19e08a24)` and `` `TASK-000000000001` `` yield the identifier,
+/// while `TASK-0123456789abcdef` yields a run twelve characters too long and
+/// is refused whole rather than truncated into a false positive.
+fn minted_identifiers_in(prose: &str) -> impl Iterator<Item = EntityId> + '_ {
+    prose
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+        .filter_map(|run| EntityId::parse(run).ok())
+}
+
+/// An identifier written in prose that names an entity the corpus does not
+/// hold (§4, ADR-1e6bcbf62e61).
+///
+/// **A signal and never a fault.** The prose is not wrong, it points at
+/// nothing: there is nothing to repair in a message written once, and exiting 8
+/// over it would redden a pipeline for a sentence somebody typed correctly
+/// about an entity that has since gone. Nothing is refused at write time and
+/// nothing is rewritten here either, which is the whole of what separates this
+/// from a reference: a citation in prose confers nothing, orders nothing and is
+/// followed by nobody (ADR-c88f99e1c16e).
+///
+/// **Once for the corpus and never once per mention**, the volume rule this
+/// catalogue already applies to entities predating `author`, to actor values
+/// and to orphan entries. Measured on this corpus before the rule was
+/// proposed: 1087 distinct identifiers named in prose, 15 resolving to nothing.
+/// Fifteen lines are fifteen lines a reader scrolls past; one line naming the
+/// first few and counting the rest is one line they read.
+///
+/// **An identifier that resolves is silent whatever its status**, superseded
+/// included, and that is derived rather than conceded. Prose is where history
+/// is written, so naming a document that has been replaced is the correct use
+/// of it; and a `done_criteria` naming one is frozen at claim, so a finding
+/// against it would be a finding nobody could clear, which is the failure §11
+/// names. Nothing here reads `status` at all.
+///
+/// An identifier whose file exists and did not parse is left unjudged, on the
+/// same doctrine as every other resolution in this pass: unreadable is not
+/// absent, and calling it absent is a false accusation the reader would act on.
+fn check_prose_identifiers(
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    unread: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    let held: HashSet<&EntityId> = entities.iter().map(|(_, e)| e.id()).collect();
+    // Keyed on the identifier named, valued by the entities naming it: the
+    // finding is about the pointer and not about whoever wrote it, and two
+    // documents making the same mistake are one dead identifier and not two.
+    // Both collections are ordered, so the note prints one order on every
+    // machine, which a walk of a directory does not give.
+    let mut dead: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
+    for (_, e) in entities.iter().filter(|(_, e)| in_scope(e)) {
+        for named in prose_of(e).into_iter().flat_map(minted_identifiers_in) {
+            if held.contains(&named) || unread.contains(&named.to_string()) {
+                continue;
+            }
+            dead.entry(named).or_default().insert(e.id().clone());
+        }
+    }
+    if dead.is_empty() {
+        return;
+    }
+    let total = dead.len();
+    let note = dead
+        .iter()
+        .take(5)
+        .map(|(id, by)| {
+            let first = by.iter().next().expect("an entry is inserted with a namer");
+            match by.len() {
+                1 => format!("{id}, named in {first}"),
+                2 => format!("{id}, named in {first} and 1 other entity"),
+                n => format!("{id}, named in {first} and {} other entities", n - 1),
+            }
+        })
+        .collect();
+    report.findings.push(
+        Finding::signal(
+            "corpus",
+            format!(
+                // No command, and that is the honest end of it: an identifier
+                // naming nothing cannot be looked up, a message is written
+                // once, and a criterion is frozen. Naming a repair here would
+                // be naming one that answers nothing.
+                "{total} identifiers written in prose name an entity this corpus does not \
+                 hold: prose is not a reference, so nothing is refused, nothing is \
+                 rewritten and nothing is owed"
+            ),
+        )
+        .with_note(note),
     );
 }
 

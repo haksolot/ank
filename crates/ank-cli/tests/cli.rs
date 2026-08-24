@@ -16,6 +16,7 @@
 //! and `ank-cli` has no library target — so there is no unit test that could
 //! spawn the binary even if we wanted one.
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -203,7 +204,7 @@ impl Repo {
     /// identity (TASK-a548c95261a5), and one identity holding two live claims
     /// is still a state the corpus can be in — a ref written by hand, a claim
     /// taken by an earlier binary, a lapse revived. Ank is not a gatekeeper
-    /// (ADR-6b3fa9ba3a05), so the fixtures that assert what the tool says about
+    /// (ADR-6b3f19e08a24), so the fixtures that assert what the tool says about
     /// that state cannot be built by claiming twice any more. Claim, expire,
     /// claim, revive: both claims are taken by the binary and only the clock is
     /// forged, which is what `expire_claim` was already doing.
@@ -534,6 +535,62 @@ impl Repo {
                  created: 2026-08-01T00:00:00Z\nauthor: human:marie\nstatus: {status}\n\
                  scope:\n  - docs/**\n{references}{supersedes}schema: 3\nversion: 1\n---\n\
                  \nThe document itself.\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    // The three seeders below write **prose**, which is the one thing every
+    // other seeder in this file holds constant (ADR-1e6bcbf62e61).
+    //
+    // Written by hand rather than through the verbs, and necessarily so for the
+    // same reason `seed_spec` is: the state under test is prose naming an
+    // entity the corpus does not hold, and no verb resolves an identifier
+    // inside a body, a criterion or a message. That is the whole of the
+    // decision. A fixture that could be built by the writer would be a fixture
+    // testing a refusal this corpus deliberately does not have.
+
+    /// A task whose `done_criteria` and body are the caller's.
+    fn seed_task_saying(&self, id: &str, criteria: &str, body: &str) {
+        std::fs::write(
+            self.flat_task_path(id),
+            format!(
+                "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
+                 created: 2026-07-28T00:00:00Z\nauthor: human:marie\nstatus: open\n\
+                 scope:\n  - src/**\nblocked_by: []\ndone_criteria: |\n  {criteria}\n\
+                 criteria_by: creator\nschema: 3\nversion: 1\n---\n\n{body}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// A spec whose body is the caller's, with the succession field a silence
+    /// test needs.
+    fn seed_spec_saying(&self, id: &str, status: &str, supersedes: Option<&str>, body: &str) {
+        let supersedes = supersedes
+            .map(|s| format!("supersedes: {s}\n"))
+            .unwrap_or_default();
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: spec\nslug: a-document\ntitle: A document\n\
+                 created: 2026-08-01T00:00:00Z\nauthor: human:marie\nstatus: {status}\n\
+                 scope:\n  - docs/**\n{supersedes}schema: 3\nversion: 1\n---\n\n{body}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    /// An entry whose message is the caller's. The message **is** the title
+    /// (§3), which is why this reads like a title field and is not one.
+    fn seed_log_saying(&self, id: &str, about: &str, seq: u64, message: &str) {
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: log\ntitle: {message}\n\
+                 created: 2026-07-29T00:00:0{seq}Z\nauthor: human:marie\n\
+                 scope:\n  - src/**\nabout: {about}\n\
+                 seq: {seq}\nschema: 3\nversion: 1\n---\n\nThe entry itself.\n"
             ),
         )
         .unwrap();
@@ -3054,7 +3111,21 @@ fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
 
     // What is left is the draft, which was a signal before and still is.
     let said = stdout(&r.ank("claude-code@ank", &["check"]));
-    assert!(findings_about(&said, GONE).is_empty(), "{said}");
+
+    // The **reference** to the absent document is gone, which is what the
+    // repair was for. The identifier is not: `--drop-reference` records what it
+    // dropped, so the machinery entry it wrote now names in prose an entity the
+    // corpus does not hold, and that is reported by the rule of
+    // ADR-1e6bcbf62e61 rather than by this one. A signal, on a line that is not
+    // about the citing document at all, and the trade is a fault for a record.
+    // Asserting that `GONE` is nowhere in the output would be asserting that
+    // the repair erased the history of itself.
+    assert!(
+        findings_about(&said, GONE)
+            .iter()
+            .all(|l| !l.contains(CITING) && !l.contains("references")),
+        "the citation is repaired, and only the trace of the repair remains: {said}"
+    );
     assert!(
         findings_about(&said, REPLACED)
             .iter()
@@ -3066,6 +3137,229 @@ fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
         0,
         "the faults are gone, so the exit code is: {said}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// An identifier written in prose that names nothing (ADR-1e6bcbf62e61,
+// TASK-0d6fa3a7ea47)
+// ---------------------------------------------------------------------------
+
+/// The entities the fixture holds.
+const PROSE_TASK: &str = "TASK-00000000fb01";
+const PROSE_SPEC: &str = "SPEC-00000000fb02";
+const PROSE_ENTRY: &str = "LOG-00000000fb03";
+const PROSE_ENTRY_TWO: &str = "LOG-00000000fb04";
+/// A document that has been replaced, and the one that replaced it. Named in a
+/// criterion so the silence under test is the one a claim would freeze.
+const PROSE_OLD_DOC: &str = "SPEC-00000000fb05";
+const PROSE_NEW_DOC: &str = "SPEC-00000000fb06";
+
+/// One dead identifier per prose surface, so a silence can only come from the
+/// surface it belongs to.
+const DEAD_IN_CRITERIA: &str = "TASK-00000000fb07";
+const DEAD_IN_MESSAGE: &str = "ADR-00000000fb08";
+const DEAD_IN_BODY: &str = "SPEC-00000000fb09";
+
+/// Three shapes no `ank new` in this corpus could ever have produced: a prefix
+/// the registry does not declare, the short form a reader types, and twelve hex
+/// characters plus one. The last is the false positive a scan that truncated
+/// instead of refusing would invent.
+const UNMINTABLE: [&str; 3] = ["EPIC-00000000fb0a", "TASK-fb0b", "TASK-00000000fb0cd"];
+
+fn prose_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_docs();
+
+    // The criterion surface, and beside the dead identifier a live one naming a
+    // **superseded** document. A criterion is frozen at claim, so a finding
+    // against that mention would be a finding nobody could ever clear.
+    r.seed_task_saying(
+        PROSE_TASK,
+        &format!(
+            "The behaviour {DEAD_IN_CRITERIA} described holds, on the terms {PROSE_OLD_DOC} set."
+        ),
+        "Free body.",
+    );
+    r.seed_spec_saying(PROSE_OLD_DOC, "superseded", None, "The document itself.");
+    r.seed_spec_saying(
+        PROSE_NEW_DOC,
+        "accepted",
+        Some(PROSE_OLD_DOC),
+        "The document itself.",
+    );
+
+    // The body surface, carrying the three shapes that are not identifiers at
+    // all. They sit in prose beside a dead one so the test cannot pass by the
+    // scan having found nothing here.
+    r.seed_spec_saying(
+        PROSE_SPEC,
+        "accepted",
+        None,
+        &format!(
+            "What {DEAD_IN_BODY} settled stands. Neither {} nor {} nor {} is an \
+             identifier this corpus mints.",
+            UNMINTABLE[0], UNMINTABLE[1], UNMINTABLE[2]
+        ),
+    );
+
+    // The message surface. One identifier, named four times across two entries,
+    // because the rule is one finding for the corpus and never one per mention.
+    r.seed_log_saying(
+        PROSE_ENTRY,
+        PROSE_TASK,
+        0,
+        &format!("closed as {DEAD_IN_MESSAGE} and then reopened as {DEAD_IN_MESSAGE}"),
+    );
+    r.seed_log_saying(
+        PROSE_ENTRY_TWO,
+        PROSE_TASK,
+        1,
+        &format!("still about {DEAD_IN_MESSAGE} which is what {DEAD_IN_MESSAGE} said"),
+    );
+    r
+}
+
+/// The one line this finding is allowed to be, or none.
+fn prose_finding(said: &str) -> Vec<String> {
+    said.lines()
+        .filter(|l| l.contains("written in prose"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// **`check` reports the identifiers prose names and the corpus does not hold**
+/// (ADR-1e6bcbf62e61, TASK-0d6fa3a7ea47).
+///
+/// Through the binary, because two of the three claims are about the process
+/// and not about the report: the severity has to reach exit 0, and the volume
+/// has to reach the reader as one line. A unit test on `Report` could assert
+/// neither.
+///
+/// The three prose surfaces are asserted separately and with a different
+/// identifier each, which is the only shape that can tell "all three are read"
+/// from "one of them is read three times".
+#[test]
+fn check_names_the_prose_identifiers_that_resolve_to_nothing_once_for_the_corpus() {
+    let r = prose_fixture();
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = stdout(&out);
+
+    // One line for the corpus. Four mentions of one identifier across two
+    // entries produce no more of it than a single mention would.
+    let found = prose_finding(&said);
+    assert_eq!(found.len(), 1, "one finding for the corpus: {said}");
+    assert!(found[0].starts_with("signal:"), "{said}");
+    assert!(found[0].contains("corpus:"), "{said}");
+
+    // Three identifiers and not six: one per surface, counted once each.
+    assert!(
+        found[0].contains("3 identifiers"),
+        "one per prose surface, counted once each: {said}"
+    );
+
+    // Each surface named its own, and the note names it.
+    for dead in [DEAD_IN_CRITERIA, DEAD_IN_MESSAGE, DEAD_IN_BODY] {
+        let about = findings_about(&said, dead);
+        assert_eq!(about.len(), 1, "{dead} is named exactly once: {said}");
+    }
+
+    // The identifier named four times is named once, and the note says where
+    // without turning into a line per mention.
+    let about = findings_about(&said, DEAD_IN_MESSAGE);
+    assert!(
+        about[0].contains(PROSE_ENTRY) && about[0].contains("1 other entity"),
+        "the note counts the entities naming it: {said}"
+    );
+
+    // **An identifier that resolves is silent whatever its status.** The
+    // criterion names a superseded document and nothing is reported: prose is
+    // where history is written, and a criterion is frozen at claim, so a
+    // finding here would be one nobody could clear.
+    assert!(
+        prose_finding(&said)
+            .iter()
+            .all(|l| !l.contains(PROSE_OLD_DOC)),
+        "a superseded document named in prose is history, not a defect: {said}"
+    );
+    assert!(
+        findings_about(&said, PROSE_OLD_DOC)
+            .iter()
+            .all(|l| !l.contains("prose")),
+        "{said}"
+    );
+
+    // **What this corpus could not have minted is not reported.** None of the
+    // three shapes is an identifier, so none of them is an identifier the
+    // corpus can fail to hold, and having an opinion about them would be the
+    // tool having an opinion about prose.
+    for shape in UNMINTABLE {
+        assert!(
+            findings_about(&said, shape).is_empty(),
+            "{shape} is not an identifier this corpus mints: {said}"
+        );
+    }
+
+    // A signal, so the exit code of a corpus carrying them is unchanged.
+    assert_eq!(code(&out), 0, "{said}");
+}
+
+/// **Nothing is refused at write time and nothing is rewritten.**
+///
+/// The two halves of what this rule deliberately does not do, and both are
+/// worth a test because both were available designs. Refusing the write would
+/// have made the tool a gatekeeper over prose, which ADR-6b3f19e08a24 refuses
+/// in general and which would also refuse the legitimate mention of an entity
+/// since deleted; repairing the prose in place would have made a read move the
+/// corpus, which is the argument ADR-f7dc76886db2 already settled for
+/// citations.
+///
+/// Byte for byte, and not "still parses": a rewrite that round-tripped would
+/// pass every softer assertion available here.
+#[test]
+fn a_check_that_reports_prose_identifiers_refuses_nothing_and_rewrites_nothing() {
+    let r = prose_fixture();
+    let dir = r.0.join(".ank/entities");
+    let before: BTreeMap<PathBuf, Vec<u8>> = std::fs::read_dir(&dir)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+        .map(|p| {
+            let bytes = std::fs::read(&p).unwrap();
+            (p, bytes)
+        })
+        .collect();
+    assert!(!before.is_empty(), "the fixture seeded nothing");
+
+    let out = r.ank("claude-code/1.0", &["check"]);
+    let said = stdout(&out);
+    assert_eq!(prose_finding(&said).len(), 1, "it reported: {said}");
+
+    let after: BTreeMap<PathBuf, Vec<u8>> = before
+        .keys()
+        .map(|p| (p.clone(), std::fs::read(p).unwrap()))
+        .collect();
+    assert_eq!(before, after, "a read moved the corpus: {said}");
+
+    // And the write is not where this belongs: a message naming an identifier
+    // that resolves to nothing is written exactly as it was typed.
+    assert_eq!(
+        code(&r.ank("claude-code/1.0", &["claim", PROSE_TASK])),
+        0,
+        "{said}"
+    );
+    let wrote = r.ank(
+        "claude-code/1.0",
+        &["log", &format!("carrying on from {DEAD_IN_CRITERIA}")],
+    );
+    assert_eq!(code(&wrote), 0, "{}", stderr(&wrote));
+
+    // The new mention is not a new identifier: it is the same one the criterion
+    // already named, and the count is of identifiers rather than of mentions.
+    let said = stdout(&r.ank("claude-code/1.0", &["check"]));
+    let found = prose_finding(&said);
+    assert_eq!(found.len(), 1, "{said}");
+    assert!(found[0].contains("3 identifiers"), "{said}");
 }
 
 // ---------------------------------------------------------------------------
@@ -5015,7 +5309,7 @@ fn status_names_every_live_claim_of_this_identity() {
 
     // One identity, two live claims. `claim` refuses to produce that state now
     // (TASK-a548c95261a5), and the state still exists — ank is not a gatekeeper
-    // (ADR-6b3fa9ba3a05), and a lapse revived is one of the ways in. Both
+    // (ADR-6b3f19e08a24), and a lapse revived is one of the ways in. Both
     // claims are taken by the binary; only the clock between them is forged.
     assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
     r.expire_claim(ID);
