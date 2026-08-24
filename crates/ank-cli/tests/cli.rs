@@ -19629,6 +19629,197 @@ fn a_closed_task_is_not_asked_to_close_down_a_chain_it_already_closed() {
     );
 }
 
+/// A reading is an act, and `check` stops asking once somebody has performed it
+/// (TASK-e3370ef322d8).
+///
+/// **The signal it clears had no act behind it.** ADR-3877fef1d662 defines
+/// `verified:` and `check` derives the finding from it, but the only place that
+/// ever wrote a reading was `accept`, which reaches an ADR or a spec and refuses
+/// a task by kind. So a task could never carry one, and 122 of this repository's
+/// own tasks were reported as unread with nothing anybody could do about it.
+///
+/// Both directions, because only the pair says anything: an entity a human has
+/// read drops out of the report, and one no human has read stays in it.
+///
+/// Through the binary, because the identity written is whatever `$ANK_AGENT`
+/// resolved to in the process that ran the verb, and no unit test reaches an
+/// environment variable.
+#[test]
+fn a_reading_is_recorded_and_the_signal_stops_asking() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(
+        r.0.join("src/lib.rs"),
+        "// x
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        "claude-code/opus-5",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Written by an agent",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let read_by_nobody = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = r.ank(
+        "claude-code/opus-5",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Also written by an agent",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let read_by_marie = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    // Both are reported before anybody reads either.
+    let out = r.ank("claude-code/opus-5", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    for id in [&read_by_nobody, &read_by_marie] {
+        assert!(
+            said.contains(&format!(
+                "signal: {id}: written by an agent and read by no human"
+            )),
+            "an agent wrote it and nobody has read it: {said}"
+        );
+    }
+
+    let out = r.ank("human:marie", &["read", &read_by_marie]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("(1 reading)"),
+        "the count is the entity's, not the session's: {}",
+        stdout(&out)
+    );
+
+    // The record is on the entity and survives a read through the binary, which
+    // is what makes it a record rather than a byte in a file nobody may open.
+    let out = r.ank("claude-code/opus-5", &["show", &read_by_marie]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("by: human:marie"),
+        "the actor is named, typed: {}",
+        stdout(&out)
+    );
+
+    let out = r.ank("claude-code/opus-5", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !said.contains(&format!("signal: {read_by_marie}: written by an agent")),
+        "a human has read it, so the corpus stops asking: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "signal: {read_by_nobody}: written by an agent and read by no human"
+        )),
+        "and the one nobody read is still reported, or the rule stopped checking: {said}"
+    );
+}
+
+/// A second reading by the same actor is appended, and a log entry is refused
+/// (TASK-e3370ef322d8).
+///
+/// **Two readings by one actor are two readings.** Reading a document again a
+/// year later is a different act, and deduplicating them would throw away the
+/// only thing the second one records. The nearest shape on this surface is
+/// `attest`, which appends a proof and never folds one into another.
+///
+/// **And an entry is written once** (ADR-25f977377fa0). A correction to an entry
+/// is a new entry naming the one it corrects, so there is no second write for a
+/// reading to be, and `check` already excludes entries from the signal above for
+/// the reasoning that decides this: an entry is a trace of work that happened,
+/// and there is nothing in it for a person to stand behind.
+#[test]
+fn a_reading_appends_and_an_entry_refuses_one() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(
+        r.0.join("src/lib.rs"),
+        "// x
+",
+    )
+    .unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        "claude-code/opus-5",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Read twice",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    for expected in ["(1 reading)", "(2 readings)"] {
+        let out = r.ank("human:marie", &["read", &id]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        assert!(
+            stdout(&out).contains(expected),
+            "expected {expected}: {}",
+            stdout(&out)
+        );
+    }
+
+    // An entry of its own, reached by asking the corpus for one rather than by
+    // constructing an identifier here. The claim is what `log` needs to write
+    // one, and it is incidental to what this test asserts.
+    let out = r.ank("claude-code/opus-5", &["claim", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("claude-code/opus-5", &["log", &id, "something learned"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let entry = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("logged <id> on <subject>")
+        .to_string();
+
+    let out = r.ank("human:marie", &["read", &entry]);
+    assert_eq!(code(&out), 1, "{}{}", stdout(&out), stderr(&out));
+    assert!(
+        stderr(&out).contains("written once"),
+        "the refusal names the rule and not the kind's inconvenience: {}",
+        stderr(&out)
+    );
+}
+
 /// A checkout inside this one is not this tree, and a scope matching only its
 /// files is dead (TASK-0e5a00f98cfe).
 ///
