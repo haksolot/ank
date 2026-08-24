@@ -19,6 +19,12 @@
 #   4  the checksum did not match the one the release published
 #   5  a tool this script needs is missing
 #
+# --no-welcome, or ANK_NO_WELCOME in the environment, turns off everything this
+# script draws for a human and leaves only the lines a machine reads. It is
+# absent from the list above on purpose: the welcome is drawn before the first
+# request goes out, nothing in it can fail, and a flag that could change one of
+# these five codes would be a flag that made the install depend on it.
+#
 set -eu
 
 repo="haksolot/ank"
@@ -52,6 +58,125 @@ die() {
 }
 
 # --------------------------------------------------------------------------
+# Welcome
+# --------------------------------------------------------------------------
+
+# The logo, at half the resolution of assets/ank.svg and drawn in ASCII. That
+# file is the reference for the shape and nothing here reads it: an installer
+# that fetches a logo before it fetches the binary is an installer with a
+# second way to fail before doing anything useful, so the frames are bytes in
+# this file. ASCII and not U+2588 for the reason the shebang is /bin/sh -- this
+# runs on busybox, under a locale nobody chose, and a logo that arrives as
+# question marks is worse than no logo at all.
+#
+# Twelve lines, always, including the empty ones. The animation redraws the
+# same block in place, so a frame that were shorter would leave the tail of the
+# one before it on the screen.
+#
+# \033 and not \e: the octal escape is the one POSIX printf guarantees, and \e
+# is a bashism in a file that has none. \033[K clears what the previous frame
+# left to the right of this line.
+logo_line() {
+  case $1 in
+    1) logo_art='          ####' ;;
+    2) logo_art='        ##    ##' ;;
+    3) logo_art='        ##    ##' ;;
+    4) logo_art='          ####' ;;
+    5) logo_art='          ####' ;;
+    6) logo_art='  ######  ####  ######' ;;
+    7) logo_art='  ####    ####    ####' ;;
+    8) logo_art='  ####    ####    ####' ;;
+    9) logo_art='  ####    ####    ####' ;;
+    10) logo_art='    ################' ;;
+    12) logo_art='          ank' ;;
+    *) logo_art='' ;;
+  esac
+  printf '%s\033[K\n' "$logo_art" >&2
+}
+
+# Bottom up: the base, then the stem, then the loop, which is the order the
+# shape is built in and the order that leaves the whole of it standing at the
+# end. Frame 11 adds the name, and that is the beat the animation exists for:
+# it costs the time it takes to read the name of the tool and not a second
+# more.
+draw_logo() {
+  # POSIX sleep takes an integer, and every sleep this script is likely to meet
+  # -- coreutils, BSD, busybox built with the fancy option -- takes a fraction.
+  # The ones that do not are told apart by asking rather than by guessing:
+  # without a delay the frames still draw, in the order they draw, as fast as
+  # the terminal will take them.
+  frame_delay=0.06
+  sleep 0.01 2>/dev/null || frame_delay=""
+
+  # The cursor would otherwise blink in the middle of the drawing. Restored on
+  # the way out and on the two signals a human sends, because a terminal left
+  # with an invisible cursor is a terminal somebody has to repair with `reset`.
+  trap 'printf "\033[?25h" >&2; exit 130' INT
+  trap 'printf "\033[?25h" >&2; exit 143' TERM
+  printf '\033[?25l' >&2
+
+  frame=1
+  while [ "$frame" -le 11 ]; do
+    line=1
+    while [ "$line" -le 12 ]; do
+      if [ "$line" -le 10 ] && [ "$line" -ge $((11 - frame)) ]; then
+        logo_line "$line"
+      elif [ "$line" -eq 12 ] && [ "$frame" -eq 11 ]; then
+        logo_line 12
+      else
+        logo_line 0
+      fi
+      line=$((line + 1))
+    done
+    if [ "$frame" -lt 11 ]; then
+      [ -z "$frame_delay" ] || sleep "$frame_delay"
+      printf '\033[12A' >&2
+    fi
+    frame=$((frame + 1))
+  done
+
+  # The cursor comes back first and the blank line after it, so the last byte
+  # this function writes is a newline: whatever the install says next starts on
+  # a line of its own rather than behind an escape sequence.
+  printf '\033[?25h\n' >&2
+  trap - INT TERM
+}
+
+# ADR-5fbd99bf6fd5 read as an absence: where no human is looking, this script
+# draws nothing at all.
+#
+# Both streams are tested and not only one. Under `curl ... | sh` stdin is the
+# script and both of the others are the terminal, which is the case that must
+# animate; under `sh install.sh > install.log` stderr is still a terminal, and
+# a log file full of cursor movements is exactly the noise this must never
+# produce. /dev/tty is the third test and the one the decision names: no
+# controlling terminal means a provisioning script, a Dockerfile or a runner,
+# whatever the streams happen to say.
+welcome_wanted() {
+  [ "$no_welcome" = no ] || return 1
+  [ -t 1 ] || return 1
+  [ -t 2 ] || return 1
+  # A runner sets this, and some runner images hand their steps a pty.
+  [ -z "${CI:-}" ] || return 1
+  # A terminal that says it cannot move a cursor is taken at its word.
+  case "${TERM:-}" in
+    "" | dumb) return 1 ;;
+  esac
+  # A subshell: a redirection that fails on a special builtin is fatal to the
+  # shell itself, and this test exists to be answered no.
+  ( : > /dev/tty ) 2>/dev/null || return 1
+  # A window narrower than the art wraps every line, and a block that is taller
+  # than twelve rows is a block the redraw moves back over the middle of. Asked
+  # of tput, and only believed when it answers a number: a machine without it
+  # is a machine this refuses to guess about in the direction of drawing.
+  logo_cols=$(tput cols 2>/dev/null) || logo_cols=""
+  case "$logo_cols" in
+    "" | *[!0-9]*) : ;;
+    *) [ "$logo_cols" -ge 24 ] || return 1 ;;
+  esac
+}
+
+# --------------------------------------------------------------------------
 # Platforms
 # --------------------------------------------------------------------------
 
@@ -81,11 +206,15 @@ options:
   --version <version>  install this release instead of the latest one;
                        "v0.2.0" and "0.2.0" both work
   --dir <path>         install into <path> instead of \$HOME/.local/bin
+  --no-welcome         draw nothing; install exactly what an install with the
+                       animation installs, and say the same things about it
   -h, --help           print this and exit
 
 environment:
   ANK_VERSION          same as --version
   ANK_INSTALL_DIR      same as --dir
+  ANK_NO_WELCOME       same as --no-welcome, for a caller that pipes this
+                       script into sh and cannot pass an argument to it
   ANK_BASE_URL         where the archives are fetched from, for a mirror or a
                        staged release; requires --version, since only GitHub
                        can be asked which release is the latest
@@ -267,6 +396,8 @@ resolve_latest() {
 version=${ANK_VERSION:-}
 install_dir=${ANK_INSTALL_DIR:-}
 base_url=${ANK_BASE_URL:-}
+no_welcome=no
+[ -z "${ANK_NO_WELCOME:-}" ] || no_welcome=yes
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -288,6 +419,10 @@ while [ $# -gt 0 ]; do
       ;;
     --dir=*)
       install_dir=${1#--dir=}
+      shift
+      ;;
+    --no-welcome)
+      no_welcome=yes
       shift
       ;;
     -h | --help)
@@ -324,6 +459,13 @@ fi
 # --------------------------------------------------------------------------
 # Install
 # --------------------------------------------------------------------------
+
+# Before anything is asked of the network, which is what "before the download
+# starts" has to mean here: the first request this script makes is the redirect
+# that resolves the latest tag, and it is below.
+if welcome_wanted; then
+  draw_logo
+fi
 
 pick_downloader
 pick_sha_tool
