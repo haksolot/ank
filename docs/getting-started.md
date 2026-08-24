@@ -330,8 +330,13 @@ re-acquire silently, provided nobody took it over.
 **Each entry is an entity of its own**, which is why the line names one. The
 task's own file is not touched at all, no frontmatter and no version bump, and two
 agents writing at once write two files, so there is nothing for a merge to
-resolve. Any kind may be logged against, an ADR included, and writing about
-something that is not a task asks for no claim: there is none to hold.
+resolve. Any kind may be logged against, and a subject with no work left to
+arbitrate asks for no claim: an ADR, a spec, and a task already `done` or
+`closed`. A claim is what arbitrates work, so holding it is required exactly
+where there is work to arbitrate, on a task that is `open` or `in_progress`.
+That is what lets a correction reach a task after it is settled, which is the
+one place a wrong entry used to have nowhere to go. Name the task when the entry
+goes on a finished one: HEAD never points at one.
 
 `ank log 820d` with no message reads the entries back, newest first, and needs
 no claim. A message too long for a line is printed elided there; `ank show`
