@@ -5,14 +5,18 @@ slug: the-installer-greets-a-human-and-is-silent-to-a
 title: The installer greets a human, and is silent to a pipe
 created: 2026-08-24T21:59:05Z
 author: claude-code/opus-5+planning
-status: proposed
+status: accepted
 scope:
   - install.sh
   - install.ps1
 constraint: |
   install.sh and install.ps1 animate, ask and teach only when a human is at a terminal. Under curl | sh standard input is the script itself, so a prompt reads from /dev/tty and from nowhere else, and where no terminal is attached the installer asks nothing, draws nothing and installs exactly what it installs with no welcome at all. Every question carries a default that Enter accepts, every offer may be declined, and no offer is a step the installation waits on: the binary is on disk and usable before the first question is asked, and nothing an offer does can change the installer's exit code. A documented flag disables the welcome entirely, and a run with that flag differs in no outcome from an interactive run that declined everything.
+ratified: 530f11a61544
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-24T22:26:38Z
 schema: 4
-version: 1
+version: 2
 ---
 
 The two installers are 524 and 598 lines that say nothing to the person running
