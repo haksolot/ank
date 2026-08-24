@@ -5,13 +5,13 @@ slug: the-attention-budget-and-the-constraint-lifecycl
 title: The attention budget and the constraint lifecycle
 created: 2026-08-15T17:45:37Z
 author: claude-code/opus-5
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/src/context.rs
 references: [SPEC-a89ba4f755e9, SPEC-f353359663d5]
 ratified: e4c935f01222
 schema: 3
-version: 8
+version: 9
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
