@@ -4429,6 +4429,106 @@ fn warn_orphaned_citations(
     );
 }
 
+/// Records that somebody read this entity and stands behind it.
+///
+/// **The corpus asked this question and shipped no act that answered it**
+/// (TASK-e3370ef322d8). ADR-3877fef1d662 defines `verified:` as a list of
+/// readings, each naming a typed actor and an instant, and `check` reports an
+/// entity an agent wrote and no human has read. Exactly one place in this
+/// binary ever wrote a reading: [`promote`], reached only from `accept`. So the
+/// signal cleared for an ADR or a spec at its ratification, cleared for nothing
+/// else, and could never clear for a task at all, since `accept` refuses a task
+/// by kind before it reads anything. On this repository's own corpus that was
+/// 186 entities, 122 of them tasks: half of every signal it carried, on a state
+/// no act could change.
+///
+/// **No signature, no branch, and no refusal on who is calling.** A reading is
+/// not a ratification and does not borrow its ceremony. ADR-3877fef1d662 is
+/// explicit that the convention is a signal and not a wall: an agent can write
+/// `human:` in front of its own name exactly as it can set `$ANK_AGENT` to
+/// anything, and what the field buys is that the ordinary case becomes legible,
+/// not that the dishonest one becomes impossible. What is written here is the
+/// identity in effect and the instant; judging it is the reader's work.
+///
+/// **It appends**, on the shape `attest` already carries, and it does not
+/// deduplicate: two readings by one actor are two readings, because reading a
+/// document again a year later is a different act and dropping the second
+/// throws away the only thing it records.
+///
+/// **No log entry, and that is the same answer `accept` gives.** A ratification
+/// records a reading and writes no entry either: the reading *is* the record,
+/// on the entity, carrying the actor and the instant, and a line saying the same
+/// thing in the work trace would be the same fact written twice. Nor a machinery
+/// entry: ADR-f7dc76886db2 puts `verified` on the transition side of its own
+/// definition of content, beside `status`, `proof` and `ratified`, so the write
+/// leaves the content hash where it was.
+pub fn read(
+    inv: &Invocation,
+    repo: &Repo,
+    identity: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let prefix = inv.positionals.first().ok_or_else(|| {
+        CliError::new(ExitCode::Generic, "read expects an id").with_hint("ank read <id>")
+    })?;
+
+    let store = Store::new(&repo.ank);
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let mut entity = loaded.entity;
+
+    let reading = Verified {
+        by: identity.to_string(),
+        at: claim::now_utc(),
+    };
+    // A refusal on state, naming the rule rather than the kind's inconvenience.
+    // An entry is written once and never modified (ADR-25f977377fa0): a
+    // correction there is a new entry naming the one it corrects, so there is no
+    // second write for a reading to be. `check` already excludes entries from
+    // the signal this verb exists to clear, on the reasoning that decides this:
+    // an entry is a trace of work that happened, and there is nothing in it for
+    // a person to stand behind.
+    match &mut entity {
+        Entity::Task(t) => t.verified.push(reading.clone()),
+        Entity::Adr(a) => a.verified.push(reading.clone()),
+        Entity::Spec(s) => s.verified.push(reading.clone()),
+        Entity::Log(l) => {
+            let id = l.id.clone();
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!("{id} is a log entry, and an entry is written once"),
+            )
+            .with_hint(format!("ank show {id}")));
+        }
+    }
+
+    let id = entity.id().clone();
+    let readings = entity.verified().len();
+    store.write(&entity, base_version)?;
+
+    if inv.json() {
+        let doc = Obj::document()
+            .str("entity", &id.to_string())
+            .str("kind", id.kind().as_str())
+            .str("by", &reading.by)
+            .str("at", &reading.at)
+            .num("readings", readings)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        let style = inv.style();
+        let _ = writeln!(
+            out,
+            "{} {} by {} ({readings} reading{})",
+            style.advanced("read"),
+            style.id(&id.to_string()),
+            reading.by,
+            if readings == 1 { "" } else { "s" }
+        );
+    }
+    Ok(ExitCode::Ok)
+}
+
 /// The command that changes a ratified decision, in the kind's own words.
 ///
 /// `--supersedes` resolves inside one kind (§3), so the chain a spec declares is
