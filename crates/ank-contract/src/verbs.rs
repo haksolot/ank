@@ -569,15 +569,27 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "run the loop",
         renews: Renews::Never,
         coordinates: true,
-        summary: "an id alone reads the log; an id and a message appends one and renews the claim, which needs holding it",
+        // **The claim is a condition on the subject, not on the write** (§4,
+        // ADR-25f977377fa0). A claim arbitrates work, and only an `open` or
+        // `in_progress` task has work left to arbitrate: an ADR, a spec, and a
+        // task already `done` or `closed` each take an entry with no claim held
+        // and none taken.
+        //
+        // This line and the refusal below both said the write needs the claim,
+        // flatly. That was the whole rule when it was written and became
+        // narrower than the rule the day a correction gained somewhere to land
+        // on a settled task (TASK-c34392707a7b). A help line narrower than the
+        // binary is read as the binary refusing, which is the failure §9 exists
+        // to prevent.
+        summary: "an id alone reads the log; an id and a message appends one and renews the claim, needed where a claim arbitrates work and not on a done or closed task",
         subcommands: &[],
         max_positionals: 2,
         // Both optional, and what is given decides which of the two things the
         // verb does: an id alone reads, a message writes (§4).
         positional_help: "[<id>] [<message>]",
         flags: &[],
-        refuses: &[refuses(ExitCode::Transition, "writing with no claim held by this agent")],
-        notes: &[],
+        refuses: &[refuses(ExitCode::Transition, "writing to an open or in_progress task with no claim held by this agent")],
+        notes: &["a done or closed task has to be named: HEAD never points at one"],
         refuses_globals: &[],
         output: &[when("reading, `ank log <id>`", &[f("about", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("entries", Type::Array(LOG_ENTRY)), f("machinery", Type::Array(LOG_ENTRY))]), when("appending, `ank log <id> <message>`", &[f("about", Type::Str), f("entry", Type::Str), f("logged", Type::Bool), f("warnings", Type::Strings)])],
         owner_task: None,
