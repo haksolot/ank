@@ -140,7 +140,7 @@ pub fn message_of(title: &str, body: &str) -> String {
 ///
 /// **A control character is not content, and what it earns is a refusal rather
 /// than a repair.** Ank records what a caller states and does not edit it
-/// (ADR-6b3fa9ba3a05), so deleting bytes from a message somebody wrote is the
+/// (ADR-6b3f19e08a24), so deleting bytes from a message somebody wrote is the
 /// worse of the two answers; but the byte was not typed either. Measured on
 /// TASK-f113addd8f40: PowerShell reads a backtick as its escape character, so
 /// `` `rev-list `` inside a double-quoted argument reached the binary as a
