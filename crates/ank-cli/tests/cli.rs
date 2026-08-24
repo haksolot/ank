@@ -19401,3 +19401,152 @@ fn the_json_document_of_context_is_served_under_the_same_budget() {
         "the counters follow the page instead of the perimeter:\n{doc}"
     );
 }
+
+/// Ratifying a successor names the citations it just orphaned
+/// (TASK-3f47e6fd3598).
+///
+/// **The act and the damage are the same instant, and only one of them used to
+/// be visible.** `accept` holds the predecessor's identifier, it has just
+/// written the transition that made it superseded, and the working tree is
+/// right there. Two ratifications on this project's own corpus left
+/// thirty-three citations behind in nine files and said nothing, and the
+/// default branch went red at the next push on a test that had been green
+/// minutes before.
+///
+/// Driven through the binary, on a repository whose source mentions the
+/// predecessor, because the walk is of a working tree and no unit test over
+/// `accept` has one.
+#[test]
+fn ratifying_a_successor_names_the_citations_it_orphaned() {
+    let r = ready_to_ratify();
+    let first = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    let out = r.ank("human:marie", &["accept", &first]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // The citation a module header carries: a constraint handed to the next
+    // reader with the authority of a decision record and no command attached.
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        format!(
+            "//! The shape below is what {first} asks for.
+fn main() {{}}
+"
+        ),
+    )
+    .unwrap();
+
+    let out = r.ank(
+        "human:marie",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "The replacement",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do Y.",
+            "--supersedes",
+            &first,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let second = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+    r.git(&["add", "-A"]);
+    r.git(&[
+        "commit",
+        "-qm",
+        "the successor, and the citation it will orphan",
+    ]);
+
+    let out = r.ank("human:marie", &["accept", &second]);
+    // The exit code does not move: the ratification is not what is wrong.
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let err = stderr(&out);
+    assert!(
+        err.contains("src/main.rs:1"),
+        "the file and the line a reader would fix: {err}"
+    );
+    assert!(
+        err.contains(&first),
+        "the identifier that just went stale: {err}"
+    );
+    assert!(err.contains(&second), "and the one to write instead: {err}");
+    // `.ank/` is where a superseded identifier belongs (ADR-1e6bcbf62e61), and
+    // the successor's own file carries it in `supersedes:`. Naming that would
+    // send a reader to repair the corpus for recording its own history.
+    assert!(
+        !err.contains(".ank"),
+        "the corpus is not the source, and its prose is not stale: {err}"
+    );
+}
+
+/// The two silences, which are what keeps the warning readable: a ratification
+/// that supersedes nothing, and one whose predecessor no file mentions, print
+/// nothing at all (TASK-3f47e6fd3598).
+///
+/// A verb announcing that it found nothing would put a line on the ordinary
+/// case, which is every ratification that is not a succession, and a warning
+/// that fires on ordinary work is one people learn to scroll past.
+#[test]
+fn a_ratification_that_orphans_nothing_says_nothing() {
+    const MARKER: &str = "superseded by this ratification";
+    let r = ready_to_ratify();
+    let first = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // Supersedes nothing.
+    let out = r.ank("human:marie", &["accept", &first]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains(MARKER),
+        "a ratification replacing nothing orphans nothing: {}",
+        stderr(&out)
+    );
+
+    // Supersedes a predecessor no file outside the corpus mentions: `src`
+    // stands as `ready_to_ratify` left it.
+    let out = r.ank(
+        "human:marie",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "The replacement",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do Y.",
+            "--supersedes",
+            &first,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let second = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "the successor"]);
+
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("superseded"),
+        "the succession did happen: {}",
+        stdout(&out)
+    );
+    assert!(
+        !stderr(&out).contains(MARKER),
+        "no file cites it, so there is nothing to say: {}",
+        stderr(&out)
+    );
+}
