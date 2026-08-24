@@ -4271,7 +4271,121 @@ pub fn accept(
             );
         }
     }
+    // The citations this ratification just orphaned, named where the knowledge
+    // exists (TASK-3f47e6fd3598). Ratifying a successor is the act that makes
+    // every mention of its predecessor in the source stale, and it was the one
+    // act in the corpus whose damage was invisible to the person performing it:
+    // two ratifications on 2026-08-22 left thirty-three citations behind in nine
+    // files across three crates, both correct, both signed, and neither saying
+    // anything. The default branch went red at the next push on a test that had
+    // been green minutes before.
+    //
+    // **After the commit, because the commit is the act.** A ratification that
+    // failed to commit superseded nothing, and a warning about it would send a
+    // reader to repair citations that are still perfectly alive.
+    if let Some(target) = replaced.target() {
+        warn_orphaned_citations(inv, repo, target.id(), &id);
+    }
+
     Ok(ExitCode::Ok)
+}
+
+/// Every line outside `.ank/` that mentions `superseded`, on standard error,
+/// with the successor named as what to write instead.
+///
+/// **It warns and never refuses**, and the exit code does not move. A citation
+/// left behind is stale source; the decision is sound the moment it is signed.
+/// Refusing on the state of the working tree would make a correct human act
+/// fail on somebody else's comment, and would give the person holding the
+/// signing key a reason to look for a way around a ratification.
+///
+/// **It says where the repair is owed and never performs it.**
+/// ADR-c88f99e1c16e refused the re-pointing itself inside this verb, because
+/// writing to nine entities in one act would deposit nine machinery entries and
+/// pollute the trace the corpus keeps to watch itself. A message writes
+/// nothing: no amend, no version, no entry, no commit. What was refused there
+/// was the repair performing itself, not the tool saying where it is due.
+///
+/// **`.ank/` is excluded, and that is not an omission.** ADR-1e6bcbf62e61 holds
+/// a superseded identifier legitimate in the prose of the corpus, where history
+/// is written and `ank show` carries the chain. The source has no chain to
+/// follow: a comment in a module header hands the next reader a constraint with
+/// the authority of a decision record and no command attached. Same identifier,
+/// opposite verdict, and the place is what separates them.
+///
+/// **Here and not in `check`, and the reason is cost.** `check` runs on every
+/// edit to the corpus, and reading every file in the tree on each of those runs
+/// would spend that budget on a question that has a new answer only at a
+/// ratification. `accept` is rare, human, signed, on the default branch, and
+/// already slow.
+///
+/// The walk is the workspace's, rooted where a scope glob is confronted
+/// (ADR-9e56318631f3), and it reads the working tree rather than the index: a
+/// file git does not track yet is named too, which is the honest answer, since
+/// a stale citation costs the next reader the same whether or not it has been
+/// added. Nothing is truncated, because the list is the repair.
+fn warn_orphaned_citations(
+    inv: &Invocation,
+    repo: &Repo,
+    superseded: &EntityId,
+    successor: &EntityId,
+) {
+    if inv.quiet() {
+        return;
+    }
+    let needle = superseded.to_string();
+    let mut sites: Vec<String> = Vec::new();
+    let mut files: BTreeSet<String> = BTreeSet::new();
+    for rel in tracked_files(&repo.worktree) {
+        if rel == ".ank" || rel.starts_with(".ank/") {
+            continue;
+        }
+        // A file that is not text answers `Err` and is skipped, which is the
+        // whole of what this walk owes a binary.
+        let Ok(text) = std::fs::read_to_string(repo.worktree.join(&rel)) else {
+            continue;
+        };
+        if !text.contains(&needle) {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            if line.contains(&needle) {
+                sites.push(format!("{rel}:{}", n + 1));
+                files.insert(rel.clone());
+            }
+        }
+    }
+    // A ratification that supersedes nothing never reaches here, and one whose
+    // predecessor no file mentions says nothing at all: a verb that announced
+    // its own silence would be noise on the ordinary case.
+    if sites.is_empty() {
+        return;
+    }
+    sites.sort();
+    let style = inv.style().on_stderr();
+    eprintln!(
+        "{} {} {} of {superseded}, superseded by this ratification, {} in {} {}",
+        style.yellow("warning:"),
+        sites.len(),
+        if sites.len() == 1 {
+            "citation"
+        } else {
+            "citations"
+        },
+        if sites.len() == 1 {
+            "remains"
+        } else {
+            "remain"
+        },
+        files.len(),
+        if files.len() == 1 { "file" } else { "files" },
+    );
+    for site in &sites {
+        eprintln!("  {site}");
+    }
+    eprintln!(
+        "  -> write {successor} instead, or drop the citation and leave the history to `ank show`"
+    );
 }
 
 /// The command that changes a ratified decision, in the kind's own words.
