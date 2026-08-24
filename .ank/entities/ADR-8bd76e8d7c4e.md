@@ -5,15 +5,19 @@ slug: a-terminal-reader-is-the-cli-s-own-presentation
 title: A terminal reader is the CLI's own presentation, and it lives here
 created: 2026-08-24T22:00:38Z
 author: claude-code/opus-5+planning
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
   - docs/**
 constraint: |
   What ADR-894defc26f3d withdrew stays withdrawn: no browser reader in this repository, nothing under a viewer/ directory, no HTML page, and no task that would produce one. The contract such a reader rests on -- ank help --json, the exit codes, the contract version, the corpus identity and the golden suites -- stays public, documented in docs/integrating.md and permissively licensed. One case changes: a terminal reader ships here, as the verb ank tui. It reaches the corpus only by running the CLI with --json and never by linking ank-core, never by reading .ank/ and never by touching refs/ank/* itself, so the refusals it shows are the refusals the CLI gave and there is no second dispatch path to keep in step. It writes nothing the person at the keyboard did not ask for in that session, it renews no claim on its own, and accept stays a signed human act it may drive and never perform unattended.
 supersedes: ADR-894defc26f3d
+ratified: 2939cc5c27e2
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-24T22:26:38Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ADR-894defc26f3d expelled the reader from this repository, and gave three
