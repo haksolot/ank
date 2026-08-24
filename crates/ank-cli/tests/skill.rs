@@ -223,13 +223,12 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// **`read` is declared, and the declaration is the ordering rather than a
-/// shortcut** (TASK-d055f8ab836b). `read_section_4_document` reads the ratified
-/// document on purpose, so a verb cannot ship in the landing that puts it in
-/// §4: between the two sits a signed `accept`, which is a human act. The
-/// successor carrying `read` lands proposed, this line keeps the suite honest
-/// about the gap it opens, and TASK-e3370ef322d8 removes it in the commit that
-/// implements the verb.
+/// **Empty again, and the round trip is the guard working.** `read` was
+/// declared here while its ratification was in flight (TASK-d055f8ab836b) and
+/// removed in the commit that shipped it (TASK-e3370ef322d8), because
+/// `read_section_4_document` reads the ratified document on purpose and a verb
+/// therefore cannot ship in the landing that puts it in §4: between the two
+/// sits a signed `accept`, which is a human act.
 ///
 /// The list stays even when it is empty, because it is the only place a future
 /// verb may be declared missing, and because the test below fails the moment a
@@ -241,7 +240,7 @@ fn help_order() -> Vec<String> {
 /// them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
 /// TASK-7ed19b16895e) turned the suite red until this line was edited, in the
 /// same commit.
-const NOT_YET_DISPATCHED: [&str; 1] = ["read"];
+const NOT_YET_DISPATCHED: [&str; 0] = [];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

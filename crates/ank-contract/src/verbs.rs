@@ -772,6 +772,39 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), opt("superseded", Type::Str), f("commit", Type::Str), f("anchor", Type::Str)])],
         owner_task: None,
     },
+    // Between `accept` and `close`: §4's order, and beside the verb this one was
+    // split from. `accept` records a reading as a consequence of ratifying, and
+    // everything it cannot reach needs the act on its own.
+    CommandSpec {
+        name: "read",
+        group: "shape the work",
+        // The same answer `show` gives, and for the same reason: reading the
+        // entity you hold is work on it, and working is what keeps the lock.
+        renews: Renews::Named,
+        // Nothing here touches a ref, a branch or a remote. The reading is a
+        // field on the entity and the write is the store's, so this verb answers
+        // on the files alone (ADR-9307e5d214a7).
+        coordinates: false,
+        summary: "records that a person read this entity and stands behind it",
+        subcommands: &[],
+        max_positionals: 1,
+        positional_help: "<id>",
+        flags: &[],
+        refuses: &[
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            refuses(
+                ExitCode::Generic,
+                "a log entry: it is written once, and a reading would be a second write",
+            ),
+        ],
+        notes: &[
+            "the reading names the identity in effect and the instant; nothing is signed, and nothing is refused on who is calling",
+            "a second reading by the same actor is appended, because reading a document again is a different act",
+        ],
+        refuses_globals: &[],
+        output: &[one(&[f("entity", Type::Str), f("kind", Type::Str), f("by", Type::Str), f("at", Type::Str), f("readings", Type::Num)])],
+        owner_task: None,
+    },
     CommandSpec {
         name: "close",
         group: "shape the work",
