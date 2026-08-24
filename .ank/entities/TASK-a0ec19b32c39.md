@@ -5,15 +5,20 @@ slug: a-closed-task-blocked-by-a-closed-task-is-asked
 title: A closed task blocked by a closed task is asked to close down a chain it already closed
 created: 2026-08-24T17:53:45Z
 author: claude-code/opus-5-closed-chain
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/human.rs
 blocked_by: []
 done_criteria: |
   check does not report 'blocked by <id>, which is closed' against a task that is itself closed, and still reports it against an open or in-progress one. The finding it does report is unchanged in wording for the cases that keep it. Verified through the binary on a corpus carrying both shapes. cargo test is green, cargo fmt --check passes, and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 05b42e5209b92f6b899d14a6c43854da04e332f3
+    criteria: ec3ae4cb431a
+    via: submitted
 schema: 4
-version: 2
+version: 3
 ---
 
 `check` reports a task blocked by a closed task, and the sentence it prints is
