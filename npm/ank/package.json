@@ -18,10 +18,12 @@
     "architecture-decision-record",
     "tasks",
     "coordination",
+    "mcp",
     "pi-package"
   ],
   "bin": {
-    "ank": "bin/ank"
+    "ank": "bin/ank",
+    "ank-mcp": "bin/ank-mcp"
   },
   "pi": {
     "skills": [
@@ -31,6 +33,8 @@
   },
   "files": [
     "bin/ank",
+    "bin/ank-mcp",
+    "bin/wrapper.js",
     "skills/",
     "README.md",
     "LICENSE"
