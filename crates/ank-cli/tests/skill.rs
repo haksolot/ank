@@ -223,12 +223,22 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// **Empty again, and the round trip is the guard working.** `read` was
+/// **`tui` is here, and the round trip is the guard working.** `read` was
 /// declared here while its ratification was in flight (TASK-d055f8ab836b) and
 /// removed in the commit that shipped it (TASK-e3370ef322d8), because
 /// `read_section_4_document` reads the ratified document on purpose and a verb
 /// therefore cannot ship in the landing that puts it in §4: between the two
 /// sits a signed `accept`, which is a human act.
+///
+/// `tui` is in exactly that state (ADR-8bd76e8d7c4e, TASK-8108e3771ba0). The
+/// Commands block of SPEC-20357e21a45a lists it and that document is
+/// `proposed`, so the test below does not check it yet -- it walks the
+/// *ratified* block, which is the predecessor and does not carry the line.
+/// Declaring it now is what makes the ratification itself green: the signed
+/// `accept` is the moment §4 gains the verb, and a suite that first learns of
+/// it there turns red on a human act rather than on a landing anybody is
+/// watching. `crates/ank-tui/**` is TASK-49746735127f's, and it removes this
+/// line in the commit that dispatches the verb.
 ///
 /// The list stays even when it is empty, because it is the only place a future
 /// verb may be declared missing, and because the test below fails the moment a
@@ -240,7 +250,7 @@ fn help_order() -> Vec<String> {
 /// them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
 /// TASK-7ed19b16895e) turned the suite red until this line was edited, in the
 /// same commit.
-const NOT_YET_DISPATCHED: [&str; 0] = [];
+const NOT_YET_DISPATCHED: [&str; 1] = ["tui"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
