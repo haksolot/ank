@@ -5,7 +5,7 @@ slug: the-ank-logo-is-drawn-to-a-terminal-and-to-nothi
 title: The ank logo is drawn to a terminal, and to nothing else
 created: 2026-08-24T21:59:19Z
 author: claude-code/opus-5+planning
-status: in_progress
+status: done
 scope:
   - install.sh
   - install.ps1
@@ -14,8 +14,13 @@ blocked_by: []
 done_criteria: |
   Both installers draw the ank logo as animated ASCII art before the download starts, and only when a terminal is attached. Piped, redirected, run under a CI runner or run with the disabling flag, they emit no frame and no escape sequence at all. The frames are held in the scripts themselves, so neither installer gains a network request it does not already make, and install.sh stays POSIX sh with no bashisms. install.yml asserts on all three platforms that a non-interactive run emits no escape sequence and that the installed binary answers --version. The disabling flag appears in the usage text and in the comment block that lists the exit codes. cargo test is green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 9af607a49e7151ba6c6828860b2a3f8dbb9bf4a9
+    criteria: 38e45e5f61ed
+    via: submitted
 schema: 4
-version: 3
+version: 4
 ---
 
 The visible half of ADR-5fbd99bf6fd5, and the half that carries its whole risk:
