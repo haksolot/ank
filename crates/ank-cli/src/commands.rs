@@ -9,9 +9,12 @@
 //!   entity to code, and an entity attached to nothing is invisible to
 //!   `context` forever after — so it is refused at creation, when the cost of
 //!   fixing it is one flag.
-//! - **`find`** answers under the same budget as `context` and says what it
-//!   cut. A search command without a cap is a context-explosion vector at least
-//!   as effective as a badly bounded `context`.
+//! - **`find`** answers a terminal under the same budget as `context` and says
+//!   what it cut. A search command without a cap is a context-explosion vector
+//!   at least as effective as a badly bounded `context` — but the page being
+//!   protected is a human's, so `--json` is served whole whatever the budget
+//!   (ADR-3e6ce108edcd). A parser has no page, and a listing it cannot trust to
+//!   be complete is worse than a long one.
 //! - **`log`** requires holding the claim wherever a claim arbitrates work, and
 //!   renews the TTL by writing. Working is what keeps the lock; there is no
 //!   heartbeat verb to memorise. Given nothing but an id it reads instead, and
@@ -1190,8 +1193,21 @@ pub fn find(
     };
 
     let total = hits.len();
-    let cap = cap_from(cfg);
-    let shown = total.min(cap);
+    // **The budget is the human reader's** (ADR-3e6ce108edcd). A program has no
+    // page to fill, so `--json` is served every row whatever `context_budget`
+    // says, and `shown` therefore equals `total`; the only thing that ever
+    // separates the two is a filter, and `--free` is the one filter there is —
+    // it is counted in `hidden`, which is why `hidden` can go on meaning
+    // exactly what it meant.
+    //
+    // The terminal keeps the cap, the `+N more` notice and the line naming
+    // `--scope` exactly as they were: what a human is shown is not what is
+    // being changed here, and no flag lifts the cap on either side.
+    let shown = if inv.json() {
+        total
+    } else {
+        total.min(cap_from(cfg))
+    };
 
     if inv.json() {
         // `state` beside `status`, from the plane already read above and in the
@@ -1535,6 +1551,10 @@ pub fn scope(
 /// one-line results. A cap in characters and a cap in lines are the same rule
 /// seen from two sides; expressing it in lines here keeps the output stable
 /// whatever the length of a title.
+///
+/// **Asked only on the way to a terminal** (ADR-3e6ce108edcd). The one caller
+/// left is the human listing of `find`; `--json` does not consult it, because
+/// the budget prices attention and a parser is not spending any.
 fn cap_from(cfg: &Config) -> usize {
     (cfg.context_budget / 80).clamp(1, FIND_MAX_RESULTS)
 }

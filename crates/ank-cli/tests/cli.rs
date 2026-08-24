@@ -18649,3 +18649,397 @@ fn a_succession_with_no_successor_is_still_a_fault_when_everything_was_read() {
         "{said}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The attention budget is the human reader's (ADR-3e6ce108edcd)
+// ---------------------------------------------------------------------------
+//
+// `find` used to convert `context_budget` into a number of rows and spend it on
+// `--json` as well as on the terminal. Measured on this repository's own corpus
+// the day the decision was taken, `ank find --type adr --json` answered
+// `{"total":63,"shown":40,"hidden":0}`: twenty-three decisions missing from a
+// document meant for a parser, and the field named `hidden` reporting that
+// nobody had taken anything, because `hidden` counts what `--free` withheld and
+// knows nothing about the page.
+//
+// The fixture below is the same defect in miniature, and it is worth reading
+// once. Twelve tasks and twelve decisions on a page that fits five: before this
+// change `find --json` returned five rows out of twenty-four and **not one of
+// the twelve tasks**, because decisions sort first and filled the page whole. A
+// caller building the set of this corpus's tasks out of that document would
+// have concluded the repository had none, which is precisely how the
+// measurement that produced ADR-3e6ce108edcd had to be taken twice.
+//
+// `review`, `scope` and `graph` were never capped: each already answered whole,
+// and their documents are byte-identical either side of this change. They are
+// covered here regardless, because the decision binds all four and a guard that
+// only watches the verb that was broken leaves the other three free to acquire
+// the defect later, quietly, from the human code path they share.
+
+/// A `context_budget` leaving room for five one-line results.
+///
+/// `cap_from` converts characters into lines at eighty each and clamps to
+/// `FIND_MAX_RESULTS`, so four hundred is a cap of five. Seeding past forty
+/// entities would exercise the same rule at ten times the cost in fixture.
+const FIVE_LINE_PAGE: &str =
+    "schema: 1\ncontext_budget: 400\nclaim_ttl_max: 2h\ndefault_branch: main\n";
+
+/// Twelve tasks and twelve proposed decisions, all on `src/**`, on a page that
+/// fits five: whatever a listing hands back from here, it had to choose.
+///
+/// Deliberately identical to the corpus the pre-change binary was measured on,
+/// so that the bytes pinned in `the_human_page_of_all_four_listings_is_unchanged`
+/// are what that binary actually printed and not what this one happens to print.
+fn past_the_budget() -> (Repo, Vec<String>, Vec<String>) {
+    let r = Repo::new();
+    std::fs::write(r.0.join(".ank/config.yml"), FIVE_LINE_PAGE).unwrap();
+    let mut tasks = Vec::new();
+    let mut adrs = Vec::new();
+    for i in 0..12 {
+        let t = format!("TASK-0000000000{i:02}");
+        r.seed_task_titled(&t, &format!("Task number {i}"));
+        tasks.push(t);
+        let a = format!("ADR-00000000aa{i:02}");
+        seed_numbered_adr(&r, &a, i);
+        adrs.push(a);
+    }
+    (r, tasks, adrs)
+}
+
+/// A proposed decision carrying a title of its own, so that a listing of twelve
+/// is twelve distinguishable rows rather than one sentence printed twelve times.
+fn seed_numbered_adr(r: &Repo, id: &str, i: usize) {
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        format!(
+            "---\nid: {id}\ntype: adr\nslug: example\ntitle: Decision number {i}\n\
+             created: 2026-07-20T00:00:00Z\nstatus: proposed\nscope:\n  - src/**\n\
+             constraint: |\n  A rule number {i}.\nschema: 1\nversion: 1\n---\n\nWhy.\n"
+        ),
+    )
+    .unwrap();
+}
+
+/// Every identifier in `ids` is somewhere in `doc`, and the failure names the
+/// ones that are not rather than printing "false".
+fn holds_every(doc: &str, ids: &[String], what: &str) {
+    let missing: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| !doc.contains(id))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{what} left {} of {} rows out of a document a program reads: {missing:?}\n{doc}",
+        missing.len(),
+        ids.len()
+    );
+}
+
+/// `find --json` carries every row, and `shown` says so.
+#[test]
+fn find_json_answers_every_row_whatever_the_budget() {
+    let (r, tasks, adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let said = stdout(&out);
+
+    assert_eq!(json_number(&said, "\"total\":"), 24, "{said}");
+    assert_eq!(
+        json_number(&said, "\"shown\":"),
+        json_number(&said, "\"total\":"),
+        "nothing was filtered, so nothing may separate the two: {said}"
+    );
+    holds_every(&said, &tasks, "find --json");
+    holds_every(&said, &adrs, "find --json");
+
+    // The fixture is only worth running while the human page really is too
+    // small to hold a task: that is what makes the assertions above a
+    // falsification of the cut rather than a restatement of the corpus.
+    let human = stdout(&r.ank("claude-code@ank", &["find"]));
+    assert!(
+        !human.contains(tasks[0].as_str()),
+        "the page must exclude the tasks for this test to mean anything:\n{human}"
+    );
+}
+
+/// `review --json` carries the whole ratification queue.
+#[test]
+fn review_json_answers_every_row_whatever_the_budget() {
+    let (r, _tasks, adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["review", "--json"]);
+    // Findings, because twelve scopes in this fixture match no tracked file.
+    // `review` answers the queue whatever it then reports about it (§8), and
+    // the exit code is asserted so that an empty document could not pass here
+    // by way of an early return.
+    assert_eq!(code(&out), 8, "{}", both_streams(&out));
+    holds_every(&stdout(&out), &adrs, "review --json");
+}
+
+/// `scope --json` carries everything covering the path.
+#[test]
+fn scope_json_answers_every_row_whatever_the_budget() {
+    let (r, tasks, adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["scope", "src/", "--json"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let said = stdout(&out);
+
+    assert_eq!(json_number(&said, "\"total\":"), 24, "{said}");
+    holds_every(&said, &tasks, "scope --json");
+    holds_every(&said, &adrs, "scope --json");
+}
+
+/// `graph --json` carries every task in the perimeter.
+#[test]
+fn graph_json_answers_every_row_whatever_the_budget() {
+    let (r, tasks, _adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["graph", "--json"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    holds_every(&stdout(&out), &tasks, "graph --json");
+}
+
+/// `shown` and `total` agree unless a filter took rows out, and `hidden` counts
+/// the filter's doing and nothing else.
+///
+/// Both halves matter and neither implies the other. Before this change the two
+/// numbers disagreed on a corpus nobody had filtered, which is the state that
+/// misleads a parser most: `hidden` said zero, truthfully, while nineteen rows
+/// were missing, so a caller comparing the three fields was told the difference
+/// was nobody's doing.
+#[test]
+fn a_json_listing_separates_shown_from_total_only_where_a_filter_did() {
+    let (r, tasks, _adrs) = past_the_budget();
+    // One task outside `src/**`, so a live claim over `src` leaves something
+    // standing: a filter that withheld every row would make `hidden`
+    // unfalsifiable, since zero and all look alike at the end of a listing.
+    let apart = "TASK-0000000000ff";
+    r.seed_task_scoped(apart, "docs/**");
+
+    // No filter, on a corpus more than twice the page: the two numbers agree,
+    // and nothing is hidden.
+    let said = stdout(&r.ank("claude-code@ank", &["find", "--type", "task", "--json"]));
+    assert_eq!(json_number(&said, "\"total\":"), 13, "{said}");
+    assert_eq!(json_number(&said, "\"shown\":"), 13, "{said}");
+    assert_eq!(json_number(&said, "\"hidden\":"), 0, "{said}");
+
+    // A live claim on one `src` task puts every other `src` task out of reach.
+    assert_eq!(code(&r.ank("mia@laptop", &["claim", tasks[0].as_str()])), 0);
+
+    let said = stdout(&r.ank(
+        "claude-code@ank",
+        &["find", "--type", "task", "--free", "--json"],
+    ));
+    // Eleven, not twelve. The claimed task also left the listing, but it left
+    // because it is no longer open rather than because a scope met it, and
+    // `free_of_live_claims` is explicit that `hidden` answers "what did the
+    // scope filter cost me" and nothing else. That is the clause under test:
+    // `hidden` names what a filter withheld, so a row that was never a
+    // candidate must not inflate it.
+    assert_eq!(
+        json_number(&said, "\"hidden\":"),
+        11,
+        "hidden counts the scope collisions and only those: {said}"
+    );
+    assert_eq!(json_number(&said, "\"total\":"), 1, "{said}");
+    assert_eq!(
+        json_number(&said, "\"shown\":"),
+        1,
+        "the page still did not cut: only the filter moved either number: {said}"
+    );
+    assert!(
+        said.contains(apart),
+        "the row no live claim covers survives: {said}"
+    );
+}
+
+/// What `find` printed on this fixture before the change, whole.
+///
+/// Five rows and the notice, because the page holds five: this is the constant
+/// the whole decision turns on. The budget was not lifted, it was moved off the
+/// document a program reads and left exactly where it was on the one a human
+/// reads.
+const FIND_PAGE: &str = concat!(
+    "  ADR-00000000aa00  [proposed] Decision number 0\n",
+    "  ADR-00000000aa01  [proposed] Decision number 1\n",
+    "  ADR-00000000aa02  [proposed] Decision number 2\n",
+    "  ADR-00000000aa03  [proposed] Decision number 3\n",
+    "  ADR-00000000aa04  [proposed] Decision number 4\n",
+    "+19 more, narrow with --scope <path> or --type task|adr|spec|log\n",
+);
+
+/// What `review` printed on this fixture before the change, whole.
+const REVIEW_PAGE: &str = concat!(
+    "PROPOSED (12)\n",
+    "  ADR-00000000aa00  Decision number 0\n",
+    "  ADR-00000000aa01  Decision number 1\n",
+    "  ADR-00000000aa02  Decision number 2\n",
+    "  ADR-00000000aa03  Decision number 3\n",
+    "  ADR-00000000aa04  Decision number 4\n",
+    "  ADR-00000000aa05  Decision number 5\n",
+    "  ADR-00000000aa06  Decision number 6\n",
+    "  ADR-00000000aa07  Decision number 7\n",
+    "  ADR-00000000aa08  Decision number 8\n",
+    "  ADR-00000000aa09  Decision number 9\n",
+    "  ADR-00000000aa10  Decision number 10\n",
+    "  ADR-00000000aa11  Decision number 11\n",
+    "\n",
+    "no ratification key declared: permissions are advisory, not enforced (§8)\n",
+    "\n",
+    "LIVE CONSTRAINTS (0)\n",
+    "\n",
+    "DEAD SCOPES (12)\n",
+    "  ADR-00000000aa00\n",
+    "  ADR-00000000aa01\n",
+    "  ADR-00000000aa02\n",
+    "  ADR-00000000aa03\n",
+    "  ADR-00000000aa04\n",
+    "  ADR-00000000aa05\n",
+    "  ADR-00000000aa06\n",
+    "  ADR-00000000aa07\n",
+    "  ADR-00000000aa08\n",
+    "  ADR-00000000aa09\n",
+    "  ADR-00000000aa10\n",
+    "  ADR-00000000aa11\n",
+    "\n",
+    "12 fault(s), 14 signal(s)\n",
+);
+
+/// What `scope src/` printed on this fixture before the change, whole.
+const SCOPE_PAGE: &str = concat!(
+    "src\n",
+    "\n",
+    "ADR (12)\n",
+    "  ADR-00000000aa00  [proposed] Decision number 0\n",
+    "  ADR-00000000aa01  [proposed] Decision number 1\n",
+    "  ADR-00000000aa02  [proposed] Decision number 2\n",
+    "  ADR-00000000aa03  [proposed] Decision number 3\n",
+    "  ADR-00000000aa04  [proposed] Decision number 4\n",
+    "  ADR-00000000aa05  [proposed] Decision number 5\n",
+    "  ADR-00000000aa06  [proposed] Decision number 6\n",
+    "  ADR-00000000aa07  [proposed] Decision number 7\n",
+    "  ADR-00000000aa08  [proposed] Decision number 8\n",
+    "  ADR-00000000aa09  [proposed] Decision number 9\n",
+    "  ADR-00000000aa10  [proposed] Decision number 10\n",
+    "  ADR-00000000aa11  [proposed] Decision number 11\n",
+    "\n",
+    "TASKS (12)\n",
+    "  TASK-000000000000  [open] Task number 0\n",
+    "  TASK-000000000001  [open] Task number 1\n",
+    "  TASK-000000000002  [open] Task number 2\n",
+    "  TASK-000000000003  [open] Task number 3\n",
+    "  TASK-000000000004  [open] Task number 4\n",
+    "  TASK-000000000005  [open] Task number 5\n",
+    "  TASK-000000000006  [open] Task number 6\n",
+    "  TASK-000000000007  [open] Task number 7\n",
+    "  TASK-000000000008  [open] Task number 8\n",
+    "  TASK-000000000009  [open] Task number 9\n",
+    "  TASK-000000000010  [open] Task number 10\n",
+    "  TASK-000000000011  [open] Task number 11\n",
+);
+
+/// What `graph` printed on this fixture before the change, whole.
+const GRAPH_PAGE: &str = concat!(
+    ".\n",
+    "\n",
+    "TASK-000000000000  [open] Task number 0\n",
+    "TASK-000000000001  [open] Task number 1\n",
+    "TASK-000000000002  [open] Task number 2\n",
+    "TASK-000000000003  [open] Task number 3\n",
+    "TASK-000000000004  [open] Task number 4\n",
+    "TASK-000000000005  [open] Task number 5\n",
+    "TASK-000000000006  [open] Task number 6\n",
+    "TASK-000000000007  [open] Task number 7\n",
+    "TASK-000000000008  [open] Task number 8\n",
+    "TASK-000000000009  [open] Task number 9\n",
+    "TASK-000000000010  [open] Task number 10\n",
+    "TASK-000000000011  [open] Task number 11\n",
+    "\n",
+    "12 task(s), 12 root(s) — indented under what blocks them\n",
+);
+
+/// The human page of all four listings, byte for byte.
+///
+/// **These four constants were captured from the binary built at ed72f51**, the
+/// commit before this change, on a fixture seeded to match `past_the_budget`
+/// exactly. They are not what this build prints, recorded after the fact and
+/// called a pin: that would assert only that the code agrees with itself.
+///
+/// The cut notice is in `FIND_PAGE` on purpose. It is the sentence that would
+/// disappear if somebody ever "fixed" the human listing by lifting its cap too,
+/// and the decision is explicit that what a terminal shows does not move: the
+/// budget was not raised, it was taken off the document a program reads and left
+/// untouched on the one a human reads.
+///
+/// A byte-for-byte pin over four verbs is deliberately brittle, and a future
+/// reader should know why before re-blessing it. An unrelated change to what
+/// `check` counts will redden `REVIEW_PAGE`; that is the cost of asserting the
+/// whole page rather than a substring, and the substring is what would let the
+/// budget creep back in one row at a time. Re-capture from the binary, read the
+/// diff, and only then paste it here.
+#[test]
+fn the_human_page_of_all_four_listings_is_unchanged() {
+    let (r, _tasks, _adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["find"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert_eq!(stdout(&out), FIND_PAGE, "find moved");
+
+    let out = r.ank("claude-code@ank", &["review"]);
+    assert_eq!(code(&out), 8, "{}", both_streams(&out));
+    assert_eq!(stdout(&out), REVIEW_PAGE, "review moved");
+
+    let out = r.ank("claude-code@ank", &["scope", "src/"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert_eq!(stdout(&out), SCOPE_PAGE, "scope moved");
+
+    let out = r.ank("claude-code@ank", &["graph"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert_eq!(stdout(&out), GRAPH_PAGE, "graph moved");
+}
+
+/// The budget still governs the page `context` serves.
+///
+/// `context` is the one verb whose answer *is* the budget: it decides what a
+/// reader is handed first, so ADR-3e6ce108edcd exempts it from the rule the four
+/// listings above now follow. This guards the half of that exemption which
+/// holds today, on the same fixture and at the same five-line page: the human
+/// output cuts, counts what it cut, and names the query that would show the
+/// rest.
+///
+/// **The `--json` half of that clause does not hold, and this test does not
+/// pretend otherwise.** Measured on this fixture: `context --json` emits all
+/// twenty-four rows while the page above shows four. `context.rs` reads
+/// `cfg.context_budget` at exactly one line, the human `render`, and
+/// `render_json` has never taken a budget argument since it was introduced in
+/// 6ec4f70 -- so `context --json` was never budgeted and this change did not
+/// make it so. Nothing is asserted here about the `--json` document in either
+/// direction, deliberately: pinning today's behaviour would cement what the
+/// decision forbids, and pinning the decision's behaviour would fail. The gap is
+/// carried by TASK-ecf0f37f68c9.
+#[test]
+fn the_budget_still_governs_the_page_context_serves() {
+    let (r, _tasks, _adrs) = past_the_budget();
+
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let said = stdout(&out);
+
+    assert!(
+        said.contains("+12 not shown"),
+        "the proposals were cut and counted: {said}"
+    );
+    assert!(
+        said.contains("+8 more tasks"),
+        "and so were the tasks: {said}"
+    );
+    // Four of twelve, which is the page doing real work rather than a corpus
+    // that happened to fit.
+    assert!(
+        said.contains("TASK-000000000003") && !said.contains("TASK-000000000004"),
+        "the page ends where the budget does: {said}"
+    );
+}
