@@ -12,7 +12,7 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a></p>
 
 ```sh
-npm install -g @haksolot/ank     # the binary
+npm install -g @haksolot/ank     # the binary, and ank-mcp beside it
 npx skills add haksolot/ank      # the skill, into whichever agent you run
 ```
 
@@ -37,6 +37,10 @@ Four verbs carry the loop: `ank context` for what binds here and what is takeabl
 `ank claim` to take a task and freeze its criterion, `ank log` while you work, and
 `ank done` to finish with a proof that `ank check` can verify afterwards.
 [Getting started][start] walks all of it with real output, from `ank init` onward.
+
+A client with no shell reaches the same verbs over MCP. `ank-mcp` installs beside
+the binary by every route that installs it, and [getting started][start] carries
+the configuration to paste, for Claude Code, Claude Desktop and Cursor.
 
 ## What it is not
 
