@@ -5,7 +5,7 @@ slug: the-protocol-surface-is-a-verb-of-the-one-binary
 title: The protocol surface is a verb of the one binary, and it speaks for the corpora its reader declared
 created: 2026-08-25T16:52:02Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-mcp/**
@@ -16,8 +16,12 @@ constraint: |
   
   It may speak for several corpora, and never for a merged one. Every tool carries an optional corpus argument holding the repository identity of ADR-621a7fd96ce1; absent, the call goes to the corpus the process was addressed with at startup. The set a server may reach is what the reader declared in corpora.yml (ADR-96174f1ac2b7) plus that startup corpus, and nothing is discovered: a corpus argument naming an identity the reader did not declare is refused by name. Each corpus is addressed on its own, the way --repo addresses one. Claims stay per clone and no server arbitrates across clones: there is no merged claim space, no claim held on a client's behalf, and no pooling of clients under one identity.
 supersedes: ADR-372b82af1ec7
+ratified: 7f922fe30d79
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-25T17:19:54Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-372b82af1ec7 is kept whole except in two clauses, and both are amended here

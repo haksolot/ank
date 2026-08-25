@@ -5,7 +5,7 @@ slug: a-protocol-surface-is-a-generated-full-surface-p
 title: A protocol surface is a generated full-surface passthrough, or it does not exist
 created: 2026-08-17T05:14:01Z
 author: claude-code/2.1.233+integration-contract
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/src/cli.rs
 constraint: |
@@ -13,7 +13,7 @@ constraint: |
 supersedes: ADR-1713af205186
 ratified: 629f3ae1a72d
 schema: 3
-version: 4
+version: 5
 ---
 
 ## What this supersedes, and what it keeps
