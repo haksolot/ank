@@ -19,15 +19,12 @@ fetched the binary would die behind exactly the firewall this package exists to
 cross. `bin/wrapper.js` is therefore a resolver, never a downloader: it finds
 the platform package with `require.resolve` and executes what it finds.
 
-**Two executables, one package, one version.** Each platform package carries
-`ank` and `ank-mcp`, the protocol surface, out of the same build
-: no route carries one without the other, so there is no
-install holding a CLI and a passthrough generated from a different table. The
-wrapper declares both as `bin` and resolves them by one route -- `bin/ank` and
-`bin/ank-mcp` are two lines each, and `bin/wrapper.js` is the resolution, the
-diagnostics and the exit code for both. Two copies of that file is the
-arrangement where the protocol surface quietly stops resolving the way the CLI
-does and nothing turns red.
+**One executable, one package, one version.** Each platform package carries
+`ank` and nothing else (ADR-1ea31c2f3c5a). The protocol surface is the verb
+`ank mcp` and the watcher is `ank watch`, so there is no second file that could
+arrive from a different build, or fail to arrive at all. The wrapper declares
+one `bin` -- `bin/ank` is two lines, and `bin/wrapper.js` is the resolution,
+the diagnostics and the exit code behind it.
 
 **The Linux package declares no `libc`.** The build is `x86_64-unknown-linux-musl`
 and statically linked, so it runs on a glibc distribution just as well; declaring
@@ -39,13 +36,13 @@ not because it restricts where it runs.
 gives 4, 6, 8 and 9 distinct meanings that an agent branches on. A wrapper that
 collapsed them into 0 and 1 would break every caller reading them, which is why
 `bin/wrapper.js` exits with the child's status and reserves 9, the environment
-code, for its own failures. `ank-mcp` reaches its client the same way, and `stdio` is
-inherited rather than captured, because a surface that speaks JSON-RPC on stdin
-has nothing to say to a wrapper holding the pipe.
+code, for its own failures. `ank mcp` reaches its client through the same shim,
+and `stdio` is inherited rather than captured, because a surface that speaks
+JSON-RPC on stdin has nothing to say to a wrapper holding the pipe.
 
 ## What is not in git
 
-`npm/ank-*/bin/` is empty here and ignored. Both binaries land in it during the
+`npm/ank-*/bin/` is empty here and ignored. The binary lands in it during the
 release run, from the same artefacts the GitHub release publishes: one build,
 two channels, no second compilation that could disagree with the first.
 
@@ -60,7 +57,6 @@ only ever the last released one.
 `release.yml` does it on a `v*` tag, with `NPM_TOKEN` from the repository
 secrets and `--access public`, which a scoped package needs on its first
 publish. On `workflow_dispatch` the same job assembles the packages, installs
-them from the tarballs on all three platforms, and shows `ank-mcp` answering
-`--version` with the number `ank` answers with, so the pipeline is proved before
-a tag depends on it, and a tag is the one thing here that is awkward to take
-back.
+them from the tarballs on all three platforms, and holds one `initialize`
+conversation with `npx ank mcp`, so the pipeline is proved before a tag depends
+on it, and a tag is the one thing here that is awkward to take back.

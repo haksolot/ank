@@ -21,7 +21,6 @@ check="$root/.github/scripts/check-version.sh"
 manifests=(
   crates/ank-cli/Cargo.toml
   crates/ank-core/Cargo.toml
-  crates/ank-mcp/Cargo.toml
   npm/ank/package.json
   npm/ank-linux-x64-musl/package.json
   npm/ank-darwin-arm64/package.json
@@ -41,7 +40,7 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-# plant <dir> -- the eight manifests, at their real paths, byte for byte.
+# plant <dir> -- the seven manifests, at their real paths, byte for byte.
 plant() {
   local dir="$1" m
   for m in "${manifests[@]}"; do

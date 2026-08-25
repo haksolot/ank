@@ -11,11 +11,21 @@ this channel works where fetching a bare executable does not. It covers
 `linux x64`, `darwin arm64` and `win32 x64`; on any other platform the wrapper
 exits 9 and names `cargo install`. ank needs **git 2.34 or newer**.
 
-Two commands are installed, out of one build and under one version: `ank`, the
-CLI, and `ank-mcp`, the protocol surface a client with no shell reaches instead.
-Every verb the CLI dispatches is a tool there, generated from the same table.
+One command is installed, and everything ank does is a verb of it. A client
+with no shell reaches the same verbs over MCP by launching that command with
+`mcp`, and every verb the CLI dispatches is a tool there, generated from the
+same table:
 
-This package carries both. The skill an agent loads is a separate install, and
+    {
+      "mcpServers": {
+        "ank": {
+          "command": "ank",
+          "args": ["mcp", "--repo", "/path/to/your/repo"]
+        }
+      }
+    }
+
+The skill an agent loads is a separate install, and
 [the documentation](https://github.com/haksolot/ank) covers both, along with the
 specification and the source.
 

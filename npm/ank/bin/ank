@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
-// The CLI. Every word about how this resolves is in wrapper.js, which ank-mcp
-// beside it uses unchanged.
+// The CLI, and the only executable this package installs: the protocol surface
+// and the watcher are verbs of it (ADR-1ea31c2f3c5a). Every word about how it
+// resolves is in wrapper.js.
 require("./wrapper.js").run("ank");

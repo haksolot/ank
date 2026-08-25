@@ -22,8 +22,7 @@
     "pi-package"
   ],
   "bin": {
-    "ank": "bin/ank",
-    "ank-mcp": "bin/ank-mcp"
+    "ank": "bin/ank"
   },
   "pi": {
     "skills": [
@@ -33,7 +32,6 @@
   },
   "files": [
     "bin/ank",
-    "bin/ank-mcp",
     "bin/wrapper.js",
     "skills/",
     "README.md",
