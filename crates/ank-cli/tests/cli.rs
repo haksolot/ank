@@ -5769,6 +5769,166 @@ fn status_remote_names_the_claims_origin_holds_and_which_are_only_there() {
     );
 }
 
+/// `status` names how far this checkout's `refs/ank/*` have drifted from
+/// origin's (TASK-6596aae0713c, ADR-47e2ac102f58).
+///
+/// **The state this exists for is invisible, and that is what makes it
+/// dangerous.** A clone whose fetch refspec is `refs/heads/*` never updates
+/// `refs/ank/*`, so it holds a copy that ages in silence while the remote
+/// moves. On 2026-08-25 an agent reading such a copy answered it with
+/// `git push origin +refs/ank/*:refs/ank/*` and force-updated eighty-three refs
+/// from a week-old snapshot. Nothing reported the gap, so nothing could have
+/// stopped it being read as current.
+///
+/// Against a bare origin and a second clone, because that is the only shape
+/// where the two planes can disagree: a worktree shares `refs/ank/` with the
+/// checkout that made it.
+///
+/// **A signal and never a wall**, asserted rather than promised: the exit code
+/// is zero with the drift named, nothing is refused, and the way out named is a
+/// fetch. It must never be a push -- the push is the thing that caused the
+/// damage.
+#[test]
+fn status_names_the_refs_this_checkout_holds_that_origin_has_moved_past() {
+    const MINE: &str = "TASK-000000000f41";
+    const THEIRS: &str = "TASK-000000000f42";
+    let r = Repo::new();
+    r.seed_task_titled(MINE, "Held in this clone");
+    r.seed_task_titled(THEIRS, "Held in the other clone");
+    let (_origin, other) = r.cloned();
+
+    // Taken here, so the ref exists on both planes pointing at one object.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+    let refname = format!("refs/ank/claims/{MINE}");
+    let here = r.git(&["rev-parse", &refname]);
+
+    // And now the state the incident was made of, made the way it was made:
+    // origin moves and this checkout does not hear about it. The bulk
+    // force-push is the operation being reproduced, so it is spelled out here
+    // as raw git rather than reached through a verb -- ank has no verb that
+    // does this, which is the whole point, and `push_ref` writes one ref at a
+    // time under `--force-with-lease` precisely so that it cannot.
+    let head = r.git(&["rev-parse", "HEAD"]);
+    assert_ne!(
+        here, head,
+        "the fixture moved origin to where it already was"
+    );
+    r.git(&["push", "-q", "origin", &format!("+{head}:{refname}")]);
+
+    // A ref origin holds that this checkout has never seen, which is the other
+    // half of the count.
+    let out = r.ank_at("codex@host-9", &["claim", THEIRS], &other);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let out = r.ank("claude-code@ank", &["status", "--remote"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a signal moved an exit code:\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+    let said = stdout(&out);
+    let line = said
+        .lines()
+        .find(|l| l.starts_with("refs "))
+        .unwrap_or_else(|| panic!("status named no refs drift at all:\n{said}"));
+    assert!(
+        line.contains("1 ref(s) origin has moved past"),
+        "the stale copy is not counted: {line}"
+    );
+    assert!(
+        line.contains("1 ref(s) origin holds that are not here"),
+        "the ref this clone has never seen is not counted: {line}"
+    );
+    // A fetch, and never a push. The bulk push is the operation that defeats
+    // the compare-and-swap `push_ref` writes every ref under, and a line about
+    // stale refs that proposed one would be the incident's own instruction.
+    assert!(
+        line.contains("git fetch origin"),
+        "the way to close the gap is not named: {line}"
+    );
+    assert!(
+        !said.contains("git push"),
+        "the report proposes the push that caused the damage:\n{said}"
+    );
+    // Beside the branch drift it already names, and under it: the two lines
+    // answer the same question of the two planes.
+    let keys: Vec<&str> = said
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .collect();
+    let drift = keys.iter().position(|k| *k == "drift");
+    let refs = keys.iter().position(|k| *k == "refs");
+    assert!(
+        drift.is_some() && refs == drift.map(|i| i + 1),
+        "the refs line is not beside the branch drift:\n{said}"
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--remote", "--json"]));
+    assert!(
+        json.contains("\"refs\":{\"stale\":1,\"absent\":1}"),
+        "the machine surface is blind to what the human one says: {json}"
+    );
+
+    // Without the flag nothing was compared, so there is nothing to say and
+    // `null` says it. Zero would be a claim this checkout is level, which is
+    // the answer no verb may give without having asked.
+    let plain = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        !plain.lines().any(|l| l.starts_with("refs ")),
+        "status answered about a plane it made no call to read:\n{plain}"
+    );
+    let plain_json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(
+        plain_json.contains("\"refs\":null"),
+        "an uncompared plane is reported as a measurement: {plain_json}"
+    );
+}
+
+/// A checkout level with origin says so in one line and enumerates nothing
+/// (TASK-6596aae0713c).
+///
+/// The half that keeps the signal readable. A line that only ever appears when
+/// something is wrong is a line a reader has to tell from silence, and silence
+/// is what "the remote was never read" already means here -- so the level case
+/// is printed, and printed short. A report that listed thirty untouched refs to
+/// say nothing had happened would be the noise that trains a reader to skip the
+/// line, which is exactly the outcome the drift line exists to avoid.
+#[test]
+fn status_says_a_checkout_level_with_origin_in_one_line() {
+    const MINE: &str = "TASK-000000000f43";
+    let r = Repo::new();
+    r.seed_task_titled(MINE, "Held in this clone");
+    let (_origin, _other) = r.cloned();
+
+    // A ref on both planes pointing at the same object: `claim` pushes it, and
+    // ADR-af533e7a3e03 is why the push having happened is not in doubt.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+
+    let out = r.ank("claude-code@ank", &["status", "--remote"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = stdout(&out);
+    let lines: Vec<&str> = said.lines().filter(|l| l.starts_with("refs ")).collect();
+    assert_eq!(lines.len(), 1, "the level case is not one line:\n{said}");
+    assert_eq!(
+        lines[0], "refs level with origin",
+        "the level case does not say it is level:\n{said}"
+    );
+    // Enumerates nothing: no ref name reaches the output, and no count of them
+    // either.
+    assert!(
+        !said.contains("refs/ank/"),
+        "the level case enumerated the namespace:\n{said}"
+    );
+
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--remote", "--json"]));
+    assert!(
+        json.contains("\"refs\":{\"stale\":0,\"absent\":0}"),
+        "level is not reported as level: {json}"
+    );
+}
+
 /// What a watcher mirrors into `refs/ank/watch/*` reaches `status`, and reaches
 /// nothing else (ADR-a22cd3196529).
 ///

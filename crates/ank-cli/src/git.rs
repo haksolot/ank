@@ -497,6 +497,15 @@ pub fn crosses_repository(here: Option<&Path>, root: Option<&Path>) -> bool {
 
 const HEADS_PREFIX: &str = "refs/heads/";
 const ANK_NAMESPACE: &str = "refs/ank/";
+
+/// The same namespace as a glob, which is what `ls-remote` matches against.
+///
+/// `for-each-ref` takes a prefix and `ls-remote` takes a pattern, so the two
+/// spellings differ by a star and mean one thing. Stated once here rather than
+/// written out at each call site: a namespace typed twice is a namespace that
+/// can be typed differently twice (ADR-85e6f9e1ba1e names `refs/ank/*` as the
+/// project's, and this is where that name lives).
+pub const ANK_NAMESPACE_PATTERN: &str = "refs/ank/*";
 const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
 const ORIGIN_PREFIX: &str = "refs/remotes/origin/";
 
