@@ -1212,7 +1212,7 @@ pub fn find(
     if inv.json() {
         // `state` beside `status`, from the plane already read above and in the
         // spelling `context --json` uses: the marker the human listing prints,
-        // brackets stripped. A marker is not colour — ADR-0c8ab846d262 keeps
+        // brackets stripped. A marker is not colour — ADR-1f70ce2c3eac keeps
         // colour for the reader and structure for everyone — so the answer a
         // terminal gets about a row finished on a branch is the answer a pipe
         // gets, and a caller filtering on this JSON no longer schedules work the

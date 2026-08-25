@@ -496,7 +496,7 @@ pub fn run(
     // claim is held by somebody else — and that message talks about claims,
     // correctly, while the reader's actual mistake was one line higher.
     //
-    // Plain text, source included, both ways round (ADR-0c8ab846d262). The
+    // Plain text, source included, both ways round (ADR-1f70ce2c3eac). The
     // source is not decoration on the value: `claude-code/6f4f` names a
     // session and `seanl@sean-laptop` names a machine, so two sessions in one
     // checkout that both let it fall back are one agent to every ref the tool
@@ -639,7 +639,7 @@ pub fn run(
 /// from `claim::way_out` rather than restated (TASK-38b384543551).
 ///
 /// Plain text either way. What is said here is a state a reader must be able to
-/// act on, so none of it is carried by colour (ADR-0c8ab846d262) — the same
+/// act on, so none of it is carried by colour (ADR-1f70ce2c3eac) — the same
 /// bytes reach a terminal and a pipe.
 fn also_claimed(
     out: &mut dyn Write,

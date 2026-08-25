@@ -1,4 +1,4 @@
-//! ANSI styling, and the whole of it (§4, ADR-0c8ab846d262).
+//! ANSI styling, and the whole of it (§4, ADR-1f70ce2c3eac).
 //!
 //! Every escape sequence this binary can emit is written here, in one table of
 //! eight codes. That is deliberate: color is presentation, and presentation
@@ -20,7 +20,7 @@
 
 use std::io::IsTerminal;
 
-/// The structure alphabet of §4 (ADR-0c8ab846d262).
+/// The structure alphabet of §4 (ADR-1f70ce2c3eac).
 ///
 /// Text, not escapes, and therefore not gated on [`Style`] at all: a tree is
 /// what the `blocked_by` edges are, and drawing it one way for a human and

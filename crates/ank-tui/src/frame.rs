@@ -2,16 +2,27 @@
 //!
 //! **Three escape sequences, and they are the whole of what this crate emits.**
 //! They move the cursor and swap the screen buffer; none of them is colour.
-//! That is deliberate rather than an omission: the palette of §4 lives in
-//! `ank-cli`'s `style.rs`, this crate may not link `ank-cli`, and a second
-//! palette would be a second place deciding what a status looks like. Nothing
-//! here is carried by colour, so what is given up is decoration and not
-//! information -- which is the rule ADR-0c8ab846d262 states, kept by having no
-//! colour at all rather than by being careful.
+//! That is where this crate stands today, and the reason is still worth
+//! stating: the palette of §4 lives in `ank-cli`'s `style.rs`, this crate may
+//! not link `ank-cli`, and a second palette would be a second place deciding
+//! what a status looks like. With no route to the first one, monochrome was
+//! the only answer left rather than the answer that was chosen.
 //!
-//! The structure layer is that ADR's, unchanged: the tree connectors and the
-//! marker on a held row are text, and they are the same bytes on every
-//! platform.
+//! **The other route is open now, and this file has not taken it yet.**
+//! ADR-1f70ce2c3eac makes what a status means one table, held where every
+//! surface reads it and holding no escape sequence, and each surface paints
+//! that meaning its own way: two renderers are allowed and a second table is
+//! not. The reason above is the one that decision keeps; the monochrome it
+//! forced is not.
+//!
+//! TASK-4fa385c1772d is where this file is drawn again through ratatui, and
+//! TASK-6cd41d23b7d1 is where the reader paints that table and NO_COLOR
+//! reaches it. Until then nothing here is carried by colour, so what is given
+//! up is decoration and not information.
+//!
+//! The structure layer is ADR-1f70ce2c3eac's and the supersession left it
+//! word for word: the tree connectors and the marker on a held row are text,
+//! and they are the same bytes on every platform.
 
 /// The alternate screen buffer. What a full-screen reader owes the shell it was
 /// launched from: leaving restores the scrollback the session was covering.
@@ -24,7 +35,7 @@ pub const LEAVE: &str = "\x1b[?1049l";
 pub const HOME: &str = "\x1b[H\x1b[2J";
 
 /// The marker on the row the cursor is on, in the two columns every listing in
-/// this tool already spends on its left margin (ADR-0c8ab846d262).
+/// this tool already spends on its left margin (ADR-1f70ce2c3eac).
 pub const CURSOR: &str = "> ";
 /// The same two columns on every other row.
 pub const PLAIN: &str = "  ";

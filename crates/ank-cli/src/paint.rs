@@ -6,7 +6,7 @@
 //! occupies no column, so stripping the escapes from what this writes yields
 //! the byte sequence `show` wrote before it existed — same characters, same
 //! order, nothing aligned, nothing re-indented. The file is not re-laid-out for
-//! a human: ADR-0c8ab846d262 already refused to give one corpus two shapes.
+//! a human: ADR-1f70ce2c3eac already refused to give one corpus two shapes.
 //!
 //! **No escape sequence is written here.** The palette stays in
 //! [`crate::style`] and this module only calls its accessors, so the rule

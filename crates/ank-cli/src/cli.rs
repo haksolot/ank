@@ -1081,7 +1081,7 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
 /// The corpus, and whatever resolving it had to say.
 ///
 /// **The note is printed here and never inside the resolution**, on the split
-/// ADR-0c8ab846d262 draws: what a reader is told is presentation, and a
+/// ADR-1f70ce2c3eac draws: what a reader is told is presentation, and a
 /// resolver that printed would be a second place deciding what `--quiet` means.
 /// Standard error, because stdout is a parser's input (§4) and a declaration
 /// answering instead of the tree changes no answer, only where it came from.
