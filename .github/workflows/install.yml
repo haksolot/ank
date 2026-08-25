@@ -28,6 +28,11 @@ env:
   # this project has ever published, so a step that silently reached the real
   # release instead of the staged one cannot pass.
   STAGED_VERSION: "9.9.9"
+  # A second staged release, older than ank-mcp: the same layout with the
+  # protocol surface absent. --version reaches releases published before
+  # ank-mcp existed, and an installer that failed on one would break a route
+  # that works today, so that archive is staged rather than imagined.
+  STAGED_LEGACY_VERSION: "9.9.8"
   STAGED_PORT: "8731"
 
 jobs:
@@ -81,7 +86,13 @@ jobs:
               exit 1
             }
           done
-          echo "--help names all three targets, and the flag that draws nothing"
+          # Two executables land, so --help says two land: a caller who reads it
+          # and then finds one file has been told the wrong thing.
+          printf '%s' "$out" | grep -q -- 'ank-mcp' || {
+            echo "--help does not name ank-mcp"
+            exit 1
+          }
+          echo "--help names all three targets, the flag that draws nothing, and ank-mcp"
 
       # The first of the two failures that matter. A fake `uname` on PATH is
       # what makes this testable on a machine that is one of the supported
@@ -154,19 +165,55 @@ jobs:
           chmod +x "stage/$name/ank"
           echo "staged" > "stage/$name/README.md"
 
+          # The protocol surface, beside it in the one directory the archive
+          # carries, because that is where release.yml puts it and where
+          # install.sh looks. Field two of each --version line is the version:
+          # `ank` prints the commit and the skill revision beside its number and
+          # `ank-mcp` prints neither, which is the same shape release.yml's own
+          # npm assertion compares.
+          cat > "stage/$name/ank-mcp" <<EOF
+          #!/bin/sh
+          if [ "\$1" = "--version" ]; then
+            echo "ank-mcp ${STAGED_VERSION}"
+            exit 0
+          fi
+          echo "staged stand-in for ank-mcp" >&2
+          exit 2
+          EOF
+          chmod +x "stage/$name/ank-mcp"
+
+          # The release older than ank-mcp, in the same layout with the second
+          # executable absent.
+          legacy="ank-${STAGED_LEGACY_VERSION}-${{ matrix.target }}"
+          mkdir -p "stage/$legacy"
+          cat > "stage/$legacy/ank" <<EOF
+          #!/bin/sh
+          if [ "\$1" = "--version" ]; then
+            echo "ank ${STAGED_LEGACY_VERSION} (staged)"
+            exit 0
+          fi
+          echo "staged stand-in for ank" >&2
+          exit 2
+          EOF
+          chmod +x "stage/$legacy/ank"
+          echo "staged" > "stage/$legacy/README.md"
+
           cd stage
           # The same layout release.yml packages: one directory named after the
           # archive, and the checksum in sha256sum's own format beside it. The
           # script parses that file, so a shape invented here would test a
           # parser against nothing.
-          tar czf "${name}.tar.gz" "$name"
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
-          else
-            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
-          fi
-          mkdir -p "srv/v${STAGED_VERSION}"
+          for pack in "$name" "$legacy"; do
+            tar czf "${pack}.tar.gz" "$pack"
+            if command -v sha256sum >/dev/null 2>&1; then
+              sha256sum "${pack}.tar.gz" > "${pack}.tar.gz.sha256"
+            else
+              shasum -a 256 "${pack}.tar.gz" > "${pack}.tar.gz.sha256"
+            fi
+          done
+          mkdir -p "srv/v${STAGED_VERSION}" "srv/v${STAGED_LEGACY_VERSION}"
           cp "${name}.tar.gz" "${name}.tar.gz.sha256" "srv/v${STAGED_VERSION}/"
+          cp "${legacy}.tar.gz" "${legacy}.tar.gz.sha256" "srv/v${STAGED_LEGACY_VERSION}/"
 
           cd srv
           nohup python3 -m http.server "$STAGED_PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
@@ -221,6 +268,15 @@ jobs:
           }
           echo "no escape sequence, no frame, and the binary answers --version"
 
+          # And the last thing it printed has to name the second executable: a
+          # caller who never lists the directory learns what landed from that
+          # block and from nowhere else.
+          grep -q "staged-bin/ank-mcp" staged.log || {
+            echo "the install did not name ank-mcp in what it printed"
+            exit 1
+          }
+          echo "and it named ank-mcp in what it installed"
+
           # The flag, on a run that already had no terminal: it has to be
           # accepted and to change nothing. The same directory, so the two logs
           # can differ in nothing but what the flag turns off.
@@ -230,6 +286,88 @@ jobs:
             exit 1
           }
           echo "--no-welcome is accepted, and changes nothing"
+
+      # What ADR-e39a44f80e0e asks for, measured where the criterion puts it:
+      # not that the script contains a line about ank-mcp, but that the
+      # directory it installed into holds two executables, that both answer
+      # --version, and that they answer with one version.
+      #
+      # The number and not the line, for the reason the stand-ins print what
+      # they print: it is field two of each. Asserted non-empty first, because
+      # two versions that are both empty are equal and that is not the news.
+      - name: both executables are installed, and report the same version
+        run: |
+          set -e
+          test -x "$PWD/staged-bin/ank" || { echo "ank is not installed"; exit 1; }
+          test -x "$PWD/staged-bin/ank-mcp" || {
+            echo "ank-mcp was not installed beside ank"
+            ls -l "$PWD/staged-bin"
+            exit 1
+          }
+
+          ank_line=$("$PWD/staged-bin/ank" --version)
+          mcp_line=$("$PWD/staged-bin/ank-mcp" --version)
+          echo "ank:     $ank_line"
+          echo "ank-mcp: $mcp_line"
+          ank_version=$(printf '%s\n' "$ank_line" | awk '{print $2}')
+          mcp_version=$(printf '%s\n' "$mcp_line" | awk '{print $2}')
+          test -n "$ank_version" || { echo "ank --version printed no version"; exit 1; }
+          test "$ank_version" = "$mcp_version" || {
+            echo "ank reports $ank_version and ank-mcp reports $mcp_version"
+            exit 1
+          }
+
+          # "with the same permissions" is a claim about two files on disk, so
+          # it is read off them rather than off the script that wrote them. The
+          # first field of `ls -l` is the one spelling GNU and BSD both print.
+          ank_mode=$(ls -l "$PWD/staged-bin/ank" | awk '{print $1}')
+          mcp_mode=$(ls -l "$PWD/staged-bin/ank-mcp" | awk '{print $1}')
+          echo "modes: ank $ank_mode, ank-mcp $mcp_mode"
+          test "$ank_mode" = "$mcp_mode" || {
+            echo "the two executables were installed with different permissions"
+            exit 1
+          }
+          echo "two executables, one version, one mode"
+
+      # The older release, which is the case that decides the shape. --version
+      # points this script at archives published before ank-mcp existed, and a
+      # hard failure there would break a route that works today: the person
+      # asked for ank, and ank is what that archive can give them.
+      #
+      # Only stderr is captured -- `2>&1 >/dev/null` sends stdout to the void
+      # and stderr to the capture -- because "says so on standard error" is the
+      # claim, and reading both streams together would not tell them apart.
+      - name: an archive with no ank-mcp still installs ank, and says so
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          set +e
+          err=$(sh install.sh --version "$STAGED_LEGACY_VERSION" --dir "$PWD/legacy-bin" 2>&1 >/dev/null)
+          code=$?
+          set -e
+          echo "$err"
+          echo "exit $code"
+
+          test "$code" -eq 0 || {
+            echo "an archive without ank-mcp has to install ank rather than fail"
+            exit 1
+          }
+          test -x "$PWD/legacy-bin/ank" || { echo "ank was not installed"; exit 1; }
+          test ! -e "$PWD/legacy-bin/ank-mcp" || {
+            echo "it installed an ank-mcp the archive does not carry"
+            exit 1
+          }
+          printf '%s' "$err" | grep -q 'carries no ank-mcp' || {
+            echo "the install did not say on stderr that the archive carries no ank-mcp"
+            exit 1
+          }
+          got=$("$PWD/legacy-bin/ank" --version)
+          echo "ank --version: $got"
+          test "$got" = "ank ${STAGED_LEGACY_VERSION} (staged)" || {
+            echo "expected: ank ${STAGED_LEGACY_VERSION} (staged)"
+            exit 1
+          }
+          echo "installed ank, said on stderr what the archive is missing, exited 0"
 
       # The second of the two failures that matter, and the reason the .sha256
       # is published at all. One byte appended to the archive, the checksum
@@ -323,6 +461,25 @@ jobs:
                 exit 1
                 ;;
             esac
+            # ank-mcp lives inside the archive, so the release page cannot be
+            # asked whether this one carries it; the install directory can.
+            # Written as a test for the reason the branch above is: the first
+            # release that carries the pair turns this into an assertion with
+            # no edit here, and until then the staged release measures it.
+            if [ -e "$PWD/real-bin/ank-mcp" ]; then
+              real_mcp=$("$PWD/real-bin/ank-mcp" --version)
+              echo "ank-mcp --version: $real_mcp"
+              real_ank_version=$(printf '%s\n' "$got" | awk '{print $2}')
+              real_mcp_version=$(printf '%s\n' "$real_mcp" | awk '{print $2}')
+              test -n "$real_ank_version" || { echo "ank --version printed no version"; exit 1; }
+              test "$real_ank_version" = "$real_mcp_version" || {
+                echo "ank reports $real_ank_version and ank-mcp reports $real_mcp_version"
+                exit 1
+              }
+              echo "the released pair reports one version"
+            else
+              echo "$tag carries no ank-mcp; the staged release is where the pair is measured"
+            fi
           else
             test "$code" -eq 3 || {
               echo "$tag does not carry $archive, so the script had to refuse with 3"
@@ -336,10 +493,12 @@ jobs:
             echo "$tag carries no $archive, and the script said so rather than failing silently"
           fi
 
-  # The Windows half of the same claim. It asserts the same four properties the
-  # job above does -- it explains itself, it refuses a platform by name, it
-  # refuses a tampered archive before unpacking, and the real release installs
-  # and answers with its version -- in the language Windows actually has.
+  # The Windows half of the same claim. It asserts the same properties the job
+  # above does -- it explains itself, it refuses a platform by name, it places
+  # both executables and they report one version, an archive older than ank-mcp
+  # still installs ank, it refuses a tampered archive before unpacking, and the
+  # real release installs and answers with its version -- in the language
+  # Windows actually has.
   #
   # Both shells, and that is the point of the last two steps: install.ps1 claims
   # Windows PowerShell 5.1 as its floor because that is what a clean Windows
@@ -376,14 +535,17 @@ jobs:
           $out = (& ./install.ps1 -Help *>&1 | Out-String)
           # -NoWelcome is in the list for the reason the others are: a switch
           # a caller cannot find is a switch they cannot use.
+          # ank-mcp.exe is in the list for the reason the switch is: two
+          # executables land, and a caller who reads -Help and then finds one
+          # file has been told the wrong thing.
           foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh',
-                              '-NoWelcome', 'ANK_NO_WELCOME') {
+                              '-NoWelcome', 'ANK_NO_WELCOME', 'ank-mcp.exe') {
             if ($out -notmatch [regex]::Escape($needle)) {
               "-Help does not name $needle"
               exit 1
             }
           }
-          "-Help names the target, the environment, the other script and the switch"
+          "-Help names the target, the environment, the other script, the switch and ank-mcp"
 
       # The first of the two failures that matter. The architecture is read out
       # of the environment precisely so this is testable on a machine that is
@@ -422,7 +584,9 @@ jobs:
       - name: stage a release and serve it
         run: |
           $name = "ank-$env:STAGED_VERSION-x86_64-pc-windows-msvc"
+          $legacy = "ank-$env:STAGED_LEGACY_VERSION-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "stage/pack/$name" -Force | Out-Null
+          New-Item -ItemType Directory -Path "stage/pack-legacy/$legacy" -Force | Out-Null
 
           # A real executable and not a text file wearing the name, because the
           # claim under test is that the installed binary answers --version and
@@ -432,39 +596,62 @@ jobs:
           #
           # Add-Type -OutputAssembly would read better and is not used:
           # PowerShell 7 dropped that parameter, and these steps run under pwsh.
-          $src = @(
-            'public class StandIn {',
-            '    public static int Main(string[] args) {',
-            '        if (args.Length > 0 && args[0] == "--version") {',
-            "            System.Console.WriteLine(`"ank $env:STAGED_VERSION (staged)`");",
-            '            return 0;',
-            '        }',
-            '        System.Console.Error.WriteLine("staged stand-in for ank");',
-            '        return 2;',
-            '    }',
-            '}'
-          )
-          Set-Content -Path 'stage/standin.cs' -Value $src
-
           $csc = Get-ChildItem "$env:WINDIR\Microsoft.NET\Framework64\v4.0.*\csc.exe" `
             -ErrorAction SilentlyContinue | Select-Object -Last 1
           if (-not $csc) { "no csc.exe on this image, so no runnable stand-in can be built"; exit 1 }
-          & $csc.FullName /nologo /target:exe /out:"stage\pack\$name\ank.exe" 'stage\standin.cs'
-          if ($LASTEXITCODE -ne 0) { "the stand-in did not compile"; exit 1 }
 
-          # The source stays outside stage/pack, so the archive carries the
-          # binary and the README and nothing this step needed to build them.
+          # Three stand-ins: the pair the staged release carries, and the lone
+          # ank of a release older than ank-mcp. Written once and called three
+          # times, since stand-ins differing in more than the line they print
+          # would be testing that difference instead of the script.
+          function New-StandIn {
+              param([string]$Source, [string]$Exe, [string]$Line, [string]$What)
+
+              Set-Content -Path $Source -Value @(
+                'public class StandIn {',
+                '    public static int Main(string[] args) {',
+                '        if (args.Length > 0 && args[0] == "--version") {',
+                "            System.Console.WriteLine(`"$Line`");",
+                '            return 0;',
+                '        }',
+                "        System.Console.Error.WriteLine(`"staged stand-in for $What`");",
+                '        return 2;',
+                '    }',
+                '}'
+              )
+              & $csc.FullName /nologo /target:exe /out:$Exe $Source
+              if ($LASTEXITCODE -ne 0) { "the stand-in for $What did not compile"; exit 1 }
+          }
+
+          # Field two of each --version line is the version: `ank` prints the
+          # commit and the skill revision beside its number and `ank-mcp` prints
+          # neither, which is the shape release.yml's own npm assertion compares.
+          #
+          # The sources stay outside the pack directories, so the archives carry
+          # the executables and the README and nothing these lines needed to
+          # build them.
+          New-StandIn 'stage\ank.cs' "stage\pack\$name\ank.exe" "ank $env:STAGED_VERSION (staged)" 'ank'
+          New-StandIn 'stage\ank-mcp.cs' "stage\pack\$name\ank-mcp.exe" "ank-mcp $env:STAGED_VERSION" 'ank-mcp'
+          New-StandIn 'stage\ank-legacy.cs' "stage\pack-legacy\$legacy\ank.exe" "ank $env:STAGED_LEGACY_VERSION (staged)" 'ank'
+
           Set-Content -Path "stage/pack/$name/README.md" -Value 'staged'
+          Set-Content -Path "stage/pack-legacy/$legacy/README.md" -Value 'staged'
 
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           [System.IO.Compression.ZipFile]::CreateFromDirectory(
             (Resolve-Path 'stage/pack'), (Join-Path $PWD "stage/$name.zip"))
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path 'stage/pack-legacy'), (Join-Path $PWD "stage/$legacy.zip"))
 
-          $hash = (Get-FileHash -Path "stage/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
-          Set-Content -Path "stage/$name.zip.sha256" -Value "$hash  $name.zip"
+          foreach ($pack in $name, $legacy) {
+            $hash = (Get-FileHash -Path "stage/$pack.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+            Set-Content -Path "stage/$pack.zip.sha256" -Value "$hash  $pack.zip"
+          }
 
           New-Item -ItemType Directory -Path "stage/srv/v$env:STAGED_VERSION" -Force | Out-Null
+          New-Item -ItemType Directory -Path "stage/srv/v$env:STAGED_LEGACY_VERSION" -Force | Out-Null
           Copy-Item "stage/$name.zip", "stage/$name.zip.sha256" "stage/srv/v$env:STAGED_VERSION/"
+          Copy-Item "stage/$legacy.zip", "stage/$legacy.zip.sha256" "stage/srv/v$env:STAGED_LEGACY_VERSION/"
 
           Start-Process -FilePath 'python' `
             -ArgumentList '-m', 'http.server', $env:STAGED_PORT, '--bind', '127.0.0.1' `
@@ -522,6 +709,15 @@ jobs:
           }
           "no escape sequence, no frame, and the binary answers --version"
 
+          # And the last thing it printed has to name the second executable: a
+          # caller who never lists the directory learns what landed from that
+          # block and from nowhere else.
+          if ($out -notmatch 'ank-mcp\.exe') {
+            "the install did not name ank-mcp.exe in what it printed"
+            exit 1
+          }
+          "and it named ank-mcp.exe in what it installed"
+
           # The switch, on a run that already had no console: it has to be
           # accepted and to change nothing. The same directory, so the two
           # transcripts can differ in nothing but what the switch turns off.
@@ -534,6 +730,90 @@ jobs:
             exit 1
           }
           "-NoWelcome is accepted, and changes nothing"
+          exit 0
+
+      # What ADR-e39a44f80e0e asks for, measured where the criterion puts it:
+      # not that the script contains a line about ank-mcp, but that the
+      # directory it installed into holds two executables, that both answer
+      # --version, and that they answer with one version.
+      - name: both executables are installed, and report the same version
+        run: |
+          if (-not (Test-Path "$PWD/staged-bin/ank.exe")) { "ank.exe is not installed"; exit 1 }
+          if (-not (Test-Path "$PWD/staged-bin/ank-mcp.exe")) {
+            "ank-mcp.exe was not installed beside ank.exe"
+            Get-ChildItem "$PWD/staged-bin" | Format-Table -AutoSize | Out-String
+            exit 1
+          }
+
+          $ankLine = & "$PWD/staged-bin/ank.exe" --version
+          $mcpLine = & "$PWD/staged-bin/ank-mcp.exe" --version
+          "ank:     $ankLine"
+          "ank-mcp: $mcpLine"
+          # Field two of each, for the reason the stand-ins print what they
+          # print. Asserted non-empty first, because two versions that are both
+          # empty are equal and that is not the news.
+          $ankVersion = ($ankLine -split '\s+')[1]
+          $mcpVersion = ($mcpLine -split '\s+')[1]
+          if (-not $ankVersion) { "ank --version printed no version"; exit 1 }
+          if ($ankVersion -ne $mcpVersion) {
+            "ank reports $ankVersion and ank-mcp reports $mcpVersion"
+            exit 1
+          }
+
+          # "with the same permissions" is a claim about two files on disk, so
+          # it is read off them rather than off the script that wrote them. On
+          # Windows that is the access rules, which two files moved into one
+          # directory inherit alike.
+          $ankAcl = (Get-Acl "$PWD/staged-bin/ank.exe").AccessToString
+          $mcpAcl = (Get-Acl "$PWD/staged-bin/ank-mcp.exe").AccessToString
+          if ($ankAcl -ne $mcpAcl) {
+            "the two executables were installed with different access rules"
+            $ankAcl
+            $mcpAcl
+            exit 1
+          }
+          "two executables, one version, one set of access rules"
+          exit 0
+
+      # The older release, which is the case that decides the shape. -Version
+      # points this script at archives published before ank-mcp existed, and a
+      # hard failure there would break a route that works today: the person
+      # asked for ank, and ank is what that archive can give them.
+      #
+      # install.sh says it on standard error; this file says everything through
+      # Write-Host, for the reason it records where Say is defined, so the
+      # stream asserted here is the host stream and that is the same decision
+      # spelled the way Windows spells it.
+      - name: an archive with no ank-mcp still installs ank, and says so
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          $LASTEXITCODE = 0
+          $out = (& ./install.ps1 -Version $env:STAGED_LEGACY_VERSION -Dir "$PWD/legacy-bin" *>&1 | Out-String)
+          $code = $LASTEXITCODE
+          $out
+          "exit $code"
+
+          if ($code -ne 0) {
+            "an archive without ank-mcp has to install ank rather than fail"
+            exit 1
+          }
+          if (-not (Test-Path "$PWD/legacy-bin/ank.exe")) { "ank.exe was not installed"; exit 1 }
+          if (Test-Path "$PWD/legacy-bin/ank-mcp.exe") {
+            "it installed an ank-mcp.exe the archive does not carry"
+            exit 1
+          }
+          if ($out -notmatch 'carries no ank-mcp') {
+            "the install did not say the archive carries no ank-mcp"
+            exit 1
+          }
+          $got = & "$PWD/legacy-bin/ank.exe" --version
+          "ank --version: $got"
+          if ($got -ne "ank $env:STAGED_LEGACY_VERSION (staged)") {
+            "expected: ank $env:STAGED_LEGACY_VERSION (staged)"
+            exit 1
+          }
+          "installed ank, said what the archive is missing, exited 0"
           exit 0
 
       # The second of the two failures that matter, and the reason the .sha256
@@ -632,6 +912,25 @@ jobs:
               exit 1
             }
             "the binary answers with the released version"
+            # ank-mcp.exe lives inside the archive, so the release page cannot
+            # be asked whether this one carries it; the install directory can.
+            # Written as a test for the reason the branch above is: the first
+            # release that carries the pair turns this into an assertion with no
+            # edit here, and until then the staged release measures it.
+            if (Test-Path "$PWD/real-bin/ank-mcp.exe") {
+              $mcp = & "$PWD/real-bin/ank-mcp.exe" --version
+              "ank-mcp --version: $mcp"
+              $realAnk = ($got -split '\s+')[1]
+              $realMcp = ($mcp -split '\s+')[1]
+              if (-not $realAnk) { "ank --version printed no version"; exit 1 }
+              if ($realAnk -ne $realMcp) {
+                "ank reports $realAnk and ank-mcp reports $realMcp"
+                exit 1
+              }
+              "the released pair reports one version"
+            } else {
+              "$tag carries no ank-mcp; the staged release is where the pair is measured"
+            }
           } else {
             if (-not $failed) { "$tag does not carry $archive, so the script had to refuse"; exit 1 }
             if ($reason -notmatch 'code 3') { "the refusal is not the download code"; exit 1 }
