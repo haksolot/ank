@@ -1491,10 +1491,10 @@ pub fn scope_clashes(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ElsewhereClaim {
     pub task: EntityId,
-    /// The corpus, as the reader declared it. The location and not the
-    /// repository identity: the identity keys the map on the *tree* a reader
-    /// stands in (ADR-96174f1ac2b7), which is not what this claim is in, and a
-    /// path is what the reader can act on.
+    /// The corpus, as the reader declared it and as [`rendered`] spells it.
+    /// The location and not the repository identity: the identity keys the map
+    /// on the *tree* a reader stands in (ADR-96174f1ac2b7), which is not what
+    /// this claim is in, and a path is what the reader can act on.
     pub corpus: String,
     pub expires: String,
 }
@@ -1571,7 +1571,7 @@ pub fn claims_elsewhere(
         match live_claims_where(&repo.corpus, None, now, &|holder| holder == identity) {
             Ok(claims) => held.extend(claims.into_iter().map(|(task, record)| ElsewhereClaim {
                 task,
-                corpus: location.clone(),
+                corpus: rendered(location),
                 expires: record.expires,
             })),
             Err(_) => warnings.push(unreadable(location, "could not be read")),
@@ -1580,15 +1580,42 @@ pub fn claims_elsewhere(
     (held, warnings)
 }
 
+/// A path as this corpus renders one: forward slashes, on every platform.
+///
+/// **One rendering, held whatever the platform.** Windows CI caught the two
+/// halves of one sentence disagreeing: the corpus came out `C:/corpora/front`
+/// because the reader wrote it that way in `corpora.yml` and the map is echoed
+/// verbatim, and `corpora.yml`'s own location came out `C:\Users\...` because
+/// `Path::display` renders with the platform's separator. Two spellings of one
+/// kind of thing in one sentence is not cosmetic: a reader cannot grep for a
+/// path spelled one way in one clause and the other way in the next, and an
+/// agent keying on the corpus would read two spellings of one directory as two
+/// corpora.
+///
+/// **Forward slashes and not the platform's**, because that is already what
+/// this corpus does everywhere a path reaches a reader: `normalize_path`
+/// unifies a scope before it is matched, and `context`, `done` and `human` each
+/// unify a path before printing it. A message is read on a machine other than
+/// the one that wrote it, and the corpus it names is the same corpus either
+/// way.
+fn rendered(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
 /// The one sentence a declared corpus that did not answer costs, ending with
 /// where the declaration that named it lives.
+///
+/// Both paths go through [`rendered`], and that is the point rather than a
+/// detail: this sentence is where the two spellings met.
 fn unreadable(location: &str, why: &str) -> String {
+    let map = crate::config::corpora_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| crate::config::CORPORA_FILE.to_string());
     format!(
-        "the corpus declared at {location} {why}, and what it holds is not named \
+        "the corpus declared at {} {why}, and what it holds is not named \
          (correct the entry in {})",
-        crate::config::corpora_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| crate::config::CORPORA_FILE.to_string())
+        rendered(location),
+        rendered(&map)
     )
 }
 
@@ -3301,7 +3328,7 @@ mod tests {
             "the claim held elsewhere is named: {text}"
         );
         assert!(
-            text.contains(&format!("in {}", there.0.display())),
+            text.contains(&format!("in {}", named(&there.0))),
             "with the corpus it is in: {text}"
         );
         assert!(text.starts_with("warning:"), "as a warning: {text}");
@@ -3343,10 +3370,7 @@ mod tests {
             rows[0]["task"].as_str(),
             Some(theirs.id.to_string().as_str())
         );
-        assert_eq!(
-            rows[0]["corpus"].as_str(),
-            Some(there.0.display().to_string().as_str())
-        );
+        assert_eq!(rows[0]["corpus"].as_str(), Some(named(&there.0).as_str()));
         assert!(rows[0]["expires"].as_str().is_some(), "{text}");
         // One document, one line, and the shape `ank-contract` declares for it.
         assert_eq!(text.lines().count(), 1, "{text}");
@@ -3556,7 +3580,7 @@ mod tests {
         for location in [&absent, &bare.0, &detached.0] {
             let named: Vec<&String> = warnings
                 .iter()
-                .filter(|w| w.contains(&location.display().to_string()))
+                .filter(|w| w.contains(&named(location)))
                 .collect();
             assert_eq!(named.len(), 1, "{location:?} named once: {warnings:?}");
             assert!(
@@ -3612,6 +3636,48 @@ mod tests {
             before,
             fingerprint(&there.0),
             "a corpus that was read must be byte for byte what it was"
+        );
+    }
+
+    /// A fixture path spelled the way `claim` spells one.
+    ///
+    /// Not `Path::display`, which renders with the platform's separator: the
+    /// binary holds one rendering on every platform, so a test comparing
+    /// against the platform's would assert the opposite of the rule on the one
+    /// platform where the two differ.
+    fn named(path: &Path) -> String {
+        rendered(&path.display().to_string())
+    }
+
+    /// One rendering, held whatever the platform, in both halves of the
+    /// sentence that carries two paths.
+    ///
+    /// Driven with a Windows path on every platform rather than left to a
+    /// Windows runner to discover, because that is the only way the assertion
+    /// means anything on the two platforms where `Path::display` already
+    /// agrees with it. Windows CI is what found the defect; this is what stops
+    /// it coming back between runs there.
+    #[test]
+    fn one_rendering_is_held_for_every_path_a_line_carries() {
+        let claim = ElsewhereClaim {
+            task: EntityId::parse("TASK-000000000001").unwrap(),
+            corpus: rendered(r"C:\corpora\front"),
+            expires: "2026-08-25T18:41:12Z".into(),
+        };
+        let line = claim.line("claude-code@ank");
+        assert!(line.contains("C:/corpora/front"), "{line}");
+        assert!(
+            !line.contains('\\'),
+            "a path is spelled one way, whatever wrote it: {line}"
+        );
+
+        // The sentence where the two spellings met: the location the reader
+        // typed, and the map's own location, which `Path::display` renders.
+        let w = unreadable(r"C:\corpora\front", "is not a corpus");
+        assert!(w.contains("C:/corpora/front"), "{w}");
+        assert!(
+            !w.contains('\\'),
+            "both halves of the sentence, not one of them: {w}"
         );
     }
 
