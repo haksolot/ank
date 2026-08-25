@@ -14,9 +14,19 @@ rust-version = "1.95"
 license = "Apache-2.0"
 description = "The Ank protocol surface: every verb the CLI dispatches, over MCP, generated from one table."
 
-[[bin]]
-name = "ank-mcp"
-path = "src/main.rs"
+# **A library, and no `[[bin]]`** (ADR-fd98f4bc6dea). The surface is the verb
+# `ank mcp`, so this crate is linked into the one executable every route carries
+# rather than shipped beside it -- the same shape `ank-tui` has, and folded for
+# the same reason ADR-8bd76e8d7c4e gave there: a separate file is invisible to
+# precisely the people it exists for, and has to be distributed, documented and
+# discovered as a third thing.
+#
+# Declared rather than left to convention, because the absence of a second
+# executable is the thing this task changed and a reader looking for it should
+# find a statement and not a missing section.
+[lib]
+name = "ank_mcp"
+path = "src/lib.rs"
 
 [dependencies]
 # The table this surface is generated from, and the writer it shares with the

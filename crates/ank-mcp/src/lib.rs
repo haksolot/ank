@@ -21,6 +21,19 @@
 //! `refs/ank/*` is per repository and merging them would invent an arbitration
 //! the refs cannot carry.
 //!
+//! **This is a library, and the surface is the verb `ank mcp`** (ADR-fd98f4bc6dea).
+//! It was a sibling executable, and the file folded into the one binary every
+//! route carries for the reason ADR-8bd76e8d7c4e gave for `tui`: a separate file
+//! is invisible to precisely the people it exists for, and has to be
+//! distributed, documented and discovered as a third thing.
+//!
+//! **One executable is not one process, and that is what the fold left alone.**
+//! [`call`] still spawns `ank <verb> --repo <corpus> --json` per call. Linking
+//! the CLI's dispatch in here would re-derive every refusal, and anything
+//! re-derived can differ; spawning inherits them by construction. So what folded
+//! is the file and never the dispatch, and `crates/ank-mcp/tests/dependencies.rs`
+//! reads that back out of the build rather than trusting this paragraph.
+//!
 //! **This does not make a protocol the preferred route.** §2's common denominator
 //! is shell, that is still what the skill teaches, and this exists for the client
 //! that has no shell at all.
@@ -29,66 +42,50 @@ mod call;
 mod tools;
 
 use ank_contract::json::{string, Obj};
-use ank_contract::ExitCode;
 use std::io::{BufRead, Write};
 use std::path::PathBuf;
 
 /// The MCP revision this server implements.
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
-fn main() {
-    let repo = match corpus() {
-        Ok(path) => path,
-        Err(message) => {
-            // The one refusal that happens before any client is listening, so it
-            // goes where a person will see it and carries §4's environment code.
-            eprintln!("error[{}]: {message}", ExitCode::Environment);
-            eprintln!("  -> ank-mcp --repo <path to a directory holding .ank/>");
-            std::process::exit(ExitCode::Environment.code());
-        }
-    };
+/// Where the surface reaches, resolved by the dispatch and never here.
+///
+/// Both halves are the caller's foundation rather than this crate's: the verb
+/// resolves the corpus the way every other verb resolves it, so a missing
+/// `.ank/` is the refusal it already is instead of a JSON-RPC error a client
+/// would have to decode, and it names the binary so that this crate has one
+/// road out of the process and no search to get it wrong.
+pub struct Address {
+    /// The binary a call runs. `std::env::current_exe()` of the process serving
+    /// the verb -- see the note on [`call`].
+    pub exe: PathBuf,
+    /// The corpus every call is addressed to, for now the only one
+    /// (TASK-2f31789f6af2).
+    pub repo: PathBuf,
+}
 
-    let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
-    for line in stdin.lock().lines() {
+/// Serves the session: one message in, at most one out, until the client stops
+/// writing.
+///
+/// **Flushed per reply, and that is not tidiness.** A client speaks to this over
+/// a pipe and waits for an answer before it sends the next request, so a reply
+/// still sitting in a buffer is a session that has deadlocked rather than one
+/// that is slow.
+///
+/// A line that will not parse is answered and the session continues: JSON-RPC
+/// reserves a code for exactly that, and a server that hung up on one would take
+/// the client's other work with it. The loop ends on end of input, which is what
+/// a client closing its side means, and on nothing else.
+pub fn serve(address: &Address, input: &mut dyn BufRead, out: &mut dyn Write) {
+    for line in input.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(reply) = handle(&line, &repo) {
-            let _ = writeln!(stdout, "{reply}");
-            let _ = stdout.flush();
+        if let Some(reply) = handle(&line, address) {
+            let _ = writeln!(out, "{reply}");
+            let _ = out.flush();
         }
-    }
-}
-
-/// The corpus this process speaks for, from `--repo` or the working directory.
-///
-/// Resolved once and never again: the value is what every call is given, so a
-/// server cannot drift between corpora while a client holds a claim in one.
-fn corpus() -> Result<PathBuf, String> {
-    let mut args = std::env::args().skip(1);
-    let mut given: Option<PathBuf> = None;
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "--repo" | "-r" => match args.next() {
-                Some(path) => given = Some(PathBuf::from(path)),
-                None => return Err("--repo needs a path".to_string()),
-            },
-            "--version" | "-V" => {
-                println!("ank-mcp {}", env!("CARGO_PKG_VERSION"));
-                std::process::exit(0);
-            }
-            other => return Err(format!("unknown argument '{other}'")),
-        }
-    }
-    let root = match given {
-        Some(path) => path,
-        None => std::env::current_dir().map_err(|e| e.to_string())?,
-    };
-    match root.join(".ank").is_dir() {
-        true => Ok(root),
-        false => Err(format!("no .ank/ under {}", root.display())),
     }
 }
 
@@ -97,7 +94,7 @@ fn corpus() -> Result<PathBuf, String> {
 /// `None` for a notification, which is a message with no `id` and must never be
 /// answered: a reply to one is a protocol error on our side, and the client that
 /// sent `notifications/initialized` is waiting for nothing.
-fn handle(line: &str, repo: &std::path::Path) -> Option<String> {
+fn handle(line: &str, address: &Address) -> Option<String> {
     let request: serde_yaml::Value = match serde_yaml::from_str(line) {
         Ok(value) => value,
         // Unparseable and therefore unattributable: no id to answer against, so
@@ -120,6 +117,12 @@ fn handle(line: &str, repo: &std::path::Path) -> Option<String> {
             &Obj::new()
                 .str("protocolVersion", PROTOCOL_VERSION)
                 .obj("capabilities", Obj::new().obj("tools", Obj::new()))
+                // **`ank-mcp` and not `ank`**, although the executable is now
+                // `ank`. This names the *server* a client configured, not the
+                // file it launched, and a client's own configuration keys off
+                // it: renaming it would rename every entry in every client
+                // that already talks to this surface, to say something the
+                // command line beside it already says.
                 .obj(
                     "serverInfo",
                     Obj::new()
@@ -140,17 +143,13 @@ fn handle(line: &str, repo: &std::path::Path) -> Option<String> {
             id_json,
             &Obj::new().raw("tools", &tools::list()).finish(),
         )),
-        "tools/call" => Some(call_tool(id_json, request.get("params"), repo)),
+        "tools/call" => Some(call_tool(id_json, request.get("params"), address)),
         other => Some(error(id_json, -32601, &format!("no such method '{other}'"))),
     }
 }
 
 /// `tools/call`, which is the only method that reaches the corpus.
-fn call_tool(
-    id: Option<String>,
-    params: Option<&serde_yaml::Value>,
-    repo: &std::path::Path,
-) -> String {
+fn call_tool(id: Option<String>, params: Option<&serde_yaml::Value>, address: &Address) -> String {
     let params = match params {
         Some(p) => p,
         None => return error(id, -32602, "tools/call needs params"),
@@ -201,14 +200,14 @@ fn call_tool(
         }
     }
 
-    match call::run(spec, repo, &args) {
+    match call::run(spec, address, &args) {
         Ok(outcome) => result(id, &outcome.to_result()),
         // The binary itself could not be run. That is the environment and not the
         // corpus, and §4 keeps the two apart on purpose.
         Err(e) => error(
             id,
             -32603,
-            &format!("cannot run {}: {e}", call::ank_binary().display()),
+            &format!("cannot run {}: {e}", address.exe.display()),
         ),
     }
 }

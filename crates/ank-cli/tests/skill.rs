@@ -223,7 +223,7 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// **`mcp` and `watch` are here, and the round trip is the guard working.**
+/// **`watch` is here, and the round trip is the guard working.**
 /// `read` was declared here while its ratification was in flight
 /// (TASK-d055f8ab836b) and removed in the commit that shipped it
 /// (TASK-e3370ef322d8), because `read_section_4_document` reads the ratified
@@ -237,18 +237,17 @@ fn help_order() -> Vec<String> {
 /// what the second test below forces: a declared verb that has started
 /// shipping fails until the line is gone.
 ///
-/// These two are in exactly that state (ADR-fd98f4bc6dea, ADR-a22cd3196529,
-/// TASK-36666e36744e). The protocol surface and the watcher stop being sibling
-/// executables and become verbs of the one binary distribution carries
-/// (ADR-1ea31c2f3c5a), and the Commands block of SPEC-fe8bdb84faca lists them.
-/// That document is `proposed`, so the test below does not check either entry
-/// yet -- it walks the *ratified* block, which is the predecessor and does not
-/// carry the lines. Declaring them now is what makes the ratification
-/// itself green: the signed `accept` is the moment §4 gains the two verbs, and
-/// a suite that first learns of them there turns red on a human act rather
-/// than on a landing anybody is watching. `crates/ank-mcp/**` is
-/// TASK-e655d28c83cb's and `crates/ank-daemon/**` is TASK-9dd22f2b0430's, and
-/// each removes its line in the commit that dispatches its verb.
+/// `mcp` and `watch` were both declared here (ADR-fd98f4bc6dea,
+/// ADR-a22cd3196529, TASK-36666e36744e), while SPEC-fe8bdb84faca was still
+/// `proposed` and the block this suite walks was its predecessor: the signed
+/// `accept` is the moment §4 gains a verb, and declaring it beforehand is what
+/// makes the ratification itself green rather than red on a human act nobody is
+/// watching. `mcp` has now been through the round trip whole -- the document is
+/// ratified, TASK-e655d28c83cb dispatched the verb, and this line lost its first
+/// entry in that same commit, because the test below fails a declared verb that
+/// has started shipping. `watch` is where `mcp` was: `crates/ank-daemon/**` is
+/// TASK-9dd22f2b0430's, and it removes the entry in the commit that dispatches
+/// it.
 ///
 /// The list stays even when it is empty, because it is the only place a future
 /// verb may be declared missing, and because the test below fails the moment a
@@ -260,7 +259,7 @@ fn help_order() -> Vec<String> {
 /// of them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
 /// TASK-7ed19b16895e, TASK-49746735127f) turned the suite red until this line
 /// was edited, in the same commit.
-const NOT_YET_DISPATCHED: [&str; 2] = ["mcp", "watch"];
+const NOT_YET_DISPATCHED: [&str; 1] = ["watch"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

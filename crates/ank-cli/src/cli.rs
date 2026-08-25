@@ -805,6 +805,46 @@ fn tui(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) ->
     ank_tui::run(&address, inv.json(), out).map_err(refused)
 }
 
+/// `mcp`, the protocol surface (ADR-fd98f4bc6dea, §4).
+///
+/// The same two things `tui` does above, for the same reasons and minus the
+/// terminal. The corpus is resolved here so that a missing `.ank/` is the
+/// refusal it already is, printed where a person starting a server will see it,
+/// rather than a JSON-RPC error the first client has to decode. And the address
+/// is built here, because both halves of it are the caller's foundation and
+/// neither is the surface's to guess.
+///
+/// **`current_exe` and not a search.** The sibling binary had to look for the
+/// `ank` it was released with -- beside itself, then `PATH`, with `ANK_BIN` over
+/// both -- and a wrong answer there was a server reporting verbs the installed
+/// CLI does not have. A verb has no such question: the binary a call runs is the
+/// process already running, so the search is gone and the failure with it.
+///
+/// **What is not folded is the dispatch.** The surface still runs
+/// `ank <verb> --repo <corpus> --json` per call rather than calling into this
+/// file, so every refusal a client sees is the one the binary gave. Linking the
+/// dispatch in would re-derive them, and anything re-derived can differ.
+fn mcp(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) -> Result<ExitCode> {
+    let repo = resolved(inv, cwd)?;
+    let exe = std::env::current_exe().map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot find this binary to run it: {e}"),
+        )
+        .with_hint("every call is a run of ank: start the server by the binary's path on disk")
+    })?;
+    let address = ank_mcp::Address {
+        exe,
+        repo: repo.corpus,
+    };
+    // Standard input is the client's half of the transport and is read nowhere
+    // else in this binary, so it is locked here rather than threaded through a
+    // dispatch that has no other use for it.
+    let stdin = std::io::stdin();
+    ank_mcp::serve(&address, &mut stdin.lock(), out);
+    Ok(ExitCode::Ok)
+}
+
 /// A refusal the reader raised, in the shape this file renders.
 fn refused(r: ank_tui::Refused) -> CliError {
     CliError::new(r.code, r.message).with_hint(r.hint)
@@ -1081,6 +1121,14 @@ fn dispatch(
     if inv.command == "tui" {
         return tui(&inv, cwd, out);
     }
+    // The fifth, and it is the fourth's reasoning exactly (ADR-fd98f4bc6dea).
+    // `mcp` is a surface that reaches the corpus by *running this binary*, once
+    // per call, so the foundation it needs is the one each of those children
+    // establishes for itself. What is checked here is what a child cannot check:
+    // that the corpus resolves at all, and that this process can name itself.
+    if inv.command == "mcp" {
+        return mcp(&inv, cwd, out);
+    }
 
     let s = startup(&inv, cwd)?;
     let code = match inv.command {
@@ -1246,7 +1294,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            24,
+            25,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1323,7 +1371,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
-            "attest", "amend", "show", "edit", "migrate", "tui",
+            "attest", "amend", "show", "edit", "migrate", "tui", "mcp",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

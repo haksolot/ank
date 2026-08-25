@@ -45,6 +45,13 @@ ank-contract = { path = "../ank-contract" }
 # this binary, so it does not link back, and `crates/ank-tui/tests/dependencies.rs`
 # reads the graph to keep that true.
 ank-tui = { path = "../ank-tui" }
+# The protocol surface of ADR-fd98f4bc6dea, which ships as the verb `ank mcp`
+# rather than as a sibling binary, on the reading ADR-8bd76e8d7c4e gave for
+# `tui`. The dependency points this way and only this way: `ank-mcp` reaches the
+# corpus by running this binary, so it does not link back -- one executable is
+# not one process, and `crates/ank-mcp/tests/dependencies.rs` reads the graph to
+# keep that true.
+ank-mcp = { path = "../ank-mcp" }
 # Already in the tree through ank-core: no new crate enters here.
 # config.yml is the only YAML the CLI reads itself; sha2 and hex are the
 # index's content hash per file, which decides what needs reindexing (§6).
