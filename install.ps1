@@ -32,10 +32,12 @@ Exit codes, so a caller can branch on the failure rather than on the message:
   5  a runtime this script needs is missing
 
 -NoWelcome, or ANK_NO_WELCOME in the environment, turns off everything this
-script draws for a human and leaves only the lines a machine reads. It is
-absent from the list above on purpose: the welcome is drawn before the first
-request goes out, nothing in it can fail, and a flag able to change one of
-these five codes would be a flag that made the install depend on it.
+script draws for a human and everything it asks one, and leaves only the lines
+a machine reads. It is absent from the list above on purpose: the welcome is
+drawn before the first request goes out and the offer comes after the binary is
+on disk and verified, so neither is on the path to any of them -- a flag able
+to change one of these five codes would be a flag that made the install depend
+on it.
 
 They are the codes install.sh returns for the same failures, and they reach a
 caller who runs this as a file. The one-liner above runs it through `iex`, where
@@ -80,8 +82,8 @@ $RunningAsFile = -not [string]::IsNullOrEmpty($PSCommandPath)
 # stderr: under `iex` this runs in the caller's own session, and a diagnosis
 # written to the pipeline would land in whatever they were assembling.
 function Say {
-    param([string]$Line = '')
-    Write-Host $Line
+    param([string]$Line = '', [switch]$NoNewline)
+    if ($NoNewline) { Write-Host -NoNewline $Line } else { Write-Host $Line }
 }
 
 # `Fail <code> <lines>`: the code carries the kind of failure, the lines carry
@@ -119,8 +121,8 @@ function Show-Usage {
     Say '                      "v0.2.0" and "0.2.0" both work'
     Say '  -Dir <path>         install into <path> instead of'
     Say '                      $env:LOCALAPPDATA\Programs\ank'
-    Say '  -NoWelcome          draw nothing; install exactly what an install with'
-    Say '                      the animation installs, and say the same things about it'
+    Say '  -NoWelcome          draw nothing and ask nothing; install exactly what an'
+    Say '                      interactive run that declined every offer installs'
     Say '  -Help               print this and exit'
     Say ''
     Say 'environment:'
@@ -137,6 +139,14 @@ function Show-Usage {
     Say ''
     Say '  Linux and macOS are installed by install.sh:'
     Say "    curl -fsSL https://raw.githubusercontent.com/$Repo/main/install.sh | sh"
+    Say ''
+    Say 'the skills:'
+    Say '  With a console attached, once ank is installed and verified, this offers'
+    Say '  to run:'
+    Say "    npx skills add $Repo"
+    Say '  They teach an agent how to use ank. It is one question, Enter accepts it,'
+    Say '  declining installs nothing more, and nothing that command does can change'
+    Say '  any of the codes below.'
     Say ''
     Say 'exit codes:'
     Say '  1 usage   2 unsupported platform   3 download   4 checksum   5 missing runtime'
@@ -239,7 +249,7 @@ function Show-Logo {
 }
 
 # ADR-5fbd99bf6fd5 read as an absence: where no human is looking, this script
-# draws nothing at all.
+# draws nothing at all and asks nothing at all.
 #
 # Both streams are tested and not only one. `irm ... | iex` leaves stdout and
 # stderr on the console, which is the case that must animate; redirecting
@@ -248,7 +258,14 @@ function Show-Logo {
 # asked last, and by trying rather than by name: a host with no console answers
 # the two properties above happily and then throws on the first cursor it is
 # asked to place.
-function Test-WelcomeWanted {
+#
+# The logo and the offer read this same answer, which is what makes -NoWelcome
+# and an interactive run that declined everything leave the same machine
+# behind: one predicate, so there is no second gate to disagree with this one.
+# The width belongs to the block of art alone and is asked inside Show-Logo,
+# since a console too narrow to hold the logo is still a console with a person
+# in front of it.
+function Test-HumanAtTerminal {
     if ($NoWelcome) { return $false }
     if ($env:ANK_NO_WELCOME) { return $false }
     # A runner sets this, and a runner is a machine with no human at it.
@@ -261,6 +278,100 @@ function Test-WelcomeWanted {
         return $false
     }
     return $true
+}
+
+# ---------------------------------------------------------------------------
+# The skills
+# ---------------------------------------------------------------------------
+
+# ADR-5fbd99bf6fd5's offer, and the last thing this script does. Everything
+# else has already happened by then: the binary is on disk, verified, reported,
+# and the PATH advice given. That ordering is the decision rather than a layout
+# -- an installation that stops to ask something is an installation that can be
+# abandoned half-done, and half-done is the worst state for a tool whose next
+# action is `ank context`.
+#
+# `npx skills add <owner>/ank` is what skill/SKILL.md already teaches, and it
+# serves every agent the skills CLI knows about rather than one. An installer
+# that learned where each of them keeps its skills is an installer that goes
+# stale silently, so this one hands that work to the tool whose job it is.
+#
+# Nothing in here is allowed to reach the caller as a failure. The call site
+# wraps it, and the exit code is stamped after it returns.
+function Invoke-SkillOffer {
+    if (-not (Test-HumanAtTerminal)) { return }
+
+    Say ''
+    Say 'The skills teach an agent how to use ank: the contract, and one policy'
+    Say 'per activity. They install through the skills CLI, which puts them where'
+    Say 'each agent looks.'
+    Say ''
+    Say "  npx skills add $Repo"
+    Say ''
+
+    # [Console]::ReadLine and not Read-Host, which is where Windows differs
+    # from the /dev/tty install.sh opens and why the two files spell this step
+    # differently. `irm ... | iex` runs this text through a pipeline in the
+    # caller's own session: Console.In is the console and never that pipeline,
+    # so a question asked here cannot consume what they piped. $null is end of
+    # input -- nothing was typed, so nothing is assumed.
+    Say -NoNewline 'Install them now? [Y/n] '
+    $answer = $null
+    try { $answer = [Console]::ReadLine() } catch { $answer = $null }
+    if ($null -eq $answer) {
+        Say ''
+        return
+    }
+
+    # Enter is yes and everything unrecognised is no, in that order: a default
+    # the criterion names, and a decline for anything else because asking twice
+    # is asking twice.
+    $reply = $answer.Trim()
+    if ($reply -ne '' -and $reply -notmatch '^(y|yes)$') { return }
+
+    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
+        Say ''
+        Say "  npx skills add $Repo"
+        Say 'node is not on PATH, so that was not run.'
+        return
+    }
+
+    Say ''
+
+    # npm_config_yes is `npx --yes` spelled as the environment: on a cold cache
+    # npx asks its own question -- "Ok to proceed?" -- and this one was
+    # answered above, once. It is restored rather than left set, because under
+    # `iex` the environment of this process is the caller's own.
+    $savedYes = $env:npm_config_yes
+    $code = 0
+    try {
+        $env:npm_config_yes = '1'
+        $global:LASTEXITCODE = 0
+        # Through Say for the reason Say exists: under `iex` output written to
+        # the pipeline lands in whatever the caller was assembling. 2>&1 so
+        # npx's diagnosis arrives as text rather than as error records a
+        # caller's $ErrorActionPreference could turn into an exception.
+        & npx skills add $Repo 2>&1 | ForEach-Object { Say "$_" }
+        $code = $LASTEXITCODE
+    } catch {
+        Say "  $($_.Exception.Message)"
+        $code = 9
+    } finally {
+        $env:npm_config_yes = $savedYes
+    }
+
+    if ($code -eq 0) {
+        Say ''
+        Say 'the skills are installed'
+    } else {
+        Say ''
+        Say "npx skills add $Repo exited $code, so the skills are not installed."
+        Say 'ank is, and it is exactly the ank this script installs when nobody is'
+        Say 'asked anything at all.'
+        Say ''
+        Say 'Run that line again when you want them:'
+        Say "  npx skills add $Repo"
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -518,7 +629,7 @@ if ($BaseUrl) {
 # Wrapped, because a host that cannot place a cursor is not a reason to fail an
 # install: nothing has been downloaded yet and nothing below depends on a frame
 # having been drawn.
-if (Test-WelcomeWanted) {
+if (Test-HumanAtTerminal) {
     try { Show-Logo } catch { }
 }
 
@@ -818,6 +929,22 @@ try {
             Say 'after adding: a truncated PATH loses entries other tools put there.'
         }
     }
+
+    # Wrapped, and it is the whole guarantee in two lines rather than one.
+    #
+    # The try is the half install.sh spells `offer_skills || :`: a question
+    # asked after a successful install may not turn that install into a
+    # failure, so nothing thrown in there gets out of here.
+    #
+    # The stamp is the half that has no counterpart in install.sh, and it is
+    # the one that would have been missed by reading. `pwsh -File install.ps1`
+    # exits with $LASTEXITCODE, which every native command run above sets: with
+    # nothing here, an npx that failed would silently become this script's exit
+    # code and the caller would read a green install as red. Assigned in the
+    # global scope, because an assignment inside a script writes a script-local
+    # variable that shadows it and changes nothing the host reads.
+    try { Invoke-SkillOffer } catch { }
+    $global:LASTEXITCODE = 0
 } finally {
     if ($tmp -and (Test-Path -Path $tmp)) {
         Remove-Item -Path $tmp -Recurse -Force -ErrorAction SilentlyContinue
