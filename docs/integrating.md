@@ -24,7 +24,7 @@ cannot fall behind what the binary does.
 One verb, whole, is the shape of every entry:
 
     $ ank help close --json
-    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false}],"notes":[],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
+    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false},{"name":"--worktree","short":null,"takes_value":true,"repeatable":false}],"notes":[],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
 
 So a client can discover, without reading a line of Rust: every verb, its flags
 and their short forms, the states it refuses on **with the code each returns**,
@@ -183,9 +183,10 @@ is `done` or `closed` on the default branch. The binary says so itself:
     $ ank help check
     ank check [<path>]
       the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes
-      global:   -j, --json -q, --quiet -r, --repo <v>
+      global:   -j, --json -q, --quiet -r, --repo <v> --worktree <v>
       note:     exit 8 means findings; a signal alone leaves it 0
                 the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch
+      refuses:  the path names nothing inside this repository (1)
 
 A dashboard refreshing every thirty seconds must not call it. `ank status`,
 `ank find` and `ank show` are what a poll uses; `check` is the verb a human or a
@@ -262,6 +263,28 @@ somebody installing rather than integrating. If you hold a configuration
 written against a second executable named `ank-mcp`, releases up to 0.6.0
 placed one and no route places one any more: the change is that one line.
 
+**Several repositories do not need several servers.** `--repo` names the corpus
+a call naming none of its own goes to; every other corpus that server may reach
+is declared once, outside every repository, and the block above does not change
+by a character. The declaration is written through the CLI, keyed on the
+repository identity of the corpus and never on a path:
+
+    $ ank config --user corpora.bccc32d77d8a9a329f772f789dc5fb1054259d70 /srv/back
+    corpora.bccc32d77d8a9a329f772f789dc5fb1054259d70 /srv/back
+
+What that writes is `corpora.yml` (ADR-96174f1ac2b7), beside the `watch.yml`
+further down and under the same directory rule -- `%APPDATA%\ank` on Windows,
+`$XDG_CONFIG_HOME/ank` elsewhere, falling back to `$HOME/.config/ank`:
+
+    schema: 1
+    corpora:
+      bccc32d77d8a9a329f772f789dc5fb1054259d70: /srv/back
+
+The identity is the root commit, which `ank status --json` prints under
+`"corpus"`, so run that in the repository you want to declare and paste what it
+gives you. What one server does and does not become by reading that file is the
+second property below.
+
 What the surface *is* belongs here, because four properties of it are
 load-bearing and none of them is visible from a tool list.
 
@@ -277,19 +300,54 @@ exactly as they sit on the command line; flags arrive under their own names with
 the leading dashes stripped. Nothing in the server names a verb, so the two
 surfaces cannot disagree about what exists.
 
-**One process is addressed with one corpus, at startup.** `--repo` is resolved
-once, there, and that value is what a call naming no corpus of its own is given,
-so a server cannot drift between corpora while a client holds a claim in one. A
-call that passes `--repo`, `--json` or `--quiet` is refused by name rather than
-being allowed to contradict the process it is talking to:
+**One process may speak for several corpora, and never for a merged one.**
+`--repo` is resolved once, at startup, and that corpus is where a call naming
+none of its own goes, so a client that never passes the argument sees exactly
+what it saw before the argument existed. Every tool also carries an optional
+`corpus` argument (ADR-fd98f4bc6dea), whose value is the repository identity of
+ADR-621a7fd96ce1 -- the root commit, never a path. One server, addressed at one
+corpus at startup, answering out of another the reader declared:
 
-    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
+    --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_find","arguments":{"arguments":["--status","open"],"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70"}}}
+    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\"}]}"}],"isError":false,"exitCode":0}}
+
+That permits multiplexing. It still forbids merging, and **telling those two
+apart is the whole of the decision**, so it is worth being exact about which one
+you are building. Every call becomes `ank --repo <one corpus> <verb> --json`,
+one corpus at a time. There is no merged claim space, no claim held on a
+client's behalf, and no arbitration across clones, because `refs/ank/*` is per
+repository and cannot carry one -- the same ban federation gets
+(ADR-a1de673043b4), carried into the multi-corpus clause in the same words.
+Two claims taken through one server land in `refs/ank/claims` of two
+repositories, and neither corpus carries a word about the other's task. So a
+board over four repositories is one server and four corpora addressed on their
+own, presented together by whatever sits above them; it is not four claim
+spaces made into one, and a client that shows them as one list must not
+arbitrate over that list. What a multi-corpus server does acquire is one
+identity holding a lease in several corpora at once, and nothing beyond it.
+
+The reachable set is **declared, and nothing is discovered**: the startup corpus
+plus whatever the `corpora.yml` above declares. A caller cannot name a corpus by
+path, so there is no spelling of "every corpus on this machine"; and an identity
+nobody declared is refused by name, with nothing spawned and no falling back to
+the corpus the client did not ask for:
+
+    <-- {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}],"isError":true,"exitCode":9,"stderr":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}}
+    <-- {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}],"isError":true,"exitCode":9,"stderr":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}}
+
+Both are **9**, and 9 is the right code for both: what is missing is a
+declaration in the reader's configuration, not anything in either corpus.
+
+The three flags the server keeps for itself stay refused. A call that passes
+`--repo`, `--json` or `--quiet` is turned away by name rather than being allowed
+to contradict the process it is talking to, and `--repo` is turned away naming
+the argument a caller reaches for instead:
+
+    <-- {"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
 
 Nothing is hidden by that and nothing is curated: every verb takes exactly the
-arguments the table gives it, and what is withheld is three flags that are the
-server's own. A deployment over several repositories is several servers,
-addressed separately, presented together by whatever sits above them. It is the
-answer `refs/ank/*` forces, and the same one federation gets (ADR-a1de673043b4).
+arguments the table gives it, plus the one argument that says which corpus it
+runs in.
 
 **A refusal is the CLI's refusal, and it carries the CLI's exit code.** The
 surface spawns `ank`; it does not link it. So a refusal on state is not
@@ -307,7 +365,8 @@ with `isError` means the *corpus* said no. A client that conflates them reports
 its own bug as a state of your repository.
 
 **No claim is taken that the CLI would not have taken in that clone.** Every
-claim goes to `refs/ank/claims/<id>` in that repository, arbitrated by the same
+claim goes to `refs/ank/claims/<id>` in that repository -- the corpus the call
+named, or the startup one where it named none -- arbitrated by the same
 compare-and-swap against the same remote. The server holds no claim on a
 client's behalf, renews none for anybody, and pools no clients under one
 identity: one stdio server serves one client, so one process is one caller. It
@@ -476,9 +535,11 @@ holds that true.
   to a list you maintain. A list maintained by hand is a list that will disagree,
   and the disagreement surfaces on your side, days later, as a bug you cannot see
   from there.
-- **`--repo <path>` addresses a corpus**, so a tool holding several addresses
-  each on its own. Claims are per repository: nothing merges the claim spaces of
-  two clones, because `refs/ank/*` cannot carry such an arbitration.
+- **One corpus is addressed at a time**, by `--repo <path>` on the CLI and by
+  the `corpus` argument over MCP, so a tool holding several addresses each on
+  its own. One process may hold several; nothing merges them. Claims are per
+  repository, and nothing merges the claim spaces of two clones, because
+  `refs/ank/*` cannot carry such an arbitration.
 - **Do not bind to `ank watch`.** It answers nothing, and it is optional by
   construction. Write your integration against the CLI or the protocol surface,
   and let the watcher make those answers arrive sooner where somebody chose to
