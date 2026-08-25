@@ -121,28 +121,17 @@ pub struct Declaration {
 /// **The same rule `ank config --user` applies to `corpora.yml`**, deliberately
 /// and not by coincidence: a reader who declared a corpus in one file and a
 /// watch in another, under two different directories, would have two homes and
-/// no way to know it. `%APPDATA%\ank` on Windows; `$XDG_CONFIG_HOME/ank`
-/// elsewhere, falling back to `$HOME/.config/ank`. An empty value counts as
-/// unset, because a shell that exports a variable to nothing has said nothing
-/// and joining onto it would name a relative path under the current directory.
+/// no way to know it.
 ///
-/// The rule is three lines of platform difference and the environment, so it is
-/// written here rather than depended on: `ank-cli` is a binary with no library
-/// target, and `the_watch_file_sits_beside_the_corpora_file` in this crate's
-/// suite drives both binaries to assert the two agree.
+/// It used to be written out here, because `ank-cli` is a binary with no
+/// library target and there was nowhere shared to put it. There is now: the
+/// change stream of TASK-2f7777a1fdff lands in this same directory and is
+/// followed out of it by `ank-tui`, so the rule moved to
+/// [`ank_contract::events::user_dir`] and this is the one name the rest of the
+/// crate uses. `the_watch_file_sits_beside_the_corpora_file` in this crate's
+/// suite still drives both binaries to assert `ank-cli`'s own copy agrees.
 pub fn user_dir() -> Option<PathBuf> {
-    let var = |key: &str| {
-        std::env::var_os(key)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    if cfg!(windows) {
-        return var("APPDATA").map(|p| p.join("ank"));
-    }
-    if let Some(xdg) = var("XDG_CONFIG_HOME") {
-        return Some(xdg.join("ank"));
-    }
-    var("HOME").map(|p| p.join(".config").join("ank"))
+    ank_contract::events::user_dir()
 }
 
 /// The declaration file, wherever this reader's home is.

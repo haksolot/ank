@@ -5,17 +5,19 @@ slug: a-change-becomes-an-event-and-the-reader-repaint
 title: A change becomes an event, and the reader repaints instead of polling
 created: 2026-08-24T22:03:25Z
 author: claude-code/opus-5+planning
-status: open
+status: in_progress
 scope:
   - crates/ank-daemon/**
   - crates/ank-tui/**
   - docs/integrating.md
+  - crates/ank-contract/src/events.rs
+  - crates/ank-contract/src/lib.rs
 blocked_by: [TASK-a73b41660413, TASK-49746735127f]
 done_criteria: |
   The daemon emits an event when a corpus it watches changes, stating which corpus by its repository identity and what kind of change occurred, and stating nothing about what a reader should do. The stream is documented in docs/integrating.md well enough for a reader written outside this repository to consume it. ank tui consumes it where it is available and falls back to its own reading where it is not, and a test shows the interface reaching the same displayed state by both routes. A test asserts the interface issues no repeating query while idle with the stream connected, and that no event ever carries entity content a reader would otherwise get from the CLI. cargo test is green and cargo fmt --check passes.
 criteria_by: creator
 schema: 4
-version: 1
+version: 3
 ---
 
 The last of ADR-a22cd3196529, and the one with a real consumer at last: the

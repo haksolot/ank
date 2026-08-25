@@ -114,6 +114,41 @@ pub fn mirror(root: &Path) -> Result<Fetched, String> {
         .to_string())
 }
 
+/// What the mirror holds right now: every tracking ref with the object it
+/// points at, one per line, sorted as git sorts them.
+///
+/// This is how a change to somebody else's claims becomes news. The fetch above
+/// says whether git succeeded, never whether anything moved -- `--quiet` and a
+/// zero exit are the same on a remote that has not changed since the last
+/// minute -- so what moved is answered by looking, and looking is one
+/// `for-each-ref` per fetch cycle rather than per poll.
+///
+/// A repository git cannot answer about reads as an empty mirror, which is what
+/// a repository with no tracking refs is. The caller compares two readings and
+/// nothing else, so a failure costs a comparison that says "unchanged" and never
+/// a wrong event.
+pub fn mirrored(root: &Path) -> Vec<String> {
+    Command::new("git")
+        .args([
+            "for-each-ref",
+            "--format=%(refname)%09%(objectname)",
+            TRACKING,
+        ])
+        .current_dir(root)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| {
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

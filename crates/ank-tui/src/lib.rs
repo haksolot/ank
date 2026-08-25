@@ -22,6 +22,22 @@
 //! is no timer to put anything on. The assertion is in the suite, not in this
 //! sentence.
 //!
+//! **A change reaches the screen as an event, never as a poll**
+//! (TASK-2f7777a1fdff). `ank-daemon` appends a line when a corpus it watches
+//! moves, and [`stream`] follows that file: an event wakes the session and the
+//! screen is drawn again from the corpus. Where there is no stream -- no
+//! watcher has ever run here, or this reader has no home to find one in -- the
+//! screen is drawn again when its person types `r`, which is what it always
+//! did. Both routes reach the same displayed state, and the suite compares
+//! them.
+//!
+//! An event is a repaint and never a write. It runs `status` and `find` and
+//! deliberately not `show`, because `show` renews the lease when the id is the
+//! task the caller holds (ADR-0bb7ea8991bc): a reader that re-read the open
+//! entity on an event would have made a watcher's news renew a claim, which is
+//! the one thing this reader has been forbidden twice over. The reasoning sits
+//! on [`view::App::repaint`], next to the code that keeps it true.
+//!
 //! **And a write is the verb, run as a shell would run it.** Nothing here
 //! composes a claim record, moves a ref or edits an entity: `ank claim <id>`
 //! does that, and this crate spawns it. So ADR-052accd6e3b2 names an
@@ -59,13 +75,14 @@
 //! * [`view::View::Entity`] -- one entity: what holds it, the constraints
 //!   binding its declared scope, and its body, paged rather than cut.
 
-use std::io::IsTerminal;
+use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
 
 pub mod ank;
 pub mod frame;
 pub mod input;
 pub mod model;
+pub mod stream;
 pub mod view;
 
 pub use ank::Ank;
@@ -146,9 +163,68 @@ pub fn run(
         let _ = writeln!(out, "{}", snapshot.document());
         return Ok(ExitCode::Ok);
     }
-    let stdin = std::io::stdin();
-    let mut input = stdin.lock();
-    session(&ank, &mut input, out, terminal_size())
+    // The corpus this reader is on, asked once and never again. The stream
+    // names corpora by the repository identity of ADR-621a7fd96ce1, so a
+    // follower has to know which lines are its own before the first one
+    // arrives, and an identity does not change under a session. A refusal here
+    // is not one: the reader simply has no stream to follow and falls back to
+    // reading when its person asks, which is what the next line already does.
+    let corpus = ank
+        .json("status", &[])
+        .map(|v| ank::text(&v, "corpus"))
+        .unwrap_or_default();
+    let (wake, waking) = std::sync::mpsc::channel::<Wake>();
+    typing(wake.clone());
+    let stream = stream::follow(&corpus, wake);
+    // Blocking, and there is nothing else in it: with nobody typing and nothing
+    // changing, this reader is a process asleep on a channel. No verb runs, no
+    // clock ticks and no claim moves.
+    let mut wakes = std::iter::from_fn(move || waking.recv().ok());
+    session(&ank, &mut wakes, out, terminal_size(), stream)
+}
+
+/// What can wake a drawn screen. There are exactly three things, and two of them
+/// end the session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Wake {
+    /// A line the person typed, terminator and all.
+    Line(String),
+    /// The watcher said this corpus moved (TASK-2f7777a1fdff). It carries what
+    /// happened and not what to do about it, which is why there is nothing in
+    /// this variant: the answer is to read the corpus again.
+    Changed,
+    /// End of input. A session whose terminal went away has nothing left to
+    /// draw to, and that is a quit and never an error.
+    Closed,
+    /// The terminal could not be read from. An environment to repair, and the
+    /// one way out of a session that is not a zero.
+    Broken(String),
+}
+
+/// Reads the terminal on a thread, so the drawn screen can be woken by
+/// something other than a keystroke.
+///
+/// **This is what an event costs, and it is the whole of it.** A reader blocked
+/// on `read_line` cannot be told anything; a reader blocked on a channel can be
+/// told by whatever holds a sender. Nothing else changes: the same lines arrive
+/// in the same order, and a session with no stream behind it is the session
+/// TASK-b50b340c0bb1 measured, one command at a time.
+fn typing(wake: std::sync::mpsc::Sender<Wake>) {
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        loop {
+            let mut line = String::new();
+            let said = match stdin.lock().read_line(&mut line) {
+                Ok(0) => Wake::Closed,
+                Ok(_) => Wake::Line(line),
+                Err(e) => Wake::Broken(e.to_string()),
+            };
+            let ending = !matches!(said, Wake::Line(_));
+            if wake.send(said).is_err() || ending {
+                return;
+            }
+        }
+    });
 }
 
 /// Whether there is a screen to draw on.
@@ -180,40 +256,55 @@ fn refused_by_the_cli(failed: ank::Failed) -> Refused {
     }
 }
 
-/// The session, with its three edges injected so the suite can drive it.
+/// The session, with its edges injected so the suite can drive it.
 ///
 /// `size` is passed in rather than measured here: measuring the window is an
 /// `ioctl` on Unix and a console call on Windows, which is the FFI this crate
 /// declines (see the module header), and a test that could not choose the
 /// window could not assert what a frame holds.
+///
+/// `wakes` is an iterator and not a reader, because a screen now has two things
+/// that can move it and a `read_line` can only ever be one. It blocks in
+/// `next`, which is where an idle session sits: no verb, no clock, nothing.
+///
+/// `stream` is what the screen says about how it is being kept current, and
+/// `None` where there is nothing to follow.
 pub fn session(
     ank: &Ank,
-    input: &mut dyn std::io::BufRead,
+    wakes: &mut dyn Iterator<Item = Wake>,
     out: &mut dyn std::io::Write,
     size: (usize, usize),
+    stream: Option<stream::Stream>,
 ) -> Result<ExitCode, Refused> {
-    let mut app = view::App::new(size);
+    let mut app = view::App::new(size, stream);
     app.reload(ank);
     let _ = write!(out, "{}", frame::ENTER);
     let code = loop {
         let _ = write!(out, "{}{}", frame::HOME, app.frame());
         let _ = out.flush();
-        let mut line = String::new();
-        match input.read_line(&mut line) {
-            // End of input is a quit and never an error: a session whose
-            // terminal went away has nothing left to draw to.
-            Ok(0) => break ExitCode::Ok,
-            Ok(_) => {}
-            Err(e) => {
+        // Exhausted means every sender is gone, which is the same end of input
+        // by another road.
+        let Some(wake) = wakes.next() else {
+            break ExitCode::Ok;
+        };
+        match wake {
+            Wake::Closed => break ExitCode::Ok,
+            Wake::Broken(e) => {
                 app.note(format!("cannot read from the terminal: {e}"));
                 break ExitCode::Environment;
             }
-        }
-        if app.act(
-            input::parse(line.trim_end_matches(['\n', '\r']), app.view()),
-            ank,
-        ) {
-            break ExitCode::Ok;
+            // News, and never an instruction: what the screen does about it is
+            // read the corpus again, and `repaint` is where the one read it may
+            // not run is refused.
+            Wake::Changed => app.repaint(ank),
+            Wake::Line(line) => {
+                if app.act(
+                    input::parse(line.trim_end_matches(['\n', '\r']), app.view()),
+                    ank,
+                ) {
+                    break ExitCode::Ok;
+                }
+            }
         }
     };
     let _ = write!(out, "{}", frame::LEAVE);

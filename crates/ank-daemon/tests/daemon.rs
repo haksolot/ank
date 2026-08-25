@@ -16,6 +16,7 @@
 //! being trusted -- the moment a warm listing and a cold one differ, the daemon
 //! has become a source of truth nobody voted for.
 
+use ank_contract::events;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -91,6 +92,19 @@ impl Home {
 
     fn watch_file(&self) -> PathBuf {
         self.0.join("ank").join("watch.yml")
+    }
+
+    /// The change stream, where this reader's environment puts it.
+    ///
+    /// Named through the contract rather than spelled here: the daemon writes
+    /// it and `ank-tui` follows it, and a suite carrying its own copy of the
+    /// name would agree with a stream that moved.
+    fn stream(&self) -> PathBuf {
+        self.0.join("ank").join(events::STREAM_FILE)
+    }
+
+    fn stream_text(&self) -> String {
+        std::fs::read_to_string(self.stream()).unwrap_or_default()
     }
 
     fn apply(&self, cmd: &mut Command) {
@@ -1111,4 +1125,213 @@ fn an_unreachable_remote_is_reported_and_the_watcher_keeps_watching() {
         logged.matches("fetch:").count() >= 1,
         "the watcher went quiet about a remote it never reached: {logged}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The stream: a change becomes an event (TASK-2f7777a1fdff)
+// ---------------------------------------------------------------------------
+
+/// A running daemon that has certainly finished its first look at a corpus.
+///
+/// **The first look is a sighting and not a change**, which is the property this
+/// crate is careful about and the one that makes starting a watcher racy to test
+/// against: a change made before the opening pass is part of what that pass
+/// sees, so it produces no event and never will. Dropping the index and waiting
+/// for it to come back is what says the pass happened -- the loop mirrors, takes
+/// the fingerprint and then warms, so an index that exists again is a
+/// fingerprint that has already been taken.
+fn started_and_looked(home: &Home, corpus: &Corpus, args: &[&str]) -> Running {
+    corpus.drop_index();
+    let daemon = start(home, args);
+    until("the watcher's first look", || corpus.index().is_file());
+    daemon
+}
+
+/// Every line the stream could carry about one corpus, built by the encoder
+/// both ends share.
+///
+/// The set is finite and it is two, which is what makes the assertion below
+/// exhaustive rather than a sample: a line that is not one of these is a line
+/// carrying something an event is not allowed to carry.
+fn every_possible_line(identity: &str) -> Vec<String> {
+    events::CHANGES
+        .iter()
+        .map(|c| {
+            events::Event::new(identity, *c)
+                .line()
+                .trim_end()
+                .to_string()
+        })
+        .collect()
+}
+
+fn lines_of(text: &str) -> Vec<String> {
+    text.lines().map(str::to_string).collect()
+}
+
+/// The change the reader was waiting for: what moved, and about which corpus.
+///
+/// **A first sighting is not a change**, and that is asserted first. The opening
+/// pass warms every checkout it was handed, and a watcher that called its own
+/// first look a change would wake every reader on the machine at startup for
+/// news that is not news.
+#[test]
+fn a_change_becomes_an_event_naming_the_corpus_and_the_kind() {
+    let home = Home::new();
+    let corpus = Corpus::new(scratch("event").join("tree"), &home);
+    let identity = corpus.identity(&home);
+    home.declare(&format!(
+        "schema: 1\nwatch:\n  {}: {}\n",
+        identity,
+        corpus.root.display()
+    ));
+
+    let warmed = home.daemon(&["--once"]).output().unwrap();
+    assert!(warmed.status.success(), "{warmed:?}");
+    assert_eq!(
+        home.stream_text(),
+        "",
+        "the first look at a corpus is a sighting and not a change"
+    );
+
+    let daemon = started_and_looked(&home, &corpus, &["--interval", "50"]);
+    corpus.ank(
+        &home,
+        &[
+            "new",
+            "task",
+            "--title",
+            "A second task",
+            "--scope",
+            "src/**",
+        ],
+    );
+    until("the stream to carry the change", || {
+        !home.stream_text().is_empty()
+    });
+    daemon.stop();
+
+    let seen = lines_of(&home.stream_text());
+    let expected = events::Event::new(&identity, events::Change::Entities)
+        .line()
+        .trim_end()
+        .to_string();
+    assert!(
+        seen.contains(&expected),
+        "the event names this corpus and says the entities moved:\n{seen:?}"
+    );
+}
+
+/// The other kind of change, and the one no local look could see: a claim taken
+/// in a clone this reader cannot read, arriving through the mirror.
+///
+/// Two clones for the reason `a_claim_taken_in_one_clone_is_reported_by_status_in_the_other`
+/// gives: a claim moving in the same checkout would be a file under `.ank/`
+/// moving, which is the other event entirely.
+#[test]
+fn a_claim_taken_in_another_clone_becomes_a_refs_event() {
+    let home = Home::new();
+    let root = scratch("refsevent");
+    let origin = root.join("origin.git");
+    bare(&home, &origin);
+
+    let first = Corpus::new(root.join("first"), &home);
+    first.git(
+        &home,
+        &["config", "remote.origin.url", &origin.display().to_string()],
+    );
+    first.git(&home, &["push", "-q", "-u", "origin", "main"]);
+    let second = clone(&home, &origin, &root.join("second"));
+    let identity = first.identity(&home);
+    let task = first.task_id(&home);
+
+    // Only the second clone is watched, so nothing the first one does to its own
+    // files can reach this stream: the only route left is the mirror.
+    home.declare(&format!(
+        "schema: 1\nfetch: 1\nwatch:\n  {}: {}\n",
+        identity,
+        second.root.display()
+    ));
+    // The first mirror has to have happened before the claim is taken, or the
+    // claim is part of what the opening pass saw and is therefore not a change.
+    let daemon = started_and_looked(&home, &second, &["--interval", "50"]);
+
+    first.ank_as(
+        &home,
+        "first@ank.local",
+        &["claim", &task, "--criteria", "the stream carries it"],
+    );
+    first.git(&home, &["push", "-q", "origin", "refs/ank/claims/*"]);
+
+    let expected = events::Event::new(&identity, events::Change::Refs)
+        .line()
+        .trim_end()
+        .to_string();
+    until("the stream to say the refs moved", || {
+        lines_of(&home.stream_text()).contains(&expected)
+    });
+    daemon.stop();
+}
+
+/// The property the criterion asks to be asserted rather than argued: an event
+/// says what changed and never carries what the CLI answers.
+///
+/// **Stated exhaustively.** Every line of the stream is byte-identical to one of
+/// the two the shared encoder can produce for this corpus, so there is no room
+/// for a title, a status, a body or an identifier to have arrived -- the set of
+/// possible lines is enumerated, not sampled.
+///
+/// The second half is the same statement made the way a person would check it,
+/// against a corpus whose content is distinctive enough that a leak could not
+/// hide: the identifier, the title and a log entry's message are all things a
+/// reader gets by running `ank show`, and none of them is here.
+#[test]
+fn no_event_carries_entity_content_a_reader_would_get_from_the_cli() {
+    let home = Home::new();
+    let corpus = Corpus::new(scratch("content").join("tree"), &home);
+    let identity = corpus.identity(&home);
+    home.declare(&format!(
+        "schema: 1\nwatch:\n  {}: {}\n",
+        identity,
+        corpus.root.display()
+    ));
+
+    let daemon = started_and_looked(&home, &corpus, &["--interval", "50"]);
+    let title = "Piezoelectric ratchets in the transept";
+    corpus.ank(
+        &home,
+        &["new", "task", "--title", title, "--scope", "src/**"],
+    );
+    until("the first change to reach the stream", || {
+        !lines_of(&home.stream_text()).is_empty()
+    });
+    // The second is made after the first has landed, so it is a second event
+    // and not the same one: two writes inside one poll are one change, which is
+    // the watcher being a watcher rather than a journal.
+    let second = "The transept was measured and the ratchet was not";
+    corpus.ank(
+        &home,
+        &["new", "task", "--title", second, "--scope", "src/**"],
+    );
+    until("the second change to reach the stream", || {
+        lines_of(&home.stream_text()).len() >= 2
+    });
+    let task = corpus.task_id(&home);
+    daemon.stop();
+
+    let text = home.stream_text();
+    let possible = every_possible_line(&identity);
+    for line in lines_of(&text) {
+        assert!(
+            possible.contains(&line),
+            "an event carried something an event may not:\n{line}\nof {possible:?}"
+        );
+    }
+
+    for leaked in [title, second, task.as_str(), "test@ank.local", "open"] {
+        assert!(
+            !text.contains(leaked),
+            "the stream carries '{leaked}', which is what ank show answers:\n{text}"
+        );
+    }
 }

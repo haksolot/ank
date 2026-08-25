@@ -1093,3 +1093,535 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
         "with the proof that was typed:\n{shown}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The change stream (TASK-2f7777a1fdff)
+// ---------------------------------------------------------------------------
+//
+// The reader is told that the corpus moved instead of asking on a timer, and
+// three things have to be true of that. It must reach the same screen the
+// reload reaches, or the fast path and the slow path drift until only the one
+// the developer runs is correct. It must ask nothing at all while nobody is
+// typing and nothing is changing, or it is the refresh loop this crate spent
+// TASK-b50b340c0bb1 not having. And it must renew nothing, ever: `ank show`
+// renews the lease when the id is the task the caller holds, so an event that
+// re-read the open entity would keep a claim alive for somebody who went home,
+// which ADR-0bb7ea8991bc forbids in exactly those words.
+//
+// All three are facts about a running process, a real terminal and a git
+// repository, so all three are asserted against one.
+
+/// The reader's own configuration home: where the watcher would put a stream,
+/// and where this suite puts one instead.
+///
+/// **The watcher is not run here, and that is the point.** What `ank tui`
+/// consumes is a file of lines, and the lines are built by
+/// `ank_contract::events`, which is the encoder `ank-daemon` writes with -- so
+/// the two ends are held together by the code they share rather than by two
+/// processes agreeing on a Tuesday. That the watcher writes those lines, into
+/// this path, is asserted in its own suite, which is where a watcher belongs.
+///
+/// `XDG_CONFIG_HOME` alone, and never `HOME`: this has to move where the reader
+/// looks for its stream without moving where git looks for a user's
+/// configuration, and a fixture that changed the second would be testing this
+/// machine's git rather than this binary.
+#[cfg(unix)]
+struct Home(PathBuf);
+
+#[cfg(unix)]
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(unix)]
+impl Home {
+    /// A home whose stream exists and is empty: a watcher has run here, and
+    /// nothing has happened yet.
+    fn following(what: &str) -> Home {
+        let home = Home::empty(what);
+        std::fs::write(home.stream(), "").unwrap();
+        home
+    }
+
+    /// A home with no stream in it at all: no watcher has ever run for this
+    /// reader, which is the mode every checkout without one is in.
+    fn empty(what: &str) -> Home {
+        let root = scratch(what);
+        std::fs::create_dir_all(root.join("ank")).unwrap();
+        Home(root)
+    }
+
+    fn stream(&self) -> PathBuf {
+        self.0.join("ank").join(ank_contract::events::STREAM_FILE)
+    }
+
+    /// One line of news, exactly as the watcher writes one.
+    fn says(&self, corpus: &str, change: ank_contract::events::Change) {
+        use std::io::Write;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.stream())
+            .unwrap();
+        file.write_all(
+            ank_contract::events::Event::new(corpus, change)
+                .line()
+                .as_bytes(),
+        )
+        .unwrap();
+    }
+}
+
+/// A session that can be watched while it is still running.
+///
+/// [`drive`] writes every command before reading anything, which is all a
+/// keystroke-driven screen ever needed. A screen that repaints on its own has to
+/// be observed *between* keystrokes, and often with no keystroke at all, so the
+/// drain here writes into a buffer the test can read at any moment.
+#[cfg(unix)]
+struct Live {
+    child: std::process::Child,
+    writer: std::fs::File,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+}
+
+#[cfg(unix)]
+impl Live {
+    /// Opens `ank tui` on a real terminal, with whatever environment the test
+    /// needs on top of the usual one.
+    fn open(repo: &Repo, agent: &str, env: &[(&str, String)]) -> Live {
+        use std::io::Read;
+
+        let (master, slave_path) = pty::open();
+        let mut command = Command::new(ANK);
+        command
+            .arg("tui")
+            .current_dir(&repo.0)
+            .env("ANK_AGENT", agent)
+            .env("COLUMNS", "120")
+            .env("LINES", "40")
+            .env("NO_COLOR", "1");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let child = command
+            .stdin(pty::stdio(pty::slave(&slave_path)))
+            .stdout(pty::stdio(pty::slave(&slave_path)))
+            .stderr(pty::stdio(pty::slave(&slave_path)))
+            .spawn()
+            .expect("the binary must have been built");
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let into = std::sync::Arc::clone(&seen);
+        let mut reader = master
+            .try_clone()
+            .expect("the master side must be clonable for the drain");
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => into.lock().unwrap().extend_from_slice(&buf[..n]),
+                }
+            }
+        });
+        Live {
+            child,
+            writer: master,
+            seen,
+        }
+    }
+
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.seen.lock().unwrap()).to_string()
+    }
+
+    /// Waits for the screen to say something.
+    ///
+    /// Bounded and generous, on the rule the watcher's suite states: this is
+    /// asserting that something happens at all, not how fast, so the wall is
+    /// high enough that a loaded runner never reports the runner instead of the
+    /// code.
+    fn until(&self, what: &str, done: impl Fn(&str) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if done(&self.text()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("timed out waiting for {what}:\n{}", self.text());
+    }
+
+    /// The last frame drawn, once the screen has stopped moving.
+    ///
+    /// Settled first, because a frame read the instant a needle appeared is
+    /// half a frame: the reader writes a screen in one call but a terminal
+    /// hands it over in whatever pieces it likes.
+    fn frame(&self) -> String {
+        let mut last = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            let now = self.text();
+            if !now.is_empty() && now == last {
+                return last_frame(&now);
+            }
+            last = now;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        panic!("the screen never stopped moving:\n{last}");
+    }
+
+    fn send(&mut self, line: &str) {
+        use std::io::Write;
+        writeln!(self.writer, "{line}").expect("the terminal must accept a command");
+        self.writer.flush().unwrap();
+    }
+
+    fn quit(mut self) {
+        self.send("q");
+        let status = self.child.wait().expect("the session must end");
+        assert!(status.success(), "the session ended with {status}");
+    }
+}
+
+/// The last whole frame of a byte stream a session wrote.
+///
+/// Frames are separated by the sequence that homes the cursor and clears the
+/// screen, and the session's last act is to leave the alternate buffer, which is
+/// chrome rather than a frame.
+#[cfg(unix)]
+fn last_frame(seen: &str) -> String {
+    const HOME: &str = "\x1b[H\x1b[2J";
+    const LEAVE: &str = "\x1b[?1049l";
+    let at = seen
+        .rfind(HOME)
+        .expect("a session draws at least one frame");
+    seen[at + HOME.len()..].replace(LEAVE, "")
+}
+
+/// A frame with the one line that names the route taken out of it.
+///
+/// The two routes must reach the same displayed state, and the one thing that
+/// must *not* be the same is the line saying which route the screen is on: a
+/// comparison that demanded byte equality there would be demanding the reader
+/// lie about how it is being kept current. Everything else -- the claims, every
+/// row, the counts, the note -- is compared byte for byte.
+#[cfg(unix)]
+fn without_the_route(frame: &str) -> String {
+    frame
+        .lines()
+        .map(
+            |line| match (line.starts_with("identity "), line.find("stream ")) {
+                (true, Some(at)) => line[..at].to_string(),
+                _ => line.to_string(),
+            },
+        )
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// The repository identity the stream keys on, as the CLI states it.
+#[cfg(unix)]
+fn corpus_of(repo: &Repo) -> String {
+    let doc = repo.stdout(READER, &["status", "--json"]);
+    let at = doc.find("\"corpus\":\"").expect("status names the corpus");
+    let rest = &doc[at + 10..];
+    rest[..rest.find('"').expect("a closed string")].to_string()
+}
+
+/// Both routes, on one corpus, reaching one screen.
+///
+/// **Two sessions open at once, and one change.** The fast path and the slow
+/// path have to be compared against the same corpus at the same state, and a
+/// test that ran them one after the other would be comparing two states. So
+/// both screens are opened before anything moves: one with a stream to follow
+/// and one without, the corpus gains a task, and each screen catches up the way
+/// it can -- the first because it was told, the second because somebody typed
+/// `r`.
+///
+/// What is asserted is the frame, byte for byte, minus the one line that says
+/// which of the two it was. That line is asserted to differ, because two routes
+/// that turned out to be one route would otherwise pass this test perfectly.
+#[cfg(unix)]
+#[test]
+fn the_event_and_the_reload_reach_the_same_displayed_state() {
+    let repo = Repo::seeded("routes");
+    repo.warm(READER);
+    let corpus = corpus_of(&repo);
+    let following = Home::following("routes-stream");
+    let alone = Home::empty("routes-none");
+
+    let told = Live::open(
+        &repo,
+        READER,
+        &[("XDG_CONFIG_HOME".into(), following.0.display().to_string())],
+    );
+    told.until("the told screen to open", |t| t.contains("ENTITIES"));
+    let mut asking = Live::open(
+        &repo,
+        READER,
+        &[("XDG_CONFIG_HOME".into(), alone.0.display().to_string())],
+    );
+    asking.until("the asking screen to open", |t| t.contains("ENTITIES"));
+    assert!(
+        told.text().contains("stream following"),
+        "the first screen has a stream:\n{}",
+        told.text()
+    );
+    assert!(
+        asking.text().contains("stream none"),
+        "and the second has none:\n{}",
+        asking.text()
+    );
+
+    let arrived = repo.spare(
+        "A task that arrives while two screens are open",
+        "both screens name it, and neither polled for it",
+    );
+    let needle = short_of(&arrived);
+
+    // Nobody types into this one.
+    following.says(&corpus, ank_contract::events::Change::Entities);
+    told.until("the event to reach the screen", |t| t.contains(&needle));
+    let by_event = told.frame();
+
+    asking.send("r");
+    asking.until("the reload to reach the screen", |t| t.contains(&needle));
+    let by_reload = asking.frame();
+
+    assert_eq!(
+        without_the_route(&by_event),
+        without_the_route(&by_reload),
+        "the two routes drew two different screens"
+    );
+    assert_ne!(
+        by_event, by_reload,
+        "the two frames are identical, so the route line says nothing and this \
+         test compared one route with itself"
+    );
+
+    told.quit();
+    asking.quit();
+}
+
+/// A screen with a stream connected, and nobody typing, asks nothing.
+///
+/// **The instrument is git.** Every read this reader makes is `ank <verb>
+/// --json` spawned as a child, and every one of those verbs asks git something
+/// (ADR-9307e5d214a7 requires it per verb). So a shim on `PATH` that records
+/// each invocation and hands the call to the real binary counts every query the
+/// reader makes, whatever route it took to make one -- which is stronger than
+/// counting the spawns this crate knows about, because it would also catch a
+/// query made some other way.
+///
+/// The corpus is changed from the test process, which does not carry the shim,
+/// so what the log holds is the reader's own asking and nothing else.
+#[cfg(unix)]
+#[test]
+fn a_screen_with_the_stream_connected_asks_nothing_while_it_is_idle() {
+    let repo = Repo::seeded("idle-stream");
+    repo.warm(READER);
+    let corpus = corpus_of(&repo);
+    let home = Home::following("idle-stream-home");
+    let shim = Shim::new("idle-stream-shim");
+
+    let live = Live::open(
+        &repo,
+        READER,
+        &[
+            ("XDG_CONFIG_HOME".into(), home.0.display().to_string()),
+            ("PATH".into(), shim.path()),
+            ("ANK_GIT_LOG".into(), shim.log.display().to_string()),
+        ],
+    );
+    live.until("the screen to open", |t| t.contains("ENTITIES"));
+    assert!(
+        live.text().contains("stream following"),
+        "the stream is connected:\n{}",
+        live.text()
+    );
+    let opened = shim.settled();
+    assert!(
+        opened > 0,
+        "the instrument counted nothing, so it counts nothing"
+    );
+
+    // Three seconds, the length TASK-b50b340c0bb1 chose for the same reason: a
+    // renewal writes at second resolution, and anything that happens here would
+    // have to be visible at that scale.
+    std::thread::sleep(std::time::Duration::from_secs(3));
+    assert_eq!(
+        shim.count(),
+        opened,
+        "a screen with a stream connected asked again while nobody typed"
+    );
+
+    // And the instrument reads a query when there is one: an event arrives, the
+    // reader answers it by reading the corpus, and the count moves.
+    let arrived = repo.spare(
+        "A task that arrives while the screen is idle",
+        "the screen names it without anybody typing",
+    );
+    home.says(&corpus, ank_contract::events::Change::Entities);
+    live.until("the event to reach the screen", |t| {
+        t.contains(&short_of(&arrived))
+    });
+    assert!(
+        shim.count() > opened,
+        "the reader repainted without asking the corpus anything, so the \
+         comparison above proves nothing"
+    );
+    live.quit();
+}
+
+/// An event repaints, and renews nothing (ADR-0bb7ea8991bc).
+///
+/// **This is the trap the previous wave laid bare.** `ank show <id>` renews the
+/// lease when the id is the task the caller holds, so a reader that answered an
+/// event by re-reading the entity on screen would have made a watcher's news
+/// renew somebody's claim -- a claim renewed by reporting rather than by
+/// working, which is the thing that decision exists to refuse and which
+/// TASK-b50b340c0bb1 already forbade an idle session to do.
+///
+/// So the session is put where the damage would be: the entity view, on the very
+/// task this identity holds. Then events arrive for three seconds. Afterwards
+/// `b` goes back to the list, which runs nothing at all -- and the list names a
+/// task that did not exist when the entity was opened, which is only possible if
+/// every one of those events did repaint. The refs are byte for byte where they
+/// were.
+#[cfg(unix)]
+#[test]
+fn an_event_repaints_the_list_and_renews_no_claim() {
+    let repo = Repo::seeded("event-claim");
+    let held = repo.only(&["--type", "task"]);
+    repo.warm(HOLDER);
+    let corpus = corpus_of(&repo);
+    let home = Home::following("event-claim-home");
+
+    let mut live = Live::open(
+        &repo,
+        HOLDER,
+        &[("XDG_CONFIG_HOME".into(), home.0.display().to_string())],
+    );
+    live.until("the screen to open", |t| t.contains("ENTITIES"));
+    // Opening the task you hold renews the lease, and it is supposed to: it is
+    // `ank show`, run because a person typed an identifier (TASK-49746735127f).
+    // What follows is about what happens with nobody typing.
+    live.send(&short_of(&held));
+    live.until("the held task to open", |t| t.contains(TAIL));
+    let _ = live.frame();
+
+    let before = ank_refs(&repo);
+    assert!(!before.is_empty(), "a claim is held, so there is a ref");
+
+    let arrived = repo.spare(
+        "A task that arrives while the held one is open",
+        "the list names it, and the lease did not move",
+    );
+    for _ in 0..6 {
+        home.says(&corpus, ank_contract::events::Change::Entities);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+
+    // `b` draws the list out of what is already in hand: it reads nothing.
+    live.send("b");
+    live.until("the list to name the task that arrived", |t| {
+        t.contains(&short_of(&arrived))
+    });
+    assert_eq!(
+        before,
+        ank_refs(&repo),
+        "an event renewed a lease, which is a claim renewed by reporting"
+    );
+
+    // The instrument reads a renewal when there is one.
+    let _ = repo.stdout(HOLDER, &["show", &held, "--json"]);
+    assert_ne!(
+        before,
+        ank_refs(&repo),
+        "three seconds of events and a renewing verb left the refs identical, \
+         so the comparison above proves nothing"
+    );
+    live.quit();
+}
+
+/// A shim `git` on `PATH` that records every call and hands it to the real one.
+///
+/// Four symbols' worth of shell rather than a crate: what is needed is a count
+/// of invocations, and the honest place to count them is where they happen.
+/// The real binary is resolved once, here, so the shim cannot find itself.
+#[cfg(unix)]
+struct Shim {
+    dir: PathBuf,
+    log: PathBuf,
+}
+
+#[cfg(unix)]
+impl Drop for Shim {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[cfg(unix)]
+impl Shim {
+    fn new(what: &str) -> Shim {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = scratch(what);
+        let real = String::from_utf8_lossy(
+            &Command::new("sh")
+                .args(["-c", "command -v git"])
+                .output()
+                .expect("a shell is a hard dependency of this suite")
+                .stdout,
+        )
+        .trim()
+        .to_string();
+        assert!(!real.is_empty(), "git must be on PATH for this suite");
+        let script = dir.join("git");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\necho call >> \"$ANK_GIT_LOG\"\nexec {real} \"$@\"\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        Shim {
+            log: dir.join("calls"),
+            dir,
+        }
+    }
+
+    fn path(&self) -> String {
+        format!(
+            "{}:{}",
+            self.dir.display(),
+            std::env::var("PATH").unwrap_or_default()
+        )
+    }
+
+    fn count(&self) -> usize {
+        std::fs::read_to_string(&self.log)
+            .unwrap_or_default()
+            .lines()
+            .count()
+    }
+
+    /// The count once the reader has stopped making calls: two identical
+    /// readings a moment apart.
+    fn settled(&self) -> usize {
+        let mut last = usize::MAX;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            let now = self.count();
+            if now > 0 && now == last {
+                return now;
+            }
+            last = now;
+            std::thread::sleep(std::time::Duration::from_millis(300));
+        }
+        panic!("the reader never stopped asking");
+    }
+}
