@@ -1,4 +1,4 @@
-//! The daemon, driven as a process.
+//! `ank watch`, driven as a process.
 //!
 //! Driven rather than called, on the rule this repository learned twice: a
 //! criterion that talks about the binary is tested through the binary, because
@@ -6,6 +6,20 @@
 //! never reached. Every claim ADR-a22cd3196529 makes is a claim about a running
 //! process -- what it reads, what it leaves untouched, and what stopping it
 //! changes -- and none of them can be asserted from inside a function.
+//!
+//! **It sits here rather than in `crates/ank-daemon/tests/`** for the
+//! mechanical reason `tests/tui.rs` and `tests/mcp.rs` give: `CARGO_BIN_EXE_ank`
+//! is defined only for the package that declares the binary, and the watcher
+//! stopped declaring one when it became a verb (TASK-9dd22f2b0430). The suite
+//! did not otherwise change shape -- it spawned a sibling executable and now
+//! spawns `ank watch`, which is the whole of what the fold did.
+//!
+//! **Being started by a verb is not answering one**, and this suite is where
+//! that is mechanical rather than argued. There is no assertion here that asks
+//! a running watcher anything, because there is no way to: the four flags are
+//! all read before the loop begins, and
+//! `stopping_the_daemon_changes_no_verbs_output_and_no_verbs_exit_code` holds
+//! the other half -- every verb answers identically with the process gone.
 //!
 //! Two of the assertions here are the two ways this is usually got wrong.
 //! `nothing_walks_a_filesystem_looking_for_a_corpus` plants corpora above,
@@ -37,33 +51,27 @@ use std::time::{Duration, Instant};
 fn isolated_git_config() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let p =
-            std::env::temp_dir().join(format!("ank-daemon-it-gitconfig-{}", std::process::id()));
+        let p = std::env::temp_dir().join(format!("ank-watch-it-gitconfig-{}", std::process::id()));
         std::fs::write(&p, "[commit]\n\tgpgsign = false\n").unwrap();
         p
     })
     .as_path()
 }
 
-/// The binaries, found the way the daemon itself finds `ank`: beside the one
-/// cargo built. In a test tree that is `target/<profile>/`, which is where
-/// cargo puts every binary of the workspace.
-fn bin(name: &str) -> PathBuf {
-    let daemon = PathBuf::from(env!("CARGO_BIN_EXE_ank-daemon"));
-    let dir = daemon.parent().expect("a built binary has a directory");
-    let exe = if cfg!(windows) {
-        format!("{name}.exe")
-    } else {
-        name.to_string()
-    };
-    dir.join(exe)
+/// The binary, which is now the only one there is.
+///
+/// `CARGO_BIN_EXE_ank` and not a path built up beside something: the watcher
+/// and the CLI are one executable (ADR-1ea31c2f3c5a), so a suite that looked
+/// for two would be asserting the shape this task removed.
+fn ank_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_ank"))
 }
 
 /// A temporary directory nothing else in this suite uses.
 fn scratch(what: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
-        "ank-daemon-it-{what}-{}-{}",
+        "ank-watch-it-{what}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
     ));
@@ -117,9 +125,14 @@ impl Home {
             .env("ANK_AGENT", "test@ank.local");
     }
 
+    /// The watcher, started the one way there is to start it.
+    ///
+    /// A verb of `ank` and not a file beside it: what the flags mean, and what
+    /// each refusal says, is asserted against the surface a reader actually
+    /// has.
     fn daemon(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(bin("ank-daemon"));
-        c.args(args);
+        let mut c = Command::new(ank_bin());
+        c.arg("watch").args(args);
         self.apply(&mut c);
         c
     }
@@ -174,7 +187,7 @@ impl Corpus {
     }
 
     fn ank_raw(&self, home: &Home, args: &[&OsStr], cwd: &Path) -> Output {
-        let mut c = Command::new(bin("ank"));
+        let mut c = Command::new(ank_bin());
         c.args(args).current_dir(cwd);
         home.apply(&mut c);
         c.output()
@@ -200,7 +213,7 @@ impl Corpus {
     /// hold -- so a fixture that let both sides share the default would assert
     /// the mirror by never reading it.
     fn ank_as(&self, home: &Home, agent: &str, args: &[&str]) -> Output {
-        let mut c = Command::new(bin("ank"));
+        let mut c = Command::new(ank_bin());
         c.args(args).current_dir(&self.root);
         home.apply(&mut c);
         c.env("ANK_AGENT", agent);
@@ -350,7 +363,7 @@ impl Running {
 fn start(home: &Home, args: &[&str]) -> Running {
     let mut cmd = home.daemon(args);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    Running(cmd.spawn().expect("the daemon must have been built"))
+    Running(cmd.spawn().expect("ank must have been built"))
 }
 
 /// The same, with stderr kept: what the watcher reports is an assertion in its
@@ -359,7 +372,7 @@ fn start_logging(home: &Home, args: &[&str], log: &Path) -> Running {
     let mut cmd = home.daemon(args);
     let file = std::fs::File::create(log).unwrap();
     cmd.stdout(Stdio::null()).stderr(Stdio::from(file));
-    Running(cmd.spawn().expect("the daemon must have been built"))
+    Running(cmd.spawn().expect("ank must have been built"))
 }
 
 /// Waits for a condition the daemon is meant to produce.
@@ -476,6 +489,113 @@ fn the_watch_file_sits_beside_the_corpora_file() {
             .is_file(),
         "the CLI wrote its declarations somewhere else"
     );
+}
+
+/// The four flags §4 gives this verb, and no fifth.
+///
+/// **The flag surface is where "it answers no verb" is kept mechanical.** Not
+/// one of these asks the watcher a question about a corpus: `--list` and
+/// `--where` report the declaration back and never a corpus's contents,
+/// `--once` and `--interval` say when to look. A flag that queried a running
+/// watcher is the shape ADR-a22cd3196529 refuses, and this is where its absence
+/// is read off the binary rather than off a promise.
+///
+/// It is `ank help watch` and not a `--help` of the watcher's own, which is the
+/// other half of the fold: one help surface, generated from the table both the
+/// dispatch and the listing come out of (ADR-6fd69efb629c).
+#[test]
+fn the_verb_offers_the_four_flags_of_section_4_and_no_query() {
+    let out = Command::new(ank_bin())
+        .args(["help", "watch"])
+        .output()
+        .expect("ank must have been built");
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout);
+    for flag in ["--list", "--once", "--interval", "--where"] {
+        assert!(said.contains(flag), "ank help watch omits {flag}:\n{said}");
+    }
+}
+
+/// The two globals that address a corpus are refused, and refused rather than
+/// ignored.
+///
+/// **This is the discovery ban reached from the caller's side.** Nothing walks a
+/// filesystem looking for a corpus (ADR-a22cd3196529), and the mirror image of
+/// that is a caller who *names* one: `ank watch --repo <tree>` reads as "watch
+/// this", and a verb that took the flag and warmed something else would have
+/// answered a question nobody could tell it had gone unanswered. `ank help
+/// watch` therefore offers neither, on §9's rule that a name the verb rejects
+/// by design may not appear in the offer, and the refusal points at the file
+/// that does decide.
+#[test]
+fn addressing_one_corpus_is_refused_and_the_declaration_is_named() {
+    let home = Home::new();
+    for global in ["--repo", "--worktree"] {
+        let out = home.daemon(&[global, "."]).output().unwrap();
+        assert_eq!(out.status.code(), Some(1), "{global}: {out:?}");
+        let said = String::from_utf8_lossy(&out.stderr);
+        assert!(said.contains(global), "{said}");
+        assert!(
+            said.contains("--where"),
+            "the refusal has to point at what does decide: {said}"
+        );
+    }
+
+    // And the page does not offer what the verb rejects.
+    let out = Command::new(ank_bin())
+        .args(["help", "watch"])
+        .output()
+        .expect("ank must have been built");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let offer = said
+        .lines()
+        .find(|l| l.trim_start().starts_with("global:"))
+        .expect("ank help watch prints its globals");
+    for refused in ["--repo", "--worktree"] {
+        assert!(
+            !offer.contains(refused),
+            "ank help watch offers {refused} and the verb refuses it: {offer}"
+        );
+    }
+}
+
+/// A flag nobody declared is refused, and refused by the surface the reader
+/// actually typed at.
+///
+/// The watcher used to parse its own argv and had its own word for this. It
+/// does not any more: the parser refuses against the flags the table declares,
+/// so a mistyped `ank watch` fails the way a mistyped `ank find` does, with §4's
+/// environment code and the command that lists what there is. One parser, and
+/// the refusal a reader learns once.
+#[test]
+fn an_unknown_flag_is_refused_by_the_verbs_own_surface() {
+    let home = Home::new();
+    let out = home.daemon(&["--scan-everything"]).output().unwrap();
+    assert!(!out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("--scan-everything"), "{said}");
+}
+
+/// `--interval` is carried through to the watcher's own reading of it, and the
+/// two refusals it can raise are still its own words.
+///
+/// The dispatch hands the value across as the caller typed it precisely so
+/// these stay here: a number is what the watcher needs, so what a number has to
+/// be is answered where it is needed and not re-derived beside it.
+#[test]
+fn an_interval_that_would_spin_is_refused_before_anything_is_read() {
+    let home = Home::new();
+    // No declaration at all, so a watcher that read the file before the number
+    // would refuse about the file instead: the number is checked first.
+    let out = home.daemon(&["--interval", "0"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(9), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("would spin"), "{said}");
+
+    let out = home.daemon(&["--interval", "soon"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(9), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("soon"), "{said}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,6 +1340,122 @@ fn a_change_becomes_an_event_naming_the_corpus_and_the_kind() {
         seen.contains(&expected),
         "the event names this corpus and says the entities moved:\n{seen:?}"
     );
+}
+
+/// **Two corpora, and each change lands keyed on the one it happened in.**
+///
+/// This is the property the fold had to keep and the reason it is asserted
+/// rather than argued (TASK-9dd22f2b0430). A watcher is worth having because
+/// one process covers every checkout a reader keeps -- the declaration is a
+/// map, not a path -- and the two ways a fold could quietly break that are both
+/// checked here. It could watch only the first corpus, which the second half of
+/// the test catches. And it could report a change under the wrong identity, or
+/// under none, which the keying catches: the line for each change names that
+/// corpus and never the other, so a reader following the stream for one
+/// repository is not woken by the other and does not miss its own.
+///
+/// **The changes are made one at a time, and each is waited for.** Two writes
+/// inside one poll would be one change per corpus in the best case and an
+/// ordering race in the worst, and what is being asserted is which corpus a
+/// line names -- not how many lines a poll may coalesce.
+///
+/// The first pass is a sighting and not a change, for both corpora and for the
+/// reason `a_change_becomes_an_event_naming_the_corpus_and_the_kind` gives, so
+/// the stream is empty until something actually moves.
+#[test]
+fn a_declaration_naming_two_corpora_keys_each_change_on_its_own() {
+    let home = Home::new();
+    let root = scratch("two");
+    let first = Corpus::new(root.join("first"), &home);
+    let second = Corpus::new(root.join("second"), &home);
+    let one = first.identity(&home);
+    let two = second.identity(&home);
+    // Two repositories and therefore two identities. Were these equal the whole
+    // test would pass while asserting nothing, since every line would name the
+    // one corpus there was.
+    assert_ne!(
+        one, two,
+        "two git repositories with two root commits are two corpora"
+    );
+    home.declare(&format!(
+        "schema: 1\nwatch:\n  {}: {}\n  {}: {}\n",
+        one,
+        first.root.display(),
+        two,
+        second.root.display()
+    ));
+
+    // Both are declared, so both are watched: a listing that named one would be
+    // the failure this test exists for, seen before a single event.
+    let listed = home.daemon(&["--list"]).output().unwrap();
+    assert!(listed.status.success(), "{listed:?}");
+    let listing = String::from_utf8_lossy(&listed.stdout);
+    assert!(
+        listing.contains(&one) && listing.contains(&two),
+        "{listing}"
+    );
+    assert!(
+        listing.contains("watching 2 corpora, 2 checkouts"),
+        "{listing}"
+    );
+
+    first.drop_index();
+    second.drop_index();
+    let daemon = start(&home, &["--interval", "50"]);
+    until("the watcher's first look at both corpora", || {
+        first.index().is_file() && second.index().is_file()
+    });
+    assert_eq!(
+        home.stream_text(),
+        "",
+        "the first look at a corpus is a sighting and not a change, in each of them"
+    );
+
+    let entities_moved = |identity: &str| {
+        events::Event::new(identity, events::Change::Entities)
+            .line()
+            .trim_end()
+            .to_string()
+    };
+
+    for (corpus, identity, title) in [
+        (&first, &one, "A task in the first corpus"),
+        (&second, &two, "A task in the second corpus"),
+    ] {
+        let expected = entities_moved(identity);
+        corpus.ank(
+            &home,
+            &["new", "task", "--title", title, "--scope", "src/**"],
+        );
+        until("the stream to carry this corpus's change", || {
+            lines_of(&home.stream_text()).contains(&expected)
+        });
+    }
+    daemon.stop();
+
+    // Both lines are there, which is the multi-corpus half.
+    let seen = lines_of(&home.stream_text());
+    for identity in [&one, &two] {
+        assert!(
+            seen.contains(&entities_moved(identity)),
+            "no line names {identity}:\n{seen:?}"
+        );
+    }
+    // And every line names a corpus that was declared, which is the keying
+    // half: a change reported under the wrong identity, or under none, would
+    // leave one of these two unmatched. The set of lines a corpus can produce
+    // is finite and shared with the encoder, so this is exhaustive rather than
+    // a sample.
+    let possible: Vec<String> = every_possible_line(&one)
+        .into_iter()
+        .chain(every_possible_line(&two))
+        .collect();
+    for line in &seen {
+        assert!(
+            possible.contains(line),
+            "a line names neither declared corpus:\n{line}\nof {possible:?}"
+        );
+    }
 }
 
 /// The other kind of change, and the one no local look could see: a claim taken

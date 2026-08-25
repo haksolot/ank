@@ -1,4 +1,4 @@
-//! `ank-daemon`: it keeps declared corpora warm, and that is the whole of it
+//! `ank watch`: it keeps declared corpora warm, and that is the whole of it
 //! (ADR-a22cd3196529).
 //!
 //! **It answers no verb.** There is no query surface here, no socket, no
@@ -8,6 +8,38 @@
 //! passthrough or it does not exist, and a daemon answering the three questions a board finds convenient
 //! would be the curated subset that decision refused, arrived at from the other
 //! direction.
+//!
+//! **Being *started* by a verb is not *answering* one, and the two readings of
+//! that clause are worth separating here rather than in a commit message.** The
+//! decision governs what this process serves: nothing asks it a question,
+//! nothing receives an answer from it, and no caller can address it at all once
+//! it is running. It says nothing about how it is spawned, and it never did --
+//! a sibling executable was one spelling of a launch and `ank watch` is
+//! another. What would break the clause is a verb that *queried* the watcher:
+//! `ank watch --who-holds-what`, a status served out of this process, a socket
+//! any flag could reach. There is none, the flag surface is exactly the four §4
+//! lists, and not one of them asks this process about a corpus. So the fold
+//! moves the file and leaves the clause where it was, in the same way
+//! ADR-fd98f4bc6dea's fold of `ank mcp` moved a file and left the dispatch on
+//! the far side of a process boundary.
+//!
+//! **This is a library, and the surface is the verb `ank watch`**
+//! (ADR-1ea31c2f3c5a). It was a sibling executable, and the file folded into the
+//! one binary every route carries for the reason ADR-8bd76e8d7c4e gave for
+//! `tui`: a separate file is invisible to precisely the people it exists for,
+//! and has to be distributed, documented and discovered as a third thing. What
+//! folded with it is the search for `ank`: this process *is* `ank`, so
+//! [`Address::exe`] is the dispatch's own `current_exe()`, and the beside-me /
+//! `PATH` / `ANK_BIN` ladder the sibling needed, along with the wrong answer it
+//! could have given, is gone.
+//!
+//! **What did not fold is the read.** [`warm`] still spawns
+//! `ank find --repo <corpus> --json` per pass rather than linking the index, so
+//! the daemon is not a second implementation of anything the CLI answers --
+//! which is what keeps the first clause above true by construction, since a
+//! process that has to run the CLI to learn anything has no dispatch of its own
+//! to be a second one. `crates/ank-daemon/tests/dependencies.rs` reads that back
+//! out of the build rather than trusting this paragraph.
 //!
 //! **Nothing depends on it.** Every verb behaves identically with this process
 //! absent; its absence is never an error and no route makes running it a
@@ -49,11 +81,13 @@ mod warm;
 use ank_contract::events;
 use ank_contract::ExitCode;
 use declare::Declaration;
-use fail::{Fail, Result};
+use fail::Result;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+pub use fail::Fail;
 
 /// How often the declared corpora are looked at, when the caller names nothing.
 ///
@@ -67,103 +101,81 @@ use std::time::{Duration, Instant};
 /// the idle case is invisible.
 const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 
-const USAGE: &str = "\
-ank-daemon                keeps the corpora you declared warm, so the ank you run answers sooner
-
-  --list                  print what would be watched, and watch nothing
-  --once                  warm every declared corpus once, then exit
-  --interval <ms>         how often to look (default 500)
-  --where                 print the declaration file this reader's environment names
-  --version               the build
-  --help                  this
-
-It declares nothing, answers no verb and holds no claim. The only thing it
-writes into a repository is that repository's own index and a mirror of
-refs/ank/* under refs/ank/watch/, on the interval watch.yml states; it moves no
-branch, no tag and no claim of yours. A change it sees becomes a line on
-events.jsonl beside watch.yml, which says which corpus moved and what kind of
-change it was, and never what to do about it. Every verb behaves the same with
-it stopped, which is why stopping it is always safe.
-";
-
-fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut out = std::io::stdout();
-    let mut err = std::io::stderr();
-    match run(&args, &mut out, &mut err) {
-        Ok(code) => std::process::exit(code.code()),
-        Err(fail) => {
-            fail.report(&mut err);
-            std::process::exit(fail.code.code());
-        }
-    }
+/// Where the watcher reaches, resolved by the dispatch and never here.
+///
+/// One field, and it is the caller's foundation rather than this crate's: the
+/// verb names the binary a warming runs, so this crate has one road out of the
+/// process and no search to get it wrong. There is deliberately no corpus here
+/// -- the corpora are what the reader declared in [`declare::WATCH_FILE`], and
+/// a watcher that took one from the directory it was started in would be
+/// discovering a corpus, which is the thing ADR-a22cd3196529 refuses first.
+pub struct Address {
+    /// The binary a warming runs. `std::env::current_exe()` of the process
+    /// serving the verb -- see the note on [`warm`].
+    pub exe: PathBuf,
 }
 
+/// The four flags §4 gives this verb, as the dispatch parsed them.
+///
+/// **`interval` arrives as the caller typed it.** "not a number" and "zero
+/// would spin rather than watch" are the watcher's own refusals and not the
+/// parser's, so they are raised below, in the words they were raised in when
+/// this was an executable of its own.
 #[derive(Debug, Default)]
-struct Options {
-    list: bool,
-    once: bool,
-    location: bool,
-    interval: Option<Duration>,
+pub struct Options {
+    /// `--list`: print what would be watched, and watch nothing.
+    pub list: bool,
+    /// `--once`: warm every declared corpus once, then return.
+    pub once: bool,
+    /// `--where`: print the declaration file this reader's environment names.
+    pub location: bool,
+    /// `--interval <ms>`: how often to look, as text.
+    pub interval: Option<String>,
 }
 
-/// **An unknown argument is refused**, and refused with the environment code
-/// rather than passed along. A watcher that ignored a flag it did not know
-/// would be watching under a configuration its caller does not have.
-fn parse(args: &[String]) -> Result<Options> {
-    let mut opts = Options::default();
-    let mut it = args.iter();
-    while let Some(arg) = it.next() {
-        match arg.as_str() {
-            "--list" => opts.list = true,
-            "--once" => opts.once = true,
-            "--where" => opts.location = true,
-            "--interval" => {
-                let ms = it.next().ok_or_else(|| {
-                    Fail::new(
-                        ExitCode::Environment,
-                        "--interval expects a number of milliseconds",
-                    )
-                })?;
-                let ms: u64 = ms.parse().map_err(|_| {
-                    Fail::new(
-                        ExitCode::Environment,
-                        format!("--interval {ms} is not a number of milliseconds"),
-                    )
-                })?;
-                if ms == 0 {
-                    return Err(Fail::new(
-                        ExitCode::Environment,
-                        "--interval 0 would spin rather than watch",
-                    )
-                    .with_hint("give it a number of milliseconds, or take the default of 500"));
-                }
-                opts.interval = Some(Duration::from_millis(ms));
-            }
-            other => {
-                return Err(
-                    Fail::new(ExitCode::Environment, format!("unknown argument: {other}"))
-                        .with_hint("ank-daemon --help"),
-                )
-            }
+impl Options {
+    /// The interval this reader asked for, or [`DEFAULT_INTERVAL`].
+    fn interval(&self) -> Result<Duration> {
+        let Some(ms) = self.interval.as_deref() else {
+            return Ok(DEFAULT_INTERVAL);
+        };
+        let parsed: u64 = ms.parse().map_err(|_| {
+            Fail::new(
+                ExitCode::Environment,
+                format!("--interval {ms} is not a number of milliseconds"),
+            )
+        })?;
+        if parsed == 0 {
+            return Err(Fail::new(
+                ExitCode::Environment,
+                "--interval 0 would spin rather than watch",
+            )
+            .with_hint("give it a number of milliseconds, or take the default of 500"));
         }
+        Ok(Duration::from_millis(parsed))
     }
-    Ok(opts)
 }
 
-fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<ExitCode> {
-    if args.iter().any(|a| a == "--help" || a == "-h") {
-        let _ = write!(out, "{USAGE}");
-        return Ok(ExitCode::Ok);
-    }
-    if args.iter().any(|a| a == "--version") {
-        // The shape `ank --version` uses, and the same number: both come out of
-        // one build, so a caller holding both reads one answer rather than two
-        // it has to reconcile.
-        let _ = writeln!(out, "ank-daemon {}", env!("CARGO_PKG_VERSION"));
-        return Ok(ExitCode::Ok);
-    }
-    let opts = parse(args)?;
+/// The verb, from the first refusal to the loop that does not return.
+///
+/// **Every refusal below is a refusal to start**, and each carries §4's
+/// environment code with the exact correction, because a watcher that started
+/// on a declaration it could not honour would be warming nothing while
+/// reporting that it watches something.
+///
+/// `--help` and `--version` are not read here and no longer exist as flags of
+/// this surface: `ank help watch` prints what §4 declares and `ank --version`
+/// names the one build both halves come out of. A second copy of either, kept
+/// in step by somebody remembering, is exactly what the fold removed.
+pub fn run(
+    address: &Address,
+    opts: &Options,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<ExitCode> {
+    // Read before the declaration is, so a mistyped number is refused against
+    // nothing rather than after a walk of somebody's checkouts.
+    let interval = opts.interval()?;
     let path = declare::watch_path()?;
     if opts.location {
         let _ = writeln!(out, "{}", path.display());
@@ -196,14 +208,7 @@ fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<Exit
         return Ok(ExitCode::Ok);
     }
 
-    let ank = warm::locate_ank()?;
-    watch(
-        &declared,
-        &ank,
-        opts.once,
-        opts.interval.unwrap_or(DEFAULT_INTERVAL),
-        err,
-    );
+    watch(&declared, &address.exe, opts.once, interval, err);
     Ok(ExitCode::Ok)
 }
 
@@ -438,17 +443,40 @@ mod tests {
     use declare::Watched;
     use std::path::PathBuf;
 
+    fn interval(given: Option<&str>) -> Result<Duration> {
+        Options {
+            interval: given.map(str::to_string),
+            ..Options::default()
+        }
+        .interval()
+    }
+
+    /// An unknown argument is the dispatch's refusal now, not this crate's:
+    /// `ank watch --scan-everything` is refused by the parser against the flags
+    /// §4 declares, in the words the CLI refuses every other verb's typo in.
+    /// `an_unknown_flag_is_refused_by_the_verbs_own_surface` in
+    /// `crates/ank-cli/tests/watch.rs` drives the binary to say so.
     #[test]
-    fn an_unknown_argument_is_refused_with_the_environment_code() {
-        let err = parse(&["--scan-everything".to_string()]).unwrap_err();
+    fn an_interval_of_zero_is_refused_rather_than_spun() {
+        let err = interval(Some("0")).unwrap_err();
         assert_eq!(err.code, ExitCode::Environment);
-        assert!(err.message.contains("--scan-everything"), "{err:?}");
+        assert!(err.message.contains("would spin"), "{err:?}");
+    }
+
+    /// The other half, and the reason the flag arrives as text: the parser
+    /// knows `--interval` takes a value and nothing more, so what a number has
+    /// to be is answered where the number is used.
+    #[test]
+    fn an_interval_that_is_not_a_number_is_refused_by_name() {
+        let err = interval(Some("half a second")).unwrap_err();
+        assert_eq!(err.code, ExitCode::Environment);
+        assert!(err.message.contains("half a second"), "{err:?}");
     }
 
     #[test]
-    fn an_interval_of_zero_is_refused_rather_than_spun() {
-        let err = parse(&["--interval".to_string(), "0".to_string()]).unwrap_err();
-        assert!(err.message.contains("would spin"), "{err:?}");
+    fn an_interval_nobody_stated_is_the_default() {
+        assert_eq!(interval(None).unwrap(), DEFAULT_INTERVAL);
+        assert_eq!(interval(Some("50")).unwrap(), Duration::from_millis(50));
     }
 
     #[test]

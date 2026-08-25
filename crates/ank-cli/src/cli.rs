@@ -845,6 +845,91 @@ fn mcp(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) ->
     Ok(ExitCode::Ok)
 }
 
+/// `watch`, the watcher (ADR-a22cd3196529, ADR-1ea31c2f3c5a, §4).
+///
+/// **It answers no verb, and being started by one does not change that.** The
+/// clause a reader meets first in ADR-a22cd3196529 is the easiest one in this
+/// tree to read backwards, so it is worth saying in the place the reading
+/// happens: what the decision forbids is a *query surface* -- a socket, a
+/// protocol, a subset of the CLI answering out of a resident process. It says
+/// nothing about how the process is launched, and it never did: a sibling
+/// executable was one spelling of a launch and this verb is another. `ank
+/// watch` starts something that still serves nobody. The flags below are the
+/// four §4 lists and not one of them asks the watcher about a corpus, which is
+/// what keeps the clause mechanical rather than a promise.
+///
+/// **And nothing may come to depend on it.** Every other verb behaves
+/// identically with this process absent, its absence is never an error, and no
+/// route makes running it a condition of using ank -- which is why this arm is
+/// the whole of the dispatch's knowledge of it: nothing above reads a watcher's
+/// state, nothing below waits for one.
+///
+/// **The corpus is not resolved here, and that is the difference from `tui` and
+/// `mcp`.** Those two speak for the corpus the caller is standing in. This one
+/// speaks for the corpora the reader declared, in a file outside every
+/// repository (ADR-96174f1ac2b7) -- so requiring a `.ank/` under the working
+/// directory would make starting the watcher depend on where it was started
+/// from, and refuse it in the one place a person is most likely to type it.
+///
+/// **`current_exe` and not a search**, for the reason `mcp` gives above: the
+/// binary a warming runs is the process already running, so the sibling's
+/// `ANK_BIN` / beside-me / `PATH` ladder is gone and the wrong answer it could
+/// have given with it.
+fn watch(inv: &Invocation, out: &mut dyn std::io::Write) -> Result<ExitCode> {
+    // Refused and never ignored, which is the rule §9 holds `init --repo` to.
+    // Both of these address *a* corpus, and this verb is told which corpora to
+    // keep warm by the reader's declaration; a caller who typed one would have
+    // addressed a tree nothing is watching and been told nothing at all. The
+    // declaration is what to correct, so the refusal names the file.
+    for named in ["--repo", "--worktree"] {
+        if inv.has(named) {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!(
+                    "{named} addresses one corpus, and the watcher warms the \
+                     corpora you declared"
+                ),
+            )
+            .with_hint("ank watch --where names the file that says which"));
+        }
+    }
+    let exe = std::env::current_exe().map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot find this binary to run it: {e}"),
+        )
+        .with_hint("a warming is a run of ank: start the watcher by the binary's path on disk")
+    })?;
+    let address = ank_daemon::Address { exe };
+    let options = ank_daemon::Options {
+        list: inv.has("--list"),
+        once: inv.has("--once"),
+        location: inv.has("--where"),
+        // Carried as the caller typed it. What a number has to be is the
+        // watcher's own refusal, raised in its own words, and re-deriving it
+        // here would be a second answer to one question.
+        interval: inv.value("--interval").map(str::to_string),
+    };
+    // Standard error is where the log goes, and it is the watcher's ordinary
+    // destination: the listing and the declaration path are answers to a person
+    // who asked, and everything the loop reports is a line in a log file.
+    let mut err = std::io::stderr();
+    ank_daemon::run(&address, &options, out, &mut err).map_err(watching)
+}
+
+/// A refusal the watcher raised, in the shape this file renders.
+///
+/// The hint is carried where there is one and left off where there is not:
+/// every refusal this crate raises names a next command, and the one that does
+/// not is a bug in the watcher rather than a line to invent here.
+fn watching(f: ank_daemon::Fail) -> CliError {
+    let err = CliError::new(f.code, f.message);
+    match f.hint {
+        Some(hint) => err.with_hint(hint),
+        None => err,
+    }
+}
+
 /// A refusal the reader raised, in the shape this file renders.
 fn refused(r: ank_tui::Refused) -> CliError {
     CliError::new(r.code, r.message).with_hint(r.hint)
@@ -1129,6 +1214,17 @@ fn dispatch(
     if inv.command == "mcp" {
         return mcp(&inv, cwd, out);
     }
+    // The sixth, and it goes one step further than the two above it
+    // (ADR-a22cd3196529). `watch` resolves no corpus at all: what it keeps warm
+    // is what the reader declared outside every repository, so there is nothing
+    // in the working directory for it to need, and a `.ank/` demanded here
+    // would refuse the watcher in the one place a person is most likely to
+    // start it. It answers no verb once running, and starting it by one is not
+    // answering one -- the note on `watch` below says why that reading is the
+    // one the decision carries.
+    if inv.command == "watch" {
+        return watch(&inv, out);
+    }
 
     let s = startup(&inv, cwd)?;
     let code = match inv.command {
@@ -1294,7 +1390,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            25,
+            26,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1371,7 +1467,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
-            "attest", "amend", "show", "edit", "migrate", "tui", "mcp",
+            "attest", "amend", "show", "edit", "migrate", "tui", "mcp", "watch",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

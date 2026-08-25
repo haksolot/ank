@@ -12137,10 +12137,25 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 23] = [
+const NOT_A_PATH: [&str; 27] = [
     // A scope and not a path: it says *which* file of declarations, and there
     // is one (ADR-96174f1ac2b7).
     "--user",
+    // `watch`'s four, and all four are here for one reason: not one of them
+    // names anything in a corpus (ADR-a22cd3196529). Three carry no value at
+    // all, and `--interval` carries a number of milliseconds.
+    //
+    // `--where` is the one worth a sentence, because it is the one that looks
+    // like an exception: it *prints* a path. What it prints is the declaration
+    // file this reader's environment names, which lives outside every
+    // repository and is computed rather than given -- so there is nothing
+    // coming off the command line for `context::normalised` to have an opinion
+    // about, and normalising the answer would refuse the only value it ever
+    // has.
+    "--list",
+    "--once",
+    "--interval",
+    "--where",
     // Entity ids, both of them: what a document rests on is another entity of
     // this corpus, never a file (ADR-c88f99e1c16e). The scope is what names
     // paths on a spec, and it is in GLOB_FLAGS.

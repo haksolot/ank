@@ -504,8 +504,13 @@ pub struct CommandSpec {
     /// The states this verb refuses on, with their codes (§9).
     pub refuses: &'static [Refusal],
     /// Global flags this verb refuses by name (§4). Empty for every verb but
-    /// `init`, which refuses `--repo`: the flag names a repository that already
-    /// carries a `.ank/`, and `init` is what produces one.
+    /// two. `init` refuses `--repo`: the flag names a repository that already
+    /// carries a `.ank/`, and `init` is what produces one. `watch` refuses
+    /// `--repo` and `--worktree`: both address *a* corpus, and the watcher is
+    /// told which corpora to keep warm by the reader's declaration and by
+    /// nothing else (ADR-a22cd3196529) -- a flag that looked like it named one
+    /// would be the discovery that decision refuses, offered from the caller's
+    /// side.
     ///
     /// Declared here rather than only in the verb, because §9 forbids offering
     /// a name the verb rejects by design — so the same list has to reach the
@@ -1114,6 +1119,94 @@ pub const COMMANDS: &[CommandSpec] = &[
         // shape is MCP's own -- the documents ADR-6fd69efb629c governs are the
         // ones the *children* return, each already declared by the verb that
         // returns it and carried through untouched.
+        output: &[],
+        owner_task: None,
+    },
+    // After `mcp`, which is §4's order, and in the same group for the reason §4
+    // gives when it says both are verbs for the reason `tui` is one: every
+    // route carries one executable (ADR-1ea31c2f3c5a), so a surface that is not
+    // a verb is a surface that has to arrive beside the binary.
+    //
+    // **It is grouped with the verbs that look and never with the verbs that
+    // act, and that is the honest place for it.** It changes no entity, takes
+    // no claim and answers no question; what it leaves behind is a cache the
+    // next `ank` finds warm. A reader scanning `ank help` for the thing that
+    // makes a listing fast reads this group.
+    CommandSpec {
+        name: "watch",
+        group: "look around",
+        // It takes no claim, holds none on anybody's behalf and renews none
+        // (ADR-a22cd3196529, §4). A lease is renewed by working, and this
+        // process does not work on a task -- it warms an index
+        // (ADR-0bb7ea8991bc).
+        renews: Renews::Never,
+        // **False, and this is the one verb where that is not about cost.**
+        // `coordinates` makes the foundation check git in *the checkout's*
+        // corpus, and this verb has no such corpus: what it watches is what the
+        // reader declared outside every repository, so there is nothing here
+        // for the check to be about. git is asked per declared checkout, and a
+        // checkout whose git will not answer costs a line and the next poll,
+        // because nothing depends on this process.
+        coordinates: false,
+        summary: "keeps the corpora you declared warm, so the ank you run answers sooner; it answers no verb and nothing depends on it",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        // Exactly the four §4 lists, and the shape of that list is the
+        // decision rather than an omission: not one of them asks the watcher a
+        // question about a corpus. A caller that wants an answer runs the CLI,
+        // which is what keeps this from being a second dispatch path -- and it
+        // is why being started by a verb leaves "it answers no verb" intact.
+        flags: &[
+            switch("--list"),
+            switch("--once"),
+            flag("--interval"),
+            switch("--where"),
+        ],
+        refuses: &[
+            refuses(
+                ExitCode::Environment,
+                "no home directory in the environment, so there is nowhere to declare a corpus",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "the declaration does not exist, names a schema this build does not read, or is not YAML",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "a declared directory holds no .ank/, or holds a corpus filed under another identity: nothing looks for one elsewhere",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "--interval is not a number of milliseconds, or is 0, which would spin rather than watch",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "--repo or --worktree: each addresses one corpus, and this verb warms the corpora you declared",
+            ),
+        ],
+        notes: &[
+            "it declares nothing: watch.yml in this reader's configuration directory says which corpora to keep warm, and --where prints where that is",
+            "the only things it writes into a repository are that repository's own index and a mirror of refs/ank/* under refs/ank/watch/; it moves no branch, no tag and no claim of yours",
+            "a change it sees becomes a line on events.jsonl beside watch.yml, saying which corpus moved and what kind of change it was, and never what to do about it",
+            "every verb behaves the same with it stopped, its absence is never an error, and no route makes running it a condition of using ank",
+            "--json changes nothing: what a program follows is events.jsonl, whose shape is the event stream's own",
+        ],
+        // **The two globals that address a corpus are refused rather than
+        // ignored**, and §9 is why it is a refusal and not a silence: a name
+        // the verb rejects by design may not be offered, and a name that is
+        // offered has to do something. `--repo` and `--worktree` do nothing
+        // here, because what this verb watches is what the reader declared in
+        // watch.yml -- so a caller who typed `ank watch --repo <tree>` would
+        // have addressed a corpus that is not being watched and been told
+        // nothing. That is the discovery ADR-a22cd3196529 refuses, reached from
+        // the caller's side instead of the filesystem's.
+        refuses_globals: &["--repo", "--worktree"],
+        // **No `--json` document leaves this verb either, and the empty list is
+        // the answer rather than a verb that forgot to give one.** `--list`
+        // prints a listing for a person reading a log, and the document a
+        // program wanted is `events.jsonl` -- written by this process, followed
+        // by anyone, and already declared where both ends of it read it.
         output: &[],
         owner_task: None,
     },

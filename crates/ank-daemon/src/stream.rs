@@ -35,7 +35,7 @@ pub fn path() -> Option<PathBuf> {
 /// Appends one event, or says why it could not.
 ///
 /// The directory is created rather than required, for the one case that
-/// actually occurs: a reader whose declaration lives somewhere `ank-daemon`
+/// actually occurs: a reader whose declaration lives somewhere `ank watch`
 /// reached through `XDG_CONFIG_HOME` has that directory, and a reader who has
 /// somehow lost it between two polls is better served by a stream that comes
 /// back than by a watcher that stops writing one.
