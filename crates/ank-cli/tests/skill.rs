@@ -223,12 +223,12 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// **It is empty, and `tui` leaving it is the round trip closing.** `read` was
-/// declared here while its ratification was in flight (TASK-d055f8ab836b) and
-/// removed in the commit that shipped it (TASK-e3370ef322d8), because
-/// `read_section_4_document` reads the ratified document on purpose and a verb
-/// therefore cannot ship in the landing that puts it in §4: between the two
-/// sits a signed `accept`, which is a human act.
+/// **`mcp` and `watch` are here, and the round trip is the guard working.**
+/// `read` was declared here while its ratification was in flight
+/// (TASK-d055f8ab836b) and removed in the commit that shipped it
+/// (TASK-e3370ef322d8), because `read_section_4_document` reads the ratified
+/// document on purpose and a verb therefore cannot ship in the landing that
+/// puts it in §4: between the two sits a signed `accept`, which is a human act.
 ///
 /// `tui` went the same way. TASK-8108e3771ba0 put the line in the Commands
 /// block of SPEC-20357e21a45a and declared the verb here, the ratification of
@@ -237,17 +237,30 @@ fn help_order() -> Vec<String> {
 /// second test below forces: a declared verb that has started shipping fails
 /// until the line is gone.
 ///
-/// The list stays even now that it is empty, because it is the only place a
-/// future verb may be declared missing, and because the test below fails the
-/// moment a declared one starts shipping -- so the declaration cannot outlive
-/// the gap it describes.
+/// These two are in exactly that state (ADR-fd98f4bc6dea, ADR-a22cd3196529,
+/// TASK-36666e36744e). The protocol surface and the watcher stop being sibling
+/// executables and become verbs of the one binary distribution carries
+/// (ADR-1ea31c2f3c5a), and the Commands block of SPEC-fe8bdb84faca lists them.
+/// That document is `proposed`, so the test below does not check either entry
+/// yet -- it walks the *ratified* block, which is the predecessor and does not
+/// carry the lines. Declaring them now is what makes the ratification
+/// itself green: the signed `accept` is the moment §4 gains the two verbs, and
+/// a suite that first learns of them there turns red on a human act rather
+/// than on a landing anybody is watching. `crates/ank-mcp/**` is
+/// TASK-e655d28c83cb's and `crates/ank-daemon/**` is TASK-9dd22f2b0430's, and
+/// each removes its line in the commit that dispatches its verb.
 ///
-/// `scope`, `graph`, `status`, `edit` and now `tui` were all here in turn,
-/// which is the guard working as intended rather than a maintenance chore:
-/// shipping each of them (TASK-e717ee625c5c, TASK-253e897d3330,
-/// TASK-15336a0012d5, TASK-7ed19b16895e, TASK-49746735127f) turned the suite
-/// red until this line was edited, in the same commit.
-const NOT_YET_DISPATCHED: [&str; 0] = [];
+/// The list stays even when it is empty, because it is the only place a future
+/// verb may be declared missing, and because the test below fails the moment a
+/// declared one starts shipping -- so the declaration cannot outlive the gap it
+/// describes.
+///
+/// `scope`, `graph`, `status`, `edit` and `tui` were all here in turn, which is
+/// the guard working as intended rather than a maintenance chore: shipping each
+/// of them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
+/// TASK-7ed19b16895e, TASK-49746735127f) turned the suite red until this line
+/// was edited, in the same commit.
+const NOT_YET_DISPATCHED: [&str; 2] = ["mcp", "watch"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
