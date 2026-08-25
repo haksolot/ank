@@ -1,20 +1,29 @@
 //! The one road to the corpus: running `ank <verb> --json` (ADR-8bd76e8d7c4e).
 //!
-//! Nine verbs are reached from here, in two lists that are policy made
-//! mechanical rather than policy stated in prose. [`READS`] is the four that
-//! only read -- `status`, `find`, `show` and `scope` -- and [`Ank::json`]
-//! refuses anything else before spawning. [`ACTS`] is the five the person at
-//! the keyboard may ask for -- `claim`, `log`, `release`, `done` and `amend` --
-//! and [`Ank::act`] refuses anything else the same way. Two gates and not one,
-//! because the difference between them is the whole of what a reader is allowed
-//! to do on its own: a screen repaints by reading, and it writes only where a
-//! command was typed.
+//! Eleven verbs are reached from here, in two lists that are policy made
+//! mechanical rather than policy stated in prose. [`READS`] is the five that
+//! only read -- `status`, `find`, `show`, `scope` and `review` -- and
+//! [`Ank::json`] refuses anything else before spawning. [`ACTS`] is the six the
+//! person at the keyboard may ask for -- `claim`, `log`, `release`, `done`,
+//! `amend` and `accept` -- and [`Ank::act`] refuses anything else the same way.
+//! Two gates and not one, because the difference between them is the whole of
+//! what a reader is allowed to do on its own: a screen repaints by reading, and
+//! it writes only where a command was typed.
 //!
-//! **`accept` is in neither list, and the test below is what keeps it out.** It
-//! is a signed human act the reader may drive and never perform
-//! (ADR-8bd76e8d7c4e), and a verb absent from a list is absent silently -- so
-//! the absence is asserted rather than left to whoever reads the two constants
-//! next.
+//! **`accept` is on the acting list, and the reader still never performs one**
+//! (TASK-d90e94afca08). ADR-8bd76e8d7c4e lets the reader *drive* a
+//! ratification and forbids it performing one unattended, and the line between
+//! those two words is drawn here rather than described: driving is spawning
+//! `ank accept <id>`, which is the same road `claim` takes and runs only where
+//! a word was typed whole. Performing would be supplying a key or answering a
+//! passphrase prompt, and [`Ank::spawn`] gives every child `output()`'s null
+//! stdin -- so this process has no channel through which a secret could reach
+//! one, whatever a later edit intends. The signature is git's and the person's,
+//! and it is unreachable from here by construction rather than by restraint.
+//!
+//! The four that must stay out of both lists are `close`, `check`, `attest` and
+//! `init`, and a verb absent from a list is absent silently -- so the absence
+//! is asserted below rather than left to whoever reads the two constants next.
 //!
 //! **An act runs with `--json` like a read does.** ADR-8bd76e8d7c4e and
 //! SPEC-93531977642f both say the reader reaches the corpus only by running the
@@ -39,11 +48,29 @@ pub use serde_yaml::Value;
 
 /// The verbs this reader may run on its own, and the whole of them.
 ///
-/// Every one of them only reads: `status`, `find`, `show` and `scope` write no
-/// file and no ref (§4). Repainting the screen therefore cannot write by
-/// accident, and the property is enforced one function below rather than
+/// Every one of them only reads: `status`, `find`, `show`, `scope` and `review`
+/// write no file and no ref (§4). Repainting the screen therefore cannot write
+/// by accident, and the property is enforced one function below rather than
 /// asserted in a comment.
-pub const READS: &[&str] = &["status", "find", "show", "scope"];
+///
+/// **`review` is here and not on the acting list**, which is the answer to the
+/// obvious objection that a ratification queue sounds like part of ratifying.
+/// The verb answers a question and changes nothing: §4 gives it
+/// `renews: Never` and `coordinates: false`, so a screen that redraws the queue
+/// on a watcher's news renews no lease and takes no ref -- which is what lets
+/// the queue be repainted at all (ADR-0bb7ea8991bc).
+pub const READS: &[&str] = &["status", "find", "show", "scope", "review"];
+
+/// The verbs whose exit 8 carries a document rather than a refusal.
+///
+/// `review` shares `check`'s report and therefore its exit code, and §4 says so
+/// on the verb: findings leave 8, a signal alone leaves 0. The document is
+/// written all the same, so a reader that read 8 as a refusal would show an
+/// empty queue to every corpus with a fault in it -- which is the corpus most
+/// in need of one. Named as a list rather than tolerated everywhere: `find`
+/// and `status` never answer 8, and a blanket rule would silently swallow the
+/// day one of them starts to.
+const FINDINGS_ARE_AN_ANSWER: &[&str] = &["review"];
 
 /// The verbs this reader may run *because somebody typed one*, and the whole of
 /// them.
@@ -54,10 +81,17 @@ pub const READS: &[&str] = &["status", "find", "show", "scope"];
 /// night renews nothing: there is no second dispatch path here for either rule
 /// to be reimplemented on.
 ///
-/// `accept` is not here and must not arrive: it is signed, on the default
-/// branch, and a human act the reader may drive and never perform
-/// (ADR-8bd76e8d7c4e).
-pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend"];
+/// **`accept` is the sixth, and it arrived by a decision rather than by being
+/// typed into the list** (TASK-d90e94afca08). It is here because driving a
+/// ratification *is* spawning the verb, and the reader has no other way to do
+/// it; what keeps it a human act is stated in the module header and enforced in
+/// three places that are not this one -- the grammar takes no tail after the
+/// word, so nothing beyond the single identifier is ever passed; `input::parse`
+/// takes it only where the document is open on the screen; and the child is
+/// given no stdin, so no prompt of git's can be answered from this process.
+///
+/// `close`, `check`, `attest` and `init` are not here and must not arrive.
+pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend", "accept"];
 
 /// A call that did not produce a document, in the three ways it can fail.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,7 +257,7 @@ impl Ank {
                 args: shown.clone(),
                 error: e.to_string(),
             })?;
-        if !out.status.success() {
+        if !out.status.success() && !answered_with_findings(verb, &out.status) {
             return Err(Failed::Refused {
                 args: shown,
                 code: out.status.code().unwrap_or(ExitCode::Generic.code()),
@@ -240,6 +274,11 @@ impl Ank {
             answered,
         })
     }
+}
+
+/// Whether a non-zero exit is this verb saying "there are findings" (§4).
+fn answered_with_findings(verb: &str, status: &std::process::ExitStatus) -> bool {
+    FINDINGS_ARE_AN_ANSWER.contains(&verb) && status.code() == Some(ExitCode::Findings.code())
 }
 
 /// A call that answered: the command line it was, and the document it gave.
@@ -363,10 +402,16 @@ mod tests {
     }
 
     /// The acting gate, and the same proof that it comes first.
+    ///
+    /// **`accept` left this list and the other four did not** (TASK-d90e94afca08).
+    /// The reader drives a ratification now, so the verb reaches the spawn; that
+    /// is a decision about one verb, and it says nothing whatever about `close`,
+    /// `check`, `attest` or `init`, which stay out for the reasons they always
+    /// had. The list below is the whole of what widened, and it widened by one.
     #[test]
     fn a_verb_outside_the_acting_list_is_refused_before_anything_is_spawned() {
         let ank = nowhere();
-        for verb in ["accept", "close", "check", "attest", "init"] {
+        for verb in ["close", "check", "attest", "init"] {
             assert_eq!(
                 ank.act(verb, &["TASK-0001".to_string()]),
                 Err(Failed::NotAnAct {
@@ -383,19 +428,63 @@ mod tests {
         }
     }
 
-    /// `accept` is signed, on the default branch, and a human act the reader may
-    /// drive and never perform (ADR-8bd76e8d7c4e).
+    /// `accept` is an act and never a read, and the two lists do not overlap.
     ///
-    /// Stated as an assertion because the alternative is a verb that arrives in
-    /// a list by being typed into it, which is a change nothing would fail on.
+    /// The half that matters most is the first line. A repaint calls
+    /// [`Ank::json`] and nothing else, so `accept` being absent from [`READS`]
+    /// is what makes "the reader never performs one unattended" a property of
+    /// the code: there is no road from a watcher's news to this verb, whatever
+    /// a screen is showing when the news arrives.
     #[test]
-    fn accept_is_in_neither_list_and_the_two_lists_do_not_overlap() {
+    fn accept_is_an_act_and_never_a_read() {
+        let ank = nowhere();
         assert!(!READS.contains(&"accept"));
-        assert!(!ACTS.contains(&"accept"));
+        assert_eq!(
+            ank.json("accept", &["ADR-0001"]),
+            Err(Failed::NotARead {
+                verb: "accept".to_string()
+            }),
+            "a repaint reached accept"
+        );
+        assert!(ACTS.contains(&"accept"));
         for verb in ACTS {
             assert!(
                 !READS.contains(verb),
                 "{verb} is on both roads, and the gates then say nothing"
+            );
+        }
+    }
+
+    /// `review` is a read, and the four the reader may never run stay out of
+    /// both lists.
+    #[test]
+    fn review_reads_and_the_four_that_must_stay_out_are_on_neither_road() {
+        assert!(
+            READS.contains(&"review"),
+            "the queue is read by asking review"
+        );
+        for verb in ["close", "check", "attest", "init"] {
+            assert!(
+                !READS.contains(&verb),
+                "{verb} is not a read of this reader"
+            );
+            assert!(!ACTS.contains(&verb), "{verb} is not an act of this reader");
+        }
+    }
+
+    /// A verb that answers 8 with a document is not refused (§4).
+    ///
+    /// Asserted on the table rather than on a spawn: what the reader has to get
+    /// right is which verbs answer that way, and `review` is the one -- a
+    /// corpus with a fault in it is exactly the corpus whose queue a person
+    /// most needs to see.
+    #[test]
+    fn a_verb_that_answers_with_findings_is_the_queue_and_only_the_queue() {
+        assert_eq!(FINDINGS_ARE_AN_ANSWER, &["review"]);
+        for verb in FINDINGS_ARE_AN_ANSWER {
+            assert!(
+                READS.contains(verb),
+                "{verb} tolerates 8 on a road it is not on"
             );
         }
     }

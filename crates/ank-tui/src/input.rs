@@ -12,10 +12,10 @@
 //!
 //! # A reading command is one letter, and an act never is
 //!
-//! `j`, `k`, `n`, `p`, `c`, `b`, `g`, `r`, `q` -- every command that only moves
-//! the screen is a single letter, and it is the whole word too. The five that
-//! write are `claim`, `log`, `release`, `done` and `amend`, spelled whole, with
-//! no abbreviation and no letter of their own.
+//! `j`, `k`, `n`, `p`, `c`, `b`, `g`, `r`, `v`, `q` -- every command that only
+//! moves the screen is a single letter, and it is the whole word too. The six
+//! that write are `claim`, `log`, `release`, `done`, `amend` and `accept`,
+//! spelled whole, with no abbreviation and no letter of their own.
 //!
 //! That asymmetry is the criterion's "no action is taken without an explicit
 //! keystroke", made into something the grammar enforces rather than something
@@ -23,6 +23,23 @@
 //! typed nothing; there is no `d`. And it costs the reading half nothing,
 //! because a one-letter command is what a reader types a hundred times a
 //! session and a `done` is what they type once.
+//!
+//! # What `accept` costs on top of that, and why
+//!
+//! Ratification is the act this project guards hardest, so the word alone is
+//! not the whole of the gate (TASK-d90e94afca08). Two more things are true of
+//! it here, and both are the grammar's rather than the renderer's.
+//!
+//! **It takes no tail.** [`Tail::Nothing`] refuses the rest of the line instead
+//! of forwarding it, so what leaves this module is always the verb and the one
+//! identifier the view puts in front -- "nothing beyond the single document",
+//! held by there being no shape in which a second argument could travel.
+//!
+//! **It is only a command where the document is open.** In the list it is
+//! refused, naming the way in: a proposal binds nobody until somebody reads it,
+//! and a queue that could be ratified from a row is a queue nobody reads. The
+//! parse already takes the view for the empty line, so this costs no new input
+//! and puts the rule where a later edit has to see it.
 
 use crate::view::View;
 
@@ -55,6 +72,10 @@ pub enum Command {
     Search(Option<String>),
     /// Show the constraints binding the open entity, or hide them for the body.
     Constraints,
+    /// The ratification queue: what is proposed, and who may sign it
+    /// (TASK-d90e94afca08). A read and nothing else -- `ank review` writes no
+    /// file, takes no ref and renews no lease (§4).
+    Queue,
     /// Run one verb of the writing half against the entity under the cursor.
     ///
     /// The identifier is not in here: it is the selected entity, which the view
@@ -109,6 +130,17 @@ enum Tail {
     /// CLI is left to answer for the missing one -- which is exactly the
     /// refusal a person typing `done` on a task with no verifier needs to see.
     Behind(&'static str),
+    /// Nothing at all: the verb takes the identifier the view supplies and not
+    /// one byte more, and a line that carries a tail is refused rather than
+    /// trimmed.
+    ///
+    /// Refused and not ignored, because the two read identically on the screen
+    /// and only one of them is honest: somebody who typed `accept ADR-8bd7`
+    /// meant that identifier, and running the verb against whatever is open
+    /// while silently dropping what they wrote would be the reader choosing a
+    /// document for them. §4 gives `accept` no flags either, so there is
+    /// nothing a tail could legitimately be.
+    Nothing,
 }
 
 /// The writing half of the loop, and how each verb reads a line.
@@ -122,13 +154,14 @@ const ACTS: &[(&str, Tail)] = &[
     ("release", Tail::Behind("--reason")),
     ("done", Tail::Behind("--proof")),
     ("amend", Tail::Words),
+    ("accept", Tail::Nothing),
 ];
 
 pub fn parse(line: &str, view: View) -> Command {
     let line = line.trim();
     if line.is_empty() {
         return match view {
-            View::List => Command::Open,
+            View::List | View::Queue => Command::Open,
             View::Entity => Command::Page(1),
         };
     }
@@ -148,17 +181,29 @@ pub fn parse(line: &str, view: View) -> Command {
         "o" | "open" => Command::Open,
         "?" | "h" | "help" => Command::Help,
         "f" | "filter" => Command::Kind(non_empty(rest).map(|k| k.to_ascii_lowercase())),
+        // `v` and not a letter closer to the word: `q` is quit, and a queue one
+        // keystroke from the way out is a queue nobody opens twice.
+        "v" | "queue" => Command::Queue,
         "n" | "next" => Command::Page(1),
         "p" | "prev" => Command::Page(-1),
         _ => match ACTS.iter().find(|(name, _)| *name == word) {
-            Some((verb, tail)) => act(verb, *tail, rest),
+            Some((verb, tail)) => act(verb, *tail, rest, view),
             None => repeated(word).unwrap_or_else(|| other(line)),
         },
     }
 }
 
 /// One act, with the rest of the line read the way its verb reads one.
-fn act(verb: &'static str, tail: Tail, rest: &str) -> Command {
+///
+/// The view is consulted for exactly one verb, and the module header says why:
+/// a ratification is typed on the document, not at a row that names it.
+fn act(verb: &'static str, tail: Tail, rest: &str, view: View) -> Command {
+    if verb == "accept" && view != View::Entity {
+        return Command::Malformed(
+            "'accept' is typed on the document itself: open it first, and read it              (Enter opens the row under the cursor)"
+                .to_string(),
+        );
+    }
     let args = match tail {
         Tail::Words => words(rest),
         Tail::Message => match non_empty(rest) {
@@ -172,6 +217,14 @@ fn act(verb: &'static str, tail: Tail, rest: &str) -> Command {
         Tail::Behind(flag) => match non_empty(rest) {
             Some(value) => vec![flag.to_string(), value],
             None => Vec::new(),
+        },
+        Tail::Nothing => match non_empty(rest) {
+            None => Vec::new(),
+            Some(said) => {
+                return Command::Malformed(format!(
+                    "'{verb}' takes nothing after it, and '{said}' is something: it                      ratifies the document on the screen and no other"
+                ))
+            }
         },
     };
     Command::Act(Act { verb, args })
@@ -264,6 +317,7 @@ mod tests {
     #[test]
     fn an_empty_line_means_the_obvious_next_thing_in_each_view() {
         assert_eq!(parse("", View::List), Command::Open);
+        assert_eq!(parse("", View::Queue), Command::Open);
         assert_eq!(parse("", View::Entity), Command::Page(1));
         assert_eq!(parse("   ", View::Entity), Command::Page(1));
     }
@@ -276,6 +330,7 @@ mod tests {
             ("g", "top", Command::Top),
             ("b", "back", Command::Back),
             ("c", "constraints", Command::Constraints),
+            ("v", "queue", Command::Queue),
             ("n", "next", Command::Page(1)),
             ("p", "prev", Command::Page(-1)),
         ] {
@@ -401,16 +456,68 @@ mod tests {
     /// rather than a habit of the renderer.
     #[test]
     fn no_single_letter_line_can_write() {
-        for c in 'a'..='z' {
-            let line = c.to_string();
-            assert!(
-                !matches!(list(&line), Command::Act(_)),
-                "'{line}' writes, and one letter must not"
-            );
+        for view in [View::List, View::Queue, View::Entity] {
+            for c in 'a'..='z' {
+                let line = c.to_string();
+                assert!(
+                    !matches!(parse(&line, view), Command::Act(_)),
+                    "'{line}' writes in {view:?}, and one letter must not"
+                );
+            }
+            // Nor does a near miss on one of the six.
+            for line in ["d", "cl", "clai", "don", "rel", "am", "acce", "close"] {
+                assert!(
+                    !matches!(parse(line, view), Command::Act(_)),
+                    "'{line}' writes in {view:?}"
+                );
+            }
         }
-        // Nor does a near miss on one of the five.
-        for line in ["d", "cl", "clai", "don", "rel", "am", "accept", "close"] {
-            assert!(!matches!(list(line), Command::Act(_)), "'{line}' writes");
+    }
+
+    /// `accept` is a command where the document is open, and a refusal
+    /// everywhere else (TASK-d90e94afca08).
+    ///
+    /// The refusal is the reader's own and names the way in, because the person
+    /// who typed it wants to ratify and the answer is "read it first" rather
+    /// than "no".
+    #[test]
+    fn accept_is_typed_on_the_document_and_nowhere_else() {
+        assert_eq!(
+            parse("accept", View::Entity),
+            Command::Act(Act {
+                verb: "accept",
+                args: Vec::new()
+            }),
+            "the identifier is the view's, and there is nothing else to pass"
+        );
+        for view in [View::List, View::Queue] {
+            match parse("accept", view) {
+                Command::Malformed(said) => {
+                    assert!(said.contains("open it first"), "{view:?}: {said}");
+                }
+                other => panic!("{view:?} took an accept off a row: {other:?}"),
+            }
+        }
+    }
+
+    /// Nothing travels after the word, and a line that carries something is
+    /// refused rather than trimmed.
+    ///
+    /// This is "accepts nothing beyond the single document", held by the
+    /// grammar: there is no shape in which a second argument reaches the verb.
+    #[test]
+    fn accept_takes_no_tail_and_says_so_rather_than_dropping_it() {
+        for line in ["accept ADR-8bd7", "accept --force", "accept  everything"] {
+            match parse(line, View::Entity) {
+                Command::Malformed(said) => {
+                    assert!(said.contains("takes nothing after it"), "{line}: {said}");
+                    assert!(
+                        said.contains("the document on the screen"),
+                        "it names what it would have ratified: {said}"
+                    );
+                }
+                other => panic!("'{line}' carried a tail: {other:?}"),
+            }
         }
     }
 

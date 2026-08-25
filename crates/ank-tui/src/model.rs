@@ -3,7 +3,20 @@
 //! [`Snapshot`] is `ank status --json` and `ank find --json` put side by side:
 //! who holds what, and every entity of every kind with its status. [`Detail`]
 //! is `ank show <id> --json` and one `ank scope <glob> --json` per glob the
-//! entity declares: the body whole, and the constraints binding it.
+//! entity declares: the body whole, and the constraints binding it. [`Queue`]
+//! is `ank review --json`: what is waiting for a signature, and who may give
+//! one.
+//!
+//! **The queue is asked for and not computed**, though the rows are in the
+//! snapshot already and filtering them on `proposed` would have been one line.
+//! Two reasons, and the second is the one that decides it. `find` answers
+//! within an attention budget and says what it withheld (ADR-3e6ce108edcd), so
+//! a queue derived from it is a queue that can be silently short -- and a
+//! ratification queue missing an entry is the one wrong answer here that a
+//! person would act on by not acting. And `review` is where §4 puts this
+//! question: what is proposed, and who may sign it. Deriving the first while
+//! having to ask for the second would leave one screen answering out of two
+//! sources that can disagree.
 //!
 //! **Nothing here derives a fact the CLI did not state.** The one exception is
 //! the `scope:` block, which is lifted out of the frontmatter the CLI printed
@@ -182,6 +195,55 @@ impl Snapshot {
                 }),
             )
             .finish()
+    }
+}
+
+/// The ratification queue, as `review` answers it.
+///
+/// Both halves of the question §4 gives that verb: the documents waiting for a
+/// signature, and the principals `.ank/allowed_signers` declares. The second is
+/// not filtered by anything -- a signer is a fact about the repository and not
+/// about a path -- and an empty list is a state of its own rather than "nobody
+/// yet", which is why [`Queue::signers`] being empty is rendered as the
+/// sentence §8 gives it rather than as a section with no rows.
+#[derive(Debug, Clone, Default)]
+pub struct Queue {
+    pub proposed: Vec<Row>,
+    pub signers: Vec<String>,
+}
+
+impl Queue {
+    pub fn load(ank: &Ank) -> Result<Queue, Failed> {
+        let answer = ank.json("review", &[])?;
+        Ok(Queue {
+            proposed: ank::rows(&answer, "proposed").iter().map(waiting).collect(),
+            signers: ank::rows(&answer, "signers")
+                .iter()
+                .map(|s| format!("{}  {}", ank::text(s, "principal"), ank::text(s, "keytype")))
+                .collect(),
+        })
+    }
+}
+
+/// One row of the queue, out of the two fields `review` gives it.
+///
+/// `status` is filled in rather than read, and it is the one value on this
+/// screen the CLI did not spell: `review` has no `status` field on a queue
+/// entry because the queue *is* the proposed set -- §4 defines it that way and
+/// the human page heads the section `PROPOSED`. `kind` comes off the
+/// identifier, which carries it by construction (ADR-c9f9d1a05b23), and not off
+/// a lookup in the snapshot: the snapshot is budgeted and the queue is not, so
+/// a row missing from one must still be whole in the other.
+fn waiting(value: &ank::Value) -> Row {
+    let id = ank::text(value, "id");
+    Row {
+        kind: id
+            .split_once('-')
+            .map(|(kind, _)| kind.to_ascii_lowercase())
+            .unwrap_or_default(),
+        id,
+        status: "proposed".to_string(),
+        title: ank::text(value, "title"),
     }
 }
 

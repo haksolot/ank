@@ -1,4 +1,4 @@
-//! The two views and the state between them.
+//! The three views and the state between them.
 //!
 //! [`App`] holds what was read, where the cursor is, and what is filtered. It
 //! reads by calling [`Ank`] and by nothing else, and it renders by returning a
@@ -20,6 +20,19 @@
 //! -- there is no timer in this crate, and [`App::frame`] is a pure function of
 //! what the last command left behind.
 //!
+//! **`accept` runs through that same function, and the difference is what it is
+//! *not* allowed to be** (TASK-d90e94afca08). It is one more verb spawned
+//! against one selected identifier, which is the point: a ratification taken
+//! from this screen is the ratification a shell takes, because it *is* the
+//! command a shell runs. What the reader adds is subtraction. The grammar takes
+//! no tail after the word and takes the word only where the document is open,
+//! so the entity a ratification lands on is always one somebody put on the
+//! screen and read; [`App::ratify_line`] offers the word only where the verb
+//! would accept it; and the child is spawned with no stdin, so nothing in this
+//! process can answer a passphrase prompt on a person's behalf. Every refusal
+//! that follows -- the wrong branch, a document already ratified, a signature
+//! git would not make -- is the CLI's, shown in the CLI's own bytes.
+//!
 //! **The split on what reaches the screen is the crate header's, applied to an
 //! answer.** The chrome is this crate's own -- the line naming the command that
 //! ran, the two columns of gutter -- and every value under it is the document's,
@@ -30,12 +43,29 @@
 use crate::ank::{Ank, Failed, Ran};
 use crate::frame::{self, fit, pad, window, wrap};
 use crate::input::{Act, Command};
-use crate::model::{short_of, Detail, Row, Snapshot};
+use crate::model::{short_of, Detail, Queue, Row, Snapshot};
 use crate::stream::Stream;
 
+/// # The ratification queue is a third view and not a section of the first
+///
+/// It could have been a block above the entities, the way the claims are, and
+/// that was the first shape (TASK-d90e94afca08). Two facts sent it to a view of
+/// its own. `ank review` runs a whole inspection of the corpus and costs
+/// seconds where the other four verbs cost tenths, so a queue in the list frame
+/// is a queue paid for on every repaint, including the ones a watcher's news
+/// causes -- and this crate spent a wave making an idle screen cost nothing.
+/// And the queue answers a different question with a different second half:
+/// what is waiting, and *who may sign it*, which is a fact about the repository
+/// that has no place among rows about work.
+///
+/// So it is asked for, by `v`, and it shares everything the list already has:
+/// [`App::rows`] answers with the queue's rows there, so the cursor, the row
+/// numbers, `j`/`k` and Enter are the same code and behave the same way. Enter
+/// opens the document, which is where `accept` is typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     List,
+    Queue,
     Entity,
 }
 
@@ -65,6 +95,13 @@ pub struct App {
     /// nothing to follow. Read at every paint rather than stored as a word,
     /// because a watcher started after the session opened makes one appear.
     stream: Option<Stream>,
+    /// The ratification queue, once somebody has asked for it, and `None`
+    /// before that. Never loaded on the reader's own initiative: `review` is
+    /// the one read here that costs a full inspection of the corpus.
+    queue: Option<Queue>,
+    /// The listing an open entity was opened from, so `b` goes back where the
+    /// person came from rather than always to the entities.
+    origin: View,
 }
 
 impl App {
@@ -82,6 +119,8 @@ impl App {
             search: None,
             offset: 0,
             stream,
+            queue: None,
+            origin: View::List,
         }
     }
 
@@ -102,6 +141,7 @@ impl App {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
                 self.note = None;
+                self.requeue(ank);
                 if let Some(id) = held {
                     if let Some(at) = self.rows().iter().position(|r| r.id == id) {
                         self.cursor = at;
@@ -109,6 +149,26 @@ impl App {
                 }
                 self.clamp();
             }
+            Err(failed) => self.fail(failed),
+        }
+    }
+
+    /// Asks `review` again, but only where the queue is what somebody is
+    /// looking at.
+    ///
+    /// **The condition is the whole of the design.** `review` inspects the
+    /// corpus and costs what a `check` costs, so running it on every reload
+    /// would put that price on every event a watcher sends and undo what
+    /// TASK-2f7777a1fdff bought. A queue nobody has opened is not stale, and one
+    /// that is open has to be current -- a ratification queue showing a document
+    /// somebody else ratified a minute ago is the one row a person would act on
+    /// wrongly.
+    fn requeue(&mut self, ank: &Ank) {
+        if self.view != View::Queue {
+            return;
+        }
+        match Queue::load(ank) {
+            Ok(queue) => self.queue = Some(queue),
             Err(failed) => self.fail(failed),
         }
     }
@@ -149,14 +209,26 @@ impl App {
     // The rows a filter leaves
     // -----------------------------------------------------------------------
 
+    /// The rows the current listing offers, filtered.
+    ///
+    /// One function for both listings rather than two, which is what makes the
+    /// cursor, the row numbers, `j`/`k` and Enter behave identically in the
+    /// queue without a line of their own. The filters apply there too: a queue
+    /// of two hundred proposals is a list like any other, and `f adr` narrows
+    /// it the way it narrows everything else.
     fn rows(&self) -> Vec<&Row> {
-        let Some(snapshot) = &self.snapshot else {
-            return Vec::new();
+        let all: &[Row] = match self.view {
+            View::Queue => match &self.queue {
+                Some(queue) => &queue.proposed,
+                None => &[],
+            },
+            _ => match &self.snapshot {
+                Some(snapshot) => &snapshot.entities,
+                None => return Vec::new(),
+            },
         };
         let needle = self.search.as_ref().map(|s| s.to_ascii_lowercase());
-        snapshot
-            .entities
-            .iter()
+        all.iter()
             .filter(|r| self.kind.as_ref().is_none_or(|k| &r.kind == k))
             .filter(|r| {
                 needle.as_ref().is_none_or(|n| {
@@ -206,7 +278,7 @@ impl App {
                 self.clamp();
             }
             Command::Page(by) => match self.view {
-                View::List => {
+                View::List | View::Queue => {
                     let page = self.list_page().max(1) as isize;
                     self.cursor = step(self.cursor, by * page, self.rows().len());
                     self.clamp();
@@ -221,18 +293,33 @@ impl App {
                 }
             },
             Command::Top => match self.view {
-                View::List => {
+                View::List | View::Queue => {
                     self.cursor = 0;
                     self.top = 0;
                 }
                 View::Entity => self.offset = 0,
             },
             Command::Open => self.open_selected(ank),
+            Command::Queue => {
+                // The person asked, so the price is theirs to spend: this is
+                // the one read here that inspects the whole corpus.
+                self.view = View::Queue;
+                self.cursor = 0;
+                self.top = 0;
+                self.requeue(ank);
+                self.clamp();
+            }
             Command::Back => {
-                self.view = View::List;
+                self.view = match self.view {
+                    // Back out of a document to the listing it was opened
+                    // from, and out of the queue to the entities.
+                    View::Entity => self.origin,
+                    _ => View::List,
+                };
                 self.detail = None;
                 self.pane = Pane::Body;
                 self.offset = 0;
+                self.clamp();
             }
             Command::Select(needle) => match self.rows().iter().position(|r| {
                 r.id.to_ascii_uppercase()
@@ -303,7 +390,7 @@ impl App {
     fn target(&self) -> Option<String> {
         match self.view {
             View::Entity => self.detail.as_ref().map(|d| d.id.clone()),
-            View::List => self.selected().map(|r| r.id.clone()),
+            View::List | View::Queue => self.selected().map(|r| r.id.clone()),
         }
     }
 
@@ -324,9 +411,10 @@ impl App {
             self.note = Some("no entity is selected: move onto a row, or open one".to_string());
             return;
         };
+        let verb = act.verb;
         let mut args = vec![id.clone()];
         args.extend(act.args);
-        let said = match ank.act(act.verb, &args) {
+        let said = match ank.act(verb, &args) {
             Ok(ran) => answered(&ran),
             // Whole and unaltered: `error[N]:` and the command the CLI named as
             // the way out are already in these bytes, and rewording them would
@@ -336,6 +424,15 @@ impl App {
         self.reload(ank);
         if self.view == View::Entity {
             self.open_selected(ank);
+        }
+        // A ratification leaves the queue, so a queue somebody opened before
+        // typing the word is wrong the moment it lands. Asked again here and
+        // nowhere else: `reload` refreshes it only where it is on the screen,
+        // and after an `accept` the screen is the document.
+        if verb == "accept" && self.queue.is_some() {
+            if let Ok(queue) = Queue::load(ank) {
+                self.queue = Some(queue);
+            }
         }
         // Under whatever the reread had to say, and never instead of it: a
         // reload that failed after a write that landed is the one moment a
@@ -354,6 +451,9 @@ impl App {
         match Detail::load(ank, &id) {
             Ok(detail) => {
                 self.detail = Some(detail);
+                if self.view != View::Entity {
+                    self.origin = self.view;
+                }
                 self.view = View::Entity;
                 self.offset = 0;
             }
@@ -367,7 +467,7 @@ impl App {
 
     pub fn frame(&self) -> String {
         match self.view {
-            View::List => self.list_frame(),
+            View::List | View::Queue => self.list_frame(),
             View::Entity => self.entity_frame(),
         }
     }
@@ -398,15 +498,63 @@ impl App {
         }
     }
 
-    /// The rows the list has room for, once the header, the claims and the
-    /// trailer are paid for.
+    /// The rows the list has room for, once the header, the standing section
+    /// and the trailer are paid for.
     fn list_page(&self) -> usize {
-        // At least one: an empty claim list still costs the line that says so.
-        let claims = self.claim_lines().len().max(1);
-        // 2 header, 1 rule, 1 claims heading, the claims, 1 blank, 1 list
+        // At least one: an empty section still costs the line that says so.
+        let standing = self.standing_lines().len().max(1);
+        // 2 header, 1 rule, 1 section heading, the section, 1 blank, 1 list
         // heading, 1 blank, the note, 2 key lines.
-        let fixed = 2 + 1 + 1 + claims + 1 + 1 + 1 + self.note_lines().len() + 2;
+        let fixed = 2 + 1 + 1 + standing + 1 + 1 + 1 + self.note_lines().len() + 2;
         self.size.1.saturating_sub(fixed).max(1)
+    }
+
+    /// The block between the rule and the rows: who holds what on the
+    /// entities, who may sign on the queue.
+    ///
+    /// Two answers in one place because they are the same kind of thing -- a
+    /// standing fact about the corpus that the rows below are read against --
+    /// and because the arithmetic above has one section to pay for either way.
+    fn standing_lines(&self) -> Vec<String> {
+        match self.view {
+            View::Queue => self.signer_lines(),
+            _ => self.claim_lines(),
+        }
+    }
+
+    /// The heading over that block, and the sentence for an empty one.
+    ///
+    /// The empty queue sentence is §8's own, carried through from `review`
+    /// rather than written again here: an empty signer list is not "declared,
+    /// and nobody yet" -- it is the advisory regime, and a reader that rendered
+    /// a section with no rows would let a person mistake one for the other.
+    fn standing_heading(&self) -> (String, &'static str) {
+        match self.view {
+            View::Queue => (
+                format!("MAY RATIFY ({})", self.signer_lines().len()),
+                "  no ratification key declared: permissions are advisory, not enforced (§8)",
+            ),
+            _ => (
+                format!(
+                    "CLAIMS ({})",
+                    self.snapshot.as_ref().map_or(0, |s| s.claims.len())
+                ),
+                "  nothing is held",
+            ),
+        }
+    }
+
+    /// The principals `.ank/allowed_signers` declares, as `review` reads them.
+    fn signer_lines(&self) -> Vec<String> {
+        let width = self.width();
+        match &self.queue {
+            None => Vec::new(),
+            Some(queue) => queue
+                .signers
+                .iter()
+                .map(|s| fit(&format!("  {s}"), width))
+                .collect(),
+        }
     }
 
     fn claim_lines(&self) -> Vec<String> {
@@ -476,12 +624,13 @@ impl App {
         ));
         lines.push(frame::rule(width));
 
-        lines.push(format!("CLAIMS ({})", snapshot.claims.len()));
-        let claims = self.claim_lines();
-        if claims.is_empty() {
-            lines.push("  nothing is held".to_string());
+        let (heading, empty) = self.standing_heading();
+        lines.push(heading);
+        let standing = self.standing_lines();
+        if standing.is_empty() {
+            lines.push(fit(empty, width));
         } else {
-            lines.extend(claims);
+            lines.extend(standing);
         }
         lines.push(String::new());
 
@@ -489,12 +638,22 @@ impl App {
         let page = self.list_page();
         let shown = page.min(rows.len().saturating_sub(self.top));
         lines.push(fit(
-            &format!(
-                "ENTITIES {}{}   (of {} in the corpus)",
-                window(self.top, shown, rows.len()),
-                self.filter_note(),
-                snapshot.total
-            ),
+            &match self.view {
+                // The queue is answered whole: `review` carries no attention
+                // budget, so there is no "of N in the corpus" to state and
+                // stating one would imply a withholding that did not happen.
+                View::Queue => format!(
+                    "QUEUE {}{}   (proposed, and waiting for a person)",
+                    window(self.top, shown, rows.len()),
+                    self.filter_note()
+                ),
+                _ => format!(
+                    "ENTITIES {}{}   (of {} in the corpus)",
+                    window(self.top, shown, rows.len()),
+                    self.filter_note(),
+                    snapshot.total
+                ),
+            },
             width,
         ));
         for (i, row) in rows.iter().skip(self.top).take(page).enumerate() {
@@ -518,13 +677,33 @@ impl App {
             ));
         }
         if rows.is_empty() {
-            lines.push("  no entity matches this filter".to_string());
+            lines.push(
+                match (self.view, self.kind.is_some() || self.search.is_some()) {
+                    // Said even where there is nothing to say, on `review`'s own
+                    // reasoning: an empty queue and an unprinted queue read
+                    // identically, and this screen is where the question has an
+                    // answer.
+                    (View::Queue, false) => "  nothing proposed for ratification".to_string(),
+                    (View::Queue, true) => "  nothing in the queue matches this filter".to_string(),
+                    _ => "  no entity matches this filter".to_string(),
+                },
+            );
         }
 
         lines.push(String::new());
         lines.extend(self.note_lines());
         lines.push(fit(KEYS, width));
-        lines.push(fit(ACT_KEYS, width));
+        lines.push(fit(
+            match self.view {
+                // `accept` is deliberately not offered here, and neither are the
+                // five: a ratification is typed on the document, and a trailer
+                // that offered one at a row would be making an offer the
+                // grammar turns down (TASK-84cfad83c308's rule, on this screen).
+                View::Queue => QUEUE_ACT,
+                _ => ACT_KEYS,
+            },
+            width,
+        ));
         lines.join("\n") + "\n"
     }
 
@@ -588,12 +767,36 @@ impl App {
         // 4 header, 1 rule, then what differs: the body pane carries the
         // constraint heading, the summary under it, a blank and its own heading;
         // the constraints pane carries one heading and a blank. Both end on a
-        // blank, the note and the two key lines.
+        // blank, the note, the two key lines, and the ratification line where
+        // this document is one that could take a signature.
+        let ratify = usize::from(self.ratify_line().is_some());
         let fixed = match self.pane {
             Pane::Body => 4 + 1 + 1 + self.constraint_summary().len() + 1 + 1 + 1 + notes + 2,
             Pane::Constraints => 4 + 1 + 1 + 1 + 1 + notes + 2,
-        };
+        } + ratify;
         self.size.1.saturating_sub(fixed).max(1)
+    }
+
+    /// The offer to ratify, where this document is one that can be ratified.
+    ///
+    /// **Shown on a proposed ADR or spec and on nothing else.** `accept` refuses
+    /// a task, and it refuses a document already accepted, so a trailer that
+    /// carried the word over every open entity would be offering what the verb
+    /// turns down -- the defect TASK-84cfad83c308 named on `help`, which is the
+    /// same defect wherever an interface makes a promise the dispatch does not
+    /// keep. A person reading a task therefore never sees the word at all, and
+    /// one reading a proposal sees what it costs: their signature, on the
+    /// default branch, on this document.
+    ///
+    /// The status is the snapshot's and not this crate's judgement. Where the
+    /// snapshot does not carry the row -- `find` answers within a budget -- no
+    /// line is drawn, which errs towards saying nothing rather than towards
+    /// offering something.
+    fn ratify_line(&self) -> Option<&'static str> {
+        let detail = self.detail.as_ref()?;
+        let row = self.snapshot.as_ref()?.row(&detail.id)?;
+        let ratifiable = row.status == "proposed" && matches!(row.kind.as_str(), "adr" | "spec");
+        ratifiable.then_some(RATIFY_KEY)
     }
 
     /// The first few constraints, so the body view still answers "what binds
@@ -708,6 +911,9 @@ impl App {
         }
         lines.push(fit(ENTITY_KEYS, width));
         lines.push(fit(ACT_KEYS, width));
+        if let Some(ratify) = self.ratify_line() {
+            lines.push(fit(ratify, width));
+        }
         lines.join("\n") + "\n"
     }
 }
@@ -809,8 +1015,15 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 }
 
 pub const KEYS: &str =
-    "j/k move  n/p page  <row> or <id> select  Enter open  f <kind>  /<text>  r reload  q quit";
+    "j/k move  n/p page  <row> or <id> select  Enter open  f <kind>  /<text>  v queue  r reload  q quit";
 pub const ENTITY_KEYS: &str = "Enter/n/p page  g top  c constraints  r reload  b back  q quit";
+/// What the queue offers instead of the writing half.
+///
+/// It names the one road to a ratification and no verb at all, which is the
+/// honest shape of this screen: nothing here can be signed, and the way to sign
+/// is to read the document first.
+pub const QUEUE_ACT: &str =
+    "Enter opens a document   (accept is typed there, on the body -- the signature stays yours)";
 /// The writing half, on its own line and spelled whole.
 ///
 /// Separate from the other two because it is a different kind of offer: the keys
@@ -819,6 +1032,15 @@ pub const ENTITY_KEYS: &str = "Enter/n/p page  g top  c constraints  r reload  b
 /// do, and one line mixing them would make that a matter of remembering.
 pub const ACT_KEYS: &str =
     "claim  log <message>  release <reason>  done <proof>  amend <flags>   (the entity on screen)";
+/// The sixth act, on a line of its own, and only where the verb would take it.
+///
+/// A third line for a third kind of offer, on the reasoning [`ACT_KEYS`] gives
+/// for being a second one: those five move the corpus, and this one asks a
+/// person for a signature that ank has no way to produce. It says so, because
+/// somebody about to type it should know what they are being asked for and
+/// where it has to happen.
+pub const RATIFY_KEY: &str =
+    "accept   (this document, on the default branch -- ank signs nothing, your key does)";
 
 #[cfg(test)]
 mod tests {
@@ -1310,6 +1532,185 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The ratification queue (TASK-d90e94afca08)
+    // -----------------------------------------------------------------------
+
+    fn queued() -> Queue {
+        Queue {
+            proposed: vec![
+                row("ADR-0000ffff0002", "adr", "proposed", "A decision waiting"),
+                row(
+                    "SPEC-0000ffff0003",
+                    "spec",
+                    "proposed",
+                    "A specification waiting",
+                ),
+            ],
+            signers: vec!["marie@laptop  ssh-ed25519".to_string()],
+        }
+    }
+
+    /// The queue names what is waiting and who may sign it, and both halves are
+    /// `review`'s own answer.
+    #[test]
+    fn the_queue_names_what_is_waiting_and_who_may_ratify() {
+        let mut a = app();
+        a.queue = Some(queued());
+        a.view = View::Queue;
+        let f = a.list_frame();
+        for expected in [
+            "QUEUE",
+            "ADR-0000",
+            "SPEC-0000",
+            "A decision waiting",
+            "MAY RATIFY (1)",
+            "marie@laptop",
+        ] {
+            assert!(f.contains(expected), "{expected} missing from:\n{f}");
+        }
+        assert!(
+            !f.contains("CLAIMS"),
+            "the queue answers a different question:\n{f}"
+        );
+    }
+
+    /// An empty queue says so, and a corpus declaring no key says which regime
+    /// it is in rather than showing an empty section.
+    #[test]
+    fn an_empty_queue_and_an_undeclared_key_are_both_stated() {
+        let mut a = app();
+        a.queue = Some(Queue::default());
+        a.view = View::Queue;
+        let f = a.list_frame();
+        assert!(f.contains("nothing proposed for ratification"), "{f}");
+        assert!(
+            f.contains("permissions are advisory"),
+            "the advisory regime is a state, not an empty list:\n{f}"
+        );
+    }
+
+    /// The queue's rows are the list's rows: one cursor, one set of keys, one
+    /// road to the document.
+    #[test]
+    fn the_queue_moves_and_opens_the_way_the_list_does() {
+        let mut a = app();
+        let ank = nowhere();
+        a.queue = Some(queued());
+        a.act(Command::Queue, &ank);
+        // `Command::Queue` asked `review`, which cannot be spawned here, so the
+        // frame carries the refusal -- and the rows already in hand stay.
+        a.queue = Some(queued());
+        assert_eq!(a.view, View::Queue);
+        assert_eq!(rendered_rows(&a), ["ADR-0000ffff0002", "SPEC-0000ffff0003"]);
+        a.act(Command::Move(1), &ank);
+        assert_eq!(
+            a.selected().map(|r| r.id.clone()).as_deref(),
+            Some("SPEC-0000ffff0003"),
+            "j moves in the queue"
+        );
+        a.act(Command::Row(1), &ank);
+        assert_eq!(a.cursor, 0, "a row number selects in the queue");
+    }
+
+    /// `b` out of a document goes back to the listing it was opened from.
+    #[test]
+    fn back_out_of_a_document_returns_to_the_listing_it_was_opened_from() {
+        let mut a = app();
+        let ank = nowhere();
+        a.queue = Some(queued());
+        a.view = View::Queue;
+        a.detail = Some(detail("ADR-0000ffff0002", "body\n"));
+        a.origin = View::Queue;
+        a.view = View::Entity;
+        a.act(Command::Back, &ank);
+        assert_eq!(a.view, View::Queue, "the queue is where the person was");
+        a.act(Command::Back, &ank);
+        assert_eq!(a.view, View::List, "and out of the queue is the entities");
+    }
+
+    /// The word is offered on a document that could take it, and on nothing
+    /// else (TASK-84cfad83c308's rule: no offer the verb turns down).
+    #[test]
+    fn the_ratification_line_is_drawn_only_where_accept_would_take_it() {
+        let mut a = App::new((100, 30), None);
+        a.snapshot = Some(Snapshot {
+            entities: vec![
+                row("ADR-0000ffff0002", "adr", "proposed", "A decision waiting"),
+                row("ADR-8bd76e8d7c4e", "adr", "accepted", "A terminal reader"),
+                row("TASK-49746735127f", "task", "open", "A task"),
+            ],
+            ..snapshot()
+        });
+        a.view = View::Entity;
+        for (id, offered) in [
+            ("ADR-0000ffff0002", true),
+            ("ADR-8bd76e8d7c4e", false),
+            ("TASK-49746735127f", false),
+        ] {
+            a.detail = Some(detail(id, "body\n"));
+            let f = a.entity_frame();
+            assert_eq!(
+                f.contains("accept   (this document"),
+                offered,
+                "{id} was offered {}:\n{f}",
+                f.contains("accept   (this document")
+            );
+        }
+    }
+
+    /// A ratification is one verb, one identifier, and nothing else on the
+    /// command line.
+    ///
+    /// Read off the failure, the way the other acts are: the binary is not
+    /// there, so `Failed` carries the whole `argv` that would have been spawned.
+    #[test]
+    fn a_ratification_runs_accept_with_the_open_document_and_nothing_else() {
+        let mut a = app();
+        let ank = nowhere();
+        a.detail = Some(detail("ADR-8bd76e8d7c4e", "body\n"));
+        a.view = View::Entity;
+        a.act(
+            Command::Act(Act {
+                verb: "accept",
+                args: Vec::new(),
+            }),
+            &ank,
+        );
+        let said = a.note.clone().unwrap_or_default();
+        assert!(
+            said.contains("ank accept ADR-8bd76e8d7c4e --json"),
+            "{said}"
+        );
+    }
+
+    /// The queue is never asked for on the reader's own initiative.
+    ///
+    /// `review` inspects the whole corpus, and this is the property that keeps
+    /// an event cheap: a repaint refreshes the queue where it is on the screen
+    /// and leaves it alone where it is not.
+    #[test]
+    fn a_repaint_asks_review_only_where_the_queue_is_on_the_screen() {
+        let mut a = app();
+        let ank = nowhere();
+        a.queue = Some(queued());
+        // The binary is not there, so a call that is made says so and a call
+        // that is not made leaves the note alone. That is the whole
+        // instrument, and it reads in both directions.
+        a.requeue(&ank);
+        assert_eq!(
+            a.note, None,
+            "a repaint of the entities asked review for the queue"
+        );
+        a.view = View::Queue;
+        a.requeue(&ank);
+        let said = a.note.clone().unwrap_or_default();
+        assert!(
+            said.contains("review"),
+            "a repaint of the queue did not ask review: {said}"
+        );
     }
 
     #[test]
