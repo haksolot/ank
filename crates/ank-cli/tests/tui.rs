@@ -20,6 +20,14 @@
 //! call. The reader itself is platform-independent by construction -- it does
 //! no FFI, and the escape sequences it writes are the same bytes on all three
 //! (`crates/ank-tui/src/frame.rs`).
+//!
+//! **The writing half is measured here too** (TASK-b50b340c0bb1). What a unit
+//! test can say about `claim` from a screen is which `argv` would have been
+//! spawned; what it cannot say is that the ref which came out is the ref a
+//! shell claim makes, that a refused `done` left the task where it was, or that
+//! a screen nobody touched for three seconds renewed nothing. All three are
+//! facts about a process and a git repository, so all three are asserted
+//! against a real one.
 
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
@@ -131,6 +139,40 @@ impl Repo {
         String::from_utf8_lossy(&self.ank(agent, args).stdout).to_string()
     }
 
+    /// A second task, unclaimed, and its identifier.
+    ///
+    /// The seeded one is held by [`HOLDER`], and a task the suite means to claim
+    /// from the screen has to be free. Named by its title rather than found by
+    /// elimination: two tasks in a corpus and a filter that leaves one is a
+    /// filter that will leave two the day a third arrives.
+    fn spare(&self, title: &str, criteria: &str) -> String {
+        self.ank(
+            OTHER,
+            &[
+                "new",
+                "task",
+                "--title",
+                title,
+                "--scope",
+                "src/**",
+                "--criteria",
+                criteria,
+            ],
+        );
+        self.only(&["--type", "task", "--status", "open"])
+    }
+
+    /// Every read the reader makes on its first frame, made once beforehand.
+    ///
+    /// `.ank/index.db` is the CLI's own cache and it is written the first time a
+    /// corpus is searched. Warming it before a snapshot is what separates "the
+    /// session wrote something" from "the first read built a cache".
+    fn warm(&self, agent: &str) {
+        let _ = self.stdout(agent, &["find", "--json"]);
+        let _ = self.stdout(agent, &["status", "--json"]);
+        let _ = self.stdout(agent, &["scope", "src/**", "--json"]);
+    }
+
     /// The one identifier a `find` filter leaves, read out of the `--json`
     /// document rather than off the human page.
     fn only(&self, filter: &[&str]) -> String {
@@ -146,6 +188,9 @@ impl Repo {
 
 const HOLDER: &str = "claude-code/opus-5+tui-suite";
 const OTHER: &str = "claude-code/opus-5+someone-else";
+/// A third identity, holding nothing, so that a claim taken from the screen is
+/// taken by an agent free to take one (§3: one live claim per identity).
+const READER: &str = "claude-code/opus-5+at-the-keyboard";
 const ADR_TITLE: &str = "The reader draws what the CLI printed";
 const TASK_TITLE: &str = "A task the reader opens";
 /// Deliberately wider than the window the suite opens, and ending on a marker
@@ -711,5 +756,340 @@ fn json_on_a_terminal_answers_one_document_and_opens_no_session() {
     assert!(
         document.contains(TASK_TITLE),
         "with the titles the list draws:\n{document}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The writing half (TASK-b50b340c0bb1)
+// ---------------------------------------------------------------------------
+
+/// A session that is opened, left alone for `quiet`, and then told to quit.
+///
+/// The one thing [`drive`] cannot express, and the whole of what "a session left
+/// idle" means: the commands are written *after* the wait rather than before it,
+/// so the reader spends that time blocked on a terminal nobody is typing at --
+/// which is where a refresh loop, had this crate one, would be doing its work.
+#[cfg(unix)]
+fn idle(repo: &Repo, agent: &str, quiet: std::time::Duration) -> String {
+    use std::io::{Read, Write};
+
+    let (master, slave_path) = pty::open();
+    let mut child = Command::new(ANK)
+        .arg("tui")
+        .current_dir(&repo.0)
+        .env("ANK_AGENT", agent)
+        .env("COLUMNS", "120")
+        .env("LINES", "40")
+        .env("NO_COLOR", "1")
+        .stdin(pty::stdio(pty::slave(&slave_path)))
+        .stdout(pty::stdio(pty::slave(&slave_path)))
+        .stderr(pty::stdio(pty::slave(&slave_path)))
+        .spawn()
+        .expect("the binary must have been built");
+
+    let mut reader = master
+        .try_clone()
+        .expect("the master side must be clonable for the drain");
+    let drain = std::thread::spawn(move || {
+        let mut seen = Vec::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => seen.extend_from_slice(&buf[..n]),
+            }
+        }
+        seen
+    });
+
+    std::thread::sleep(quiet);
+    let mut writer = master;
+    writeln!(writer, "q").expect("the terminal must accept a command");
+    writer.flush().unwrap();
+    let status = child.wait().expect("the session must end");
+    assert!(status.success(), "the session ended with {status}");
+    drop(writer);
+    String::from_utf8_lossy(&drain.join().expect("the drain must not panic")).to_string()
+}
+
+/// The claim state of one task: every ref this corpus carries by name, and the
+/// record at the task's own address with its two instants masked.
+///
+/// Both halves matter and they answer different questions. The names say the
+/// claim landed at the address a claim lands at and nowhere else; the record
+/// says what landed there is the same record, field for field -- the holder, the
+/// lease, the hash of the frozen criterion and the hash of the constraints.
+///
+/// `claimed` and `expires` are masked because they are the two fields that
+/// *must* differ between two claims taken a second apart, and a comparison that
+/// kept them would be asserting the clock stood still.
+#[cfg(unix)]
+fn claim_state(repo: &Repo, task: &str) -> String {
+    let names = ref_names(repo);
+    format!("{names}--\n{}", masked_record(repo, task))
+}
+
+/// The record on `refs/ank/claims/<id>`, with its instants replaced.
+#[cfg(unix)]
+fn masked_record(repo: &Repo, task: &str) -> String {
+    let sha = String::from_utf8_lossy(
+        &repo
+            .git(&["rev-parse", &format!("refs/ank/claims/{task}")])
+            .stdout,
+    )
+    .trim()
+    .to_string();
+    let body = String::from_utf8_lossy(&repo.git(&["cat-file", "-p", &sha]).stdout).to_string();
+    body.lines()
+        .map(|line| match line.split_once(':') {
+            Some((key, _)) if matches!(key.trim(), "claimed" | "expires" | "completed") => {
+                format!("{key}: <instant>")
+            }
+            _ => line.to_string(),
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+/// The code the verb table declares for one of a verb's refusals.
+///
+/// Read out of `ank_contract::COMMANDS` rather than written as a number here:
+/// "the code the table declares" is the criterion's phrase, and a test carrying
+/// its own copy of the number would agree with a table that moved.
+fn declared(verb: &str, about: &str) -> ank_contract::ExitCode {
+    ank_contract::spec_of(verb)
+        .unwrap_or_else(|| panic!("{verb} is a verb of the surface"))
+        .refuses
+        .iter()
+        .find(|r| r.when.contains(about))
+        .unwrap_or_else(|| panic!("{verb} declares no refusal about {about:?}"))
+        .code
+}
+
+/// A claim taken from the screen is the claim a shell takes (ADR-8bd76e8d7c4e).
+///
+/// The point of the whole crate, stated as the one comparison that can settle
+/// it: the same task is claimed twice by the same agent, once by typing `claim`
+/// into the reader and once by running `ank claim` in this suite, and the two
+/// records are compared. They are equal because there is no second dispatch
+/// path -- the reader spawned the verb that the suite spawned.
+#[cfg(unix)]
+#[test]
+fn a_claim_taken_through_the_reader_is_the_ref_a_shell_claim_makes() {
+    let repo = Repo::seeded("claim-ref");
+    let task = repo.spare(
+        "A task the reader claims",
+        "Claimed twice over, once from the screen and once from a shell.",
+    );
+
+    let seen = drive(&repo, READER, &[&short_of(&task), "claim", "q"]);
+    assert!(
+        seen.contains(&format!("ank claim {task}")),
+        "the reader ran the verb, and said which one:\n{seen}"
+    );
+    let from_the_screen = claim_state(&repo, &task);
+    assert!(
+        from_the_screen.contains(READER),
+        "the record names the agent that typed it:\n{from_the_screen}"
+    );
+    assert!(
+        from_the_screen.contains("criteria:"),
+        "and the hash of the criterion it froze:\n{from_the_screen}"
+    );
+
+    // Hand it back and take it again the way a shell does.
+    repo.ank(
+        READER,
+        &[
+            "release",
+            &task,
+            "--reason",
+            "to take it again from a shell",
+        ],
+    );
+    repo.ank(READER, &["claim", &task]);
+    let from_a_shell = claim_state(&repo, &task);
+
+    assert_eq!(
+        from_the_screen, from_a_shell,
+        "the reader's claim and the shell's claim are two different records"
+    );
+}
+
+/// A `done` with no proof is refused, and the refusal on the screen is the
+/// CLI's: its code and the command it named as the way out (TASK-b50b340c0bb1).
+///
+/// The task is left exactly as it was, which is the half that matters more than
+/// the message: a reader that had written the status itself would have moved the
+/// file whatever the verb answered.
+#[cfg(unix)]
+#[test]
+fn a_done_refused_for_a_missing_proof_leaves_the_task_untouched() {
+    let repo = Repo::seeded("done-no-proof");
+    let task = repo.only(&["--type", "task"]);
+    repo.warm(HOLDER);
+    let before = corpus_files(&repo);
+    let names = ref_names(&repo);
+
+    let seen = drive(&repo, HOLDER, &["f task", "", "done", "q"]);
+
+    let code = declared("done", "no proof");
+    assert_eq!(code, ank_contract::ExitCode::Proof, "the table moved");
+    assert!(
+        seen.contains(&format!("error[{code}]:")),
+        "the code the table declares is on the screen:\n{seen}"
+    );
+    assert!(
+        seen.contains("--proof"),
+        "and the command the CLI named as the way out:\n{seen}"
+    );
+    assert!(
+        seen.contains("ENTITIES") || seen.contains("BODY"),
+        "and the session kept its shape:\n{seen}"
+    );
+
+    assert_eq!(
+        before,
+        corpus_files(&repo),
+        "a file under .ank/ moved on a refused done"
+    );
+    assert_eq!(names, ref_names(&repo), "a ref was created or removed");
+    // The lease may have moved -- `show` renews on the held task, which is what
+    // typing that command in a shell does. What may not is the state of the
+    // record: a `done` that landed would have replaced the claim with a
+    // completion (ADR-6d8736c04cfa).
+    let record = masked_record(&repo, &task);
+    assert!(
+        record.contains("expires:") && !record.contains("commit:"),
+        "the claim ref carries a completion, so the done landed:\n{record}"
+    );
+    let found = repo.stdout(HOLDER, &["find", "--type", "task", "--json"]);
+    assert!(
+        found.contains("\"status\":\"in_progress\""),
+        "the task moved out of in_progress:\n{found}"
+    );
+}
+
+/// A screen nobody is typing at runs no command, so it renews nothing
+/// (ADR-0bb7ea8991bc).
+///
+/// The measurement is on the refs, because the lease is the only thing an idle
+/// session could move and `refs/ank/claims/<id>` is where it lives. The second
+/// half of the test is what makes the first half mean anything: one renewing
+/// verb is then run by hand, and the refs are asserted to have moved -- so
+/// "nothing changed" is a fact about the session and not about the instrument.
+#[cfg(unix)]
+#[test]
+fn a_session_left_idle_renews_no_claim() {
+    let repo = Repo::seeded("idle");
+    let task = repo.only(&["--type", "task"]);
+    repo.warm(HOLDER);
+    let files = corpus_files(&repo);
+    let before = ank_refs(&repo);
+    assert!(!before.is_empty(), "a claim is held, so there is a ref");
+
+    // Long enough that a renewal would land on a different second, which is the
+    // resolution the record is written at.
+    let seen = idle(&repo, HOLDER, std::time::Duration::from_secs(3));
+    assert!(seen.contains("ENTITIES"), "the session opened:\n{seen}");
+    assert!(
+        seen.contains(&short_of(&task)),
+        "and drew the corpus:\n{seen}"
+    );
+
+    assert_eq!(
+        before,
+        ank_refs(&repo),
+        "a screen left alone renewed a claim"
+    );
+    assert_eq!(files, corpus_files(&repo), "and it wrote a file");
+
+    // The instrument reads a renewal when there is one.
+    let _ = repo.stdout(HOLDER, &["show", &task, "--json"]);
+    assert_ne!(
+        before,
+        ank_refs(&repo),
+        "three seconds and a renewing verb left the refs identical, so the \
+         comparison above proves nothing"
+    );
+}
+
+/// All five verbs of the writing half, from a selected entity, through the
+/// verbs (TASK-b50b340c0bb1).
+///
+/// One task carried through the loop the way a person would: claim it, log what
+/// they learned, amend its scope, hand it back with a reason, take it again and
+/// finish it with a proof. What is asserted is not the screen but the corpus
+/// afterwards -- the entry is in the log, the glob is in the scope, the reason
+/// is recorded, and the task is done with the proof that was typed.
+#[cfg(unix)]
+#[test]
+fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
+    let repo = Repo::seeded("acts");
+    let task = repo.spare(
+        "A task the reader works",
+        "Claimed, logged, amended, released and finished, all from the screen.",
+    );
+    let head = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let seen = drive(
+        &repo,
+        READER,
+        &[
+            &short_of(&task),
+            "claim",
+            "log the glob was one directory short",
+            "amend --scope src/deeper/**",
+            "release the criterion measures the wrong thing",
+            "q",
+        ],
+    );
+    assert!(
+        seen.contains(&format!("ank claim {task}")),
+        "the verbs are named as they run:\n{seen}"
+    );
+
+    let entries = repo.stdout(READER, &["log", &task, "--json"]);
+    assert!(
+        entries.contains("the glob was one directory short"),
+        "the entry the reader logged is in the log:\n{entries}"
+    );
+    assert!(
+        entries.contains("the criterion measures the wrong thing"),
+        "and so is the reason it was handed back:\n{entries}"
+    );
+    let shown = repo.stdout(READER, &["show", &task, "--json"]);
+    assert!(
+        shown.contains("src/deeper/**"),
+        "the amended glob is on the entity:\n{shown}"
+    );
+    let found = repo.stdout(READER, &["find", "--type", "task", "--json"]);
+    assert!(
+        found.contains("\"status\":\"open\""),
+        "the release put it back:\n{found}"
+    );
+
+    // And the last one, which needs the claim back.
+    let seen = drive(
+        &repo,
+        READER,
+        &[
+            &short_of(&task),
+            "claim",
+            &format!("done commit:{head}"),
+            "q",
+        ],
+    );
+    assert!(!seen.contains("error["), "the finish was refused:\n{seen}");
+    let shown = repo.stdout(READER, &["show", &task, "--json"]);
+    assert!(
+        shown.contains("status: done"),
+        "the task is finished:\n{shown}"
+    );
+    assert!(
+        shown.contains(&head),
+        "with the proof that was typed:\n{shown}"
     );
 }

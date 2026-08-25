@@ -1,10 +1,27 @@
 //! The one road to the corpus: running `ank <verb> --json` (ADR-8bd76e8d7c4e).
 //!
-//! Four verbs are reached from here and they are the four that only read --
-//! `status`, `find`, `show` and `scope`. That list is not a policy stated in
-//! prose: it is [`READS`], and [`Ank::json`] refuses a verb the list does not
-//! carry before spawning anything, so a later edit that reached for `claim`
-//! would fail here rather than write.
+//! Nine verbs are reached from here, in two lists that are policy made
+//! mechanical rather than policy stated in prose. [`READS`] is the four that
+//! only read -- `status`, `find`, `show` and `scope` -- and [`Ank::json`]
+//! refuses anything else before spawning. [`ACTS`] is the five the person at
+//! the keyboard may ask for -- `claim`, `log`, `release`, `done` and `amend` --
+//! and [`Ank::act`] refuses anything else the same way. Two gates and not one,
+//! because the difference between them is the whole of what a reader is allowed
+//! to do on its own: a screen repaints by reading, and it writes only where a
+//! command was typed.
+//!
+//! **`accept` is in neither list, and the test below is what keeps it out.** It
+//! is a signed human act the reader may drive and never perform
+//! (ADR-8bd76e8d7c4e), and a verb absent from a list is absent silently -- so
+//! the absence is asserted rather than left to whoever reads the two constants
+//! next.
+//!
+//! **An act runs with `--json` like a read does.** ADR-8bd76e8d7c4e and
+//! SPEC-93531977642f both say the reader reaches the corpus only by running the
+//! CLI with `--json`, and dropping the flag to get a human sentence back would
+//! be reading that as decoration. Nothing is lost by keeping it: the CLI renders
+//! `error[N]:` and the command that resolves it on stderr whatever `--json`
+//! says, so a refusal arrives in the CLI's own bytes either way.
 //!
 //! **The document is read with `serde_yaml`, not with a parser written here.**
 //! YAML 1.2 is a superset of JSON, `ank-mcp` already reads JSON-RPC that way,
@@ -20,12 +37,27 @@ use std::process::Command;
 
 pub use serde_yaml::Value;
 
-/// The verbs this reader may run, and the whole of them.
+/// The verbs this reader may run on its own, and the whole of them.
 ///
 /// Every one of them only reads: `status`, `find`, `show` and `scope` write no
-/// file and no ref (§4). The reader therefore cannot write by accident, and the
-/// property is enforced one function below rather than asserted in a comment.
+/// file and no ref (§4). Repainting the screen therefore cannot write by
+/// accident, and the property is enforced one function below rather than
+/// asserted in a comment.
 pub const READS: &[&str] = &["status", "find", "show", "scope"];
+
+/// The verbs this reader may run *because somebody typed one*, and the whole of
+/// them.
+///
+/// The writing half of the loop, against the entity under the cursor. Each is
+/// run as a shell would run it, which is what keeps ADR-052accd6e3b2 naming an
+/// intersecting claim and ADR-0bb7ea8991bc holding that a screen left open all
+/// night renews nothing: there is no second dispatch path here for either rule
+/// to be reimplemented on.
+///
+/// `accept` is not here and must not arrive: it is signed, on the default
+/// branch, and a human act the reader may drive and never perform
+/// (ADR-8bd76e8d7c4e).
+pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend"];
 
 /// A call that did not produce a document, in the three ways it can fail.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,9 +76,14 @@ pub enum Failed {
     /// The CLI answered and the answer did not parse. A defect on this side of
     /// the pipe, and it is reported as one rather than as an empty screen.
     Unreadable { args: String, error: String },
-    /// A verb outside [`READS`]. Never reached from a running reader; reached
-    /// by the next edit that tries to make one write.
+    /// A verb outside [`READS`], asked for on the reading road. Never reached
+    /// from a running reader; reached by the next edit that tries to make a
+    /// repaint write.
     NotARead { verb: String },
+    /// A verb outside [`ACTS`], asked for on the acting road. Reached by the
+    /// next edit that adds a command for a verb the list does not carry --
+    /// `accept` above all, which is the one this gate exists for.
+    NotAnAct { verb: String },
 }
 
 impl Failed {
@@ -107,7 +144,16 @@ impl fmt::Display for Failed {
                 )
             }
             Failed::NotARead { verb } => {
-                write!(f, "'{verb}' is not one of the verbs this reader may run")
+                write!(
+                    f,
+                    "'{verb}' is not one of the verbs this reader may read with"
+                )
+            }
+            Failed::NotAnAct { verb } => {
+                write!(
+                    f,
+                    "'{verb}' is not one of the verbs this reader may act with"
+                )
             }
         }
     }
@@ -124,20 +170,49 @@ impl Ank {
         Ank { address }
     }
 
-    /// One `--json` document, or why there is none.
+    /// One `--json` document off a verb that only reads, or why there is none.
     ///
-    /// `--json` is appended here and never by a caller, so no call site can
-    /// forget it and read a human page by mistake. The address flags go in
-    /// front of the verb's own arguments, which is where a caller typed them.
+    /// The gate is [`READS`] and it is checked before anything is spawned, so a
+    /// later edit that reached for `claim` from a repaint would fail here rather
+    /// than write.
     pub fn json(&self, verb: &str, args: &[&str]) -> Result<Value, Failed> {
         if !READS.contains(&verb) {
             return Err(Failed::NotARead {
                 verb: verb.to_string(),
             });
         }
+        let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        Ok(self.spawn(verb, &owned)?.answered)
+    }
+
+    /// One verb of the writing half, run because somebody typed it.
+    ///
+    /// The gate is [`ACTS`], checked before anything is spawned and for the same
+    /// reason [`READS`] is: the verbs a reader may reach are a list, and a list
+    /// is what an edit has to change in the open.
+    ///
+    /// What comes back is [`Ran`]: the command as it was run, and the document
+    /// the CLI answered. Both are wanted by the caller -- one is the chrome a
+    /// screen puts over the answer, the other is the answer -- and a caller that
+    /// rebuilt the first from what it asked for could rebuild it wrongly.
+    pub fn act(&self, verb: &str, args: &[String]) -> Result<Ran, Failed> {
+        if !ACTS.contains(&verb) {
+            return Err(Failed::NotAnAct {
+                verb: verb.to_string(),
+            });
+        }
+        self.spawn(verb, args)
+    }
+
+    /// The one road out of this process, and there is deliberately only one.
+    ///
+    /// `--json` is appended here and never by a caller, so no call site can
+    /// forget it and read a human page by mistake. The address flags go in
+    /// front of the verb's own arguments, which is where a caller typed them.
+    fn spawn(&self, verb: &str, args: &[String]) -> Result<Ran, Failed> {
         let mut argv: Vec<String> = self.address.flags();
         argv.push(verb.to_string());
-        argv.extend(args.iter().map(|a| a.to_string()));
+        argv.extend(args.iter().cloned());
         argv.push("--json".to_string());
         let shown = argv.join(" ");
         let out = Command::new(&self.address.exe)
@@ -156,11 +231,25 @@ impl Ank {
             });
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        serde_yaml::from_str(&text).map_err(|e| Failed::Unreadable {
-            args: shown,
+        let answered = serde_yaml::from_str(&text).map_err(|e| Failed::Unreadable {
+            args: shown.clone(),
             error: e.to_string(),
+        })?;
+        Ok(Ran {
+            shown: format!("ank {shown}"),
+            answered,
         })
     }
+}
+
+/// A call that answered: the command line it was, and the document it gave.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ran {
+    /// The invocation, spelled as a shell would have had to spell it. Shown
+    /// above the answer so that what a screen reports is checkable against what
+    /// a person could have typed themselves.
+    pub shown: String,
+    pub answered: Value,
 }
 
 // ---------------------------------------------------------------------------
@@ -245,14 +334,18 @@ mod tests {
         assert_eq!(text(&v, "branch"), "main");
     }
 
-    #[test]
-    fn a_verb_that_writes_is_refused_before_anything_is_spawned() {
-        let ank = Ank::new(Address {
+    fn nowhere() -> Ank {
+        Ank::new(Address {
             exe: "/nonexistent/ank".into(),
             cwd: ".".into(),
             repo: None,
             worktree: None,
-        });
+        })
+    }
+
+    #[test]
+    fn a_verb_that_writes_is_refused_before_anything_is_spawned() {
+        let ank = nowhere();
         // `/nonexistent/ank` would fail to spawn, so reaching `NotARead` proves
         // the check happens first.
         assert_eq!(
@@ -265,6 +358,44 @@ mod tests {
             assert!(
                 !matches!(ank.json(verb, &[]), Err(Failed::NotARead { .. })),
                 "{verb} is a read and must pass the gate"
+            );
+        }
+    }
+
+    /// The acting gate, and the same proof that it comes first.
+    #[test]
+    fn a_verb_outside_the_acting_list_is_refused_before_anything_is_spawned() {
+        let ank = nowhere();
+        for verb in ["accept", "close", "check", "attest", "init"] {
+            assert_eq!(
+                ank.act(verb, &["TASK-0001".to_string()]),
+                Err(Failed::NotAnAct {
+                    verb: verb.to_string()
+                }),
+                "{verb} reached the spawn"
+            );
+        }
+        for verb in ACTS {
+            assert!(
+                !matches!(ank.act(verb, &[]), Err(Failed::NotAnAct { .. })),
+                "{verb} is an act and must pass the gate"
+            );
+        }
+    }
+
+    /// `accept` is signed, on the default branch, and a human act the reader may
+    /// drive and never perform (ADR-8bd76e8d7c4e).
+    ///
+    /// Stated as an assertion because the alternative is a verb that arrives in
+    /// a list by being typed into it, which is a change nothing would fail on.
+    #[test]
+    fn accept_is_in_neither_list_and_the_two_lists_do_not_overlap() {
+        assert!(!READS.contains(&"accept"));
+        assert!(!ACTS.contains(&"accept"));
+        for verb in ACTS {
+            assert!(
+                !READS.contains(verb),
+                "{verb} is on both roads, and the gates then say nothing"
             );
         }
     }
