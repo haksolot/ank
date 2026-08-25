@@ -5654,6 +5654,16 @@ pub fn amend(
     // of what the amend produced (ADR-f7dc76886db2).
     let before = loaded.entity.clone();
 
+    // Refused on what was typed, before the normaliser sees it: `+src/**` is a
+    // glob that compiles and matches nothing, so nothing downstream has a
+    // reason to object until `check` reports the dead scope (TASK-86babab0eb1b).
+    // Here rather than in `normalised_globs`, because the marker's whole
+    // plausibility comes from this verb's `--scope`/`--drop-scope` pairing, and
+    // `new --scope` and `find --scope` offer the caller no such pairing to
+    // confuse.
+    refuse_scope_marker(inv.values("--scope"), "--scope", &id)?;
+    refuse_scope_marker(inv.values("--drop-scope"), "--drop-scope", &id)?;
+
     // Both normalised, and both for the same reason `new --scope` is: one is
     // written into the entity, and the other is compared against what is
     // already stored there, which is now always a normal form. A raw
@@ -6055,6 +6065,56 @@ fn amend_references(
     }
     for r in drop {
         changes.push(format!("-references {r}"));
+    }
+    Ok(())
+}
+
+/// A `--scope` or `--drop-scope` value opening on `+` or `-`, which is a list
+/// marker and not a glob.
+///
+/// The mistake is this verb's own doing. `--scope` adds and `--drop-scope`
+/// removes, which is exactly the pairing that `+`/`-` list syntax expresses
+/// elsewhere as one flag with two markers, so a caller who has met that syntax
+/// writes `--scope "+src/**"` and is told it worked. What was stored was the
+/// glob `+src/**`, which matches no file: `check` then reported a dead scope
+/// with no rename and no deletion behind it, four commands and often a `done`
+/// later, at which point `amend` refuses because the plan is settled.
+///
+/// **Refused rather than stripped**, and the choice is TASK-86babab0eb1b's
+/// work. Stripping would store a glob the caller did not type, and a leading
+/// `+` is a real filename in the wild -- SvelteKit's `+page.svelte` -- so the
+/// strip would make a legitimate path unwritable while reporting success. That
+/// is the defect this exists to remove, one character further along. The
+/// reasoning is the one the `--reference` refusal above already follows: a flag
+/// quietly reinterpreted teaches the caller it worked.
+///
+/// The escape is the normaliser's, not a second rule: `normalize_path` drops a
+/// leading `./` segment, so `--scope "./+page.svelte"` stores `+page.svelte`.
+/// The hint names it, because a refusal that leaves a legitimate value
+/// unwritable is a wall rather than a correction.
+fn refuse_scope_marker(raw: &[String], flag: &str, id: &EntityId) -> Result<()> {
+    for g in raw {
+        let g = g.trim();
+        let Some(marker) = g.chars().next().filter(|c| *c == '+' || *c == '-') else {
+            continue;
+        };
+        // What the caller meant, on either reading, with the marker gone. A
+        // value that is nothing but the marker leaves nothing to propose, so
+        // the hint falls back to the placeholder every other scope refusal
+        // here uses.
+        let bare = g[marker.len_utf8()..].trim();
+        let bare = if bare.is_empty() { "<glob>" } else { bare };
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!(
+                "'{g}' opens on '{marker}', which is a list marker and not part of a glob: \
+                 {flag} takes the glob alone"
+            ),
+        )
+        .with_hint(format!(
+            "ank amend {id} --scope \"{bare}\" adds and --drop-scope \"{bare}\" removes, \
+             or {flag} \"./{g}\" for a path whose name really begins with '{marker}'"
+        )));
     }
     Ok(())
 }
