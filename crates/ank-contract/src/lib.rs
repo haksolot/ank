@@ -13,7 +13,7 @@
 //!
 //! **Nothing here decides anything.** The table says what the surface *is*; it
 //! never says what a verb does. `ank-cli` parses against it, dispatches from
-//! it, and renders `help` out of it; ADR-372b82af1ec7's protocol surface is
+//! it, and renders `help` out of it; ADR-fd98f4bc6dea's protocol surface is
 //! generated from the same table for the same reason. A reader who wants the
 //! description rather than the types has `ank help --json`, which is generated
 //! from exactly what is here.

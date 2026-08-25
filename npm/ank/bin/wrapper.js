@@ -12,7 +12,7 @@
 // `os` and `cpu` through optionalDependencies.
 //
 // `ank` and `ank-mcp` come out of one build and travel in one platform package
-// (ADR-e39a44f80e0e), so they resolve by one route. Two copies of this file,
+// out of one package, so they resolve by one route. Two copies of this file,
 // one per bin, is the arrangement where the protocol surface quietly stops
 // resolving the way the CLI does and nothing turns red: the resolution, the
 // diagnostics and the exit-code passthrough are written once and `run` is

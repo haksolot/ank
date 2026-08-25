@@ -7,8 +7,8 @@
 #
 # Two executables land and not one: `ank`, and `ank-mcp` beside it, the protocol
 # surface a client speaks to. They come out of one archive and go into one
-# directory, because ADR-e39a44f80e0e says no route carries one without the
-# other. An archive published before ank-mcp existed carries only `ank`, and
+# directory, and no route carries one without the other. That pairing ends with
+# TASK-d9b167250aa8, which leaves one executable to install. An archive published before ank-mcp existed carries only `ank`, and
 # --version points this script at exactly those: such a release installs `ank`
 # and is told what is missing, rather than becoming a route that stopped
 # working.
@@ -630,7 +630,7 @@ if [ ! -f "$binary" ]; then
     "Nothing was installed."
 fi
 
-# The other half of ADR-e39a44f80e0e: where a route places ank, it places
+# The other half of the same rule: where this route places ank, it places
 # ank-mcp next to it. Missing only from an archive older than the protocol
 # surface itself, which is a release --version still reaches, so its absence is
 # reported at the end rather than refused here.

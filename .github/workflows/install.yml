@@ -305,7 +305,7 @@ jobs:
           }
           echo "--no-welcome is accepted, and changes nothing"
 
-      # What ADR-e39a44f80e0e asks for, measured where the criterion puts it:
+      # What the pairing rule asks for, measured where the criterion puts it:
       # not that the script contains a line about ank-mcp, but that the
       # directory it installed into holds two executables, that both answer
       # --version, and that they answer with one version.
@@ -999,7 +999,7 @@ jobs:
           "-NoWelcome is accepted, and changes nothing"
           exit 0
 
-      # What ADR-e39a44f80e0e asks for, measured where the criterion puts it:
+      # What the pairing rule asks for, measured where the criterion puts it:
       # not that the script contains a line about ank-mcp, but that the
       # directory it installed into holds two executables, that both answer
       # --version, and that they answer with one version.

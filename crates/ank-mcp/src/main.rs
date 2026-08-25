@@ -1,6 +1,6 @@
 //! The Ank protocol surface: every verb, over MCP, generated from one table.
 //!
-//! ADR-372b82af1ec7 permits this and permits nothing else: a full-surface
+//! ADR-fd98f4bc6dea permits this and permits nothing else: a full-surface
 //! passthrough or no surface at all. It supersedes an earlier refusal, kept
 //! whole as the shape of what is now allowed. The proposal that refusal rejected
 //! exposed four verbs out of twenty-two, which rebuilt under a
@@ -13,11 +13,13 @@
 //! has is what the CLI dispatches, and it cannot be otherwise without an edit to
 //! the table both consume.
 //!
-//! **One process speaks for one corpus.** Addressed once, at startup, the way
-//! `--repo` addresses one. A per-call repository would make one server several
-//! corpora and invent an arbitration `refs/ank/*` cannot carry, which is the one
-//! thing ADR-372b82af1ec7 spells out at length: claims stay per repository, and a
-//! deployment over several is several servers.
+//! **One process speaks for one corpus, for now.** Addressed once, at startup,
+//! the way `--repo` addresses one. ADR-fd98f4bc6dea permits several, each
+//! addressed on its own, and TASK-2f31789f6af2 is where a call learns to name
+//! which; what that decision keeps in the same words is the ban this paragraph
+//! was written for. A server may never merge two claim spaces, because
+//! `refs/ank/*` is per repository and merging them would invent an arbitration
+//! the refs cannot carry.
 //!
 //! **This does not make a protocol the preferred route.** §2's common denominator
 //! is shell, that is still what the skill teaches, and this exists for the client

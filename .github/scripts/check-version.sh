@@ -93,7 +93,7 @@ compare() {
 
 # ank-mcp is here for the same reason ank-cli is: the release ships it, in every
 # archive and every npm package, and the smoke job asserts it answers --version
-# with the number ank answers with (ADR-e39a44f80e0e). A tag that bumped ank-cli
+# with the number ank answers with. A tag that bumped ank-cli
 # and left ank-mcp behind would pass this gate and then break on the tag itself,
 # which is the loop this whole job exists to spare.
 for crate in ank-cli ank-core ank-mcp; do

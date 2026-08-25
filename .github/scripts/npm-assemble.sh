@@ -8,9 +8,9 @@
 # first. Nothing here downloads anything, which is the property the whole
 # channel exists for (npm/README.md).
 #
-# Two executables per platform package, never one: ADR-e39a44f80e0e makes
-# ank-mcp freight of every route that carries ank, so the pair travels in one
-# package under one version and an install cannot end up holding half of it.
+# Two executables per platform package, never one: ank-mcp is freight of every
+# route that carries ank, so the pair travels in one package under one version
+# and an install cannot end up holding half of it. TASK-d9b167250aa8 reduces this to one.
 #
 #   npm-assemble.sh <version> [package ...]
 #

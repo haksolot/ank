@@ -1,10 +1,10 @@
-//! The tool list, generated from the verb table (ADR-372b82af1ec7).
+//! The tool list, generated from the verb table (ADR-fd98f4bc6dea).
 //!
 //! **Nothing here names a verb.** The list is [`COMMANDS`] walked, so a verb the
 //! table gains reaches this surface with no edit in this crate, and a verb it
 //! does not carry is a verb this surface does not have. That is the condition
-//! ADR-372b82af1ec7 answered, on terms the refusal it replaced had written for
-//! itself: not a curated subset, not parity kept by review, generated.
+//! this surface was permitted on (ADR-fd98f4bc6dea), on terms the refusal it
+//! replaced had written for itself: not a curated subset, not parity kept by review, generated.
 //!
 //! What a tool advertises is what the table already knows: the summary as the
 //! description, the positionals and flags as the input schema, the refusals with
@@ -21,9 +21,12 @@ use ank_contract::{CommandSpec, COMMANDS};
 /// the arguments the table gives it. What is withheld is the three flags that
 /// would let a caller contradict the process it is talking to.
 ///
-/// `--repo` because the server speaks for **exactly one corpus**, addressed once
-/// at startup: a per-call repository would make one process several corpora,
-/// which is the merged claim space ADR-372b82af1ec7 forbids in as many words.
+/// `--repo` because the corpus a call runs against is the server's to choose and
+/// never the caller's: today that is the one it was addressed with at startup,
+/// and under ADR-fd98f4bc6dea it becomes one of the several its reader declared,
+/// named by a `corpus` argument the table validates (TASK-2f31789f6af2). Either
+/// way a caller cannot reach a corpus by writing a path into a flag, which is
+/// what would turn a declared set into a merged one.
 /// `--json` because the server always wants the machine document and a client
 /// asking for the human one would get a shape nothing describes. `--quiet` means
 /// nothing to a caller that reads a return value rather than a terminal.
