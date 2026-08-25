@@ -764,6 +764,52 @@ fn not_implemented(spec: &CommandSpec) -> CliError {
     .with_hint(format!("ank show {task}"))
 }
 
+/// `tui`, the terminal reader (ADR-8bd76e8d7c4e, §4).
+///
+/// Three things happen here and nothing else does: the refusal a caller with no
+/// terminal is owed, the resolution of the corpus so that a missing `.ank/` is
+/// the refusal it already is rather than a screen with an error on it, and the
+/// address the reader spawns this binary with.
+///
+/// **The order is the refusal's.** The terminal check is first because it is
+/// the cheapest and because it is the one an agent that typed `ank tui` by
+/// accident needs: `ank` is run by agents far more often than by people, and a
+/// process that hung holding a terminal it does not have would be the worst
+/// answer of the three.
+///
+/// **`current_exe` and not a name looked up on `PATH`.** The reader must run
+/// *this* build, or the frames it draws come from a different corpus reader
+/// than the one the caller invoked, and the version they disagree on would be
+/// invisible on the screen.
+fn tui(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) -> Result<ExitCode> {
+    if !ank_tui::attached() {
+        return Err(refused(ank_tui::no_terminal()));
+    }
+    let _repo = resolved(inv, cwd)?;
+    let exe = std::env::current_exe().map_err(|e| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("cannot find this binary to run it: {e}"),
+        )
+        .with_hint(ank_tui::INSTEAD)
+    })?;
+    let address = ank_tui::Address {
+        exe,
+        cwd: cwd.to_path_buf(),
+        // The caller's own address, passed through rather than the path just
+        // resolved: the child then walks exactly as the parent did, so there is
+        // one resolution and not two (ADR-9e56318631f3).
+        repo: inv.repo().map(str::to_string),
+        worktree: inv.worktree().map(str::to_string),
+    };
+    ank_tui::run(&address, inv.json(), out).map_err(refused)
+}
+
+/// A refusal the reader raised, in the shape this file renders.
+fn refused(r: ank_tui::Refused) -> CliError {
+    CliError::new(r.code, r.message).with_hint(r.hint)
+}
+
 /// Entry point. Returns the exit code; never calls `exit` itself, so that it
 /// stays testable.
 ///
@@ -1025,6 +1071,16 @@ fn dispatch(
         warn_if_outside_repository(&inv, &repo, cwd);
         return crate::config::run(&inv, &repo, out);
     }
+    // The fourth, and the reason is its own (ADR-8bd76e8d7c4e). `tui` is a
+    // reader that reaches the corpus by *running this binary*, so the
+    // foundation it needs is the one every child call establishes for itself:
+    // loading a config and resolving an identity here would be a second
+    // resolution, free to disagree with the twenty the session then makes.
+    // What is checked here is what a child cannot check — that there is a
+    // terminal to draw on — and that the corpus resolves at all.
+    if inv.command == "tui" {
+        return tui(&inv, cwd, out);
+    }
 
     let s = startup(&inv, cwd)?;
     let code = match inv.command {
@@ -1190,7 +1246,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            23,
+            24,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1267,7 +1323,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
-            "attest", "amend", "show", "edit", "migrate",
+            "attest", "amend", "show", "edit", "migrate", "tui",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
