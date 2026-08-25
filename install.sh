@@ -28,10 +28,12 @@
 #   5  a tool this script needs is missing
 #
 # --no-welcome, or ANK_NO_WELCOME in the environment, turns off everything this
-# script draws for a human and leaves only the lines a machine reads. It is
-# absent from the list above on purpose: the welcome is drawn before the first
-# request goes out, nothing in it can fail, and a flag that could change one of
-# these five codes would be a flag that made the install depend on it.
+# script draws for a human and everything it asks one, and leaves only the
+# lines a machine reads. It is absent from the list above on purpose: the
+# welcome is drawn before the first request goes out and the offer comes after
+# the binary is on disk and verified, so neither is on the path to any of them
+# -- a flag able to change one of these five codes would be a flag that made
+# the install depend on it.
 #
 set -eu
 
@@ -151,7 +153,7 @@ draw_logo() {
 }
 
 # ADR-5fbd99bf6fd5 read as an absence: where no human is looking, this script
-# draws nothing at all.
+# draws nothing at all and asks nothing at all.
 #
 # Both streams are tested and not only one. Under `curl ... | sh` stdin is the
 # script and both of the others are the terminal, which is the case that must
@@ -160,7 +162,12 @@ draw_logo() {
 # produce. /dev/tty is the third test and the one the decision names: no
 # controlling terminal means a provisioning script, a Dockerfile or a runner,
 # whatever the streams happen to say.
-welcome_wanted() {
+#
+# The logo and the offer read this same answer, which is what makes
+# --no-welcome and an interactive run that declined everything leave the same
+# machine behind: one predicate, so there is no second gate to disagree with
+# this one.
+human_at_terminal() {
   [ "$no_welcome" = no ] || return 1
   [ -t 1 ] || return 1
   [ -t 2 ] || return 1
@@ -173,6 +180,13 @@ welcome_wanted() {
   # A subshell: a redirection that fails on a special builtin is fatal to the
   # shell itself, and this test exists to be answered no.
   ( : > /dev/tty ) 2>/dev/null || return 1
+}
+
+# The width is about the block of art and about nothing else, so it is here and
+# not above: a window too narrow to hold the logo is still a window with a
+# person in front of it, and a question fits in twenty columns.
+welcome_wanted() {
+  human_at_terminal || return 1
   # A window narrower than the art wraps every line, and a block that is taller
   # than twelve rows is a block the redraw moves back over the middle of. Asked
   # of tput, and only believed when it answers a number: a machine without it
@@ -218,8 +232,8 @@ options:
   --version <version>  install this release instead of the latest one;
                        "v0.2.0" and "0.2.0" both work
   --dir <path>         install into <path> instead of \$HOME/.local/bin
-  --no-welcome         draw nothing; install exactly what an install with the
-                       animation installs, and say the same things about it
+  --no-welcome         draw nothing and ask nothing; install exactly what an
+                       interactive run that declined every offer installs
   -h, --help           print this and exit
 
 environment:
@@ -236,6 +250,14 @@ $(supported_lines)
 
   Windows is published as a .zip and this script does not install it:
     ${releases_url}
+
+the skills:
+  With a terminal attached, once ank is installed and verified, this offers
+  to run:
+    npx skills add ${repo}
+  They teach an agent how to use ank. It is one question, Enter accepts it,
+  declining installs nothing more, and nothing that command does can change
+  any of the codes below.
 
 exit codes:
   1 usage   2 unsupported platform   3 download   4 checksum   5 missing tool
@@ -723,3 +745,100 @@ case ":${PATH}:" in
     say "then open a new shell, or run that line now in this one."
     ;;
 esac
+
+# --------------------------------------------------------------------------
+# The skills
+# --------------------------------------------------------------------------
+
+# ADR-5fbd99bf6fd5's offer, and the last thing this script does. Everything
+# above has already happened: the binary is on disk, verified, reported, and
+# the PATH advice given. That ordering is the decision rather than a layout --
+# an installation that stops to ask something is an installation that can be
+# abandoned half-done, and half-done is the worst state for a tool whose next
+# action is `ank context`.
+#
+# `npx skills add <owner>/ank` is what skill/SKILL.md already teaches, and it
+# serves every agent the skills CLI knows about rather than one. An installer
+# that learned where each of them keeps its skills is an installer that goes
+# stale silently, so this one hands that work to the tool whose job it is.
+offer_skills() {
+  human_at_terminal || return 0
+
+  say ""
+  say "The skills teach an agent how to use ank: the contract, and one policy"
+  say "per activity. They install through the skills CLI, which puts them where"
+  say "each agent looks."
+  say ""
+  say "  npx skills add ${repo}"
+  say ""
+
+  # /dev/tty and nowhere else, which is the trap ADR-5fbd99bf6fd5 exists to
+  # name. Under `curl ... | sh` standard input is this script: a plain `read`
+  # would consume the rest of the file and execute none of it, and it would do
+  # so only on the route people actually use, having worked in every local test
+  # where the script was run from a file.
+  printf 'Install them now? [Y/n] ' >&2
+  if ! IFS= read -r offer_answer < /dev/tty; then
+    # End of input rather than an answer. Nothing was typed, so nothing is
+    # assumed, and the newline is ours because no Enter was pressed to echo
+    # one.
+    say ""
+    return 0
+  fi
+
+  # Enter is yes and everything unrecognised is no, in that order: a default
+  # the criterion names, and a decline for anything else because asking twice
+  # is asking twice.
+  case "$offer_answer" in
+    "" | y | Y | yes | Yes | YES) : ;;
+    *) return 0 ;;
+  esac
+
+  if ! have node; then
+    say ""
+    say "  npx skills add ${repo}"
+    say "node is not on PATH, so that was not run."
+    return 0
+  fi
+
+  say ""
+
+  # Two redirections, each doing something this cannot work without.
+  #
+  # `< /dev/tty` for the reason the prompt above reads from there: standard
+  # input is still this script, and npx asks its own question on a cold cache
+  # -- "Ok to proceed?" -- which it would answer with the next lines of this
+  # file. npm_config_yes is `npx --yes` spelled as the environment, so that
+  # question is not asked at all: the person already answered it, once, above.
+  # It is set for the child and not exported, which is what keeps it out of
+  # every other command here.
+  #
+  # `>&2` for the reason `say` writes there: the interesting use of this script
+  # is `curl ... | sh`, and npx's output on stdout would land in whatever the
+  # caller was reading. A redirection and not a pipe, so nothing is buffered
+  # and the terminal shows npx working while it works.
+  offer_code=0
+  npm_config_yes=1 npx skills add "$repo" < /dev/tty >&2 || offer_code=$?
+
+  if [ "$offer_code" -eq 0 ]; then
+    say ""
+    say "the skills are installed"
+  else
+    say ""
+    say "npx skills add ${repo} exited ${offer_code}, so the skills are not"
+    say "installed. ank is, and it is exactly the ank this script installs when"
+    say "nobody is asked anything at all."
+    say ""
+    say "Run that line again when you want them:"
+    say "  npx skills add ${repo}"
+  fi
+}
+
+# `|| :` and not a bare call, and it is the whole guarantee in one line. This
+# is the last command in the file, so the script's status is its status: with
+# `set -e` in force a single failure anywhere inside would become the exit code
+# of an install that has already succeeded. Called this way, the failure is
+# tested rather than fatal, `set -e` is suspended for the duration, and the
+# status this script leaves with is the status it had before the question was
+# asked.
+offer_skills || :

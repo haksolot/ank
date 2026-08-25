@@ -86,6 +86,14 @@ jobs:
               exit 1
             }
           done
+          # The offer is a thing this script does to the machine, so it is a
+          # thing --help says it does: a caller who reads this and is then
+          # asked a question they were not told about has been surprised by
+          # their installer.
+          printf '%s' "$out" | grep -q -- 'npx skills add haksolot/ank' || {
+            echo "--help does not name the command the offer runs"
+            exit 1
+          }
           # Two executables land, so --help says two land: a caller who reads it
           # and then finds one file has been told the wrong thing.
           printf '%s' "$out" | grep -q -- 'ank-mcp' || {
@@ -277,6 +285,16 @@ jobs:
           }
           echo "and it named ank-mcp in what it installed"
 
+          # And it asked nothing. ADR-5fbd99bf6fd5 read as an absence covers
+          # the offer as well as the animation: where no terminal is attached
+          # the installer converses not at all, so the word does not appear.
+          if grep -qi 'skills' staged.log; then
+            echo "the skills were raised with no terminal attached:"
+            grep -i 'skills' staged.log
+            exit 1
+          fi
+          echo "and it said nothing about the skills, with nobody there to answer"
+
           # The flag, on a run that already had no terminal: it has to be
           # accepted and to change nothing. The same directory, so the two logs
           # can differ in nothing but what the flag turns off.
@@ -368,6 +386,206 @@ jobs:
             exit 1
           }
           echo "installed ank, said on stderr what the archive is missing, exited 0"
+
+      # The offer ADR-5fbd99bf6fd5 describes, driven through a real pty, which
+      # is the only place it exists: it is gated on a terminal, and a workflow
+      # step is precisely a machine without one. `os.forkpty` gives the
+      # installer a controlling terminal, so `/dev/tty` opens, `-t 1` and
+      # `-t 2` answer yes, and what runs is the code path a person reaches
+      # rather than a flag standing in for them. The keys are written into the
+      # pty, which is the one thing simulated here and is what a keyboard does.
+      #
+      # The prompt appearing at all is the proof the terminal is real: it is
+      # printed on the far side of the same gate the logo is, so a harness that
+      # had quietly produced a pipe would assert its way to nothing.
+      #
+      # `npx` is replaced by one that fails on purpose, which is the last
+      # clause of the criterion asked as a falsification rather than as a
+      # review: an install that has already finished stays finished, so the
+      # exit code is 0, both executables are in place, and the failure is
+      # reported instead of swallowed.
+      - name: the offer is asked at a terminal, and no failure of it changes the exit code
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          set -e
+
+          # A node and an npx that exist, answer, and fail. The marker is how
+          # "it was not run" is asserted about a command rather than about a
+          # message: a file that is not there is not an absence of prose.
+          mkdir -p fakenode
+          cat > fakenode/node <<'EOF'
+          #!/bin/sh
+          echo "staged stand-in for node"
+          EOF
+          cat > fakenode/npx <<'EOF'
+          #!/bin/sh
+          printf 'npx ran: %s\n' "$*" >> "$NPX_MARKER"
+          echo "npx: this one fails on purpose" >&2
+          exit 1
+          EOF
+          chmod +x fakenode/node fakenode/npx
+
+          # A PATH with no node on it, built by naming what the installer uses
+          # rather than by removing entries from the real one: node lives in
+          # /usr/bin on the Linux image, and dropping that directory would take
+          # `sh` with it. A tool missing from this list shows up as the
+          # installer's own exit code and names itself.
+          mkdir -p nonode
+          for tool in sh uname curl wget sha256sum shasum openssl awk tr mktemp \
+            tar gzip gunzip chmod mv mkdir rm cat sed head tput sleep; do
+            if tool_path=$(command -v "$tool" 2>/dev/null); then
+              ln -sf "$tool_path" "nonode/$tool"
+            fi
+          done
+          test ! -e nonode/node || { echo "the node-free PATH has a node on it"; exit 1; }
+
+          cat > offer.py <<'PY'
+          import fcntl, os, select, signal, struct, sys, termios
+
+          INSTALL = os.path.join(os.getcwd(), "install.sh")
+          VERSION = os.environ["STAGED_VERSION"]
+          HERE = os.getcwd()
+          FAKE = os.path.join(HERE, "fakenode")
+          NONODE = os.path.join(HERE, "nonode")
+
+          def drive(args, keys, env_extra, timeout=180):
+              """Run args on a pty of its own and type keys at it."""
+              pid, fd = os.forkpty()
+              if pid == 0:
+                  env = dict(os.environ)
+                  # The runner sets it, and the installer reads it as "no human
+                  # here" -- which is true of the step and false of the pty.
+                  env.pop("CI", None)
+                  env["TERM"] = "xterm"
+                  env.update(env_extra)
+                  try:
+                      os.execvpe(args[0], args, env)
+                  finally:
+                      os._exit(127)
+              # A window the logo fits in, so the run resembles the one a person
+              # gets. Nothing below depends on it.
+              try:
+                  fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 100, 0, 0))
+              except OSError:
+                  pass
+              if keys:
+                  os.write(fd, keys)
+              out = b""
+              timed_out = False
+              while True:
+                  try:
+                      ready, _, _ = select.select([fd], [], [], timeout)
+                  except OSError:
+                      break
+                  if not ready:
+                      timed_out = True
+                      os.kill(pid, signal.SIGKILL)
+                      break
+                  try:
+                      chunk = os.read(fd, 65536)
+                  except OSError:
+                      break
+                  if not chunk:
+                      break
+                  out += chunk
+              _, status = os.waitpid(pid, 0)
+              os.close(fd)
+              code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 128 + os.WTERMSIG(status)
+              return code, out.decode("utf-8", "replace"), timed_out
+
+          failures = []
+
+          def case(label, keys, extra=(), node=True):
+              marker = os.path.join(HERE, "marker-" + label)
+              target = os.path.join(HERE, "bin-" + label)
+              env = {
+                  "NPX_MARKER": marker,
+                  "PATH": (FAKE + os.pathsep + os.environ["PATH"]) if node else NONODE,
+              }
+              args = ["sh", INSTALL, "--version", VERSION, "--dir", target] + list(extra)
+              code, out, timed_out = drive(args, keys, env)
+              print("=" * 70)
+              print(label, "-> exit", code, "| asked", out.count("[Y/n]"),
+                    "| npx ran", os.path.exists(marker), "| timed out", timed_out)
+              sys.stdout.write(out.replace("\r", ""))
+              sys.stdout.write("\n")
+              return {
+                  "label": label, "code": code, "out": out, "timed_out": timed_out,
+                  "asked": out.count("[Y/n]"), "ran": os.path.exists(marker),
+                  "dir": target,
+              }
+
+          def want(run, ok, why):
+              if not ok:
+                  failures.append(run["label"] + ": " + why)
+
+          def installed(run):
+              return (os.access(os.path.join(run["dir"], "ank"), os.X_OK)
+                      and os.access(os.path.join(run["dir"], "ank-mcp"), os.X_OK))
+
+          # Accepted, and the command it accepts fails. This is the assertion
+          # the criterion names: the install is already done, so it stays done.
+          run = case("accept", b"y\n")
+          want(run, not run["timed_out"], "it never finished")
+          want(run, run["code"] == 0, "a failing skill step changed the exit code to %d" % run["code"])
+          want(run, run["asked"] == 1, "it asked %d times, and once is the contract" % run["asked"])
+          want(run, run["ran"], "it accepted and never ran npx")
+          want(run, installed(run), "the binaries are not in place after the offer failed")
+          want(run, "npx skills add haksolot/ank" in run["out"], "it never named the command it ran")
+          want(run, "exited 1" in run["out"], "it swallowed the failure instead of reporting it")
+
+          # Enter is the default the criterion names, so it has to reach npx
+          # the way a typed yes does.
+          run = case("enter", b"\n")
+          want(run, run["code"] == 0, "exit %d" % run["code"])
+          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          want(run, run["ran"], "Enter did not default to yes")
+
+          # Declined, end of input, and the flag: three ways to leave the
+          # machine in the state an installer without this step leaves it.
+          run = case("decline", b"n\n")
+          want(run, run["code"] == 0, "exit %d" % run["code"])
+          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          want(run, not run["ran"], "it ran npx after being declined")
+          want(run, installed(run), "declining cost the install its binaries")
+
+          # ^D on an empty line, which is end of input rather than an answer.
+          run = case("eof", b"\x04")
+          want(run, run["code"] == 0, "exit %d" % run["code"])
+          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          want(run, not run["ran"], "it ran npx having been told nothing")
+
+          # The flag, on a run that has a terminal and would have said yes.
+          # This is the only place ADR-5fbd99bf6fd5's "differs in no outcome
+          # from an interactive run that declined everything" can be measured,
+          # since without a terminal there is nothing to differ from.
+          run = case("noflag", b"y\n", extra=["--no-welcome"])
+          want(run, run["code"] == 0, "exit %d" % run["code"])
+          want(run, run["asked"] == 0, "--no-welcome asked anyway")
+          want(run, not run["ran"], "--no-welcome ran npx anyway")
+          want(run, "####" not in run["out"], "--no-welcome drew the logo at a terminal")
+          want(run, installed(run), "--no-welcome cost the install its binaries")
+
+          # node absent: the command, and one line saying why it was not run.
+          run = case("nonode", b"y\n", node=False)
+          want(run, run["code"] == 0, "exit %d" % run["code"])
+          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          want(run, not run["ran"], "it ran npx with no node to run it")
+          want(run, "npx skills add haksolot/ank" in run["out"], "it did not print the command")
+          want(run, "node is not on PATH" in run["out"], "it did not say why it was not run")
+          want(run, installed(run), "the binaries are not in place")
+
+          print("=" * 70)
+          if failures:
+              for line in failures:
+                  print("FAIL", line)
+              sys.exit(1)
+          print("asked once at a terminal, defaulted to yes on Enter, and a skill step")
+          print("that failed left the install reporting success with both binaries in place")
+          PY
+
+          python3 offer.py
 
       # The second of the two failures that matter, and the reason the .sha256
       # is published at all. One byte appended to the archive, the checksum
@@ -538,14 +756,20 @@ jobs:
           # ank-mcp.exe is in the list for the reason the switch is: two
           # executables land, and a caller who reads -Help and then finds one
           # file has been told the wrong thing.
+          # The offer is a thing this script does to the machine, so it is a
+          # thing -Help says it does: a caller who reads this and is then asked
+          # a question they were not told about has been surprised by their
+          # installer.
           foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh',
-                              '-NoWelcome', 'ANK_NO_WELCOME', 'ank-mcp.exe') {
+                              '-NoWelcome', 'ANK_NO_WELCOME', 'ank-mcp.exe',
+                              'npx skills add haksolot/ank') {
             if ($out -notmatch [regex]::Escape($needle)) {
               "-Help does not name $needle"
               exit 1
             }
           }
-          "-Help names the target, the environment, the other script, the switch and ank-mcp"
+          "-Help names the target, the environment, the other script, the switch,"
+          "ank-mcp and the command the offer runs"
 
       # The first of the two failures that matter. The architecture is read out
       # of the environment precisely so this is testable on a machine that is
@@ -718,6 +942,15 @@ jobs:
           }
           "and it named ank-mcp.exe in what it installed"
 
+          # And it asked nothing. ADR-5fbd99bf6fd5 read as an absence covers
+          # the offer as well as the animation: where no console is attached
+          # the installer converses not at all, so the word does not appear.
+          if ($out -match 'skills') {
+            "the skills were raised with no console attached"
+            exit 1
+          }
+          "and it said nothing about the skills, with nobody there to answer"
+
           # The switch, on a run that already had no console: it has to be
           # accepted and to change nothing. The same directory, so the two
           # transcripts can differ in nothing but what the switch turns off.
@@ -814,6 +1047,257 @@ jobs:
             exit 1
           }
           "installed ank, said what the archive is missing, exited 0"
+          exit 0
+
+      # The Windows half of the same claim, and the place the two files stop
+      # being translations of each other. install.sh opens /dev/tty; this one
+      # reads [Console]::ReadLine, because `irm | iex` never touches this
+      # process's standard input and the console is what a person types at.
+      #
+      # A workflow step has no console at all, so the probe is launched into
+      # one of its own: nothing is redirected, Windows hands a console-subsystem
+      # process a console when it has none to inherit, and the probe refuses to
+      # assert anything if it finds itself without one. Typing is the only
+      # thing simulated -- Console.SetIn swaps the reader ReadLine draws from,
+      # in that process alone, which leaves the gate reading a real console and
+      # the installer on the code path a person reaches.
+      #
+      # `npx` is replaced by one that fails on purpose, which is the last
+      # clause of the criterion asked as a falsification rather than as a
+      # review: an install that has already finished stays finished. On this
+      # platform that claim has a second half with no counterpart in sh --
+      # `pwsh -File` exits with $LASTEXITCODE, so an npx that failed would
+      # become the installer's exit code unless something says otherwise.
+      - name: the offer is asked at a console, and no failure of it changes the exit code
+        env:
+          ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
+        run: |
+          # A node and an npx that exist, answer, and fail. The marker is how
+          # "it was not run" is asserted about a command rather than about a
+          # message: a file that is not there is not an absence of prose.
+          New-Item -ItemType Directory -Path 'fakenode' -Force | Out-Null
+          Set-Content -Path 'fakenode/node.cmd' -Value @(
+            '@echo off',
+            'echo staged stand-in for node'
+          )
+          Set-Content -Path 'fakenode/npx.cmd' -Value @(
+            '@echo off',
+            '>>"%ANK_NPX_MARKER%" echo npx ran %*',
+            'echo npx: this one fails on purpose 1>&2',
+            'exit /b 1'
+          )
+
+          # A PATH with no node on it. Removing the entries that hold one is
+          # safe here in a way it is not on Linux: node lives in its own
+          # directory on this image, not in the one that carries the shell.
+          $noNodePath = (($env:Path -split ';') | Where-Object {
+            if (-not $_) { return $false }
+            try {
+              -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and
+              -not (Test-Path -LiteralPath (Join-Path $_ 'npx.cmd'))
+            } catch { $true }
+          }) -join ';'
+
+          Set-Content -Path 'probe.ps1' -Value @'
+          param(
+              [Parameter(Mandatory = $true)][string]$Answer,
+              [Parameter(Mandatory = $true)][string]$Dir,
+              [Parameter(Mandatory = $true)][string]$OutFile,
+              [Parameter(Mandatory = $true)][string]$CodeFile,
+              [switch]$NoWelcome
+          )
+
+          # A switch, and the call written out twice rather than splatted, both
+          # for the same reason: a flag whose name begins with a dash does not
+          # survive being carried as a value. `-Extra -NoWelcome` on a
+          # `pwsh -File` command line is read as a parameter name of its own,
+          # and `@extraArgs` holding '-NoWelcome' is splatted positionally at a
+          # script that takes nothing positionally. Both arrived nowhere, and
+          # both left install.ps1 asking. Two literal call sites cannot.
+
+          # A console of its own is the whole point of this file, so it is
+          # asserted and not assumed: a probe that quietly lost its console
+          # would take the no-terminal path through every case below and
+          # report six passes for a question never asked.
+          $console = $false
+          try {
+              $console = (-not [Console]::IsOutputRedirected) -and (-not [Console]::IsErrorRedirected)
+              $null = $Host.UI.RawUI.CursorPosition
+          } catch {
+              $console = $false
+          }
+          if (-not $console) {
+              Set-Content -Path $OutFile -Value 'the probe was given no console of its own'
+              Set-Content -Path $CodeFile -Value '199'
+              exit 0
+          }
+
+          # Typing, without a keyboard. Console.SetIn replaces the reader
+          # [Console]::ReadLine draws from, in this process and nowhere else:
+          # the console stays real, the gate reads it as real, and what runs is
+          # what runs for a person. An empty reader is at end of input from the
+          # first call, which is the answer nobody gives.
+          $text = switch ($Answer) {
+              'eof'   { '' }
+              'enter' { "`r`n" }
+              default { "$Answer`r`n" }
+          }
+          [Console]::SetIn([System.IO.StringReader]::new($text))
+
+          # Global, and named as global on both sides. An assignment without
+          # the prefix writes a variable in this script's own scope, and the
+          # one an exiting child sets is the one the engine keeps: seeded and
+          # read here they would be two variables wearing one name, and a
+          # refusal from install.ps1 would read back as a success.
+          $installer = Join-Path $PSScriptRoot 'install.ps1'
+          $global:LASTEXITCODE = 0
+          if ($NoWelcome) {
+              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome *>&1 | Out-String)
+          } else {
+              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir *>&1 | Out-String)
+          }
+          $code = $global:LASTEXITCODE
+
+          # What the probe was told, recorded beside what the installer said.
+          # Without it, "-NoWelcome asked anyway" is the same message whether
+          # the installer ignored the switch or the harness never delivered it,
+          # and those are repairs in different files.
+          Set-Content -Path $OutFile -Value ("probe: NoWelcome=$([bool]$NoWelcome)`r`n" + $out)
+          Set-Content -Path $CodeFile -Value "$code"
+          exit 0
+          '@
+
+          $pwshPath = (Get-Command pwsh).Source
+          $savedPath = $env:Path
+          # The runner sets it, and the installer reads it as "no human here"
+          # -- which is true of this step and false of the console below.
+          $env:CI = ''
+          $failures = New-Object System.Collections.ArrayList
+
+          function Invoke-Case {
+              param([string]$Label, [string]$Answer, [switch]$NoWelcome, [switch]$NoNode)
+
+              $marker = Join-Path $PWD "marker-$Label"
+              $dir = Join-Path $PWD "bin-$Label"
+              $outFile = Join-Path $PWD "out-$Label.txt"
+              $codeFile = Join-Path $PWD "code-$Label.txt"
+
+              $env:ANK_NPX_MARKER = $marker
+              $env:Path = if ($NoNode) { $script:noNodePath } else { (Join-Path $PWD 'fakenode') + ';' + $script:savedPath }
+
+              $argv = @('-NoProfile', '-File', 'probe.ps1', '-Answer', $Answer,
+                        '-Dir', $dir, '-OutFile', $outFile, '-CodeFile', $codeFile)
+              if ($NoWelcome) { $argv += '-NoWelcome' }
+
+              # Hidden, and hidden is what forces the launch through
+              # ShellExecute: that is the path which gives the child a console
+              # of its own rather than the pipes this step is holding.
+              Start-Process -FilePath $script:pwshPath -ArgumentList $argv `
+                  -WorkingDirectory "$PWD" -WindowStyle Hidden -Wait
+              $env:Path = $script:savedPath
+
+              $code = 999
+              if (Test-Path $codeFile) { $code = [int]((Get-Content $codeFile -Raw).Trim()) }
+              $out = ''
+              if (Test-Path $outFile) { $out = (Get-Content $outFile -Raw) }
+              if (-not $out) { $out = '' }
+
+              $asked = ([regex]::Matches($out, [regex]::Escape('[Y/n]'))).Count
+
+              # Write-Host and not a bare string, which is the difference
+              # between a log line and a return value: everything a function
+              # emits is its output, so three strings on the pipeline would
+              # reach the caller as an array with the object at the end of it
+              # and every assertion below would be read off a string.
+              Write-Host ('=' * 70)
+              Write-Host "$Label -> exit $code | asked $asked | npx ran $(Test-Path $marker)"
+              Write-Host $out
+
+              return [pscustomobject]@{
+                  Label = $Label; Code = $code; Out = $out
+                  Asked = $asked; Ran = (Test-Path $marker); Dir = $dir
+              }
+          }
+
+          function Want {
+              param($Run, [bool]$Ok, [string]$Why)
+              if ($Run.Out -match 'no console of its own') {
+                  # Said once for the run and not once per assertion: the
+                  # probe measured nothing, so there is one thing to report.
+                  $note = "$($Run.Label): the probe never got a console, so nothing about this run was measured"
+                  if (-not $script:failures.Contains($note)) { $null = $script:failures.Add($note) }
+                  return
+              }
+              if (-not $Ok) { $null = $script:failures.Add("$($Run.Label): $Why") }
+          }
+
+          function Installed {
+              param($Run)
+              return ((Test-Path (Join-Path $Run.Dir 'ank.exe')) -and
+                      (Test-Path (Join-Path $Run.Dir 'ank-mcp.exe')))
+          }
+
+          # Accepted, and the command it accepts fails. This is the assertion
+          # the criterion names: the install is already done, so it stays done.
+          $run = Invoke-Case -Label 'accept' -Answer 'y'
+          Want $run ($run.Code -eq 0) "a failing skill step changed the exit code to $($run.Code)"
+          Want $run ($run.Asked -eq 1) "it asked $($run.Asked) times, and once is the contract"
+          Want $run ($run.Ran) 'it accepted and never ran npx'
+          Want $run (Installed $run) 'the executables are not in place after the offer failed'
+          Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it never named the command it ran'
+          Want $run ($run.Out -match 'exited 1') 'it swallowed the failure instead of reporting it'
+
+          # Enter is the default the criterion names, so it has to reach npx
+          # the way a typed yes does.
+          $run = Invoke-Case -Label 'enter' -Answer 'enter'
+          Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want $run ($run.Ran) 'Enter did not default to yes'
+
+          # Declined, end of input, and the switch: three ways to leave the
+          # machine in the state an installer without this step leaves it.
+          $run = Invoke-Case -Label 'decline' -Answer 'n'
+          Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want $run (-not $run.Ran) 'it ran npx after being declined'
+          Want $run (Installed $run) 'declining cost the install its executables'
+
+          $run = Invoke-Case -Label 'eof' -Answer 'eof'
+          Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want $run (-not $run.Ran) 'it ran npx having been told nothing'
+
+          # The switch, on a run that has a console and would have said yes.
+          # This is the only place ADR-5fbd99bf6fd5's "differs in no outcome
+          # from an interactive run that declined everything" can be measured,
+          # since without a console there is nothing to differ from.
+          $run = Invoke-Case -Label 'noflag' -Answer 'y' -NoWelcome
+          Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          # Asked first, because it separates the two repairs: a probe that was
+          # never handed the switch is a defect in this file, and one that was
+          # and still saw a question is a defect in install.ps1.
+          Want $run ($run.Out -match 'probe: NoWelcome=True') 'the probe was never handed the switch'
+          Want $run ($run.Asked -eq 0) '-NoWelcome asked anyway'
+          Want $run (-not $run.Ran) '-NoWelcome ran npx anyway'
+          Want $run ($run.Out -notmatch '####') '-NoWelcome drew the logo at a console'
+          Want $run (Installed $run) '-NoWelcome cost the install its executables'
+
+          # node absent: the command, and one line saying why it was not run.
+          $run = Invoke-Case -Label 'nonode' -Answer 'y' -NoNode
+          Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want $run (-not $run.Ran) 'it ran npx with no node to run it'
+          Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it did not print the command'
+          Want $run ($run.Out -match 'node is not on PATH') 'it did not say why it was not run'
+          Want $run (Installed $run) 'the executables are not in place'
+
+          '=' * 70
+          if ($failures.Count) {
+              foreach ($line in $failures) { "FAIL $line" }
+              exit 1
+          }
+          'asked once at a console, defaulted to yes on Enter, and a skill step that'
+          'failed left the install reporting success with both executables in place'
           exit 0
 
       # The second of the two failures that matter, and the reason the .sha256
