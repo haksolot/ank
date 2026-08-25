@@ -14,8 +14,9 @@
 //! reason `tests/tui.rs` gives for sitting here. A suite that could not name the
 //! binary would be back to testing the function instead of the process.
 //!
-//! Three claims are asserted here and all three come from the table rather than
-//! from a list written beside it. The advertised tools **equal** `COMMANDS`, so
+//! Three claims about the surface are asserted here and all three come from the
+//! table rather than from a list written beside it. The advertised tools
+//! **equal** `COMMANDS`, so
 //! a verb added there reaches this surface with no edit in this crate and a verb
 //! removed stops being advertised. A refused call carries **the code the table
 //! declares for that refusal**, read out of `spec.refuses` rather than typed as
@@ -23,6 +24,11 @@
 //! publishes. And the document a call answers with is **the document the binary
 //! prints**, compared against a direct run of the same verb, because the whole
 //! of what the fold left alone is that a call is still a run of `ank`.
+//!
+//! A fourth claim is about a number rather than about the table: the version a
+//! client is told, and the one in the identity a claim is written under, is the
+//! one `ank --version` prints (TASK-ae64d1c5678d). It is read out of the process
+//! for the same reason everything else here is.
 
 use ank_contract::{ExitCode, COMMANDS};
 use std::io::Write;
@@ -183,6 +189,44 @@ fn talk_at(repo: &Path, home: Option<&Path>, requests: &[&str]) -> Vec<String> {
         .collect()
 }
 
+/// A session under no named identity, which is the only way to see the one the
+/// server gives itself.
+///
+/// `ANK_AGENT` is *removed* rather than left alone: every other session here
+/// sets it, and a machine that happened to have it exported would otherwise
+/// make the typed identity untestable exactly where it matters -- an agent's
+/// own shell, which is where this suite runs.
+fn talk_unnamed(repo: &Path, requests: &[&str]) -> Vec<String> {
+    let mut child = Command::new(ANK)
+        .arg("mcp")
+        .arg("--repo")
+        .arg(repo)
+        .env_remove("ANK_AGENT")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must have been built");
+    {
+        let stdin = child.stdin.as_mut().expect("piped");
+        for request in requests {
+            writeln!(stdin, "{request}").expect("the server must accept a request");
+        }
+    }
+    let out = child.wait_with_output().expect("the server must finish");
+    assert!(
+        out.status.success(),
+        "the server exited {:?}: {}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.to_string())
+        .collect()
+}
+
 /// A crude field read, deliberately: pulling one value out of a reply needs no
 /// parser, and a parser here would be a second reading of the surface under test.
 fn field(line: &str, key: &str) -> Option<String> {
@@ -198,6 +242,31 @@ fn field(line: &str, key: &str) -> Option<String> {
         .find(|c: char| c == ',' || c == '}')
         .unwrap_or(rest.len());
     Some(rest[..end].trim().to_string())
+}
+
+/// The version out of `serverInfo`, and not merely the first `"version"` in the
+/// reply.
+///
+/// [`field`] would find the right one today, since `protocolVersion` is spelled
+/// with a capital and nothing else in the handshake carries the key. That is a
+/// fact about how the reply is written rather than about what is being asserted,
+/// so the object is sliced first: a key added above it must not quietly turn
+/// this into a test of something else.
+fn server_info_version(reply: &str) -> Option<String> {
+    let at = reply.find("\"serverInfo\"")?;
+    field(&reply[at..], "version")
+}
+
+/// A fragment as it reads once the surface has escaped a document into a `text`
+/// block.
+///
+/// The same escaper both sides share (ADR-6fd69efb629c), applied to a fragment
+/// instead of a whole document, with the quotes it wraps a string in taken back
+/// off. Escaping by hand here would be a second escaper to keep in step with the
+/// one under test.
+fn escaped(fragment: &str) -> String {
+    let quoted = ank_contract::json::string(fragment);
+    quoted[1..quoted.len() - 1].to_string()
 }
 
 /// The tool names a `tools/list` reply advertises, in the order it advertises
@@ -706,5 +775,89 @@ fn every_advertised_tool_carries_the_corpus_argument() {
          corpora a client can reach per verb (ADR-fd98f4bc6dea): {}",
         replies[0]
     );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+/// The version a client is told is the version the binary prints, in both places
+/// one leaves this surface (TASK-ae64d1c5678d).
+///
+/// **Read out of the process, never out of `CARGO_PKG_VERSION`.** A test that
+/// compared the constant with itself would pass on the very day the surface went
+/// back to reporting the library's number, which is the defect this closes: the
+/// crate's version used to reach a client here, and the gate that held it to the
+/// release tag went away with the second executable it was written for
+/// (ADR-1ea31c2f3c5a). So `ank --version` is run, and what it says is the
+/// expectation. CLAUDE.md states the rule this is an instance of.
+///
+/// **Two places and one number.** `serverInfo` is what a client reads at the
+/// handshake; `ank-mcp/<version>` is the typed identity every claim taken
+/// through this surface is written under, and it outlives the session in the
+/// ref. They are asserted against the same value, because two numbers reaching a
+/// reader are two numbers that can drift and only one of them would ever be
+/// looked at again.
+///
+/// The claim is taken through the surface rather than read off a struct: the
+/// identity is an environment variable handed to a spawned process, so what
+/// proves it is a record the corpus wrote.
+#[test]
+fn the_surface_reports_the_version_the_binary_prints_and_writes_under_it() {
+    let repo = corpus();
+    let id = seeded_task(&repo);
+
+    // `ank <version> (<commit>, skill <revision>)` -- the second word, and the
+    // only part of that line this is about.
+    let printed = ank(&repo, &["--version"]);
+    assert!(
+        printed.status.success(),
+        "ank --version must answer: {}",
+        String::from_utf8_lossy(&printed.stderr)
+    );
+    let line = String::from_utf8_lossy(&printed.stdout).trim().to_string();
+    let version = line
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        !version.is_empty() && version.chars().next().is_some_and(|c| c.is_ascii_digit()),
+        "the shape of `ank --version` moved and this test is reading the wrong \
+         word of it: {line}"
+    );
+
+    let claim = format!(
+        r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ank_claim","arguments":{{"arguments":["{id}"]}}}}}}"#
+    );
+    let replies = talk_unnamed(
+        &repo,
+        &[
+            r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}"#,
+            &claim,
+        ],
+    );
+    assert_eq!(replies.len(), 2, "{replies:?}");
+
+    assert_eq!(
+        server_info_version(&replies[0]).as_deref(),
+        Some(version.as_str()),
+        "a client is told a version the binary does not answer with. The number \
+         in serverInfo is the executable's, handed down by the dispatch, and the \
+         release gates that one against the tag: {}",
+        replies[0]
+    );
+
+    assert_eq!(
+        field(&replies[1], "exitCode").as_deref(),
+        Some("0"),
+        "the claim must have been taken for its holder to say anything: {}",
+        replies[1]
+    );
+    assert!(
+        replies[1].contains(&escaped(&format!(r#""holder":"ank-mcp/{version}""#))),
+        "the claim was written under an identity carrying a version the binary \
+         does not answer with. It is the same number serverInfo reports, and it \
+         is in a ref that outlives this session: {}",
+        replies[1]
+    );
+
     let _ = std::fs::remove_dir_all(&repo);
 }

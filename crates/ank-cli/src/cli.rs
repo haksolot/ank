@@ -836,6 +836,16 @@ fn mcp(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) ->
     let address = ank_mcp::Address {
         exe,
         repo: repo.corpus,
+        // **The version a client is told, handed over here because the surface
+        // cannot honestly work it out** (TASK-ae64d1c5678d). `crates/ank-mcp`
+        // must not link this crate (ADR-fd98f4bc6dea), so its own
+        // `CARGO_PKG_VERSION` can only ever name the library; this one is the
+        // executable's, the same literal `version_line` above prints, and the
+        // one the release gates against the tag. `exe` is this very process, so
+        // the number handed down is the number that binary answers `--version`
+        // with -- by construction and not by anyone keeping two literals in
+        // step. The argument in full is on `ank_mcp::Address::version`.
+        version: env!("CARGO_PKG_VERSION").to_string(),
     };
     // Standard input is the client's half of the transport and is read nowhere
     // else in this binary, so it is locked here rather than threaded through a

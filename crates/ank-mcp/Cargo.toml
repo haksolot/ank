@@ -1,10 +1,20 @@
 [package]
 name = "ank-mcp"
-# ank-cli's version, and not a version of its own. Both are built out of one
-# build and land in one archive today, so a caller holding both has no way to
-# ask which of two numbers describes the pair -- and the release asserts
-# they answer `--version` alike, on all three platforms, before it publishes
-# anything. check-version.sh holds this literal to the tag with the others.
+# **Internal, and nobody is ever told this number** (TASK-ae64d1c5678d). It read
+# `ank-cli's version, and not a version of its own` while there were two files
+# in one archive and a caller holding both had to know which number described
+# the pair. There is one file (ADR-1ea31c2f3c5a), so there is no pair, and
+# check-version.sh stopped holding this literal to the tag along with the rest of
+# the machinery for the second executable.
+#
+# What outlived that reason is that the number went on leaving the process: a
+# client read it in `serverInfo` and every claim taken through the surface was
+# written under `ank-mcp/<it>`. Both now report the version the dispatch hands
+# down, which is the binary's -- so this literal describes a library nothing
+# publishes, is gated by nothing, and is free to move or not move for the
+# reasons a crate version exists. `crates/ank-mcp/src/lib.rs` states the choice
+# where it is made, and `crates/ank-cli/tests/mcp.rs` holds the surface to it
+# through the binary.
 version = "0.6.0"
 edition = "2021"
 # The workspace floor, for the reason ank-core's manifest gives: one lockfile,
