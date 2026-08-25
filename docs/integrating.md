@@ -333,6 +333,8 @@ falling back to `$HOME/.config/ank`. It lives outside every repository, and it
 is keyed on the repository identity of ADR-621a7fd96ce1 rather than on a path:
 
     schema: 1
+    # Seconds between two mirrors of refs/ank/*. Optional; 60 when omitted.
+    fetch: 60
     watch:
       # The key is the root commit, which `ank status --json` prints under
       # "corpus". One checkout, or a list of them.
@@ -346,11 +348,24 @@ repository's identity is refused with both identities, and a directory carrying
 no `.ank/` is refused rather than searched around: `ank-daemon --list` prints
 what would be watched without watching anything.
 
-**The only thing it writes into a repository is that repository's own
-`index.db`.** No branch, no working tree, no index of git's, and no
-`refs/ank/claims`. It takes no claim, holds none on anybody's behalf, and
-renews none -- a claim is renewed by working, not by reporting
-(ADR-0bb7ea8991bc).
+**The only things it writes into a repository are that repository's own
+`index.db` and a mirror of `refs/ank/*`.** The mirror lands in
+`refs/ank/watch/origin/*`, a tracking namespace of the watcher's own: no branch,
+no tag, no working tree, no index of git's, and no `refs/ank/claims`. It takes
+no claim, holds none on anybody's behalf, and renews none -- a claim is renewed
+by working, not by reporting (ADR-0bb7ea8991bc). A fetch that fails is a line on
+stderr and never an exit code: the watcher keeps watching, and a dead network
+downgrades what it offers rather than stopping it.
+
+**What the mirror buys is one line of `ank status`.** `refs/ank/claims/*` in a
+clone is whatever somebody last fetched by hand, so on a parc of clones the
+`elsewhere` section reports who held what an hour ago and has no way to say so.
+`status` reads the mirror beside its own plane and reports both as one list,
+with the local record winning wherever they carry the same task. No other verb
+reads it, and none may: an installation with a watcher and one without have to
+be one product. That is asserted rather than promised, in
+`a_claim_a_watcher_mirrored_is_reported_by_status_and_by_nothing_else`, which
+compares every listing verb byte for byte with the mirror present and absent.
 
 ## What binds and what does not
 

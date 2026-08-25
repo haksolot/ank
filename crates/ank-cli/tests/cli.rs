@@ -5769,6 +5769,146 @@ fn status_remote_names_the_claims_origin_holds_and_which_are_only_there() {
     );
 }
 
+/// What a watcher mirrors into `refs/ank/watch/*` reaches `status`, and reaches
+/// nothing else (ADR-a22cd3196529).
+///
+/// The reader's half of the watcher. `refs/ank/claims/*` in this clone is
+/// whatever somebody last fetched by hand, so on a parc of clones `status`
+/// reports holders as of an hour ago; a watcher mirrors the remote's namespace
+/// on an interval and this is what reading that mirror buys.
+///
+/// **The mirror is written here by git and not by the daemon**, deliberately:
+/// what this file is about is the CLI, and the refspec below is the one the
+/// watcher runs. That the watcher runs it, on the interval its declaration
+/// states, is asserted where it belongs -- against the binary, in
+/// `crates/ank-daemon/tests/daemon.rs`.
+///
+/// **Nothing depends on it**, asserted as an equality rather than promised: the
+/// listing verbs, the graph, `check` and `context` answer the same bytes with
+/// the mirror present and absent, because the day one of them starts deciding
+/// on it, an installation with a watcher and one without have become two
+/// products.
+#[test]
+fn a_claim_a_watcher_mirrored_is_reported_by_status_and_by_nothing_else() {
+    const MINE: &str = "TASK-000000000f41";
+    const THEIRS: &str = "TASK-000000000f42";
+    let r = Repo::new();
+    r.seed_task_titled(MINE, "Held in this clone");
+    r.seed_task_titled(THEIRS, "Held in the other clone");
+    let (_origin, other) = r.cloned();
+
+    let out = r.ank_at("codex@host-9", &["claim", THEIRS], &other);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    // Every verb, before any mirror exists. This is the installation without a
+    // watcher, which is the one every CI runner and every container has.
+    let verbs: &[&[&str]] = &[
+        &["find", "--status", "open", "--json"],
+        &["find", "--json"],
+        &["graph"],
+        &["scope", "src/**"],
+        &["check"],
+        &["context"],
+        &["show", THEIRS],
+    ];
+    let cold: Vec<(Vec<u8>, Option<i32>)> = verbs
+        .iter()
+        .map(|v| {
+            let out = r.ank("claude-code@ank", v);
+            (out.stdout.clone(), out.status.code())
+        })
+        .collect();
+    let said = stdout(&r.ank("claude-code@ank", &["status"]));
+    assert!(
+        said.contains("elsewhere no claim by another agent"),
+        "the claim reached this clone by a route nobody ran:\n{said}"
+    );
+
+    // The refspec the watcher runs, and nothing else it runs: the destination
+    // is its own namespace, so `refs/ank/claims/*` here is untouched.
+    r.git(&[
+        "fetch",
+        "--quiet",
+        "--prune",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "origin",
+        "+refs/ank/*:refs/ank/watch/origin/*",
+    ]);
+    assert!(
+        r.claim_ref(THEIRS).is_none(),
+        "the mirror landed on the plane it is supposed to stay off"
+    );
+
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let said = stdout(&out);
+    let line = said
+        .lines()
+        .find(|l| l.contains(THEIRS))
+        .unwrap_or_else(|| panic!("the mirrored claim went unreported:\n{said}"));
+    // The record itself is here, unlike a ref seen with `ls-remote`: the mirror
+    // carries the object, so the holder is read rather than guessed at.
+    assert!(
+        line.contains("codex@host-9") && line.contains("Held in the other clone"),
+        "a mirrored claim lost what the record says: {line}"
+    );
+    assert!(
+        !line.contains("on origin only"),
+        "a record this clone can read is reported as one it cannot: {line}"
+    );
+    // No network was paid for: `seen` answers whether `--remote` found the ref
+    // on origin, and nothing asked it to.
+    let json = stdout(&r.ank("claude-code@ank", &["status", "--json"]));
+    assert!(
+        json.contains(&format!(
+            "{{\"id\":\"{THEIRS}\",\"title\":\"Held in the other clone\",\
+             \"holder\":\"codex@host-9\""
+        )),
+        "{json}"
+    );
+    assert!(
+        json.contains("\"remote\":false"),
+        "the mirror was reported as a remote read: {json}"
+    );
+
+    // And every other verb answers exactly what it answered with no mirror at
+    // all, byte for byte and code for code.
+    for (verb, (bytes, exit)) in verbs.iter().zip(&cold) {
+        let out = r.ank("claude-code@ank", verb);
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(bytes),
+            "{verb:?} answered differently because a watcher had run"
+        );
+        assert_eq!(out.status.code(), *exit, "{verb:?}");
+    }
+
+    // A local record wins where both planes carry the task: the mirror is news
+    // about other clones, and a background process may not overrule this one's
+    // own arbitration.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", MINE])), 0);
+    r.git(&[
+        "fetch",
+        "--quiet",
+        "--prune",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "origin",
+        "+refs/ank/*:refs/ank/watch/origin/*",
+    ]);
+    let said = stdout(&r.ank("someone-else@host-2", &["status"]));
+    assert_eq!(
+        said.lines().filter(|l| l.contains(MINE)).count(),
+        1,
+        "the task is listed twice, once per plane:\n{said}"
+    );
+    assert!(
+        said.contains("elsewhere 2 claim(s) by other agents"),
+        "the two planes did not sort into one list:\n{said}"
+    );
+}
+
 /// The flag degrades where there is no remote to read, and never fails
 /// (TASK-028bcee93801, §2).
 ///

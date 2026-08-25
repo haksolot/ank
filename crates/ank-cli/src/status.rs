@@ -118,11 +118,12 @@ pub fn run(
     // is the verb an agent runs to learn where things stand rather than what to
     // do next.
     //
-    // Read through the same `coordination` map every listing verb uses, not a
-    // second enumeration of the refs: one plane, one reading, and a second one
-    // would be free to disagree with the first.
-    let plane = context::coordination(&repo.corpus, &mut Vec::new())?;
+    // Read through the same plane every listing verb uses, not a second
+    // enumeration of the refs: one plane, one reading, and a second one would
+    // be free to disagree with the first.
+    let plane = context::plane(&repo.corpus, &mut Vec::new())?;
     let mut elsewhere: Vec<Held> = plane
+        .claims
         .iter()
         .filter_map(|(id, state)| match state {
             // **The title, joined here and not looked up later.** The rows are
@@ -141,6 +142,40 @@ pub fn run(
             _ => None,
         })
         .collect();
+
+    // **What a watcher mirrored, which is the same fact arriving without the
+    // round trip** (ADR-a22cd3196529). `refs/ank/claims/*` in this clone is
+    // whatever somebody last fetched by hand, so on a parc of clones the
+    // section above reports holders as of an hour ago and has no way to say so.
+    // A watcher mirrors the remote's namespace on the interval its declaration
+    // states, and reading that mirror is what makes this line current.
+    //
+    // **Added, never substituted.** A local record wins where both carry the
+    // same task: the mirror is news about other clones and the local plane is
+    // this one's own arbitration, and a background process may not overrule it.
+    // Where no watcher runs the map is empty and every line below is exactly
+    // what it was -- which is the whole of "nothing depends on it", asserted
+    // rather than promised.
+    //
+    // `seen` stays untouched: it answers whether `--remote` found the ref on
+    // origin, which is a different question from where this clone read the
+    // record. A mirrored claim carries a holder and an expiry like any other,
+    // because the record itself is here to be read.
+    for (id, state) in &plane.mirrored {
+        let context::Coordination::Claimed { holder, expires } = state else {
+            continue;
+        };
+        if holder == identity || plane.claims.contains_key(id) {
+            continue;
+        }
+        elsewhere.push(Held {
+            id: id.clone(),
+            title: title_of(&rows, id),
+            holder: Some(holder.clone()),
+            expires: Some(expires.clone()),
+            seen: None,
+        });
+    }
 
     // **The remote plane, only when it is asked for** (§7, ADR-47e2ac102f58).
     // The default stays what §7 says it is: `claim` is the one verb that pays
@@ -172,7 +207,10 @@ pub fn run(
         // never that it is a claim rather than the completion record that
         // shares the namespace.
         for id in ids {
-            if plane.contains_key(id) {
+            // Both sources, because a claim already listed is a claim already
+            // listed however it got here: from this clone's own plane, or from
+            // a mirror a watcher filled.
+            if plane.claims.contains_key(id) || elsewhere.iter().any(|h| &h.id == id) {
                 continue;
             }
             elsewhere.push(Held {
