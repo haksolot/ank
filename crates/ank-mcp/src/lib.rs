@@ -13,13 +13,21 @@
 //! has is what the CLI dispatches, and it cannot be otherwise without an edit to
 //! the table both consume.
 //!
-//! **One process speaks for one corpus, for now.** Addressed once, at startup,
-//! the way `--repo` addresses one. ADR-fd98f4bc6dea permits several, each
-//! addressed on its own, and TASK-2f31789f6af2 is where a call learns to name
-//! which; what that decision keeps in the same words is the ban this paragraph
-//! was written for. A server may never merge two claim spaces, because
-//! `refs/ank/*` is per repository and merging them would invent an arbitration
-//! the refs cannot carry.
+//! **A call names its corpus, and a server never merges two.** Every tool
+//! carries an optional `corpus` argument holding the repository identity of
+//! ADR-621a7fd96ce1; absent, the call goes to the corpus the process was
+//! addressed with at startup, the way `--repo` addresses one. The set a server
+//! may reach is that corpus plus what the reader declared in `corpora.yml`, and
+//! nothing is discovered: an identity nobody declared is refused by name.
+//! [`corpora`] is the whole of it, and it hands [`call`] one path.
+//!
+//! **Multiplexing is what was permitted; merging is what stays forbidden**, in
+//! the same words the superseded decision used. There is no merged claim space,
+//! no claim held on a client's behalf, and no pooling of clients under one
+//! identity — because `refs/ank/*` is per repository, and a server that merged
+//! two claim spaces would be inventing an arbitration the refs cannot carry.
+//! Nothing in this crate reasons about two corpora at once: a resolution returns
+//! one path, and every call is `ank --repo <one corpus> <verb> --json`.
 //!
 //! **This is a library, and the surface is the verb `ank mcp`** (ADR-fd98f4bc6dea).
 //! It was a sibling executable, and the file folded into the one binary every
@@ -39,6 +47,7 @@
 //! that has no shell at all.
 
 mod call;
+mod corpora;
 mod tools;
 
 use ank_contract::json::{string, Obj};
@@ -59,8 +68,14 @@ pub struct Address {
     /// The binary a call runs. `std::env::current_exe()` of the process serving
     /// the verb -- see the note on [`call`].
     pub exe: PathBuf,
-    /// The corpus every call is addressed to, for now the only one
-    /// (TASK-2f31789f6af2).
+    /// The corpus the process was addressed with, which is where a call goes
+    /// when it names none.
+    ///
+    /// **The startup corpus, and not the only one a server can reach.** A call
+    /// may name another by the identity of ADR-621a7fd96ce1, resolved against
+    /// what the reader declared ([`corpora`]). This one is the default and is
+    /// resolved by the dispatch, so a client that names nothing is served
+    /// exactly as it was before a call could name anything.
     pub repo: PathBuf,
 }
 
@@ -77,12 +92,18 @@ pub struct Address {
 /// the client's other work with it. The loop ends on end of input, which is what
 /// a client closing its side means, and on nothing else.
 pub fn serve(address: &Address, input: &mut dyn BufRead, out: &mut dyn Write) {
+    // Built once and per session, because what it resolves is per session: the
+    // reader's declarations and the startup corpus's own name do not change
+    // under a running server, and reading them per call would ask the same
+    // question of the same file for every message a client sends. It resolves
+    // nothing until a call names a corpus.
+    let reach = corpora::Reach::new(address);
     for line in input.lines() {
         let Ok(line) = line else { break };
         if line.trim().is_empty() {
             continue;
         }
-        if let Some(reply) = handle(&line, address) {
+        if let Some(reply) = handle(&line, &reach) {
             let _ = writeln!(out, "{reply}");
             let _ = out.flush();
         }
@@ -94,7 +115,7 @@ pub fn serve(address: &Address, input: &mut dyn BufRead, out: &mut dyn Write) {
 /// `None` for a notification, which is a message with no `id` and must never be
 /// answered: a reply to one is a protocol error on our side, and the client that
 /// sent `notifications/initialized` is waiting for nothing.
-fn handle(line: &str, address: &Address) -> Option<String> {
+fn handle(line: &str, reach: &corpora::Reach) -> Option<String> {
     let request: serde_yaml::Value = match serde_yaml::from_str(line) {
         Ok(value) => value,
         // Unparseable and therefore unattributable: no id to answer against, so
@@ -133,8 +154,14 @@ fn handle(line: &str, address: &Address) -> Option<String> {
                     "instructions",
                     "Every verb the ank CLI dispatches is a tool here, generated \
                      from one table. Start with ank_context: it answers what binds \
-                     this perimeter and what is claimable. This server speaks for \
-                     one corpus, fixed when it started.",
+                     this perimeter and what is claimable. Every tool takes an \
+                     optional corpus argument, the root commit ank status --json \
+                     prints under \"corpus\": absent, a call goes to the corpus this \
+                     server was addressed with at startup; given, it goes to that \
+                     corpus alone, and only corpora the reader declared can be \
+                     named. Each corpus is addressed on its own and none is merged \
+                     with another: a claim is taken in one repository, by the refs \
+                     of that repository.",
                 )
                 .finish(),
         )),
@@ -143,13 +170,25 @@ fn handle(line: &str, address: &Address) -> Option<String> {
             id_json,
             &Obj::new().raw("tools", &tools::list()).finish(),
         )),
-        "tools/call" => Some(call_tool(id_json, request.get("params"), address)),
+        "tools/call" => Some(call_tool(id_json, request.get("params"), reach)),
         other => Some(error(id_json, -32601, &format!("no such method '{other}'"))),
     }
 }
 
-/// `tools/call`, which is the only method that reaches the corpus.
-fn call_tool(id: Option<String>, params: Option<&serde_yaml::Value>, address: &Address) -> String {
+/// `tools/call`, which is the only method that reaches a corpus.
+///
+/// **The corpus is settled before anything runs, and exactly once.** A call
+/// names one or names none, [`corpora::Reach::resolve`] turns that into one
+/// path, and a name it cannot resolve is refused with a §4 code and the command
+/// that resolves it -- the verb is not spawned, no corpus is opened, and nothing
+/// falls back to the corpus the caller did not ask for. Falling back would be
+/// the worst answer available here: a claim taken in a corpus the client did not
+/// name, reported as success.
+fn call_tool(
+    id: Option<String>,
+    params: Option<&serde_yaml::Value>,
+    reach: &corpora::Reach,
+) -> String {
     let params = match params {
         Some(p) => p,
         None => return error(id, -32602, "tools/call needs params"),
@@ -162,9 +201,18 @@ fn call_tool(id: Option<String>, params: Option<&serde_yaml::Value>, address: &A
     };
 
     let mut args = call::Arguments::default();
+    let mut named: Option<String> = None;
     if let Some(map) = params.get("arguments").and_then(|a| a.as_mapping()) {
         for (key, value) in map {
             let Some(key) = key.as_str() else { continue };
+            // The one argument that is the surface's rather than the verb's, so
+            // it is taken out before the table is consulted: the table knows
+            // nothing about it and would refuse it by name, which is the right
+            // answer for every key except this one.
+            if key == corpora::ARGUMENT {
+                named = Some(scalar(value));
+                continue;
+            }
             if key == "arguments" {
                 if let Some(list) = value.as_sequence() {
                     for item in list {
@@ -188,7 +236,12 @@ fn call_tool(id: Option<String>, params: Option<&serde_yaml::Value>, address: &A
                 return error(
                     id,
                     -32602,
-                    &format!("{flag} belongs to the server: one process, one corpus"),
+                    &format!(
+                        "{flag} belongs to the server: name a corpus with the \
+                         {} argument, by the identity ank status --json prints, \
+                         never by a path",
+                        corpora::ARGUMENT
+                    ),
                 );
             }
             let values = match (known.takes_value, value.as_sequence()) {
@@ -200,14 +253,23 @@ fn call_tool(id: Option<String>, params: Option<&serde_yaml::Value>, address: &A
         }
     }
 
-    match call::run(spec, address, &args) {
+    // A corpus this server cannot reach is a refusal and not a protocol error:
+    // the request is well formed and the answer is no, which is the line
+    // `Outcome::refused` already draws. It reaches the client through the same
+    // renderer a refusal from the binary does, so the two shapes cannot drift.
+    let corpus = match reach.resolve(named.as_deref()) {
+        Ok(corpus) => corpus,
+        Err(refusal) => return result(id, &refusal.outcome().to_result()),
+    };
+
+    match call::run(spec, reach.address(), &corpus, &args) {
         Ok(outcome) => result(id, &outcome.to_result()),
         // The binary itself could not be run. That is the environment and not the
         // corpus, and §4 keeps the two apart on purpose.
         Err(e) => error(
             id,
             -32603,
-            &format!("cannot run {}: {e}", address.exe.display()),
+            &format!("cannot run {}: {e}", reach.address().exe.display()),
         ),
     }
 }
