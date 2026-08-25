@@ -632,6 +632,66 @@ The shortest of them, which detects what you run and links it to a single copy:
 That installs the skill, not the binary. The skill teaches one page, and it is
 loaded on every session, which is why its content is deliberately small.
 
+## Adopting ank where there is already code
+
+Everything above happened in an empty directory, which is the one repository
+nobody has. `ank init` on two years of history leaves you with a corpus and no
+content, and the question it raises is not how to write an ADR: it is which
+decisions this code has already made, and which of them were worth writing down
+all along. That reading is an agent's work, and these are the three prompts that
+ask for it. Both installers offer to print the same three, character for
+character, and a test holds the three copies together.
+
+Run this once, at the root of the repository:
+
+    ank init
+
+Then paste each prompt into your agent, one at a time, reading what comes back
+before you send the next. They follow the three moments of an adoption: what the
+code already decided, what it still owes, and whether the answer holds.
+
+**What the code already decided.** This is the one you judge the tool on. A
+constraint you recognise on sight is a constraint that was true and unwritten,
+and the reason it now has an id is that the next agent reads it without being
+told.
+
+<!-- adopt-prompts:begin -->
+
+    Read this repository and write, as ank ADRs, the decisions its code
+    has already made: the ones a newcomer would break without knowing
+    they existed. One ADR per decision, each with a scope glob covering
+    the files it binds and a constraint stated as a rule. Leave them
+    proposed; I ratify them myself.
+
+They land `proposed`, which binds nobody. `ank review` lists what is waiting, and
+`ank accept <id>` stays yours: a signed act, on the default branch, one at a
+time. An agent proposes and says it is waiting.
+
+**What it still owes.** Intentions scattered across TODOs, an issue tracker and a
+README are not work an agent can take. A scope and a criterion are, which is what
+`ank claim` freezes and `ank done` measures.
+
+    Read the TODOs, the open issues and the README of this repository,
+    and turn what they promise into ank tasks. Give each one a scope
+    glob and a done_criteria a test could settle, and use blocked_by
+    only where a task genuinely waits on another.
+
+**Whether the answer holds.** The third is the uncomfortable one, and it is meant
+to be: a constraint the code already breaks is the ordinary result of writing
+down what was implicit, not a sign the first prompt went wrong. What you want out
+of it is the list, before anybody starts repairing.
+
+    Run ank check and ank review here, then read every ADR back against
+    the code its scope matches. Tell me which constraints the code
+    already breaks and which scopes match no file, and change nothing
+    until I have read your answer.
+
+<!-- adopt-prompts:end -->
+
+None of the three is a step the tool waits on. A corpus with nothing but the ADRs
+from the first prompt is already worth `ank context`, and the other two can wait
+until you want them.
+
 ## Why it works this way
 
 You have now done the loop once, which is the right moment for the four claims

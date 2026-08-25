@@ -251,13 +251,16 @@ $(supported_lines)
   Windows is published as a .zip and this script does not install it:
     ${releases_url}
 
-the skills:
-  With a terminal attached, once ank is installed and verified, this offers
-  to run:
+the two questions:
+  With a terminal attached, once ank is installed and verified, this asks
+  two things and nothing else. The first offers to run:
     npx skills add ${repo}
-  They teach an agent how to use ank. It is one question, Enter accepts it,
-  declining installs nothing more, and nothing that command does can change
-  any of the codes below.
+  which teaches an agent how to use ank. The second offers to print three
+  prompts that adopt ank in a repository that already has code and no
+  .ank; they are in docs/getting-started.md too, and printing them writes
+  nothing anywhere.
+  Enter accepts each, declining either does nothing at all, and nothing
+  either does can change any of the codes below.
 
 exit codes:
   1 usage   2 unsupported platform   3 download   4 checksum   5 missing tool
@@ -834,11 +837,103 @@ offer_skills() {
   fi
 }
 
-# `|| :` and not a bare call, and it is the whole guarantee in one line. This
-# is the last command in the file, so the script's status is its status: with
-# `set -e` in force a single failure anywhere inside would become the exit code
-# of an install that has already succeeded. Called this way, the failure is
-# tested rather than fatal, `set -e` is suspended for the duration, and the
-# status this script leaves with is the status it had before the question was
+# --------------------------------------------------------------------------
+# Adopting ank where there is already code
+# --------------------------------------------------------------------------
+
+# ADR-5fbd99bf6fd5's second offer, and the last question this script asks.
+# Installing ank is the easy half. The half nobody had written down is what to
+# say to an agent so that a repository with two years of history acquires a
+# corpus worth having, and the moment after an install is the one moment the
+# person is certainly reading.
+#
+# Three prompts, because the adoption has three moments: state as ADRs what the
+# code already decided, so the constraints that exist implicitly become
+# readable; turn a list of intentions into tasks carrying a scope and a
+# criterion; and check what came out. The first one is the one the reader
+# judges the tool on, which is why it is first.
+#
+# The same three prose blocks live in install.ps1 and in docs/getting-started.md,
+# and a test holds the three copies character for character
+# (crates/ank-cli/tests/adopt.rs). Prose duplicated in three files diverges, and
+# this is the prose where divergence is worst: an installer teaching a prompt
+# the documentation has since corrected. The markers below are what the test
+# reads; the block between them is the one to edit, and the other two follow.
+# adopt-prompts:begin
+adopt_walkthrough() {
+  cat >&2 <<'ADOPT_EOF'
+In a repository that already has code and no .ank, start with:
+
+  ank init
+
+Then paste these three into your agent, one at a time, and read what each
+one produces before you send the next.
+
+1. What the code already decided:
+
+    Read this repository and write, as ank ADRs, the decisions its code
+    has already made: the ones a newcomer would break without knowing
+    they existed. One ADR per decision, each with a scope glob covering
+    the files it binds and a constraint stated as a rule. Leave them
+    proposed; I ratify them myself.
+
+2. What is still owed:
+
+    Read the TODOs, the open issues and the README of this repository,
+    and turn what they promise into ank tasks. Give each one a scope
+    glob and a done_criteria a test could settle, and use blocked_by
+    only where a task genuinely waits on another.
+
+3. What you now have:
+
+    Run ank check and ank review here, then read every ADR back against
+    the code its scope matches. Tell me which constraints the code
+    already breaks and which scopes match no file, and change nothing
+    until I have read your answer.
+
+The same three are in docs/getting-started.md, which says what to expect
+from each:
+
+  https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+ADOPT_EOF
+}
+# adopt-prompts:end
+
+# The second question, asked on the same terms as the first: only with a human
+# at a terminal, from /dev/tty and nowhere else, with a default Enter accepts.
+# Declining prints nothing -- not a shortened version, not a pointer to one.
+# An offer that answers a no with half of a yes is an offer that was not really
 # asked.
+offer_adoption() {
+  human_at_terminal || return 0
+
+  say ""
+  printf 'Print the three prompts that adopt ank in a repository you already have? [Y/n] ' >&2
+  if ! IFS= read -r adopt_answer < /dev/tty; then
+    # End of input rather than an answer. The newline is ours because no Enter
+    # was pressed to echo one.
+    say ""
+    return 0
+  fi
+
+  case "$adopt_answer" in
+    "" | y | Y | yes | Yes | YES) : ;;
+    *) return 0 ;;
+  esac
+
+  say ""
+  # To stderr, for the reason `say` writes there: the interesting use of this
+  # script is `curl ... | sh`, and stdout belongs to whoever is reading it.
+  adopt_walkthrough
+  say ""
+}
+
+# `|| :` on each and not a bare call, and it is the whole guarantee in two
+# lines. These are the last commands in the file, so the script's status is the
+# status of the last of them: with `set -e` in force a single failure anywhere
+# inside either would become the exit code of an install that has already
+# succeeded. Called this way, the failure is tested rather than fatal, `set -e`
+# is suspended for the duration, and the status this script leaves with is the
+# status it had before the first question was asked.
 offer_skills || :
+offer_adoption || :
