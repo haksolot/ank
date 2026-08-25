@@ -5,7 +5,7 @@ slug: distribution-carries-one-executable-and-parity-o
 title: Distribution carries one executable, and parity of reach stops being a rule
 created: 2026-08-25T16:52:19Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - install.sh
   - install.ps1
@@ -15,8 +15,12 @@ scope:
 constraint: |
   Every route that carries ank carries one executable, for the three platforms ADR-221aa5da440a names, out of one build. No route places a second file beside it, and no route exists for a surface alone: the protocol surface and the watcher are verbs of that executable (ADR-fd98f4bc6dea), so what reaches a reader is what the binary dispatches. The documentation that teaches installing ank states in the same place how a client reaches the protocol surface, with a configuration a reader can paste, and that configuration names the binary and the verb.
 supersedes: ADR-e39a44f80e0e
+ratified: 042872247ebe
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-25T17:20:06Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-e39a44f80e0e made distribution a rule because the surface was freight: a

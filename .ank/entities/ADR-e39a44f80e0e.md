@@ -5,7 +5,7 @@ slug: the-protocol-surface-ships-wherever-the-cli-ship
 title: The protocol surface ships wherever the CLI ships
 created: 2026-08-24T21:57:38Z
 author: claude-code/opus-5+planning
-status: accepted
+status: superseded
 scope:
   - install.sh
   - install.ps1
@@ -19,7 +19,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-08-24T22:26:35Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ADR-372b82af1ec7 permitted a protocol surface on conditions, and TASK-e819448560e7
