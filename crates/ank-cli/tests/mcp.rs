@@ -34,6 +34,16 @@ const ANK: &str = env!("CARGO_BIN_EXE_ank");
 
 /// A corpus with one task, built through the binary rather than by writing files.
 fn corpus() -> PathBuf {
+    corpus_titled("A task to find", None)
+}
+
+/// The same, with the task's title chosen and the reader's home named.
+///
+/// Both are what the multi-corpus suite needs and no other test does. A title
+/// tells two corpora apart in an answer, which is how "neither names the other's
+/// task" is asserted on content rather than on an id alone; a home is what makes
+/// the reader's declarations the test's and not the machine's.
+fn corpus_titled(title: &str, home: Option<&Path>) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir().join(format!(
         "ank-mcp-it-{}-{}",
@@ -62,7 +72,7 @@ fn corpus() -> PathBuf {
     git(&["config", "commit.gpgsign", "false"]);
 
     let run = |args: &[&str]| {
-        let out = ank(&root, args);
+        let out = ank_at(&root, home, args);
         assert!(
             out.status.success(),
             "ank {args:?}: {}",
@@ -75,7 +85,7 @@ fn corpus() -> PathBuf {
         "new",
         "task",
         "--title",
-        "A task to find",
+        title,
         "--scope",
         "src/**",
         "--criteria",
@@ -94,12 +104,37 @@ fn corpus() -> PathBuf {
 /// back through the surface, and a call that ran under another identity or from
 /// another directory would be a different call.
 fn ank(repo: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(ANK)
-        .args(args)
+    ank_at(repo, None, args)
+}
+
+/// The same run, with the reader's home named.
+///
+/// `None` leaves the machine's, which is what every single-corpus test wants:
+/// the corpora it builds are keyed on root commits nobody has declared anywhere,
+/// so the reader's real map answers nothing about them either way.
+fn ank_at(repo: &Path, home: Option<&Path>, args: &[&str]) -> std::process::Output {
+    let mut cmd = Command::new(ANK);
+    cmd.args(args)
         .current_dir(repo)
-        .env("ANK_AGENT", "test@ank.local")
-        .output()
-        .expect("the binary must have been built")
+        .env("ANK_AGENT", "test@ank.local");
+    if let Some(home) = home {
+        let (key, value) = reader_home(home);
+        cmd.env(key, value);
+    }
+    cmd.output().expect("the binary must have been built")
+}
+
+/// The environment variable that names where a reader's declarations live, and
+/// the value to give it for `home`.
+///
+/// The rule is `ank_contract::events::user_dir`'s, read from the outside: this
+/// is a test of the file the surface actually opens, so it must name it the way
+/// the surface resolves it and not the way one platform spells it.
+fn reader_home(home: &Path) -> (&'static str, PathBuf) {
+    match cfg!(windows) {
+        true => ("APPDATA", home.to_path_buf()),
+        false => ("XDG_CONFIG_HOME", home.to_path_buf()),
+    }
 }
 
 /// Sends every request, closes stdin, and returns the reply lines in order.
@@ -109,16 +144,25 @@ fn ank(repo: &Path, args: &[&str]) -> std::process::Output {
 /// -- which is what the verb bought over the sibling that had to go looking
 /// (ADR-fd98f4bc6dea).
 fn talk(repo: &Path, requests: &[&str]) -> Vec<String> {
-    let mut child = Command::new(ANK)
-        .arg("mcp")
+    talk_at(repo, None, requests)
+}
+
+/// The same session, with the reader's home named: one server, addressed with
+/// one corpus at startup, reaching whatever that home declares and nothing else.
+fn talk_at(repo: &Path, home: Option<&Path>, requests: &[&str]) -> Vec<String> {
+    let mut cmd = Command::new(ANK);
+    cmd.arg("mcp")
         .arg("--repo")
         .arg(repo)
         .env("ANK_AGENT", "test@ank.local")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("the binary must have been built");
+        .stderr(Stdio::piped());
+    if let Some(home) = home {
+        let (key, value) = reader_home(home);
+        cmd.env(key, value);
+    }
+    let mut child = cmd.spawn().expect("the binary must have been built");
     {
         let stdin = child.stdin.as_mut().expect("piped");
         for request in requests {
@@ -342,6 +386,325 @@ fn the_server_refuses_a_flag_that_would_make_it_two_corpora() {
         replies[1].contains("takes no --nonsense"),
         "a flag the verb does not take is refused by name, against the table: {}",
         replies[1]
+    );
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
+// ---------------------------------------------------------------------------
+// Several corpora, and never a merged one (ADR-fd98f4bc6dea, TASK-2f31789f6af2)
+// ---------------------------------------------------------------------------
+//
+// **The clause under test is a distinction, so the test is about what does not
+// happen.** Multiplexing is permitted: one server may address several corpora,
+// each on its own, the way `--repo` addresses one. Merging is forbidden in the
+// same words the superseded decision used -- no merged claim space, no claim
+// held on a client's behalf, no arbitration across clones. Two claims taken
+// through one server is the permitted half; the forbidden half is only visible
+// as an absence, and the place an absence can be read is `refs/ank/claims`,
+// which is per repository and is where a merged claim space would have had to
+// leave a trace.
+//
+// **A temporary home, and not the machine's.** What a server may reach is what
+// the reader declared, so a test that used the developer's own `corpora.yml`
+// would be asserting something about their laptop. The declaration is written
+// with `ank config --user`, which is the verb that owns the file (§4,
+// ADR-96174f1ac2b7): the surface then finds it by resolving the same home, so a
+// disagreement about where that file lives fails here rather than in prose.
+
+/// A reader's home, empty, with no corpus declared in it yet.
+fn declaring_home() -> PathBuf {
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let home = std::env::temp_dir().join(format!(
+        "ank-mcp-home-{}-{}",
+        std::process::id(),
+        SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    home
+}
+
+/// The repository identity of a corpus, read out of the binary.
+///
+/// `ank status --json` under `"corpus"` is where ADR-96174f1ac2b7 sends a reader
+/// looking for the key, and it is what the surface's own argument documents. So
+/// the value this test names a corpus with is the value a client would have
+/// obtained, rather than a root commit read out of git here.
+fn corpus_identity(repo: &Path, home: &Path) -> String {
+    let out = ank_at(repo, Some(home), &["status", "--json"]);
+    let text = String::from_utf8_lossy(&out.stdout).to_string();
+    let id = field(&text, "corpus").expect("status names the corpus it answered about");
+    assert_eq!(id.len(), 40, "an identity is a root commit: {id}");
+    id
+}
+
+/// Every claim ref a corpus holds, by the task each one names.
+fn claimed_tasks(repo: &Path) -> Vec<String> {
+    let out = Command::new("git")
+        .args(["for-each-ref", "--format=%(refname)", "refs/ank/claims"])
+        .current_dir(repo)
+        .output()
+        .expect("git is a hard dependency of this repository");
+    assert!(out.status.success(), "git for-each-ref failed");
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.rsplit('/').next().map(str::to_string))
+        .collect()
+}
+
+/// One server, two corpora, two claims, and neither corpus carrying a trace of
+/// the other.
+///
+/// **This is the criterion, and every assertion below is one of its clauses.**
+/// A call omitting the argument reaches the corpus the process was addressed
+/// with, which is the backwards compatibility clause and is asserted first
+/// because every client that exists today makes exactly that call. A call naming
+/// a declared identity reaches that corpus and takes a claim there. An identity
+/// nobody declared is refused by name, with a §4 code and the command that
+/// resolves it, and -- the half that matters -- does not quietly fall back to
+/// the corpus the caller did not name. And each corpus ends holding its own
+/// claim on its own `refs/ank/claims`, naming its own task and nothing of the
+/// other's, which is the ban on a merged claim space made observable.
+#[test]
+fn two_corpora_through_one_server_land_two_claims_and_no_third() {
+    let home = declaring_home();
+    let one = corpus_titled("The task of the first corpus", Some(&home));
+    let two = corpus_titled("The task of the second corpus", Some(&home));
+    let id_two = corpus_identity(&two, &home);
+    let task_one = seeded_task(&one);
+    let task_two = seeded_task(&two);
+    assert_ne!(task_one, task_two, "two corpora mint two ids");
+
+    // Declared with the verb that owns the map. The startup corpus is
+    // deliberately *not* declared: it is reachable because it is the startup
+    // corpus, and asserting that is asserting the set is "what the reader
+    // declared plus that one" rather than "what the reader declared".
+    let declare = ank_at(
+        &two,
+        Some(&home),
+        &[
+            "config",
+            "--user",
+            &format!("corpora.{id_two}"),
+            &two.display().to_string(),
+        ],
+    );
+    assert!(
+        declare.status.success(),
+        "the declaration must be written: {}",
+        String::from_utf8_lossy(&declare.stderr)
+    );
+
+    // A root commit of the right shape that no corpus has and nobody declared.
+    let nobodys = "0".repeat(40);
+
+    let replies = talk_at(
+        &one,
+        Some(&home),
+        &[
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ank_claim","arguments":{{"arguments":["{task_one}"]}}}}}}"#
+            ),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ank_claim","arguments":{{"arguments":["{task_two}"],"corpus":"{id_two}"}}}}}}"#
+            ),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"ank_find","arguments":{{"corpus":"{nobodys}"}}}}}}"#
+            ),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{{"name":"ank_find","arguments":{{"corpus":"{id_two}"}}}}}}"#
+            ),
+            r#"{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ank_find","arguments":{}}}"#,
+        ],
+    );
+    assert_eq!(replies.len(), 5, "{replies:?}");
+
+    // 1. No corpus named: the corpus the process was addressed with, unchanged
+    //    from every client that existed before the argument did.
+    assert_eq!(
+        field(&replies[0], "exitCode").as_deref(),
+        Some("0"),
+        "a call naming no corpus must reach the startup corpus: {}",
+        replies[0]
+    );
+    assert!(
+        replies[0].contains(&task_one),
+        "the claim was taken on the startup corpus's own task: {}",
+        replies[0]
+    );
+
+    // 2. A declared identity: that corpus, addressed on its own.
+    assert_eq!(
+        field(&replies[1], "exitCode").as_deref(),
+        Some("0"),
+        "a declared corpus must be reachable by name: {}",
+        replies[1]
+    );
+    assert!(
+        replies[1].contains(&task_two),
+        "the claim was taken on the named corpus's own task: {}",
+        replies[1]
+    );
+
+    // 3. An identity nobody declared: refused by name, and nothing runs.
+    //    The code is what settles that no fallback happened -- a call that had
+    //    quietly gone to the startup corpus would have answered that corpus's
+    //    listing with exit 0.
+    assert_eq!(
+        field(&replies[2], "exitCode").as_deref(),
+        Some(ExitCode::Environment.code().to_string().as_str()),
+        "an undeclared corpus is refused with the code §4 declares for an \
+         environment to repair: {}",
+        replies[2]
+    );
+    assert_eq!(
+        field(&replies[2], "isError").as_deref(),
+        Some("true"),
+        "a refusal is an error result: {}",
+        replies[2]
+    );
+    assert!(
+        replies[2].contains(&nobodys),
+        "refused by name, so the name is in the refusal: {}",
+        replies[2]
+    );
+    assert!(
+        replies[2].contains(&format!("ank config --user corpora.{nobodys}")),
+        "every refusal names the command that resolves it (§4): {}",
+        replies[2]
+    );
+    assert!(
+        !replies[2].contains("\"contract\""),
+        "the refused call answered a document, so something ran: {}",
+        replies[2]
+    );
+
+    // 4 and 5. Each corpus answers about itself, and about nothing else. This is
+    // the aggregation ADR-621a7fd96ce1 permits: two readings presented one after
+    // the other, never one corpus with two sources.
+    assert!(
+        replies[3].contains("The task of the second corpus")
+            && !replies[3].contains("The task of the first corpus"),
+        "the named corpus answered about the other one: {}",
+        replies[3]
+    );
+    assert!(
+        replies[4].contains("The task of the first corpus")
+            && !replies[4].contains("The task of the second corpus"),
+        "the startup corpus answered about the other one: {}",
+        replies[4]
+    );
+
+    // The claim spaces, which are the refs and are per repository. A merged one
+    // is what ADR-fd98f4bc6dea forbids in the same words the decision it
+    // supersedes used, and this is where it would have had to leave a trace.
+    assert_eq!(
+        claimed_tasks(&one),
+        vec![task_one.clone()],
+        "the first corpus must hold its own claim and only its own"
+    );
+    assert_eq!(
+        claimed_tasks(&two),
+        vec![task_two.clone()],
+        "the second corpus must hold its own claim and only its own"
+    );
+
+    let _ = std::fs::remove_dir_all(&one);
+    let _ = std::fs::remove_dir_all(&two);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The startup corpus is reachable by its own name too, and a path is reachable
+/// by no name at all.
+///
+/// **The set is "what the reader declared plus the startup corpus"**, so the
+/// startup corpus has to answer to its identity and not only to the absence of
+/// one -- otherwise a client looping over the corpora it can see would be able
+/// to name every one of them except the one it is talking to.
+///
+/// **And a corpus is named by an identity, never by a path.** That is the clause
+/// that keeps a declared set from becoming a merged one: a caller who could put
+/// a path here would reach every corpus on the machine, which is `--repo` back
+/// under another name. The refusal names the command that prints a real one.
+#[test]
+fn the_startup_corpus_answers_to_its_own_identity_and_a_path_answers_to_nothing() {
+    let home = declaring_home();
+    let repo = corpus_titled("The only task", Some(&home));
+    let id = corpus_identity(&repo, &home);
+    let path = repo.display().to_string().replace('\\', "/");
+
+    let replies = talk_at(
+        &repo,
+        Some(&home),
+        &[
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"ank_find","arguments":{{"corpus":"{id}"}}}}}}"#
+            ),
+            &format!(
+                r#"{{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{{"name":"ank_find","arguments":{{"corpus":"{path}"}}}}}}"#
+            ),
+        ],
+    );
+    assert_eq!(replies.len(), 2, "{replies:?}");
+
+    assert_eq!(
+        field(&replies[0], "exitCode").as_deref(),
+        Some("0"),
+        "the corpus the server was addressed with is in the set it may reach, \
+         and is reachable by its own identity: {}",
+        replies[0]
+    );
+    assert!(
+        replies[0].contains("The only task"),
+        "and it answered about itself: {}",
+        replies[0]
+    );
+
+    assert_eq!(
+        field(&replies[1], "isError").as_deref(),
+        Some("true"),
+        "a path is not a corpus name: {}",
+        replies[1]
+    );
+    assert!(
+        replies[1].contains("is not a repository identity")
+            && replies[1].contains("ank status --json"),
+        "the refusal says what a name is and names the command that prints one: \
+         {}",
+        replies[1]
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// Every tool advertises the argument, asserted through the process.
+///
+/// The unit test in `crates/ank-mcp` asserts the same property of the generated
+/// schema; this asserts it of the bytes that leave the server, which is the rule
+/// CLAUDE.md states and this file's own header repeats: what a protocol promises
+/// is what leaves the process. A schema that was right in the function and
+/// absent from the reply would be exactly the failure the golden harness exists
+/// to catch elsewhere.
+#[test]
+fn every_advertised_tool_carries_the_corpus_argument() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#],
+    );
+    let listed = advertised(&replies[0]);
+    assert_eq!(listed.len(), COMMANDS.len(), "{listed:?}");
+    // One tool is one object, and every one of them has to carry the property.
+    // Counting is the assertion: a subset would still contain the substring.
+    assert_eq!(
+        replies[0]
+            .matches("\"corpus\":{\"type\":\"string\"")
+            .count(),
+        COMMANDS.len(),
+        "the corpus argument is on every tool or it is a curated subset of the \
+         corpora a client can reach per verb (ADR-fd98f4bc6dea): {}",
+        replies[0]
     );
     let _ = std::fs::remove_dir_all(&repo);
 }

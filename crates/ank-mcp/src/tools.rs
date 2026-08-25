@@ -21,12 +21,13 @@ use ank_contract::{CommandSpec, COMMANDS};
 /// the arguments the table gives it. What is withheld is the three flags that
 /// would let a caller contradict the process it is talking to.
 ///
-/// `--repo` because the corpus a call runs against is the server's to choose and
-/// never the caller's: today that is the one it was addressed with at startup,
-/// and under ADR-fd98f4bc6dea it becomes one of the several its reader declared,
-/// named by a `corpus` argument the table validates (TASK-2f31789f6af2). Either
-/// way a caller cannot reach a corpus by writing a path into a flag, which is
-/// what would turn a declared set into a merged one.
+/// `--repo` because a corpus is named by its identity here and never by a path
+/// (ADR-fd98f4bc6dea, [`crate::corpora`]). A server may reach several corpora --
+/// the one it was addressed with at startup, and the ones its reader declared --
+/// and every one of them is reached by naming a root commit that resolves to a
+/// declaration. A caller that could write a path into a flag would reach every
+/// corpus on the machine, which is exactly what turns a declared set into a
+/// merged one.
 /// `--json` because the server always wants the machine document and a client
 /// asking for the human one would get a shape nothing describes. `--quiet` means
 /// nothing to a caller that reads a return value rather than a terminal.
@@ -123,6 +124,23 @@ fn input_schema(spec: &CommandSpec) -> String {
         };
         props = props.obj(name, value);
     }
+    // **Every tool, and never a list of the ones it would suit**
+    // (ADR-fd98f4bc6dea). The argument says which corpus a call is addressed to,
+    // and a tool that did not carry it would be a verb a multi-corpus client can
+    // only reach in one of them -- the curated subset this surface was permitted
+    // on condition of not having, arriving through the back door as a curated
+    // set of *corpora* per verb.
+    //
+    // Last, after the verb's own arguments, so that a schema a client already
+    // reads is extended rather than rewritten: no property it knew has moved.
+    // It is never in `required`, which is the whole of what optional means here
+    // -- absent, the call goes where every call went before this existed.
+    props = props.obj(
+        crate::corpora::ARGUMENT,
+        Obj::new()
+            .str("type", "string")
+            .str("description", crate::corpora::HELP),
+    );
     Obj::new()
         .str("type", "object")
         .obj("properties", props)
@@ -139,4 +157,74 @@ pub fn list() -> String {
             .finish()
     });
     ank_contract::json::array(tools)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every tool carries the argument, and the table cannot take the name back.
+    ///
+    /// Two assertions and they are two different failures. The first is the
+    /// criterion: a verb the table gains reaches this surface addressable in
+    /// every corpus the server can reach, with no edit here. The second is the
+    /// collision that would make the first one silently false -- a verb
+    /// declaring a `--corpus` flag would put two properties of that name in one
+    /// schema, and the surface's own argument is the one a client would stop
+    /// being able to pass.
+    #[test]
+    fn every_tool_carries_the_corpus_argument_and_no_verb_shadows_it() {
+        let needle = format!("\"{}\":", crate::corpora::ARGUMENT);
+        for spec in COMMANDS {
+            let schema = input_schema(spec);
+            assert!(
+                schema.contains(&needle),
+                "{} does not advertise the corpus argument, so a client can \
+                 reach it in one corpus only (ADR-fd98f4bc6dea): {schema}",
+                spec.name
+            );
+            assert_eq!(
+                schema.matches(&needle).count(),
+                1,
+                "{} advertises the corpus argument twice: a verb has grown a \
+                 --corpus flag and the table now shadows the surface's own \
+                 argument",
+                spec.name
+            );
+            assert!(
+                ank_contract::find_flag(spec, "--corpus").is_none(),
+                "{} declares a --corpus flag: the surface names a corpus by its \
+                 identity and a verb naming one by anything else would be a \
+                 second answer to one question",
+                spec.name
+            );
+        }
+    }
+
+    /// The argument is optional, and optional is a property of the document
+    /// rather than of the prose: nothing in a generated schema is required, so a
+    /// client that passed no corpus yesterday passes none today.
+    #[test]
+    fn the_corpus_argument_is_never_required() {
+        for spec in COMMANDS {
+            let schema = input_schema(spec);
+            assert!(
+                !schema.contains("\"required\""),
+                "{} requires something, and the corpus argument must not be it: \
+                 {schema}",
+                spec.name
+            );
+        }
+    }
+
+    /// The three global flags stay the server's, `--repo` most of all: it is the
+    /// one that takes a path, and a path is how a declared set becomes a merged
+    /// one.
+    #[test]
+    fn the_globals_stay_the_servers() {
+        for flag in SERVER_FLAGS {
+            assert!(!client_flag(flag), "{flag} reached the client");
+        }
+        assert!(client_flag("--json-lines"), "a flag is not a prefix match");
+    }
 }

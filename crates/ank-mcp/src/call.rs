@@ -77,8 +77,14 @@ impl Outcome {
 /// The argv for a call, from the table and the client's arguments.
 ///
 /// `--repo` and `--json` are the server's, added here and never accepted from a
-/// caller: one process speaks for one corpus, and the machine document is the
-/// only shape this surface can describe.
+/// caller: the corpus is resolved from the identity a call named
+/// ([`crate::corpora`]) and never written by hand into a flag, and the machine
+/// document is the only shape this surface can describe.
+///
+/// **One `--repo`, and it names one corpus.** This is where the ban on a merged
+/// claim space is mechanical rather than argued: whatever a server may reach,
+/// what leaves it is one process addressed to one repository, exactly as a shell
+/// would have addressed it.
 pub fn argv(spec: &CommandSpec, repo: &Path, args: &Arguments) -> Vec<String> {
     let mut out = vec![spec.name.to_string()];
     out.extend(args.positionals.iter().cloned());
@@ -107,7 +113,7 @@ pub struct Arguments {
     pub flags: Vec<(String, Vec<String>)>,
 }
 
-/// Runs the verb and returns what the process said.
+/// Runs the verb in one corpus and returns what the process said.
 ///
 /// The identity is the server's and is typed (§3, ADR-3877d2b7c0f5). One stdio
 /// server serves one client, so one process is one caller: nothing here pools
@@ -115,11 +121,28 @@ pub struct Arguments {
 /// nothing holds a claim on a client's behalf either. The claim a call takes is
 /// the claim the CLI would have taken in that clone, on the same ref, arbitrated
 /// by the same compare-and-swap.
-pub fn run(spec: &CommandSpec, address: &Address, args: &Arguments) -> std::io::Result<Outcome> {
+///
+/// **The corpus is an argument and the address is not.** A server may be able to
+/// reach several (ADR-fd98f4bc6dea), and this function still sees exactly one --
+/// which is why a claim taken through it is a claim in one clone and why no
+/// arbitration across clones can be expressed here at all. The identity a call
+/// writes under does not change with the corpus, and neither does the ref that
+/// arbitrates it: one identity holding a lease in two corpora is two leases,
+/// each on its own `refs/ank/*`, and that is the shape ADR-fd98f4bc6dea permits.
+///
+/// The working directory moves with the corpus. A relative path in an argument
+/// is resolved by the process that receives it, so a call addressed to one
+/// corpus and run from another would resolve `crates/**` against the wrong tree.
+pub fn run(
+    spec: &CommandSpec,
+    address: &Address,
+    corpus: &Path,
+    args: &Arguments,
+) -> std::io::Result<Outcome> {
     let out = Command::new(&address.exe)
-        .args(argv(spec, &address.repo, args))
+        .args(argv(spec, corpus, args))
         .env("ANK_AGENT", identity())
-        .current_dir(&address.repo)
+        .current_dir(corpus)
         .output()?;
     Ok(Outcome {
         code: out.status.code().unwrap_or(1),
