@@ -141,7 +141,7 @@ pub fn run(
 ) -> std::io::Result<Outcome> {
     let out = Command::new(&address.exe)
         .args(argv(spec, corpus, args))
-        .env("ANK_AGENT", identity())
+        .env("ANK_AGENT", identity(&address.version))
         .current_dir(corpus)
         .output()?;
     Ok(Outcome {
@@ -156,9 +156,21 @@ pub fn run(
 /// `$ANK_AGENT` from the environment wins, so a deployment that already names its
 /// agents keeps naming them; otherwise the process names itself and its version,
 /// which is the convention of §3 rather than a hostname.
-pub fn identity() -> String {
+///
+/// **The name is the server's and the number is the binary's**
+/// (TASK-ae64d1c5678d). `ank-mcp` is what wrote the record, which is what §3
+/// asks a typed identity to say and is the same name `serverInfo` gives a
+/// client. The version beside it is [`Address::version`] and not this crate's
+/// `CARGO_PKG_VERSION`: a claim record outlives the session that took it, and a
+/// reader who wants the build that wrote it needs a number `ank --version`
+/// answers with -- one the release gates against the tag -- rather than the
+/// number of a library nobody can install. `serverInfo` reads the same value, so
+/// the two cannot disagree.
+///
+/// [`Address::version`]: crate::Address::version
+pub fn identity(version: &str) -> String {
     std::env::var("ANK_AGENT")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| format!("ank-mcp/{}", env!("CARGO_PKG_VERSION")))
+        .unwrap_or_else(|| format!("ank-mcp/{version}"))
 }

@@ -42,6 +42,12 @@
 //! is the file and never the dispatch, and `crates/ank-mcp/tests/dependencies.rs`
 //! reads that back out of the build rather than trusting this paragraph.
 //!
+//! **The version a client is told is the binary's, and this crate's own number
+//! reaches nobody.** Both places a version leaves this surface -- `serverInfo`
+//! at the handshake and the `ank-mcp/<version>` identity a call writes under --
+//! read [`Address::version`], which the dispatch hands down. The argument is on
+//! that field.
+//!
 //! **This does not make a protocol the preferred route.** §2's common denominator
 //! is shell, that is still what the skill teaches, and this exists for the client
 //! that has no shell at all.
@@ -59,7 +65,7 @@ const PROTOCOL_VERSION: &str = "2025-06-18";
 
 /// Where the surface reaches, resolved by the dispatch and never here.
 ///
-/// Both halves are the caller's foundation rather than this crate's: the verb
+/// Every field is the caller's foundation rather than this crate's: the verb
 /// resolves the corpus the way every other verb resolves it, so a missing
 /// `.ank/` is the refusal it already is instead of a JSON-RPC error a client
 /// would have to decode, and it names the binary so that this crate has one
@@ -68,6 +74,39 @@ pub struct Address {
     /// The binary a call runs. `std::env::current_exe()` of the process serving
     /// the verb -- see the note on [`call`].
     pub exe: PathBuf,
+    /// The version that binary answers `--version` with, and the only version
+    /// this surface ever tells anyone (TASK-ae64d1c5678d).
+    ///
+    /// **This is the choice, and it is made here.** `crates/ank-mcp` carries a
+    /// version of its own, as every crate must, and until now that number was
+    /// what a client read in `serverInfo` and what landed in the
+    /// `ank-mcp/<version>` identity every claim taken through this surface is
+    /// written under. It was held to the release tag by
+    /// `.github/scripts/check-version.sh`, and the reason that gate gave was
+    /// that the release shipped `ank-mcp` as a file of its own. It does not any
+    /// more (ADR-1ea31c2f3c5a): the surface is a verb, so the file went and the
+    /// gate went with it -- correctly, by the reason as written. What the reason
+    /// never covered is that the number went on reaching a client anyway.
+    ///
+    /// Two repairs were available. Gate this crate's version against the tag
+    /// again: that restores a rule whose stated justification is gone, and
+    /// leaves two numbers that agree only because somebody remembered -- one
+    /// more of the literals `check-version.sh` exists because nobody gets right
+    /// forever. Or stop the crate's number reaching a client at all, which is
+    /// this: what a client is told is the version of the executable it is
+    /// talking to, and `crates/ank-mcp/Cargo.toml`'s literal becomes what a
+    /// crate version is for, a number cargo resolves the workspace with.
+    ///
+    /// **Handed down, because it cannot honestly be computed here.** This crate
+    /// must not link `ank-cli` -- that is ADR-fd98f4bc6dea and
+    /// `tests/dependencies.rs` reads it back out of the build -- so
+    /// `CARGO_PKG_VERSION` here can only ever name this crate. The dispatch
+    /// already hands over what the surface cannot work out for itself, and this
+    /// is one more of those. It is exact rather than approximately right:
+    /// [`Address::exe`] is `current_exe()`, the process serving the verb, so the
+    /// version compiled into that process *is* the version it prints. There is
+    /// nothing to parse and nothing to keep in step.
+    pub version: String,
     /// The corpus the process was addressed with, which is where a call goes
     /// when it names none.
     ///
@@ -144,11 +183,17 @@ fn handle(line: &str, reach: &corpora::Reach) -> Option<String> {
                 // it: renaming it would rename every entry in every client
                 // that already talks to this surface, to say something the
                 // command line beside it already says.
+                //
+                // The version beside it is the binary's, not this crate's, and
+                // is the same value `call::identity` writes into the process
+                // identity: a client reads a version here and an agent reads
+                // one off a claim record, and the two are one number or they
+                // are a drift nobody can see (see [`Address::version`]).
                 .obj(
                     "serverInfo",
                     Obj::new()
                         .str("name", "ank-mcp")
-                        .str("version", env!("CARGO_PKG_VERSION")),
+                        .str("version", &reach.address().version),
                 )
                 .str(
                     "instructions",

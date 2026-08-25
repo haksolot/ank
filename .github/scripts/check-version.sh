@@ -97,6 +97,21 @@ compare() {
 # -- are not gated here, for the reason ADR-1ea31c2f3c5a removed the gate that
 # used to be: nothing published carries any of them as a file of its own, so a
 # version they disagree on is not a version anybody downloads.
+#
+# **That reason is about files, and one of those libraries was also telling
+# people a number** (TASK-ae64d1c5678d). `ank-mcp` used to be gated here and was
+# dropped with the rest of the second executable's machinery, while its
+# `CARGO_PKG_VERSION` went on reaching a client in `serverInfo` and landing in
+# the `ank-mcp/<version>` identity of every claim taken through the surface. The
+# repair is not a gate back: the surface reports the version the dispatch hands
+# it, which is `ank-cli`'s, so the number a client reads is a number already
+# compared above. Gating the library too would have put a second literal here
+# whose only job was to be equal to the first -- one more of the ten, and the
+# whole argument of this script is that nobody keeps ten right forever.
+#
+# So the rule for this loop is what a release publishes as a file, and nothing
+# else. A library that starts telling a reader its own number belongs in one of
+# the two lists: this one, or `Address::version`'s.
 for crate in ank-cli ank-core; do
   f="crates/$crate/Cargo.toml"
   compare "$f" "$f" "$(cargo_version "$f" 2>/dev/null)" \
