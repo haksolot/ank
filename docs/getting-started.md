@@ -38,7 +38,7 @@ instructions predate its tool.
 
 Every route places a second executable beside `ank`: **`ank-mcp`**, the same
 verbs over MCP, for a client that has no shell to run them in. It is freight of
-the three install routes rather than a fourth beside them (ADR-e39a44f80e0e),
+the three install routes rather than a fourth beside them,
 so there is nothing further to fetch:
 
     $ ank-mcp --version

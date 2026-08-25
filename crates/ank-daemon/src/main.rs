@@ -3,9 +3,9 @@
 //!
 //! **It answers no verb.** There is no query surface here, no socket, no
 //! protocol and no subset of the CLI wearing a different name. A caller that
-//! wants an answer runs `ank`, which finds a cache already warm. ADR-372b82af1ec7
-//! settled that a second surface is a generated full passthrough or it does not
-//! exist, and a daemon answering the three questions a board finds convenient
+//! wants an answer runs `ank`, which finds a cache already warm.
+//! ADR-fd98f4bc6dea settles that a second surface is a generated full
+//! passthrough or it does not exist, and a daemon answering the three questions a board finds convenient
 //! would be the curated subset that decision refused, arrived at from the other
 //! direction.
 //!
@@ -157,9 +157,9 @@ fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<Exit
         return Ok(ExitCode::Ok);
     }
     if args.iter().any(|a| a == "--version") {
-        // The shape `ank --version` uses, and the same number: the binaries come
-        // out of one build (ADR-e39a44f80e0e), so a caller holding both reads
-        // one answer rather than two it has to reconcile.
+        // The shape `ank --version` uses, and the same number: both come out of
+        // one build, so a caller holding both reads one answer rather than two
+        // it has to reconcile.
         let _ = writeln!(out, "ank-daemon {}", env!("CARGO_PKG_VERSION"));
         return Ok(ExitCode::Ok);
     }

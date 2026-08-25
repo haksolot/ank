@@ -19,9 +19,9 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn bin(name: &str) -> PathBuf {
-    // The sibling rule the server itself follows: `ank` sits beside `ank-mcp`
-    // because ADR-372b82af1ec7 ships them together. In a test tree that is
-    // `target/<profile>/`, which is also where cargo puts both.
+    // The rule the server itself follows: `ank` sits beside `ank-mcp`, because
+    // the two are built together. In a test tree that is `target/<profile>/`,
+    // which is also where cargo puts both.
     let mcp = PathBuf::from(env!("CARGO_BIN_EXE_ank-mcp"));
     let dir = mcp.parent().expect("a built binary has a directory");
     let exe = if cfg!(windows) {
@@ -175,7 +175,7 @@ fn the_surface_it_advertises_is_the_table_and_nothing_else() {
     assert_eq!(
         listed, table,
         "the advertised surface is not the table, in the table's order. \
-         ADR-372b82af1ec7 allows a full-surface passthrough and nothing else, so \
+         ADR-fd98f4bc6dea allows a full-surface passthrough and nothing else, so \
          any difference here is either a curated subset or a list somebody wrote \
          by hand"
     );
@@ -238,8 +238,8 @@ fn the_server_refuses_a_flag_that_would_make_it_two_corpora() {
     );
     assert!(
         replies[0].contains("belongs to the server"),
-        "--repo must be refused by name: one process speaks for one corpus \
-         (ADR-372b82af1ec7): {}",
+        "--repo must be refused by name: the corpus is the server's to choose \
+         and never the caller's (ADR-fd98f4bc6dea): {}",
         replies[0]
     );
     assert!(

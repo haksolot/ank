@@ -237,13 +237,13 @@ side, which is what makes them worth copying.
 ## The protocol surface is the same verbs, over MCP
 
 A client with no shell reaches ank through `ank-mcp`, which installs beside the
-CLI by every route that installs the CLI (ADR-e39a44f80e0e). The configuration
+CLI by every route that installs the CLI. The configuration
 to paste is in [getting-started.md](getting-started.md); what it *is* belongs
 here, because four properties of it are load-bearing and none of them is
 visible from a tool list.
 
 **Every verb `COMMANDS` carries, generated from that table.** Not a curated
-subset, under any protocol (ADR-372b82af1ec7). It is the same table `ank help
+subset, under any protocol (ADR-fd98f4bc6dea). It is the same table `ank help
 --json` is generated from, walked: the summary becomes the tool description, the
 refusals and their exit codes are written into it so a client can read what a
 call will refuse before making it, and the flags become the input schema. One
@@ -307,7 +307,7 @@ Everything else worth knowing about it as an integrator is what it refuses to be
 **It is not a surface.** No socket, no protocol, no query of its own, and no
 subset of the verbs. There is nothing here to ask: a caller that wants an answer
 runs the CLI, or talks to `ank-mcp`. A daemon answering the three questions a
-dashboard finds convenient would be the curated subset ADR-372b82af1ec7 refused,
+dashboard finds convenient would be the curated subset ADR-fd98f4bc6dea refuses,
 reached from the other direction, and it would be a third dispatch path in a
 project that has spent its history reducing to one. It does *tell* you when a
 corpus it watches changes, on a stream described below, and that is push and

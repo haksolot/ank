@@ -127,7 +127,7 @@ jobs:
       - name: test
         run: cargo test --workspace --target ${{ matrix.target }}
 
-      # Both executables, one invocation, one checkout (ADR-e39a44f80e0e). Two
+      # Both executables, one invocation, one checkout. Two
       # `cargo build` lines would compile the same table twice and could be
       # made to disagree; one line cannot. `ank-mcp` is a generated passthrough
       # over `ank_contract::COMMANDS`, so a surface built from an older table
@@ -150,7 +150,7 @@ jobs:
           esac
           name="ank-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
-          # Both, into every archive. ADR-e39a44f80e0e: where a route places
+          # Both, into every archive: where a route places
           # ank, it places ank-mcp next to it, and the archive is the route
           # install.sh and install.ps1 unpack.
           if [ "${{ matrix.archive }}" = "zip" ]; then
@@ -204,7 +204,7 @@ jobs:
       # release page serves and what install.sh and install.ps1 unpack, and a
       # `cp` that silently did not happen leaves the executable in `target/`
       # and out of the tarball -- where nothing else in this file would notice.
-      # ADR-e39a44f80e0e says no route carries one without the other; this is
+      # No route carries one without the other; this is
       # that condition, asserted on the artefact rather than assumed from the
       # step above it.
       - name: the archive carries both executables
@@ -423,7 +423,7 @@ jobs:
           echo "npx:    $actual"
           test "$expected" = "$actual"
 
-      # The criterion of ADR-e39a44f80e0e, on the machine that will run it. The
+      # The pairing criterion, on the machine that will run it. The
       # two executables come out of one `cargo build`, and the observable form
       # of that is answering `--version` with one number.
       #

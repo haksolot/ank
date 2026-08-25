@@ -21,7 +21,7 @@ the platform package with `require.resolve` and executes what it finds.
 
 **Two executables, one package, one version.** Each platform package carries
 `ank` and `ank-mcp`, the protocol surface, out of the same build
-(ADR-e39a44f80e0e): no route carries one without the other, so there is no
+: no route carries one without the other, so there is no
 install holding a CLI and a passthrough generated from a different table. The
 wrapper declares both as `bin` and resolves them by one route -- `bin/ank` and
 `bin/ank-mcp` are two lines each, and `bin/wrapper.js` is the resolution, the

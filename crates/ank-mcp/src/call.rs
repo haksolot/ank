@@ -18,9 +18,11 @@ use std::process::Command;
 
 /// Where the `ank` binary is, given that this one is its sibling.
 ///
-/// Beside this executable first, because ADR-372b82af1ec7 says the protocol
-/// surface ships from this repository as a sibling binary: the two travel
-/// together, so the copy next to us is the copy we were released with. `PATH` is
+/// Beside this executable first: the two travel together today, so the copy
+/// next to us is the copy we were released with. That siblinghood is on its way
+/// out -- ADR-fd98f4bc6dea makes this surface a verb of the one binary, and
+/// TASK-e655d28c83cb is where the file folds in -- but the road out of this
+/// process does not change with it: the verb spawns `ank` exactly as this does. `PATH` is
 /// the fallback, and `ANK_BIN` overrides both for a caller that has a reason.
 ///
 /// Getting this wrong silently would be the worst failure available here: a
@@ -120,7 +122,7 @@ pub struct Arguments {
 ///
 /// The identity is the server's and is typed (§3, ADR-3877d2b7c0f5). One stdio
 /// server serves one client, so one process is one caller: nothing here pools
-/// several clients under a single identity, which ADR-372b82af1ec7 forbids, and
+/// several clients under a single identity, which ADR-fd98f4bc6dea forbids, and
 /// nothing holds a claim on a client's behalf either. The claim a call takes is
 /// the claim the CLI would have taken in that clone, on the same ref, arbitrated
 /// by the same compare-and-swap.

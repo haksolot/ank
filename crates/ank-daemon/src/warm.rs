@@ -44,9 +44,8 @@ use std::process::{Command, Stdio};
 /// binaries in unusual places uses; it is checked first so neither has to
 /// arrange a `PATH`.
 ///
-/// **Then beside this binary**, which is the rule the release already follows
-/// for the pair it ships (ADR-e39a44f80e0e): where a route places `ank`, it
-/// places its siblings next to it. Then `PATH`, which is where a reader who
+/// **Then beside this binary**, which is where the release puts `ank` today:
+/// what a route places, it places together. Then `PATH`, which is where a reader who
 /// installed one and built the other will have it.
 pub fn locate_ank() -> Result<PathBuf> {
     if let Some(told) = std::env::var_os("ANK_BIN").filter(|v| !v.is_empty()) {
