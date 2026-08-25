@@ -73,7 +73,15 @@ jobs:
               exit 1
             }
           done
-          echo "--help names all three targets"
+          # The flag that turns the welcome off is documented only if it is
+          # here: one a caller cannot find is one they cannot use.
+          for f in --no-welcome ANK_NO_WELCOME; do
+            printf '%s' "$out" | grep -q -- "$f" || {
+              echo "--help does not name $f"
+              exit 1
+            }
+          done
+          echo "--help names all three targets, and the flag that draws nothing"
 
       # The first of the two failures that matter. A fake `uname` on PATH is
       # what makes this testable on a machine that is one of the supported
@@ -175,18 +183,53 @@ jobs:
           echo "the staged release never came up"
           exit 1
 
-      - name: the staged release installs and answers with its version
+      # The install itself, and with it the absence ADR-5fbd99bf6fd5 is written
+      # as. A runner is precisely a machine with no terminal, so the welcome has
+      # to produce nothing at all here -- asserted on the bytes rather than on
+      # the rendering, because an escape sequence is invisible in exactly the
+      # log somebody would open to check for it.
+      - name: a non-interactive run draws nothing, and answers with its version
         env:
           ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
         run: |
           set -e
-          sh install.sh --version "$STAGED_VERSION" --dir "$PWD/staged-bin"
+          esc=$(printf '\033')
+
+          # Both streams into a file, which is what
+          # `curl ... | sh > install.log 2>&1` leaves behind.
+          sh install.sh --version "$STAGED_VERSION" --dir "$PWD/staged-bin" > staged.log 2>&1
+          cat staged.log
+
+          if LC_ALL=C grep -q "$esc" staged.log; then
+            echo "an escape sequence reached the log with no terminal attached:"
+            LC_ALL=C cat -v staged.log
+            exit 1
+          fi
+          # The art is ASCII, so the frame is asserted absent as well as the
+          # escapes that animate it: a logo drawn without moving a cursor would
+          # pass the test above and still be noise in the log.
+          if grep -q '####' staged.log; then
+            echo "the logo was drawn with no terminal attached"
+            exit 1
+          fi
+
           got=$("$PWD/staged-bin/ank" --version)
           echo "ank --version: $got"
           test "$got" = "ank ${STAGED_VERSION} (staged)" || {
             echo "expected: ank ${STAGED_VERSION} (staged)"
             exit 1
           }
+          echo "no escape sequence, no frame, and the binary answers --version"
+
+          # The flag, on a run that already had no terminal: it has to be
+          # accepted and to change nothing. The same directory, so the two logs
+          # can differ in nothing but what the flag turns off.
+          sh install.sh --no-welcome --version "$STAGED_VERSION" --dir "$PWD/staged-bin" > flag.log 2>&1
+          diff staged.log flag.log || {
+            echo "--no-welcome changed what the install said"
+            exit 1
+          }
+          echo "--no-welcome is accepted, and changes nothing"
 
       # The second of the two failures that matter, and the reason the .sha256
       # is published at all. One byte appended to the archive, the checksum
@@ -331,13 +374,16 @@ jobs:
         run: |
           & ./install.ps1 -Help
           $out = (& ./install.ps1 -Help *>&1 | Out-String)
-          foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh') {
+          # -NoWelcome is in the list for the reason the others are: a switch
+          # a caller cannot find is a switch they cannot use.
+          foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh',
+                              '-NoWelcome', 'ANK_NO_WELCOME') {
             if ($out -notmatch [regex]::Escape($needle)) {
               "-Help does not name $needle"
               exit 1
             }
           }
-          "-Help names the target, the environment and the other script"
+          "-Help names the target, the environment, the other script and the switch"
 
       # The first of the two failures that matter. The architecture is read out
       # of the environment precisely so this is testable on a machine that is
@@ -377,7 +423,37 @@ jobs:
         run: |
           $name = "ank-$env:STAGED_VERSION-x86_64-pc-windows-msvc"
           New-Item -ItemType Directory -Path "stage/pack/$name" -Force | Out-Null
-          Set-Content -Path "stage/pack/$name/ank.exe" -Value 'staged stand-in for ank' -NoNewline
+
+          # A real executable and not a text file wearing the name, because the
+          # claim under test is that the installed binary answers --version and
+          # Windows will not run a .exe that is not one. csc.exe comes with the
+          # .NET Framework that is part of the OS, so this asks the image for
+          # nothing it does not already carry.
+          #
+          # Add-Type -OutputAssembly would read better and is not used:
+          # PowerShell 7 dropped that parameter, and these steps run under pwsh.
+          $src = @(
+            'public class StandIn {',
+            '    public static int Main(string[] args) {',
+            '        if (args.Length > 0 && args[0] == "--version") {',
+            "            System.Console.WriteLine(`"ank $env:STAGED_VERSION (staged)`");",
+            '            return 0;',
+            '        }',
+            '        System.Console.Error.WriteLine("staged stand-in for ank");',
+            '        return 2;',
+            '    }',
+            '}'
+          )
+          Set-Content -Path 'stage/standin.cs' -Value $src
+
+          $csc = Get-ChildItem "$env:WINDIR\Microsoft.NET\Framework64\v4.0.*\csc.exe" `
+            -ErrorAction SilentlyContinue | Select-Object -Last 1
+          if (-not $csc) { "no csc.exe on this image, so no runnable stand-in can be built"; exit 1 }
+          & $csc.FullName /nologo /target:exe /out:"stage\pack\$name\ank.exe" 'stage\standin.cs'
+          if ($LASTEXITCODE -ne 0) { "the stand-in did not compile"; exit 1 }
+
+          # The source stays outside stage/pack, so the archive carries the
+          # binary and the README and nothing this step needed to build them.
           Set-Content -Path "stage/pack/$name/README.md" -Value 'staged'
 
           Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -410,20 +486,54 @@ jobs:
           "the staged release never came up"
           exit 1
 
-      - name: the staged release installs what the archive carried
+      # The install itself, and with it the absence ADR-5fbd99bf6fd5 is written
+      # as. A runner is precisely a machine with no console, so the welcome has
+      # to produce nothing at all here.
+      #
+      # install.ps1 moves the cursor through $Host.UI.RawUI rather than with an
+      # escape sequence -- Windows PowerShell 5.1 in conhost prints ESC[12A
+      # instead of obeying it -- so the escape assertion below is a floor rather
+      # than the whole of the claim. The frame is asserted absent too, and that
+      # is the one that would catch a guard which stopped holding.
+      - name: a non-interactive run draws nothing, and answers with its version
         env:
           ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
         run: |
+          $esc = [char]27
           $LASTEXITCODE = 0
-          & ./install.ps1 -Version $env:STAGED_VERSION -Dir "$PWD/staged-bin"
+          $out = (& ./install.ps1 -Version $env:STAGED_VERSION -Dir "$PWD/staged-bin" *>&1 | Out-String)
+          $out
           if ($LASTEXITCODE -ne 0) { "the staged install failed"; exit 1 }
-          $got = Get-Content "$PWD/staged-bin/ank.exe" -Raw
-          "installed content: $got"
-          if ($got -ne 'staged stand-in for ank') {
-            "the installed file is not what the archive carried"
+
+          if ($out.Contains($esc)) {
+            "an escape sequence reached the transcript with no console attached"
             exit 1
           }
-          "installed exactly what the staged archive carried"
+          if ($out -match '####') {
+            "the logo was drawn with no console attached"
+            exit 1
+          }
+
+          $got = & "$PWD/staged-bin/ank.exe" --version
+          "ank --version: $got"
+          if ($got -ne "ank $env:STAGED_VERSION (staged)") {
+            "expected: ank $env:STAGED_VERSION (staged)"
+            exit 1
+          }
+          "no escape sequence, no frame, and the binary answers --version"
+
+          # The switch, on a run that already had no console: it has to be
+          # accepted and to change nothing. The same directory, so the two
+          # transcripts can differ in nothing but what the switch turns off.
+          $LASTEXITCODE = 0
+          $flag = (& ./install.ps1 -NoWelcome -Version $env:STAGED_VERSION -Dir "$PWD/staged-bin" *>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { "-NoWelcome failed the install"; exit 1 }
+          if ($flag -ne $out) {
+            "-NoWelcome changed what the install said"
+            $flag
+            exit 1
+          }
+          "-NoWelcome is accepted, and changes nothing"
           exit 0
 
       # The second of the two failures that matter, and the reason the .sha256

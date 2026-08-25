@@ -24,6 +24,12 @@ Exit codes, so a caller can branch on the failure rather than on the message:
   4  the checksum did not match the one the release published
   5  a runtime this script needs is missing
 
+-NoWelcome, or ANK_NO_WELCOME in the environment, turns off everything this
+script draws for a human and leaves only the lines a machine reads. It is
+absent from the list above on purpose: the welcome is drawn before the first
+request goes out, nothing in it can fail, and a flag able to change one of
+these five codes would be a flag that made the install depend on it.
+
 They are the codes install.sh returns for the same failures, and they reach a
 caller who runs this as a file. The one-liner above runs it through `iex`, where
 `exit` would close the window the caller is typing in -- so under `iex` a
@@ -35,6 +41,7 @@ not being run as a file.
 param(
     [string]$Version,
     [string]$Dir,
+    [switch]$NoWelcome,
     [switch]$Help
 )
 
@@ -100,11 +107,15 @@ function Show-Usage {
     Say '                      "v0.2.0" and "0.2.0" both work'
     Say '  -Dir <path>         install into <path> instead of'
     Say '                      $env:LOCALAPPDATA\Programs\ank'
+    Say '  -NoWelcome          draw nothing; install exactly what an install with'
+    Say '                      the animation installs, and say the same things about it'
     Say '  -Help               print this and exit'
     Say ''
     Say 'environment:'
     Say '  ANK_VERSION         same as -Version'
     Say '  ANK_INSTALL_DIR     same as -Dir'
+    Say '  ANK_NO_WELCOME      same as -NoWelcome, for a caller that pipes this script'
+    Say '                      into iex and cannot pass a switch to it'
     Say '  ANK_BASE_URL        where the archives are fetched from, for a mirror or a'
     Say '                      staged release; requires -Version, since only GitHub'
     Say '                      can be asked which release is the latest'
@@ -117,6 +128,127 @@ function Show-Usage {
     Say ''
     Say 'exit codes:'
     Say '  1 usage   2 unsupported platform   3 download   4 checksum   5 missing runtime'
+}
+
+# ---------------------------------------------------------------------------
+# Welcome
+# ---------------------------------------------------------------------------
+
+# The logo, at half the resolution of assets/ank.svg and drawn in ASCII: the
+# same twelve lines install.sh holds, because it is the same logo and two
+# spellings of it would drift. That file is the reference for the shape and
+# nothing here reads it -- an installer that fetches a logo before it fetches
+# the binary is an installer with a second way to fail before doing anything
+# useful, so the frames are bytes in this file.
+#
+# ASCII and not U+2588, because the console this lands in is not always UTF-8:
+# a Windows PowerShell 5.1 in conhost under codepage 437 renders a block
+# character as a question mark, and a logo that arrives as question marks is
+# worse than no logo at all.
+$LogoArt = @(
+    '          ####',
+    '        ##    ##',
+    '        ##    ##',
+    '          ####',
+    '          ####',
+    '  ######  ####  ######',
+    '  ####    ####    ####',
+    '  ####    ####    ####',
+    '  ####    ####    ####',
+    '    ################',
+    '',
+    '          ank'
+)
+$LogoWidth = 24
+
+# The cursor is moved through $Host.UI.RawUI and not with an escape sequence,
+# and that is the Windows half of this decision rather than a preference.
+# Windows PowerShell 5.1 in conhost does not turn on virtual terminal
+# processing for its own output, so an ESC[12A written there is printed as
+# glyphs instead of obeyed: the animation would become exactly the mess it
+# exists to avoid, on precisely the shell this file claims as its floor. RawUI
+# is the interface both hosts implement, and it emits no escape sequence at
+# all, on any run.
+function Show-Logo {
+    $ui = $Host.UI.RawUI
+
+    # A window narrower than the art wraps every line, and a block that is
+    # taller than twelve rows is a block the redraw moves back over the middle
+    # of. Nothing is written before this is known.
+    if ($ui.WindowSize.Width -lt $LogoWidth) { return }
+
+    # The blank lines are written before the position is read, so that a window
+    # with the prompt at its bottom does its scrolling now: a coordinate saved
+    # while the buffer is still moving points at the wrong row for every frame
+    # after it.
+    for ($i = 0; $i -lt $LogoArt.Count; $i++) { Say '' }
+
+    $top = $ui.CursorPosition.Y - $LogoArt.Count
+    if ($top -lt 0) { return }
+    $origin = New-Object System.Management.Automation.Host.Coordinates 0, $top
+
+    $savedCursor = $true
+    try {
+        $savedCursor = [Console]::CursorVisible
+        [Console]::CursorVisible = $false
+    } catch {
+        # A host that will not say whether its cursor is visible still draws.
+    }
+
+    try {
+        # Bottom up: the base, then the stem, then the loop, which is the order
+        # the shape is built in and the order that leaves the whole of it
+        # standing at the end. Frame 11 adds the name, and that is the beat the
+        # animation exists for: it costs the time it takes to read the name of
+        # the tool and not a second more.
+        for ($frame = 1; $frame -le 11; $frame++) {
+            $ui.CursorPosition = $origin
+            for ($line = 1; $line -le $LogoArt.Count; $line++) {
+                $text = ''
+                if ($line -le 10 -and $line -ge (11 - $frame)) {
+                    $text = $LogoArt[$line - 1]
+                } elseif ($line -eq 12 -and $frame -eq 11) {
+                    $text = $LogoArt[11]
+                }
+                # Padded rather than erased: there is no clear-to-end-of-line
+                # without an escape sequence, and writing the spaces says the
+                # same thing in the alphabet this function is restricted to.
+                Say $text.PadRight($LogoWidth)
+            }
+            if ($frame -lt 11) { Start-Sleep -Milliseconds 60 }
+        }
+    } finally {
+        try { [Console]::CursorVisible = $savedCursor } catch { }
+    }
+
+    # One blank line under the block, so what the install says next does not
+    # start on the line the name ends on.
+    Say ''
+}
+
+# ADR-5fbd99bf6fd5 read as an absence: where no human is looking, this script
+# draws nothing at all.
+#
+# Both streams are tested and not only one. `irm ... | iex` leaves stdout and
+# stderr on the console, which is the case that must animate; redirecting
+# either of them into a file is the case that must not, since a transcript full
+# of padding and repositioning is the noise this exists to avoid. The host is
+# asked last, and by trying rather than by name: a host with no console answers
+# the two properties above happily and then throws on the first cursor it is
+# asked to place.
+function Test-WelcomeWanted {
+    if ($NoWelcome) { return $false }
+    if ($env:ANK_NO_WELCOME) { return $false }
+    # A runner sets this, and a runner is a machine with no human at it.
+    if ($env:CI) { return $false }
+    try {
+        if ([Console]::IsOutputRedirected) { return $false }
+        if ([Console]::IsErrorRedirected) { return $false }
+        $null = $Host.UI.RawUI.CursorPosition
+    } catch {
+        return $false
+    }
+    return $true
 }
 
 # ---------------------------------------------------------------------------
@@ -326,8 +458,19 @@ if ($BaseUrl) {
 }
 
 # ---------------------------------------------------------------------------
-# Install
+# Welcome, then install
 # ---------------------------------------------------------------------------
+
+# Before anything is asked of the network, which is what "before the download
+# starts" has to mean here: the first request this script makes is the HEAD
+# that resolves the latest tag, and it is below.
+#
+# Wrapped, because a host that cannot place a cursor is not a reason to fail an
+# install: nothing has been downloaded yet and nothing below depends on a frame
+# having been drawn.
+if (Test-WelcomeWanted) {
+    try { Show-Logo } catch { }
+}
 
 # Both of these are session state, and under `iex` the session belongs to the
 # caller: they are restored in the finally below rather than left changed by an
