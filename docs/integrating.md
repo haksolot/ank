@@ -305,11 +305,14 @@ Everything else worth knowing about it as an integrator is what it refuses to be
 (ADR-a22cd3196529).
 
 **It is not a surface.** No socket, no protocol, no query of its own, and no
-subset of the verbs. There is nothing here to bind to: a caller that wants an
-answer runs the CLI, or talks to `ank-mcp`. A daemon answering the three
-questions a dashboard finds convenient would be the curated subset
-ADR-372b82af1ec7 refused, reached from the other direction, and it would be a
-third dispatch path in a project that has spent its history reducing to one.
+subset of the verbs. There is nothing here to ask: a caller that wants an answer
+runs the CLI, or talks to `ank-mcp`. A daemon answering the three questions a
+dashboard finds convenient would be the curated subset ADR-372b82af1ec7 refused,
+reached from the other direction, and it would be a third dispatch path in a
+project that has spent its history reducing to one. It does *tell* you when a
+corpus it watches changes, on a stream described below, and that is push and
+never pull: it says what moved, it says nothing about what moved, and there is
+still nothing to connect to.
 
 **Nothing depends on it.** Every verb gives the same output and the same exit
 code with it stopped; its absence is never an error, and no installation route
@@ -367,6 +370,75 @@ be one product. That is asserted rather than promised, in
 `a_claim_a_watcher_mirrored_is_reported_by_status_and_by_nothing_else`, which
 compares every listing verb byte for byte with the mirror present and absent.
 
+## A change becomes an event, and the stream is yours to follow
+
+The watcher appends a line when a corpus it watches changes, and any program may
+follow it. That is the one thing it offers a consumer, and it is offered as a
+file rather than as a connection: there is nothing to bind to, nothing to
+negotiate, and nothing you can ask it. Several readers follow the same bytes
+without the watcher knowing any of them exist.
+
+**Where it is.** `events.jsonl`, beside the `watch.yml` above and under the same
+directory rule -- `%APPDATA%\ank` on Windows, `$XDG_CONFIG_HOME/ank` elsewhere,
+falling back to `$HOME/.config/ank`. One file for every corpus the watcher was
+handed; each line says which corpus it is about.
+
+**What a line is.** One JSON object, one line, newline-terminated:
+
+    {"schema":1,"corpus":"4f0b8c2d1e6a39572c84ab0d6f31e75c9a2b48d0","change":"entities"}
+    {"schema":1,"corpus":"4f0b8c2d1e6a39572c84ab0d6f31e75c9a2b48d0","change":"refs"}
+
+- `schema` is the shape of the line, and it is **not** the contract version that
+  `--json` documents carry: the two move for different reasons. Within a schema a
+  line may gain a field and may never lose, rename or retype one. Skip a line
+  whose schema you do not know rather than guessing at it.
+- `corpus` is the repository identity of the watched corpus -- the root commit,
+  which `ank status --json` prints under `"corpus"`. Never a path, and no path is
+  carried beside it: a corpus reached by two paths is one corpus, and a field
+  naming one would be an invitation to key on it. Two checkouts of one corpus
+  changing produce two lines carrying the same identity, and the answer to both
+  is the same one read.
+- `change` says what moved. `entities` is "a file under that corpus's `.ank/`
+  was written, added or removed"; `refs` is "the watcher's mirror of the remote's
+  `refs/ank/*` moved", which is how a claim taken in a clone you cannot see
+  reaches you. The vocabulary is closed at those two today and may gain a word.
+
+**What a line is not.** It carries no title, no status, no body, no identifier
+and no entity content of any kind, and it never will: an event that carried the
+new state of a task would save you a call and would make the watcher a source of
+corpus data that nothing generated from the verb table ever validated
+(ADR-a22cd3196529). What changed is on the stream; what is now true of it is what
+the CLI answers, and `no_event_carries_entity_content_a_reader_would_get_from_the_cli`
+asserts the absence rather than promising it. An event also never says what to do
+about itself. There is one sensible thing to do, which is to read the corpus
+again, and the stream does not presume to say so.
+
+**How to follow it.** Open the file, remember the offset you have read to, and
+read the bytes past it whenever you like. Three rules and they are the whole
+protocol:
+
+- Consume **whole lines only**. The watcher writes one line per call, but a
+  reader that took a half-written one would repaint on a corpus it could not
+  name.
+- If the file is **shorter than your offset**, the watcher started it over and
+  you read from the beginning again. The stream is news and not a log: nothing is
+  anchored in it, nothing hashes over it, so it is bounded rather than kept, and
+  what you missed while you were not running is missed whatever the bound is.
+- If the file is **not there**, no watcher has ever run for this reader. That is
+  not an error and not a degraded mode: read the corpus when your person asks, as
+  every installation without a watcher does. If it appears later, follow it from
+  its beginning.
+
+**What it does not license.** Following the stream is not a second way into the
+corpus, and it must not become one. `ank tui` follows it and still reaches every
+byte it shows by running the CLI with `--json`, because the event says a corpus
+moved and nothing more. And an event is a repaint, never a write: the reader
+answers one by running `status` and `find`, and deliberately not `show`, which
+renews the lease when the id is the task the caller holds (ADR-0bb7ea8991bc). A
+screen nobody is sitting at is told the corpus changed all night and keeps
+nobody's claim alive; `an_event_repaints_the_list_and_renews_no_claim` is what
+holds that true.
+
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
@@ -386,3 +458,7 @@ compares every listing verb byte for byte with the mirror present and absent.
   construction. Write your integration against the CLI or the protocol surface,
   and let the watcher make those answers arrive sooner where somebody chose to
   run one.
+- **You may bind to `events.jsonl`**, which is the one exception and a narrow
+  one: it tells you a corpus changed so you can stop asking on a timer. Every
+  answer still comes from the CLI, and your integration has to work with no
+  stream at all, because most installations have none.

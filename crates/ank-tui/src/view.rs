@@ -31,6 +31,7 @@ use crate::ank::{Ank, Failed, Ran};
 use crate::frame::{self, fit, pad, window, wrap};
 use crate::input::{Act, Command};
 use crate::model::{short_of, Detail, Row, Snapshot};
+use crate::stream::Stream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
@@ -60,10 +61,14 @@ pub struct App {
     search: Option<String>,
     /// The first line of the pane on screen.
     offset: usize,
+    /// The change stream this reader is following, or `None` where there is
+    /// nothing to follow. Read at every paint rather than stored as a word,
+    /// because a watcher started after the session opened makes one appear.
+    stream: Option<Stream>,
 }
 
 impl App {
-    pub fn new(size: (usize, usize)) -> App {
+    pub fn new(size: (usize, usize), stream: Option<Stream>) -> App {
         App {
             size,
             view: View::List,
@@ -76,6 +81,7 @@ impl App {
             kind: None,
             search: None,
             offset: 0,
+            stream,
         }
     }
 
@@ -104,6 +110,34 @@ impl App {
                 self.clamp();
             }
             Err(failed) => self.fail(failed),
+        }
+    }
+
+    /// Draw again because the watcher said the corpus moved, and for no other
+    /// reason (TASK-2f7777a1fdff).
+    ///
+    /// **It runs the two verbs that read the corpus and never the one that
+    /// writes.** `ank show <id>` renews the lease when the id is the task the
+    /// caller holds (ADR-0bb7ea8991bc, and TASK-49746735127f found it the hard
+    /// way), so re-reading the open entity here would be a watcher's news
+    /// renewing somebody's claim -- a claim renewed by reporting rather than by
+    /// working, which is what that decision refuses and what
+    /// TASK-b50b340c0bb1 forbade a session to do by sitting still. So `reload`
+    /// and nothing else: the list and the claims come back current, and the body
+    /// on screen stays as it was until its person asks for it with `r`.
+    ///
+    /// That is a decision and not an omission. The alternative -- refreshing the
+    /// open entity too -- is one line, and it is the line that would make an
+    /// unattended screen keep a lease alive.
+    ///
+    /// **The note survives.** An event arriving a second after a `done` must not
+    /// wipe what the CLI answered, which is the one thing on the screen the
+    /// person cannot get back.
+    pub fn repaint(&mut self, ank: &Ank) {
+        let said = self.note.take();
+        self.reload(ank);
+        if self.note.is_none() {
+            self.note = said;
         }
     }
 
@@ -433,9 +467,10 @@ impl App {
         ));
         lines.push(fit(
             &format!(
-                "identity {}   {} claim(s) live",
+                "identity {}   {} claim(s) live   {}",
                 snapshot.identity,
-                snapshot.claims.len()
+                snapshot.claims.len(),
+                self.route()
             ),
             width,
         ));
@@ -491,6 +526,23 @@ impl App {
         lines.push(fit(KEYS, width));
         lines.push(fit(ACT_KEYS, width));
         lines.join("\n") + "\n"
+    }
+
+    /// How this screen is being kept current, in the two words a person needs.
+    ///
+    /// It says a stream exists, never that a watcher is running: nothing here
+    /// can honestly say the second without polling something, and polling
+    /// something is what the stream exists to remove.
+    ///
+    /// **On the list and not on an entity**, deliberately. An event refreshes
+    /// the list and leaves the open body where it was, for the reason
+    /// [`App::repaint`] gives, so a line promising a live screen over a body
+    /// that is not one would be the reader overstating what it does.
+    fn route(&self) -> &'static str {
+        match &self.stream {
+            Some(s) if s.following() => "stream following",
+            _ => "stream none, r to reload",
+        }
     }
 
     fn filter_note(&self) -> String {
@@ -804,9 +856,37 @@ mod tests {
     }
 
     fn app() -> App {
-        let mut a = App::new((100, 30));
+        let mut a = App::new((100, 30), None);
         a.snapshot = Some(snapshot());
         a
+    }
+
+    /// The list says how the screen is being kept current, and it says the
+    /// truth in all three states (TASK-2f7777a1fdff).
+    ///
+    /// The word matters to a person deciding whether to type `r`, and the three
+    /// cases are genuinely different: a stream being followed, a stream that is
+    /// not there yet, and a reader with nowhere to look for one.
+    #[test]
+    fn the_list_says_which_route_is_keeping_it_current() {
+        let mut a = app();
+        assert!(
+            a.list_frame().contains("stream none, r to reload"),
+            "with no stream at all:\n{}",
+            a.list_frame()
+        );
+        a.stream = Some(Stream::stated(false));
+        assert!(
+            a.list_frame().contains("stream none, r to reload"),
+            "a stream that is not there is not a stream:\n{}",
+            a.list_frame()
+        );
+        a.stream = Some(Stream::stated(true));
+        assert!(
+            a.list_frame().contains("stream following"),
+            "and one that is:\n{}",
+            a.list_frame()
+        );
     }
 
     /// The CLI, addressed where there is none: every call fails to spawn and
@@ -867,7 +947,7 @@ mod tests {
 
     #[test]
     fn no_line_of_a_frame_overflows_the_window() {
-        let mut a = App::new((40, 24));
+        let mut a = App::new((40, 24), None);
         a.snapshot = Some(snapshot());
         for line in a.list_frame().lines() {
             assert!(
@@ -1119,7 +1199,7 @@ mod tests {
 
     #[test]
     fn an_act_with_nothing_selected_names_that_and_runs_nothing() {
-        let mut a = App::new((100, 30));
+        let mut a = App::new((100, 30), None);
         let ank = nowhere();
         a.act(
             Command::Act(Act {
@@ -1209,7 +1289,7 @@ mod tests {
         let long: String = (1..=6).map(|n| format!("a note line {n}\n")).collect();
         for size in [(100, 40), (80, 24), (60, 20)] {
             for note in [None, Some(long.clone())] {
-                let mut a = App::new(size);
+                let mut a = App::new(size, None);
                 a.snapshot = Some(snapshot());
                 a.note = note.clone();
                 let rows = a.list_frame().lines().count();

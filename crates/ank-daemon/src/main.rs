@@ -30,16 +30,23 @@
 //! being. What it buys is that `ank status` stops reporting who holds what out
 //! of somebody's last manual fetch.
 //!
-//! What this build does not yet do, and where it is decided: the change it
-//! notices reaches the reader as a line on stderr rather than as an event a
-//! program subscribes to (TASK-2f775b1cb32b). That is an addition to this floor
-//! and it changes nothing about what a verb answers.
+//! **A change it notices becomes an event** (TASK-2f7777a1fdff). The line on
+//! stderr is for the person reading the log; the event is for the program that
+//! wanted to know, and it goes onto the stream of
+//! [`ank_contract::events`] -- a file beside `watch.yml`, which any reader may
+//! follow and which asks nothing of this process. An event states which corpus
+//! changed and what kind of change it was, and nothing else: no title, no
+//! status, no entity content of any kind, because a watcher that carried those
+//! would be a source of corpus data nothing generated from `COMMANDS` ever
+//! validated. What changed is here; what it means is what the CLI answers.
 
 mod declare;
 mod fail;
 mod fetch;
+mod stream;
 mod warm;
 
+use ank_contract::events;
 use ank_contract::ExitCode;
 use declare::Declaration;
 use fail::{Fail, Result};
@@ -73,8 +80,10 @@ ank-daemon                keeps the corpora you declared warm, so the ank you ru
 It declares nothing, answers no verb and holds no claim. The only thing it
 writes into a repository is that repository's own index and a mirror of
 refs/ank/* under refs/ank/watch/, on the interval watch.yml states; it moves no
-branch, no tag and no claim of yours. Every verb behaves the same with it
-stopped, which is why stopping it is always safe.
+branch, no tag and no claim of yours. A change it sees becomes a line on
+events.jsonl beside watch.yml, which says which corpus moved and what kind of
+change it was, and never what to do about it. Every verb behaves the same with
+it stopped, which is why stopping it is always safe.
 ";
 
 fn main() {
@@ -271,7 +280,22 @@ fn identity_of(root: &Path) -> Option<String> {
 /// all of the time that matters after a `git checkout`. That pass is a warming
 /// and not a change, so it says so: an event states what changed
 /// (ADR-a22cd3196529), and a first sighting is not one.
+///
+/// **Two kinds of change, because there are two things to see.** The files
+/// under `.ank/` moving is one; the mirror of somebody else's `refs/ank/*`
+/// moving is the other, and they are not the same news -- the first is work in
+/// this checkout, the second is a claim taken or released somewhere the reader
+/// cannot see. Both go onto the stream under their own word, and neither says
+/// what to do about it.
 fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err: &mut dyn Write) {
+    // Resolved once, and never per event: the directory a reader declared their
+    // watch in is the directory their stream belongs in, and asking the
+    // environment again every half-second would let the two answer differently.
+    // A home the environment does not name is not a failure -- the declaration
+    // was read out of one, so this is `None` only where something removed it --
+    // and a watcher that stopped for want of a stream would have made the
+    // stream a condition of the thing nothing depends on.
+    let stream = stream::path();
     // Flattened once, so the state and the checkout it belongs to are one
     // value. The loop below indexes nothing.
     let mut posts: Vec<Post> = Vec::new();
@@ -293,6 +317,7 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
                 root: root.clone(),
                 seen: None,
                 mirrored: None,
+                refs: None,
             });
         }
     }
@@ -326,6 +351,16 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
                 // down for a while, and retrying it every poll would turn one
                 // failure into a spin against a network that is not answering.
                 post.mirrored = Some(Instant::now());
+                // What the fetch left behind, compared with what was there
+                // before it. git answers zero on a remote that had nothing new,
+                // so "did anything move" is a question only the refs themselves
+                // answer. The first reading is a sighting and not a change, for
+                // the reason the first warming is not one.
+                let now = fetch::mirrored(&post.root);
+                if post.refs.as_ref().is_some_and(|before| before != &now) {
+                    report_change(&stream, post, events::Change::Refs, err);
+                }
+                post.refs = Some(now);
             }
             let now = warm::fingerprint(&warm::ank_dir(&post.root));
             let first = post.seen.is_none();
@@ -335,8 +370,7 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
                 continue;
             }
             if !first {
-                // What changed, and never what to do about it.
-                let _ = writeln!(err, "changed {} {}", post.identity, post.root.display());
+                report_change(&stream, post, events::Change::Entities, err);
             }
             // Degrades and never fails: nothing depends on this process, so one
             // corpus the CLI refuses costs a line and the next poll.
@@ -351,6 +385,38 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
     }
 }
 
+/// Says what changed, to the person reading the log and to the program that
+/// asked to be told.
+///
+/// Both, and in that order, because they are two audiences and not one. The
+/// line on stderr names the checkout, which is what somebody debugging a
+/// watcher needs; the event names the corpus and never the path, because a
+/// corpus reached by two paths is one corpus (ADR-621a7fd96ce1) and a field
+/// carrying a path is an invitation to key on one.
+///
+/// A stream that cannot be written costs a line and nothing else. Nothing
+/// depends on this process, so nothing may be broken by the one part of it that
+/// writes outside a repository.
+fn report_change(
+    stream: &Option<std::path::PathBuf>,
+    post: &Post,
+    change: events::Change,
+    err: &mut dyn Write,
+) {
+    // What changed, and never what to do about it.
+    let _ = writeln!(
+        err,
+        "changed {} {} {}",
+        change.word(),
+        post.identity,
+        post.root.display()
+    );
+    let Some(path) = stream else { return };
+    if let Err(reason) = stream::emit(path, &post.identity, change) {
+        let _ = writeln!(err, "stream: {reason}");
+    }
+}
+
 /// One checkout being watched, and what its `.ank/` looked like last time.
 struct Post {
     identity: String,
@@ -360,6 +426,10 @@ struct Post {
     /// process has not yet reached. `None` is due immediately, so `--once`
     /// mirrors once and a fresh start does not leave the reader a minute behind.
     mirrored: Option<Instant>,
+    /// The tracking refs as the last mirror left them, or `None` for a checkout
+    /// this process has not yet fetched for. A first reading is a sighting and
+    /// not a change.
+    refs: Option<Vec<String>>,
 }
 
 #[cfg(test)]

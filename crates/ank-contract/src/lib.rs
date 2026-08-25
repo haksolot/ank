@@ -22,6 +22,11 @@
 //! caller needs before it calls: [`ExitCode`] is what a refusal *means*, and
 //! [`Renews`] is a property of a verb the compiler has to ask of every verb
 //! ever added (§3, ADR-0bb7ea8991bc).
+//!
+//! [`events`] is here for the same reason and is not a verb: the watcher's
+//! change stream has a writer in one crate and a reader in another, so its key
+//! names and its vocabulary are exactly the pair this crate exists to keep from
+//! disagreeing.
 
 /// The version of the machine contract every `--json` document is written
 /// against, and carries (ADR-6fd69efb629c).
@@ -43,6 +48,7 @@
 /// a shape is what freezes that shape, and there is none yet.
 pub const CONTRACT_VERSION: u32 = 1;
 
+pub mod events;
 pub mod exit;
 pub mod json;
 pub mod renews;
