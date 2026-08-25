@@ -5,7 +5,7 @@ slug: what-a-status-means-is-one-table-and-each-surfac
 title: What a status means is one table, and each surface paints it its own way
 created: 2026-08-25T22:44:57Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/style.rs
   - crates/ank-contract/**
@@ -16,8 +16,12 @@ constraint: |
   
   What a status, a kind or a severity means is one table, held where every surface reads it and holding no escape sequence. Each surface paints that meaning its own way: the CLI in hand-written ANSI, emitted only when stdout is a terminal and NO_COLOR is unset, with no --color flag; the terminal reader through the library it draws with (ADR-0b55983421dd), honouring NO_COLOR the same way. Two renderers are allowed and a second table is not: a surface that decided for itself what done looks like would be the second place this rule exists to prevent.
 supersedes: ADR-0c8ab846d262
+ratified: 522556ed8e5c
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-25T23:13:15Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-0c8ab846d262 is kept whole except in one clause, and the amendment is
