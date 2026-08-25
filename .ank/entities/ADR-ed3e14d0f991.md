@@ -5,15 +5,19 @@ slug: one-live-claim-per-identity-is-per-corpus-and-th
 title: One live claim per identity is per corpus, and the claims held elsewhere are named
 created: 2026-08-25T16:52:42Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
 constraint: |
   The one live claim per identity of section 3 is per corpus, and it is stated rather than left to be discovered: refs/ank/* is per repository, so an identity holds at most one live claim in each corpus it works in, and a refusal that reached across corpora would be an arbitration the refs cannot carry. Nothing refuses on a claim held in another corpus.
   
   What a caller gets instead is the fact. Where the reader can see another corpus without being told about one -- a corpus declared in corpora.yml, or the further corpora a protocol surface was addressed with -- claim names the live claims that identity already holds elsewhere, with the corpus each is in, and takes the task anyway. A corpus the reader was not told about is not searched for and is never named. This is ADR-052accd6e3b2's rule applied across a boundary instead of across a scope: the fact is stated at claim time and never refused.
+ratified: 041055fb45e1
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-25T17:20:18Z
 schema: 4
-version: 1
+version: 2
 ---
 
 SPEC-183dd2eb4dc0 left this open in writing, and said why it had to be settled
