@@ -1071,6 +1071,52 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[one(TUI_OUT)],
         owner_task: None,
     },
+    // After `tui`, which is the order §4 puts them in and the neighbourhood
+    // both belong to: a surface that answers *what is here* to a caller who
+    // cannot type the verbs themselves. `tui` serves the human at a terminal,
+    // this one serves the client with no shell at all. Neither becomes a
+    // different kind of verb by having a client, because what they act through
+    // is `claim`, `log` and `done`, run as a shell would run them
+    // (ADR-fd98f4bc6dea, ADR-8bd76e8d7c4e).
+    CommandSpec {
+        name: "mcp",
+        group: "look around",
+        // The server renews nothing. A call that renews a lease renews it
+        // because the CLI ran the holder's verb against the held task in the
+        // child, which is the one place the rule is applied (ADR-0bb7ea8991bc);
+        // a client that left a session open all night has done no work.
+        renews: Renews::Never,
+        // It runs this binary per call, and the CLI checks git per verb
+        // (ADR-9307e5d214a7). Requiring it here would refuse the server before
+        // a client had asked anything, over a corpus the read-only half of the
+        // surface answers about perfectly well.
+        coordinates: false,
+        summary: "every verb of this table as a tool, over MCP on stdio, for a client that has no shell",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[],
+        refuses: &[refuses(
+            ExitCode::Environment,
+            "this binary cannot find itself on disk, and every call is a run of it",
+        )],
+        notes: &[
+            "JSON-RPC on stdio, one message per line: initialize, tools/list, tools/call, ping",
+            "every verb of this table is a tool, generated from it: no curated subset, and no second list kept in step by review",
+            "a call runs `ank <verb> --repo <corpus> --json` as a child, so every refusal is the one this binary gives, carrying its exit code",
+            "one process speaks for one corpus, the one --repo addressed at startup",
+            "--json names what this surface already is, and changes nothing",
+        ],
+        refuses_globals: &[],
+        // **No `--json` document leaves this verb, and the empty list is the
+        // answer rather than a verb that forgot to give one.** What leaves the
+        // process is JSON-RPC, one message per line, and the contract for that
+        // shape is MCP's own -- the documents ADR-6fd69efb629c governs are the
+        // ones the *children* return, each already declared by the verb that
+        // returns it and carried through untouched.
+        output: &[],
+        owner_task: None,
+    },
     CommandSpec {
         name: "check",
         group: "keep the corpus honest",

@@ -10,39 +10,28 @@
 //!
 //! So there is no dispatch here. There is an argv, built from the table, and a
 //! process.
+//!
+//! **The binary a call runs is this process itself**, and [`Address::exe`]
+//! carries it. This used to be a search: `ank-mcp` was a second file, so the
+//! `ank` it wanted was the copy beside it, then `PATH`, with `ANK_BIN` to
+//! override both. Every branch of that search existed because a sibling had to
+//! *find* the binary it was released with, and getting it wrong silently was the
+//! worst failure available here -- a server answering out of a different build
+//! than the one beside it, reporting verbs the installed CLI does not have.
+//!
+//! A verb has no such question to ask. `ank mcp` *is* the binary, so
+//! `std::env::current_exe()` in the dispatch answers it exactly, and the search,
+//! the fallback and the override are gone along with the failure they could have
+//! had. That is the whole of what folding the file changed here
+//! (ADR-fd98f4bc6dea).
+//!
+//! [`Address::exe`]: crate::Address::exe
 
+use crate::Address;
 use ank_contract::json::Obj;
 use ank_contract::{CommandSpec, ExitCode};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
-
-/// Where the `ank` binary is, given that this one is its sibling.
-///
-/// Beside this executable first: the two travel together today, so the copy
-/// next to us is the copy we were released with. That siblinghood is on its way
-/// out -- ADR-fd98f4bc6dea makes this surface a verb of the one binary, and
-/// TASK-e655d28c83cb is where the file folds in -- but the road out of this
-/// process does not change with it: the verb spawns `ank` exactly as this does. `PATH` is
-/// the fallback, and `ANK_BIN` overrides both for a caller that has a reason.
-///
-/// Getting this wrong silently would be the worst failure available here: a
-/// server answering from a different build than the one beside it would report
-/// verbs the installed CLI does not have.
-pub fn ank_binary() -> PathBuf {
-    if let Some(explicit) = std::env::var_os("ANK_BIN") {
-        return PathBuf::from(explicit);
-    }
-    let exe = if cfg!(windows) { "ank.exe" } else { "ank" };
-    if let Ok(here) = std::env::current_exe() {
-        if let Some(dir) = here.parent() {
-            let beside = dir.join(exe);
-            if beside.is_file() {
-                return beside;
-            }
-        }
-    }
-    PathBuf::from("ank")
-}
 
 /// What one call produced.
 pub struct Outcome {
@@ -126,11 +115,11 @@ pub struct Arguments {
 /// nothing holds a claim on a client's behalf either. The claim a call takes is
 /// the claim the CLI would have taken in that clone, on the same ref, arbitrated
 /// by the same compare-and-swap.
-pub fn run(spec: &CommandSpec, repo: &Path, args: &Arguments) -> std::io::Result<Outcome> {
-    let out = Command::new(ank_binary())
-        .args(argv(spec, repo, args))
+pub fn run(spec: &CommandSpec, address: &Address, args: &Arguments) -> std::io::Result<Outcome> {
+    let out = Command::new(&address.exe)
+        .args(argv(spec, &address.repo, args))
         .env("ANK_AGENT", identity())
-        .current_dir(repo)
+        .current_dir(&address.repo)
         .output()?;
     Ok(Outcome {
         code: out.status.code().unwrap_or(1),
