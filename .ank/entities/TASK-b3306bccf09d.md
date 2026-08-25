@@ -5,7 +5,7 @@ slug: a-client-is-told-how-to-reach-the-protocol-surfa
 title: A client is told how to reach the protocol surface, in a form it can paste
 created: 2026-08-24T21:58:27Z
 author: claude-code/opus-5+planning
-status: open
+status: done
 scope:
   - docs/getting-started.md
   - docs/integrating.md
@@ -14,8 +14,13 @@ blocked_by: []
 done_criteria: |
   docs/getting-started.md states that installing ank installs the protocol surface with it, and carries a working MCP client configuration for Claude Code, Claude Desktop and Cursor, each naming --repo explicitly so the corpus a process speaks for is never implicit. docs/integrating.md states what the surface is: every verb COMMANDS carries, generated from that table, one process for one corpus, a refusal carrying the CLI exit code as its reason, and no claim taken that the CLI would not have taken in that clone. Every entity id cited in the new prose resolves under ank check, and check reports no finding on the three files. cargo test is green.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 6f5dadfda46bf26111d400c2db7303a0a4e11f05
+    criteria: 2f868a43d968
+    via: submitted
 schema: 4
-version: 1
+version: 3
 ---
 
 The third thing ADR-e39a44f80e0e requires, and the only one a reader ever sees.

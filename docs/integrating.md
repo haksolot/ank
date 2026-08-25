@@ -234,6 +234,67 @@ Both are plain files in a public repository. Copy them into your own suite; a
 shape that changes here without its fixture changing is a failing test on our
 side, which is what makes them worth copying.
 
+## The protocol surface is the same verbs, over MCP
+
+A client with no shell reaches ank through `ank-mcp`, which installs beside the
+CLI by every route that installs the CLI (ADR-e39a44f80e0e). The configuration
+to paste is in [getting-started.md](getting-started.md); what it *is* belongs
+here, because four properties of it are load-bearing and none of them is
+visible from a tool list.
+
+**Every verb `COMMANDS` carries, generated from that table.** Not a curated
+subset, under any protocol (ADR-372b82af1ec7). It is the same table `ank help
+--json` is generated from, walked: the summary becomes the tool description, the
+refusals and their exit codes are written into it so a client can read what a
+call will refuse before making it, and the flags become the input schema. One
+tool per verb, whatever the table carries, named `ank_<verb>` because a bare
+`context` collides with every other server a client has loaded and `ank context`
+is not a legal tool name. Positionals arrive as `arguments`, an array of strings,
+exactly as they sit on the command line; flags arrive under their own names with
+the leading dashes stripped. Nothing in the server names a verb, so the two
+surfaces cannot disagree about what exists.
+
+**One process speaks for one corpus.** `--repo` is resolved once, at startup, and
+that value is what every call is given, so a server cannot drift between corpora
+while a client holds a claim in one. A call that passes `--repo`, `--json` or
+`--quiet` is refused by name rather than being allowed to contradict the process
+it is talking to:
+
+    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: one process, one corpus"}}
+
+Nothing is hidden by that and nothing is curated: every verb takes exactly the
+arguments the table gives it, and what is withheld is three flags that are the
+server's own. A deployment over several repositories is several servers,
+addressed separately, presented together by whatever sits above them. It is the
+answer `refs/ank/*` forces, and the same one federation gets (ADR-a1de673043b4).
+
+**A refusal is the CLI's refusal, and it carries the CLI's exit code.** The
+surface spawns `ank`; it does not link it. So a refusal on state is not
+re-derived here, it is inherited, hint and all, and it comes back as a result
+rather than as a protocol error, because the request was well formed and the
+answer is no:
+
+    {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}],"isError":true,"exitCode":2,"stderr":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}}
+
+`exitCode` is present on every call including a successful one, so a client that
+branches on it never has to tell absence from zero; `stderr` is carried
+separately for the reason warnings live there in the first place. The two error
+channels stay apart: a JSON-RPC error means the *request* was wrong, a result
+with `isError` means the *corpus* said no. A client that conflates them reports
+its own bug as a state of your repository.
+
+**No claim is taken that the CLI would not have taken in that clone.** Every
+claim goes to `refs/ank/claims/<id>` in that repository, arbitrated by the same
+compare-and-swap against the same remote. The server holds no claim on a
+client's behalf, renews none for anybody, and pools no clients under one
+identity: one stdio server serves one client, so one process is one caller. It
+writes under a typed process identity, `ank-mcp/<version>`, unless `$ANK_AGENT`
+names one, so a deployment that already names its agents keeps naming them.
+
+`accept` is a tool here like every other verb, because a generated surface
+curates nothing out. Being reachable over a protocol changes nothing about it:
+it still refuses off the default branch, with no way around it.
+
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
