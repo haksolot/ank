@@ -17,6 +17,7 @@ version = "0.6.0"
 dependencies = [
  "ank-contract",
  "ank-core",
+ "ank-tui",
  "hex",
  "rusqlite",
  "serde",
@@ -51,6 +52,14 @@ dependencies = [
 
 [[package]]
 name = "ank-mcp"
+version = "0.6.0"
+dependencies = [
+ "ank-contract",
+ "serde_yaml",
+]
+
+[[package]]
+name = "ank-tui"
 version = "0.6.0"
 dependencies = [
  "ank-contract",
