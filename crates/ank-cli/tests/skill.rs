@@ -223,8 +223,8 @@ fn help_order() -> Vec<String> {
 
 /// Verbs §4 specifies and the binary does not dispatch yet.
 ///
-/// **`watch` is here, and the round trip is the guard working.**
-/// `read` was declared here while its ratification was in flight
+/// **The list is empty, and it stays.** `read` was declared here while its
+/// ratification was in flight
 /// (TASK-d055f8ab836b) and removed in the commit that shipped it
 /// (TASK-e3370ef322d8), because `read_section_4_document` reads the ratified
 /// document on purpose and a verb therefore cannot ship in the landing that
@@ -242,12 +242,12 @@ fn help_order() -> Vec<String> {
 /// `proposed` and the block this suite walks was its predecessor: the signed
 /// `accept` is the moment §4 gains a verb, and declaring it beforehand is what
 /// makes the ratification itself green rather than red on a human act nobody is
-/// watching. `mcp` has now been through the round trip whole -- the document is
-/// ratified, TASK-e655d28c83cb dispatched the verb, and this line lost its first
-/// entry in that same commit, because the test below fails a declared verb that
-/// has started shipping. `watch` is where `mcp` was: `crates/ank-daemon/**` is
-/// TASK-9dd22f2b0430's, and it removes the entry in the commit that dispatches
-/// it.
+/// watching. Both have now been through the round trip whole -- the document is
+/// ratified, TASK-e655d28c83cb dispatched `mcp` and TASK-9dd22f2b0430
+/// dispatched `watch`, and each lost its entry here in the very commit that
+/// started shipping it, because the test below fails a declared verb that has
+/// started shipping. §4's Commands block and the binary's dispatch table now
+/// name the same verbs, with nothing in between.
 ///
 /// The list stays even when it is empty, because it is the only place a future
 /// verb may be declared missing, and because the test below fails the moment a
@@ -259,7 +259,7 @@ fn help_order() -> Vec<String> {
 /// of them (TASK-e717ee625c5c, TASK-253e897d3330, TASK-15336a0012d5,
 /// TASK-7ed19b16895e, TASK-49746735127f) turned the suite red until this line
 /// was edited, in the same commit.
-const NOT_YET_DISPATCHED: [&str; 1] = ["watch"];
+const NOT_YET_DISPATCHED: [&str; 0] = [];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

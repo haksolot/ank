@@ -12,9 +12,24 @@ rust-version = "1.95"
 license = "Apache-2.0"
 description = "The Ank watcher: it keeps declared corpora warm, answers no verb, and nothing depends on it."
 
-[[bin]]
-name = "ank-daemon"
-path = "src/main.rs"
+# **A library, and no `[[bin]]`** (ADR-a22cd3196529, ADR-1ea31c2f3c5a). The
+# watcher is the verb `ank watch`, so this crate is linked into the one
+# executable every route carries rather than shipped beside it -- the same shape
+# `ank-tui` and `ank-mcp` have, and folded for the reason ADR-8bd76e8d7c4e gave
+# there: a separate file is invisible to precisely the people it exists for, and
+# has to be distributed, documented and discovered as a third thing.
+#
+# **Being started by a verb is not answering one.** ADR-a22cd3196529's clause is
+# that the watcher serves no verb and exposes no query surface, and it is
+# untouched by this: `ank watch` starts a process that still answers nothing.
+# The note at the top of `src/lib.rs` says it where a reader meets it.
+#
+# Declared rather than left to convention, because the absence of a second
+# executable is the thing this task changed and a reader looking for it should
+# find a statement and not a missing section.
+[lib]
+name = "ank_daemon"
+path = "src/lib.rs"
 
 [dependencies]
 # The exit codes, read out of the contract rather than typed as numbers

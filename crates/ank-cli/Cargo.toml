@@ -52,6 +52,15 @@ ank-tui = { path = "../ank-tui" }
 # not one process, and `crates/ank-mcp/tests/dependencies.rs` reads the graph to
 # keep that true.
 ank-mcp = { path = "../ank-mcp" }
+# The watcher of ADR-a22cd3196529, which ships as the verb `ank watch` rather
+# than as a sibling binary, on the reading ADR-8bd76e8d7c4e gave for `tui` and
+# ADR-1ea31c2f3c5a made general. The dependency points this way and only this
+# way: the watcher reaches a declared corpus by running this binary, so it does
+# not link back, and `crates/ank-daemon/tests/dependencies.rs` reads the graph
+# to keep that true. Being started by this verb is not answering one -- the
+# watcher still serves nothing, which is the clause that ADR spends its first
+# paragraph on.
+ank-daemon = { path = "../ank-daemon" }
 # Already in the tree through ank-core: no new crate enters here.
 # config.yml is the only YAML the CLI reads itself; sha2 and hex are the
 # index's content hash per file, which decides what needs reindexing (§6).

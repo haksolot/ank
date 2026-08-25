@@ -16,6 +16,14 @@
 //! set for the terminal reader, applied to the one other thing that reads a
 //! corpus it did not write.
 //!
+//! **The `ank` it spawns is handed to it, and is this very process**
+//! ([`crate::Address::exe`]). While the watcher was a sibling executable it had
+//! to *find* the `ank` it was released with -- `ANK_BIN`, then beside itself,
+//! then `PATH` -- and a wrong answer there was a watcher warming an index a
+//! different build would rewrite. `ank watch` has no such question: the binary
+//! is the process already running, so the ladder is gone and the way it could
+//! be wrong went with it.
+//!
 //! **`--repo` and not a working directory.** The corpus is addressed by the
 //! flag §6 gives for exactly that, which short-circuits the walk. A daemon that
 //! set a current directory and let `ank` walk up from it would be discovering a
@@ -33,46 +41,8 @@
 //! allowed to be as cheap as a stat.
 
 use crate::declare::ANK_DIR;
-use crate::fail::{Fail, Result};
-use ank_contract::ExitCode;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-
-/// Where the CLI is, told or found.
-///
-/// **Told first.** `ANK_BIN` is what a test uses and what anybody with the two
-/// binaries in unusual places uses; it is checked first so neither has to
-/// arrange a `PATH`.
-///
-/// **Then beside this binary**, which is where the release puts `ank` today:
-/// what a route places, it places together. Then `PATH`, which is where a reader who
-/// installed one and built the other will have it.
-pub fn locate_ank() -> Result<PathBuf> {
-    if let Some(told) = std::env::var_os("ANK_BIN").filter(|v| !v.is_empty()) {
-        let path = PathBuf::from(told);
-        if path.is_file() {
-            return Ok(path);
-        }
-        return Err(Fail::new(
-            ExitCode::Environment,
-            format!("ANK_BIN names {}, which is not a file", path.display()),
-        )
-        .with_hint("unset ANK_BIN to look beside this binary and then on PATH"));
-    }
-    let exe = if cfg!(windows) { "ank.exe" } else { "ank" };
-    if let Some(sibling) = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join(exe)))
-        .filter(|p| p.is_file())
-    {
-        return Ok(sibling);
-    }
-    // `PATH`, resolved by the operating system when the name carries no
-    // separator. Whether it is there is answered by the first spawn rather than
-    // by a walk of `PATH` written here, which would be a third rule for finding
-    // an executable and would disagree with the shell on at least one platform.
-    Ok(PathBuf::from(exe))
-}
 
 /// What a `.ank/` looks like right now: every file under it, with its length
 /// and the instant it was last written.
