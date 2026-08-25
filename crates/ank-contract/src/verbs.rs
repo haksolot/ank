@@ -178,6 +178,43 @@ const CONTEXT_OUT: &[Field] = &[
     f("warnings", Type::Strings),
 ];
 
+// The claim taken, and nothing about corpora the reader did not declare
+// (ADR-ed3e14d0f991).
+const CLAIM_OUT: &[Field] = &[
+    f("task", Type::Str),
+    f("holder", Type::Str),
+    f("expires", Type::Str),
+    f("warnings", Type::Strings),
+];
+
+/// The same document, plus the live claims this identity already holds in the
+/// other corpora the reader declared in `corpora.yml` (ADR-ed3e14d0f991).
+///
+/// **A second document and not a field that is always there.** A document may
+/// gain a field within a contract version, and gaining one here would still be
+/// a byte a caller who declared no corpus sees that it did not see before —
+/// which is the one thing the decision says such a caller must not pay. `log`
+/// already declares two documents for two calls; this declares two for two
+/// readers, and a client binds `claims_elsewhere` where it is present exactly
+/// as it binds either shape of `log`.
+const CLAIM_OUT_ELSEWHERE: &[Field] = &[
+    f("task", Type::Str),
+    f("holder", Type::Str),
+    f("expires", Type::Str),
+    f("warnings", Type::Strings),
+    f(
+        "claims_elsewhere",
+        Type::Array(&[
+            f("task", Type::Str),
+            // Where the reader declared that corpus, never the repository
+            // identity: the map is keyed on the tree a reader stands in
+            // (ADR-96174f1ac2b7), which is not the corpus the claim is in.
+            f("corpus", Type::Str),
+            f("expires", Type::Str),
+        ]),
+    ),
+];
+
 const STATUS_OUT: &[Field] = &[
     // The first field gained under the contract, and the demonstration of what
     // CONTRACT_VERSION promises: a document may gain a field within a version and
@@ -589,7 +626,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &["--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one"],
         refuses_globals: &[],
-        output: &[one(&[f("task", Type::Str), f("holder", Type::Str), f("expires", Type::Str), f("warnings", Type::Strings)])],
+        output: &[one(CLAIM_OUT), when("this identity holds a live claim in another corpus the reader declared", CLAIM_OUT_ELSEWHERE)],
         owner_task: None,
     },
     CommandSpec {
