@@ -34,20 +34,13 @@ revision answers the same question about the other half: it is the value
 that file can compare two strings it already holds and see that its
 instructions predate its tool.
 
-### The protocol surface installs with it
+### The protocol surface is a verb of the same binary
 
-Every route places a second executable beside `ank`: **`ank-mcp`**, the same
-verbs over MCP, for a client that has no shell to run them in. It is freight of
-the three install routes rather than a fourth beside them,
-so there is nothing further to fetch:
-
-    $ ank-mcp --version
-    ank-mcp <version>
-
-The same version `ank` reports, because the two are freight of one release and
-come out of one build. They are not versionable apart on purpose: a server built
-from an older table would advertise verbs the installed CLI does not dispatch,
-and the refusal a caller got back would be one no exit code describes.
+A client that has no shell to run verbs in reaches the same verbs over MCP, and
+there is nothing further to install for it: the surface is **`ank mcp`**, a verb
+of the executable you just put on your `PATH` (ADR-1ea31c2f3c5a). Every route
+carries one file, so a route cannot deliver the CLI and fail to deliver the
+surface.
 
 It speaks JSON-RPC over stdio and the client spawns it, which means it is
 configured rather than started. Three configurations, and each of them is
@@ -55,7 +48,7 @@ pasted rather than derived.
 
 **Claude Code**, one line, which writes the entry for you:
 
-    claude mcp add ank -- ank-mcp --repo /path/to/your/repo
+    claude mcp add ank -- ank mcp --repo /path/to/your/repo
 
 or `.mcp.json` at the root of the repository, which is the form that travels
 with the tree and reaches everyone who clones it:
@@ -63,8 +56,8 @@ with the tree and reaches everyone who clones it:
     {
       "mcpServers": {
         "ank": {
-          "command": "ank-mcp",
-          "args": ["--repo", "/path/to/your/repo"]
+          "command": "ank",
+          "args": ["mcp", "--repo", "/path/to/your/repo"]
         }
       }
     }
@@ -76,8 +69,8 @@ directory of its own and so has nothing else to go on:
     {
       "mcpServers": {
         "ank": {
-          "command": "ank-mcp",
-          "args": ["--repo", "/path/to/your/repo"]
+          "command": "ank",
+          "args": ["mcp", "--repo", "/path/to/your/repo"]
         }
       }
     }
@@ -88,32 +81,33 @@ for every project at once:
     {
       "mcpServers": {
         "ank": {
-          "command": "ank-mcp",
-          "args": ["--repo", "/path/to/your/repo"]
+          "command": "ank",
+          "args": ["mcp", "--repo", "/path/to/your/repo"]
         }
       }
     }
+
+**`command` is `ank` and `mcp` is the first argument, in all three.** If you
+have a configuration written against `ank-mcp`, that is the one line to change:
+releases up to 0.6.0 placed a second executable by that name and no route places
+one any more, so a client still naming it gets `command not found` rather than a
+wrong answer.
 
 **`--repo` is written out in all three, and that is the point of showing them.**
 A client spawns the server in whatever directory it happens to be in, and with
 no `--repo` the server takes that directory. The failure mode is not an error:
 it is a process quietly speaking for a corpus nobody meant, or for none. The
-configuration is also the *only* place it can be named, because one process
-speaks for exactly one corpus, fixed at startup, and a call that tries to pass
-`--repo` itself is refused by name:
+configuration is also where it is named rather than something a call may
+override, and a call that tries to pass `--repo` itself is refused by name:
 
-    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: one process, one corpus"}}
-
-So several repositories are several entries, one server each. That is the same
-answer the refs give everywhere else: claims live in `refs/ank/*`, which is per
-repository, and nothing merges the claim spaces of two clones.
+    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
 
 A path with no corpus under it is refused before any client is listening, rather
 than after, so it reaches a person rather than a log:
 
-    $ ank-mcp --repo /tmp
-    error[9]: no .ank/ under /tmp
-      -> ank-mcp --repo <path to a directory holding .ank/>
+    $ ank mcp --repo /tmp
+    error[1]: no .ank/ found from /tmp
+      -> ank init
 
 Every verb the CLI dispatches is a tool on that surface, under the name
 `ank_<verb>`, and what a call gets back is the document `--json` returns with

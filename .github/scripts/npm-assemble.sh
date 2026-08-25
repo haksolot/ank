@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# Fills the npm packages with the binaries the build job produced, stamps one
+# Fills the npm packages with the binary the build job produced, stamps one
 # version across all four, and packs them.
 #
-# The binaries come from the same artefacts the GitHub release publishes: one
+# The binary comes from the same artefacts the GitHub release publishes: one
 # build, two channels, and no second compilation that could disagree with the
 # first. Nothing here downloads anything, which is the property the whole
 # channel exists for (npm/README.md).
 #
-# Two executables per platform package, never one: ank-mcp is freight of every
-# route that carries ank, so the pair travels in one package under one version
-# and an install cannot end up holding half of it. TASK-d9b167250aa8 reduces this to one.
+# One executable per platform package (ADR-1ea31c2f3c5a). The protocol surface
+# and the watcher are verbs of it, so there is no second file for a package to
+# be short of and no half an install can end up holding.
 #
 #   npm-assemble.sh <version> [package ...]
 #
@@ -42,8 +42,7 @@ target_of() {
   esac
 }
 
-# The extension, applied to both names rather than each name written out twice
-# per platform. Windows is the only row that has one.
+# The extension. Windows is the only row that has one.
 suffix_of() {
   case "$1" in
     ank-win32-x64) echo .exe ;;
@@ -51,30 +50,26 @@ suffix_of() {
   esac
 }
 
-# The two executables a platform package carries, in the order the wrapper
-# declares them. A name added here is a name the release must have built, and a
-# missing one below stops the assembly rather than shipping a package that is
-# short a binary.
-executables=(ank ank-mcp)
-
 for p in "${packages[@]}"; do
   target="$(target_of "$p")"
   suffix="$(suffix_of "$p")"
   mkdir -p "npm/$p/bin"
-  for name in "${executables[@]}"; do
-    exe="${name}${suffix}"
-    # The loose binaries the build job uploads beside the archives. Reaching for
-    # them rather than unpacking a .zip keeps this script free of unzip, which
-    # the Windows runner's bash does not have.
-    src="$(find dist -type f -path "*${target}*" -name "$exe" | head -n 1)"
-    if [ -z "$src" ]; then
-      echo "no $exe built for $target under dist/" >&2
-      exit 1
-    fi
-    cp "$src" "npm/$p/bin/$exe"
-    chmod +x "npm/$p/bin/$exe"
-    echo "  npm/$p/bin/$exe from $src"
-  done
+  exe="ank${suffix}"
+  # The loose binary the build job uploads beside the archives. Reaching for it
+  # rather than unpacking a .zip keeps this script free of unzip, which the
+  # Windows runner's bash does not have.
+  #
+  # A missing one stops the assembly rather than publishing a package that
+  # carries no binary at all: the wrapper would resolve nothing and every
+  # install of that platform would exit 9.
+  src="$(find dist -type f -path "*${target}*" -name "$exe" | head -n 1)"
+  if [ -z "$src" ]; then
+    echo "no $exe built for $target under dist/" >&2
+    exit 1
+  fi
+  cp "$src" "npm/$p/bin/$exe"
+  chmod +x "npm/$p/bin/$exe"
+  echo "  npm/$p/bin/$exe from $src"
   cp LICENSE "npm/$p/LICENSE"
   (
     cd "npm/$p"

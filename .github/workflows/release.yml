@@ -127,15 +127,14 @@ jobs:
       - name: test
         run: cargo test --workspace --target ${{ matrix.target }}
 
-      # Both executables, one invocation, one checkout. Two
-      # `cargo build` lines would compile the same table twice and could be
-      # made to disagree; one line cannot. `ank-mcp` is a generated passthrough
-      # over `ank_contract::COMMANDS`, so a surface built from an older table
-      # than the CLI beside it advertises verbs that CLI does not dispatch --
-      # a refusal section 4 gives no code for, because it should not be
-      # reachable.
+      # One binary, and the workspace is what makes it one: the protocol
+      # surface and the watcher are libraries linked into `ank` and dispatched
+      # by the verbs `mcp` and `watch` (ADR-1ea31c2f3c5a, ADR-fd98f4bc6dea,
+      # ADR-a22cd3196529). A surface built from an older table than the CLI
+      # beside it used to be a thing that could happen; one executable built
+      # once cannot disagree with itself.
       - name: build
-        run: cargo build --release --bin ank --bin ank-mcp --target ${{ matrix.target }}
+        run: cargo build --release --bin ank --target ${{ matrix.target }}
 
       # Named for what it runs on, because that is the question someone
       # downloading it is asking.
@@ -150,15 +149,12 @@ jobs:
           esac
           name="ank-${version}-${{ matrix.target }}"
           mkdir -p "dist/${name}"
-          # Both, into every archive: where a route places
-          # ank, it places ank-mcp next to it, and the archive is the route
-          # install.sh and install.ps1 unpack.
+          # One executable into every archive, which is the archive
+          # install.sh and install.ps1 unpack (ADR-1ea31c2f3c5a).
           if [ "${{ matrix.archive }}" = "zip" ]; then
             cp "target/${{ matrix.target }}/release/ank.exe" "dist/${name}/"
-            cp "target/${{ matrix.target }}/release/ank-mcp.exe" "dist/${name}/"
           else
             cp "target/${{ matrix.target }}/release/ank" "dist/${name}/"
-            cp "target/${{ matrix.target }}/release/ank-mcp" "dist/${name}/"
           fi
           cp README.md LICENSE "dist/${name}/"
           # The contract alone, and not the three activity policies beside
@@ -204,10 +200,12 @@ jobs:
       # release page serves and what install.sh and install.ps1 unpack, and a
       # `cp` that silently did not happen leaves the executable in `target/`
       # and out of the tarball -- where nothing else in this file would notice.
-      # No route carries one without the other; this is
-      # that condition, asserted on the artefact rather than assumed from the
-      # step above it.
-      - name: the archive carries both executables
+      #
+      # One executable, and the count is asserted rather than only the name:
+      # every route carries one file (ADR-1ea31c2f3c5a), so an archive that
+      # grew a second one has stopped being what install.sh promises, and a
+      # test that only looked for `ank` would not see it.
+      - name: the archive carries one executable
         shell: bash
         run: |
           set -e
@@ -219,26 +217,42 @@ jobs:
             # only listing shape that survives a name with a space in it. `tr`
             # because 7z is a native Windows program and ends its lines CRLF,
             # and a trailing carriage return would make every name below miss.
-            *.zip) listing=$(7z l -ba -slt "$archive" | tr -d '\r' | sed -n 's/^Path = //p'); exes="ank.exe ank-mcp.exe" ;;
-            *)     listing=$(tar tzf "$archive"); exes="ank ank-mcp" ;;
+            *.zip) listing=$(7z l -ba -slt "$archive" | tr -d '\r' | sed -n 's/^Path = //p'); exe="ank.exe" ;;
+            *)     listing=$(tar tzf "$archive"); exe="ank" ;;
           esac
           # Basenames, because 7z on Windows separates with a backslash and tar
           # with a slash, and the question here is which files are inside.
           names=$(printf '%s\n' "$listing" | sed 's|.*[/\\]||')
           printf '%s\n' "$listing" | sed 's/^/  /'
-          for exe in $exes; do
-            printf '%s\n' "$names" | grep -qx "$exe"
-            echo "  carries $exe"
-          done
+          printf '%s\n' "$names" | grep -qx "$exe"
+          echo "  carries $exe"
+          # The rest of the archive is prose and a licence: README.md, LICENSE
+          # and SKILL.md, copied above. Anything else in there is a second file
+          # this route no longer places.
+          #
+          # The directory the archive is named after is skipped too, and it is
+          # skipped by name rather than by kind: tar lists it with a trailing
+          # slash, which leaves an empty basename, and 7z lists it without one,
+          # which leaves the directory's own name.
+          dir=$(basename "$archive" | sed -e 's/\.tar\.gz$//' -e 's/\.zip$//')
+          extra=$(printf '%s\n' "$names" |
+            grep -v -e '^$' -e "^${dir}\$" -e "^${exe}\$" \
+              -e '^README.md$' -e '^LICENSE$' -e '^SKILL.md$' || true)
+          test -z "$extra" || {
+            echo "the archive carries more than the one executable and its papers:"
+            printf '%s\n' "$extra" | sed 's/^/    /'
+            exit 1
+          }
+          echo "  and nothing else beside README.md, LICENSE and SKILL.md"
 
-      # The loose binaries travel beside the archives, for the npm packages
+      # The loose binary travels beside the archives, for the npm packages
       # below: extracting a .zip would need `unzip`, which the Windows runner's
       # bash does not have, and building a second time to avoid that would be
       # two binaries where the point is one.
       #
-      # Both of them, named one per line rather than as `ank*`: a glob would
-      # also sweep up whatever the packaging step leaves in that directory
-      # next, and what the npm packages are entitled to take is exactly these.
+      # Named rather than globbed as `ank*`: a glob would also sweep up
+      # whatever the packaging step leaves in that directory next, and what the
+      # npm packages are entitled to take is exactly this file.
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
@@ -248,8 +262,6 @@ jobs:
             dist/*.sha256
             dist/*/ank
             dist/*/ank.exe
-            dist/*/ank-mcp
-            dist/*/ank-mcp.exe
           if-no-files-found: error
 
   # The npm channel exists for the workstation whose firewall blocks downloading
@@ -423,39 +435,16 @@ jobs:
           echo "npx:    $actual"
           test "$expected" = "$actual"
 
-      # The pairing criterion, on the machine that will run it. The
-      # two executables come out of one `cargo build`, and the observable form
-      # of that is answering `--version` with one number.
-      #
-      # Read out of the installed package and not off `dist/`: what a user holds
-      # is what npm resolved through optionalDependencies, and a platform
-      # package assembled without ank-mcp would pass every assertion above this
-      # one. Compared against each other rather than against a literal, so the
-      # check cannot drift from the version it ships.
-      #
-      # The number, not the line: `ank` prints the commit and the skill revision
-      # beside it (section 4) and `ank-mcp` prints neither, so it is field two
-      # of each. Field two is asserted non-empty first, because two versions
-      # that are both empty are equal and that is not the news.
-      - name: ank-mcp reports the version ank reports
-        shell: bash
-        run: |
-          set -e
-          cd smoke
-          ank_line=$(npx ank --version)
-          mcp_line=$(npx ank-mcp --version)
-          echo "ank:     $ank_line"
-          echo "ank-mcp: $mcp_line"
-          ank_version=$(printf '%s\n' "$ank_line" | awk '{print $2}')
-          mcp_version=$(printf '%s\n' "$mcp_line" | awk '{print $2}')
-          test -n "$ank_version"
-          test "$ank_version" = "$mcp_version"
-
       # A version is printed on stdout; a protocol surface is a conversation on
       # stdin. The wrapper spawns with `stdio: inherit` precisely so that a
       # client's request reaches the server, and nothing above this line would
       # notice if it stopped: `--version` never reads a byte. One `initialize`
       # is the smallest exchange that does.
+      #
+      # Reached as a verb of the installed binary (ADR-1ea31c2f3c5a): the same
+      # `npx ank` the step above ran, given `mcp`. That is the configuration
+      # docs/integrating.md hands a reader to paste, exercised on the machine
+      # that will run it.
       #
       # `--repo` is given the checkout, which is the one directory on this
       # runner holding a `.ank/`, in the runner's own path shape rather than
@@ -467,9 +456,10 @@ jobs:
           set -e
           cd smoke
           reply=$(echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-            | npx ank-mcp --repo "$GITHUB_WORKSPACE")
+            | npx ank mcp --repo "$GITHUB_WORKSPACE")
           echo "$reply"
-          printf '%s\n' "$reply" | grep -q '"name":"ank-mcp"'
+          printf '%s\n' "$reply" | grep -q '"serverInfo"'
+          printf '%s\n' "$reply" | grep -q '"protocolVersion"'
 
       # The exit codes carry meaning (section 4) and a wrapper is where they go
       # to die. An unknown verb is a 2, and 2 rather than 1 is the point: a
@@ -477,11 +467,16 @@ jobs:
       # test that only asked for non-zero. It also needs no repository, so what
       # is under test is the wrapper and not the fixture.
       #
-      # Both bins, because both now go through one wrapper.js and a shim of
-      # their own: `ank-mcp` refuses an unknown argument with the environment
-      # code, and 9 is the one code this wrapper also produces by itself, so a
-      # 9 that came from the wrapper instead of the server would read the same.
-      # The line on stderr is what tells them apart, and it is asserted.
+      # One bin now, so one shim and one wrapper: what a client launches to
+      # reach the protocol surface is this same `ank`, given `mcp`
+      # (ADR-1ea31c2f3c5a). 2 rather than 1 is the point of the first case: a
+      # wrapper collapsing every failure into "it failed" would still pass a
+      # test that only asked for non-zero. It also needs no repository, so what
+      # is under test is the wrapper and not the fixture.
+      #
+      # The second case is the verb the surface lives behind, refusing before
+      # any client is listening. It travels through the same shim, so a
+      # wrapper that ate the refusal on the way back would show here.
       - name: the exit code survives the wrapper
         shell: bash
         run: |
@@ -495,13 +490,13 @@ jobs:
           test "$code" -eq 2
 
           set +e
-          err=$(npx ank-mcp --nosuchflag 2>&1)
+          err=$(npx ank mcp --nosuchflag 2>&1)
           code=$?
           set -e
           echo "$err"
-          echo "an unknown argument to ank-mcp exited $code"
-          test "$code" -eq 9
-          printf '%s\n' "$err" | grep -q "unknown argument"
+          echo "an unknown flag on the protocol surface exited $code"
+          test "$code" -eq 1
+          printf '%s\n' "$err" | grep -q -- "--nosuchflag"
 
   publish-npm:
     # Only on a tag, and only once all three smoke tests agree. Publishing is

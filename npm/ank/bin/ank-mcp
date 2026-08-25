@@ -1,7 +1,0 @@
-#!/usr/bin/env node
-"use strict";
-
-// The protocol surface, resolved through the same platform package as `ank` by
-// the same wrapper. A client points its MCP configuration at
-// this name; the reasoning is in wrapper.js.
-require("./wrapper.js").run("ank-mcp");

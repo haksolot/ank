@@ -236,11 +236,34 @@ side, which is what makes them worth copying.
 
 ## The protocol surface is the same verbs, over MCP
 
-A client with no shell reaches ank through `ank-mcp`, which installs beside the
-CLI by every route that installs the CLI. The configuration
-to paste is in [getting-started.md](getting-started.md); what it *is* belongs
-here, because four properties of it are load-bearing and none of them is
-visible from a tool list.
+A client with no shell reaches ank through `ank mcp`, a verb of the one
+executable every route installs (ADR-1ea31c2f3c5a). There is no second file to
+fetch, sign or discover: what the CLI dispatches is what the surface serves,
+because they are the same file.
+
+The configuration is `command` naming the binary and `mcp` as its first
+argument, and it is pasted rather than derived:
+
+    {
+      "mcpServers": {
+        "ank": {
+          "command": "ank",
+          "args": ["mcp", "--repo", "/path/to/your/repo"]
+        }
+      }
+    }
+
+`--repo` is written out because a client spawns the server in whatever
+directory it happens to be in, and with no `--repo` the server takes that
+directory -- which is a process quietly speaking for a corpus nobody meant, or
+for none, rather than an error anyone sees.
+[getting-started.md](getting-started.md) carries the same block per client, for
+somebody installing rather than integrating. If you hold a configuration
+written against a second executable named `ank-mcp`, releases up to 0.6.0
+placed one and no route places one any more: the change is that one line.
+
+What the surface *is* belongs here, because four properties of it are
+load-bearing and none of them is visible from a tool list.
 
 **Every verb `COMMANDS` carries, generated from that table.** Not a curated
 subset, under any protocol (ADR-fd98f4bc6dea). It is the same table `ank help
@@ -254,13 +277,13 @@ exactly as they sit on the command line; flags arrive under their own names with
 the leading dashes stripped. Nothing in the server names a verb, so the two
 surfaces cannot disagree about what exists.
 
-**One process speaks for one corpus.** `--repo` is resolved once, at startup, and
-that value is what every call is given, so a server cannot drift between corpora
-while a client holds a claim in one. A call that passes `--repo`, `--json` or
-`--quiet` is refused by name rather than being allowed to contradict the process
-it is talking to:
+**One process is addressed with one corpus, at startup.** `--repo` is resolved
+once, there, and that value is what a call naming no corpus of its own is given,
+so a server cannot drift between corpora while a client holds a claim in one. A
+call that passes `--repo`, `--json` or `--quiet` is refused by name rather than
+being allowed to contradict the process it is talking to:
 
-    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: one process, one corpus"}}
+    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
 
 Nothing is hidden by that and nothing is curated: every verb takes exactly the
 arguments the table gives it, and what is withheld is three flags that are the
@@ -297,16 +320,17 @@ it still refuses off the default branch, with no way around it.
 
 ## The watcher keeps a cache warm, and answers nothing
 
-`ank-daemon` is a background process that keeps the derived index of the corpora
+`ank watch` is a background process that keeps the derived index of the corpora
 you declare current, so the `ank` you run finds a cache it does not have to
-rebuild. It is built from this workspace and no installation route ships it,
-which is the same statement as the one below about nothing depending on it.
-Everything else worth knowing about it as an integrator is what it refuses to be
-(ADR-a22cd3196529).
+rebuild. It is a verb of the same one executable every route installs
+(ADR-1ea31c2f3c5a), so every installation already has it -- and running one is
+still nobody's condition for anything, which is the statement below about
+nothing depending on it. Everything else worth knowing about it as an
+integrator is what it refuses to be (ADR-a22cd3196529).
 
 **It is not a surface.** No socket, no protocol, no query of its own, and no
 subset of the verbs. There is nothing here to ask: a caller that wants an answer
-runs the CLI, or talks to `ank-mcp`. A daemon answering the three questions a
+runs the CLI, or talks to `ank mcp`. A watcher answering the three questions a
 dashboard finds convenient would be the curated subset ADR-fd98f4bc6dea refuses,
 reached from the other direction, and it would be a third dispatch path in a
 project that has spent its history reducing to one. It does *tell* you when a
@@ -348,8 +372,9 @@ Two worktrees of one repository are two paths under one key, and therefore one
 watched corpus -- which is the whole reason the key is not the path. A key that
 is not a root commit is refused by name, a checkout filed under another
 repository's identity is refused with both identities, and a directory carrying
-no `.ank/` is refused rather than searched around: `ank-daemon --list` prints
-what would be watched without watching anything.
+no `.ank/` is refused rather than searched around: `ank watch --list` prints
+what would be watched without watching anything, and `ank watch --where` prints
+where the declaration is read from.
 
 **The only things it writes into a repository are that repository's own
 `index.db` and a mirror of `refs/ank/*`.** The mirror lands in
@@ -454,7 +479,7 @@ holds that true.
 - **`--repo <path>` addresses a corpus**, so a tool holding several addresses
   each on its own. Claims are per repository: nothing merges the claim spaces of
   two clones, because `refs/ank/*` cannot carry such an arbitration.
-- **Do not bind to `ank-daemon`.** It answers nothing, and it is optional by
+- **Do not bind to `ank watch`.** It answers nothing, and it is optional by
   construction. Write your integration against the CLI or the protocol surface,
   and let the watcher make those answers arrive sooner where somebody chose to
   run one.

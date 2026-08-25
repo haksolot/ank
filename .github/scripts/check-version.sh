@@ -12,7 +12,7 @@
 # with itself, which is a correct test of the wrapper and no test at all of the
 # version.
 #
-# Eleven literals across eight files carry the version today, which is ten more
+# Ten literals across seven files carry the version today, which is nine more
 # chances to be careful than anyone gets right forever. This makes the
 # disagreement fail instead.
 #
@@ -21,7 +21,7 @@
 # here costs a tag.
 #
 # The parsing is sed and awk. jq is on the runner but not on every machine a
-# maintainer would run this from, and the shapes read here are eight files this
+# maintainer would run this from, and the shapes read here are seven files this
 # repository writes itself. A literal the parser cannot find is a failure and
 # never a pass -- a shape that moved must turn this red, or the check quietly
 # stops checking.
@@ -91,12 +91,13 @@ compare() {
   bad_fix+=("$fix")
 }
 
-# ank-mcp is here for the same reason ank-cli is: the release ships it, in every
-# archive and every npm package, and the smoke job asserts it answers --version
-# with the number ank answers with. A tag that bumped ank-cli
-# and left ank-mcp behind would pass this gate and then break on the tag itself,
-# which is the loop this whole job exists to spare.
-for crate in ank-cli ank-core ank-mcp; do
+# The two crates whose version a release is about: `ank-cli` is the executable
+# every route carries, and `ank-core` is what it is. The libraries linked into
+# it -- the verb table, the protocol surface, the watcher, the terminal reader
+# -- are not gated here, for the reason ADR-1ea31c2f3c5a removed the gate that
+# used to be: nothing published carries any of them as a file of its own, so a
+# version they disagree on is not a version anybody downloads.
+for crate in ank-cli ank-core; do
   f="crates/$crate/Cargo.toml"
   compare "$f" "$f" "$(cargo_version "$f" 2>/dev/null)" \
     "$f: version = \"$version\""

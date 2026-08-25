@@ -10,12 +10,15 @@ the release published, verify it against the .sha256 published beside it, unpack
 it, and never end in silence. What differs is only what Windows spells
 differently.
 
-Two executables land and not one: ank.exe, and ank-mcp.exe beside it, the
-protocol surface a client speaks to. They come out of one archive and go into
-one directory, and no route carries one without the other. That pairing ends
-with TASK-d9b167250aa8, which leaves one executable to install. An archive published before ank-mcp existed carries only ank.exe, and
--Version points this script at exactly those: such a release installs ank.exe
-and is told what is missing, rather than becoming a route that stopped working.
+One executable lands: ank.exe. The protocol surface and the watcher are verbs
+of it (ADR-1ea31c2f3c5a), so there is no second file for this script to place
+and no way for one to fail to arrive.
+
+-Version reaches releases published before that was true, whose archive carries
+a second executable beside ank.exe. Nothing here asks: the archive is unpacked,
+ank.exe is taken out of it, and whatever else the directory holds goes with the
+temporary directory. So an old release installs the one file this script
+promises, by the same code path a new one does.
 
 Windows PowerShell 5.1 is the floor, because that is what a clean Windows ships
 and this channel exists for the machine that has nothing installed yet. Two
@@ -105,10 +108,10 @@ function Fail {
 function Show-Usage {
     Say 'install ank from a GitHub release'
     Say ''
-    Say 'Two executables land in the install directory: ank.exe, and ank-mcp.exe'
-    Say 'beside it, the protocol surface a client speaks to. A release published'
-    Say 'before ank-mcp existed carries only ank.exe; this installs it and says'
-    Say 'what is missing.'
+    Say 'One executable lands in the install directory: ank.exe. The protocol'
+    Say 'surface and the watcher are verbs of it -- ank mcp, ank watch -- so'
+    Say 'there is nothing further to fetch and nothing further to configure a'
+    Say 'client against.'
     Say ''
     Say 'usage:'
     Say "  irm $RawUrl | iex"
@@ -569,11 +572,10 @@ function Expand-Zip {
 # one takes the name; the stale copies are swept on the next run, since the
 # process holding one is still holding it now.
 #
-# Written once and called twice rather than inlined per executable: ank.exe and
-# ank-mcp.exe are locked by the same rule, and a second copy of this dance is a
-# second place for it to stop being true. Returns the message of the failure it
-# could not work around, or $null, because the two callers have different things
-# to say afterwards -- one has installed nothing, the other has installed ank.
+# A function rather than an inlined block: what it does is subtle enough to be
+# worth reading on its own, and its one caller is easier to read for not
+# carrying it. Returns the message of the failure it could not work around, or
+# $null.
 function Move-IntoPlace {
     param([string]$Source, [string]$Destination, [string]$Name)
 
@@ -884,7 +886,14 @@ try {
     }
 
     # The layout release.yml packages: one directory named after the archive,
-    # carrying the two executables beside README.md, LICENSE and SKILL.md.
+    # carrying the executable beside README.md, LICENSE and SKILL.md.
+    #
+    # ank.exe is required and the rest of the directory is not read at all. An
+    # archive published before ADR-1ea31c2f3c5a carries a second executable
+    # there, and the answer to it is the same as the answer to README.md: it is
+    # not what was asked for, so it is not moved anywhere. A check that refused
+    # an archive holding more than this would refuse every release published so
+    # far.
     $unpacked = Join-Path $tmp "ank-$bare-$target"
     $binary = Join-Path $unpacked 'ank.exe'
     if (-not (Test-Path -Path $binary -PathType Leaf)) {
@@ -896,13 +905,6 @@ try {
             'Nothing was installed.'
         )
     }
-
-    # The other half of the same rule: where this route places ank, it places
-    # ank-mcp next to it. Missing only from an archive older than the protocol
-    # surface itself, which is a release -Version still reaches, so its absence
-    # is reported at the end rather than refused here.
-    $mcpBinary = Join-Path $unpacked 'ank-mcp.exe'
-    $mcpInstalled = Test-Path -Path $mcpBinary -PathType Leaf
 
     if (-not $Dir) {
         if (-not $env:LOCALAPPDATA) {
@@ -945,28 +947,6 @@ try {
         )
     }
 
-    # The same call in the same order, which is what gives the pair the same
-    # permissions rather than a second mechanism that hopes to: both files were
-    # unpacked out of one archive into one directory, so they carry the same
-    # access rules before this line, and a move into $Dir treats them alike.
-    $mcpDestination = Join-Path $Dir 'ank-mcp.exe'
-    if ($mcpInstalled) {
-        $failure = Move-IntoPlace -Source $mcpBinary -Destination $mcpDestination -Name 'ank-mcp.exe'
-        if ($failure) {
-            Fail 1 @(
-                "could not write $mcpDestination.",
-                '',
-                "  $failure",
-                '',
-                'Something is holding the file open and it could not be renamed either.',
-                'Close any client running ank-mcp and try again.',
-                '',
-                "ank is installed at $destination. ank-mcp is not, so a client has",
-                'no protocol surface to reach until this is run again.'
-            )
-        }
-    }
-
     $installedVersion = ''
     try {
         $installedVersion = (& $destination --version 2>$null | Select-Object -First 1)
@@ -974,31 +954,9 @@ try {
         $installedVersion = ''
     }
 
-    $mcpVersion = ''
-    if ($mcpInstalled) {
-        try {
-            $mcpVersion = (& $mcpDestination --version 2>$null | Select-Object -First 1)
-        } catch {
-            $mcpVersion = ''
-        }
-    }
-
     Say ''
     Say "installed  $destination"
     if ($installedVersion) { Say "           $installedVersion" }
-    if ($mcpInstalled) {
-        Say "           $mcpDestination"
-        if ($mcpVersion) { Say "           $mcpVersion" }
-    } else {
-        # Said rather than swallowed. The caller asked for ank and has ank, so
-        # this is not a failure; but a client pointed at this directory will
-        # find no ank-mcp.exe in it, and this is the only place able to say why.
-        Say ''
-        Say "$archive carries no ank-mcp.exe, so only ank was installed."
-        Say 'That archive predates the protocol surface. A release that carries'
-        Say 'both installs both:'
-        Say "  irm $RawUrl | iex"
-    }
 
     # The last way left to leave a caller without a working `ank`: a binary in a
     # directory nothing looks in. Naming the command to run is the difference
