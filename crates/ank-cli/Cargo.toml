@@ -38,6 +38,13 @@ ank-core = { path = "../ank-core" }
 # (ADR-6fd69efb629c). No third-party code enters with it: the crate is in this
 # workspace and has no dependencies of its own.
 ank-contract = { path = "../ank-contract" }
+# The terminal reader of ADR-8bd76e8d7c4e, which ships as the verb `ank tui`
+# rather than as a sibling binary: a human types `ank tui`, and a separate
+# executable is invisible to precisely the people it exists for. The dependency
+# points this way and only this way -- `ank-tui` reaches the corpus by running
+# this binary, so it does not link back, and `crates/ank-tui/tests/dependencies.rs`
+# reads the graph to keep that true.
+ank-tui = { path = "../ank-tui" }
 # Already in the tree through ank-core: no new crate enters here.
 # config.yml is the only YAML the CLI reads itself; sha2 and hex are the
 # index's content hash per file, which decides what needs reindexing (§6).

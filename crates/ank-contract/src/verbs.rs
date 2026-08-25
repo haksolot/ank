@@ -61,6 +61,41 @@ const LOG_ENTRY: &[Field] = &[
     opt("records", Type::Str),
 ];
 
+/// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
+///
+/// `tui` draws a screen and, under `--json`, answers what that screen holds:
+/// the corpus it opened, who holds what, and the rows the list carries. It is
+/// the reader's own answer rather than a passthrough of the four verbs it runs,
+/// which is why it has a shape of its own here.
+const TUI_OUT: &[Field] = &[
+    f("corpus", Type::Str),
+    f("branch", Type::Str),
+    f("default_branch", Type::Str),
+    f("identity", Type::Str),
+    f("total", Type::Num),
+    f("shown", Type::Num),
+    f(
+        "claims",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("holder", Type::Str),
+            f("expires", Type::Str),
+            f("mine", Type::Bool),
+        ]),
+    ),
+    f(
+        "entities",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("kind", Type::Str),
+            f("status", Type::Str),
+            f("title", Type::Str),
+        ]),
+    ),
+];
+
 /// An entity row as `scope` and `find` render one.
 const ROW: &[Field] = &[
     f("id", Type::Str),
@@ -951,6 +986,37 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[],
         refuses_globals: &[],
         output: &[one(&[f("path", Type::Str), f("total", Type::Num), f("adr", Type::Array(ROW)), f("specs", Type::Array(ROW)), f("tasks", Type::Array(ROW))])],
+        owner_task: None,
+    },
+    // Beside `graph` and `scope`, which is the neighbourhood §4 puts it in: the
+    // verbs that answer *what is here* rather than change it. A reader that
+    // also acts does not become a different kind of verb -- what it acts
+    // through is `claim`, `log` and `done`, run as a shell would run them
+    // (ADR-8bd76e8d7c4e).
+    CommandSpec {
+        name: "tui",
+        group: "look around",
+        renews: Renews::Never,
+        // It runs the CLI, and the CLI checks git per verb (ADR-9307e5d214a7).
+        // Requiring it here would refuse a reader over a corpus that four
+        // read-only verbs answer about perfectly well.
+        coordinates: false,
+        summary: "a full-screen reader over this corpus: every entity with its status, a body whole, what binds it, and who holds what",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[],
+        refuses: &[refuses(
+            ExitCode::Environment,
+            "no terminal on stdin and stdout: a screen cannot be drawn into a pipe",
+        )],
+        notes: &[
+            "it reaches the corpus only by running this binary with --json, and writes nothing",
+            "a command is a short word and Enter; ? lists them, q leaves",
+            "--json answers the opening frame as data and opens no session",
+        ],
+        refuses_globals: &[],
+        output: &[one(TUI_OUT)],
         owner_task: None,
     },
     CommandSpec {

@@ -1,0 +1,33 @@
+[package]
+name = "ank-tui"
+# ank-cli's version, and not a version of its own. This crate is linked into
+# the `ank` binary rather than shipped beside it, so "which ank is this" has one
+# answer and this number is not a second one.
+version = "0.6.0"
+edition = "2021"
+# The workspace floor, for the reason ank-core's manifest gives: one lockfile,
+# one build.
+rust-version = "1.95"
+# Apache-2.0, like the whole tree (ADR-9f03438f5422).
+license = "Apache-2.0"
+description = "The Ank terminal reader: it draws what the CLI prints, and reaches the corpus only by running it."
+
+# **The dependency list is the constraint made mechanical** (ADR-8bd76e8d7c4e).
+# `ank-core` is absent and must stay absent, and so is every git library: this
+# crate reaches the corpus by running `ank ... --json` and by nothing else, so
+# the refusals it shows are the refusals the binary gave and there is no second
+# dispatch path to keep in step. `tests/dependencies.rs` reads the graph back
+# out of cargo and fails when either arrives.
+[dependencies]
+# The exit codes, read out of the contract rather than typed as numbers
+# (ADR-6fd69efb629c). This is what `ank-daemon` takes from it and for the same
+# reason: this crate dispatches no verb, so the verb table is not its business.
+ank-contract = { path = "../ank-contract" }
+# **No new crate enters the tree for this.** The CLI's `--json` has to be
+# *read*, and `ank-contract::json` writes and does not read. `serde_yaml` is
+# already a dependency of `ank-core`, `ank-cli`, `ank-daemon` and `ank-mcp`, and
+# YAML 1.2 is a superset of JSON, so a one-line document parses as flow YAML.
+# `ank-mcp` reads JSON-RPC requests this way already (§13 spends a dependency
+# only on necessity), and the escaper on the other side emits only `\"`, `\\`,
+# `\n` and `\u00xx`, every one of which a double-quoted YAML scalar carries.
+serde_yaml = "0.9"
