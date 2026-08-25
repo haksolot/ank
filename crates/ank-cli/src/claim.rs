@@ -37,9 +37,9 @@ use ank_core::{
     TaskStatus,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// One ref per task, and the address is the same whichever state the record
@@ -380,7 +380,7 @@ pub fn live_claims_of(
     except: &EntityId,
     now: i64,
 ) -> Result<Vec<(EntityId, ClaimRecord)>> {
-    live_claims_where(cwd, except, now, &|holder| holder == identity)
+    live_claims_where(cwd, Some(except), now, &|holder| holder == identity)
 }
 
 /// The same walk, with the identity test handed in.
@@ -390,9 +390,17 @@ pub fn live_claims_of(
 /// holds — and a second copy of "a lapsed claim is not a live one" is a second
 /// chance to read expiry differently. That predicate is the whole reason
 /// ADR-052accd6e3b2's signal does not fire on abandoned work forever.
+///
+/// **`except` is an option and not a task**, because the two callers differ on
+/// whether there is anything to exclude. Reading this corpus, the task being
+/// claimed is the one claim that must not be reported back to its own claimer.
+/// Reading a corpus the reader declared, there is nothing to exclude at all:
+/// ids are minted without coordination and two corpora do not collide, so an id
+/// that matched over there would be a different task, and dropping it would
+/// hide a real claim behind a coincidence.
 fn live_claims_where(
     cwd: &Path,
-    except: &EntityId,
+    except: Option<&EntityId>,
     now: i64,
     keep: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<(EntityId, ClaimRecord)>> {
@@ -404,7 +412,7 @@ fn live_claims_where(
         let Ok(id) = EntityId::parse(rest) else {
             continue;
         };
-        if &id == except {
+        if except == Some(&id) {
             continue;
         }
         let out = git::output(cwd, &["cat-file", "-p", r.object.as_str()])?;
@@ -1434,7 +1442,7 @@ pub fn scope_clashes(
     now: i64,
 ) -> Result<Vec<ScopeClash>> {
     let mut clashes = Vec::new();
-    for (id, record) in live_claims_where(cwd, &task.id, now, &|holder| holder != identity)? {
+    for (id, record) in live_claims_where(cwd, Some(&task.id), now, &|holder| holder != identity)? {
         let Ok(loaded) = store.load(&id) else {
             continue;
         };
@@ -1452,6 +1460,136 @@ pub fn scope_clashes(
         });
     }
     Ok(clashes)
+}
+
+// ---------------------------------------------------------------------------
+// A live claim this identity holds in another corpus the reader declared
+// (ADR-ed3e14d0f991)
+// ---------------------------------------------------------------------------
+//
+// **The rule stays per corpus, and this is the fact that replaces the refusal
+// nobody can arbitrate.** `refs/ank/*` is per repository (ADR-4e7c25b1f639,
+// ADR-a1de673043b4), so a cross-corpus refusal could only be enforced by
+// whatever process happened to see both corpora at once, and two such processes
+// would not see each other. So nothing below refuses: it names, exactly as
+// ADR-052accd6e3b2 names two claims whose scopes intersect, and the claim is
+// taken all the same.
+//
+// **Only what the reader already declared is ever read or named**
+// (ADR-621a7fd96ce1, ADR-96174f1ac2b7). The map is handed in; nothing here
+// walks a filesystem looking for a corpus, reads a git remote, or derives a
+// location from a path or a slug. A caller who has declared nothing hands in an
+// empty map, no corpus is opened, no line is added, and what they see is what
+// they saw before this existed.
+//
+// **Reading crosses, writing never does.** What is opened over there is
+// `refs/ank/claims/*` and nothing else: no store, no index, no ref written, no
+// file touched. The lock ADR-a1de673043b4 left standing is that claims are not
+// *arbitrated* across a boundary, and naming one is not arbitrating it.
+
+/// A live claim this identity holds in another corpus the reader declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ElsewhereClaim {
+    pub task: EntityId,
+    /// The corpus, as the reader declared it. The location and not the
+    /// repository identity: the identity keys the map on the *tree* a reader
+    /// stands in (ADR-96174f1ac2b7), which is not what this claim is in, and a
+    /// path is what the reader can act on.
+    pub corpus: String,
+    pub expires: String,
+}
+
+impl ElsewhereClaim {
+    /// The one line `claim` prints, naming the task, the corpus and the lease.
+    ///
+    /// The identity is passed in rather than carried, because it is the same
+    /// for every row: the question this answers is what *this* caller already
+    /// holds, and repeating it on the struct would be a field that can only
+    /// ever hold one value.
+    pub fn line(&self, identity: &str) -> String {
+        format!(
+            "{identity} holds {} in {}, until {}",
+            self.task, self.corpus, self.expires
+        )
+    }
+}
+
+/// Every live claim `identity` holds in a declared corpus that is not `here`,
+/// and one warning per declared corpus that could not be read.
+///
+/// `declared` is [`crate::config::declarations`]'s map, handed in rather than
+/// read here: a function that reads the reader's home is a function no test can
+/// pin, and the golden that says a caller with no declaration sees today's
+/// bytes is exactly the test that needs to hand in an empty one.
+///
+/// **The corpus in hand is skipped by its path, not by the map's key.** The key
+/// is the identity of the tree a reader stands in and the value is where its
+/// corpus lives, so two keys can name one corpus and the key cannot answer
+/// "is this the one I am already in". [`crate::repo::same_corpus`] canonicalises
+/// both sides, which is the same question `--repo` asks, and the canonical path
+/// is also what deduplicates one corpus declared twice.
+///
+/// **Degrade, never fail** (§2). A declared corpus that is not there, is not a
+/// corpus, or whose refs cannot be read costs one line and the claim is taken —
+/// the rule [`crate::repo::peers_of`] already follows for a peer, and the same
+/// reason: a claim does not fail because something the reader was told about is
+/// missing. Once per corpus, because the map holds each one once and the
+/// canonical path drops the rest.
+pub fn claims_elsewhere(
+    here: &Path,
+    declared: &BTreeMap<String, String>,
+    identity: &str,
+    now: i64,
+) -> (Vec<ElsewhereClaim>, Vec<String>) {
+    let mut held = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
+
+    // Sorted by the declared location rather than left in the map's order,
+    // which is the order of a root commit's hex and means nothing to a reader.
+    let mut locations: Vec<&String> = declared.values().collect();
+    locations.sort();
+    locations.dedup();
+
+    for location in locations {
+        let root = Path::new(location);
+        if crate::repo::same_corpus(root, here) {
+            continue;
+        }
+        match std::fs::canonicalize(root) {
+            Ok(real) if seen.contains(&real) => continue,
+            Ok(real) => seen.push(real),
+            // Not a refusal and not a skip: `at` below is what says whether a
+            // corpus is there, and it says it with the warning this branch
+            // would otherwise pre-empt.
+            Err(_) => {}
+        }
+        let Ok(repo) = crate::repo::at(root) else {
+            warnings.push(unreadable(location, "is not a corpus"));
+            continue;
+        };
+        match live_claims_where(&repo.corpus, None, now, &|holder| holder == identity) {
+            Ok(claims) => held.extend(claims.into_iter().map(|(task, record)| ElsewhereClaim {
+                task,
+                corpus: location.clone(),
+                expires: record.expires,
+            })),
+            Err(_) => warnings.push(unreadable(location, "could not be read")),
+        }
+    }
+    (held, warnings)
+}
+
+/// The one sentence a declared corpus that did not answer costs, ending with
+/// where the declaration that named it lives.
+fn unreadable(location: &str, why: &str) -> String {
+    format!(
+        "the corpus declared at {location} {why}, and what it holds is not named \
+         (correct the entry in {})",
+        crate::config::corpora_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| crate::config::CORPORA_FILE.to_string())
+    )
 }
 
 /// Hash of a constraint set. Stable under reordering (the entries are sorted)
@@ -1755,6 +1893,29 @@ pub fn run(
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
+    // **The reader's declarations, read once and handed down**
+    // (ADR-96174f1ac2b7). Silent on every error, for the reason
+    // `repo::is_declared` gives: resolution has already refused on a map it
+    // could not parse by the time any verb runs, so a second reading has
+    // nothing new to report and no business failing a claim over it.
+    let declared = config::declarations().unwrap_or_default();
+    run_with(inv, repo, cfg, identity, &declared, out)
+}
+
+/// The verb with the reader's declarations handed in.
+///
+/// Split from [`run`] so the map is an argument and not an ambient file: the
+/// hard boundary of ADR-ed3e14d0f991 is that a caller who declared nothing sees
+/// the bytes they saw before, and a test that cannot say "declared nothing"
+/// cannot assert it.
+fn run_with(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    declared: &BTreeMap<String, String>,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let prefix = inv.positionals.first().ok_or_else(|| {
         CliError::new(ExitCode::Generic, "claim expects a task id").with_hint("ank claim <id>")
     })?;
@@ -1904,11 +2065,24 @@ pub fn run(
     // precondition of the claim -- the task is already held by the time this is
     // read, and the criterion says the exit code is 0.
     let clashes = scope_clashes(&repo.corpus, &store, &task, identity, now_secs())?;
+    // What this identity already holds in a corpus the reader declared
+    // (ADR-ed3e14d0f991). Named and never refused, for the reason the ADR
+    // gives: a refusal across corpora could only be arbitrated by whatever
+    // process saw both, and `refs/ank/*` is per repository. Read after the ref
+    // is taken, with the clashes, because it is a fact about the caller and not
+    // a precondition of the claim -- the exit code is the one a claim with
+    // nothing to report gives.
+    let (elsewhere, unread) = claims_elsewhere(&repo.corpus, declared, identity, now_secs());
     let warnings: Vec<String> = also_held
         .iter()
         .map(|(id, c)| format!("{identity} already holds {id} until {}", c.expires))
         .chain((!also_held.is_empty()).then(way_out))
         .chain(clashes.iter().map(ScopeClash::line))
+        // The same line a human reads and a `--json` caller reads, exactly as
+        // the two above: the structured field below is the shape, not a second
+        // set of facts.
+        .chain(elsewhere.iter().map(|e| e.line(identity)))
+        .chain(unread)
         // A claim that did not reach the remote holds in this clone alone, and
         // §7 is explicit that the risk is displayed rather than hidden.
         .chain(acquired.sync.warning())
@@ -1919,9 +2093,28 @@ pub fn run(
             .str("task", &acquired.id.to_string())
             .str("holder", &acquired.holder)
             .str("expires", &acquired.expires)
-            .strings("warnings", &warnings)
-            .finish();
-        let _ = writeln!(out, "{doc}");
+            .strings("warnings", &warnings);
+        // **The key arrives with the facts and never without them.** A document
+        // is free to gain a field within a contract version, and an empty array
+        // on every claim would still be a byte a parser sees that it did not see
+        // before -- which is the one thing ADR-ed3e14d0f991 says a caller with no
+        // declaration must not pay. So `claim` declares two documents, the way
+        // `log` does, and the golden for the caller who declared nothing is the
+        // one that was already there.
+        let doc = match elsewhere.is_empty() {
+            true => doc,
+            false => doc.array(
+                "claims_elsewhere",
+                elsewhere.iter().map(|e| {
+                    crate::json::Obj::new()
+                        .str("task", &e.task.to_string())
+                        .str("corpus", &e.corpus)
+                        .str("expires", &e.expires)
+                        .finish()
+                }),
+            ),
+        };
+        let _ = writeln!(out, "{}", doc.finish());
     } else {
         // A warning survives `--quiet`: what it reports is not the confirmation
         // the flag is there to silence.
@@ -3008,12 +3201,441 @@ mod tests {
     }
 
     fn run_verb(t: &Temp, inv: &Invocation) -> Result<ExitCode> {
-        let repo = Repo {
-            corpus: t.0.clone(),
-            worktree: t.0.clone(),
-            ank: t.0.join(".ank"),
-        };
         let mut out = Vec::new();
-        run(inv, &repo, &test_config(), "claude-code@ank", &mut out)
+        run_declared(t, inv, &BTreeMap::new(), &mut out)
+    }
+
+    /// The verb with the reader's declarations handed in, and its bytes kept.
+    ///
+    /// Never [`run`], which would read whichever `corpora.yml` the machine
+    /// running the suite happens to carry: what a test asserts about a caller
+    /// with no declaration has to be a caller with no declaration, and an
+    /// ambient file is the one thing that could make that sentence false on
+    /// somebody else's laptop.
+    fn run_declared(
+        t: &Temp,
+        inv: &Invocation,
+        declared: &BTreeMap<String, String>,
+        out: &mut Vec<u8>,
+    ) -> Result<ExitCode> {
+        run_with(
+            inv,
+            &t.repo(),
+            &test_config(),
+            "claude-code@ank",
+            declared,
+            out,
+        )
+    }
+
+    /// A second corpus, in a repository of its own, holding one task.
+    ///
+    /// Its own repository because that is where a corpus's claims live
+    /// (ADR-9e56318631f3): a directory with a `.ank/` and no git is a corpus
+    /// whose refs cannot be read, which is the *other* test.
+    fn second_corpus(hex: &str) -> (Temp, Task) {
+        let t = Temp::new_repo();
+        let task = open_task(hex);
+        t.seed(&task);
+        t.commit_all("seed");
+        (t, task)
+    }
+
+    fn declaring(entries: &[(&str, &Path)]) -> BTreeMap<String, String> {
+        entries
+            .iter()
+            .map(|(key, path)| (key.to_string(), path.display().to_string()))
+            .collect()
+    }
+
+    /// Forty hex characters, which is the only key `declarations` lets through.
+    fn key(n: u8) -> String {
+        format!("{:040x}", n)
+    }
+
+    // -----------------------------------------------------------------------
+    // One live claim per identity is per corpus, and the rest are named
+    // (ADR-ed3e14d0f991)
+    // -----------------------------------------------------------------------
+
+    /// The whole of the decision in one call: the claim is taken, the exit code
+    /// is the one a claim with nothing to report gives, and the claim held in
+    /// the other declared corpus is named with the corpus it is in.
+    #[test]
+    fn a_claim_held_in_another_declared_corpus_is_named_and_never_refused() {
+        let here = Temp::new_repo();
+        let mine = open_task("00000000ca01");
+        here.seed(&mine);
+        here.commit_all("seed");
+
+        let (there, theirs) = second_corpus("00000000ca02");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+
+        let declared = declaring(&[(&key(1), &there.0)]);
+        let inv = invocation(&["claim", &mine.id.to_string()]);
+        let mut out = Vec::new();
+        assert_eq!(
+            run_declared(&here, &inv, &declared, &mut out).unwrap(),
+            ExitCode::Ok,
+            "the code is the one a claim with nothing to report gives"
+        );
+
+        // Taken all the same, and on the ref rather than only on paper.
+        assert!(matches!(
+            read(&here.0, &mine.id).unwrap().unwrap().record,
+            Record::Claim(_)
+        ));
+
+        let text = String::from_utf8(out).unwrap();
+        assert!(
+            text.contains(&format!("claude-code@ank holds {}", theirs.id)),
+            "the claim held elsewhere is named: {text}"
+        );
+        assert!(
+            text.contains(&format!("in {}", there.0.display())),
+            "with the corpus it is in: {text}"
+        );
+        assert!(text.starts_with("warning:"), "as a warning: {text}");
+    }
+
+    /// The same facts, under a field of its own.
+    #[test]
+    fn json_carries_the_claims_elsewhere_under_a_field_of_its_own() {
+        let here = Temp::new_repo();
+        let mine = open_task("00000000cb01");
+        here.seed(&mine);
+        here.commit_all("seed");
+
+        let (there, theirs) = second_corpus("00000000cb02");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+
+        let declared = declaring(&[(&key(1), &there.0)]);
+        let inv = invocation(&["claim", &mine.id.to_string(), "--json"]);
+        let mut out = Vec::new();
+        assert_eq!(
+            run_declared(&here, &inv, &declared, &mut out).unwrap(),
+            ExitCode::Ok
+        );
+
+        let text = String::from_utf8(out).unwrap();
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+        let rows = doc["claims_elsewhere"].as_sequence().expect(&text);
+        assert_eq!(rows.len(), 1, "{text}");
+        assert_eq!(
+            rows[0]["task"].as_str(),
+            Some(theirs.id.to_string().as_str())
+        );
+        assert_eq!(
+            rows[0]["corpus"].as_str(),
+            Some(there.0.display().to_string().as_str())
+        );
+        assert!(rows[0]["expires"].as_str().is_some(), "{text}");
+        // One document, one line, and the shape `ank-contract` declares for it.
+        assert_eq!(text.lines().count(), 1, "{text}");
+    }
+
+    /// The hard boundary, pinned against a golden: with nothing declared, no
+    /// corpus is read, none is named, and the bytes are the ones that were
+    /// there before any of this existed — on both surfaces.
+    #[test]
+    fn a_caller_with_no_declaration_sees_the_bytes_it_saw_before() {
+        // A corpus that would be named the moment anything went looking for
+        // one, holding a live claim under the very identity that is claiming
+        // here. Nothing declares it, so nothing may find it.
+        let (there, theirs) = second_corpus("00000000cc02");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+
+        let here = Temp::new_repo();
+        let mine = open_task("00000000cc01");
+        here.seed(&mine);
+        here.commit_all("seed");
+
+        let mut out = Vec::new();
+        let inv = invocation(&["claim", "TASK-00000000cc01"]);
+        assert_eq!(
+            run_declared(&here, &inv, &BTreeMap::new(), &mut out).unwrap(),
+            ExitCode::Ok
+        );
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "claimed TASK-00000000cc01 example -> HEAD\n",
+            "a caller with no declaration sees the line it always saw"
+        );
+
+        // And the machine surface, whose golden in `tests/golden-json/` carries
+        // exactly these keys in exactly this order.
+        let here = Temp::new_repo();
+        let mine = open_task("00000000cc01");
+        here.seed(&mine);
+        here.commit_all("seed");
+        let mut out = Vec::new();
+        let inv = invocation(&["claim", "TASK-00000000cc01", "--json"]);
+        run_declared(&here, &inv, &BTreeMap::new(), &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        let expires = expires_in(&text);
+        assert_eq!(
+            text,
+            format!(
+                "{{\"contract\":1,\"task\":\"TASK-00000000cc01\",\
+                 \"holder\":\"claude-code@ank\",\"expires\":\"{expires}\",\
+                 \"warnings\":[]}}\n"
+            ),
+            "no key arrives that a caller with no declaration did not already read"
+        );
+    }
+
+    /// The instant the document carries, which is the one value in it this test
+    /// cannot know in advance. Read back out rather than pinned, the way
+    /// `tests/golden-json/` redacts it.
+    fn expires_in(doc: &str) -> String {
+        let v: serde_yaml::Value = serde_yaml::from_str(doc).unwrap();
+        v["expires"].as_str().unwrap().to_string()
+    }
+
+    /// A corpus nobody declared is never read and never named, asserted from
+    /// the reading side rather than through the whole verb.
+    #[test]
+    fn only_a_declared_corpus_is_ever_read_or_named() {
+        let (there, theirs) = second_corpus("00000000cd02");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+        let here = Temp::new_repo();
+
+        let (held, warnings) =
+            claims_elsewhere(&here.0, &BTreeMap::new(), "claude-code@ank", now_secs());
+        assert!(held.is_empty(), "nothing declared, nothing found: {held:?}");
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // Declared, and now it answers: the difference between the two calls is
+        // the map and nothing else.
+        let (held, warnings) = claims_elsewhere(
+            &here.0,
+            &declaring(&[(&key(1), &there.0)]),
+            "claude-code@ank",
+            now_secs(),
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(held.len(), 1, "{held:?}");
+        assert_eq!(held[0].task, theirs.id);
+    }
+
+    /// The corpus in hand is not reported back to itself, however the reader
+    /// declared it, and a corpus declared twice is named once.
+    #[test]
+    fn the_corpus_being_claimed_in_is_never_among_the_ones_named() {
+        let here = Temp::new_repo();
+        let a = open_task("00000000ce01");
+        let b = open_task("00000000ce02");
+        here.seed(&a);
+        here.seed(&b);
+        here.commit_all("seed");
+        acquire(&here.0, &b, "claude-code@ank", DEFAULT_TTL, "h", "c", None).unwrap();
+
+        // Declared under its own path and under a second key, which is what two
+        // trees sharing one corpus look like in the map.
+        let declared = declaring(&[(&key(1), &here.0), (&key(2), &here.0)]);
+        let (held, warnings) = claims_elsewhere(&here.0, &declared, "claude-code@ank", now_secs());
+        assert!(
+            held.is_empty(),
+            "the corpus in hand is `also_held`'s business, not this one: {held:?}"
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+
+        // And one corpus declared twice under two keys is opened once.
+        let (there, theirs) = second_corpus("00000000ce03");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+        let declared = declaring(&[(&key(1), &there.0), (&key(2), &there.0)]);
+        let (held, _) = claims_elsewhere(&here.0, &declared, "claude-code@ank", now_secs());
+        assert_eq!(held.len(), 1, "named once, not once per key: {held:?}");
+    }
+
+    /// Somebody else's claim over there is not this caller's, and a lapsed one
+    /// is nobody's.
+    #[test]
+    fn only_this_identity_and_only_a_live_claim_is_named() {
+        let here = Temp::new_repo();
+        let (there, theirs) = second_corpus("00000000cf02");
+        acquire(
+            &there.0,
+            &theirs,
+            "codex@host-9",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+        let declared = declaring(&[(&key(1), &there.0)]);
+
+        let (held, _) = claims_elsewhere(&here.0, &declared, "claude-code@ank", now_secs());
+        assert!(held.is_empty(), "another identity holds it: {held:?}");
+
+        let (held, _) = claims_elsewhere(&here.0, &declared, "codex@host-9", now_secs());
+        assert_eq!(held.len(), 1, "{held:?}");
+
+        // Past the lease and past the drift tolerance it is nobody's, which is
+        // the predicate `live_claims_where` already applies here.
+        let later =
+            now_secs() + DEFAULT_TTL.as_secs() as i64 + DRIFT_TOLERANCE.as_secs() as i64 + 1;
+        let (held, _) = claims_elsewhere(&here.0, &declared, "codex@host-9", later);
+        assert!(held.is_empty(), "a lapsed claim is not held: {held:?}");
+    }
+
+    /// A declared corpus that cannot be read costs one line and never the
+    /// claim.
+    #[test]
+    fn a_declared_corpus_that_cannot_be_read_warns_once_and_the_claim_is_taken() {
+        let here = Temp::new_repo();
+        let mine = open_task("00000000c001");
+        here.seed(&mine);
+        here.commit_all("seed");
+
+        // Three ways to be unreadable: a path that is not there, a directory
+        // that is no corpus, and a corpus whose repository is not one, so its
+        // refs cannot be read.
+        let absent = here.0.join("no-such-corpus");
+        let bare = Temp::new_repo();
+        std::fs::remove_dir_all(bare.0.join(".ank")).unwrap();
+        let detached = Temp::new_repo();
+        std::fs::remove_dir_all(detached.0.join(".git")).unwrap();
+
+        let declared = declaring(&[
+            (&key(1), &absent),
+            (&key(2), &bare.0),
+            (&key(3), &detached.0),
+        ]);
+        let (held, warnings) = claims_elsewhere(&here.0, &declared, "claude-code@ank", now_secs());
+        assert!(held.is_empty(), "{held:?}");
+        assert_eq!(warnings.len(), 3, "one line per corpus, once: {warnings:?}");
+        // Each named once, in the order the reader would read them off the
+        // map's values rather than in the order this test wrote them.
+        for location in [&absent, &bare.0, &detached.0] {
+            let named: Vec<&String> = warnings
+                .iter()
+                .filter(|w| w.contains(&location.display().to_string()))
+                .collect();
+            assert_eq!(named.len(), 1, "{location:?} named once: {warnings:?}");
+            assert!(
+                named[0].contains("corpora.yml"),
+                "and where to correct it: {}",
+                named[0]
+            );
+        }
+
+        // And the claim is taken, with the same code as one with nothing to
+        // report.
+        let inv = invocation(&["claim", &mine.id.to_string()]);
+        let mut out = Vec::new();
+        assert_eq!(
+            run_declared(&here, &inv, &declared, &mut out).unwrap(),
+            ExitCode::Ok
+        );
+        assert!(matches!(
+            read(&here.0, &mine.id).unwrap().unwrap().record,
+            Record::Claim(_)
+        ));
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("claimed"), "{text}");
+    }
+
+    /// Reading crosses and writing never does: the declared corpus is left
+    /// exactly as it was found.
+    #[test]
+    fn naming_a_claim_elsewhere_writes_nothing_in_the_corpus_it_names() {
+        let here = Temp::new_repo();
+        let mine = open_task("00000000c101");
+        here.seed(&mine);
+        here.commit_all("seed");
+
+        let (there, theirs) = second_corpus("00000000c102");
+        acquire(
+            &there.0,
+            &theirs,
+            "claude-code@ank",
+            DEFAULT_TTL,
+            "h",
+            "c",
+            None,
+        )
+        .unwrap();
+        let before = fingerprint(&there.0);
+
+        let inv = invocation(&["claim", &mine.id.to_string()]);
+        let mut out = Vec::new();
+        run_declared(&here, &inv, &declaring(&[(&key(1), &there.0)]), &mut out).unwrap();
+
+        assert_eq!(
+            before,
+            fingerprint(&there.0),
+            "a corpus that was read must be byte for byte what it was"
+        );
+    }
+
+    /// Every path under `root`, with what each file holds. Enough to catch a
+    /// ref written, an index created, or an entity moved.
+    fn fingerprint(root: &Path) -> Vec<(PathBuf, u64)> {
+        fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                match p.is_dir() {
+                    true => walk(&p, out),
+                    false => out.push((
+                        p.clone(),
+                        std::fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
+                    )),
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out.sort();
+        out
     }
 }

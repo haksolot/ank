@@ -9384,6 +9384,149 @@ fn with_no_declaration_the_walk_is_unchanged() {
 }
 
 // ---------------------------------------------------------------------------
+// One live claim per identity is per corpus (ADR-ed3e14d0f991, TASK-1317adb617e8)
+// ---------------------------------------------------------------------------
+
+/// The decision through the binary: an identity holding a live claim in a
+/// corpus the reader declared takes a task in another corpus all the same, and
+/// is told what it holds and where.
+///
+/// **Through the binary and not through the verb.** Everything between a
+/// `corpora.yml` on disk and the line this asserts is wiring — the home the
+/// reader's map lives under, the read of it at startup, the hand-off to
+/// `claim` — and a unit test that hands the map in directly is green whether
+/// that wiring exists or not. CLAUDE.md says so in as many words, and it says
+/// it because green unit tests have twice covered code the binary never
+/// reached.
+#[test]
+fn a_claim_held_in_a_declared_corpus_is_named_and_the_task_is_taken_anyway() {
+    let d = Declared::new();
+    d.corpus_repository();
+    d.corpus_in_tree();
+
+    // The declaration is keyed on a repository this reader never stands in, so
+    // the tree keeps its own corpus through the walk and the declared corpus is
+    // reached only as somewhere this identity also works.
+    let elsewhere = "0".repeat(40);
+    d.declare(&[(&elsewhere, &d.corpus.to_string_lossy())]);
+
+    // A live claim over there, taken through the binary with `--repo`.
+    let out = d.ank(&[
+        "claim",
+        "TASK-000000000001",
+        "--repo",
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    // And now a task here. The claim is taken, the code is the one a claim with
+    // nothing to report gives, and the claim held elsewhere is named with the
+    // corpus it is in.
+    let out = d.ank(&["claim", "TASK-00000000000f"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a claim elsewhere never refuses: {}",
+        both_streams(&out)
+    );
+    let said = both_streams(&out);
+    assert!(said.contains("claimed TASK-00000000000f"), "{said}");
+    assert!(
+        said.contains("claude-code/1.0 holds TASK-000000000001"),
+        "the claim held elsewhere is named: {said}"
+    );
+    assert!(
+        said.contains(&d.corpus.to_string_lossy().to_string()),
+        "with the corpus it is in: {said}"
+    );
+
+    // The same facts on the machine surface, under a field of its own.
+    let out = d.ank(&[
+        "release",
+        "--reason",
+        "done here",
+        "--repo",
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = d.ank(&[
+        "claim",
+        "TASK-000000000001",
+        "--repo",
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = d.ank(&["release", "--reason", "taking it again for the document"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = d.ank(&["claim", "TASK-00000000000f", "--json"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let doc = stdout(&out);
+    assert!(
+        doc.contains(r#""claims_elsewhere":[{"task":"TASK-000000000001","corpus":"#),
+        "the document carries the claim under a field of its own: {doc}"
+    );
+}
+
+/// The hard boundary, through the binary: with nothing declared, the corpus
+/// next door is neither read nor named, and the bytes are the ones the golden
+/// in `tests/golden-json/` already pins.
+#[test]
+fn a_corpus_nobody_declared_is_never_read_and_never_named() {
+    let d = Declared::new();
+    d.corpus_repository();
+    d.corpus_in_tree();
+
+    // A live claim next door under the very identity that is about to claim
+    // here. Only the declaration is missing.
+    let out = d.ank(&[
+        "claim",
+        "TASK-000000000001",
+        "--repo",
+        &d.corpus.to_string_lossy(),
+    ]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+
+    let out = d.ank(&["claim", "TASK-00000000000f"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let said = both_streams(&out);
+    assert_eq!(
+        said.trim(),
+        "claimed TASK-00000000000f in-tree -> HEAD",
+        "a caller with no declaration reads what it always read"
+    );
+    assert!(
+        !said.contains("TASK-000000000001"),
+        "nothing walked to a corpus nobody named: {said}"
+    );
+    assert!(d.map_text().is_empty(), "and no map was written");
+}
+
+/// A declared corpus that cannot be read costs one line and never the claim.
+#[test]
+fn a_declared_corpus_that_cannot_be_read_warns_and_the_claim_is_still_taken() {
+    let d = Declared::new();
+    d.corpus_in_tree();
+
+    let elsewhere = "0".repeat(40);
+    let absent = d.tree.join("no-such-corpus");
+    d.declare(&[(&elsewhere, &absent.to_string_lossy())]);
+
+    let out = d.ank(&["claim", "TASK-00000000000f"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a corpus that did not answer never fails the claim: {}",
+        both_streams(&out)
+    );
+    let said = both_streams(&out);
+    assert!(said.contains("claimed TASK-00000000000f"), "{said}");
+    assert!(
+        said.contains(&absent.to_string_lossy().to_string()) && said.contains("corpora.yml"),
+        "named once, with where to correct it: {said}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // init --at, and the declaration it writes (TASK-49fce8b49d00)
 // ---------------------------------------------------------------------------
 
