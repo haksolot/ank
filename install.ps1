@@ -140,13 +140,16 @@ function Show-Usage {
     Say '  Linux and macOS are installed by install.sh:'
     Say "    curl -fsSL https://raw.githubusercontent.com/$Repo/main/install.sh | sh"
     Say ''
-    Say 'the skills:'
-    Say '  With a console attached, once ank is installed and verified, this offers'
-    Say '  to run:'
+    Say 'the two questions:'
+    Say '  With a console attached, once ank is installed and verified, this asks two'
+    Say '  things and nothing else. The first offers to run:'
     Say "    npx skills add $Repo"
-    Say '  They teach an agent how to use ank. It is one question, Enter accepts it,'
-    Say '  declining installs nothing more, and nothing that command does can change'
-    Say '  any of the codes below.'
+    Say '  which teaches an agent how to use ank. The second offers to print three'
+    Say '  prompts that adopt ank in a repository that already has code and no .ank;'
+    Say '  they are in docs/getting-started.md too, and printing them writes nothing'
+    Say '  anywhere.'
+    Say '  Enter accepts each, declining either does nothing at all, and nothing'
+    Say '  either does can change any of the codes below.'
     Say ''
     Say 'exit codes:'
     Say '  1 usage   2 unsupported platform   3 download   4 checksum   5 missing runtime'
@@ -372,6 +375,102 @@ function Invoke-SkillOffer {
         Say 'Run that line again when you want them:'
         Say "  npx skills add $Repo"
     }
+}
+
+# ---------------------------------------------------------------------------
+# Adopting ank where there is already code
+# ---------------------------------------------------------------------------
+
+# ADR-5fbd99bf6fd5's second offer, and the last question this script asks.
+# Installing ank is the easy half. The half nobody had written down is what to
+# say to an agent so that a repository with two years of history acquires a
+# corpus worth having, and the moment after an install is the one moment the
+# person is certainly reading.
+#
+# Three prompts, because the adoption has three moments: state as ADRs what the
+# code already decided, so the constraints that exist implicitly become
+# readable; turn a list of intentions into tasks carrying a scope and a
+# criterion; and check what came out. The first one is the one the reader judges
+# the tool on, which is why it is first.
+#
+# The same three prose blocks live in install.sh and in docs/getting-started.md,
+# and a test holds the three copies character for character
+# (crates/ank-cli/tests/adopt.rs). Prose duplicated in three files diverges, and
+# this is the prose where divergence is worst: an installer teaching a prompt the
+# documentation has since corrected. The markers below are what the test reads;
+# the block between them is the one to edit, and the other two follow.
+#
+# A single-quoted here-string, so nothing in it is expanded: the text carries $
+# and backticks in no place today, and a literal block is what keeps that from
+# becoming a rule somebody has to remember. Its terminator sits at column zero
+# because Windows PowerShell 5.1 requires it there.
+# adopt-prompts:begin
+$AdoptWalkthrough = @'
+In a repository that already has code and no .ank, start with:
+
+  ank init
+
+Then paste these three into your agent, one at a time, and read what each
+one produces before you send the next.
+
+1. What the code already decided:
+
+    Read this repository and write, as ank ADRs, the decisions its code
+    has already made: the ones a newcomer would break without knowing
+    they existed. One ADR per decision, each with a scope glob covering
+    the files it binds and a constraint stated as a rule. Leave them
+    proposed; I ratify them myself.
+
+2. What is still owed:
+
+    Read the TODOs, the open issues and the README of this repository,
+    and turn what they promise into ank tasks. Give each one a scope
+    glob and a done_criteria a test could settle, and use blocked_by
+    only where a task genuinely waits on another.
+
+3. What you now have:
+
+    Run ank check and ank review here, then read every ADR back against
+    the code its scope matches. Tell me which constraints the code
+    already breaks and which scopes match no file, and change nothing
+    until I have read your answer.
+
+The same three are in docs/getting-started.md, which says what to expect
+from each:
+
+  https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+'@
+# adopt-prompts:end
+
+# The second question, asked on the same terms as the first: only with a human
+# at a console, through [Console]::ReadLine so that a caller's `iex` pipeline is
+# never what answers it, and with a default Enter accepts. Declining prints
+# nothing -- not a shortened version, not a pointer to one. An offer that
+# answers a no with half of a yes is an offer that was not really asked.
+#
+# Nothing in here is allowed to reach the caller as a failure. The call site
+# wraps it, and the exit code is stamped after it returns.
+function Invoke-AdoptionOffer {
+    if (-not (Test-HumanAtTerminal)) { return }
+
+    Say ''
+    Say -NoNewline 'Print the three prompts that adopt ank in a repository you already have? [Y/n] '
+    $answer = $null
+    try { $answer = [Console]::ReadLine() } catch { $answer = $null }
+    if ($null -eq $answer) {
+        Say ''
+        return
+    }
+
+    $reply = $answer.Trim()
+    if ($reply -ne '' -and $reply -notmatch '^(y|yes)$') { return }
+
+    Say ''
+    # Split on either ending rather than on [Environment]::NewLine: this file is
+    # fetched by `irm` on one machine and checked out by git on another, and the
+    # bytes between two lines are not the same in both.
+    foreach ($line in ($AdoptWalkthrough -split "\r?\n")) { Say $line }
+    Say ''
 }
 
 # ---------------------------------------------------------------------------
@@ -944,6 +1043,7 @@ try {
     # global scope, because an assignment inside a script writes a script-local
     # variable that shadows it and changes nothing the host reads.
     try { Invoke-SkillOffer } catch { }
+    try { Invoke-AdoptionOffer } catch { }
     $global:LASTEXITCODE = 0
 } finally {
     if ($tmp -and (Test-Path -Path $tmp)) {

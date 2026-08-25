@@ -449,6 +449,16 @@ jobs:
           FAKE = os.path.join(HERE, "fakenode")
           NONODE = os.path.join(HERE, "nonode")
 
+          # Each offer is counted by the words that are its own. `[Y/n]` is the
+          # marker both questions end with, so counting it counted how many
+          # questions reached the screen and never how often one of them was
+          # repeated -- readings that agreed while there was one question and
+          # parted the moment there were two. The head of each question is the
+          # part the two do not share, and it is short enough to survive a line
+          # a console decided to fold.
+          SKILLS_Q = "Install them now?"
+          ADOPT_Q = "Print the three prompts"
+
           def drive(args, keys, env_extra, timeout=180):
               """Run args on a pty of its own and type keys at it."""
               pid, fd = os.forkpty()
@@ -505,15 +515,18 @@ jobs:
               }
               args = ["sh", INSTALL, "--version", VERSION, "--dir", target] + list(extra)
               code, out, timed_out = drive(args, keys, env)
+              skills_asked = out.count(SKILLS_Q)
+              adopt_asked = out.count(ADOPT_Q)
               print("=" * 70)
-              print(label, "-> exit", code, "| asked", out.count("[Y/n]"),
+              print(label, "-> exit", code,
+                    "| skills asked", skills_asked, "| adoption asked", adopt_asked,
                     "| npx ran", os.path.exists(marker), "| timed out", timed_out)
               sys.stdout.write(out.replace("\r", ""))
               sys.stdout.write("\n")
               return {
                   "label": label, "code": code, "out": out, "timed_out": timed_out,
-                  "asked": out.count("[Y/n]"), "ran": os.path.exists(marker),
-                  "dir": target,
+                  "skills_asked": skills_asked, "adopt_asked": adopt_asked,
+                  "ran": os.path.exists(marker), "dir": target,
               }
 
           def want(run, ok, why):
@@ -524,12 +537,29 @@ jobs:
               return (os.access(os.path.join(run["dir"], "ank"), os.X_OK)
                       and os.access(os.path.join(run["dir"], "ank-mcp"), os.X_OK))
 
+          # Once each, asserted of each: this is the property the probe exists
+          # for, and it is stricter than the total it replaces. Two questions
+          # asked once and one question asked twice both come to two; only a
+          # count kept per question tells them apart.
+          def asked_once(run):
+              want(run, run["skills_asked"] == 1,
+                   "the skills offer was asked %d times, and once is the contract"
+                   % run["skills_asked"])
+              want(run, run["adopt_asked"] == 1,
+                   "the adoption offer was asked %d times, and once is the contract"
+                   % run["adopt_asked"])
+
+          # Two answers and not one, in every case below: there are two
+          # questions now, and a run that answers only the first leaves the
+          # second reading a terminal nobody will ever type at, until the
+          # timeout kills it. The case's answer is given to each question.
+
           # Accepted, and the command it accepts fails. This is the assertion
           # the criterion names: the install is already done, so it stays done.
-          run = case("accept", b"y\n")
+          run = case("accept", b"y\ny\n")
           want(run, not run["timed_out"], "it never finished")
           want(run, run["code"] == 0, "a failing skill step changed the exit code to %d" % run["code"])
-          want(run, run["asked"] == 1, "it asked %d times, and once is the contract" % run["asked"])
+          asked_once(run)
           want(run, run["ran"], "it accepted and never ran npx")
           want(run, installed(run), "the binaries are not in place after the offer failed")
           want(run, "npx skills add haksolot/ank" in run["out"], "it never named the command it ran")
@@ -537,40 +567,43 @@ jobs:
 
           # Enter is the default the criterion names, so it has to reach npx
           # the way a typed yes does.
-          run = case("enter", b"\n")
+          run = case("enter", b"\n\n")
           want(run, run["code"] == 0, "exit %d" % run["code"])
-          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          asked_once(run)
           want(run, run["ran"], "Enter did not default to yes")
 
           # Declined, end of input, and the flag: three ways to leave the
           # machine in the state an installer without this step leaves it.
-          run = case("decline", b"n\n")
+          run = case("decline", b"n\nn\n")
           want(run, run["code"] == 0, "exit %d" % run["code"])
-          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          asked_once(run)
           want(run, not run["ran"], "it ran npx after being declined")
           want(run, installed(run), "declining cost the install its binaries")
 
           # ^D on an empty line, which is end of input rather than an answer.
-          run = case("eof", b"\x04")
+          # Twice, because each question opens /dev/tty for itself and a single
+          # ^D ends the input of one read.
+          run = case("eof", b"\x04\x04")
           want(run, run["code"] == 0, "exit %d" % run["code"])
-          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          asked_once(run)
           want(run, not run["ran"], "it ran npx having been told nothing")
 
           # The flag, on a run that has a terminal and would have said yes.
           # This is the only place ADR-5fbd99bf6fd5's "differs in no outcome
           # from an interactive run that declined everything" can be measured,
           # since without a terminal there is nothing to differ from.
-          run = case("noflag", b"y\n", extra=["--no-welcome"])
+          run = case("noflag", b"y\ny\n", extra=["--no-welcome"])
           want(run, run["code"] == 0, "exit %d" % run["code"])
-          want(run, run["asked"] == 0, "--no-welcome asked anyway")
+          want(run, run["skills_asked"] == 0, "--no-welcome asked the skills offer anyway")
+          want(run, run["adopt_asked"] == 0, "--no-welcome asked the adoption offer anyway")
           want(run, not run["ran"], "--no-welcome ran npx anyway")
           want(run, "####" not in run["out"], "--no-welcome drew the logo at a terminal")
           want(run, installed(run), "--no-welcome cost the install its binaries")
 
           # node absent: the command, and one line saying why it was not run.
-          run = case("nonode", b"y\n", node=False)
+          run = case("nonode", b"y\ny\n", node=False)
           want(run, run["code"] == 0, "exit %d" % run["code"])
-          want(run, run["asked"] == 1, "asked %d times" % run["asked"])
+          asked_once(run)
           want(run, not run["ran"], "it ran npx with no node to run it")
           want(run, "npx skills add haksolot/ank" in run["out"], "it did not print the command")
           want(run, "node is not on PATH" in run["out"], "it did not say why it was not run")
@@ -581,8 +614,9 @@ jobs:
               for line in failures:
                   print("FAIL", line)
               sys.exit(1)
-          print("asked once at a terminal, defaulted to yes on Enter, and a skill step")
-          print("that failed left the install reporting success with both binaries in place")
+          print("each offer asked once at a terminal, both defaulted to yes on Enter, and")
+          print("a skill step that failed left the install reporting success with both")
+          print("binaries in place")
           PY
 
           python3 offer.py
@@ -1137,10 +1171,16 @@ jobs:
           # the console stays real, the gate reads it as real, and what runs is
           # what runs for a person. An empty reader is at end of input from the
           # first call, which is the answer nobody gives.
+          #
+          # Two lines and not one, because there are two questions now. A
+          # reader that runs dry at the first leaves the second answered by end
+          # of input rather than by the case, and the case would then be
+          # measuring a run nobody asked for. The case's answer is given to
+          # each question.
           $text = switch ($Answer) {
               'eof'   { '' }
-              'enter' { "`r`n" }
-              default { "$Answer`r`n" }
+              'enter' { "`r`n`r`n" }
+              default { "$Answer`r`n$Answer`r`n" }
           }
           [Console]::SetIn([System.IO.StringReader]::new($text))
 
@@ -1202,7 +1242,15 @@ jobs:
               if (Test-Path $outFile) { $out = (Get-Content $outFile -Raw) }
               if (-not $out) { $out = '' }
 
-              $asked = ([regex]::Matches($out, [regex]::Escape('[Y/n]'))).Count
+              # Each offer counted by the words that are its own. `[Y/n]` is
+              # the marker both questions end with, so counting it counted how
+              # many questions reached the screen and never how often one of
+              # them was repeated -- readings that agreed while there was one
+              # question and parted the moment there were two. The head of each
+              # question is the part the two do not share, and it is short
+              # enough to survive a line Out-String decided to fold.
+              $skillsAsked = ([regex]::Matches($out, [regex]::Escape('Install them now?'))).Count
+              $adoptAsked = ([regex]::Matches($out, [regex]::Escape('Print the three prompts'))).Count
 
               # Write-Host and not a bare string, which is the difference
               # between a log line and a return value: everything a function
@@ -1210,12 +1258,13 @@ jobs:
               # reach the caller as an array with the object at the end of it
               # and every assertion below would be read off a string.
               Write-Host ('=' * 70)
-              Write-Host "$Label -> exit $code | asked $asked | npx ran $(Test-Path $marker)"
+              Write-Host "$Label -> exit $code | skills asked $skillsAsked | adoption asked $adoptAsked | npx ran $(Test-Path $marker)"
               Write-Host $out
 
               return [pscustomobject]@{
                   Label = $Label; Code = $code; Out = $out
-                  Asked = $asked; Ran = (Test-Path $marker); Dir = $dir
+                  SkillsAsked = $skillsAsked; AdoptAsked = $adoptAsked
+                  Ran = (Test-Path $marker); Dir = $dir
               }
           }
 
@@ -1237,11 +1286,21 @@ jobs:
                       (Test-Path (Join-Path $Run.Dir 'ank-mcp.exe')))
           }
 
+          # Once each, asserted of each: this is the property the probe exists
+          # for, and it is stricter than the total it replaces. Two questions
+          # asked once and one question asked twice both come to two; only a
+          # count kept per question tells them apart.
+          function Want-AskedOnce {
+              param($Run)
+              Want $Run ($Run.SkillsAsked -eq 1) "the skills offer was asked $($Run.SkillsAsked) times, and once is the contract"
+              Want $Run ($Run.AdoptAsked -eq 1) "the adoption offer was asked $($Run.AdoptAsked) times, and once is the contract"
+          }
+
           # Accepted, and the command it accepts fails. This is the assertion
           # the criterion names: the install is already done, so it stays done.
           $run = Invoke-Case -Label 'accept' -Answer 'y'
           Want $run ($run.Code -eq 0) "a failing skill step changed the exit code to $($run.Code)"
-          Want $run ($run.Asked -eq 1) "it asked $($run.Asked) times, and once is the contract"
+          Want-AskedOnce $run
           Want $run ($run.Ran) 'it accepted and never ran npx'
           Want $run (Installed $run) 'the executables are not in place after the offer failed'
           Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it never named the command it ran'
@@ -1251,20 +1310,20 @@ jobs:
           # the way a typed yes does.
           $run = Invoke-Case -Label 'enter' -Answer 'enter'
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
-          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want-AskedOnce $run
           Want $run ($run.Ran) 'Enter did not default to yes'
 
           # Declined, end of input, and the switch: three ways to leave the
           # machine in the state an installer without this step leaves it.
           $run = Invoke-Case -Label 'decline' -Answer 'n'
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
-          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want-AskedOnce $run
           Want $run (-not $run.Ran) 'it ran npx after being declined'
           Want $run (Installed $run) 'declining cost the install its executables'
 
           $run = Invoke-Case -Label 'eof' -Answer 'eof'
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
-          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want-AskedOnce $run
           Want $run (-not $run.Ran) 'it ran npx having been told nothing'
 
           # The switch, on a run that has a console and would have said yes.
@@ -1277,7 +1336,8 @@ jobs:
           # never handed the switch is a defect in this file, and one that was
           # and still saw a question is a defect in install.ps1.
           Want $run ($run.Out -match 'probe: NoWelcome=True') 'the probe was never handed the switch'
-          Want $run ($run.Asked -eq 0) '-NoWelcome asked anyway'
+          Want $run ($run.SkillsAsked -eq 0) '-NoWelcome asked the skills offer anyway'
+          Want $run ($run.AdoptAsked -eq 0) '-NoWelcome asked the adoption offer anyway'
           Want $run (-not $run.Ran) '-NoWelcome ran npx anyway'
           Want $run ($run.Out -notmatch '####') '-NoWelcome drew the logo at a console'
           Want $run (Installed $run) '-NoWelcome cost the install its executables'
@@ -1285,7 +1345,7 @@ jobs:
           # node absent: the command, and one line saying why it was not run.
           $run = Invoke-Case -Label 'nonode' -Answer 'y' -NoNode
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
-          Want $run ($run.Asked -eq 1) "asked $($run.Asked) times"
+          Want-AskedOnce $run
           Want $run (-not $run.Ran) 'it ran npx with no node to run it'
           Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it did not print the command'
           Want $run ($run.Out -match 'node is not on PATH') 'it did not say why it was not run'
@@ -1296,8 +1356,9 @@ jobs:
               foreach ($line in $failures) { "FAIL $line" }
               exit 1
           }
-          'asked once at a console, defaulted to yes on Enter, and a skill step that'
-          'failed left the install reporting success with both executables in place'
+          'each offer asked once at a console, both defaulted to yes on Enter, and a'
+          'skill step that failed left the install reporting success with both'
+          'executables in place'
           exit 0
 
       # The second of the two failures that matter, and the reason the .sha256
