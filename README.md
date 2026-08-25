@@ -12,7 +12,7 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a></p>
 
 ```sh
-npm install -g @haksolot/ank     # the binary, and ank-mcp beside it
+npm install -g @haksolot/ank     # one executable, and nothing beside it
 npx skills add haksolot/ank      # the skill, into whichever agent you run
 ```
 
@@ -38,9 +38,14 @@ Four verbs carry the loop: `ank context` for what binds here and what is takeabl
 `ank done` to finish with a proof that `ank check` can verify afterwards.
 [Getting started][start] walks all of it with real output, from `ank init` onward.
 
-A client with no shell reaches the same verbs over MCP. `ank-mcp` installs beside
-the binary by every route that installs it, and [getting started][start] carries
-the configuration to paste, for Claude Code, Claude Desktop and Cursor.
+Installing puts one executable on your `PATH`, and every surface ank has is a
+verb of it. A client with no shell reaches the same verbs over MCP through
+`ank mcp`, with no second file to fetch or discover, and [getting started][start]
+carries the configuration to paste, for Claude Code, Claude Desktop and Cursor.
+
+`ank tui` is the same corpus full-screen, for a human at a terminal. `ank watch`
+keeps the corpora you declare warm so the next `ank` answers sooner, and nothing
+depends on it running.
 
 ## What it is not
 
