@@ -11,10 +11,25 @@
 //! throw away the twelve hundred rows it already has because one entity could
 //! not be shown. So [`App::note`] carries what the CLI said, in the CLI's own
 //! bytes, and the frame keeps its shape.
+//!
+//! # Acting, and where the words come from
+//!
+//! [`App::run`] is the writing half: it puts the selected identifier in front of
+//! what was typed and hands the whole to [`Ank::act`], which spawns the verb.
+//! Nothing else here writes, and nothing runs without a line having been typed
+//! -- there is no timer in this crate, and [`App::frame`] is a pure function of
+//! what the last command left behind.
+//!
+//! **The split on what reaches the screen is the crate header's, applied to an
+//! answer.** The chrome is this crate's own -- the line naming the command that
+//! ran, the two columns of gutter -- and every value under it is the document's,
+//! rendered by [`answered`] without a word added. A refusal is not rendered at
+//! all: it is the CLI's stderr, which already carries `error[N]:` and the
+//! command that resolves it, passed through the way [`Failed`] carries it.
 
-use crate::ank::{Ank, Failed};
+use crate::ank::{Ank, Failed, Ran};
 use crate::frame::{self, fit, pad, window, wrap};
-use crate::input::Command;
+use crate::input::{Act, Command};
 use crate::model::{short_of, Detail, Row, Snapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,13 +248,68 @@ impl App {
                 };
                 self.offset = 0;
             }
-            Command::Help => self.note = Some(KEYS.to_string()),
+            Command::Act(act) => self.run(act, ank),
+            Command::Malformed(said) => self.note = Some(said),
+            Command::Help => self.note = Some(format!("{KEYS}\n{ENTITY_KEYS}\n{ACT_KEYS}")),
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
             }
         }
         false
+    }
+
+    /// The entity a typed act is about.
+    ///
+    /// The one that is open when one is open, and the row under the cursor
+    /// otherwise. Not the cursor in both cases: an entity opened by identifier
+    /// from a filtered list is the entity on the screen, and acting on whatever
+    /// the cursor drifted onto instead would be the reader choosing a different
+    /// task than the one being read.
+    fn target(&self) -> Option<String> {
+        match self.view {
+            View::Entity => self.detail.as_ref().map(|d| d.id.clone()),
+            View::List => self.selected().map(|r| r.id.clone()),
+        }
+    }
+
+    /// Runs one verb of the writing half against the selected entity.
+    ///
+    /// The identifier goes in front of what was typed, because `<id>` is the
+    /// first positional of all five verbs and the person at the keyboard already
+    /// said which entity they meant by having it on the screen. Everything after
+    /// it is theirs, untouched.
+    ///
+    /// **The reread afterwards is part of the same keystroke.** A `claim` moves
+    /// a ref and a `done` moves a status, so the frame still on the screen is
+    /// stale the instant the verb answers; leaving it would be the reader
+    /// showing a task as open that it has just finished. This is not a timer and
+    /// there is none: nothing here runs unless a line was typed.
+    fn run(&mut self, act: Act, ank: &Ank) {
+        let Some(id) = self.target() else {
+            self.note = Some("no entity is selected: move onto a row, or open one".to_string());
+            return;
+        };
+        let mut args = vec![id.clone()];
+        args.extend(act.args);
+        let said = match ank.act(act.verb, &args) {
+            Ok(ran) => answered(&ran),
+            // Whole and unaltered: `error[N]:` and the command the CLI named as
+            // the way out are already in these bytes, and rewording them would
+            // be a second vocabulary for the same conditions.
+            Err(failed) => failed.to_string(),
+        };
+        self.reload(ank);
+        if self.view == View::Entity {
+            self.open_selected(ank);
+        }
+        // Under whatever the reread had to say, and never instead of it: a
+        // reload that failed after a write that landed is the one moment a
+        // reader most needs both halves.
+        self.note = Some(match self.note.take() {
+            Some(after) => format!("{said}\n{after}"),
+            None => said,
+        });
     }
 
     fn open_selected(&mut self, ank: &Ank) {
@@ -272,13 +342,36 @@ impl App {
         self.size.0
     }
 
+    /// The note, as the rows it costs.
+    ///
+    /// A note used to be one line, and an act's answer is not: a document has a
+    /// field per line and a refusal has its sentence and the command that
+    /// resolves it. So the note is measured rather than assumed, and both frames
+    /// pay for what it actually is.
+    ///
+    /// Always at least one row, empty where there is nothing to say: the blank
+    /// line above the key line is what keeps the trailer from moving under a
+    /// reader every time a command has something to report.
+    fn note_lines(&self) -> Vec<String> {
+        let width = self.width();
+        match &self.note {
+            None => vec![String::new()],
+            Some(note) => note
+                .lines()
+                .flat_map(|l| wrap(l, width))
+                .map(|l| fit(&l, width))
+                .collect(),
+        }
+    }
+
     /// The rows the list has room for, once the header, the claims and the
     /// trailer are paid for.
     fn list_page(&self) -> usize {
-        let claims = self.claim_lines().len();
-        // 2 header, 1 rule, claims heading, claims, 1 blank, 1 list heading,
-        // 1 blank, 1 note, 1 keys.
-        let fixed = 2 + 1 + 1 + claims + 1 + 1 + 1 + 1 + 1;
+        // At least one: an empty claim list still costs the line that says so.
+        let claims = self.claim_lines().len().max(1);
+        // 2 header, 1 rule, 1 claims heading, the claims, 1 blank, 1 list
+        // heading, 1 blank, the note, 2 key lines.
+        let fixed = 2 + 1 + 1 + claims + 1 + 1 + 1 + self.note_lines().len() + 2;
         self.size.1.saturating_sub(fixed).max(1)
     }
 
@@ -325,6 +418,7 @@ impl App {
                     .unwrap_or_else(|| "the corpus has not been read".to_string()),
             );
             lines.push(KEYS.to_string());
+            lines.push(ACT_KEYS.to_string());
             return lines.join("\n") + "\n";
         };
 
@@ -393,8 +487,9 @@ impl App {
         }
 
         lines.push(String::new());
-        lines.push(fit(self.note.as_deref().unwrap_or(""), width));
+        lines.extend(self.note_lines());
         lines.push(fit(KEYS, width));
+        lines.push(fit(ACT_KEYS, width));
         lines.join("\n") + "\n"
     }
 
@@ -437,14 +532,15 @@ impl App {
     }
 
     fn pane_page(&self) -> usize {
-        // 3 header, 1 rule, 1 constraint heading, up to 4 constraints, 1 more,
-        // 1 blank, 1 pane heading, 1 blank, 1 note, 1 keys.
-        let summary = if self.pane == Pane::Body {
-            self.constraint_summary().len()
-        } else {
-            0
+        let notes = self.note_lines().len();
+        // 4 header, 1 rule, then what differs: the body pane carries the
+        // constraint heading, the summary under it, a blank and its own heading;
+        // the constraints pane carries one heading and a blank. Both end on a
+        // blank, the note and the two key lines.
+        let fixed = match self.pane {
+            Pane::Body => 4 + 1 + 1 + self.constraint_summary().len() + 1 + 1 + 1 + notes + 2,
+            Pane::Constraints => 4 + 1 + 1 + 1 + 1 + notes + 2,
         };
-        let fixed = 4 + 1 + summary + 1 + 1 + 1 + 1 + 1;
         self.size.1.saturating_sub(fixed).max(1)
     }
 
@@ -547,15 +643,72 @@ impl App {
         }
 
         lines.push(String::new());
-        let note = self.note.clone().or_else(|| {
-            detail
-                .unresolved
-                .first()
-                .map(|u| format!("a scope could not be asked about -- {u}"))
-        });
-        lines.push(fit(note.as_deref().unwrap_or(""), width));
+        match &self.note {
+            Some(_) => lines.extend(self.note_lines()),
+            None => lines.push(fit(
+                &detail
+                    .unresolved
+                    .first()
+                    .map(|u| format!("a scope could not be asked about -- {u}"))
+                    .unwrap_or_default(),
+                width,
+            )),
+        }
         lines.push(fit(ENTITY_KEYS, width));
+        lines.push(fit(ACT_KEYS, width));
         lines.join("\n") + "\n"
+    }
+}
+
+/// What a verb answered, as the screen carries it.
+///
+/// One chrome line naming the command that ran, then the document's own fields,
+/// one per line, in the order it wrote them. Nothing is selected and nothing is
+/// renamed: `warnings` is what the CLI called it, and a field the contract adds
+/// later shows up here the day it is added rather than the day this function is
+/// taught about it (ADR-6fd69efb629c).
+///
+/// `contract` is the one field left out. It is on every document by
+/// construction and says nothing about the act.
+fn answered(ran: &Ran) -> String {
+    let mut lines = vec![ran.shown.clone()];
+    if let Some(fields) = ran.answered.as_mapping() {
+        for (key, value) in fields {
+            let name = key.as_str().unwrap_or_default();
+            if name.is_empty() || name == "contract" {
+                continue;
+            }
+            // Padded to a column and never cut to one: a field name is the
+            // thing that says what the value is, and `invented_la~` is a
+            // reader deciding a name is decoration.
+            let gap = " ".repeat(12usize.saturating_sub(name.chars().count()));
+            lines.push(format!("  {name}{gap}  {}", flat(value)));
+        }
+    }
+    lines.join("\n")
+}
+
+/// One value of a document on one line.
+///
+/// Total by construction: every shape a document can carry has a rendering
+/// here, because the alternative is a field that arrives one day and is silently
+/// dropped -- which is the strict-reader failure ADR-6fd69efb629c warns against,
+/// wearing the other mask.
+fn flat(value: &crate::ank::Value) -> String {
+    use crate::ank::Value;
+    match value {
+        Value::Null => "(none)".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) => n.to_string(),
+        Value::String(s) => s.replace('\n', " "),
+        Value::Sequence(items) if items.is_empty() => "(none)".to_string(),
+        Value::Sequence(items) => items.iter().map(flat).collect::<Vec<_>>().join(", "),
+        Value::Mapping(fields) => fields
+            .iter()
+            .map(|(k, v)| format!("{}={}", flat(k), flat(v)))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Value::Tagged(t) => flat(&t.value),
     }
 }
 
@@ -606,6 +759,14 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 pub const KEYS: &str =
     "j/k move  n/p page  <row> or <id> select  Enter open  f <kind>  /<text>  r reload  q quit";
 pub const ENTITY_KEYS: &str = "Enter/n/p page  g top  c constraints  r reload  b back  q quit";
+/// The writing half, on its own line and spelled whole.
+///
+/// Separate from the other two because it is a different kind of offer: the keys
+/// above move a screen, and these five move the corpus. A person reading the
+/// trailer should be able to see at a glance which of the two they are about to
+/// do, and one line mixing them would make that a matter of remembering.
+pub const ACT_KEYS: &str =
+    "claim  log <message>  release <reason>  done <proof>  amend <flags>   (the entity on screen)";
 
 #[cfg(test)]
 mod tests {
@@ -646,6 +807,35 @@ mod tests {
         let mut a = App::new((100, 30));
         a.snapshot = Some(snapshot());
         a
+    }
+
+    /// The CLI, addressed where there is none: every call fails to spawn and
+    /// says which one it would have been.
+    fn nowhere() -> Ank {
+        Ank::new(crate::Address {
+            exe: "/nonexistent/ank".into(),
+            cwd: ".".into(),
+            repo: None,
+            worktree: None,
+        })
+    }
+
+    fn detail(id: &str, content: &str) -> Detail {
+        Detail {
+            id: id.to_string(),
+            coordination: Some("claimed by claude-code/opus-5+tui-verb".to_string()),
+            content: content.to_string(),
+            scopes: vec!["crates/ank-tui/**".to_string()],
+            constraints: vec![row(
+                "ADR-8bd76e8d7c4e",
+                "adr",
+                "accepted",
+                "A terminal reader",
+            )],
+            blocked_by: Vec::new(),
+            unblocks: Vec::new(),
+            unresolved: Vec::new(),
+        }
     }
 
     /// The identifiers the entity rows carry, which is what a filter narrows.
@@ -873,6 +1063,173 @@ mod tests {
         let f = a.list_frame();
         assert!(f.contains("cannot run `ank"), "{f}");
         assert!(f.contains("ADR-8bd7"), "the rows are still there:\n{f}");
+    }
+
+    /// The identifier the reader puts in front is the selected one, and what
+    /// follows it is what was typed.
+    ///
+    /// Read off the failure, which is the one place a spawn that never happened
+    /// still states its own command line: the binary is not there, so `Failed`
+    /// carries the whole `argv` and the assertion is on the call that would have
+    /// been made.
+    #[test]
+    fn an_act_runs_the_verb_with_the_selected_identifier_in_front() {
+        let mut a = app();
+        let ank = nowhere();
+        a.act(Command::Kind(Some("task".to_string())), &ank);
+        a.act(
+            Command::Act(Act {
+                verb: "done",
+                args: vec!["--proof".to_string(), "commit:2d9c847".to_string()],
+            }),
+            &ank,
+        );
+        let said = a.note.clone().unwrap_or_default();
+        assert!(
+            said.contains("ank done TASK-49746735127f --proof commit:2d9c847 --json"),
+            "{said}"
+        );
+    }
+
+    /// The entity on the screen and not the row the cursor drifted onto.
+    #[test]
+    fn an_act_in_the_entity_view_is_about_the_entity_that_is_open() {
+        let mut a = app();
+        let ank = nowhere();
+        a.detail = Some(detail("SPEC-20357e21a45a", "body\n"));
+        a.view = View::Entity;
+        // The cursor is still on the first row of the list, which is the ADR.
+        assert_eq!(
+            a.selected().map(|r| r.id.clone()).as_deref(),
+            Some("ADR-8bd76e8d7c4e")
+        );
+        a.act(
+            Command::Act(Act {
+                verb: "claim",
+                args: Vec::new(),
+            }),
+            &ank,
+        );
+        let said = a.note.clone().unwrap_or_default();
+        assert!(
+            said.contains("ank claim SPEC-20357e21a45a --json"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn an_act_with_nothing_selected_names_that_and_runs_nothing() {
+        let mut a = App::new((100, 30));
+        let ank = nowhere();
+        a.act(
+            Command::Act(Act {
+                verb: "claim",
+                args: Vec::new(),
+            }),
+            &ank,
+        );
+        let said = a.note.clone().unwrap_or_default();
+        assert!(said.contains("no entity is selected"), "{said}");
+        assert!(!said.contains("cannot run"), "nothing was spawned: {said}");
+    }
+
+    /// The chrome is one line and the rest is the document, field for field.
+    #[test]
+    fn an_answer_is_the_documents_own_fields_under_the_command_that_ran() {
+        let ran = Ran {
+            shown: "ank claim TASK-49746735127f --json".to_string(),
+            answered: serde_yaml::from_str(
+                r#"{"contract":1,"task":"TASK-49746735127f","holder":"claude-code/opus-5","expires":"2026-08-25T10:00:00Z","warnings":["a constraint moved"]}"#,
+            )
+            .unwrap(),
+        };
+        let said = answered(&ran);
+        let lines: Vec<&str> = said.lines().collect();
+        assert_eq!(lines[0], "ank claim TASK-49746735127f --json");
+        assert!(
+            !said.contains("contract"),
+            "the one field that says nothing about the act: {said}"
+        );
+        for expected in [
+            "task",
+            "TASK-49746735127f",
+            "holder",
+            "claude-code/opus-5",
+            "expires",
+            "2026-08-25T10:00:00Z",
+            "warnings",
+            "a constraint moved",
+        ] {
+            assert!(said.contains(expected), "{expected} missing from:\n{said}");
+        }
+    }
+
+    /// A field the reader was never taught about still reaches the screen, and
+    /// an empty list says so rather than showing as a field with nothing after
+    /// it (ADR-6fd69efb629c).
+    #[test]
+    fn a_field_this_reader_never_heard_of_is_shown_rather_than_dropped() {
+        let ran = Ran {
+            shown: "ank amend TASK-0001 --json".to_string(),
+            answered: serde_yaml::from_str(
+                r#"{"contract":1,"entity":"TASK-0001","amended":[],"invented_later":{"deep":[1,2]}}"#,
+            )
+            .unwrap(),
+        };
+        let said = answered(&ran);
+        assert!(said.contains("(none)"), "an empty list is named: {said}");
+        assert!(said.contains("invented_later"), "{said}");
+        assert!(said.contains("deep=1, 2"), "{said}");
+    }
+
+    /// A refusal reaches the screen whole, `error[N]:` and the way out both.
+    #[test]
+    fn a_refusal_keeps_its_code_and_its_way_out_on_the_screen() {
+        let mut a = app();
+        a.note = Some(
+            Failed::Refused {
+                args: "done TASK-49746735127f".to_string(),
+                code: 5,
+                stderr: "error[5]: TASK-4974 declares no verifier, so done needs a proof\n  -> ank done TASK-4974 --proof commit:<sha>\n".to_string(),
+            }
+            .to_string(),
+        );
+        let f = a.list_frame();
+        assert!(f.contains("error[5]:"), "the code the table declares:\n{f}");
+        assert!(
+            f.contains("-> ank done TASK-4974 --proof commit:<sha>"),
+            "and the command the CLI named as the way out:\n{f}"
+        );
+    }
+
+    /// A note of several lines costs the rows it takes, and the frame still
+    /// fits the window.
+    #[test]
+    fn a_frame_never_outgrows_the_window_it_was_given() {
+        let long: String = (1..=6).map(|n| format!("a note line {n}\n")).collect();
+        for size in [(100, 40), (80, 24), (60, 20)] {
+            for note in [None, Some(long.clone())] {
+                let mut a = App::new(size);
+                a.snapshot = Some(snapshot());
+                a.note = note.clone();
+                let rows = a.list_frame().lines().count();
+                assert!(rows <= size.1, "the list frame is {rows} rows in {size:?}");
+
+                a.detail = Some(detail(
+                    "TASK-49746735127f",
+                    &(1..=200).map(|n| format!("line {n}\n")).collect::<String>(),
+                ));
+                a.view = View::Entity;
+                for pane in [Pane::Body, Pane::Constraints] {
+                    a.pane = pane;
+                    let rows = a.entity_frame().lines().count();
+                    assert!(
+                        rows <= size.1,
+                        "the {pane:?} pane is {rows} rows in {size:?}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]

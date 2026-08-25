@@ -14,11 +14,21 @@
 //! data is not, and `tests/tui.rs` in `ank-cli` asserts that the frames name
 //! entities the corpus actually carries.
 //!
-//! **It writes nothing.** The four verbs it runs are the four that only read,
-//! it renews no claim on its own (none of them declares [`Renews`] anything on
-//! a task it does not name), and quitting leaves `.ank/` and `refs/ank/*`
-//! exactly as it found them. The assertion is in the suite, not in this
+//! **It writes nothing the person at the keyboard did not ask for**
+//! (ADR-8bd76e8d7c4e). Repainting runs the four verbs that only read, so a
+//! screen left open all night runs no command at all and renews no claim; the
+//! five that write -- `claim`, `log`, `release`, `done` and `amend` -- run once
+//! each, when their word is typed whole. Nothing here is on a timer, and there
+//! is no timer to put anything on. The assertion is in the suite, not in this
 //! sentence.
+//!
+//! **And a write is the verb, run as a shell would run it.** Nothing here
+//! composes a claim record, moves a ref or edits an entity: `ank claim <id>`
+//! does that, and this crate spawns it. So ADR-052accd6e3b2 names an
+//! intersecting claim exactly as it would in a terminal, a criterion frozen by
+//! hash is frozen by the same code that freezes it everywhere else, and every
+//! refusal on the screen is the one the binary gave -- with its exit code and
+//! the command it named as the way out, unaltered.
 //!
 //! # Why the input is a line and not a keystroke
 //!
@@ -35,7 +45,9 @@
 //!
 //! It buys something back, too. A line can carry an argument, so `f adr`,
 //! `/claim` and `TASK-4974` are commands rather than modes, which a
-//! keystroke reader would have had to build a prompt for.
+//! keystroke reader would have had to build a prompt for -- and so are
+//! `log <what you learned>` and `done commit:<sha>`, which a keystroke reader
+//! could not have taken at all without one.
 //!
 //! # The layout
 //!

@@ -9,6 +9,20 @@
 //! the view**: opening the row under the cursor in the list, turning the page in
 //! an entity. That is the one place the parse consults the view, and it is why
 //! [`parse`] takes one.
+//!
+//! # A reading command is one letter, and an act never is
+//!
+//! `j`, `k`, `n`, `p`, `c`, `b`, `g`, `r`, `q` -- every command that only moves
+//! the screen is a single letter, and it is the whole word too. The five that
+//! write are `claim`, `log`, `release`, `done` and `amend`, spelled whole, with
+//! no abbreviation and no letter of their own.
+//!
+//! That asymmetry is the criterion's "no action is taken without an explicit
+//! keystroke", made into something the grammar enforces rather than something
+//! the renderer is careful about. A finger that slips onto `d` and Enter has
+//! typed nothing; there is no `d`. And it costs the reading half nothing,
+//! because a one-letter command is what a reader types a hundred times a
+//! session and a `done` is what they type once.
 
 use crate::view::View;
 
@@ -41,6 +55,16 @@ pub enum Command {
     Search(Option<String>),
     /// Show the constraints binding the open entity, or hide them for the body.
     Constraints,
+    /// Run one verb of the writing half against the entity under the cursor.
+    ///
+    /// The identifier is not in here: it is the selected entity, which the view
+    /// knows and the parse does not.
+    Act(Act),
+    /// A line that named an act and did not give it what it needs. The reader's
+    /// own refusal and not the CLI's, and the line between the two is where the
+    /// fact lives: this one is about the line that was typed, and every refusal
+    /// on the state of the corpus stays the CLI's (ADR-8bd76e8d7c4e).
+    Malformed(String),
     Help,
     /// A line that asked for nothing: whitespace in the list, where an empty
     /// line already means open.
@@ -54,6 +78,51 @@ pub enum Command {
 /// treated as an identifier and falls through to [`Command::Unknown`], where it
 /// is named rather than swallowed.
 const IDENTIFIER_KINDS: &[&str] = &["task", "adr", "spec", "log"];
+
+/// One verb of the writing half, with the arguments a typed line gave it.
+///
+/// `args` is the verb's own tail and never carries the identifier: the view
+/// puts that in front, because `<id>` is the first positional of all five and
+/// the view is what knows which entity is selected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Act {
+    pub verb: &'static str,
+    pub args: Vec<String>,
+}
+
+/// How the rest of a typed line becomes a verb's arguments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tail {
+    /// Split into words, so flags can be typed: `claim --ttl 4h`,
+    /// `amend --scope "crates/ank tui/**"`. Empty is legitimate and the CLI
+    /// answers for what it needs.
+    Words,
+    /// The rest of the line whole, as one positional. `log <message>`, where
+    /// splitting on spaces would turn a sentence into twelve arguments.
+    ///
+    /// Required: `ank log <id>` with no message *reads* the log, which is a
+    /// different act than the one the word was typed for, and silently doing
+    /// the other one is the surprise this refuses instead.
+    Message,
+    /// The rest of the line whole, behind a flag: `done --proof <p>`,
+    /// `release --reason <r>`. Absent, the flag is not passed at all and the
+    /// CLI is left to answer for the missing one -- which is exactly the
+    /// refusal a person typing `done` on a task with no verifier needs to see.
+    Behind(&'static str),
+}
+
+/// The writing half of the loop, and how each verb reads a line.
+///
+/// The verbs here are [`crate::ank::ACTS`], and `ank.rs` refuses anything else
+/// before spawning; the test below holds the two lists to each other, so a verb
+/// added to one and forgotten in the other fails rather than half-works.
+const ACTS: &[(&str, Tail)] = &[
+    ("claim", Tail::Words),
+    ("log", Tail::Message),
+    ("release", Tail::Behind("--reason")),
+    ("done", Tail::Behind("--proof")),
+    ("amend", Tail::Words),
+];
 
 pub fn parse(line: &str, view: View) -> Command {
     let line = line.trim();
@@ -81,8 +150,68 @@ pub fn parse(line: &str, view: View) -> Command {
         "f" | "filter" => Command::Kind(non_empty(rest).map(|k| k.to_ascii_lowercase())),
         "n" | "next" => Command::Page(1),
         "p" | "prev" => Command::Page(-1),
-        _ => repeated(word).unwrap_or_else(|| other(line)),
+        _ => match ACTS.iter().find(|(name, _)| *name == word) {
+            Some((verb, tail)) => act(verb, *tail, rest),
+            None => repeated(word).unwrap_or_else(|| other(line)),
+        },
     }
+}
+
+/// One act, with the rest of the line read the way its verb reads one.
+fn act(verb: &'static str, tail: Tail, rest: &str) -> Command {
+    let args = match tail {
+        Tail::Words => words(rest),
+        Tail::Message => match non_empty(rest) {
+            Some(message) => vec![message],
+            None => {
+                return Command::Malformed(format!(
+                    "'{verb}' needs a message: {verb} <what you learned>"
+                ))
+            }
+        },
+        Tail::Behind(flag) => match non_empty(rest) {
+            Some(value) => vec![flag.to_string(), value],
+            None => Vec::new(),
+        },
+    };
+    Command::Act(Act { verb, args })
+}
+
+/// A line split into words, with double quotes grouping one.
+///
+/// Not a shell: there is no escaping, no variable and no single quote, and the
+/// three lines that would add them would be three lines of a language this
+/// reader is not. What it buys is the one case that actually occurs -- a scope
+/// glob or a criterion with a space in it -- and an unclosed quote runs to the
+/// end of the line rather than being an error, because the alternative is
+/// refusing a line over a character the person can plainly see is missing.
+fn words(line: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut word = String::new();
+    let mut open = false;
+    let mut started = false;
+    for c in line.chars() {
+        match c {
+            '"' => {
+                open = !open;
+                started = true;
+            }
+            c if c.is_whitespace() && !open => {
+                if started {
+                    out.push(std::mem::take(&mut word));
+                    started = false;
+                }
+            }
+            c => {
+                word.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        out.push(word);
+    }
+    out
 }
 
 /// `j`, `k`, and the same with a count in front: `5j`.
@@ -182,6 +311,132 @@ mod tests {
         assert_eq!(list("f ADR"), Command::Kind(Some("adr".to_string())));
         assert_eq!(list("f"), Command::Kind(None));
         assert_eq!(list("filter task"), Command::Kind(Some("task".to_string())));
+    }
+
+    #[test]
+    fn each_act_reads_its_line_the_way_its_verb_takes_one() {
+        assert_eq!(
+            list("claim"),
+            Command::Act(Act {
+                verb: "claim",
+                args: Vec::new()
+            }),
+            "the identifier is the view's, not the parse's"
+        );
+        assert_eq!(
+            list("claim --ttl 4h"),
+            Command::Act(Act {
+                verb: "claim",
+                args: vec!["--ttl".to_string(), "4h".to_string()]
+            })
+        );
+        assert_eq!(
+            list("log the probe counts the marker, not the question"),
+            Command::Act(Act {
+                verb: "log",
+                args: vec!["the probe counts the marker, not the question".to_string()]
+            }),
+            "a message is one argument and keeps its commas and spaces"
+        );
+        assert_eq!(
+            list("done commit:2d9c847"),
+            Command::Act(Act {
+                verb: "done",
+                args: vec!["--proof".to_string(), "commit:2d9c847".to_string()]
+            })
+        );
+        assert_eq!(
+            list("release the criterion measures the wrong thing"),
+            Command::Act(Act {
+                verb: "release",
+                args: vec![
+                    "--reason".to_string(),
+                    "the criterion measures the wrong thing".to_string()
+                ]
+            })
+        );
+        assert_eq!(
+            list("amend --drop-blocked-by TASK-4974"),
+            Command::Act(Act {
+                verb: "amend",
+                args: vec!["--drop-blocked-by".to_string(), "TASK-4974".to_string()]
+            })
+        );
+    }
+
+    /// `done` and `release` with nothing after them are passed through bare, and
+    /// the CLI answers for the flag it wants. That is the whole point: the
+    /// refusal a person meets on `done` with no proof has to be the binary's,
+    /// with its code and its way out.
+    #[test]
+    fn a_flag_nobody_typed_is_not_invented_and_not_refused_here() {
+        for (line, verb) in [("done", "done"), ("release", "release")] {
+            assert_eq!(
+                list(line),
+                Command::Act(Act {
+                    verb,
+                    args: Vec::new()
+                }),
+                "{line}"
+            );
+        }
+    }
+
+    /// `ank log <id>` with no message reads the log, which is not what the word
+    /// was typed for. The reader says so rather than quietly doing the other
+    /// thing.
+    #[test]
+    fn log_with_no_message_is_named_and_nothing_is_run() {
+        match list("log") {
+            Command::Malformed(said) => {
+                assert!(said.contains("needs a message"), "{said}");
+                assert!(said.contains("log <"), "it names the form: {said}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// An act is never one letter, and a reading command always is. That is what
+    /// makes "no action without an explicit keystroke" a property of the grammar
+    /// rather than a habit of the renderer.
+    #[test]
+    fn no_single_letter_line_can_write() {
+        for c in 'a'..='z' {
+            let line = c.to_string();
+            assert!(
+                !matches!(list(&line), Command::Act(_)),
+                "'{line}' writes, and one letter must not"
+            );
+        }
+        // Nor does a near miss on one of the five.
+        for line in ["d", "cl", "clai", "don", "rel", "am", "accept", "close"] {
+            assert!(!matches!(list(line), Command::Act(_)), "'{line}' writes");
+        }
+    }
+
+    /// The two lists are one list, kept in two places for two jobs: this one
+    /// reads a line, `ank.rs`'s gates a spawn. They must name the same verbs.
+    #[test]
+    fn the_grammar_and_the_gate_name_the_same_verbs() {
+        let mine: Vec<&str> = ACTS.iter().map(|(name, _)| *name).collect();
+        assert_eq!(mine, crate::ank::ACTS.to_vec());
+    }
+
+    #[test]
+    fn a_quoted_word_keeps_its_spaces_and_an_unclosed_one_runs_to_the_end() {
+        assert_eq!(words(""), Vec::<String>::new());
+        assert_eq!(words("  a   b  "), ["a", "b"]);
+        assert_eq!(
+            words("--scope \"crates/ank tui/**\" --scope src/**"),
+            ["--scope", "crates/ank tui/**", "--scope", "src/**"]
+        );
+        assert_eq!(
+            words("--criteria \"unclosed and long"),
+            ["--criteria", "unclosed and long"]
+        );
+        // An empty quoted word is a word, and not nothing: `--reason ""` is a
+        // caller saying so.
+        assert_eq!(words("--reason \"\""), ["--reason", ""]);
     }
 
     #[test]

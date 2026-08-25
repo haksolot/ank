@@ -1011,8 +1011,14 @@ pub const COMMANDS: &[CommandSpec] = &[
             "no terminal on stdin and stdout: a screen cannot be drawn into a pipe",
         )],
         notes: &[
-            "it reaches the corpus only by running this binary with --json, and writes nothing",
+            // "and writes nothing" stood here for as long as the reader only
+            // read, and stopped being true the day claim, log, release, done and
+            // amend became reachable from a selected entity (TASK-b50b340c0bb1).
+            // A help line narrower than the binary is read as the binary
+            // refusing, which is the failure §9 exists to prevent.
+            "it reaches the corpus only by running this binary with --json, and writes nothing on its own",
             "a command is a short word and Enter; ? lists them, q leaves",
+            "claim, log, release, done and amend act on the selected entity, each by running that verb",
             "--json answers the opening frame as data and opens no session",
         ],
         refuses_globals: &[],
