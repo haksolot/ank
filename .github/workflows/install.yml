@@ -1104,8 +1104,17 @@ jobs:
               [Parameter(Mandatory = $true)][string]$Dir,
               [Parameter(Mandatory = $true)][string]$OutFile,
               [Parameter(Mandatory = $true)][string]$CodeFile,
-              [string[]]$Extra = @()
+              [switch]$NoWelcome
           )
+
+          # A switch and not a list of extra arguments, which is what the first
+          # run of this step taught: `pwsh -File probe.ps1 -Extra -NoWelcome`
+          # hands the binder a value that begins with a dash, it reads it as a
+          # parameter name of its own, and the flag arrives nowhere. The
+          # argument install.ps1 is given is built here, where nothing has to
+          # survive a command line.
+          $extraArgs = @()
+          if ($NoWelcome) { $extraArgs += '-NoWelcome' }
 
           # A console of its own is the whole point of this file, so it is
           # asserted and not assumed: a probe that quietly lost its console
@@ -1143,7 +1152,7 @@ jobs:
           # refusal from install.ps1 would read back as a success.
           $global:LASTEXITCODE = 0
           $out = (& (Join-Path $PSScriptRoot 'install.ps1') `
-              -Version $env:STAGED_VERSION -Dir $Dir @Extra *>&1 | Out-String)
+              -Version $env:STAGED_VERSION -Dir $Dir @extraArgs *>&1 | Out-String)
           $code = $global:LASTEXITCODE
           Set-Content -Path $OutFile -Value $out
           Set-Content -Path $CodeFile -Value "$code"
@@ -1158,7 +1167,7 @@ jobs:
           $failures = New-Object System.Collections.ArrayList
 
           function Invoke-Case {
-              param([string]$Label, [string]$Answer, [string[]]$Extra = @(), [switch]$NoNode)
+              param([string]$Label, [string]$Answer, [switch]$NoWelcome, [switch]$NoNode)
 
               $marker = Join-Path $PWD "marker-$Label"
               $dir = Join-Path $PWD "bin-$Label"
@@ -1170,7 +1179,7 @@ jobs:
 
               $argv = @('-NoProfile', '-File', 'probe.ps1', '-Answer', $Answer,
                         '-Dir', $dir, '-OutFile', $outFile, '-CodeFile', $codeFile)
-              if ($Extra.Count) { $argv += '-Extra'; $argv += $Extra }
+              if ($NoWelcome) { $argv += '-NoWelcome' }
 
               # Hidden, and hidden is what forces the launch through
               # ShellExecute: that is the path which gives the child a console
@@ -1254,7 +1263,7 @@ jobs:
           # This is the only place ADR-5fbd99bf6fd5's "differs in no outcome
           # from an interactive run that declined everything" can be measured,
           # since without a console there is nothing to differ from.
-          $run = Invoke-Case -Label 'noflag' -Answer 'y' -Extra @('-NoWelcome')
+          $run = Invoke-Case -Label 'noflag' -Answer 'y' -NoWelcome
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
           Want $run ($run.Asked -eq 0) '-NoWelcome asked anyway'
           Want $run (-not $run.Ran) '-NoWelcome ran npx anyway'
