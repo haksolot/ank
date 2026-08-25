@@ -4205,7 +4205,7 @@ fn a_done_through_the_binary_leaves_a_completion_ref_naming_commit_and_branch() 
 }
 
 // ---------------------------------------------------------------------------
-// Short forms (TASK-f3e92656b5df, ADR-0c8ab846d262)
+// Short forms (TASK-f3e92656b5df, ADR-1f70ce2c3eac)
 // ---------------------------------------------------------------------------
 
 /// The short form is the long form, and the output proves it byte for byte.
@@ -10906,7 +10906,7 @@ fn a_blocker_that_does_not_exist_is_refused_at_creation() {
 }
 
 // ---------------------------------------------------------------------------
-// Color: the guarantee is negative (§4, ADR-0c8ab846d262)
+// Color: the guarantee is negative (§4, ADR-1f70ce2c3eac)
 // ---------------------------------------------------------------------------
 
 /// Every verb worth styling, exercised against a corpus that actually has
@@ -10955,7 +10955,7 @@ fn color_fixture() -> Repo {
 ///
 /// A spawned process writes to a pipe, so this suite *is* the piped case — the
 /// same shape an agent shelling out to `ank` sees. An escape byte anywhere in
-/// either stream is the defect ADR-0c8ab846d262 forbids, and `--json` is
+/// either stream is the defect ADR-1f70ce2c3eac forbids, and `--json` is
 /// checked beside the plain form because it is the one surface that must stay
 /// clean even at a terminal.
 #[test]
@@ -10985,7 +10985,7 @@ fn no_verb_writes_an_escape_sequence_to_a_pipe() {
 
 /// Structure ships in the bytes, and `--json` carries none of it.
 ///
-/// The other half of ADR-0c8ab846d262, and the half a test can only make in a
+/// The other half of ADR-1f70ce2c3eac, and the half a test can only make in a
 /// pipe: this suite spawns the binary, so its stdout *is* the pipe an agent
 /// reads. Colour must be absent from it and the connectors must be present —
 /// the two assertions point in opposite directions on purpose, because a
@@ -12568,7 +12568,7 @@ fn a_listing_counts_the_open_rows_a_claim_would_refuse_and_names_free() {
 /// work already finished on a branch — exactly the window the completion ref
 /// exists to close, reopened for whoever automated the question.
 ///
-/// ADR-0c8ab846d262 is the argument: colour depends on the reader, structure
+/// ADR-1f70ce2c3eac is the argument: colour depends on the reader, structure
 /// does not, and a marker is not colour. It is the answer, and it reads the
 /// same in a pipe.
 ///
@@ -14033,7 +14033,7 @@ fn the_note_reaches_json_as_a_list_and_not_as_drawn_text() {
     for glyph in ["└", "├", "│"] {
         assert!(
             !text.contains(glyph),
-            "--json carries no structure layer (ADR-0c8ab846d262): {text}"
+            "--json carries no structure layer (ADR-1f70ce2c3eac): {text}"
         );
     }
     // A finding with nothing to add carries the key and an empty list, so a

@@ -1229,7 +1229,7 @@ fn visible_len(s: &str) -> usize {
 /// so a painted page costs a reader exactly what a piped one does. Fitting once
 /// and in plain turns that from a property two renderers happen to share into
 /// one they cannot disagree about, and it is what lets `--json` — which carries
-/// no style at all (ADR-0c8ab846d262) — be served the very rows the terminal
+/// no style at all (ADR-1f70ce2c3eac) — be served the very rows the terminal
 /// was.
 #[derive(Clone)]
 pub(crate) struct Fitted {
@@ -1867,9 +1867,9 @@ mod tests {
     /// because of a drawing.
     #[test]
     fn a_gutter_costs_the_columns_the_indent_already_spent() {
-        for short in ["ADR-962c", "ADR-0c8ab846d262", "A"] {
+        for short in ["ADR-962c", "ADR-1f70ce2c3eac", "A"] {
             let c = ConstraintLine {
-                id: EntityId::parse("ADR-0c8ab846d262").unwrap(),
+                id: EntityId::parse("ADR-1f70ce2c3eac").unwrap(),
                 short: short.to_string(),
                 title: "a rule".into(),
                 text: "First line of the rule.

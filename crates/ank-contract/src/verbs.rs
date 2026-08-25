@@ -435,7 +435,7 @@ pub const GLOBAL_FLAGS: &[FlagSpec] = &[
     flag("--worktree"),
 ];
 
-/// The short forms of §4 (ADR-0c8ab846d262), and the whole of them.
+/// The short forms of §4 (ADR-1f70ce2c3eac), and the whole of them.
 ///
 /// One table rather than a letter beside each declaration: `--scope` and
 /// `--criteria` are declared in three [`CommandSpec`]s each, and three
