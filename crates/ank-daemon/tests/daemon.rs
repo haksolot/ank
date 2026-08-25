@@ -179,6 +179,41 @@ impl Corpus {
         out
     }
 
+    /// The CLI under a named identity.
+    ///
+    /// Two clones with one `ANK_AGENT` are one agent as far as `refs/ank/*` can
+    /// tell, and `status` filters its own identity out of what other agents
+    /// hold -- so a fixture that let both sides share the default would assert
+    /// the mirror by never reading it.
+    fn ank_as(&self, home: &Home, agent: &str, args: &[&str]) -> Output {
+        let mut c = Command::new(bin("ank"));
+        c.args(args).current_dir(&self.root);
+        home.apply(&mut c);
+        c.env("ANK_AGENT", agent);
+        let out = c
+            .output()
+            .expect("cargo builds every binary of the workspace");
+        assert!(
+            out.status.success(),
+            "ank {args:?} as {agent} in {}: {}",
+            self.root.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    /// Every `refs/ank/*` this repository carries, as `<name> <object>` lines.
+    ///
+    /// The plane and the mirror both, because the assertions that matter are
+    /// about which of the two moved.
+    fn ank_refs(&self, home: &Home, pattern: &str) -> String {
+        let out = self.git(
+            home,
+            &["for-each-ref", "--format=%(refname) %(objectname)", pattern],
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
     fn ank_dir(&self) -> PathBuf {
         self.root.join(".ank")
     }
@@ -209,6 +244,50 @@ impl Corpus {
             let _ = std::fs::remove_file(self.ank_dir().join(format!("index.db{suffix}")));
         }
     }
+}
+
+/// A bare repository two clones arbitrate through.
+///
+/// Bare and not a third checkout: `origin` here is what a forge is, a place
+/// refs are pushed to and fetched from, and giving it a working tree would let
+/// a test pass by writing into a file nobody would have in production.
+fn bare(home: &Home, path: &Path) {
+    let mut c = Command::new("git");
+    c.args(["init", "-q", "--bare", "-b", "main"])
+        .arg(path)
+        .current_dir(std::env::temp_dir());
+    home.apply(&mut c);
+    let out = c.output().expect("git is a hard dependency");
+    assert!(out.status.success(), "{out:?}");
+}
+
+/// A clone of `origin`, wired the way `git clone` wires one and no further.
+///
+/// **No `ank init` and therefore no `+refs/ank/*:refs/ank/*` refspec.** That is
+/// the whole point: a clone made by hand fetches branches and tags, so
+/// `refs/ank/claims/*` reaches it only when somebody runs the fetch by hand --
+/// which is the staleness the watcher exists to remove, and it cannot be
+/// demonstrated in a clone that was already synchronising itself.
+fn clone(home: &Home, origin: &Path, into: &Path) -> Corpus {
+    let mut c = Command::new("git");
+    c.args(["clone", "-q"])
+        .arg(origin)
+        .arg(into)
+        .current_dir(std::env::temp_dir());
+    home.apply(&mut c);
+    let out = c.output().expect("git is a hard dependency");
+    assert!(
+        out.status.success(),
+        "git clone: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let corpus = Corpus {
+        root: into.to_path_buf(),
+    };
+    corpus.git(home, &["config", "user.email", "test@ank.local"]);
+    corpus.git(home, &["config", "user.name", "Test"]);
+    corpus.git(home, &["config", "commit.gpgsign", "false"]);
+    corpus
 }
 
 /// Every file under a directory, with its bytes: the shape of "never touched".
@@ -257,6 +336,15 @@ impl Running {
 fn start(home: &Home, args: &[&str]) -> Running {
     let mut cmd = home.daemon(args);
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
+    Running(cmd.spawn().expect("the daemon must have been built"))
+}
+
+/// The same, with stderr kept: what the watcher reports is an assertion in its
+/// own right, and a failure it swallowed reads exactly like one it never had.
+fn start_logging(home: &Home, args: &[&str], log: &Path) -> Running {
+    let mut cmd = home.daemon(args);
+    let file = std::fs::File::create(log).unwrap();
+    cmd.stdout(Stdio::null()).stderr(Stdio::from(file));
     Running(cmd.spawn().expect("the daemon must have been built"))
 }
 
@@ -657,6 +745,12 @@ fn stopping_the_daemon_changes_no_verbs_output_and_no_verbs_exit_code() {
     }
 }
 
+/// A checkout with no remote gains its own index and nothing whatsoever else.
+///
+/// The other half of the negative, and the case every solo repository is in:
+/// with nothing to mirror there is no fetch, so `for-each-ref` is unchanged
+/// entirely rather than unchanged outside one namespace. A watcher that
+/// complained about the absent remote, or invented one, would show up here.
 #[test]
 fn the_only_thing_it_writes_into_a_repository_is_the_index() {
     let home = Home::new();
@@ -699,5 +793,322 @@ fn the_only_thing_it_writes_into_a_repository_is_the_index() {
             .trim()
             .is_empty(),
         "the working tree is not the daemon's to touch"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The mirror: refs/ank/*, and demonstrably nothing else
+// ---------------------------------------------------------------------------
+
+/// The fact this whole namespace exists for: `status` in one clone reports what
+/// another clone holds, and nobody ran a fetch.
+///
+/// **Two clones is the only honest fixture.** The thing being fixed is that
+/// `status` reports who holds what out of a stale local copy of the refs. One
+/// clone cannot show that, because there is no second plane for the first to be
+/// stale about, and a test that tried would be measuring nothing.
+///
+/// The second clone is made by `git clone` and never by `ank init`, so it
+/// carries no `+refs/ank/*:refs/ank/*` refspec: without the watcher there is no
+/// route by which a claim taken elsewhere reaches it at all.
+#[test]
+fn a_claim_taken_in_one_clone_is_reported_by_status_in_the_other() {
+    let home = Home::new();
+    let root = scratch("clones");
+    let origin = root.join("origin.git");
+    bare(&home, &origin);
+
+    let first = Corpus::new(root.join("first"), &home);
+    // `ank init` has already written `remote.origin.fetch`, so the section
+    // exists and only the url is missing: `git remote add` would refuse.
+    first.git(
+        &home,
+        &["config", "remote.origin.url", &origin.display().to_string()],
+    );
+    first.git(&home, &["push", "-q", "-u", "origin", "main"]);
+    let second = clone(&home, &origin, &root.join("second"));
+    assert_eq!(first.identity(&home), second.identity(&home));
+    let task = first.task_id(&home);
+
+    // Before anything: the second clone has no coordination plane at all, so
+    // the claim below is unreachable from it by every route but the mirror.
+    assert!(
+        second.ank_refs(&home, "refs/ank").is_empty(),
+        "a plain clone carries no refs/ank/*"
+    );
+
+    // One key, two roots: two clones of one repository are one watched corpus,
+    // and each holds its own mirror because each is its own git repository.
+    home.declare(&format!(
+        "schema: 1\nfetch: 1\nwatch:\n  {}:\n    - {}\n    - {}\n",
+        first.identity(&home),
+        first.root.display(),
+        second.root.display()
+    ));
+
+    first.ank_as(
+        &home,
+        "first@ank.local",
+        &["claim", &task, "--criteria", "the mirror carries it"],
+    );
+    assert!(
+        first
+            .ank_refs(&home, "refs/ank/claims")
+            .contains(&format!("refs/ank/claims/{task}")),
+        "the claim is a ref in the clone that took it"
+    );
+
+    let elsewhere = |c: &Corpus| -> String {
+        let out = c.ank_raw(
+            &home,
+            &[OsStr::new("status"), OsStr::new("--json")],
+            &c.root,
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    };
+    assert!(
+        !elsewhere(&second).contains("first@ank.local"),
+        "nothing has fetched yet, so the second clone cannot know"
+    );
+
+    let daemon = start(&home, &["--interval", "50"]);
+    until("status in the second clone to report the claim", || {
+        elsewhere(&second).contains("first@ank.local")
+    });
+    let said = elsewhere(&second);
+    daemon.stop();
+
+    assert!(said.contains(&task), "the task the claim is about: {said}");
+    assert!(
+        said.contains("A watched task"),
+        "the title the corpus already carries: {said}"
+    );
+    // And it is reported as a claim held by somebody else, with the record read
+    // rather than guessed at: the mirror carries the object, not merely the
+    // name of a ref.
+    assert!(
+        said.contains("\"holder\":\"first@ank.local\""),
+        "the holder comes out of the record: {said}"
+    );
+    // The local plane is where a claim of this clone's own would live, and the
+    // watcher never wrote there.
+    assert!(
+        second.ank_refs(&home, "refs/ank/claims").is_empty(),
+        "the mirror is not the plane"
+    );
+}
+
+/// The negative, which is the point of this namespace.
+///
+/// "We only fetch `refs/ank/*`" is a sentence that stays true right up until a
+/// refspec is written slightly wrong, so what must be identical afterwards is
+/// listed and asserted against a repository that has something to lose: a
+/// commit nobody pushed, a branch nobody pushed, a tag, a dirty working tree
+/// and a claim of its own.
+#[test]
+fn a_watching_cycle_moves_the_tracking_namespace_and_nothing_else() {
+    let home = Home::new();
+    let root = scratch("negative");
+    let origin = root.join("origin.git");
+    bare(&home, &origin);
+
+    let seed = Corpus::new(root.join("seed"), &home);
+    seed.git(
+        &home,
+        &["config", "remote.origin.url", &origin.display().to_string()],
+    );
+    seed.git(&home, &["push", "-q", "-u", "origin", "main"]);
+
+    let mine = clone(&home, &origin, &root.join("mine"));
+    let task = mine.task_id(&home);
+
+    // A tag pushed to the remote *after* the clone, so it is a ref the working
+    // clone has never had. If the fetch followed tags, this is what would
+    // appear in somebody's repository without anybody asking for it.
+    seed.git(&home, &["tag", "on-the-remote"]);
+    seed.git(&home, &["push", "-q", "origin", "on-the-remote"]);
+
+    // A repository with something to lose.
+    mine.git(&home, &["checkout", "-q", "-b", "unpushed"]);
+    std::fs::write(mine.root.join("src/local.rs"), "// mine\n").unwrap();
+    mine.git(&home, &["add", "-A"]);
+    mine.git(&home, &["commit", "-qm", "a commit nobody has seen"]);
+    mine.git(&home, &["tag", "mine-only"]);
+    std::fs::write(mine.root.join("src/main.rs"), "fn main() { /* dirty */ }\n").unwrap();
+    std::fs::write(mine.root.join("src/untracked.rs"), "// not added\n").unwrap();
+    // A claim of this clone's own, which is the one ref a watcher must never
+    // move: it is a live lease, and rewriting it from the remote would hand
+    // somebody's task away underneath them.
+    mine.ank_as(
+        &home,
+        "mine@ank.local",
+        &["claim", &task, "--criteria", "the mirror never touches it"],
+    );
+
+    home.declare(&format!(
+        "schema: 1\nfetch: 1\nwatch:\n  {}: {}\n",
+        mine.identity(&home),
+        mine.root.display()
+    ));
+
+    let head = mine.git(&home, &["rev-parse", "HEAD"]).stdout;
+    let branches = mine.ank_refs(&home, "refs/heads");
+    let tags = mine.ank_refs(&home, "refs/tags");
+    let index = mine.git(&home, &["ls-files", "--stage"]).stdout;
+    let porcelain = mine.git(&home, &["status", "--porcelain"]).stdout;
+    let tree = snapshot(&mine.root.join("src"));
+    let claims = mine.ank_refs(&home, "refs/ank/claims");
+    let remotes = mine.ank_refs(&home, "refs/remotes");
+    // Every ref this repository carries, whatever its namespace. The named
+    // assertions below say what must not move and are worth reading; this one
+    // says nothing else moved either, which no list of names can.
+    let every_ref = mine.ank_refs(&home, "refs/");
+    assert!(!claims.is_empty(), "the fixture holds a claim of its own");
+    assert!(
+        mine.ank_refs(&home, "refs/ank/watch").is_empty(),
+        "nothing has mirrored yet"
+    );
+
+    let out = home.daemon(&["--once"]).output().unwrap();
+    assert!(out.status.success(), "{out:?}");
+
+    // Whatever moved, moved inside the tracking namespace: the whole ref space
+    // is diffed, and the mirror is the only difference allowed to appear.
+    let after = mine.ank_refs(&home, "refs/");
+    let moved: Vec<&str> = after
+        .lines()
+        .filter(|l| !every_ref.lines().any(|was| was == *l))
+        .collect();
+    assert!(!moved.is_empty(), "nothing was mirrored at all");
+    assert!(
+        moved
+            .iter()
+            .all(|l| l.starts_with("refs/ank/watch/origin/")),
+        "a ref outside the tracking namespace moved: {moved:?}"
+    );
+    let gone: Vec<&str> = every_ref
+        .lines()
+        .filter(|l| !after.lines().any(|now| now == *l))
+        .collect();
+    assert!(gone.is_empty(), "a ref was removed: {gone:?}");
+
+    // Only the mirror moved.
+    assert!(
+        mine.ank_refs(&home, "refs/ank/watch")
+            .contains(&format!("refs/ank/watch/origin/claims/{task}")),
+        "the mirror is what the cycle was for: {}",
+        mine.ank_refs(&home, "refs/ank")
+    );
+    assert_eq!(
+        mine.git(&home, &["rev-parse", "HEAD"]).stdout,
+        head,
+        "HEAD moved"
+    );
+    assert_eq!(
+        mine.ank_refs(&home, "refs/heads"),
+        branches,
+        "a branch moved"
+    );
+    assert_eq!(
+        mine.ank_refs(&home, "refs/tags"),
+        tags,
+        "a tag arrived, or one moved"
+    );
+    assert!(
+        !mine.ank_refs(&home, "refs/tags").contains("on-the-remote"),
+        "the remote's tag followed the fetch in"
+    );
+    assert_eq!(
+        mine.git(&home, &["ls-files", "--stage"]).stdout,
+        index,
+        "git's index moved"
+    );
+    assert_eq!(
+        mine.git(&home, &["status", "--porcelain"]).stdout,
+        porcelain,
+        "the working tree moved"
+    );
+    assert_eq!(snapshot(&mine.root.join("src")), tree, "a file changed");
+    assert_eq!(
+        mine.ank_refs(&home, "refs/ank/claims"),
+        claims,
+        "a claim of this clone's own was rewritten from the remote"
+    );
+    // And git's own mirror is untouched: a remote-tracking branch that moved
+    // is how a background fetch usually announces itself, and the refspec here
+    // is narrow precisely so none of them can.
+    assert_eq!(
+        mine.ank_refs(&home, "refs/remotes"),
+        remotes,
+        "a remote-tracking branch moved, so the fetch reached beyond refs/ank/*"
+    );
+}
+
+/// A dead network is a normal Tuesday.
+///
+/// The watcher is optional by construction, so a failed mirror downgrades what
+/// it offers, says so, and never stops it -- and never reaches the exit code of
+/// anything the person is running.
+#[test]
+fn an_unreachable_remote_is_reported_and_the_watcher_keeps_watching() {
+    let home = Home::new();
+    let root = scratch("unreachable");
+    let corpus = Corpus::new(root.join("tree"), &home);
+    // A remote that is configured and cannot be reached, which is the case that
+    // has to degrade: no remote at all is the other one, and it is silent.
+    corpus.git(
+        &home,
+        &[
+            "config",
+            "remote.origin.url",
+            &root.join("nowhere.git").display().to_string(),
+        ],
+    );
+    home.declare(&format!(
+        "schema: 1\nfetch: 1\nwatch:\n  {}: {}\n",
+        corpus.identity(&home),
+        corpus.root.display()
+    ));
+
+    // One cycle: it reports, and it still exits zero. Nothing depends on this
+    // process, so a network it could not reach is not the caller's failure.
+    let out = home.daemon(&["--once"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "a dead remote is not an exit code: {out:?}"
+    );
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("fetch:"), "the failure is reported: {said}");
+    assert!(
+        corpus.index().is_file(),
+        "a corpus is warmed whether or not its remote answered"
+    );
+
+    // And it keeps watching: the failure repeats every cycle and the loop
+    // survives all of them, which is the property a single pass cannot show.
+    corpus.drop_index();
+    let log = root.join("watcher.log");
+    let daemon = start_logging(&home, &["--interval", "50"], &log);
+    let warmed = settled(&corpus.index());
+    corpus.ank(
+        &home,
+        &[
+            "new",
+            "task",
+            "--title",
+            "A later task",
+            "--scope",
+            "src/**",
+        ],
+    );
+    until(
+        "the watcher to follow the corpus past a dead remote",
+        || std::fs::read(corpus.index()).unwrap_or_default() != warmed,
+    );
+    daemon.stop();
+    let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    assert!(
+        logged.matches("fetch:").count() >= 1,
+        "the watcher went quiet about a remote it never reached: {logged}"
     );
 }

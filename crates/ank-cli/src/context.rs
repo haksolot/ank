@@ -92,17 +92,60 @@ impl Coordination {
 /// A listing has no channel for a warning and passes an empty vector — `check`
 /// is what reports a damaged ref, and a reader must not fail for having nothing
 /// to say about one.
+/// Where the watcher mirrors the remote's `refs/ank/*`, when somebody is
+/// running one (ADR-a22cd3196529).
+///
+/// **A mirror, and never the plane itself.** `refs/ank/claims/<id>` is where a
+/// claim of this clone lives, so a background process writing there would be
+/// rewriting the coordination plane under whoever is working in the tree. The
+/// watcher writes here instead, and this is the only place in the CLI that
+/// reads it: nothing claims against it, nothing prunes it, and a corpus no
+/// watcher has ever touched carries none of it -- which is what makes the
+/// watcher's absence the normal mode rather than a degraded one.
+///
+/// `refs/ank/watch/<remote>/claims/<id>`, so the tail is reached by stripping
+/// the prefix and then the one segment naming the remote.
+const WATCH_PREFIX: &str = "refs/ank/watch/";
+
+/// The task a mirrored claim ref is about, or `None` for any other ref.
+///
+/// The mirror carries whatever the remote's `refs/ank/*` carries, proofs
+/// included; only the claims half is read, because the question it answers --
+/// who holds what, right now, in another clone -- is the one a stale local plane
+/// gets wrong. A mirrored proof is an attestation this clone will receive with
+/// the branch that carries it.
+fn mirrored_claim(name: &str) -> Option<&str> {
+    let rest = name.strip_prefix(WATCH_PREFIX)?;
+    let (_remote, rest) = rest.split_once('/')?;
+    rest.strip_prefix("claims/")
+}
+
 /// Everything `refs/ank/*` says about the corpus, read in one walk.
 ///
-/// Two namespaces answering two questions — who holds a task, and what has been
-/// attested against it outside its file (ADR-493471d64ba0) — and one
-/// enumeration, because a second walk would be free to disagree with the first
-/// about a ref they both read.
+/// Three namespaces answering three questions -- who holds a task, what has been
+/// attested against it outside its file (ADR-493471d64ba0), and who the remote
+/// last said was holding it -- and one enumeration, because a second walk would
+/// be free to disagree with the first about a ref they both read.
 #[derive(Debug, Default)]
 pub(crate) struct Plane {
     pub claims: HashMap<EntityId, Coordination>,
     /// Empty for a task with no attestation, which is nearly all of them.
     pub proofs: HashMap<EntityId, Vec<claim::AttestedProof>>,
+    /// The remote's claims as a watcher last mirrored them, and **empty
+    /// wherever no watcher runs** -- which is every CI runner, every container
+    /// and most checkouts. Read by `status` alone: it is news about other
+    /// clones, and a verb that decided anything on it would make a background
+    /// process a thing to depend on.
+    pub mirrored: HashMap<EntityId, Coordination>,
+}
+
+/// Which of the three namespaces a ref was found in, and therefore which
+/// question its record answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ns {
+    Claims,
+    Proof,
+    Mirror,
 }
 
 /// The claim half alone, for the callers that only ask who holds what.
@@ -138,12 +181,14 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
         // whose state contradicts its namespace is reported rather than
         // coerced: a proof blob on a claim ref would read as a free task, which
         // is the silent fallback this module refuses everywhere else.
-        let (rest, proof_ns) = match (
+        let (rest, ns) = match (
             r.name.strip_prefix(claim::CLAIMS_PREFIX),
             r.name.strip_prefix(claim::PROOF_PREFIX),
+            mirrored_claim(&r.name),
         ) {
-            (Some(rest), _) => (rest, false),
-            (_, Some(rest)) => (rest, true),
+            (Some(rest), _, _) => (rest, Ns::Claims),
+            (_, Some(rest), _) => (rest, Ns::Proof),
+            (_, _, Some(rest)) => (rest, Ns::Mirror),
             _ => continue,
         };
         let Ok(id) = EntityId::parse(rest) else {
@@ -164,40 +209,52 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
                 continue;
             }
         };
-        match (record, proof_ns) {
-            (Record::Proof(p), true) => {
-                plane.proofs.insert(id, p.proofs);
+        // Read once and filed by address. The mirror carries the same records
+        // as the namespace it mirrors, so the reading is the same reading; what
+        // differs is which map it lands in, and therefore who is allowed to act
+        // on it.
+        let state = match record {
+            Record::Proof(p) => {
+                if ns == Ns::Proof {
+                    plane.proofs.insert(id, p.proofs);
+                } else {
+                    warnings.push(format!(
+                        "{} carries a record of the wrong kind for its namespace",
+                        r.name
+                    ));
+                }
+                continue;
             }
-            (Record::Completed(c), false) => {
-                plane.claims.insert(
-                    id,
-                    Coordination::Finished {
-                        commit: c.commit,
-                        branch: c.branch,
-                    },
-                );
+            _ if ns == Ns::Proof => {
+                warnings.push(format!(
+                    "{} carries a record of the wrong kind for its namespace",
+                    r.name
+                ));
+                continue;
             }
-            (Record::Claim(c), false) => {
-                let state = match claim::is_expired(&c, claim::now_secs(), &id) {
-                    Ok(true) => Coordination::Lapsed { holder: c.holder },
-                    Ok(false) => Coordination::Claimed {
-                        holder: c.holder,
-                        expires: c.expires,
-                    },
-                    Err(e) => {
-                        // The ref is not appended: `corrupt` already names it, and it
-                        // is the one thing the reader acts on.
-                        warnings.push(e.message);
-                        continue;
-                    }
-                };
-                plane.claims.insert(id, state);
-            }
-            (_, _) => warnings.push(format!(
-                "{} carries a record of the wrong kind for its namespace",
-                r.name
-            )),
-        }
+            Record::Completed(c) => Coordination::Finished {
+                commit: c.commit,
+                branch: c.branch,
+            },
+            Record::Claim(c) => match claim::is_expired(&c, claim::now_secs(), &id) {
+                Ok(true) => Coordination::Lapsed { holder: c.holder },
+                Ok(false) => Coordination::Claimed {
+                    holder: c.holder,
+                    expires: c.expires,
+                },
+                Err(e) => {
+                    // The ref is not appended: `corrupt` already names it, and it
+                    // is the one thing the reader acts on.
+                    warnings.push(e.message);
+                    continue;
+                }
+            },
+        };
+        match ns {
+            Ns::Claims => plane.claims.insert(id, state),
+            Ns::Mirror => plane.mirrored.insert(id, state),
+            Ns::Proof => unreachable!("a proof namespace never reaches a coordination state"),
+        };
     }
     Ok(plane)
 }

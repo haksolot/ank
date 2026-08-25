@@ -27,9 +27,20 @@ use ank_contract::ExitCode;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 /// The reader's watch list, under [`user_dir`].
 pub const WATCH_FILE: &str = "watch.yml";
+
+/// How often `refs/ank/*` is mirrored when the declaration states nothing.
+///
+/// A minute, and deliberately three orders of magnitude above the warm poll.
+/// The poll is a stat of a local directory and costs nothing; this is a network
+/// round trip against somebody's forge, once per watched checkout, forever. A
+/// claim is a thirty-minute lease (§3), so a minute is already an order of
+/// magnitude finer than the thing it reports on, and anybody who wants it
+/// finer, or who is watching a remote that charges for it, states a number.
+pub const DEFAULT_FETCH: Duration = Duration::from_secs(60);
 
 /// The only schema this build reads. A file declaring anything else is refused
 /// by number rather than read optimistically, for the reason `corpora.yml` is:
@@ -48,6 +59,15 @@ pub const ANK_DIR: &str = ".ank";
 #[serde(deny_unknown_fields)]
 struct WatchFileDoc {
     schema: u32,
+    /// Seconds between two mirrors of `refs/ank/*`, stated by the reader who
+    /// pays for them.
+    ///
+    /// **Optional, and still schema 1.** A field that may be omitted is
+    /// readable by a build that predates it, so the number does not move; a
+    /// file that *states* it is refused by an older daemon, which is the
+    /// honest outcome of asking for something that build cannot do.
+    #[serde(default)]
+    fetch: Option<u64>,
     #[serde(default)]
     watch: BTreeMap<String, Trees>,
 }
@@ -81,6 +101,18 @@ impl Trees {
 pub struct Watched {
     pub identity: String,
     pub roots: Vec<PathBuf>,
+}
+
+/// A declaration resolved: what to watch, and how often to pay the network for
+/// news about it.
+///
+/// The interval travels with the list rather than beside it, because it is
+/// stated in the same file by the same reader and a second source for it would
+/// be a second answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Declaration {
+    pub fetch: Duration,
+    pub watch: Vec<Watched>,
 }
 
 /// Where this reader's declarations live, or `None` where the environment names
@@ -147,7 +179,7 @@ pub fn resolve(
     text: &str,
     path: &Path,
     identity_of: &dyn Fn(&Path) -> Option<String>,
-) -> Result<Vec<Watched>> {
+) -> Result<Declaration> {
     let doc: WatchFileDoc = serde_yaml::from_str(text).map_err(|e| {
         Fail::new(ExitCode::Environment, format!("{}: {e}", path.display())).with_hint(
             "schema: 1 and a watch: map of repository identity to the path of a checkout, \
@@ -164,6 +196,30 @@ pub fn resolve(
             ),
         ));
     }
+    // **A stated zero is refused rather than rounded up.** `fetch: 0` reads as
+    // "as often as possible", and as often as possible is a network round trip
+    // per poll -- twice a second by default, against somebody's forge. A reader
+    // who wants that has mistyped, and a watcher that silently substituted its
+    // own number would be watching under a configuration its caller does not
+    // have.
+    let fetch = match doc.fetch {
+        Some(0) => {
+            return Err(Fail::new(
+                ExitCode::Environment,
+                format!(
+                    "{}: fetch: 0 would fetch on every look rather than on an interval",
+                    path.display()
+                ),
+            )
+            .with_hint(format!(
+                "give it a number of seconds, or omit fetch to take the default of {}",
+                DEFAULT_FETCH.as_secs()
+            )))
+        }
+        Some(secs) => Duration::from_secs(secs),
+        None => DEFAULT_FETCH,
+    };
+
     if doc.watch.is_empty() {
         return Err(Fail::new(
             ExitCode::Environment,
@@ -259,7 +315,10 @@ pub fn resolve(
             roots,
         });
     }
-    Ok(watched)
+    Ok(Declaration {
+        fetch,
+        watch: watched,
+    })
 }
 
 /// Whether two paths name one directory, asked of the filesystem rather than of
@@ -315,5 +374,47 @@ mod tests {
     fn an_unknown_field_is_refused() {
         let err = resolve("schema: 1\nscan: true\n", Path::new("watch.yml"), &none).unwrap_err();
         assert_eq!(err.code, ExitCode::Environment);
+    }
+
+    #[test]
+    fn a_fetch_interval_of_zero_is_refused_rather_than_run_every_poll() {
+        let err = resolve(
+            "schema: 1\nfetch: 0\nwatch: {}\n",
+            Path::new("watch.yml"),
+            &none,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ExitCode::Environment);
+        assert!(err.message.contains("fetch: 0"), "{err:?}");
+        // Refused before the emptiness of `watch:` is: a number that cannot be
+        // honoured is wrong whatever it is applied to, and reporting the second
+        // fault first would send the reader to correct the wrong line.
+        assert!(
+            !err.message.contains("nothing is declared"),
+            "the interval is judged on its own terms: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_declaration_that_states_no_interval_takes_the_default() {
+        // Read through a declaration that resolves, because the interval is a
+        // field of the answer rather than a constant a caller reaches for.
+        let dir = std::env::temp_dir().join(format!(
+            "ank-daemon-declare-{}-{}",
+            std::process::id(),
+            "default"
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(ANK_DIR)).unwrap();
+        let key = "a".repeat(40);
+        let found = |_: &Path| Some("a".repeat(40));
+        let text = format!("schema: 1\nwatch:\n  {key}: {}\n", dir.display());
+        let declared = resolve(&text, Path::new("watch.yml"), &found).unwrap();
+        assert_eq!(declared.fetch, DEFAULT_FETCH);
+
+        let stated = format!("schema: 1\nfetch: 5\nwatch:\n  {key}: {}\n", dir.display());
+        let declared = resolve(&stated, Path::new("watch.yml"), &found).unwrap();
+        assert_eq!(declared.fetch, Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

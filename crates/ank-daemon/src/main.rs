@@ -21,23 +21,32 @@
 //! ADR-621a7fd96ce1, held outside every repository. Nothing here walks a
 //! filesystem looking for a corpus, in any direction, under any flag.
 //!
-//! What this build does not yet do, and where it is decided: it fetches
-//! nothing (TASK-a73bd7f1c8f0 carries ADR-a22cd3196529's `refs/ank/*` clause),
-//! and the change it notices reaches the reader as a line on stderr rather than
-//! as an event a program subscribes to (TASK-2f775b1cb32b). Both are additions
-//! to this floor and neither changes what a verb answers.
+//! **It mirrors `refs/ank/*` and nothing else.** The one thing it writes into
+//! somebody else's repository is a fetch into [`fetch::TRACKING`], a namespace
+//! no verb writes and every reader of the plane skips. No branch, no tag, no
+//! working tree, no index of git's, and no local `refs/ank/claims`: a
+//! background process that moved any of those in a repository where somebody is
+//! working would be the source of surprises a coordination tool has no business
+//! being. What it buys is that `ank status` stops reporting who holds what out
+//! of somebody's last manual fetch.
+//!
+//! What this build does not yet do, and where it is decided: the change it
+//! notices reaches the reader as a line on stderr rather than as an event a
+//! program subscribes to (TASK-2f775b1cb32b). That is an addition to this floor
+//! and it changes nothing about what a verb answers.
 
 mod declare;
 mod fail;
+mod fetch;
 mod warm;
 
 use ank_contract::ExitCode;
-use declare::Watched;
+use declare::Declaration;
 use fail::{Fail, Result};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How often the declared corpora are looked at, when the caller names nothing.
 ///
@@ -61,8 +70,11 @@ ank-daemon                keeps the corpora you declared warm, so the ank you ru
   --version               the build
   --help                  this
 
-It declares nothing, answers no verb and holds no claim. Every verb behaves the
-same with it stopped, which is why stopping it is always safe.
+It declares nothing, answers no verb and holds no claim. The only thing it
+writes into a repository is that repository's own index and a mirror of
+refs/ank/* under refs/ank/watch/, on the interval watch.yml states; it moves no
+branch, no tag and no claim of yours. Every verb behaves the same with it
+stopped, which is why stopping it is always safe.
 ";
 
 fn main() {
@@ -168,16 +180,16 @@ fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<Exit
             ))
         }
     };
-    let watched = declare::resolve(&text, &path, &identity_of)?;
+    let declared = declare::resolve(&text, &path, &identity_of)?;
 
     if opts.list {
-        report(&watched, out);
+        report(&declared, out);
         return Ok(ExitCode::Ok);
     }
 
     let ank = warm::locate_ank()?;
     watch(
-        &watched,
+        &declared,
         &ank,
         opts.once,
         opts.interval.unwrap_or(DEFAULT_INTERVAL),
@@ -191,7 +203,8 @@ fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> Result<Exit
 /// No colour here at all, under ADR-0c8a12b4e0a1's split: the structure layer is
 /// emitted identically to every reader, and this process has no half that
 /// depends on who is reading -- its ordinary destination is a log file.
-fn report(watched: &[Watched], out: &mut dyn Write) {
+fn report(declared: &Declaration, out: &mut dyn Write) {
+    let watched = &declared.watch;
     let mut roots = 0;
     for corpus in watched {
         let _ = writeln!(out, "corpus {}", corpus.identity);
@@ -211,6 +224,15 @@ fn report(watched: &[Watched], out: &mut dyn Write) {
         },
         roots,
         if roots == 1 { "checkout" } else { "checkouts" },
+    );
+    // The number the reader stated, or the one they took by not stating it,
+    // printed either way: an interval a listing leaves out is one a reader
+    // discovers from their forge's rate limit.
+    let _ = writeln!(
+        out,
+        "mirroring {}* every {}s",
+        fetch::TRACKING,
+        declared.fetch.as_secs()
     );
 }
 
@@ -249,11 +271,11 @@ fn identity_of(root: &Path) -> Option<String> {
 /// all of the time that matters after a `git checkout`. That pass is a warming
 /// and not a change, so it says so: an event states what changed
 /// (ADR-a22cd3196529), and a first sighting is not one.
-fn watch(watched: &[Watched], ank: &Path, once: bool, interval: Duration, err: &mut dyn Write) {
+fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err: &mut dyn Write) {
     // Flattened once, so the state and the checkout it belongs to are one
     // value. The loop below indexes nothing.
     let mut posts: Vec<Post> = Vec::new();
-    for corpus in watched {
+    for corpus in &declared.watch {
         let _ = writeln!(
             err,
             "watching {} ({} {})",
@@ -270,11 +292,41 @@ fn watch(watched: &[Watched], ank: &Path, once: bool, interval: Duration, err: &
                 identity: corpus.identity.clone(),
                 root: root.clone(),
                 seen: None,
+                mirrored: None,
             });
         }
     }
     loop {
         for post in &mut posts {
+            // **The mirror first, and on its own clock.** The warm poll is a
+            // stat of a local directory twice a second; this is a round trip
+            // against somebody's forge, so it runs on the interval the
+            // declaration states and not on the one the poll uses.
+            //
+            // Per checkout rather than per corpus, because two roots under one
+            // identity are two *clones* as readily as two worktrees, and two
+            // clones are two repositories each holding its own mirror. Two
+            // worktrees share a repository and so pay for one redundant fetch a
+            // minute, which is the cheaper of the two ways to be wrong.
+            if post
+                .mirrored
+                .is_none_or(|at| at.elapsed() >= declared.fetch)
+            {
+                if let Err(reason) = fetch::mirror(&post.root) {
+                    // Reported and never fatal: a dead network is a normal
+                    // Tuesday, and nothing depends on this process.
+                    let _ = writeln!(
+                        err,
+                        "{} {}: fetch: {reason}",
+                        post.identity,
+                        post.root.display()
+                    );
+                }
+                // Stamped whichever way it went. A remote that is down stays
+                // down for a while, and retrying it every poll would turn one
+                // failure into a spin against a network that is not answering.
+                post.mirrored = Some(Instant::now());
+            }
             let now = warm::fingerprint(&warm::ank_dir(&post.root));
             let first = post.seen.is_none();
             let moved = post.seen.as_ref() != Some(&now);
@@ -304,11 +356,16 @@ struct Post {
     identity: String,
     root: std::path::PathBuf,
     seen: Option<Vec<(String, u64, u128)>>,
+    /// When `refs/ank/*` was last mirrored, or `None` for a checkout this
+    /// process has not yet reached. `None` is due immediately, so `--once`
+    /// mirrors once and a fresh start does not leave the reader a minute behind.
+    mirrored: Option<Instant>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use declare::Watched;
     use std::path::PathBuf;
 
     #[test]
@@ -326,13 +383,20 @@ mod tests {
 
     #[test]
     fn the_listing_counts_corpora_and_checkouts() {
-        let watched = vec![Watched {
-            identity: "a".repeat(40),
-            roots: vec![PathBuf::from("/one"), PathBuf::from("/two")],
-        }];
+        let declared = Declaration {
+            fetch: Duration::from_secs(60),
+            watch: vec![Watched {
+                identity: "a".repeat(40),
+                roots: vec![PathBuf::from("/one"), PathBuf::from("/two")],
+            }],
+        };
         let mut out = Vec::new();
-        report(&watched, &mut out);
+        report(&declared, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("watching 1 corpus, 2 checkouts"), "{text}");
+        assert!(
+            text.contains("mirroring refs/ank/watch/origin/* every 60s"),
+            "{text}"
+        );
     }
 }
