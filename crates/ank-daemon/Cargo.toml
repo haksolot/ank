@@ -1,0 +1,28 @@
+[package]
+name = "ank-daemon"
+# ank-cli's version, for the reason ank-mcp's manifest gives: these binaries
+# come out of one build and describe one release, and a number of its own would
+# be a second answer to "which ank is this" with nothing to reconcile the two.
+version = "0.6.0"
+edition = "2021"
+# The workspace floor, for the reason ank-core's manifest gives: one lockfile,
+# one build.
+rust-version = "1.95"
+# Apache-2.0, like the whole tree (ADR-9f03438f5422).
+license = "Apache-2.0"
+description = "The Ank watcher: it keeps declared corpora warm, answers no verb, and nothing depends on it."
+
+[[bin]]
+name = "ank-daemon"
+path = "src/main.rs"
+
+[dependencies]
+# The exit codes, read out of the contract rather than typed as numbers
+# (ADR-6fd69efb629c). Nothing else is taken from it: this binary dispatches no
+# verb, so the verb table is not its business.
+ank-contract = { path = "../ank-contract" }
+# The declaration file, and nothing else. Both crates are already in this
+# workspace's lockfile -- `ank-core` and `ank-cli` read YAML with exactly this
+# pair -- so no third-party code enters the tree for the daemon (§13).
+serde = { version = "=1.0.210", features = ["derive"] }
+serde_yaml = "0.9"
