@@ -19910,9 +19910,9 @@ fn a_scope_matching_only_another_checkout_is_dead() {
 /// The orphaned-citation warning names files of this tree, and a corpus is
 /// excluded wherever one sits (TASK-0e5a00f98cfe).
 ///
-/// This is what found the walk. Ratifying SPEC-78134d2b3cf8 named seven
-/// citations of the document it superseded, and six were `.ank/` files inside
-/// other agents' checkouts of this same repository. One was real.
+/// This is what found the walk. Ratifying a specification named seven citations
+/// of the document it superseded, and six were `.ank/` files inside other
+/// agents' checkouts of this same repository. One was real.
 ///
 /// Both halves matter and each was a hole of its own: the checkout is skipped by
 /// the walk, and a `.ank/` anywhere is skipped by the warning, because what
