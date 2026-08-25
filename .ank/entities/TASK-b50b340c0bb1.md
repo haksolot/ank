@@ -5,7 +5,7 @@ slug: the-reader-acts-and-every-refusal-it-shows-is-th
 title: The reader acts, and every refusal it shows is the CLI's own
 created: 2026-08-24T22:01:41Z
 author: claude-code/opus-5+planning
-status: in_progress
+status: done
 scope:
   - crates/ank-tui/**
   - crates/ank-cli/tests/tui.rs
@@ -15,8 +15,13 @@ blocked_by: [TASK-49746735127f]
 done_criteria: |
   From a selected entity the reader may claim, log, release with a reason, finish with done and a proof, and amend, each performed by running the corresponding CLI verb and never by writing a file or a ref. Where the CLI refuses, the interface shows that refusal with its exit code and the command the CLI named as the way out, unaltered. No action is taken without an explicit keystroke, and nothing is re-run on a timer. A test drives the built binary against a temporary corpus and shows three things: a claim taken through the interface produces the same ref a shell claim produces, a done refused for a missing proof leaves the task untouched and displays the code the table declares, and a session left idle renews no claim. cargo test is green and cargo fmt --check passes.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: bb3b4bc2c739566d238edb04e1900d77b529d8a2
+    criteria: f8648e7c3e55
+    via: submitted
 schema: 4
-version: 3
+version: 4
 ---
 
 The writing half. It adds no capability to ank; it removes the step of typing an
