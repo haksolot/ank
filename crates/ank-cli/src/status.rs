@@ -189,11 +189,30 @@ pub fn run(
     // underneath everybody else, which is the rule the whole module already
     // follows with `prune: false`.
     let remote = if inv.has("--remote") {
-        remote_claims(&repo.corpus, coordinated)
+        remote_refs(&repo.corpus, coordinated)
     } else {
         Remote::NotAsked
     };
-    if let Remote::Read(ids) = &remote {
+
+    // **The refs drift, out of the namespace the call above already read.**
+    // `ls-remote` was widened from `refs/ank/claims/*` to `refs/ank/*` rather
+    // than called a second time, so this costs no round trip `status` was not
+    // already making -- and it is asked only under `--remote`, because without
+    // the flag `status` makes no network call at all and a verb read this often
+    // does not start.
+    //
+    // The local half is `for-each-ref`, which is local, and which `plane` and
+    // `inspect` already run: nothing here reaches past the repository.
+    let refs_drift = match &remote {
+        Remote::Read(there) => git::ank_refs(&repo.corpus)
+            .ok()
+            .map(|here| RefDrift::measure(&here, there)),
+        _ => None,
+    };
+
+    let remote_ids = remote.claims();
+    if let Remote::Read(_) = &remote {
+        let ids = &remote_ids;
         for held in &mut elsewhere {
             held.seen = Some(if ids.contains(&held.id) {
                 Seen::Both
@@ -346,6 +365,17 @@ pub fn run(
         // two machines can share. `null` for a tree with no history, which is
         // the one corpus that cannot be named and says so.
         let corpus = crate::repo::identity(&repo.corpus);
+        // Null is the question never asked, and it is not "level": a caller
+        // reading zeroes has been told this checkout's refs match origin's,
+        // which is exactly the answer no verb may give without having compared.
+        // Without `--remote` nothing was compared, so there is nothing to say.
+        let refs_json = match &refs_drift {
+            Some(d) => Obj::new()
+                .num("stale", d.stale)
+                .num("absent", d.absent)
+                .finish(),
+            None => "null".into(),
+        };
         let doc = Obj::document()
             .opt_str("corpus", corpus.as_deref())
             // Both collapse to null, and legitimately: a parser asking for the
@@ -369,6 +399,7 @@ pub fn run(
             // prints. False is both "not asked" and "asked, no remote to read",
             // which `seen` then separates — null everywhere, or a word.
             .bool("remote", matches!(remote, Remote::Read(_)))
+            .raw("refs", &refs_json)
             .array("elsewhere", elsewhere_json)
             .num("constraints", constraints)
             .num("queue", queue)
@@ -442,6 +473,21 @@ pub fn run(
             ),
         };
         let _ = writeln!(out, "{} {line}", style.key("drift"));
+    }
+
+    // Beside the branch drift and immediately under it, because it is the same
+    // question asked of the other plane: the line above says how far this
+    // checkout's entity files are from the default branch, and this says how
+    // far its `refs/ank/*` are from origin's (ADR-47e2ac102f58 gives `status`
+    // the naming of drift).
+    //
+    // **A signal, and never a wall.** Nothing is refused, nothing is rewritten,
+    // no exit code moves. ADR-6b3f19e08a24 keeps immutability verifiable by
+    // hash and never defended by the CLI, and ADR-3877fef1d662 states the same
+    // of the actor convention: what a signal buys is that the ordinary case
+    // becomes legible, not that the dishonest case becomes impossible.
+    if let Some(drift) = &refs_drift {
+        let _ = writeln!(out, "{} {}", style.key("refs"), drift.line());
     }
 
     // Immediately above the claim, because it is the claim lines it explains.
@@ -685,21 +731,48 @@ enum Remote {
     /// The flag was not given, which is the default and the specified one: no
     /// network call is made at all.
     NotAsked,
-    /// The claim refs origin holds.
-    Read(Vec<ank_core::EntityId>),
+    /// Every ref origin holds under `refs/ank/*`, as `ls-remote` gave them.
+    Read(Vec<git::AnkRef>),
     /// The flag was given and there was no remote plane to read, with the
     /// sentence that says so and the command that changes it.
     Missing(String),
 }
 
-/// Reads the claims namespace off origin, once, with `ls-remote`.
+impl Remote {
+    /// The claim refs, out of the namespace that was read.
+    ///
+    /// Derived rather than asked for separately, which is the whole economy of
+    /// widening the pattern: one `ls-remote` answers both questions, and a
+    /// second call would be a second round trip for a subset of bytes already
+    /// in hand.
+    fn claims(&self) -> Vec<ank_core::EntityId> {
+        let Remote::Read(refs) = self else {
+            return Vec::new();
+        };
+        refs.iter()
+            .filter_map(|r| r.name.strip_prefix(crate::claim::CLAIMS_PREFIX))
+            .filter_map(|rest| ank_core::EntityId::parse(rest).ok())
+            .collect()
+    }
+}
+
+/// Reads the `refs/ank/*` namespace off origin, once, with `ls-remote`.
+///
+/// **One round trip, and the pattern is the whole namespace on purpose**
+/// (TASK-6596aae0713c). It was `refs/ank/claims/*`, because claims were the
+/// only question asked of origin. Asking for `refs/ank/*` instead costs the
+/// same single call -- `ls-remote` is one connection whatever the pattern
+/// matches -- and it is what lets `status` say how far this checkout's refs
+/// have drifted without adding a call to the verb read most often. A second
+/// `ls-remote` for the second question would have been the one thing the
+/// answer was not worth.
 ///
 /// **Every failure is a warning and the local answer**, never a refusal: a
 /// caller who asked for the remote plane and has none is in exactly the
 /// situation `status` exists for, and the two reasons are separated because the
 /// way out of each is a different command. No remote at all is level 0 and
 /// nominal (§7); a remote that cannot be reached is a laptop off the network.
-fn remote_claims(root: &std::path::Path, coordinated: bool) -> Remote {
+fn remote_refs(root: &std::path::Path, coordinated: bool) -> Remote {
     if !coordinated {
         return Remote::Missing(
             "no git repository here, so --remote has no plane to read (git init to coordinate)"
@@ -713,19 +786,97 @@ fn remote_claims(root: &std::path::Path, coordinated: bool) -> Remote {
                 .to_string(),
         );
     }
-    let pattern = format!("{}*", crate::claim::CLAIMS_PREFIX);
-    match git::ls_remote_refs(root, &pattern) {
-        Ok(refs) => Remote::Read(
-            refs.iter()
-                .filter_map(|r| r.name.strip_prefix(crate::claim::CLAIMS_PREFIX))
-                .filter_map(|rest| ank_core::EntityId::parse(rest).ok())
-                .collect(),
-        ),
+    match git::ls_remote_refs(root, git::ANK_NAMESPACE_PATTERN) {
+        Ok(refs) => Remote::Read(refs),
         Err(_) => Remote::Missing(
             "origin could not be read, so --remote answered on the local plane \
              (git ls-remote origin)"
                 .to_string(),
         ),
+    }
+}
+
+/// How far this checkout's `refs/ank/*` have drifted from origin's
+/// (TASK-6596aae0713c).
+///
+/// **Two counts and no list.** `stale` is a ref both planes carry pointing at
+/// different objects, which is the checkout holding a copy the remote has moved
+/// past; `absent` is a ref origin holds that this checkout does not. Together
+/// they are the state that is dangerous precisely because it is invisible: a
+/// clone whose fetch refspec is `refs/heads/*` never updates `refs/ank/*`, so
+/// its copy ages in silence while the remote moves, and an agent reading its
+/// own refs has no way to learn they are a week old.
+///
+/// **Differ, and never "behind".** Deciding that origin is *ahead* of this
+/// checkout means asking whether the local object is an ancestor of the remote
+/// one, and the remote object is not in this clone -- `ls-remote` carries names
+/// and objects, never contents, and the fetch that would carry them is the one
+/// a reader must not perform (ADR-47e2ac102f58). So the honest word for a ref
+/// whose two objects disagree is that they disagree, and the line says that.
+///
+/// **A ref this checkout holds and origin does not is not counted.** It is the
+/// ordinary state of work that has not been pushed yet, it is already what
+/// `seen: here` says of a claim, and the criterion names two numbers. A count
+/// that mixed unpushed work into a staleness report would make the safe case
+/// look like the dangerous one.
+struct RefDrift {
+    stale: usize,
+    absent: usize,
+}
+
+impl RefDrift {
+    /// Compared by name, then by object. Both sides come from the same two
+    /// fields -- `for-each-ref` and `ls-remote` are asked for `%(refname)` and
+    /// `%(objectname)` and for the pair `ls-remote` prints -- so there is
+    /// nothing to normalise between them.
+    fn measure(local: &[git::AnkRef], remote: &[git::AnkRef]) -> RefDrift {
+        let here: std::collections::HashMap<&str, &str> = local
+            .iter()
+            .map(|r| (r.name.as_str(), r.object.as_str()))
+            .collect();
+        let mut stale = 0;
+        let mut absent = 0;
+        for r in remote {
+            match here.get(r.name.as_str()) {
+                Some(object) if *object == r.object => {}
+                Some(_) => stale += 1,
+                None => absent += 1,
+            }
+        }
+        RefDrift { stale, absent }
+    }
+
+    fn level(&self) -> bool {
+        self.stale == 0 && self.absent == 0
+    }
+
+    /// One line, and one line in the level case too: a reader who has to tell
+    /// "level" from "never asked" by the absence of a line is reading silence,
+    /// which is the rule the branch drift line above already follows.
+    ///
+    /// The way out is named only when there is something to close, and it is a
+    /// **fetch**. Never a push: the whole reason this line exists is an agent
+    /// who answered a stale copy with `git push origin +refs/ank/*:refs/ank/*`
+    /// and force-updated eighty-three refs from a week-old snapshot. ank pushes
+    /// each of its refs itself, one at a time, under `--force-with-lease`.
+    fn line(&self) -> String {
+        if self.level() {
+            return "level with origin".to_string();
+        }
+        let mut parts = Vec::new();
+        if self.stale > 0 {
+            parts.push(format!("{} ref(s) origin has moved past", self.stale));
+        }
+        if self.absent > 0 {
+            parts.push(format!(
+                "{} ref(s) origin holds that are not here",
+                self.absent
+            ));
+        }
+        format!(
+            "{} (git fetch origin \"+refs/ank/*:refs/ank/*\")",
+            parts.join(", ")
+        )
     }
 }
 

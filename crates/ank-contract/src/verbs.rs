@@ -209,6 +209,15 @@ const STATUS_OUT: &[Field] = &[
         Type::Array(&[f("id", Type::Str), f("expires", Type::Str)]),
     ),
     f("remote", Type::Bool),
+    // Null when `--remote` was not given, which is not zero: zero would say
+    // this checkout's `refs/ank/*` match origin's, and without the flag nothing
+    // was compared (TASK-6596aae0713c). `stale` is a ref both planes carry
+    // pointing at different objects, `absent` a ref origin holds and this
+    // checkout does not.
+    opt(
+        "refs",
+        Type::Object(&[f("stale", Type::Num), f("absent", Type::Num)]),
+    ),
     f(
         "elsewhere",
         Type::Array(&[
