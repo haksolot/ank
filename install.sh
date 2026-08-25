@@ -5,6 +5,14 @@
 #   curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh
 #   curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh -s -- --version v0.2.0
 #
+# Two executables land and not one: `ank`, and `ank-mcp` beside it, the protocol
+# surface a client speaks to. They come out of one archive and go into one
+# directory, because ADR-e39a44f80e0e says no route carries one without the
+# other. An archive published before ank-mcp existed carries only `ank`, and
+# --version points this script at exactly those: such a release installs `ank`
+# and is told what is missing, rather than becoming a route that stopped
+# working.
+#
 # POSIX sh and no bashisms, deliberately. This is the channel for the Linux
 # distribution that will never have a native package, and the smallest of those
 # ship busybox ash with no bash at all. The binary is a static musl build, so
@@ -195,6 +203,10 @@ EOF
 usage() {
   cat >&2 <<EOF
 install ank from a GitHub release
+
+Two executables land in the install directory: ank, and ank-mcp beside it,
+the protocol surface a client speaks to. A release published before ank-mcp
+existed carries only ank; this installs it and says what is missing.
 
 usage:
   install.sh [--version <version>] [--dir <path>]
@@ -582,8 +594,9 @@ tar xzf "${tmp}/${archive}" -C "$tmp" ||
   die 3 "could not unpack ${archive}." "" "Nothing was installed."
 
 # The layout release.yml packages: one directory named after the archive,
-# carrying the binary beside README.md, LICENSE and SKILL.md.
-binary="${tmp}/ank-${bare}-${target}/ank"
+# carrying the two executables beside README.md, LICENSE and SKILL.md.
+unpacked="${tmp}/ank-${bare}-${target}"
+binary="${unpacked}/ank"
 if [ ! -f "$binary" ]; then
   die 3 "${archive} does not contain ank where this script expected it." \
     "" \
@@ -591,6 +604,12 @@ if [ ! -f "$binary" ]; then
     "" \
     "Nothing was installed."
 fi
+
+# The other half of ADR-e39a44f80e0e: where a route places ank, it places
+# ank-mcp next to it. Missing only from an archive older than the protocol
+# surface itself, which is a release --version still reaches, so its absence is
+# reported at the end rather than refused here.
+mcp_binary="${unpacked}/ank-mcp"
 
 if [ -z "$install_dir" ]; then
   [ -n "${HOME:-}" ] ||
@@ -619,13 +638,53 @@ chmod +x "$binary"
 mv -f "$binary" "${install_dir}/ank" ||
   die 1 "could not write ${install_dir}/ank." "" "Nothing was installed."
 
+# The same two operations in the same order, which is what gives the pair the
+# same permissions rather than a second mechanism that hopes to: tar restored
+# both files out of one archive under one umask, so their modes are equal
+# before this line, and `chmod +x` adds to the mode it is applied to instead of
+# imposing one. Reading ank's mode back and copying it onto ank-mcp would need
+# two spellings of stat, GNU's and BSD's, to buy a guarantee already held.
+if [ -f "$mcp_binary" ]; then
+  chmod +x "$mcp_binary"
+  mv -f "$mcp_binary" "${install_dir}/ank-mcp" ||
+    die 1 "could not write ${install_dir}/ank-mcp." \
+      "" \
+      "ank is installed at ${install_dir}/ank. ank-mcp is not, so a client" \
+      "has no protocol surface to reach until this is run again."
+  mcp_installed=yes
+else
+  mcp_installed=no
+fi
+
 installed_version=$("${install_dir}/ank" --version 2>/dev/null | head -1) ||
   installed_version=""
+
+mcp_version=""
+if [ "$mcp_installed" = yes ]; then
+  mcp_version=$("${install_dir}/ank-mcp" --version 2>/dev/null | head -1) ||
+    mcp_version=""
+fi
 
 say ""
 say "installed  ${install_dir}/ank"
 if [ -n "$installed_version" ]; then
   say "           ${installed_version}"
+fi
+if [ "$mcp_installed" = yes ]; then
+  say "           ${install_dir}/ank-mcp"
+  if [ -n "$mcp_version" ]; then
+    say "           ${mcp_version}"
+  fi
+else
+  # Said rather than swallowed, and on stderr like everything else here. The
+  # caller asked for ank and has ank, so this is not a failure; but a client
+  # pointed at this directory will find no ank-mcp in it, and this is the only
+  # place able to say why.
+  say ""
+  say "${archive} carries no ank-mcp, so only ank was installed."
+  say "That archive predates the protocol surface. A release that carries both"
+  say "installs both:"
+  say "  curl -fsSL ${raw_url} | sh"
 fi
 
 # The last way left to leave a caller without a working `ank`: a binary in a
