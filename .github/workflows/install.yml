@@ -1107,14 +1107,13 @@ jobs:
               [switch]$NoWelcome
           )
 
-          # A switch and not a list of extra arguments, which is what the first
-          # run of this step taught: `pwsh -File probe.ps1 -Extra -NoWelcome`
-          # hands the binder a value that begins with a dash, it reads it as a
-          # parameter name of its own, and the flag arrives nowhere. The
-          # argument install.ps1 is given is built here, where nothing has to
-          # survive a command line.
-          $extraArgs = @()
-          if ($NoWelcome) { $extraArgs += '-NoWelcome' }
+          # A switch, and the call written out twice rather than splatted, both
+          # for the same reason: a flag whose name begins with a dash does not
+          # survive being carried as a value. `-Extra -NoWelcome` on a
+          # `pwsh -File` command line is read as a parameter name of its own,
+          # and `@extraArgs` holding '-NoWelcome' is splatted positionally at a
+          # script that takes nothing positionally. Both arrived nowhere, and
+          # both left install.ps1 asking. Two literal call sites cannot.
 
           # A console of its own is the whole point of this file, so it is
           # asserted and not assumed: a probe that quietly lost its console
@@ -1150,11 +1149,20 @@ jobs:
           # one an exiting child sets is the one the engine keeps: seeded and
           # read here they would be two variables wearing one name, and a
           # refusal from install.ps1 would read back as a success.
+          $installer = Join-Path $PSScriptRoot 'install.ps1'
           $global:LASTEXITCODE = 0
-          $out = (& (Join-Path $PSScriptRoot 'install.ps1') `
-              -Version $env:STAGED_VERSION -Dir $Dir @extraArgs *>&1 | Out-String)
+          if ($NoWelcome) {
+              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome *>&1 | Out-String)
+          } else {
+              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir *>&1 | Out-String)
+          }
           $code = $global:LASTEXITCODE
-          Set-Content -Path $OutFile -Value $out
+
+          # What the probe was told, recorded beside what the installer said.
+          # Without it, "-NoWelcome asked anyway" is the same message whether
+          # the installer ignored the switch or the harness never delivered it,
+          # and those are repairs in different files.
+          Set-Content -Path $OutFile -Value ("probe: NoWelcome=$([bool]$NoWelcome)`r`n" + $out)
           Set-Content -Path $CodeFile -Value "$code"
           exit 0
           '@
@@ -1265,6 +1273,10 @@ jobs:
           # since without a console there is nothing to differ from.
           $run = Invoke-Case -Label 'noflag' -Answer 'y' -NoWelcome
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
+          # Asked first, because it separates the two repairs: a probe that was
+          # never handed the switch is a defect in this file, and one that was
+          # and still saw a question is a defect in install.ps1.
+          Want $run ($run.Out -match 'probe: NoWelcome=True') 'the probe was never handed the switch'
           Want $run ($run.Asked -eq 0) '-NoWelcome asked anyway'
           Want $run (-not $run.Ran) '-NoWelcome ran npx anyway'
           Want $run ($run.Out -notmatch '####') '-NoWelcome drew the logo at a console'
