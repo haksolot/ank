@@ -1062,7 +1062,7 @@ mod tests {
             entities: vec![
                 row("ADR-8bd76e8d7c4e", "adr", "accepted", "A terminal reader"),
                 row("TASK-49746735127f", "task", "in_progress", "ank tui opens"),
-                row("SPEC-20357e21a45a", "spec", "accepted", "The CLI surface"),
+                row("SPEC-fe8bdb84faca", "spec", "accepted", "The CLI surface"),
             ],
             total: 3,
         }
@@ -1151,7 +1151,7 @@ mod tests {
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
-            "SPEC-2035",
+            "SPEC-fe8b",
             "accepted",
             "in_progress",
             "claude-code/opus-5+tui-verb",
@@ -1200,7 +1200,7 @@ mod tests {
         a.act(Command::Search(Some("cli surface".to_string())), &ank);
         let f = a.list_frame();
         assert!(f.contains("matching 'cli surface'"), "{f}");
-        assert_eq!(rendered_rows(&a), ["SPEC-20357e21a45a"], "{f}");
+        assert_eq!(rendered_rows(&a), ["SPEC-fe8bdb84faca"], "{f}");
     }
 
     #[test]
@@ -1398,7 +1398,7 @@ mod tests {
     fn an_act_in_the_entity_view_is_about_the_entity_that_is_open() {
         let mut a = app();
         let ank = nowhere();
-        a.detail = Some(detail("SPEC-20357e21a45a", "body\n"));
+        a.detail = Some(detail("SPEC-fe8bdb84faca", "body\n"));
         a.view = View::Entity;
         // The cursor is still on the first row of the list, which is the ADR.
         assert_eq!(
@@ -1414,7 +1414,7 @@ mod tests {
         );
         let said = a.note.clone().unwrap_or_default();
         assert!(
-            said.contains("ank claim SPEC-20357e21a45a --json"),
+            said.contains("ank claim SPEC-fe8bdb84faca --json"),
             "{said}"
         );
     }

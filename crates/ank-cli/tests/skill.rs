@@ -231,11 +231,11 @@ fn help_order() -> Vec<String> {
 /// puts it in §4: between the two sits a signed `accept`, which is a human act.
 ///
 /// `tui` went the same way. TASK-8108e3771ba0 put the line in the Commands
-/// block of SPEC-20357e21a45a and declared the verb here, the ratification of
-/// that document was signed, and TASK-49746735127f dispatched the verb and
-/// removed the declaration in the commit that did it -- which is what the
-/// second test below forces: a declared verb that has started shipping fails
-/// until the line is gone.
+/// block of the §4 document of the day and declared the verb here, the
+/// ratification of that revision was signed, and TASK-49746735127f dispatched
+/// the verb and removed the declaration in the commit that did it -- which is
+/// what the second test below forces: a declared verb that has started
+/// shipping fails until the line is gone.
 ///
 /// These two are in exactly that state (ADR-fd98f4bc6dea, ADR-a22cd3196529,
 /// TASK-36666e36744e). The protocol surface and the watcher stop being sibling
