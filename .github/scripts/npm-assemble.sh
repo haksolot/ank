@@ -8,6 +8,10 @@
 # first. Nothing here downloads anything, which is the property the whole
 # channel exists for (npm/README.md).
 #
+# Two executables per platform package, never one: ADR-e39a44f80e0e makes
+# ank-mcp freight of every route that carries ank, so the pair travels in one
+# package under one version and an install cannot end up holding half of it.
+#
 #   npm-assemble.sh <version> [package ...]
 #
 # With no package named, all three are assembled -- which is what the publish
@@ -38,34 +42,46 @@ target_of() {
   esac
 }
 
-exe_of() {
+# The extension, applied to both names rather than each name written out twice
+# per platform. Windows is the only row that has one.
+suffix_of() {
   case "$1" in
-    ank-win32-x64) echo ank.exe ;;
-    *) echo ank ;;
+    ank-win32-x64) echo .exe ;;
+    *) echo "" ;;
   esac
 }
 
+# The two executables a platform package carries, in the order the wrapper
+# declares them. A name added here is a name the release must have built, and a
+# missing one below stops the assembly rather than shipping a package that is
+# short a binary.
+executables=(ank ank-mcp)
+
 for p in "${packages[@]}"; do
   target="$(target_of "$p")"
-  exe="$(exe_of "$p")"
-  # The loose binary the build job uploads beside the archives. Reaching for it
-  # rather than unpacking a .zip keeps this script free of unzip, which the
-  # Windows runner's bash does not have.
-  src="$(find dist -type f -path "*${target}*" -name "$exe" | head -n 1)"
-  if [ -z "$src" ]; then
-    echo "no $exe built for $target under dist/" >&2
-    exit 1
-  fi
+  suffix="$(suffix_of "$p")"
   mkdir -p "npm/$p/bin"
-  cp "$src" "npm/$p/bin/$exe"
-  chmod +x "npm/$p/bin/$exe"
+  for name in "${executables[@]}"; do
+    exe="${name}${suffix}"
+    # The loose binaries the build job uploads beside the archives. Reaching for
+    # them rather than unpacking a .zip keeps this script free of unzip, which
+    # the Windows runner's bash does not have.
+    src="$(find dist -type f -path "*${target}*" -name "$exe" | head -n 1)"
+    if [ -z "$src" ]; then
+      echo "no $exe built for $target under dist/" >&2
+      exit 1
+    fi
+    cp "$src" "npm/$p/bin/$exe"
+    chmod +x "npm/$p/bin/$exe"
+    echo "  npm/$p/bin/$exe from $src"
+  done
   cp LICENSE "npm/$p/LICENSE"
   (
     cd "npm/$p"
     npm pkg set version="$version"
     npm pack --silent > /dev/null
   )
-  echo "assembled npm/$p from $src"
+  echo "assembled npm/$p at $version"
 done
 
 # The wrapper pins the platform packages exactly. A range would let an install

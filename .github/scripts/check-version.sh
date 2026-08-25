@@ -12,7 +12,7 @@
 # with itself, which is a correct test of the wrapper and no test at all of the
 # version.
 #
-# Ten literals across seven files carry the version today, which is nine more
+# Eleven literals across eight files carry the version today, which is ten more
 # chances to be careful than anyone gets right forever. This makes the
 # disagreement fail instead.
 #
@@ -21,7 +21,7 @@
 # here costs a tag.
 #
 # The parsing is sed and awk. jq is on the runner but not on every machine a
-# maintainer would run this from, and the shapes read here are seven files this
+# maintainer would run this from, and the shapes read here are eight files this
 # repository writes itself. A literal the parser cannot find is a failure and
 # never a pass -- a shape that moved must turn this red, or the check quietly
 # stops checking.
@@ -91,7 +91,12 @@ compare() {
   bad_fix+=("$fix")
 }
 
-for crate in ank-cli ank-core; do
+# ank-mcp is here for the same reason ank-cli is: the release ships it, in every
+# archive and every npm package, and the smoke job asserts it answers --version
+# with the number ank answers with (ADR-e39a44f80e0e). A tag that bumped ank-cli
+# and left ank-mcp behind would pass this gate and then break on the tag itself,
+# which is the loop this whole job exists to spare.
+for crate in ank-cli ank-core ank-mcp; do
   f="crates/$crate/Cargo.toml"
   compare "$f" "$f" "$(cargo_version "$f" 2>/dev/null)" \
     "$f: version = \"$version\""

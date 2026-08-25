@@ -6,12 +6,16 @@ behind one CLI any coding agent can call.
     npx @haksolot/ank --version
     npm install -g @haksolot/ank
 
-The binary travels inside the package: nothing is downloaded at install time, so
+The binaries travel inside the package: nothing is downloaded at install time, so
 this channel works where fetching a bare executable does not. It covers
 `linux x64`, `darwin arm64` and `win32 x64`; on any other platform the wrapper
 exits 9 and names `cargo install`. ank needs **git 2.34 or newer**.
 
-This package carries the CLI. The skill an agent loads is a separate install, and
+Two commands are installed, out of one build and under one version: `ank`, the
+CLI, and `ank-mcp`, the protocol surface a client with no shell reaches instead.
+Every verb the CLI dispatches is a tool there, generated from the same table.
+
+This package carries both. The skill an agent loads is a separate install, and
 [the documentation](https://github.com/haksolot/ank) covers both, along with the
 specification and the source.
 

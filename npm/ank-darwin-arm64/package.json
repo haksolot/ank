@@ -1,7 +1,7 @@
 {
   "name": "@haksolot/ank-darwin-arm64",
   "version": "0.6.0",
-  "description": "The ank binary for macOS on Apple silicon.",
+  "description": "The ank and ank-mcp binaries for macOS on Apple silicon.",
   "license": "Apache-2.0",
   "homepage": "https://github.com/haksolot/ank",
   "repository": {
@@ -16,6 +16,7 @@
   ],
   "files": [
     "bin/ank",
+    "bin/ank-mcp",
     "LICENSE"
   ]
 }

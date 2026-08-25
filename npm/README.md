@@ -2,8 +2,8 @@
 
 Four packages, and the shape is the one esbuild uses.
 
-    @haksolot/ank                    the wrapper, and the only name anyone types
-    @haksolot/ank-linux-x64-musl     the binary, one package per target
+    @haksolot/ank                    the wrapper, and the only name anyone installs
+    @haksolot/ank-linux-x64-musl     the binaries, one package per target
     @haksolot/ank-darwin-arm64
     @haksolot/ank-win32-x64
 
@@ -16,8 +16,18 @@ That is the whole point of this channel rather than a detail of it. The driving
 case is the corporate workstation whose firewall blocks downloading a bare
 executable but lets the npm registry through; a `postinstall` script that
 fetched the binary would die behind exactly the firewall this package exists to
-cross. `bin/ank` is therefore a resolver, never a downloader: it finds the
-platform package with `require.resolve` and executes what it finds.
+cross. `bin/wrapper.js` is therefore a resolver, never a downloader: it finds
+the platform package with `require.resolve` and executes what it finds.
+
+**Two executables, one package, one version.** Each platform package carries
+`ank` and `ank-mcp`, the protocol surface, out of the same build
+(ADR-e39a44f80e0e): no route carries one without the other, so there is no
+install holding a CLI and a passthrough generated from a different table. The
+wrapper declares both as `bin` and resolves them by one route -- `bin/ank` and
+`bin/ank-mcp` are two lines each, and `bin/wrapper.js` is the resolution, the
+diagnostics and the exit code for both. Two copies of that file is the
+arrangement where the protocol surface quietly stops resolving the way the CLI
+does and nothing turns red.
 
 **The Linux package declares no `libc`.** The build is `x86_64-unknown-linux-musl`
 and statically linked, so it runs on a glibc distribution just as well; declaring
@@ -28,12 +38,14 @@ not because it restricts where it runs.
 **The wrapper forwards the exit code unchanged.** Section 4 of the specification
 gives 4, 6, 8 and 9 distinct meanings that an agent branches on. A wrapper that
 collapsed them into 0 and 1 would break every caller reading them, which is why
-`bin/ank` exits with the child's status and reserves 9, the environment code,
-for its own failures.
+`bin/wrapper.js` exits with the child's status and reserves 9, the environment
+code, for its own failures. `ank-mcp` reaches its client the same way, and `stdio` is
+inherited rather than captured, because a surface that speaks JSON-RPC on stdin
+has nothing to say to a wrapper holding the pipe.
 
 ## What is not in git
 
-`npm/ank-*/bin/` is empty here and ignored. The binaries land in it during the
+`npm/ank-*/bin/` is empty here and ignored. Both binaries land in it during the
 release run, from the same artefacts the GitHub release publishes: one build,
 two channels, no second compilation that could disagree with the first.
 
@@ -48,6 +60,7 @@ only ever the last released one.
 `release.yml` does it on a `v*` tag, with `NPM_TOKEN` from the repository
 secrets and `--access public`, which a scoped package needs on its first
 publish. On `workflow_dispatch` the same job assembles the packages, installs
-them from the tarballs on all three platforms and runs `ank --version`, so the
-pipeline is proved before a tag depends on it, and a tag is the one thing here
-that is awkward to take back.
+them from the tarballs on all three platforms, and shows `ank-mcp` answering
+`--version` with the number `ank` answers with, so the pipeline is proved before
+a tag depends on it, and a tag is the one thing here that is awkward to take
+back.

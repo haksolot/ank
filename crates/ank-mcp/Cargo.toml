@@ -1,6 +1,11 @@
 [package]
 name = "ank-mcp"
-version = "0.3.0"
+# ank-cli's version, and not a version of its own. The two binaries ship out of
+# one build and one archive (ADR-e39a44f80e0e), so a caller holding both has no
+# way to ask which of two numbers describes the pair -- and the release asserts
+# they answer `--version` alike, on all three platforms, before it publishes
+# anything. check-version.sh holds this literal to the tag with the others.
+version = "0.6.0"
 edition = "2021"
 # The workspace floor, for the reason ank-core's manifest gives: one lockfile,
 # one build.
