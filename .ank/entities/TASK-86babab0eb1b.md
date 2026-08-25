@@ -5,12 +5,16 @@ slug: amend-takes-a-scope-with-a-leading-and-check-fin
 title: amend takes a scope with a leading + and check finds it four commands later
 created: 2026-08-25T03:26:36Z
 author: claude-code/opus-5+daemon-refs
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
+  - crates/ank-cli/tests/cli.rs
 blocked_by: []
+done_criteria: |
+  ank amend <id> --scope "+p" and ank amend <id> --drop-scope "-p" both exit non-zero and write nothing to the entity: the refusal names the leading marker as a marker, names --drop-scope as the way to remove a glob, and names a leading ./ as the way to write a path whose own name begins with that character, so ank amend <id> --scope "./+p" succeeds and stores +p. A test in crates/ank-cli/tests/cli.rs drives the binary for each of those cases.
+criteria_by: claimer
 schema: 4
-version: 3
+version: 5
 ---
 
 `ank amend <id> --scope "+crates/ank-cli/src/context.rs"` stores the `+` as part

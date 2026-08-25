@@ -8088,6 +8088,67 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     );
 }
 
+/// A scope opening on `+` or `-` is a list marker, and this verb refuses it
+/// rather than storing it as part of the glob.
+///
+/// The mistake is `amend`'s own to make: `--scope` adds and `--drop-scope`
+/// removes, which is the pairing `+`/`-` list syntax expresses as one flag with
+/// two markers. Stored, `+docs/**` matches no file, and the first thing to say
+/// so is `check`, with a dead scope carrying no rename and no deletion to
+/// explain it -- four commands later, and often after a `done` past which
+/// `amend` refuses to repair anything.
+///
+/// Through the binary, and reading the file, because what is asserted is that
+/// the refusal reaches the caller and that nothing was written on the way.
+#[test]
+fn a_scope_opening_on_a_list_marker_is_refused_and_the_literal_path_keeps_a_way_in() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let before = r.task_text(ID);
+
+    let out = r.ank("marie@laptop", &["amend", ID, "--scope", "+docs/**"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert_eq!(r.task_text(ID), before, "a refusal writes nothing");
+    let said = stderr(&out);
+    // The marker named as a marker, the verb that actually removes, and the
+    // way to write a path whose own name begins with the character.
+    assert!(said.contains("list marker"), "{said}");
+    assert!(said.contains("'+'"), "{said}");
+    assert!(said.contains("--drop-scope \"docs/**\""), "{said}");
+    assert!(said.contains("--scope \"./+docs/**\""), "{said}");
+
+    // The same on the removing flag, where the marker a caller reaches for is
+    // the minus.
+    let out = r.ank("marie@laptop", &["amend", ID, "--drop-scope", "-src/**"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert_eq!(r.task_text(ID), before, "a refusal writes nothing");
+    assert!(stderr(&out).contains("list marker"), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--drop-scope \"src/**\""),
+        "{}",
+        stderr(&out)
+    );
+    // The escape names the flag the caller typed, and not the other one.
+    assert!(
+        stderr(&out).contains("--drop-scope \"./-src/**\""),
+        "{}",
+        stderr(&out)
+    );
+
+    // And the escape the refusal names is real, rather than a sentence: a
+    // repository may hold a file whose name begins with a plus, and `./` is
+    // the leading segment the normaliser already drops.
+    let out = r.ank("marie@laptop", &["amend", ID, "--scope", "./+page.svelte"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = r.task_text(ID);
+    assert!(text.contains("  - src/**\n  - +page.svelte"), "{text}");
+    assert!(
+        r.log_text(ID).contains("+scope +page.svelte"),
+        "{}",
+        r.log_text(ID)
+    );
+}
+
 /// A criterion that turns out unmeasurable is corrected, by a caller holding no
 /// claim, without the correction being recorded as the claimer's.
 ///
