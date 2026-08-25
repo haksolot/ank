@@ -70,9 +70,24 @@ impl Repo {
         repo.git(&["config", "user.email", "suite@example.invalid"]);
         repo.git(&["config", "user.name", "The Suite"]);
         repo.git(&["config", "commit.gpgsign", "false"]);
+        // **The signing regime is stated here rather than inherited.** `accept`
+        // signs where the repository can sign (ADR-964be4d940b2), and "can" is
+        // read out of git's configuration -- which, unset locally, is whatever
+        // the developer running this suite happens to have globally. A test
+        // whose corpus is signed on one machine and advisory on the next is a
+        // test that reports the machine. Set empty, this corpus is squarely in
+        // §8's advisory mode, which is the regime `review` then names on the
+        // screen and the one both roads through `accept` take.
+        repo.git(&["config", "user.signingkey", ""]);
         std::fs::create_dir_all(repo.0.join("src")).unwrap();
         std::fs::write(repo.0.join("src/lib.rs"), "// code\n").unwrap();
         repo.ank(HOLDER, &["init"]);
+        // Without this, `accept` cannot tell where ratification is allowed to
+        // happen: there is no origin here, so `default_branch` has no second
+        // source (§12). A corpus that cannot name its default branch is a
+        // corpus in which no ratification is possible at all, which is not the
+        // repository this suite is modelling.
+        repo.ank(HOLDER, &["config", "default_branch", "main"]);
         repo.ank(
             HOLDER,
             &[
@@ -1624,4 +1639,359 @@ impl Shim {
         }
         panic!("the reader never stopped asking");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Ratification (TASK-d90e94afca08)
+// ---------------------------------------------------------------------------
+//
+// The act this project guards hardest, driven from a screen. What has to be
+// true of that is four things, and every one of them is a fact about a process
+// and a git repository rather than about a function.
+//
+// The queue has to be the CLI's queue. A document ratified through the screen
+// has to be verifiable exactly as one ratified in a shell is -- same entity,
+// same anchor, same commit, judged the same by `check`. With the word withheld,
+// nothing may move: a screen that has a proposal open and is never typed at
+// leaves the queue where it found it. And where the CLI refuses -- the wrong
+// branch above all -- what reaches the screen has to be the CLI's own refusal,
+// with the command it named as the way out.
+
+/// A proposed ADR of this corpus, and its identifier.
+///
+/// `new adr` lands `proposed` (§3), which is the state the queue is made of.
+///
+/// The identifier is read as the one that was not there a moment ago, rather
+/// than by looking for the title. Two proposals in this suite deliberately
+/// carry the *same* title -- it is what makes their two ratifications
+/// comparable -- so a title is not a name here and finding one by it would find
+/// whichever came first.
+#[cfg(unix)]
+fn proposal(repo: &Repo, title: &str) -> String {
+    let before = ids_of(&repo.stdout(HOLDER, &["find", "--type", "adr", "--json"]));
+    repo.ank(
+        OTHER,
+        &[
+            "new",
+            "adr",
+            "--title",
+            title,
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A rule this suite ratifies from a screen.",
+        ],
+    );
+    ids_of(&repo.stdout(HOLDER, &["find", "--type", "adr", "--json"]))
+        .into_iter()
+        .find(|id| !before.contains(id))
+        .expect("the proposal exists")
+}
+
+/// The queue names what is waiting and who may sign it, and both are `review`'s
+/// own answer.
+///
+/// The seeded corpus declares no signing key, so the second half is §8's
+/// advisory sentence rather than a section with no rows -- which is the
+/// distinction `review` itself insists on, carried onto the screen.
+#[cfg(unix)]
+#[test]
+fn the_queue_names_what_is_waiting_and_the_regime_the_corpus_is_in() {
+    let repo = Repo::seeded("queue");
+    let waiting = proposal(&repo, "A decision waiting for a person");
+    let task = repo.only(&["--type", "task"]);
+
+    let seen = drive(&repo, READER, &["v", "q"]);
+    assert!(seen.contains("QUEUE"), "the queue was drawn:\n{seen}");
+    assert!(
+        seen.contains(&short_of(&waiting)),
+        "and it names the proposal:\n{seen}"
+    );
+    assert!(
+        seen.contains("A decision waiting for a person"),
+        "with its title:\n{seen}"
+    );
+    assert!(
+        seen.contains("permissions are advisory"),
+        "a corpus declaring no key says which regime it is in:\n{seen}"
+    );
+    // A task is not waiting for a signature and has no business in this queue.
+    let queue = seen
+        .rsplit("QUEUE")
+        .next()
+        .expect("the queue heading was drawn");
+    assert!(
+        !queue.contains(&short_of(&task)),
+        "a task is in the ratification queue:\n{queue}"
+    );
+}
+
+/// A document ratified through the reader is what a shell `accept` makes
+/// (ADR-8bd76e8d7c4e).
+///
+/// The point of the whole crate, on the one act it matters most for. Two
+/// proposals identical but for their identifiers: one is ratified by opening it
+/// on the screen and typing the word, the other by running `ank accept` in this
+/// suite. What is compared is everything a later reader would verify -- the
+/// entity as `show` prints it, the ratification commit's message, and what
+/// `check` says about each -- with the identifiers and the instants masked,
+/// because those are what two documents must differ in.
+///
+/// They are equal because there is no second dispatch path: the reader spawned
+/// the verb this suite spawned.
+#[cfg(unix)]
+#[test]
+fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
+    let repo = Repo::seeded("ratify");
+    // One title for both, so the two documents differ in nothing a
+    // ratification could legitimately depend on: same slug, same scope, same
+    // constraint, same author. What is left to differ is the identifier and the
+    // instants, and those are masked below.
+    const TITLE: &str = "A decision ratified twice over";
+    let by_screen = proposal(&repo, TITLE);
+    let by_shell = proposal(&repo, TITLE);
+
+    let seen = drive(&repo, READER, &[&by_screen, "accept", "q"]);
+    assert!(
+        seen.contains(&format!("ank accept {by_screen}")),
+        "the reader ran the verb, and said which one:\n{seen}"
+    );
+    assert!(
+        !seen.contains("error["),
+        "the ratification was refused:\n{seen}"
+    );
+
+    repo.ank(READER, &["accept", &by_shell]);
+
+    assert_eq!(
+        ratification(&repo, &by_screen),
+        ratification(&repo, &by_shell),
+        "the screen's ratification and the shell's are two different acts"
+    );
+    // And both are verifiable, which is what "ratified" is worth: `check`
+    // reports no fault about either.
+    let report = repo.stdout(READER, &["check", "--json"]);
+    for id in [&by_screen, &by_shell] {
+        assert!(
+            !faulted(&report, id),
+            "{id} is a fault after ratification:\n{report}"
+        );
+    }
+}
+
+/// Everything a later reader verifies about one ratification, with what must
+/// differ between two of them masked.
+///
+/// The entity as `show` prints it -- which carries `status`, the anchor under
+/// `ratified` and the reading recorded by the act -- and the message of the
+/// commit that made it binding. Two things are replaced and no more: the
+/// identifier, and every instant. Two documents are two documents and two acts
+/// happen at two moments, so a comparison that kept either would be asserting
+/// something false.
+///
+/// **The anchor is compared and never masked**, and that is the assertion doing
+/// the most work here. These two proposals carry the same constraint over the
+/// same scope, so the text `accept` hashes is the same text -- which means the
+/// two ratifications must arrive at the same anchor, byte for byte, or one of
+/// the two roads hashed something the other did not.
+#[cfg(unix)]
+fn ratification(repo: &Repo, id: &str) -> String {
+    let shown = repo.stdout(READER, &["show", id, "--json"]);
+    let message = String::from_utf8_lossy(
+        &repo
+            .git(&[
+                "log",
+                "-1",
+                "--format=%B",
+                "--grep",
+                &format!("ratify {id}"),
+            ])
+            .stdout,
+    )
+    .to_string();
+    assert!(
+        message.contains("ratify"),
+        "no ratification commit for {id}:\n{message}"
+    );
+    masked_instants(&format!("{shown}\n--\n{message}").replace(id, "<id>"))
+}
+
+/// Every RFC 3339 instant of a text, replaced.
+///
+/// Two acts happen at two moments, and a comparison that kept them would be
+/// asserting the clock stood still -- the same reason
+/// [`masked_record`] masks `claimed` and `expires`. Matched on the shape rather
+/// than on the field name, because these instants are inside a JSON string
+/// where there are no fields to name.
+#[cfg(unix)]
+fn masked_instants(text: &str) -> String {
+    const SHAPE: &str = "dddd-dd-ddTdd:dd:ddZ";
+    let chars: Vec<char> = text.chars().collect();
+    let shape: Vec<char> = SHAPE.chars().collect();
+    let mut out = String::new();
+    let mut at = 0;
+    while at < chars.len() {
+        let fits = at + shape.len() <= chars.len()
+            && shape.iter().enumerate().all(|(i, want)| {
+                let got = chars[at + i];
+                if *want == 'd' {
+                    got.is_ascii_digit()
+                } else {
+                    got == *want
+                }
+            });
+        if fits {
+            out.push_str("<instant>");
+            at += shape.len();
+        } else {
+            out.push(chars[at]);
+            at += 1;
+        }
+    }
+    out
+}
+
+/// Whether `check` reports a fault about this entity.
+#[cfg(unix)]
+fn faulted(report: &str, id: &str) -> bool {
+    report
+        .split("{\"subject\"")
+        .any(|f| f.contains(id) && f.contains("\"severity\":\"fault\""))
+}
+
+/// With the word withheld, nothing in the queue changes state
+/// (TASK-d90e94afca08).
+///
+/// The negative that matters more than the positive: a session that opens the
+/// queue, opens the proposal, reads its body to the end and goes back has done
+/// everything a ratification does except the one thing that is a ratification.
+/// Afterwards the document is still `proposed`, the corpus is byte for byte
+/// where it was, and history has not moved -- which is what "the reader may
+/// drive one and never perform one" means when nobody is at the keyboard.
+#[cfg(unix)]
+#[test]
+fn with_the_word_withheld_nothing_in_the_queue_changes_state() {
+    let repo = Repo::seeded("withheld");
+    let waiting = proposal(&repo, "A decision nobody ratifies");
+    repo.warm(READER);
+    let before = corpus_files(&repo);
+    let head = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+        .trim()
+        .to_string();
+
+    let seen = drive(
+        &repo,
+        READER,
+        &["v", &short_of(&waiting), "n", "n", "c", "b", "v", "q"],
+    );
+    assert!(
+        seen.contains(&short_of(&waiting)),
+        "the proposal was on the screen:\n{seen}"
+    );
+    assert!(
+        seen.contains("accept   (this document"),
+        "and the reader offered the word it never typed:\n{seen}"
+    );
+
+    let found = repo.stdout(READER, &["find", "--type", "adr", "--json"]);
+    assert!(
+        found.contains("\"status\":\"proposed\""),
+        "the proposal left the queue with nobody typing:\n{found}"
+    );
+    assert_eq!(
+        before,
+        corpus_files(&repo),
+        "a file under .ank/ moved with no word typed"
+    );
+    assert_eq!(
+        head,
+        String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_string(),
+        "a ratification commit was made with no word typed"
+    );
+}
+
+/// Off the default branch the CLI refuses, and the screen shows that refusal
+/// with the command that resolves it (§12).
+///
+/// The code is read out of the verb table rather than written here, on the rule
+/// `a_done_refused_for_a_missing_proof_leaves_the_task_untouched` already
+/// follows: "the code the table declares" is the criterion's phrase, and a
+/// number typed into this file would agree with a table that moved.
+#[cfg(unix)]
+#[test]
+fn a_ratification_off_the_default_branch_shows_the_clis_refusal_and_the_way_out() {
+    let repo = Repo::seeded("wrong-branch");
+    let waiting = proposal(&repo, "A decision on the wrong branch");
+    repo.git(&["switch", "-c", "wave7/not-the-default"]);
+    repo.warm(READER);
+    let before = corpus_files(&repo);
+
+    let seen = drive(&repo, READER, &[&short_of(&waiting), "accept", "q"]);
+
+    let code = declared("accept", "not on the default branch");
+    assert_eq!(
+        code,
+        ank_contract::ExitCode::Prerequisite,
+        "the table moved"
+    );
+    assert!(
+        seen.contains(&format!("error[{code}]:")),
+        "the code the table declares is on the screen:\n{seen}"
+    );
+    assert!(
+        seen.contains("git switch main"),
+        "and the command the CLI named as the way out:\n{seen}"
+    );
+    assert!(
+        seen.contains("BODY") || seen.contains("ENTITIES"),
+        "and the session kept its shape:\n{seen}"
+    );
+    assert_eq!(
+        before,
+        corpus_files(&repo),
+        "a refused ratification moved a file"
+    );
+}
+
+/// The word is refused off the document, and refused with a tail, and neither
+/// refusal spawns anything (TASK-d90e94afca08).
+///
+/// Both are the reader's own and both are about the line that was typed, which
+/// is the line this crate draws: a refusal on the state of the corpus is always
+/// the CLI's, and a refusal about what somebody wrote is always this one's.
+#[cfg(unix)]
+#[test]
+fn accept_is_refused_off_the_document_and_refused_with_a_tail() {
+    let repo = Repo::seeded("accept-grammar");
+    let waiting = proposal(&repo, "A decision typed at wrongly");
+    repo.warm(READER);
+    let before = corpus_files(&repo);
+
+    // From the queue, where the row is under the cursor and the body is not on
+    // the screen; then on the document, with something after the word.
+    let seen = drive(
+        &repo,
+        READER,
+        &["v", "accept", &short_of(&waiting), "accept ADR-0000", "q"],
+    );
+    assert!(
+        seen.contains("open it first"),
+        "a ratification off a row named the way in:\n{seen}"
+    );
+    assert!(
+        seen.contains("takes nothing after it"),
+        "a ratification carrying a tail was refused:\n{seen}"
+    );
+    assert!(
+        !seen.contains("ank accept"),
+        "one of the two reached the verb:\n{seen}"
+    );
+    let found = repo.stdout(READER, &["find", "--type", "adr", "--json"]);
+    assert!(
+        found.contains("\"status\":\"proposed\""),
+        "something was ratified:\n{found}"
+    );
+    assert_eq!(before, corpus_files(&repo), "a file under .ank/ moved");
 }

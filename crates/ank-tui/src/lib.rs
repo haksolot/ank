@@ -2,8 +2,8 @@
 //!
 //! **It reaches the corpus by running the CLI, and by nothing else.** Every row
 //! of corpus data on the screen arrives as a `--json` document written by
-//! `ank find`, `ank status`, `ank show` or `ank scope`, spawned as a shell would
-//! spawn them. Nothing here links `ank-core`, opens `.ank/`, or touches
+//! `ank find`, `ank status`, `ank show`, `ank scope` or `ank review`, spawned as
+//! a shell would spawn them. Nothing here links `ank-core`, opens `.ank/`, or touches
 //! `refs/ank/*`. That is slower than linking the core and the trade is taken
 //! deliberately: every refusal in this project is a refusal on state, a reader
 //! that reproduced them would get one subtly wrong, and the first symptom would
@@ -15,9 +15,9 @@
 //! entities the corpus actually carries.
 //!
 //! **It writes nothing the person at the keyboard did not ask for**
-//! (ADR-8bd76e8d7c4e). Repainting runs the four verbs that only read, so a
-//! screen left open all night runs no command at all and renews no claim; the
-//! five that write -- `claim`, `log`, `release`, `done` and `amend` -- run once
+//! (ADR-8bd76e8d7c4e). Repainting runs the verbs that only read, so a screen
+//! left open all night runs no command at all and renews no claim; the six that
+//! write -- `claim`, `log`, `release`, `done`, `amend` and `accept` -- run once
 //! each, when their word is typed whole. Nothing here is on a timer, and there
 //! is no timer to put anything on. The assertion is in the suite, not in this
 //! sentence.
@@ -67,13 +67,32 @@
 //!
 //! # The layout
 //!
-//! Two views, one screen each, because a criterion that asks for a body *whole*
-//! and a list of every kind on one screen asks for two screens.
+//! Three views, one screen each, because a criterion that asks for a body
+//! *whole* and a list of every kind on one screen asks for two screens, and the
+//! ratification queue asks a different question from either.
 //!
 //! * [`view::View::List`] -- who holds what, then every entity of every kind
 //!   with its status, windowed and filterable.
+//! * [`view::View::Queue`] -- what is proposed and waiting for a signature, and
+//!   who may give one: `ank review`, asked when its person types `v` and never
+//!   on the reader's own initiative.
 //! * [`view::View::Entity`] -- one entity: what holds it, the constraints
-//!   binding its declared scope, and its body, paged rather than cut.
+//!   binding its declared scope, and its body, paged rather than cut. This is
+//!   the only screen `accept` can be typed on.
+//!
+//! # Ratification, and the two words that are not the same
+//!
+//! ADR-8bd76e8d7c4e lets this reader *drive* `ank accept` and forbids it
+//! *performing* one unattended, and TASK-d90e94afca08 is where that sentence
+//! became code. Driving is spawning the verb, exactly as `claim` is spawned:
+//! one identifier, no flags, because a person typed the word whole on a
+//! document they had opened. Performing would be holding a key, answering a
+//! prompt, or moving more than one document at a time -- and none of the three
+//! is reachable from here. The queue is never accepted in bulk because the
+//! grammar has no shape for it; no secret can reach git through this process
+//! because the child is given no stdin; and a screen left open all night still
+//! runs nothing at all, because `accept` is on the acting list and a repaint
+//! only ever reads.
 
 use std::io::{BufRead, IsTerminal};
 use std::path::PathBuf;
