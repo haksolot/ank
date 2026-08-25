@@ -295,6 +295,63 @@ names one, so a deployment that already names its agents keeps naming them.
 curates nothing out. Being reachable over a protocol changes nothing about it:
 it still refuses off the default branch, with no way around it.
 
+## The watcher keeps a cache warm, and answers nothing
+
+`ank-daemon` is a background process that keeps the derived index of the corpora
+you declare current, so the `ank` you run finds a cache it does not have to
+rebuild. It is built from this workspace and no installation route ships it,
+which is the same statement as the one below about nothing depending on it.
+Everything else worth knowing about it as an integrator is what it refuses to be
+(ADR-a22cd3196529).
+
+**It is not a surface.** No socket, no protocol, no query of its own, and no
+subset of the verbs. There is nothing here to bind to: a caller that wants an
+answer runs the CLI, or talks to `ank-mcp`. A daemon answering the three
+questions a dashboard finds convenient would be the curated subset
+ADR-372b82af1ec7 refused, reached from the other direction, and it would be a
+third dispatch path in a project that has spent its history reducing to one.
+
+**Nothing depends on it.** Every verb gives the same output and the same exit
+code with it stopped; its absence is never an error, and no installation route
+makes running it a condition of using ank. The installation without a watcher is
+the one every CI runner, every container and every agent has, so it is the
+normal one, made slower rather than made lesser. Stopping it is always safe, and
+`stopping_the_daemon_changes_no_verbs_output_and_no_verbs_exit_code` in its
+suite is what keeps that true.
+
+**Nothing it serves is believed over the files.** The index is a cache the CLI
+rebuilds from a content hash per `.ank/` file at read time, so a listing off a
+warm index and a listing off no index are the same bytes. The watcher does not
+compute that listing and holds no copy of it: it spawns `ank` and asks for a
+read, which is what leaves the index current. It is a cache warmer, so a poll it
+misses costs latency and never correctness.
+
+**It watches what you declared, and looks for nothing.** The declaration is
+`watch.yml`, beside the `corpora.yml` of ADR-96174f1ac2b7 and under the same
+directory rule -- `%APPDATA%\ank` on Windows, `$XDG_CONFIG_HOME/ank` elsewhere,
+falling back to `$HOME/.config/ank`. It lives outside every repository, and it
+is keyed on the repository identity of ADR-621a7fd96ce1 rather than on a path:
+
+    schema: 1
+    watch:
+      # The key is the root commit, which `ank status --json` prints under
+      # "corpus". One checkout, or a list of them.
+      4f0b8c2d1e6a39572c84ab0d6f31e75c9a2b48d0: /home/me/work/ank
+      9c31ea77b04d5f2681ac3e095b7d4f60a8213ce5: /home/me/work/other
+
+Two worktrees of one repository are two paths under one key, and therefore one
+watched corpus -- which is the whole reason the key is not the path. A key that
+is not a root commit is refused by name, a checkout filed under another
+repository's identity is refused with both identities, and a directory carrying
+no `.ank/` is refused rather than searched around: `ank-daemon --list` prints
+what would be watched without watching anything.
+
+**The only thing it writes into a repository is that repository's own
+`index.db`.** No branch, no working tree, no index of git's, and no
+`refs/ank/claims`. It takes no claim, holds none on anybody's behalf, and
+renews none -- a claim is renewed by working, not by reporting
+(ADR-0bb7ea8991bc).
+
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
@@ -310,3 +367,7 @@ it still refuses off the default branch, with no way around it.
 - **`--repo <path>` addresses a corpus**, so a tool holding several addresses
   each on its own. Claims are per repository: nothing merges the claim spaces of
   two clones, because `refs/ank/*` cannot carry such an arbitration.
+- **Do not bind to `ank-daemon`.** It answers nothing, and it is optional by
+  construction. Write your integration against the CLI or the protocol surface,
+  and let the watcher make those answers arrive sooner where somebody chose to
+  run one.

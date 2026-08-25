@@ -41,6 +41,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ank-daemon"
+version = "0.6.0"
+dependencies = [
+ "ank-contract",
+ "serde",
+ "serde_yaml",
+]
+
+[[package]]
 name = "ank-mcp"
 version = "0.6.0"
 dependencies = [
