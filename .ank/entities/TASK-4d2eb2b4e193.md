@@ -5,7 +5,7 @@ slug: the-bindings-are-one-table-and-the-reader-reads
 title: The bindings are one table, and the reader reads it back
 created: 2026-08-26T17:07:10Z
 author: claude-code/opus-5+reader-redesign
-status: open
+status: in_progress
 scope:
   - crates/ank-tui/**
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   crates/ank-tui declares every binding of the reader once -- its key, its aliases, the command it runs, the word it is called by, the group it belongs to, what the screen must hold before it is offered at all, and the CLI verb it spells where it spells one -- and keys::typed, App::actions and the key list are all computed from it rather than written beside it. The list of verbs that may be spawned is NOT computed from it and stays written in ank.rs, measured against the table by a test that runs that dependency the other way round: a gate generated from the table it guards guards nothing. Every verb the table names resolves in ank_contract::verbs::COMMANDS and every flag it names to a FlagSpec of that command, and no field of the table may ever carry the value - , which the CLI reads as stdin and this reader's child does not have. Driven on a pseudo-terminal, the built binary answers ? with a list naming every binding the table declares and nothing it does not.
 criteria_by: creator
 schema: 4
-version: 3
+version: 5
 ---
 
 Seams found while designing, written here so the first holder does not pay for
