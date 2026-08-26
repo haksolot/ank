@@ -55,6 +55,14 @@ use terminal::{ids_of, Live, Repo};
 /// the middle both draw rows, which is where the painted fields are.
 const WINDOW: (u16, u16) = (110, 30);
 
+/// The rule the focused panel is drawn with, read out of the reader rather
+/// than written here (ADR-c07e2694f0e1, proposed).
+///
+/// It is a *character* and that is the point of naming it in this file: the
+/// glyph set is a second field beside the ink and no `NO_COLOR` reaches it, so
+/// this rule is on the frame of every session below whether it painted or not.
+const FOCUSED_RULE: &str = ank_tui::view::BOXES.border(true).horizontal_top;
+
 /// A closed task, so that a role the table renders as an *attribute* rather
 /// than as a colour is on the screen.
 ///
@@ -220,7 +228,7 @@ fn with_no_color_set_no_sequence_the_reader_sends_paints_anything() {
 /// And the screen is still readable, because every distinction is a character.
 ///
 /// Four signals, each of a different kind and each of them on the monochrome
-/// frame: the panel names and their numbers, the doubled rule and the `> `
+/// frame: the panel names and their numbers, the heavier rule and the `> `
 /// marker that say where the focus is, the `> ` on the row a cursor is on, and
 /// the status of a row spelled as the word it is.
 #[test]
@@ -238,8 +246,8 @@ fn with_no_color_set_the_screen_still_says_everything_it_has_to_say() {
         "the focused panel is unmarked:\n{frame}"
     );
     assert!(
-        frame.contains("=========="),
-        "the focused panel has no doubled rule:\n{frame}"
+        frame.contains(&FOCUSED_RULE.repeat(10)),
+        "the focused panel has no heavier rule:\n{frame}"
     );
     assert!(
         frame.lines().any(|l| l.contains(">     1  ")),

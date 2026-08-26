@@ -1143,6 +1143,80 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
     );
 }
 
+/// Every short identifier a frame carries, in the order they are drawn.
+///
+/// A short identifier is `<KIND>-xxxx`, and the kinds are the four this corpus
+/// has (ADR-c9f9d1a05b23).
+///
+/// **Both ends of the window are taken in characters and never in bytes**
+/// (ADR-c07e2694f0e1, proposed). The frames carry box-drawing glyphs now and a
+/// glyph is three bytes, so the two byte offsets this used to take are both a
+/// slice through a code point -- which is a panic and not a failure. `rfind`
+/// answers the byte index a character *starts* at, so the old `i + 1` landed
+/// inside a border drawn hard against a kind; `at + 5` landed inside one drawn
+/// hard against an identifier the reader had cut. The left boundary therefore
+/// steps over the whole character it found, and the right one counts the four
+/// characters after the hyphen rather than four bytes.
+fn identifiers_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find('-') {
+        let start = rest[..at]
+            .char_indices()
+            .rev()
+            .find(|(_, c)| !c.is_ascii_alphabetic())
+            .map_or(0, |(i, c)| i + c.len_utf8());
+        let kind = &rest[start..at];
+        let tail: String = rest[at + 1..].chars().take(4).collect();
+        if ["ADR", "SPEC", "TASK", "LOG"].contains(&kind)
+            && tail.chars().count() == 4
+            && tail.chars().all(|c| c.is_ascii_hexdigit())
+        {
+            out.push(format!("{kind}-{tail}"));
+        }
+        rest = &rest[at + 1..];
+    }
+    out
+}
+
+/// The scan reads a frame carrying a box-drawing glyph beside a truncated
+/// identifier, at either end of its slice (TASK-e900637aeac4).
+///
+/// Stated on the shapes rather than left to whichever ones a driven session
+/// happened to draw: a border pressed against a kind, a border pressed against
+/// an identifier the reader cut, and a hyphen with fewer than four characters
+/// left before the border. Each of the three panicked before the repair, and a
+/// panic in a suite is a crash with no verdict rather than a failure with one.
+///
+/// Not `#[cfg(unix)]`, unlike the session below it: this is arithmetic on a
+/// string and it is worth running on all three platforms.
+#[test]
+fn the_scan_reads_an_identifier_pressed_against_a_box_drawing_glyph() {
+    // The left boundary: the character before the kind is three bytes wide.
+    assert_eq!(
+        identifiers_in("\u{2503}TASK-4974\u{2503}"),
+        ["TASK-4974"],
+        "a border drawn hard against a kind was not read past"
+    );
+    // The right: a cut identifier, then the border that follows it.
+    assert_eq!(
+        identifiers_in("\u{2502}  ADR-8bd7~\u{2502}  LOG-e053\u{2502}"),
+        ["ADR-8bd7", "LOG-e053"]
+    );
+    // And a hyphen with less than a short identifier left after it, which is
+    // where `at + 5` used to land inside the glyph rather than past it.
+    assert_eq!(identifiers_in("SPEC-fe\u{2503}"), Vec::<String>::new());
+    assert_eq!(
+        identifiers_in("\u{256d}\u{2500}TASK-49\u{2501}"),
+        Vec::<String>::new()
+    );
+    // Nothing the corpus names is invented out of ordinary prose.
+    assert_eq!(
+        identifiers_in("claude-code/opus-5+glyphs   until 2026-08-25T04:36:32Z"),
+        Vec::<String>::new()
+    );
+}
+
 /// Every row on the screen is a row `find` answers with, and nothing else.
 ///
 /// This is the half of "every byte it shows is obtained by running the CLI"
@@ -1158,32 +1232,14 @@ fn the_frames_carry_no_identifier_the_corpus_does_not() {
         .collect();
     let seen = drive(&repo, HOLDER, &["\r", "b", "j", "\r", "b", "q"]);
 
-    let mut found = 0;
-    let text = seen.to_string();
-    let mut rest = text.as_str();
-    while let Some(at) = rest.find('-') {
-        // A short identifier is `<KIND>-xxxx`; the kinds are the four this
-        // corpus has (ADR-c9f9d1a05b23).
-        let start = rest[..at]
-            .rfind(|c: char| !c.is_ascii_alphabetic())
-            .map_or(0, |i| i + 1);
-        let kind = &rest[start..at];
-        if ["ADR", "SPEC", "TASK", "LOG"].contains(&kind) && rest.len() >= at + 5 {
-            let candidate = &rest[start..at + 5];
-            if candidate[kind.len() + 1..]
-                .chars()
-                .all(|c| c.is_ascii_hexdigit())
-            {
-                assert!(
-                    real.iter().any(|r| r == candidate),
-                    "the frames name {candidate}, which the corpus does not carry: {real:?}"
-                );
-                found += 1;
-            }
-        }
-        rest = &rest[at + 1..];
+    let named = identifiers_in(&seen.to_string());
+    for candidate in &named {
+        assert!(
+            real.iter().any(|r| r == candidate),
+            "the frames name {candidate}, which the corpus does not carry: {real:?}"
+        );
     }
-    assert!(found >= 2, "the frames named no identifier at all");
+    assert!(named.len() >= 2, "the frames named no identifier at all");
 }
 
 /// A terminal made narrower, then wider, redraws to its new size with nobody

@@ -64,6 +64,15 @@ impl Drop for Repo {
 }
 
 pub const AGENT: &str = "claude-code/opus-5+panel-suite";
+
+/// The terminal every session but [`Live::dumb`] is opened on.
+///
+/// Stated rather than inherited: this suite runs under whatever the developer
+/// has exported, and a reader that reads `TERM` -- which this one does, for
+/// its palette and for its border set alike -- would otherwise draw one frame
+/// on one machine and another on the next.
+pub const TERM: &str = "xterm-256color";
+
 /// Deliberately wider than the entities panel at either window, so that a
 /// frame which overflowed rather than fitted would be visible as a row past
 /// the right edge.
@@ -581,7 +590,7 @@ impl Live {
     /// about painting wants: `NO_COLOR` makes the frames the characters they
     /// are and nothing else.
     pub fn open(repo: &Repo, columns: u16, rows: u16) -> Live {
-        Live::opened(repo, columns, rows, false)
+        Live::opened(repo, columns, rows, false, TERM)
     }
 
     /// A session that may paint (TASK-6cd41d23b7d1).
@@ -591,10 +600,22 @@ impl Live {
     /// developer running it has exported, and a test whose subject is colour
     /// must not be a test that reports the machine.
     pub fn painting(repo: &Repo, columns: u16, rows: u16) -> Live {
-        Live::opened(repo, columns, rows, true)
+        Live::opened(repo, columns, rows, true, TERM)
     }
 
-    fn opened(repo: &Repo, columns: u16, rows: u16, colour: bool) -> Live {
+    /// A session on a terminal that has declared it can render nothing rich
+    /// (ADR-c07e2694f0e1, proposed).
+    ///
+    /// `TERM=dumb` is the whole of the declaration, and it is what puts the
+    /// reader on its ASCII border set and its plain palette at once -- one
+    /// probe, two answers. `NO_COLOR` is left set as [`Live::open`] sets it,
+    /// because it is beside the point here: a terminal this poor was getting
+    /// the plain palette either way.
+    pub fn dumb(repo: &Repo, columns: u16, rows: u16) -> Live {
+        Live::opened(repo, columns, rows, false, "dumb")
+    }
+
+    fn opened(repo: &Repo, columns: u16, rows: u16, colour: bool, term: &str) -> Live {
         use std::io::Read;
 
         let (master, slave_path) = pty::open();
@@ -612,7 +633,7 @@ impl Live {
             .arg("tui")
             .current_dir(&repo.0)
             .env("ANK_AGENT", AGENT)
-            .env("TERM", "xterm-256color");
+            .env("TERM", term);
         match colour {
             true => command.env_remove("NO_COLOR"),
             false => command.env("NO_COLOR", "1"),

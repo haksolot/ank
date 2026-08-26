@@ -23,6 +23,36 @@ mod terminal;
 
 use terminal::{Live, Repo};
 
+/// The border set an ordinary terminal is drawn with, read out of the reader
+/// rather than written here (ADR-c07e2694f0e1, proposed).
+///
+/// A suite carrying its own copy of a glyph would go on asserting about a
+/// character the reader had stopped drawing, which is a test that quietly
+/// stops testing rather than one that fails.
+const BOXES: ank_tui::view::Glyphs = ank_tui::view::BOXES;
+/// And the set the terminal that declared itself dumb gets back.
+const ASCII: ank_tui::view::Glyphs = ank_tui::view::ASCII;
+
+/// How many of a line's characters are a panel's vertical border, at either
+/// weight of the set an ordinary terminal is drawn with.
+fn verticals(line: &str) -> usize {
+    let of = |focused| {
+        BOXES
+            .border(focused)
+            .vertical_left
+            .chars()
+            .next()
+            .expect("a border set has a vertical")
+    };
+    let (thin, thick) = (of(false), of(true));
+    line.chars().filter(|c| *c == thin || *c == thick).count()
+}
+
+/// A run of one panel's rule, long enough that nothing else on a frame is it.
+fn rule_of(glyphs: ank_tui::view::Glyphs, focused: bool) -> String {
+    glyphs.border(focused).horizontal_top.repeat(10)
+}
+
 // ---------------------------------------------------------------------------
 // The criterion
 // ---------------------------------------------------------------------------
@@ -106,10 +136,7 @@ fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
         // the stated width that is what the pair in the middle does; below it
         // the four are stacked and no row carries two, which is the same fact
         // about the same function read at two windows.
-        let shared = frame
-            .lines()
-            .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
-            .count();
+        let shared = frame.lines().filter(|l| verticals(l) >= 4).count();
         match columns >= ank_tui::view::ONE_COLUMN {
             true => assert!(
                 shared >= 4,
@@ -133,15 +160,15 @@ fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
                 "two panels are marked at once:\n{frame}"
             );
         }
-        // And the doubled rule, which is the second signal and also a
-        // character. Both border sets are on the frame, so this is a
-        // difference and not a style everything shares.
+        // And the heavier rule, which is the second signal and also a
+        // character. Both weights of the border set are on the frame, so this
+        // is a difference and not a style everything shares.
         assert!(
-            frame.contains("=========="),
-            "no panel is drawn with the doubled border:\n{frame}"
+            frame.contains(&rule_of(BOXES, true)),
+            "no panel is drawn with the focused border:\n{frame}"
         );
         assert!(
-            frame.contains("----------"),
+            frame.contains(&rule_of(BOXES, false)),
             "every panel is drawn as the focused one:\n{frame}"
         );
 
@@ -160,6 +187,89 @@ fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
             t.contains("> 1 CLAIMS")
         });
         live.quit();
+    }
+}
+
+/// Structure is box-drawing, and ASCII where the terminal declares itself
+/// dumb (TASK-e900637aeac4, ADR-c07e2694f0e1 proposed).
+///
+/// **Through the binary, because the probe is the environment of a process.**
+/// `src/view.rs` asserts the same property of the render function, which is
+/// where the border cells can be read one at a time; what only a spawned
+/// session can answer is whether `TERM` reached the reader at all.
+///
+/// **`NO_COLOR` is set on both children, and it is the point.** [`Live::open`]
+/// exports it, so the ordinary session below is a session that has refused
+/// colour and still draws glyphs -- which is the whole of "the probe is the
+/// terminal's own declaration and never `NO_COLOR`", measured rather than
+/// asserted in prose. What the two frames colour costs are is
+/// `tests/colour.rs`, which draws one corpus with the paint and without it and
+/// requires them identical character for character.
+#[test]
+fn the_borders_are_box_drawing_and_ascii_only_where_the_terminal_says_it_is_dumb() {
+    let repo = Repo::seeded();
+    for (columns, rows) in WINDOWS {
+        let rich = Live::open(&repo, columns, rows);
+        rich.until("the session to open", |t| t.contains("2 ENTITIES"));
+        let frame = rich.frame();
+        // The corners the criterion names: rounded on a panel nobody is in,
+        // heavy on the one with the focus.
+        for corner in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
+            assert!(
+                frame.contains(corner),
+                "no unfocused panel of a {columns}x{rows} frame carries the \
+                 rounded corner {corner}:\n{frame}"
+            );
+        }
+        for corner in ["\u{250f}", "\u{2513}", "\u{2517}", "\u{251b}"] {
+            assert!(
+                frame.contains(corner),
+                "the focused panel of a {columns}x{rows} frame carries no heavy \
+                 corner {corner}:\n{frame}"
+            );
+        }
+        // And nothing is ruled in ASCII any more. `-` and `|` are characters
+        // an identifier and the line of act forms carry, so what is banned is
+        // the run of four only a border was ever drawn as.
+        for ruled in ["+--", "+==", "----", "===="] {
+            assert!(
+                !frame.contains(ruled),
+                "a {columns}x{rows} frame is still ruled with {ruled}:\n{frame}"
+            );
+        }
+        rich.quit();
+
+        // The terminal that has said it can render nothing rich gets back
+        // exactly the rules this reader drew everywhere before.
+        let dumb = Live::dumb(&repo, columns, rows);
+        dumb.until("the session to open", |t| t.contains("2 ENTITIES"));
+        let plain = dumb.frame();
+        for run in [
+            &rule_of(ASCII, true),
+            &rule_of(ASCII, false),
+            &"+".to_string(),
+        ] {
+            assert!(
+                plain.contains(run.as_str()),
+                "a dumb terminal at {columns}x{rows} is missing {run}:\n{plain}"
+            );
+        }
+        for glyph in [
+            "\u{2500}", "\u{2501}", "\u{2502}", "\u{2503}", "\u{256d}", "\u{250f}",
+        ] {
+            assert!(
+                !plain.contains(glyph),
+                "a terminal that declared itself dumb was sent {glyph} at \
+                 {columns}x{rows}:\n{plain}"
+            );
+        }
+        // The focused panel is told from the others by characters here too,
+        // which is the half of the criterion a fallback could quietly lose.
+        assert!(
+            plain.contains("> 2 ENTITIES"),
+            "the focused panel of a dumb terminal is unmarked:\n{plain}"
+        );
+        dumb.quit();
     }
 }
 
