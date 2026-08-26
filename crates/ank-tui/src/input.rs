@@ -1,28 +1,34 @@
 //! The grammar of the one-line prompt: a verb spelled whole, and its tail.
 //!
-//! **This is no longer how the screen is moved, and that is the whole of what
-//! ADR-0b55983421dd changed here.** Every command that only moves the screen is
-//! a key now, and `keys.rs` is where those live. What is left for a line is
-//! what a key cannot carry: `log <what you learned>`, `done --proof <p>`,
-//! `release <reason>`, `amend <flags>` -- four of the six verbs that write take
-//! something a keystroke has no room for, so `a` opens a prompt and this reads
-//! what is typed into it. `/` opens the same prompt on a search.
+//! **This is no longer how the screen is moved** (ADR-c07e2694f0e1). Every
+//! command that only moves the screen is a key now, and `keys.rs` is where
+//! those live. What is left for a line is what a key cannot carry: `log <what
+//! you learned>`, `done --proof <p>`, `release <reason>`, `amend <flags>` --
+//! four of the six verbs that write take something a keystroke has no room
+//! for, so `a` opens a prompt and this reads what is typed into it. `/` opens
+//! the same prompt on a search.
 //!
 //! The reading commands stay in the grammar, spelled whole, and that is not
 //! vestigial: `q`, `open`, `top` and the rest cost nothing to keep, a row
 //! number and an identifier are lines by nature, and a person who reaches the
 //! prompt and types the word they know gets what they meant.
 //!
-//! # A verb that writes is spelled whole, and none of the six is a key
+//! # A verb that writes is spelled whole here, and that is a state not a rule
 //!
-//! The six are `claim`, `log`, `release`, `done`, `amend` and `accept`, with no
-//! abbreviation and no letter of their own. Under the line discipline that
-//! asymmetry *was* the guarantee -- a slipped finger typed nothing, because
-//! there was no `d`. It is still worth having and it is no longer the whole of
-//! it: what a verb read here produces is a [`Command::Act`], and an act is a
-//! command *composed* rather than a command run. It reaches the screen spelled
-//! as a shell would spell it and waits for one key (TASK-d4a882345837,
-//! ADR-0b55983421dd). `keys.rs` and `view.rs` are where that half lives.
+//! The six are `claim`, `log`, `release`, `done`, `amend` and `accept`, and
+//! today none of them has an abbreviation or a letter of its own. Under the
+//! line discipline that asymmetry *was* the guarantee -- a slipped finger typed
+//! nothing, because there was no `d` -- and it stopped being the guarantee when
+//! the reader took keystrokes. ADR-c07e2694f0e1 ends the asymmetry outright: a
+//! key is the verb it runs, the reader binds the initial the CLI already
+//! spells, and TASK-1a415107fd56 is where those letters arrive here.
+//!
+//! What survives that is this module's actual half of the guarantee, which
+//! never depended on the road the verb was reached by. What a verb read here
+//! produces is a [`Command::Act`], and an act is a command *composed* rather
+//! than a command run. It reaches the screen spelled as a shell would spell it
+//! and waits for one key (TASK-d4a882345837, ADR-c07e2694f0e1). `keys.rs` and
+//! `view.rs` are where that half lives.
 //!
 //! # What `accept` costs on top of that, and why
 //!
@@ -124,8 +130,7 @@ pub struct Act {
 /// the flags they spell are rows of [`crate::bindings::BINDINGS`], which is
 /// also where the keys and the key list are read from; this module looks a word
 /// up there rather than carrying a second copy of it. What used to be here was
-/// one of the five parallel tables ADR-c07e2694f0e1, proposed, was written
-/// against.
+/// one of the five parallel tables ADR-c07e2694f0e1 was written against.
 ///
 /// [`crate::ank::ACTS`] still gates the spawn and is still hand-written, and
 /// the dependency runs the other way: the bindings are measured against the

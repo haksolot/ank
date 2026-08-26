@@ -1,5 +1,5 @@
 //! The `tui` verb: a full-screen reader over one corpus (ADR-8bd76e8d7c4e, §4),
-//! drawn with ratatui over crossterm (ADR-0b55983421dd).
+//! drawn with ratatui over crossterm (ADR-c07e2694f0e1).
 //!
 //! **It reaches the corpus by running the CLI, and by nothing else.** Every row
 //! of corpus data on the screen arrives as a `--json` document written by
@@ -68,20 +68,26 @@
 //!
 //! Every command that only moves the screen is one key ([`keys`]), focus
 //! included: `Tab` walks the panels, `1` to `4` name one, and Left and Right
-//! cross the columns. Four of the six verbs that write carry something a key
-//! has no room for -- a message, a reason, a proof, a flag -- so `a` opens a
-//! one-line prompt and what is typed there goes through [`input`], which is the
-//! grammar that spells the six whole. `/` opens the same prompt on a search.
+//! cross the columns. The verbs that write have no letter of their own here
+//! yet: `a` opens a one-line prompt and what is typed there goes through
+//! [`input`], which is the grammar that spells them whole. That is where the
+//! reader stands and no longer where it is going -- ADR-c07e2694f0e1 decides
+//! that a key is the verb it runs, and TASK-1a415107fd56 is where the letters
+//! arrive. The prompt outlives them rather than being replaced by them: four
+//! of the six carry something a key has no room for -- a message, a reason, a
+//! proof, a flag. `/` opens the same prompt on a search.
 //!
 //! **What the line discipline used to guarantee is replaced, and this is what
 //! replaced it.** Under a line reader a slipped finger typed nothing, because a
 //! command was a word and Enter and no word was one letter. Under a keystroke
 //! reader the guarantee is the confirmation that shows the argv before anything
-//! is spawned, which ADR-0b55983421dd requires and TASK-d4a882345837 built: a
+//! is spawned, which ADR-c07e2694f0e1 requires and TASK-d4a882345837 built: a
 //! submitted line composes the command and shows it spelled as a shell would
 //! have to spell it, `y` runs that command, and every other key on the keyboard
-//! dismisses it. So no key writes, no line writes, and what writes is a person
-//! reading an argv and saying yes to it.
+//! dismisses it. What writes is a person reading an argv and saying yes to it,
+//! and that stays true when the verbs take their letters, because the
+//! guarantee is stated over the verbs that write rather than over the road
+//! they were reached by.
 //!
 //! # The layout
 //!
@@ -128,7 +134,7 @@
 //! a keyboard cannot: [`view::App::actions`] draws what the focused panel
 //! offers with the key beside the word, so the two roads carry one vocabulary.
 //!
-//! **No command anywhere requires a modifier chord** (ADR-0b55983421dd), and
+//! **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1), and
 //! that is now measured rather than reviewed: `keys`'s own table walks every
 //! key a terminal can report against every way a modifier can be held and holds
 //! this reader to it. It is what turned `Tab` and Shift-`Tab` into the panel
@@ -553,7 +559,7 @@ mod tests {
     }
 
     /// A terminal made narrower redraws to its new size, with nobody typing
-    /// (TASK-4fa385c1772d, ADR-0b55983421dd).
+    /// (TASK-4fa385c1772d, ADR-c07e2694f0e1).
     ///
     /// The only wake in the session is the resize, so a second frame existing at
     /// all is the reader answering the window rather than a command. What is

@@ -1,5 +1,5 @@
 //! The engine: raw mode, the alternate screen, and the three things that wake a
-//! drawn screen (ADR-0b55983421dd).
+//! drawn screen (ADR-c07e2694f0e1).
 //!
 //! **No `extern` block enters this workspace for any of it, and that is the
 //! whole of why this file may exist at all.** Raw mode is `tcsetattr` on Unix

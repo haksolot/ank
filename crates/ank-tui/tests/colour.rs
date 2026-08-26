@@ -56,7 +56,7 @@ use terminal::{ids_of, Live, Repo};
 const WINDOW: (u16, u16) = (110, 30);
 
 /// The rule the focused panel is drawn with, read out of the reader rather
-/// than written here (ADR-c07e2694f0e1, proposed).
+/// than written here (ADR-c07e2694f0e1).
 ///
 /// It is a *character* and that is the point of naming it in this file: the
 /// glyph set is a second field beside the ink and no `NO_COLOR` reaches it, so

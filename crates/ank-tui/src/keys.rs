@@ -1,5 +1,5 @@
 //! One key per command, and the one place a line is still typed
-//! (ADR-0b55983421dd).
+//! (ADR-c07e2694f0e1).
 //!
 //! **The keys themselves are declared in [`crate::bindings`] and not here**
 //! (TASK-4d2eb2b4e193). What this module is now is the two grammars a table
@@ -24,7 +24,7 @@
 //! for with nothing read at all; and `Tab` is what a person who has used one of
 //! these before will press first.
 //!
-//! **No command requires a modifier chord**, which ADR-0b55983421dd asks for and
+//! **No command requires a modifier chord**, which ADR-c07e2694f0e1 asks for and
 //! a phone makes literal: a terminal keyboard on a phone has no comfortable
 //! Control. Control-C is the one exception and it is not a command -- it is the
 //! way out of a program that has taken the terminal, which raw mode has stopped
@@ -57,7 +57,7 @@
 //! keystroke that dismisses the confirmation runs anything" is true of the
 //! whole keyboard rather than of a list somebody has to keep complete.
 //!
-//! `y` is a letter and not a chord, which ADR-0b55983421dd requires and a
+//! `y` is a letter and not a chord, which ADR-c07e2694f0e1 requires and a
 //! phone makes literal, and it is not Enter: Enter is the key that submitted
 //! the line a moment earlier, and a confirmation answered by the same key that
 //! opened it is a confirmation a repeated keypress walks straight through.
@@ -108,7 +108,7 @@ pub enum Answer {
 ///
 /// The modifiers are read and not ignored, in the strict direction: a `y` with
 /// anything held is not the `y` this asks for. So no chord runs a verb, which
-/// is ADR-0b55983421dd's rule applied to the one keystroke in this reader that
+/// is ADR-c07e2694f0e1's rule applied to the one keystroke in this reader that
 /// can move a corpus, and Control-C over a confirmation dismisses it rather
 /// than doing the thing the person was interrupting.
 pub fn confirming(key: KeyEvent) -> Answer {
@@ -122,9 +122,9 @@ pub fn confirming(key: KeyEvent) -> Answer {
 ///
 /// **The mapping is a lookup and no longer a `match`** (TASK-4d2eb2b4e193).
 /// What was here was one arm per key, written beside three other renderings of
-/// the same list, and ADR-c07e2694f0e1 -- proposed, and the successor this
-/// wave is built on -- records what that cost: a key list that
-/// omitted `v`, Space, every arrow and the whole of the ring. The table is now
+/// the same list, and ADR-c07e2694f0e1 -- the decision this wave is built on --
+/// records what that cost: a key list that omitted `v`, Space, every arrow and
+/// the whole of the ring. The table is now
 /// the single declaration and this reads it, so a key that moves moves on every
 /// surface at once.
 ///
@@ -231,7 +231,7 @@ mod tests {
     }
 
     /// Every command that only moves the screen is one key, in every panel
-    /// (ADR-0b55983421dd).
+    /// (ADR-c07e2694f0e1).
     #[test]
     fn a_reading_command_is_one_key_and_the_named_keys_agree_with_the_letters() {
         for view in Focus::ALL {
@@ -261,7 +261,7 @@ mod tests {
     }
 
     /// No command is a chord, and the one that is is the way out rather than a
-    /// command (ADR-0b55983421dd: no command anywhere requires a modifier).
+    /// command (ADR-c07e2694f0e1: no command anywhere requires a modifier).
     #[test]
     fn nothing_but_the_way_out_is_reached_with_a_modifier() {
         for view in Focus::ALL {
@@ -347,7 +347,7 @@ mod tests {
     }
 
     /// Focus moves by key, three ways, and none of the three is a chord
-    /// (TASK-bb43cfe2192b, ADR-0b55983421dd).
+    /// (TASK-bb43cfe2192b, ADR-c07e2694f0e1).
     #[test]
     fn focus_moves_by_key_in_a_ring_by_digit_and_across_the_columns() {
         // The ring, forward from every panel and back again.
@@ -470,7 +470,7 @@ mod tests {
     }
 
     /// And no chord runs one either: the key that writes is the bare letter
-    /// (ADR-0b55983421dd, which forbids a command requiring a modifier -- and
+    /// (ADR-c07e2694f0e1, which forbids a command requiring a modifier -- and
     /// this is the one command that moves a corpus).
     #[test]
     fn no_modifier_held_over_the_confirming_key_still_runs_it() {
@@ -510,7 +510,7 @@ mod tests {
 /// The whole key table, stated as a domain rather than as a list of the likely
 /// keys (TASK-dd9747e5e305).
 ///
-/// ADR-0b55983421dd's rule is that **no command anywhere requires a modifier
+/// ADR-c07e2694f0e1's rule is that **no command anywhere requires a modifier
 /// chord**, and a phone makes it literal: a terminal keyboard on a phone has no
 /// comfortable Control, and a command reachable only with one is a command that
 /// reader cannot run at all. What was here before was that rule checked by
@@ -703,7 +703,7 @@ mod table {
         assert!(every_modifier().contains(&KeyModifiers::NONE));
     }
 
-    /// **No command anywhere requires a modifier chord** (ADR-0b55983421dd),
+    /// **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1),
     /// over the whole table.
     ///
     /// Every key, every way of holding it, every panel: whatever a chord

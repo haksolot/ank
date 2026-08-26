@@ -40,7 +40,7 @@ use terminal::{Live, Repo};
 const PHONE: (u16, u16) = (ank_tui::view::ONE_COLUMN - 7, 30);
 
 /// A panel's vertical border, at either weight, as characters
-/// (ADR-c07e2694f0e1, proposed).
+/// (ADR-c07e2694f0e1).
 ///
 /// Read out of the reader rather than written as `|` here: the border set
 /// moved once already, and a suite carrying its own copy of the character

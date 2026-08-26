@@ -1,5 +1,4 @@
-//! Every binding of the reader, declared once (ADR-c07e2694f0e1, proposed
-//! successor to ADR-0b55983421dd).
+//! Every binding of the reader, declared once (ADR-c07e2694f0e1).
 //!
 //! **One table, and the surfaces are computed from it.** [`keys::typed`] reads
 //! a keystroke out of it, [`crate::view::App::actions`] draws the offer out of
@@ -34,7 +33,7 @@
 //! command: raw mode has taken the line discipline's interrupt, and this is the
 //! way out of a program that took the terminal. `q` is the binding, and it
 //! reaches the same place with no modifier -- which is what
-//! ADR-0b55983421dd's "no command anywhere requires a modifier chord" asks for
+//! ADR-c07e2694f0e1's "no command anywhere requires a modifier chord" asks for
 //! and what the table in `keys.rs` measures over every key there is.
 //!
 //! # What a verb may never be handed
@@ -56,9 +55,11 @@ pub struct Binding {
     /// The key that runs it, where a key does.
     ///
     /// `None` for the writing half, which is still reached by spelling the verb
-    /// whole into the prompt (ADR-0b55983421dd) -- the asymmetry
-    /// TASK-1a415107fd56 spends. Nothing else about a verb's row changes when
-    /// its letter arrives, which is the point of declaring the row now.
+    /// whole into the prompt. That is a state and no longer a decision:
+    /// ADR-c07e2694f0e1 says a key is the verb it runs and that the reader
+    /// binds the CLI's own initial for it, and TASK-1a415107fd56 is the
+    /// asymmetry being spent. Nothing else about a verb's row changes when its
+    /// letter arrives, which is the point of declaring the row now.
     pub key: Option<KeyCode>,
     /// The other keys that reach the same thing.
     ///
@@ -237,7 +238,7 @@ pub enum Holding {
 /// same order is not a coincidence to be maintained -- it is one list.
 pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
-    // What moves the screen (ADR-0b55983421dd: every one of them is one key)
+    // What moves the screen (ADR-c07e2694f0e1: every one of them is one key)
     // -----------------------------------------------------------------------
     Binding {
         key: Some(KeyCode::Char('j')),
