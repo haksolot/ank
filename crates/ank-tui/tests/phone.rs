@@ -39,11 +39,37 @@ use terminal::{Live, Repo};
 /// anything. Thirty rows, because a phone is tall.
 const PHONE: (u16, u16) = (ank_tui::view::ONE_COLUMN - 7, 30);
 
+/// A panel's vertical border, at either weight, as characters
+/// (ADR-c07e2694f0e1, proposed).
+///
+/// Read out of the reader rather than written as `|` here: the border set
+/// moved once already, and a suite carrying its own copy of the character
+/// would have gone on counting a glyph the reader no longer draws -- which is
+/// a test that quietly stops testing rather than one that fails.
+fn verticals() -> [char; 2] {
+    let of = |focused| {
+        ank_tui::view::BOXES
+            .border(focused)
+            .vertical_left
+            .chars()
+            .next()
+            .expect("a border set has a vertical")
+    };
+    [of(false), of(true)]
+}
+
+/// A line with the panel border it opens with taken off, so what is left
+/// starts where the panel's own content does.
+fn inside(line: &str) -> &str {
+    line.trim_start_matches(verticals())
+}
+
 /// How many rows of a frame carry two panels side by side.
 fn shared(frame: &str) -> usize {
+    let verticals = verticals();
     frame
         .lines()
-        .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
+        .filter(|l| l.chars().filter(|c| verticals.contains(c)).count() >= 4)
         .count()
 }
 
@@ -152,12 +178,12 @@ fn a_tap_selects_a_row_and_a_tap_on_a_target_reaches_the_action_it_names() {
     live.tap(2, *at as u16);
     live.until("the row under the finger to be selected", |t| {
         t.lines()
-            .any(|l| l.contains(&short) && l.trim_start_matches('|').starts_with("> "))
+            .any(|l| l.contains(&short) && inside(l).starts_with("> "))
     });
     let selected = live.frame();
     let marked: Vec<&str> = selected
         .lines()
-        .filter(|l| l.contains('-') && l.trim_start_matches('|').starts_with("> "))
+        .filter(|l| l.contains('-') && inside(l).starts_with("> "))
         .collect();
     assert_eq!(
         marked.len(),
