@@ -18,8 +18,11 @@
 //!
 //! The structure layer is ADR-1f70ce2c3eac's and nothing here paints: the
 //! marker on the row the cursor is on and the marker on a held row are text,
-//! and they are the same bytes on every platform. Colour is TASK-6cd41d23b7d1's,
-//! and what is given up until then is decoration and not information.
+//! and they are the same bytes on every platform. Colour arrived after them
+//! (TASK-6cd41d23b7d1) and lives in [`crate::paint`], where the shared table
+//! has one render and this crate has no other -- so what is measured here is
+//! still characters, and a window narrowed to nothing costs a reader
+//! decoration rather than information.
 
 /// The marker on the row the cursor is on, in the two columns every listing in
 /// this tool already spends on its left margin (ADR-1f70ce2c3eac).
