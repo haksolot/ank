@@ -41,10 +41,16 @@
 //! command that resolves it, passed through the way [`Failed`] carries it.
 
 use crate::ank::{Ank, Failed, Ran};
-use crate::frame::{self, fit, pad, window, wrap};
 use crate::input::{Act, Command};
+use crate::keys::{self, Editing, Press};
 use crate::model::{short_of, Detail, Queue, Row, Snapshot};
 use crate::stream::Stream;
+use crate::text::{self, fit, pad, window, wrap};
+use ratatui::buffer::Buffer;
+use ratatui::crossterm::event::KeyEvent;
+use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::text::{Line, Text};
+use ratatui::widgets::{List, ListItem, Paragraph, Widget};
 
 /// # The ratification queue is a third view and not a section of the first
 ///
@@ -102,6 +108,13 @@ pub struct App {
     /// The listing an open entity was opened from, so `b` goes back where the
     /// person came from rather than always to the entities.
     origin: View,
+    /// The one-line prompt, open, with what has been typed into it so far.
+    ///
+    /// `None` is the ordinary state and it is where every key is a command. The
+    /// prompt is what a verb carrying a message, a reason, a proof or a flag is
+    /// spelled into, and what a search is typed into; it is opened by a key,
+    /// dismissed by a key, and runs nothing until Enter.
+    prompt: Option<String>,
 }
 
 impl App {
@@ -121,6 +134,7 @@ impl App {
             stream,
             queue: None,
             origin: View::List,
+            prompt: None,
         }
     }
 
@@ -262,6 +276,52 @@ impl App {
     // Acting
     // -----------------------------------------------------------------------
 
+    /// One key press. `true` means the session is over.
+    ///
+    /// **Two regimes, and which one is in force is the prompt.** With it closed
+    /// every key is a command that moves the screen, and none of them can
+    /// write: `keys::typed` has no shape in which a bare key becomes an act,
+    /// and the test beside it holds that. With it open every key is a
+    /// character, an edit or one of the two ways out, and nothing runs until
+    /// Enter -- at which point the line goes through the grammar this reader
+    /// already had, which is where the six verbs are spelled whole and where
+    /// `accept` is refused off the document and refused with a tail.
+    ///
+    /// So there is exactly one road from a key press to a spawned verb, and it
+    /// passes through a line somebody typed. That is what TASK-d4a882345837
+    /// will put the confirmation on.
+    pub fn press(&mut self, key: KeyEvent, ank: &Ank) -> bool {
+        if let Some(line) = &mut self.prompt {
+            return match keys::edit(line, key) {
+                Editing::Typing => false,
+                Editing::Cancel => {
+                    self.prompt = None;
+                    false
+                }
+                Editing::Submit => {
+                    let line = self.prompt.take().unwrap_or_default();
+                    let command = crate::input::parse(&line, self.view);
+                    self.act(command, ank)
+                }
+            };
+        }
+        match keys::typed(key, self.view) {
+            Press::Run(command) => self.act(command, ank),
+            Press::Cycle => {
+                let next = keys::next_kind(self.kind.as_deref());
+                self.act(Command::Kind(next), ank)
+            }
+            Press::Prompt(seed) => {
+                self.prompt = Some(seed.to_string());
+                false
+            }
+            // A key this screen does not answer to leaves everything where it
+            // was, note included: an unmapped arrow is not a person getting a
+            // command wrong.
+            Press::Ignored => false,
+        }
+    }
+
     /// Runs one command. `true` means the session is over.
     pub fn act(&mut self, command: Command, ank: &Ank) -> bool {
         self.note = None;
@@ -347,9 +407,8 @@ impl App {
             }
             Command::Kind(kind) => {
                 if let Some(k) = &kind {
-                    let known = ["adr", "spec", "task", "log"];
-                    if !known.contains(&k.as_str()) {
-                        self.note = Some(format!("no kind '{k}': {}", known.join(", ")));
+                    if !keys::KINDS.contains(&k.as_str()) {
+                        self.note = Some(format!("no kind '{k}': {}", keys::KINDS.join(", ")));
                         return false;
                     }
                 }
@@ -465,29 +524,121 @@ impl App {
     // Drawing
     // -----------------------------------------------------------------------
 
-    pub fn frame(&self) -> String {
-        match self.view {
-            View::List | View::Queue => self.list_frame(),
-            View::Entity => self.entity_frame(),
+    /// One frame, onto a ratatui `Frame` (TASK-4fa385c1772d).
+    ///
+    /// The caret is set only where a prompt is open, which is what makes
+    /// ratatui show a cursor at all: on every other screen this reader has
+    /// nothing to point at, and a block sitting on an arbitrary row would be a
+    /// promise that something there can be typed into.
+    pub fn draw(&self, frame: &mut ratatui::Frame) {
+        let area = frame.area();
+        self.render(area, frame.buffer_mut());
+        if let Some(at) = self.caret(area) {
+            frame.set_cursor_position(at);
         }
+    }
+
+    /// The same frame, into any buffer.
+    ///
+    /// **Separate from [`App::draw`] so that a test can have the frame without
+    /// owning a terminal.** Every assertion this crate makes about what is on
+    /// the screen goes through here, into a `Buffer` the size of a stated
+    /// window -- which is what the renderer wrote before ratatui and is the one
+    /// property of it worth keeping. What changed is that the buffer is now the
+    /// same type the terminal is painted from, so what a test reads is what a
+    /// person sees rather than a second rendering of the same state.
+    pub fn render(&self, area: Rect, buf: &mut Buffer) {
+        if area.is_empty() {
+            return;
+        }
+        match self.view {
+            View::List | View::Queue => self.render_list(area, buf),
+            View::Entity => self.render_entity(area, buf),
+        }
+    }
+
+    /// The frame as text, row by row, for a test to read.
+    pub fn frame(&self) -> String {
+        let area = self.area();
+        let mut buf = Buffer::empty(area);
+        self.render(area, &mut buf);
+        rows_of(&buf)
+    }
+
+    /// The window this reader believes it has.
+    ///
+    /// Held rather than measured, and updated by [`App::resize`] and by the
+    /// loop before every paint. Paging is answered while a key is being
+    /// handled, before any frame exists, so the arithmetic needs a window then
+    /// -- and a window read from one place and drawn into another would be two
+    /// numbers that can disagree.
+    fn area(&self) -> Rect {
+        Rect::new(0, 0, self.size.0 as u16, self.size.1 as u16)
+    }
+
+    /// The terminal was made narrower, wider, taller or shorter.
+    ///
+    /// Nothing is read and nothing is spawned: a resize is a fact about the
+    /// window and never about the corpus, so what it costs is one frame drawn
+    /// again at the new size (ADR-0bb7ea8991bc -- a screen being dragged about
+    /// renews nothing).
+    pub fn resize(&mut self, columns: u16, rows: u16) {
+        let size = (columns as usize, rows as usize);
+        // The loop reads the window before every paint, so this is asked far
+        // more often than the window moves. Answering the unchanged case here
+        // is what keeps a keystroke from re-wrapping a body that did not move.
+        if size == self.size {
+            return;
+        }
+        self.size = size;
+        // A shorter window is a smaller page, so the cursor can fall off the
+        // bottom of a listing that was fine a moment ago, and a body can be
+        // scrolled past its own end.
+        self.clamp();
+        let lines = self.pane_lines().len();
+        self.offset = self.offset.min(lines.saturating_sub(1));
     }
 
     fn width(&self) -> usize {
         self.size.0
     }
 
+    /// Where the caret goes, which is the end of the prompt or nowhere.
+    fn caret(&self, area: Rect) -> Option<Position> {
+        let line = self.prompt.as_ref()?;
+        let note = match self.view {
+            View::List | View::Queue => self.list_panes(area).note,
+            View::Entity => self.entity_panes(area).note,
+        };
+        let at = PROMPT.chars().count() + line.chars().count();
+        Some(Position::new(
+            note.x + (at as u16).min(note.width.saturating_sub(1)),
+            note.y,
+        ))
+    }
+
     /// The note, as the rows it costs.
     ///
     /// A note used to be one line, and an act's answer is not: a document has a
     /// field per line and a refusal has its sentence and the command that
-    /// resolves it. So the note is measured rather than assumed, and both frames
-    /// pay for what it actually is.
+    /// resolves it. So the note is measured rather than assumed, and both
+    /// layouts pay for what it actually is.
+    ///
+    /// **An open prompt is drawn here and hides whatever the note was saying.**
+    /// One row of the screen belongs to whatever the reader is being told or
+    /// asked, and a person typing `done commit:<sha>` needs to see the line
+    /// they are typing far more than the answer to the command before it. What
+    /// was there comes back when the prompt is dismissed, because cancelling
+    /// runs nothing and nothing clears it.
     ///
     /// Always at least one row, empty where there is nothing to say: the blank
     /// line above the key line is what keeps the trailer from moving under a
     /// reader every time a command has something to report.
     fn note_lines(&self) -> Vec<String> {
         let width = self.width();
+        if let Some(line) = &self.prompt {
+            return vec![fit(&format!("{PROMPT}{line}"), width)];
+        }
         match &self.note {
             None => vec![String::new()],
             Some(note) => note
@@ -498,15 +649,42 @@ impl App {
         }
     }
 
-    /// The rows the list has room for, once the header, the standing section
-    /// and the trailer are paid for.
-    fn list_page(&self) -> usize {
+    /// The bands of a listing, as ratatui's solver divides the window.
+    ///
+    /// **The arithmetic is the layout's and the layout is asked twice.** It is
+    /// asked here, at paint time, for where to put each widget; and it is asked
+    /// by [`App::list_page`], while a key is being answered, for how many rows
+    /// a page is. One function for both is what keeps the heading -- `41-60 of
+    /// 1275` -- agreeing with the rows underneath it, which two independent
+    /// counts would not.
+    fn list_panes(&self, area: Rect) -> Panes {
         // At least one: an empty section still costs the line that says so.
-        let standing = self.standing_lines().len().max(1);
-        // 2 header, 1 rule, 1 section heading, the section, 1 blank, 1 list
-        // heading, 1 blank, the note, 2 key lines.
-        let fixed = 2 + 1 + 1 + standing + 1 + 1 + 1 + self.note_lines().len() + 2;
-        self.size.1.saturating_sub(fixed).max(1)
+        let standing = 1 + self.standing_lines().len().max(1);
+        let [header, block, _, heading, rows, _, note, keys] = Layout::vertical([
+            // Two lines and the rule under them.
+            Constraint::Length(3),
+            Constraint::Length(standing as u16),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(self.note_lines().len() as u16),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+        Panes {
+            header,
+            block,
+            heading,
+            rows,
+            note,
+            keys,
+        }
+    }
+
+    /// The rows the list has room for.
+    fn list_page(&self) -> usize {
+        (self.list_panes(self.area()).rows.height as usize).max(1)
     }
 
     /// The block between the rule and the rows: who holds what on the
@@ -514,7 +692,7 @@ impl App {
     ///
     /// Two answers in one place because they are the same kind of thing -- a
     /// standing fact about the corpus that the rows below are read against --
-    /// and because the arithmetic above has one section to pay for either way.
+    /// and because the layout above has one band to pay for either way.
     fn standing_lines(&self) -> Vec<String> {
         match self.view {
             View::Queue => self.signer_lines(),
@@ -566,7 +744,7 @@ impl App {
         let mut out: Vec<String> = snapshot.claims[..room]
             .iter()
             .map(|c| {
-                let marker = if c.mine { frame::HELD } else { frame::PLAIN };
+                let marker = if c.mine { text::HELD } else { text::PLAIN };
                 let title = snapshot
                     .row(&c.id)
                     .map(|r| r.title.clone())
@@ -588,56 +766,65 @@ impl App {
         out
     }
 
-    fn list_frame(&self) -> String {
+    fn render_list(&self, area: Rect, buf: &mut Buffer) {
         let width = self.width();
-        let mut lines: Vec<String> = Vec::new();
         let Some(snapshot) = &self.snapshot else {
-            lines.push("ank tui".to_string());
-            lines.push(String::new());
-            lines.push(
+            // Nothing has been read yet, or the first read refused. There are
+            // no bands to divide: what the screen owes is the sentence and the
+            // way out.
+            let mut lines = vec![
+                "ank tui".to_string(),
+                String::new(),
                 self.note
                     .clone()
                     .unwrap_or_else(|| "the corpus has not been read".to_string()),
-            );
-            lines.push(KEYS.to_string());
-            lines.push(ACT_KEYS.to_string());
-            return lines.join("\n") + "\n";
+                String::new(),
+                KEYS.to_string(),
+                ACT_KEYS.to_string(),
+            ];
+            lines.iter_mut().for_each(|l| *l = fit(l, width));
+            paragraph(&lines).render(area, buf);
+            return;
         };
+        let panes = self.list_panes(area);
 
-        lines.push(fit(
-            &format!(
-                "ank tui   corpus {}   branch {} (default {})",
-                &snapshot.corpus[..12.min(snapshot.corpus.len())],
-                snapshot.branch,
-                snapshot.default_branch
+        paragraph(&[
+            fit(
+                &format!(
+                    "ank tui   corpus {}   branch {} (default {})",
+                    &snapshot.corpus[..12.min(snapshot.corpus.len())],
+                    snapshot.branch,
+                    snapshot.default_branch
+                ),
+                width,
             ),
-            width,
-        ));
-        lines.push(fit(
-            &format!(
-                "identity {}   {} claim(s) live   {}",
-                snapshot.identity,
-                snapshot.claims.len(),
-                self.route()
+            fit(
+                &format!(
+                    "identity {}   {} claim(s) live   {}",
+                    snapshot.identity,
+                    snapshot.claims.len(),
+                    self.route()
+                ),
+                width,
             ),
-            width,
-        ));
-        lines.push(frame::rule(width));
+            text::rule(width),
+        ])
+        .render(panes.header, buf);
 
         let (heading, empty) = self.standing_heading();
-        lines.push(heading);
         let standing = self.standing_lines();
+        let mut block = vec![heading];
         if standing.is_empty() {
-            lines.push(fit(empty, width));
+            block.push(fit(empty, width));
         } else {
-            lines.extend(standing);
+            block.extend(standing);
         }
-        lines.push(String::new());
+        paragraph(&block).render(panes.block, buf);
 
         let rows = self.rows();
-        let page = self.list_page();
+        let page = panes.rows.height as usize;
         let shown = page.min(rows.len().saturating_sub(self.top));
-        lines.push(fit(
+        paragraph(&[fit(
             &match self.view {
                 // The queue is answered whole: `review` carries no attention
                 // budget, so there is no "of N in the corpus" to state and
@@ -655,29 +842,15 @@ impl App {
                 ),
             },
             width,
-        ));
-        for (i, row) in rows.iter().skip(self.top).take(page).enumerate() {
-            let at = self.top + i;
-            let marker = if at == self.cursor {
-                frame::CURSOR
-            } else {
-                frame::PLAIN
-            };
-            let held = snapshot.claim_on(&row.id).is_some();
-            lines.push(fit(
-                &format!(
-                    "{marker}{:>5}  {}  {}  {}{}",
-                    at + 1,
-                    pad(&row.short(), 10),
-                    pad(&row.status, 12),
-                    row.title,
-                    if held { "  [held]" } else { "" }
-                ),
-                width,
-            ));
-        }
-        if rows.is_empty() {
-            lines.push(
+        )])
+        .render(panes.heading, buf);
+
+        // A `List` and not a paragraph, because these rows are a list: what is
+        // handed to it is exactly the window the heading above announced, so
+        // the widget scrolls nothing and there is no second offset to disagree
+        // with `self.top`.
+        let items: Vec<ListItem> = if rows.is_empty() {
+            vec![ListItem::new(
                 match (self.view, self.kind.is_some() || self.search.is_some()) {
                     // Said even where there is nothing to say, on `review`'s own
                     // reasoning: an empty queue and an unprinted queue read
@@ -687,24 +860,53 @@ impl App {
                     (View::Queue, true) => "  nothing in the queue matches this filter".to_string(),
                     _ => "  no entity matches this filter".to_string(),
                 },
-            );
-        }
+            )]
+        } else {
+            rows.iter()
+                .skip(self.top)
+                .take(page)
+                .enumerate()
+                .map(|(i, row)| {
+                    let at = self.top + i;
+                    let marker = if at == self.cursor {
+                        text::CURSOR
+                    } else {
+                        text::PLAIN
+                    };
+                    let held = snapshot.claim_on(&row.id).is_some();
+                    ListItem::new(fit(
+                        &format!(
+                            "{marker}{:>5}  {}  {}  {}{}",
+                            at + 1,
+                            pad(&row.short(), 10),
+                            pad(&row.status, 12),
+                            row.title,
+                            if held { "  [held]" } else { "" }
+                        ),
+                        width,
+                    ))
+                })
+                .collect()
+        };
+        List::new(items).render(panes.rows, buf);
 
-        lines.push(String::new());
-        lines.extend(self.note_lines());
-        lines.push(fit(KEYS, width));
-        lines.push(fit(
-            match self.view {
-                // `accept` is deliberately not offered here, and neither are the
-                // five: a ratification is typed on the document, and a trailer
-                // that offered one at a row would be making an offer the
-                // grammar turns down (TASK-84cfad83c308's rule, on this screen).
-                View::Queue => QUEUE_ACT,
-                _ => ACT_KEYS,
-            },
-            width,
-        ));
-        lines.join("\n") + "\n"
+        paragraph(&self.note_lines()).render(panes.note, buf);
+        paragraph(&[
+            fit(KEYS, width),
+            fit(
+                match self.view {
+                    // `accept` is deliberately not offered here, and neither are
+                    // the five: a ratification is typed on the document, and a
+                    // trailer that offered one at a row would be making an offer
+                    // the grammar turns down (TASK-84cfad83c308's rule, on this
+                    // screen).
+                    View::Queue => QUEUE_ACT,
+                    _ => ACT_KEYS,
+                },
+                width,
+            ),
+        ])
+        .render(panes.keys, buf);
     }
 
     /// How this screen is being kept current, in the two words a person needs.
@@ -752,7 +954,9 @@ impl App {
             // criterion asks for. A window smaller than the body is answered in
             // both directions -- paged down it, and wrapped across it, so a
             // line wider than the terminal keeps its end instead of losing it
-            // to a `~`.
+            // to a `~`. The wrap is this crate's rather than `Paragraph`'s for
+            // the reason `text.rs` gives: a widget that wraps inside its own
+            // render reports no count, and the heading over it states one.
             Pane::Body => detail
                 .content
                 .lines()
@@ -762,19 +966,38 @@ impl App {
         }
     }
 
-    fn pane_page(&self) -> usize {
-        let notes = self.note_lines().len();
-        // 4 header, 1 rule, then what differs: the body pane carries the
-        // constraint heading, the summary under it, a blank and its own heading;
-        // the constraints pane carries one heading and a blank. Both end on a
-        // blank, the note, the two key lines, and the ratification line where
-        // this document is one that could take a signature.
+    /// The bands of a document, as ratatui's solver divides the window.
+    fn entity_panes(&self, area: Rect) -> Panes {
+        // The band above the pane carries what differs between the two: the
+        // body pane heads its own section with the constraints summarised over
+        // it, and the constraints pane heads one section and nothing else.
+        let over = match self.pane {
+            Pane::Body => 1 + self.constraint_summary().len() + 1 + 1,
+            Pane::Constraints => 1 + 1,
+        };
         let ratify = usize::from(self.ratify_line().is_some());
-        let fixed = match self.pane {
-            Pane::Body => 4 + 1 + 1 + self.constraint_summary().len() + 1 + 1 + 1 + notes + 2,
-            Pane::Constraints => 4 + 1 + 1 + 1 + 1 + notes + 2,
-        } + ratify;
-        self.size.1.saturating_sub(fixed).max(1)
+        let [header, block, rows, _, note, keys] = Layout::vertical([
+            // Four lines and the rule under them.
+            Constraint::Length(5),
+            Constraint::Length(over as u16),
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(self.note_lines().len() as u16),
+            Constraint::Length((2 + ratify) as u16),
+        ])
+        .areas(area);
+        Panes {
+            header,
+            block,
+            heading: block,
+            rows,
+            note,
+            keys,
+        }
+    }
+
+    fn pane_page(&self) -> usize {
+        (self.entity_panes(self.area()).rows.height as usize).max(1)
     }
 
     /// The offer to ratify, where this document is one that can be ratified.
@@ -823,99 +1046,144 @@ impl App {
         out
     }
 
-    fn entity_frame(&self) -> String {
+    fn render_entity(&self, area: Rect, buf: &mut Buffer) {
         let width = self.width();
         let Some(detail) = &self.detail else {
-            return self.list_frame();
+            return self.render_list(area, buf);
         };
         let row = self.snapshot.as_ref().and_then(|s| s.row(&detail.id));
-        let mut lines: Vec<String> = Vec::new();
+        let panes = self.entity_panes(area);
 
-        lines.push(fit(
-            &format!(
-                "{}   {}   {}",
-                short_of(&detail.id),
-                row.map(|r| r.kind.clone()).unwrap_or_default(),
-                row.map(|r| r.status.clone()).unwrap_or_default()
+        paragraph(&[
+            fit(
+                &format!(
+                    "{}   {}   {}",
+                    short_of(&detail.id),
+                    row.map(|r| r.kind.clone()).unwrap_or_default(),
+                    row.map(|r| r.status.clone()).unwrap_or_default()
+                ),
+                width,
             ),
-            width,
-        ));
-        lines.push(fit(
-            &row.map(|r| r.title.clone())
-                .unwrap_or_else(|| detail.id.clone()),
-            width,
-        ));
-        lines.push(fit(
-            detail.coordination.as_deref().unwrap_or("no claim on this"),
-            width,
-        ));
-        lines.push(fit(
-            &format!("scope {}", join_or(&detail.scopes, "declared on nothing")),
-            width,
-        ));
-        lines.push(frame::rule(width));
+            fit(
+                &row.map(|r| r.title.clone())
+                    .unwrap_or_else(|| detail.id.clone()),
+                width,
+            ),
+            fit(
+                detail.coordination.as_deref().unwrap_or("no claim on this"),
+                width,
+            ),
+            fit(
+                &format!("scope {}", join_or(&detail.scopes, "declared on nothing")),
+                width,
+            ),
+            text::rule(width),
+        ])
+        .render(panes.header, buf);
 
         let pane_lines = self.pane_lines();
-        let page = self.pane_page();
+        let page = panes.rows.height as usize;
+        let counted = window(
+            self.offset,
+            page.min(pane_lines.len().saturating_sub(self.offset)),
+            pane_lines.len(),
+        );
+        let mut over = Vec::new();
         if self.pane == Pane::Body {
-            lines.push(format!(
+            over.push(format!(
                 "CONSTRAINTS ({} active, {} over this scope)",
                 active(&detail.constraints),
                 detail.constraints.len()
             ));
-            lines.extend(self.constraint_summary());
-            lines.push(String::new());
+            over.extend(self.constraint_summary());
+            over.push(String::new());
             // Rows and not lines: a body line wider than the window is several
             // rows, and calling them lines would be a count that disagrees with
             // the file.
-            lines.push(fit(
-                &format!(
-                    "BODY   rows {}",
-                    window(
-                        self.offset,
-                        page.min(pane_lines.len().saturating_sub(self.offset)),
-                        pane_lines.len()
-                    )
-                ),
-                width,
-            ));
+            over.push(fit(&format!("BODY   rows {counted}"), width));
         } else {
-            lines.push(fit(
-                &format!(
-                    "CONSTRAINTS   {}",
-                    window(
-                        self.offset,
-                        page.min(pane_lines.len().saturating_sub(self.offset)),
-                        pane_lines.len()
-                    )
-                ),
-                width,
-            ));
-            lines.push(String::new());
+            over.push(fit(&format!("CONSTRAINTS   {counted}"), width));
+            over.push(String::new());
         }
-        for line in pane_lines.iter().skip(self.offset).take(page) {
-            lines.push(fit(line, width));
-        }
+        paragraph(&over).render(panes.block, buf);
 
-        lines.push(String::new());
+        let shown: Vec<String> = pane_lines
+            .iter()
+            .skip(self.offset)
+            .take(page)
+            .map(|line| fit(line, width))
+            .collect();
+        paragraph(&shown).render(panes.rows, buf);
+
         match &self.note {
-            Some(_) => lines.extend(self.note_lines()),
-            None => lines.push(fit(
+            Some(_) => paragraph(&self.note_lines()),
+            None if self.prompt.is_some() => paragraph(&self.note_lines()),
+            None => paragraph(&[fit(
                 &detail
                     .unresolved
                     .first()
                     .map(|u| format!("a scope could not be asked about -- {u}"))
                     .unwrap_or_default(),
                 width,
-            )),
+            )]),
         }
-        lines.push(fit(ENTITY_KEYS, width));
-        lines.push(fit(ACT_KEYS, width));
+        .render(panes.note, buf);
+
+        let mut keys = vec![fit(ENTITY_KEYS, width), fit(ACT_KEYS, width)];
         if let Some(ratify) = self.ratify_line() {
-            lines.push(fit(ratify, width));
+            keys.push(fit(ratify, width));
         }
-        lines.join("\n") + "\n"
+        paragraph(&keys).render(panes.keys, buf);
     }
+}
+
+/// The bands one view divides its window into.
+///
+/// One shape for both layouts, because the two are the same screen with
+/// different content in the bands: a header, a standing block, a heading, the
+/// rows that page, whatever the reader is being told, and the keys. A document
+/// heads its rows out of the same band it summarises the constraints in, so
+/// `heading` and `block` are one there rather than a band spent on nothing.
+struct Panes {
+    header: Rect,
+    block: Rect,
+    heading: Rect,
+    rows: Rect,
+    note: Rect,
+    keys: Rect,
+}
+
+/// Lines, as a widget that clips rather than wraps.
+///
+/// Everything reaching here has been through [`fit`] or [`wrap`] already, which
+/// is where a cut is decided and announced. `Paragraph`'s own wrapping is
+/// deliberately not turned on: it would silently turn one row into two and
+/// every count on the screen would then be a count of something else.
+fn paragraph(lines: &[String]) -> Paragraph<'static> {
+    Paragraph::new(Text::from(
+        lines
+            .iter()
+            .map(|l| Line::from(l.clone()))
+            .collect::<Vec<Line>>(),
+    ))
+}
+
+/// A buffer as text, one row per line, for a test to read.
+fn rows_of(buf: &Buffer) -> String {
+    let area = *buf.area();
+    (0..area.height)
+        .map(|y| {
+            let row: String = (0..area.width)
+                .map(|x| buf.cell((x, y)).map_or(" ", |c| c.symbol()))
+                .collect();
+            row.trim_end().to_string()
+        })
+        .collect::<Vec<String>>()
+        .join("\n")
+        // The window has as many rows as it has, and the last of them is a row
+        // even where it is blank: a count taken off this text has to be the
+        // count the terminal would give.
+        + "\n"
 }
 
 /// What a verb answered, as the screen carries it.
@@ -1014,9 +1282,16 @@ fn step(at: usize, by: isize, total: usize) -> usize {
     moved.clamp(0, last as isize) as usize
 }
 
+/// The marker the prompt is drawn behind.
+///
+/// What follows it is the line the grammar will be given, byte for byte,
+/// leading slash included: a person about to press Enter is looking at exactly
+/// what will be read.
+pub const PROMPT: &str = ": ";
 pub const KEYS: &str =
-    "j/k move  n/p page  <row> or <id> select  Enter open  f <kind>  /<text>  v queue  r reload  q quit";
-pub const ENTITY_KEYS: &str = "Enter/n/p page  g top  c constraints  r reload  b back  q quit";
+    "j/k move  n/p page  Enter open  f kind  / find  v queue  r reload  a act  ? keys  q quit";
+pub const ENTITY_KEYS: &str =
+    "n/p page  g top  c constraints  r reload  b back  a act  ? keys  q quit";
 /// What the queue offers instead of the writing half.
 ///
 /// It names the one road to a ratification and no verb at all, which is the
@@ -1031,7 +1306,7 @@ pub const QUEUE_ACT: &str =
 /// trailer should be able to see at a glance which of the two they are about to
 /// do, and one line mixing them would make that a matter of remembering.
 pub const ACT_KEYS: &str =
-    "claim  log <message>  release <reason>  done <proof>  amend <flags>   (the entity on screen)";
+    "a then  claim | log <message> | release <reason> | done <proof> | amend <flags>   (the entity on screen)";
 /// The sixth act, on a line of its own, and only where the verb would take it.
 ///
 /// A third line for a third kind of offer, on the reasoning [`ACT_KEYS`] gives
@@ -1040,12 +1315,13 @@ pub const ACT_KEYS: &str =
 /// somebody about to type it should know what they are being asked for and
 /// where it has to happen.
 pub const RATIFY_KEY: &str =
-    "accept   (this document, on the default branch -- ank signs nothing, your key does)";
+    "a then  accept   (this document, on the default branch -- ank signs nothing, your key does)";
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Claim;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -1093,21 +1369,21 @@ mod tests {
     fn the_list_says_which_route_is_keeping_it_current() {
         let mut a = app();
         assert!(
-            a.list_frame().contains("stream none, r to reload"),
+            a.frame().contains("stream none, r to reload"),
             "with no stream at all:\n{}",
-            a.list_frame()
+            a.frame()
         );
         a.stream = Some(Stream::stated(false));
         assert!(
-            a.list_frame().contains("stream none, r to reload"),
+            a.frame().contains("stream none, r to reload"),
             "a stream that is not there is not a stream:\n{}",
-            a.list_frame()
+            a.frame()
         );
         a.stream = Some(Stream::stated(true));
         assert!(
-            a.list_frame().contains("stream following"),
+            a.frame().contains("stream following"),
             "and one that is:\n{}",
-            a.list_frame()
+            a.frame()
         );
     }
 
@@ -1147,7 +1423,7 @@ mod tests {
 
     #[test]
     fn the_list_names_every_kind_with_its_status_and_who_holds_what() {
-        let f = app().list_frame();
+        let f = app().frame();
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
@@ -1171,7 +1447,7 @@ mod tests {
     fn no_line_of_a_frame_overflows_the_window() {
         let mut a = App::new((40, 24), None);
         a.snapshot = Some(snapshot());
-        for line in a.list_frame().lines() {
+        for line in a.frame().lines() {
             assert!(
                 line.chars().count() <= 40,
                 "{} columns in a 40 column window: {line}",
@@ -1190,7 +1466,7 @@ mod tests {
             worktree: None,
         });
         a.act(Command::Kind(Some("adr".to_string())), &ank);
-        let f = a.list_frame();
+        let f = a.frame();
         assert!(f.contains("[kind adr]"), "{f}");
         // The rows and not the whole frame: the claims section names the held
         // task whatever the filter is, which is the point of that section.
@@ -1198,7 +1474,7 @@ mod tests {
 
         a.act(Command::Kind(None), &ank);
         a.act(Command::Search(Some("cli surface".to_string())), &ank);
-        let f = a.list_frame();
+        let f = a.frame();
         assert!(f.contains("matching 'cli surface'"), "{f}");
         assert_eq!(rendered_rows(&a), ["SPEC-fe8bdb84faca"], "{f}");
     }
@@ -1214,7 +1490,7 @@ mod tests {
         });
         a.act(Command::Kind(Some("epic".to_string())), &ank);
         assert!(a.kind.is_none(), "a kind that does not exist was applied");
-        assert!(a.list_frame().contains("no kind 'epic'"));
+        assert!(a.frame().contains("no kind 'epic'"));
     }
 
     #[test]
@@ -1252,7 +1528,7 @@ mod tests {
             "the rows join back to the body byte for byte"
         );
 
-        let first = a.entity_frame();
+        let first = a.frame();
         assert!(first.contains("line 1"), "{first}");
         assert!(first.contains("claimed by claude-code/opus-5+tui-verb"));
         assert!(first.contains("ADR-8bd7"), "the constraints are on screen");
@@ -1265,7 +1541,7 @@ mod tests {
             worktree: None,
         });
         a.act(Command::Page(1), &ank);
-        let second = a.entity_frame();
+        let second = a.frame();
         assert!(!second.contains("line 1\n"), "the page turned:\n{second}");
         assert!(a.offset > 0);
 
@@ -1274,7 +1550,7 @@ mod tests {
             a.act(Command::Page(1), &ank);
         }
         assert!(a.offset < 200, "the offset stayed inside the body");
-        assert!(a.entity_frame().contains("line 200"));
+        assert!(a.frame().contains("line 200"));
 
         a.act(Command::Top, &ank);
         assert_eq!(a.offset, 0);
@@ -1307,7 +1583,7 @@ mod tests {
             unresolved: Vec::new(),
         });
         a.view = View::Entity;
-        let f = a.entity_frame();
+        let f = a.frame();
         assert!(
             f.contains("CONSTRAINTS (1 active, 2 over this scope)"),
             "{f}"
@@ -1337,7 +1613,7 @@ mod tests {
             unresolved: Vec::new(),
         });
         a.view = View::Entity;
-        assert!(a.entity_frame().contains("+26 more, c for the list"));
+        assert!(a.frame().contains("+26 more, c for the list"));
 
         let ank = Ank::new(crate::Address {
             exe: "/nonexistent/ank".into(),
@@ -1347,7 +1623,7 @@ mod tests {
         });
         a.act(Command::Constraints, &ank);
         assert_eq!(a.pane_lines().len(), 30);
-        assert!(a.entity_frame().contains("CONSTRAINTS   1-"));
+        assert!(a.frame().contains("CONSTRAINTS   1-"));
     }
 
     #[test]
@@ -1362,7 +1638,7 @@ mod tests {
             worktree: None,
         });
         assert!(!a.act(Command::Open, &ank), "a failure is not a quit");
-        let f = a.list_frame();
+        let f = a.frame();
         assert!(f.contains("cannot run `ank"), "{f}");
         assert!(f.contains("ADR-8bd7"), "the rows are still there:\n{f}");
     }
@@ -1496,7 +1772,7 @@ mod tests {
             }
             .to_string(),
         );
-        let f = a.list_frame();
+        let f = a.frame();
         assert!(f.contains("error[5]:"), "the code the table declares:\n{f}");
         assert!(
             f.contains("-> ank done TASK-4974 --proof commit:<sha>"),
@@ -1514,7 +1790,7 @@ mod tests {
                 let mut a = App::new(size, None);
                 a.snapshot = Some(snapshot());
                 a.note = note.clone();
-                let rows = a.list_frame().lines().count();
+                let rows = a.frame().lines().count();
                 assert!(rows <= size.1, "the list frame is {rows} rows in {size:?}");
 
                 a.detail = Some(detail(
@@ -1524,7 +1800,7 @@ mod tests {
                 a.view = View::Entity;
                 for pane in [Pane::Body, Pane::Constraints] {
                     a.pane = pane;
-                    let rows = a.entity_frame().lines().count();
+                    let rows = a.frame().lines().count();
                     assert!(
                         rows <= size.1,
                         "the {pane:?} pane is {rows} rows in {size:?}"
@@ -1560,7 +1836,7 @@ mod tests {
         let mut a = app();
         a.queue = Some(queued());
         a.view = View::Queue;
-        let f = a.list_frame();
+        let f = a.frame();
         for expected in [
             "QUEUE",
             "ADR-0000",
@@ -1584,7 +1860,7 @@ mod tests {
         let mut a = app();
         a.queue = Some(Queue::default());
         a.view = View::Queue;
-        let f = a.list_frame();
+        let f = a.frame();
         assert!(f.contains("nothing proposed for ratification"), "{f}");
         assert!(
             f.contains("permissions are advisory"),
@@ -1651,7 +1927,7 @@ mod tests {
             ("TASK-49746735127f", false),
         ] {
             a.detail = Some(detail(id, "body\n"));
-            let f = a.entity_frame();
+            let f = a.frame();
             assert_eq!(
                 f.contains("accept   (this document"),
                 offered,
@@ -1724,6 +2000,206 @@ mod tests {
         });
         a.act(Command::Row(99), &ank);
         assert_eq!(a.cursor, 0);
-        assert!(a.list_frame().contains("there is no row 99"));
+        assert!(a.frame().contains("there is no row 99"));
+    }
+
+    // -----------------------------------------------------------------------
+    // The keystroke engine (TASK-4fa385c1772d)
+    // -----------------------------------------------------------------------
+
+    fn stroke(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn tap(a: &mut App, ank: &Ank, code: KeyCode) -> bool {
+        a.press(stroke(code), ank)
+    }
+
+    fn type_in(a: &mut App, ank: &Ank, line: &str) {
+        for c in line.chars() {
+            tap(a, ank, KeyCode::Char(c));
+        }
+    }
+
+    /// One key per command, on the screen rather than in the mapping: the
+    /// cursor moves, the filter narrows, the queue opens, and none of it went
+    /// through a line.
+    #[test]
+    fn a_key_moves_the_screen_and_no_line_is_typed_to_do_it() {
+        let mut a = app();
+        let ank = nowhere();
+        assert!(!tap(&mut a, &ank, KeyCode::Char('j')));
+        assert_eq!(
+            a.selected().map(|r| r.id.clone()).as_deref(),
+            Some("TASK-49746735127f"),
+            "j moved the cursor"
+        );
+        assert!(!tap(&mut a, &ank, KeyCode::Up));
+        assert_eq!(
+            a.selected().map(|r| r.id.clone()).as_deref(),
+            Some("ADR-8bd76e8d7c4e"),
+            "and the arrow moves it back"
+        );
+        // `f` walks the registry, one kind per press, and the frame says which.
+        tap(&mut a, &ank, KeyCode::Char('f'));
+        assert!(a.frame().contains("[kind adr]"), "{}", a.frame());
+        tap(&mut a, &ank, KeyCode::Char('f'));
+        assert!(a.frame().contains("[kind spec]"), "{}", a.frame());
+        for _ in 0..3 {
+            tap(&mut a, &ank, KeyCode::Char('f'));
+        }
+        assert!(a.kind.is_none(), "and back to every kind");
+        assert!(tap(&mut a, &ank, KeyCode::Char('q')), "q ends the session");
+    }
+
+    /// The prompt is the only road from a key press to a verb that writes.
+    ///
+    /// **The negative half is the one that matters**, and it is the property the
+    /// line discipline used to give for free: every key of the alphabet is
+    /// pressed, in every view, and not one of them spawns any of the six. What
+    /// the loose keys after `a` do is fill a prompt, which runs nothing until
+    /// Enter -- and the Enter here submits a line the grammar does not know, so
+    /// still nothing is spawned.
+    #[test]
+    fn no_key_reaches_a_verb_that_writes_and_the_prompt_does() {
+        for view in [View::List, View::Queue, View::Entity] {
+            let mut a = app();
+            let ank = nowhere();
+            a.queue = Some(queued());
+            a.detail = Some(detail("SPEC-fe8bdb84faca", "body\n"));
+            a.view = view;
+            let mut said = String::new();
+            for c in 'a'..='z' {
+                tap(&mut a, &ank, KeyCode::Char(c));
+                tap(&mut a, &ank, KeyCode::Enter);
+                said.push_str(&a.note.clone().unwrap_or_default());
+            }
+            for verb in crate::ank::ACTS {
+                assert!(
+                    !said.contains(&format!("ank {verb} ")),
+                    "{view:?}: a bare key ran {verb}:\n{said}"
+                );
+            }
+        }
+
+        // And the road that does exist: `a`, the word, Enter.
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char(keys::ACT));
+        assert_eq!(a.prompt.as_deref(), Some(""), "the prompt opened");
+        type_in(&mut a, &ank, "claim");
+        assert!(
+            a.frame().contains(": claim"),
+            "the line is on the screen as it is typed:\n{}",
+            a.frame()
+        );
+        assert!(a.note.is_none(), "and nothing has run yet");
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert!(a.prompt.is_none(), "the prompt closed");
+        let said = a.note.clone().unwrap_or_default();
+        assert!(said.contains("ank claim ADR-8bd76e8d7c4e --json"), "{said}");
+    }
+
+    /// A prompt dismissed runs nothing, whichever of the two ways out was taken.
+    #[test]
+    fn a_prompt_dismissed_runs_nothing() {
+        for out in [KeyCode::Esc, KeyCode::Backspace] {
+            let mut a = app();
+            let ank = nowhere();
+            tap(&mut a, &ank, KeyCode::Char(keys::ACT));
+            type_in(&mut a, &ank, "done");
+            // Backspace has to empty the line before it closes the prompt, which
+            // is what makes it a way out rather than an edit.
+            for _ in 0..5 {
+                tap(&mut a, &ank, out);
+            }
+            assert!(a.prompt.is_none(), "{out:?} left the prompt open");
+            assert_eq!(a.note, None, "{out:?} ran something");
+        }
+    }
+
+    /// `/` opens the same prompt on the grammar's search, seed and all.
+    #[test]
+    fn the_find_key_opens_the_prompt_on_a_search() {
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char(keys::FIND));
+        assert_eq!(a.prompt.as_deref(), Some("/"), "the slash is the line");
+        type_in(&mut a, &ank, "cli surface");
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert_eq!(rendered_rows(&a), ["SPEC-fe8bdb84faca"]);
+        assert!(
+            a.frame().contains("matching 'cli surface'"),
+            "{}",
+            a.frame()
+        );
+    }
+
+    /// A narrower window reflows and keeps the cursor on the page.
+    ///
+    /// The second half is what a resize can silently break: a shorter terminal
+    /// is a shorter page, and a cursor left where it was would be a row the
+    /// screen no longer draws -- so the next `j` would move something nobody
+    /// can see.
+    #[test]
+    fn a_narrower_window_reflows_and_the_cursor_stays_on_the_page() {
+        let many: Vec<Row> = (1..=60)
+            .map(|n| {
+                row(
+                    &format!("TASK-{n:04}0000000f"),
+                    "task",
+                    "open",
+                    "A row with a title long enough that a narrow window has to cut it",
+                )
+            })
+            .collect();
+        let mut a = App::new((160, 50), None);
+        a.snapshot = Some(Snapshot {
+            entities: many,
+            ..snapshot()
+        });
+        let ank = nowhere();
+        for _ in 0..40 {
+            tap(&mut a, &ank, KeyCode::Char('j'));
+        }
+        assert_eq!(a.cursor, 40);
+        assert!(
+            a.frame().lines().any(|l| l.starts_with("> ")),
+            "the cursor is on the page it was moved to"
+        );
+
+        a.resize(50, 16);
+        let narrow = a.frame();
+        assert_eq!(narrow.lines().count(), 16);
+        for line in narrow.lines() {
+            assert!(line.chars().count() <= 50, "{line}");
+        }
+        assert!(
+            narrow.lines().any(|l| l.starts_with("> ")),
+            "the cursor fell off the page a resize made shorter:\n{narrow}"
+        );
+        assert!(
+            narrow.contains('~'),
+            "a title too wide for the window is cut, and the cut is announced:\n{narrow}"
+        );
+        // Wide again, and the title is whole: nothing was lost, only fitted.
+        a.resize(160, 50);
+        assert!(a.frame().contains("has to cut it"), "{}", a.frame());
+    }
+
+    /// A resize reads nothing and spawns nothing.
+    ///
+    /// The instrument is the same one every other test here uses: the binary is
+    /// not there, so any call at all leaves `cannot run` behind. A resize that
+    /// asked the corpus anything would be a window drag renewing a lease.
+    #[test]
+    fn a_resize_asks_the_corpus_nothing() {
+        let mut a = app();
+        a.detail = Some(detail("TASK-49746735127f", "body\n"));
+        a.view = View::Entity;
+        for size in [(60, 20), (200, 80), (30, 12)] {
+            a.resize(size.0, size.1);
+            assert_eq!(a.note, None, "a resize at {size:?} ran a verb");
+        }
     }
 }

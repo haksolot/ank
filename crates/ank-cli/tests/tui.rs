@@ -1,25 +1,55 @@
-//! `ank tui` through the binary (TASK-49746735127f, ADR-8bd76e8d7c4e).
+//! `ank tui` through the binary (TASK-49746735127f, ADR-8bd76e8d7c4e,
+//! ADR-0b55983421dd).
 //!
 //! CLAUDE.md leaves no choice about where this suite lives: a criterion that
 //! talks about the binary is tested through the binary, and twice in this
 //! repository green unit tests covered code that was right on a path the binary
 //! never reached. A TUI is the extreme case of that trap -- every interesting
 //! behaviour sits behind terminal setup a unit test does not perform -- so the
-//! session here is driven through a real pseudo-terminal and the frames are
-//! read off the master side.
+//! session here is driven through a real pseudo-terminal and the screen is read
+//! off the master side.
 //!
 //! It lives in `ank-cli` rather than in `ank-tui` for one mechanical reason:
 //! `CARGO_BIN_EXE_ank` is defined only for the package that declares the
 //! binary, and a suite that could not name the binary would be back to testing
 //! the function instead of the process.
 //!
+//! # What changed when the reader moved onto ratatui, and what did not
+//!
+//! **What is asserted did not move.** Quitting leaves no file and no ref
+//! changed; a session left idle renews no claim; an event repaints and renews
+//! nothing; the event route and the reload route reach the same displayed
+//! state; the frames carry no identifier the corpus does not. Those are facts
+//! about the reader's behaviour and not about how it draws, so they survived
+//! the engine whole.
+//!
+//! **How the session is driven did move, twice.** A command is a key now
+//! (ADR-0b55983421dd), so a list of lines became a list of keystrokes, with the
+//! four verbs that carry a message, a reason, a proof or a flag spelled into
+//! the prompt that `a` opens -- see [`on_a_terminal`] for what an entry of one
+//! of those lists is.
+//!
+//! And the screen is no longer the byte stream. ratatui draws by diffing: it
+//! writes the cells that changed and moves the cursor over the ones that did
+//! not, so a space that stayed a space is never sent and `CLAIMS (1)` reaches
+//! the wire as `CLAIMS`, a cursor move and `(1)`. A substring search over those
+//! bytes would have been asserting something no longer true of them, so the
+//! bytes are applied to a grid ([`Screen`]) and every assertion here is made
+//! against what a person would have been looking at. That is stricter than
+//! what it replaced rather than looser: a frame is compared as a frame, and
+//! [`Seen::raw`] keeps the stream for the one assertion that is genuinely about
+//! it.
+//!
 //! **What is covered on which platform.** The refusal with no terminal runs
 //! everywhere, which matters most: it is the one an agent meets. The driven
 //! session is `#[cfg(unix)]`, because a pseudo-terminal on Windows is ConPTY
 //! and reaching it means the console API this workspace does not otherwise
-//! call. The reader itself is platform-independent by construction -- it does
-//! no FFI, and the escape sequences it writes are the same bytes on all three
-//! (`crates/ank-tui/src/frame.rs`).
+//! call. What CLAUDE.md's three-platform rule asks of raw mode is answered a
+//! rung down: this crate declares no foreign symbol at all
+//! (`crates/ank-tui/tests/dependencies.rs`), the two implementations of it are
+//! crossterm's and are exercised far beyond what this workspace could give
+//! them, and what runs on all three here is everything above them -- the
+//! keystroke mapping, the layout, the render, and the refusal an agent meets.
 //!
 //! **The writing half is measured here too** (TASK-b50b340c0bb1). What a unit
 //! test can say about `claim` from a screen is which `argv` would have been
@@ -233,6 +263,16 @@ fn ids_of(doc: &str) -> Vec<String> {
     out
 }
 
+/// One entry of a key list that opens an entity by its identifier.
+///
+/// An identifier is a line by nature -- it is fourteen characters and no key
+/// spells it -- so it goes through the prompt, which is where the grammar reads
+/// one and jumps to it.
+#[cfg(unix)]
+fn open(id: &str) -> String {
+    format!(":{}", short_of(id))
+}
+
 /// The short form every listing prints: the kind, then four characters.
 fn short_of(id: &str) -> String {
     let (kind, rest) = id.split_once('-').expect("an identifier has a kind");
@@ -306,20 +346,32 @@ fn json_does_not_exempt_a_caller_from_the_terminal() {
 // The driven session
 // ---------------------------------------------------------------------------
 
-/// A pseudo-terminal, opened with the four calls POSIX names for it.
+/// A pseudo-terminal, opened with the four calls POSIX names for it, and sized.
 ///
 /// Declared here rather than taken from a crate. `libc` is in the lockfile and
 /// would have been the tidier road, but it is not compiled for this target
-/// today and §13 spends a dependency only on necessity: what is needed is four
-/// symbols and one flag, `O_RDWR`, whose value POSIX fixes at 2 on every system
-/// this suite runs on. Rust links the platform's C library already, so nothing
-/// is added to the link line either.
+/// today and §13 spends a dependency only on necessity: what is needed is six
+/// symbols and two flags, and Rust links the platform's C library already, so
+/// nothing is added to the link line either.
+///
+/// **The window is set here and it has to be.** The reader asks the terminal
+/// how big it is (ADR-0b55983421dd), and a pseudo-terminal nobody sized is nought
+/// by nought -- so a suite that skipped this would be asserting what a reader
+/// draws into no window at all. It is also what makes the resize measurable:
+/// setting it again while a session is running is exactly what a person
+/// dragging the corner of a window does.
+///
+/// A test may declare what this crate may not, which is the rule
+/// `crates/ank-tui/tests/dependencies.rs` states from the other side: the
+/// reader reaches raw mode, the window and a keystroke through crossterm and
+/// declares no foreign symbol at all. The `extern` below is the instrument, not
+/// the subject.
 #[cfg(unix)]
 mod pty {
     use std::ffi::CStr;
     use std::fs::File;
-    use std::os::fd::{FromRawFd, IntoRawFd};
-    use std::os::raw::{c_char, c_int};
+    use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd};
+    use std::os::raw::{c_char, c_int, c_ulong};
     use std::path::PathBuf;
 
     extern "C" {
@@ -327,12 +379,36 @@ mod pty {
         fn grantpt(fd: c_int) -> c_int;
         fn unlockpt(fd: c_int) -> c_int;
         fn ptsname(fd: c_int) -> *mut c_char;
+        fn ioctl(fd: c_int, request: c_ulong, ...) -> c_int;
+        fn kill(pid: c_int, signal: c_int) -> c_int;
     }
 
     const O_RDWR: c_int = 2;
 
+    /// The two constants that are not POSIX, spelled per platform because they
+    /// are per platform: an `ioctl` number encodes the direction and the size
+    /// of its argument, and the two kernels encode them differently.
+    #[cfg(target_os = "linux")]
+    const TIOCSWINSZ: c_ulong = 0x5414;
+    #[cfg(not(target_os = "linux"))]
+    const TIOCSWINSZ: c_ulong = 0x8008_7467;
+
+    /// `SIGWINCH`, which is 28 on every platform this suite runs on.
+    const SIGWINCH: c_int = 28;
+
+    #[repr(C)]
+    struct WinSize {
+        rows: u16,
+        columns: u16,
+        x_pixels: u16,
+        y_pixels: u16,
+    }
+
     /// The master side as a `File`, and the path of the slave to hand the
     /// child.
+    ///
+    /// The window is not set here: it is set through a slave, and the caller is
+    /// what holds one open. See [`resize`].
     pub fn open() -> (File, PathBuf) {
         // SAFETY: the four calls are the POSIX pseudo-terminal sequence, in
         // order, and every return is checked before the next is made. The
@@ -355,6 +431,51 @@ mod pty {
         }
     }
 
+    /// The window, stated on the slave side.
+    ///
+    /// **On the slave and never on the master, and macOS is why.** Linux takes
+    /// `TIOCSWINSZ` on `/dev/ptmx` and this suite did that first; macOS does
+    /// not, because there the master is a cloning device answering only the
+    /// three ioctls `grantpt`, `unlockpt` and `ptsname` are built out of, and a
+    /// general tty ioctl on it answers `-1`. The slave is a tty on both, which
+    /// is where a window size belongs anyway: it is a property of the terminal
+    /// the program is looking at.
+    pub fn resize(slave_path: &PathBuf, columns: u16, rows: u16) {
+        let tty = slave(slave_path);
+        let size = WinSize {
+            rows,
+            columns,
+            x_pixels: 0,
+            y_pixels: 0,
+        };
+        // SAFETY: the descriptor is open and owned by `tty`, and the third
+        // argument is a pointer to a `winsize`, which is what TIOCSWINSZ reads.
+        let set = unsafe { ioctl(tty.as_raw_fd(), TIOCSWINSZ, &size) };
+        assert_eq!(
+            set,
+            0,
+            "the window could not be set on the pseudo-terminal: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+
+    /// The signal a terminal sends when its window changed.
+    ///
+    /// **Sent by name rather than left to the kernel**, and the reason is worth
+    /// stating: the kernel sends `SIGWINCH` to the foreground process group of
+    /// the terminal's *session*, and this child was never given the slave as a
+    /// controlling terminal -- no `setsid`, no `TIOCSCTTY`, because neither is
+    /// needed for anything else here. So the delivery is done explicitly, which
+    /// is the same signal arriving by a shorter road: what is under test is what
+    /// the reader does when it is told the window moved, and not which of the
+    /// two roads told it.
+    pub fn winch(child: &std::process::Child) {
+        // SAFETY: the child is alive -- it has not been waited on -- and
+        // SIGWINCH is a valid signal number.
+        let sent = unsafe { kill(child.id() as c_int, SIGWINCH) };
+        assert_eq!(sent, 0, "SIGWINCH could not be delivered to the session");
+    }
+
     /// The slave, opened once per standard stream the child is given.
     pub fn slave(path: &PathBuf) -> File {
         std::fs::OpenOptions::new()
@@ -372,72 +493,575 @@ mod pty {
     }
 }
 
-/// Runs `ank tui` on a real terminal and answers everything it drew.
+/// A terminal, as far as this suite needs one.
 ///
-/// The output is drained on a thread of its own. A session that painted more
-/// than the pseudo-terminal's buffer holds while nobody was reading would
-/// deadlock, and a deadlock in a suite is a timeout with no message.
+/// **The reader draws by diffing now, and that is what forced this.** ratatui
+/// writes the cells that changed and moves the cursor over the ones that did
+/// not, so a byte stream carrying `CLAIMS (1)` may well carry `CLAIMS`, a
+/// cursor move and `(1)` -- the screen is right and a substring search over the
+/// bytes is wrong. So the bytes are applied to a grid, exactly as a terminal
+/// applies them, and every assertion in this file is made against what a person
+/// would have been looking at.
+///
+/// It is deliberately the smallest emulator that is honest about this stream:
+/// cursor position, the two erases, and text. Everything else a CSI can say --
+/// colour, attributes, the alternate buffer, the cursor's visibility -- moves
+/// no character on the grid, so it is consumed and dropped rather than half
+/// understood. [`Screen::raw`] keeps the bytes for the one assertion that is
+/// genuinely about them.
 #[cfg(unix)]
-fn drive(repo: &Repo, agent: &str, commands: &[&str]) -> String {
-    on_a_terminal(repo, agent, &["tui"], commands)
+struct Screen {
+    grid: Vec<Vec<char>>,
+    columns: usize,
+    rows: usize,
+    x: usize,
+    y: usize,
+    /// Bytes of an escape sequence whose end has not arrived yet. A terminal
+    /// hands over a frame in whatever pieces it likes, and half a `MoveTo` is
+    /// not a character.
+    pending: Vec<u8>,
+    raw: Vec<u8>,
+    /// Every screen that was displayed, in order, without the repeats.
+    ///
+    /// The current grid answers "what is on the screen"; this answers "was this
+    /// ever on it", which is what a session driven by a list of keys is asked --
+    /// a refusal a person reads and then presses past is on one frame and gone
+    /// from the next.
+    shown: Vec<String>,
+}
+
+#[cfg(unix)]
+impl Screen {
+    fn new(columns: u16, rows: u16) -> Screen {
+        Screen {
+            grid: vec![vec![' '; columns as usize]; rows as usize],
+            columns: columns as usize,
+            rows: rows as usize,
+            x: 0,
+            y: 0,
+            pending: Vec::new(),
+            raw: Vec::new(),
+            shown: Vec::new(),
+        }
+    }
+
+    /// The window changed under the session, so the grid does too.
+    ///
+    /// Cleared rather than kept: a terminal being resized redraws from
+    /// whatever the application sends next, and a grid holding rows of the old
+    /// width would let an assertion pass on a line nobody can still see.
+    fn resized(&mut self, columns: u16, rows: u16) {
+        self.grid = vec![vec![' '; columns as usize]; rows as usize];
+        self.columns = columns as usize;
+        self.rows = rows as usize;
+        self.x = 0;
+        self.y = 0;
+    }
+
+    fn feed(&mut self, bytes: &[u8]) {
+        self.raw.extend_from_slice(bytes);
+        self.pending.extend_from_slice(bytes);
+        let taken = self.apply();
+        self.pending.drain(..taken);
+        self.snapshot();
+    }
+
+    /// The screen as it stands, kept if it is not the one already kept.
+    fn snapshot(&mut self) {
+        let now = self.text();
+        if self.shown.last() != Some(&now) {
+            self.shown.push(now);
+        }
+    }
+
+    /// Applies whole sequences and characters, answering how many bytes it
+    /// consumed. What is left is the tail of something unfinished.
+    fn apply(&mut self) -> usize {
+        let bytes = std::mem::take(&mut self.pending);
+        let mut at = 0;
+        while at < bytes.len() {
+            match bytes[at] {
+                0x1b => match escape(&bytes[at..]) {
+                    // Not all here yet: stop, and keep it for the next read.
+                    None => break,
+                    Some((len, csi)) => {
+                        if let Some((params, final_byte, private)) = csi {
+                            // **A frame is kept where the frame ended**, and
+                            // not where a read happened to stop. ratatui closes
+                            // every `draw` by hiding the cursor or by showing
+                            // it and placing it, so `?25l` and `?25h` are where
+                            // one screen becomes the next -- and a suite that
+                            // sampled on read boundaries instead would lose a
+                            // frame whenever two of them arrived together,
+                            // which under load is most of them.
+                            if self.csi(&params, final_byte, private) {
+                                self.snapshot();
+                            }
+                        }
+                        at += len;
+                    }
+                },
+                b'\r' => {
+                    self.x = 0;
+                    at += 1;
+                }
+                b'\n' => {
+                    self.y = (self.y + 1).min(self.rows.saturating_sub(1));
+                    at += 1;
+                }
+                _ => {
+                    // UTF-8, and a character split across two reads waits like
+                    // an escape sequence does.
+                    let width = utf8_width(bytes[at]);
+                    if at + width > bytes.len() {
+                        break;
+                    }
+                    match std::str::from_utf8(&bytes[at..at + width]) {
+                        Ok(s) => {
+                            for c in s.chars() {
+                                self.put(c);
+                            }
+                        }
+                        // Not a character: dropped rather than guessed at.
+                        Err(_) => {}
+                    }
+                    at += width;
+                }
+            }
+        }
+        self.pending = bytes;
+        at
+    }
+
+    fn put(&mut self, c: char) {
+        if self.y < self.rows && self.x < self.columns {
+            self.grid[self.y][self.x] = c;
+        }
+        self.x += 1;
+        if self.x >= self.columns {
+            self.x = 0;
+            self.y = (self.y + 1).min(self.rows.saturating_sub(1));
+        }
+    }
+
+    /// Applies one CSI, answering whether it ended a frame.
+    fn csi(&mut self, params: &[usize], final_byte: u8, private: bool) -> bool {
+        if private {
+            // `?1049h`, `?25l` and their kind move no character. The cursor's
+            // visibility is the one that says something all the same: it is
+            // the last thing a `draw` writes.
+            return matches!(final_byte, b'h' | b'l') && params.first() == Some(&25);
+        }
+        let at = |i: usize, default: usize| params.get(i).copied().unwrap_or(default);
+        match final_byte {
+            b'H' | b'f' => {
+                self.y = at(0, 1).saturating_sub(1).min(self.rows.saturating_sub(1));
+                self.x = at(1, 1)
+                    .saturating_sub(1)
+                    .min(self.columns.saturating_sub(1));
+            }
+            b'J' => match at(0, 0) {
+                // To the end of the screen, from the cursor.
+                0 => {
+                    for x in self.x..self.columns {
+                        self.grid[self.y][x] = ' ';
+                    }
+                    for y in self.y + 1..self.rows {
+                        self.grid[y] = vec![' '; self.columns];
+                    }
+                }
+                // To the start of it.
+                1 => {
+                    for y in 0..self.y {
+                        self.grid[y] = vec![' '; self.columns];
+                    }
+                    for x in 0..=self.x.min(self.columns - 1) {
+                        self.grid[self.y][x] = ' ';
+                    }
+                }
+                // The whole of it.
+                _ => self.grid = vec![vec![' '; self.columns]; self.rows],
+            },
+            b'K' => match at(0, 0) {
+                0 => {
+                    for x in self.x..self.columns {
+                        self.grid[self.y][x] = ' ';
+                    }
+                }
+                1 => {
+                    for x in 0..=self.x.min(self.columns - 1) {
+                        self.grid[self.y][x] = ' ';
+                    }
+                }
+                _ => self.grid[self.y] = vec![' '; self.columns],
+            },
+            // Colour, attributes, scroll regions, anything else: no character
+            // moves, so nothing here does either.
+            _ => {}
+        }
+        false
+    }
+
+    /// What is on the screen now, one row per line, trailing space cut.
+    fn text(&self) -> String {
+        self.grid
+            .iter()
+            .map(|row| row.iter().collect::<String>().trim_end().to_string())
+            .collect::<Vec<String>>()
+            .join("\n")
+    }
+
+    /// Every screen that was displayed, for a session driven by a list of keys.
+    fn everything(&self) -> String {
+        self.shown.join("\n")
+    }
+
+    fn raw(&self) -> String {
+        String::from_utf8_lossy(&self.raw).to_string()
+    }
+}
+
+/// One escape sequence at the head of `bytes`: how long it is, and the CSI it
+/// was if it was one.
+///
+/// `None` means it is not all here yet.
+#[cfg(unix)]
+#[allow(clippy::type_complexity)]
+fn escape(bytes: &[u8]) -> Option<(usize, Option<(Vec<usize>, u8, bool)>)> {
+    if bytes.len() < 2 {
+        return None;
+    }
+    match bytes[1] {
+        b'[' => {
+            let mut at = 2;
+            let private = bytes.get(2).is_some_and(|b| b"<=>?".contains(b));
+            if private {
+                at += 1;
+            }
+            let start = at;
+            while at < bytes.len() && (bytes[at].is_ascii_digit() || bytes[at] == b';') {
+                at += 1;
+            }
+            let final_byte = *bytes.get(at)?;
+            let params = String::from_utf8_lossy(&bytes[start..at])
+                .split(';')
+                .map(|p| p.parse::<usize>().unwrap_or(0))
+                .collect();
+            Some((at + 1, Some((params, final_byte, private))))
+        }
+        // An OSC runs to a BEL or an ST, and says nothing about the grid.
+        b']' => {
+            let end = bytes.iter().position(|b| *b == 0x07).or_else(|| {
+                bytes
+                    .windows(2)
+                    .position(|w| w == [0x1b, b'\\'])
+                    .map(|i| i + 1)
+            })?;
+            Some((end + 1, None))
+        }
+        // Two-byte escapes: consumed and dropped.
+        _ => Some((2, None)),
+    }
+}
+
+#[cfg(unix)]
+fn utf8_width(first: u8) -> usize {
+    match first {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        // A continuation byte with no lead: one byte, dropped as invalid.
+        _ => 1,
+    }
+}
+
+/// What a driven session was shown, with the bytes kept for the one assertion
+/// that is about them.
+///
+/// It derefs to the screens, so `seen.contains(...)` asks what this suite has
+/// always asked: was this ever on the screen.
+#[cfg(unix)]
+struct Seen {
+    screens: String,
+    raw: String,
+}
+
+#[cfg(unix)]
+impl std::ops::Deref for Seen {
+    type Target = str;
+    fn deref(&self) -> &str {
+        &self.screens
+    }
+}
+
+#[cfg(unix)]
+impl std::fmt::Display for Seen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.screens)
+    }
+}
+
+/// The window every session in this suite opens in.
+#[cfg(unix)]
+const WINDOW: (u16, u16) = (120, 40);
+
+/// Runs `ank tui` on a real terminal and answers every screen it drew.
+#[cfg(unix)]
+fn drive(repo: &Repo, agent: &str, keys: &[&str]) -> Seen {
+    on_a_terminal(repo, agent, &["tui"], keys)
 }
 
 /// The same, for a call that takes flags and ends on its own.
+///
+/// **What an entry of `keys` is.** Anything beginning with `:` is a line typed
+/// into the prompt: the key that opens it, the rest of the entry, and Enter.
+/// Anything else is the keys themselves, byte for byte -- `"q"`, `"j"`, `"\r"`
+/// for Enter. That is the shape of the reader now (ADR-0b55983421dd): every
+/// command that only moves the screen is one key, and the four verbs that carry
+/// a message, a reason, a proof or a flag are spelled into a prompt.
 #[cfg(unix)]
-fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], commands: &[&str]) -> String {
-    use std::io::{Read, Write};
-
-    let (master, slave_path) = pty::open();
-    let mut child = Command::new(ANK)
-        .args(args)
-        .current_dir(&repo.0)
-        .env("ANK_AGENT", agent)
-        // The window, stated rather than measured: the reader declines the
-        // ioctl for the reason its module header gives, and a suite that could
-        // not choose the window could not assert what a frame holds.
-        .env("COLUMNS", "120")
-        .env("LINES", "40")
-        .env("NO_COLOR", "1")
-        .stdin(pty::stdio(pty::slave(&slave_path)))
-        .stdout(pty::stdio(pty::slave(&slave_path)))
-        .stderr(pty::stdio(pty::slave(&slave_path)))
-        .spawn()
-        .expect("the binary must have been built");
-
-    let mut reader = master
-        .try_clone()
-        .expect("the master side must be clonable for the drain");
-    let drain = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                // Linux answers EIO once the last slave is closed; macOS
-                // answers zero. Both mean the session is over.
-                Ok(0) | Err(_) => break,
-                Ok(n) => seen.extend_from_slice(&buf[..n]),
-            }
-        }
-        seen
-    });
-
-    let mut writer = master;
-    for command in commands {
-        writeln!(writer, "{command}").expect("the terminal must accept a command");
-        writer.flush().unwrap();
+fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen {
+    let mut live = Live::open_with(repo, agent, args, &[]);
+    // **The first frame is waited for, and it is not politeness.** Bytes
+    // written before the reader has taken the terminal sit in the line
+    // discipline, which echoes them and holds them until a newline -- so a
+    // suite that wrote straight after spawning would be measuring the terminal
+    // it opened rather than the program it started.
+    if !args.contains(&"--json") {
+        live.until("the session to open", |t| t.contains("ank tui"));
     }
-    let status = child.wait().expect("the session must end");
-    assert!(
-        status.success(),
-        "the session ended with {status}, and a reader that quits answers 0"
-    );
-    // The child's slave descriptors went with it; dropping the master ends the
-    // drain, which is otherwise blocked reading a terminal nobody will write
-    // to again.
-    drop(writer);
-    let seen = drain.join().expect("the drain must not panic");
-    String::from_utf8_lossy(&seen).to_string()
+    for entry in keys {
+        live.press(entry);
+    }
+    live.finished("a reader that quits answers 0")
 }
+
+/// A session that is opened, left alone for `quiet`, and then told to quit.
+///
+/// The one thing a list of keys cannot express, and the whole of what "a
+/// session left idle" means: the quit is pressed *after* the wait rather than
+/// before it, so the reader spends that time blocked on a terminal nobody is
+/// typing at -- which is where a refresh loop, had this crate one, would be
+/// doing its work.
+#[cfg(unix)]
+fn idle(repo: &Repo, agent: &str, quiet: std::time::Duration) -> Seen {
+    let mut live = Live::open(repo, agent, &[]);
+    live.until("the session to open", |t| t.contains("ank tui"));
+    std::thread::sleep(quiet);
+    live.press("q");
+    live.finished("a reader that quits answers 0")
+}
+
+/// A session that can be watched while it is still running.
+///
+/// The drain feeds a [`Screen`] the test can read at any moment: what is on it
+/// now, and everything that was ever on it.
+#[cfg(unix)]
+struct Live {
+    child: std::process::Child,
+    writer: std::fs::File,
+    /// The slave's path, kept because the window is set through it: see
+    /// [`pty::resize`] for why it cannot be set through the master.
+    slave_path: PathBuf,
+    screen: std::sync::Arc<std::sync::Mutex<Screen>>,
+    /// The thread draining the master side. Held so that a session read after
+    /// it ended is read *after* the last frame arrived: a child that has
+    /// exited is not a terminal that has been read to the end, and the frame
+    /// carrying whatever the last command answered is the one most likely to
+    /// still be in flight.
+    drain: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(unix)]
+impl Live {
+    /// Opens `ank tui` on a real terminal, with whatever environment the test
+    /// needs on top of the usual one.
+    fn open(repo: &Repo, agent: &str, env: &[(&str, String)]) -> Live {
+        Live::open_with(repo, agent, &["tui"], env)
+    }
+
+    fn open_with(repo: &Repo, agent: &str, args: &[&str], env: &[(&str, String)]) -> Live {
+        use std::io::Read;
+
+        let (master, slave_path) = pty::open();
+        // **The child's streams are opened before the window is set, and that
+        // ordering is deliberate.** A pseudo-terminal whose last slave
+        // descriptor closes is a terminal that hung up, and how permanently
+        // depends on the platform. Holding these three from here means one is
+        // always open from before the size is stated until the session ends.
+        let (stdin, stdout, stderr) = (
+            pty::slave(&slave_path),
+            pty::slave(&slave_path),
+            pty::slave(&slave_path),
+        );
+        pty::resize(&slave_path, WINDOW.0, WINDOW.1);
+        let mut command = Command::new(ANK);
+        command
+            .args(args)
+            .current_dir(&repo.0)
+            .env("ANK_AGENT", agent)
+            .env("NO_COLOR", "1");
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let child = command
+            .stdin(pty::stdio(stdin))
+            .stdout(pty::stdio(stdout))
+            .stderr(pty::stdio(stderr))
+            .spawn()
+            .expect("the binary must have been built");
+
+        let screen = std::sync::Arc::new(std::sync::Mutex::new(Screen::new(WINDOW.0, WINDOW.1)));
+        let into = std::sync::Arc::clone(&screen);
+        let mut reader = master
+            .try_clone()
+            .expect("the master side must be clonable for the drain");
+        // Drained on a thread of its own: a session that painted more than the
+        // pseudo-terminal's buffer holds while nobody was reading would
+        // deadlock, and a deadlock in a suite is a timeout with no message.
+        let drain = std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            loop {
+                match reader.read(&mut buf) {
+                    // Linux answers EIO once the last slave is closed; macOS
+                    // answers zero. Both mean the session is over.
+                    Ok(0) | Err(_) => return,
+                    Ok(n) => into.lock().unwrap().feed(&buf[..n]),
+                }
+            }
+        });
+        Live {
+            child,
+            writer: master,
+            slave_path,
+            screen,
+            drain: Some(drain),
+        }
+    }
+
+    /// Waits for the session to end and for the last of it to be read.
+    ///
+    /// The order is the whole of it: wait for the child, then drop the master
+    /// so the drain stops being blocked on a terminal nobody will write to
+    /// again, then join it. Reading the screen before that join is reading it
+    /// while a frame is still on its way.
+    fn finished(mut self, why: &str) -> Seen {
+        let status = self.child.wait().expect("the session must end");
+        assert!(
+            status.success(),
+            "the session ended with {status}, and {why}"
+        );
+        drop(self.writer);
+        if let Some(drain) = self.drain.take() {
+            drain.join().expect("the drain must not panic");
+        }
+        let screen = self.screen.lock().unwrap();
+        Seen {
+            screens: screen.everything(),
+            raw: screen.raw(),
+        }
+    }
+
+    /// Everything that was ever on the screen.
+    fn text(&self) -> String {
+        self.screen.lock().unwrap().everything()
+    }
+
+    /// Waits for the screen as it is now to say something.
+    ///
+    /// Different from [`Live::until`] in the one way that matters to a resize:
+    /// that one asks whether this was *ever* on the screen, and a reflow is a
+    /// question about what is on it now.
+    fn until_screen(&self, what: &str, done: impl Fn(&str) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if done(&self.screen.lock().unwrap().text()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!(
+            "timed out waiting for {what}:\n{}",
+            self.screen.lock().unwrap().text()
+        );
+    }
+
+    /// Waits for the screen to say something.
+    ///
+    /// Bounded and generous, on the rule the watcher's suite states: this is
+    /// asserting that something happens at all, not how fast, so the wall is
+    /// high enough that a loaded runner never reports the runner instead of the
+    /// code.
+    fn until(&self, what: &str, done: impl Fn(&str) -> bool) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            if done(&self.text()) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!("timed out waiting for {what}:\n{}", self.text());
+    }
+
+    /// The screen as it is, once it has stopped moving.
+    ///
+    /// Settled first, because a screen read the instant a needle appeared is
+    /// half a screen: the reader writes a frame in one call but a terminal
+    /// hands it over in whatever pieces it likes.
+    fn frame(&self) -> String {
+        let mut last = String::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            let now = self.screen.lock().unwrap().text();
+            if !now.trim().is_empty() && now == last {
+                return now;
+            }
+            last = now;
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+        panic!("the screen never stopped moving:\n{last}");
+    }
+
+    /// One entry of a key list: a line typed into the prompt, or the keys
+    /// themselves.
+    fn press(&mut self, entry: &str) {
+        match entry.strip_prefix(':') {
+            Some(line) => {
+                self.send(&ACT.to_string());
+                self.send(line);
+                self.send("\r");
+            }
+            None => self.send(entry),
+        }
+    }
+
+    fn send(&mut self, bytes: &str) {
+        use std::io::Write;
+        self.writer
+            .write_all(bytes.as_bytes())
+            .expect("the terminal must accept a keystroke");
+        self.writer.flush().unwrap();
+    }
+
+    /// The window moved, and the session was told.
+    fn resize(&mut self, columns: u16, rows: u16) {
+        pty::resize(&self.slave_path, columns, rows);
+        self.screen.lock().unwrap().resized(columns, rows);
+        pty::winch(&self.child);
+    }
+
+    fn quit(mut self) {
+        self.press("q");
+        let _ = self.finished("a reader that quits answers 0");
+    }
+}
+
+/// The key that opens the prompt, read out of the reader rather than typed as a
+/// letter here: it is the one key this suite has to know, and a suite carrying
+/// its own copy of it would agree with a mapping that moved.
+#[cfg(unix)]
+const ACT: char = ank_tui::keys::ACT;
 
 #[cfg(unix)]
 #[test]
@@ -450,10 +1074,13 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
     // this suite took: "which claim is held by whom", with a name on it. The
     // task is what is opened, because the criterion is written into its body
     // and that is what "whole" is asserted against.
-    let seen = drive(&repo, HOLDER, &["f task", "", "b", "f", "q"]);
+    let seen = drive(&repo, HOLDER, &[":f task", "\r", "b", ":f", "q"]);
 
+    // The one assertion here that is genuinely about the bytes rather than
+    // about the screen: what a full-screen reader owes the shell it was
+    // launched from is the scrollback it was covering.
     assert!(
-        seen.contains("\x1b[?1049h") && seen.contains("\x1b[?1049l"),
+        seen.raw.contains("\x1b[?1049h") && seen.raw.contains("\x1b[?1049l"),
         "the session used the alternate screen and gave it back"
     );
     for expected in [
@@ -509,10 +1136,11 @@ fn the_frames_carry_no_identifier_the_corpus_does_not() {
         .iter()
         .map(|id| short_of(id))
         .collect();
-    let seen = drive(&repo, HOLDER, &["", "b", "j", "", "b", "q"]);
+    let seen = drive(&repo, HOLDER, &["\r", "b", "j", "\r", "b", "q"]);
 
     let mut found = 0;
-    let mut rest = seen.as_str();
+    let text = seen.to_string();
+    let mut rest = text.as_str();
     while let Some(at) = rest.find('-') {
         // A short identifier is `<KIND>-xxxx`; the kinds are the four this
         // corpus has (ADR-c9f9d1a05b23).
@@ -536,6 +1164,85 @@ fn the_frames_carry_no_identifier_the_corpus_does_not() {
         rest = &rest[at + 1..];
     }
     assert!(found >= 2, "the frames named no identifier at all");
+}
+
+/// A terminal made narrower, then wider, redraws to its new size with nobody
+/// typing (TASK-4fa385c1772d, ADR-0b55983421dd).
+///
+/// **The whole of the assertion is that no key was pressed.** The window is
+/// changed on the master side, exactly as a terminal emulator changes it, and
+/// the session is told the way a terminal tells one. What has to follow is a
+/// frame in the new shape: a row whose title no longer fits is cut and says so,
+/// no line runs past the new right edge, and the trailer sits on the last row
+/// of the new height rather than off the bottom of it. Widened again, the title
+/// comes back whole -- so what happened was a fit and never a loss.
+///
+/// Measured through the binary, on a real pseudo-terminal, because the window
+/// is an `ioctl` and a signal: the reader asks crossterm for the size and
+/// crossterm asks the kernel, and no unit test stands anywhere near that.
+#[cfg(unix)]
+#[test]
+fn a_terminal_resized_redraws_to_its_new_size_with_nothing_typed() {
+    // Wide enough that sixty columns cannot hold it once a row has spent
+    // thirty-five on its number, its identifier and its status, and narrow
+    // enough that a hundred and twenty can.
+    const LONG: &str = "A title a narrow window must cut and a wide one need not";
+    let repo = Repo::seeded("resize");
+    repo.spare(
+        LONG,
+        "The row carrying it is fitted to whatever window there is.",
+    );
+    repo.warm(READER);
+    let before = corpus_files(&repo);
+
+    let mut live = Live::open(&repo, READER, &[]);
+    live.until("the session to open", |t| t.contains("ank tui"));
+    live.until_screen("the wide frame to carry the title whole", |s| {
+        s.contains(LONG)
+    });
+    let wide = live.frame();
+    assert_eq!(wide.lines().count(), WINDOW.1 as usize, "{wide}");
+
+    live.resize(60, 20);
+    live.until_screen("the narrow frame", |s| {
+        s.contains("ank tui") && !s.contains(LONG)
+    });
+    let narrow = live.frame();
+    for line in narrow.lines() {
+        assert!(
+            line.chars().count() <= 60,
+            "{} columns in a 60 column window: {line}\n{narrow}",
+            line.chars().count()
+        );
+    }
+    assert!(
+        narrow.contains('~'),
+        "nothing was cut, so nothing was fitted to the narrower window:\n{narrow}"
+    );
+    // The trailer is on the last row there is, which is what says the layout
+    // used the new height rather than the old one.
+    let rows: Vec<&str> = narrow.lines().collect();
+    assert_eq!(rows.len(), 20, "{narrow}");
+    assert!(
+        rows[19].starts_with("a then"),
+        "the key line is not on the last row of the new window:\n{narrow}"
+    );
+
+    // Wider again, and nothing was lost: the title is whole.
+    live.resize(140, 44);
+    live.until_screen("the wide frame again", |s| s.contains(LONG));
+    let again = live.frame();
+    assert_eq!(again.lines().count(), 44, "{again}");
+    assert!(again.contains("ENTITIES"), "{again}");
+
+    // And a window being dragged about reads nothing and writes nothing: a
+    // resize is a fact about the terminal, never about the corpus.
+    assert_eq!(
+        before,
+        corpus_files(&repo),
+        "a resize moved a file under .ank/"
+    );
+    live.quit();
 }
 
 /// Quitting leaves the corpus exactly as it was found (ADR-8bd76e8d7c4e).
@@ -569,7 +1276,9 @@ fn quitting_leaves_no_file_and_no_ref_changed() {
     let seen = drive(
         &repo,
         HOLDER,
-        &["f adr", "", "n", "c", "g", "b", "f", "/task", "j", "k", "q"],
+        &[
+            ":f adr", "\r", "n", "c", "g", "b", ":f", "/task\r", "j", "k", "q",
+        ],
     );
     assert!(seen.contains("ENTITIES"), "the session ran:\n{seen}");
     assert!(seen.contains("CONSTRAINTS"), "it opened an entity:\n{seen}");
@@ -604,7 +1313,7 @@ fn opening_the_task_you_hold_takes_nothing_and_creates_nothing() {
 
     let files = corpus_files(&repo);
     let names = ref_names(&repo);
-    let seen = drive(&repo, HOLDER, &["f task", "", "q"]);
+    let seen = drive(&repo, HOLDER, &[":f task", "\r", "q"]);
     assert!(seen.contains(TAIL), "the held task was opened:\n{seen}");
 
     assert_eq!(
@@ -717,7 +1426,7 @@ fn a_refusal_on_screen_is_the_one_the_cli_gave() {
     let repo = Repo::seeded("refusal");
     // `LOG-000000000000` is not in this corpus, so `show` refuses with the
     // sentence and the code it always gives.
-    let seen = drive(&repo, HOLDER, &["LOG-000000000000", "q"]);
+    let seen = drive(&repo, HOLDER, &[":LOG-000000000000", "q"]);
     assert!(
         seen.contains("no entity") || seen.contains("LOG-000000000000"),
         "the refusal reached the screen:\n{seen}"
@@ -745,13 +1454,19 @@ fn json_on_a_terminal_answers_one_document_and_opens_no_session() {
     let seen = on_a_terminal(&repo, HOLDER, &["tui", "--json"], &[]);
 
     assert!(
-        !seen.contains("\x1b[?1049h"),
-        "a screen was opened under --json:\n{seen}"
+        !seen.raw.contains("\x1b[?1049h"),
+        "a screen was opened under --json:\n{}",
+        seen.raw
     );
+    // The bytes and not the screen: `--json` opens no session, so nothing draws
+    // and there is no screen to read. A document written to a terminal is a
+    // line as long as it is, and reading it off a 120 column grid would be
+    // reading it wrapped.
     let document = seen
+        .raw
         .lines()
         .find(|l| l.trim_start().starts_with('{'))
-        .unwrap_or_else(|| panic!("no document on the stream:\n{seen}"))
+        .unwrap_or_else(|| panic!("no document on the stream:\n{}", seen.raw))
         .trim()
         .to_string();
     assert!(
@@ -777,55 +1492,6 @@ fn json_on_a_terminal_answers_one_document_and_opens_no_session() {
 // ---------------------------------------------------------------------------
 // The writing half (TASK-b50b340c0bb1)
 // ---------------------------------------------------------------------------
-
-/// A session that is opened, left alone for `quiet`, and then told to quit.
-///
-/// The one thing [`drive`] cannot express, and the whole of what "a session left
-/// idle" means: the commands are written *after* the wait rather than before it,
-/// so the reader spends that time blocked on a terminal nobody is typing at --
-/// which is where a refresh loop, had this crate one, would be doing its work.
-#[cfg(unix)]
-fn idle(repo: &Repo, agent: &str, quiet: std::time::Duration) -> String {
-    use std::io::{Read, Write};
-
-    let (master, slave_path) = pty::open();
-    let mut child = Command::new(ANK)
-        .arg("tui")
-        .current_dir(&repo.0)
-        .env("ANK_AGENT", agent)
-        .env("COLUMNS", "120")
-        .env("LINES", "40")
-        .env("NO_COLOR", "1")
-        .stdin(pty::stdio(pty::slave(&slave_path)))
-        .stdout(pty::stdio(pty::slave(&slave_path)))
-        .stderr(pty::stdio(pty::slave(&slave_path)))
-        .spawn()
-        .expect("the binary must have been built");
-
-    let mut reader = master
-        .try_clone()
-        .expect("the master side must be clonable for the drain");
-    let drain = std::thread::spawn(move || {
-        let mut seen = Vec::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => seen.extend_from_slice(&buf[..n]),
-            }
-        }
-        seen
-    });
-
-    std::thread::sleep(quiet);
-    let mut writer = master;
-    writeln!(writer, "q").expect("the terminal must accept a command");
-    writer.flush().unwrap();
-    let status = child.wait().expect("the session must end");
-    assert!(status.success(), "the session ended with {status}");
-    drop(writer);
-    String::from_utf8_lossy(&drain.join().expect("the drain must not panic")).to_string()
-}
 
 /// The claim state of one task: every ref this corpus carries by name, and the
 /// record at the task's own address with its two instants masked.
@@ -897,7 +1563,7 @@ fn a_claim_taken_through_the_reader_is_the_ref_a_shell_claim_makes() {
         "Claimed twice over, once from the screen and once from a shell.",
     );
 
-    let seen = drive(&repo, READER, &[&short_of(&task), "claim", "q"]);
+    let seen = drive(&repo, READER, &[&open(&task), ":claim", "q"]);
     assert!(
         seen.contains(&format!("ank claim {task}")),
         "the reader ran the verb, and said which one:\n{seen}"
@@ -946,7 +1612,7 @@ fn a_done_refused_for_a_missing_proof_leaves_the_task_untouched() {
     let before = corpus_files(&repo);
     let names = ref_names(&repo);
 
-    let seen = drive(&repo, HOLDER, &["f task", "", "done", "q"]);
+    let seen = drive(&repo, HOLDER, &[":f task", "\r", ":done", "q"]);
 
     let code = declared("done", "no proof");
     assert_eq!(code, ank_contract::ExitCode::Proof, "the table moved");
@@ -1053,11 +1719,11 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
         &repo,
         READER,
         &[
-            &short_of(&task),
-            "claim",
-            "log the glob was one directory short",
-            "amend --scope src/deeper/**",
-            "release the criterion measures the wrong thing",
+            &open(&task),
+            ":claim",
+            ":log the glob was one directory short",
+            ":amend --scope src/deeper/**",
+            ":release the criterion measures the wrong thing",
             "q",
         ],
     );
@@ -1090,12 +1756,7 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
     let seen = drive(
         &repo,
         READER,
-        &[
-            &short_of(&task),
-            "claim",
-            &format!("done commit:{head}"),
-            "q",
-        ],
+        &[&open(&task), ":claim", &format!(":done commit:{head}"), "q"],
     );
     assert!(!seen.contains("error["), "the finish was refused:\n{seen}");
     let shown = repo.stdout(READER, &["show", &task, "--json"]);
@@ -1189,134 +1850,6 @@ impl Home {
     }
 }
 
-/// A session that can be watched while it is still running.
-///
-/// [`drive`] writes every command before reading anything, which is all a
-/// keystroke-driven screen ever needed. A screen that repaints on its own has to
-/// be observed *between* keystrokes, and often with no keystroke at all, so the
-/// drain here writes into a buffer the test can read at any moment.
-#[cfg(unix)]
-struct Live {
-    child: std::process::Child,
-    writer: std::fs::File,
-    seen: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-}
-
-#[cfg(unix)]
-impl Live {
-    /// Opens `ank tui` on a real terminal, with whatever environment the test
-    /// needs on top of the usual one.
-    fn open(repo: &Repo, agent: &str, env: &[(&str, String)]) -> Live {
-        use std::io::Read;
-
-        let (master, slave_path) = pty::open();
-        let mut command = Command::new(ANK);
-        command
-            .arg("tui")
-            .current_dir(&repo.0)
-            .env("ANK_AGENT", agent)
-            .env("COLUMNS", "120")
-            .env("LINES", "40")
-            .env("NO_COLOR", "1");
-        for (key, value) in env {
-            command.env(key, value);
-        }
-        let child = command
-            .stdin(pty::stdio(pty::slave(&slave_path)))
-            .stdout(pty::stdio(pty::slave(&slave_path)))
-            .stderr(pty::stdio(pty::slave(&slave_path)))
-            .spawn()
-            .expect("the binary must have been built");
-
-        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-        let into = std::sync::Arc::clone(&seen);
-        let mut reader = master
-            .try_clone()
-            .expect("the master side must be clonable for the drain");
-        std::thread::spawn(move || {
-            let mut buf = [0u8; 4096];
-            loop {
-                match reader.read(&mut buf) {
-                    Ok(0) | Err(_) => return,
-                    Ok(n) => into.lock().unwrap().extend_from_slice(&buf[..n]),
-                }
-            }
-        });
-        Live {
-            child,
-            writer: master,
-            seen,
-        }
-    }
-
-    fn text(&self) -> String {
-        String::from_utf8_lossy(&self.seen.lock().unwrap()).to_string()
-    }
-
-    /// Waits for the screen to say something.
-    ///
-    /// Bounded and generous, on the rule the watcher's suite states: this is
-    /// asserting that something happens at all, not how fast, so the wall is
-    /// high enough that a loaded runner never reports the runner instead of the
-    /// code.
-    fn until(&self, what: &str, done: impl Fn(&str) -> bool) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            if done(&self.text()) {
-                return;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(25));
-        }
-        panic!("timed out waiting for {what}:\n{}", self.text());
-    }
-
-    /// The last frame drawn, once the screen has stopped moving.
-    ///
-    /// Settled first, because a frame read the instant a needle appeared is
-    /// half a frame: the reader writes a screen in one call but a terminal
-    /// hands it over in whatever pieces it likes.
-    fn frame(&self) -> String {
-        let mut last = String::new();
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::time::Instant::now() < deadline {
-            let now = self.text();
-            if !now.is_empty() && now == last {
-                return last_frame(&now);
-            }
-            last = now;
-            std::thread::sleep(std::time::Duration::from_millis(200));
-        }
-        panic!("the screen never stopped moving:\n{last}");
-    }
-
-    fn send(&mut self, line: &str) {
-        use std::io::Write;
-        writeln!(self.writer, "{line}").expect("the terminal must accept a command");
-        self.writer.flush().unwrap();
-    }
-
-    fn quit(mut self) {
-        self.send("q");
-        let status = self.child.wait().expect("the session must end");
-        assert!(status.success(), "the session ended with {status}");
-    }
-}
-
-/// The last whole frame of a byte stream a session wrote.
-///
-/// Frames are separated by the sequence that homes the cursor and clears the
-/// screen, and the session's last act is to leave the alternate buffer, which is
-/// chrome rather than a frame.
-#[cfg(unix)]
-fn last_frame(seen: &str) -> String {
-    const HOME: &str = "\x1b[H\x1b[2J";
-    const LEAVE: &str = "\x1b[?1049l";
-    let at = seen
-        .rfind(HOME)
-        .expect("a session draws at least one frame");
-    seen[at + HOME.len()..].replace(LEAVE, "")
-}
-
 /// A frame with the one line that names the route taken out of it.
 ///
 /// The two routes must reach the same displayed state, and the one thing that
@@ -1403,7 +1936,7 @@ fn the_event_and_the_reload_reach_the_same_displayed_state() {
     told.until("the event to reach the screen", |t| t.contains(&needle));
     let by_event = told.frame();
 
-    asking.send("r");
+    asking.press("r");
     asking.until("the reload to reach the screen", |t| t.contains(&needle));
     let by_reload = asking.frame();
 
@@ -1525,7 +2058,7 @@ fn an_event_repaints_the_list_and_renews_no_claim() {
     // Opening the task you hold renews the lease, and it is supposed to: it is
     // `ank show`, run because a person typed an identifier (TASK-49746735127f).
     // What follows is about what happens with nobody typing.
-    live.send(&short_of(&held));
+    live.press(&open(&held));
     live.until("the held task to open", |t| t.contains(TAIL));
     let _ = live.frame();
 
@@ -1542,7 +2075,7 @@ fn an_event_repaints_the_list_and_renews_no_claim() {
     }
 
     // `b` draws the list out of what is already in hand: it reads nothing.
-    live.send("b");
+    live.press("b");
     live.until("the list to name the task that arrived", |t| {
         t.contains(&short_of(&arrived))
     });
@@ -1751,7 +2284,7 @@ fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
     let by_screen = proposal(&repo, TITLE);
     let by_shell = proposal(&repo, TITLE);
 
-    let seen = drive(&repo, READER, &[&by_screen, "accept", "q"]);
+    let seen = drive(&repo, READER, &[&format!(":{by_screen}"), ":accept", "q"]);
     assert!(
         seen.contains(&format!("ank accept {by_screen}")),
         "the reader ran the verb, and said which one:\n{seen}"
@@ -1882,7 +2415,7 @@ fn with_the_word_withheld_nothing_in_the_queue_changes_state() {
     let seen = drive(
         &repo,
         READER,
-        &["v", &short_of(&waiting), "n", "n", "c", "b", "v", "q"],
+        &["v", &open(&waiting), "n", "n", "c", "b", "v", "q"],
     );
     assert!(
         seen.contains(&short_of(&waiting)),
@@ -1928,7 +2461,7 @@ fn a_ratification_off_the_default_branch_shows_the_clis_refusal_and_the_way_out(
     repo.warm(READER);
     let before = corpus_files(&repo);
 
-    let seen = drive(&repo, READER, &[&short_of(&waiting), "accept", "q"]);
+    let seen = drive(&repo, READER, &[&open(&waiting), ":accept", "q"]);
 
     let code = declared("accept", "not on the default branch");
     assert_eq!(
@@ -1974,7 +2507,7 @@ fn accept_is_refused_off_the_document_and_refused_with_a_tail() {
     let seen = drive(
         &repo,
         READER,
-        &["v", "accept", &short_of(&waiting), "accept ADR-0000", "q"],
+        &["v", ":accept", &open(&waiting), ":accept ADR-0000", "q"],
     );
     assert!(
         seen.contains("open it first"),
