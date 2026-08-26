@@ -13,20 +13,20 @@ license = "Apache-2.0"
 description = "The Ank terminal reader: it draws what the CLI prints, and reaches the corpus only by running it."
 
 # **The dependency list is the constraint made mechanical** (ADR-8bd76e8d7c4e,
-# ADR-0b55983421dd). `ank-core` is absent and must stay absent, and so is every
+# ADR-c07e2694f0e1). `ank-core` is absent and must stay absent, and so is every
 # git library: this crate reaches the corpus by running `ank ... --json` and by
 # nothing else, so the refusals it shows are the refusals the binary gave and
 # there is no second dispatch path to keep in step. `tests/dependencies.rs`
 # reads the graph back out of cargo and fails when either arrives, holds this
 # list to what is declared below, and reads the sources for the `extern` block
-# ADR-0b55983421dd forbids on any platform.
+# ADR-c07e2694f0e1 forbids on any platform.
 [dependencies]
 # The exit codes, read out of the contract rather than typed as numbers
 # (ADR-6fd69efb629c). This is what `ank-daemon` takes from it and for the same
 # reason: this crate dispatches no verb, so the verb table is not its business.
 ank-contract = { path = "../ank-contract" }
 # **The two the decision spends, and the whole of what they buy**
-# (ADR-0b55983421dd). The reader is a full-screen application: raw mode, the
+# (ADR-c07e2694f0e1). The reader is a full-screen application: raw mode, the
 # alternate buffer, a keystroke, a resize, and a layout with panels to come.
 # Every one of those is two implementations of one behaviour -- `tcsetattr` and
 # `SetConsoleMode`, an `ioctl` and a console call, a byte and a key record --
@@ -40,9 +40,10 @@ ank-contract = { path = "../ank-contract" }
 # lockfile went from 50 entries to 200, and the two counts differ because a
 # lockfile carries a package whether or not a feature enables it: the termion
 # and termwiz backends, `palette` and their trees are locked and never built.
-# ADR-0b55983421dd priced this at fifty-five, which is what ratatui 0.29 costs
-# by the same instrument; 0.30 is 8 crates more compiled than that, and it is
-# the current release rather than a major this project would owe an upgrade.
+# Fifty-five is what this was priced at when the two were taken, and it is what
+# ratatui 0.29 costs by the same instrument; 0.30 is 8 crates more compiled than
+# that, and it is the current release rather than a major this project would owe
+# an upgrade.
 #
 # The default features are off and four are named. `all-widgets` and
 # `widget-calendar` are what they buy back: this reader draws no calendar, and

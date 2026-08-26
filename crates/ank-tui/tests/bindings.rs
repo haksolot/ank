@@ -10,8 +10,8 @@
 //! there is a dispatch, a note band, a wrap, a `fit` and a terminal.
 //!
 //! **Twice, that being the whole of the point.** ADR-c07e2694f0e1, the
-//! proposed successor this wave is built on, was written
-//! because the reader's own trailer taught a vocabulary the reader did not have
+//! decision this wave is built on, was written because the reader's own
+//! trailer taught a vocabulary the reader did not have
 //! -- `?` omitted `v`, Space, every arrow, the way out and the whole of the
 //! ring -- and a suite that asserted the list contains `q quit` would have
 //! passed on that screen. So this reads the drawn rows back and holds them to

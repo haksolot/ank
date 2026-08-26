@@ -109,7 +109,7 @@ pub fn wrap(line: &str, width: usize) -> Vec<String> {
 /// the terminal rather than about the arithmetic: a screen ruling its panels
 /// with box-drawing glyphs rules its chrome with the same horizontal, and one
 /// that has been told the terminal is dumb rules both with `-`
-/// (ADR-c07e2694f0e1, proposed). [`crate::view::Glyphs`] is what answers it,
+/// (ADR-c07e2694f0e1). [`crate::view::Glyphs`] is what answers it,
 /// once, when the screen opens.
 pub fn rule(width: usize, of: &str) -> String {
     of.repeat(width)

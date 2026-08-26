@@ -24,7 +24,7 @@ mod terminal;
 use terminal::{Live, Repo};
 
 /// The border set an ordinary terminal is drawn with, read out of the reader
-/// rather than written here (ADR-c07e2694f0e1, proposed).
+/// rather than written here (ADR-c07e2694f0e1).
 ///
 /// A suite carrying its own copy of a glyph would go on asserting about a
 /// character the reader had stopped drawing, which is a test that quietly
@@ -191,7 +191,7 @@ fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
 }
 
 /// Structure is box-drawing, and ASCII where the terminal declares itself
-/// dumb (TASK-e900637aeac4, ADR-c07e2694f0e1 proposed).
+/// dumb (TASK-e900637aeac4, ADR-c07e2694f0e1).
 ///
 /// **Through the binary, because the probe is the environment of a process.**
 /// `src/view.rs` asserts the same property of the render function, which is

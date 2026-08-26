@@ -1,5 +1,5 @@
 //! `ank tui` through the binary (TASK-49746735127f, ADR-8bd76e8d7c4e,
-//! ADR-0b55983421dd).
+//! ADR-c07e2694f0e1).
 //!
 //! CLAUDE.md leaves no choice about where this suite lives: a criterion that
 //! talks about the binary is tested through the binary, and twice in this
@@ -24,7 +24,7 @@
 //! the engine whole.
 //!
 //! **How the session is driven did move, twice.** A command is a key now
-//! (ADR-0b55983421dd), so a list of lines became a list of keystrokes, with the
+//! (ADR-c07e2694f0e1), so a list of lines became a list of keystrokes, with the
 //! four verbs that carry a message, a reason, a proof or a flag spelled into
 //! the prompt that `a` opens -- see [`on_a_terminal`] for what an entry of one
 //! of those lists is.
@@ -355,7 +355,7 @@ fn json_does_not_exempt_a_caller_from_the_terminal() {
 /// nothing is added to the link line either.
 ///
 /// **The window is set here and it has to be.** The reader asks the terminal
-/// how big it is (ADR-0b55983421dd), and a pseudo-terminal nobody sized is nought
+/// how big it is (ADR-c07e2694f0e1), and a pseudo-terminal nobody sized is nought
 /// by nought -- so a suite that skipped this would be asserting what a reader
 /// draws into no window at all. It is also what makes the resize measurable:
 /// setting it again while a session is running is exactly what a person
@@ -817,9 +817,11 @@ fn drive(repo: &Repo, agent: &str, keys: &[&str]) -> Seen {
 /// **What an entry of `keys` is.** Anything beginning with `:` is a line typed
 /// into the prompt: the key that opens it, the rest of the entry, and Enter.
 /// Anything else is the keys themselves, byte for byte -- `"q"`, `"j"`, `"\r"`
-/// for Enter. That is the shape of the reader now (ADR-0b55983421dd): every
-/// command that only moves the screen is one key, and the four verbs that carry
-/// a message, a reason, a proof or a flag are spelled into a prompt.
+/// for Enter. Every command that only moves the screen is one key
+/// (ADR-c07e2694f0e1), and the four verbs that carry a message, a reason, a
+/// proof or a flag are spelled into a prompt -- which is the shape of the
+/// reader today and not a shape the decision asks for: TASK-1a415107fd56 is
+/// where the writing verbs take letters of their own.
 ///
 /// A line that spells one of the six verbs that write composes a command and
 /// shows it rather than running it, so an entry that spells one is followed by
@@ -1149,9 +1151,9 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
 /// has (ADR-c9f9d1a05b23).
 ///
 /// **Both ends of the window are taken in characters and never in bytes**
-/// (ADR-c07e2694f0e1, proposed). The frames carry box-drawing glyphs now and a
-/// glyph is three bytes, so the two byte offsets this used to take are both a
-/// slice through a code point -- which is a panic and not a failure. `rfind`
+/// (ADR-c07e2694f0e1). The frames carry box-drawing glyphs now and a glyph is
+/// three bytes, so the two byte offsets this used to take are both a slice
+/// through a code point -- which is a panic and not a failure. `rfind`
 /// answers the byte index a character *starts* at, so the old `i + 1` landed
 /// inside a border drawn hard against a kind; `at + 5` landed inside one drawn
 /// hard against an identifier the reader had cut. The left boundary therefore
@@ -1243,7 +1245,7 @@ fn the_frames_carry_no_identifier_the_corpus_does_not() {
 }
 
 /// A terminal made narrower, then wider, redraws to its new size with nobody
-/// typing (TASK-4fa385c1772d, ADR-0b55983421dd).
+/// typing (TASK-4fa385c1772d, ADR-c07e2694f0e1).
 ///
 /// **The whole of the assertion is that no key was pressed.** The window is
 /// changed on the master side, exactly as a terminal emulator changes it, and

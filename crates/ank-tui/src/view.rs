@@ -72,15 +72,15 @@
 //!
 //! **The borders are box-drawing glyphs, and drop to `-`, `|`, `+` and `=` on
 //! the terminal that declares it can render neither those nor colour**
-//! (ADR-c07e2694f0e1, proposed successor to ADR-0b55983421dd). [`Glyphs`] is
-//! that choice, and it is a field of its own beside the ink rather than a part
-//! of it: the probe is the terminal's own word and never `NO_COLOR`, because
-//! refusing colour is not refusing glyphs and a frame whose characters moved
-//! when the paint went would leave "nothing is carried by colour alone" with
-//! nothing to measure it by. LOG-ed57116ba141 recorded the older answer --
-//! ASCII everywhere, for the phone that could not draw the glyphs -- and the
-//! phones people read from have overtaken it; ADR-1f70ce2c3eac's scope is the
-//! CLI's renderer and not this one.
+//! (ADR-c07e2694f0e1). [`Glyphs`] is that choice, and it is a field of its own
+//! beside the ink rather than a part of it: the probe is the terminal's own
+//! word and never `NO_COLOR`, because refusing colour is not refusing glyphs
+//! and a frame whose characters moved when the paint went would leave "nothing
+//! is carried by colour alone" with nothing to measure it by.
+//! LOG-ed57116ba141 recorded the older answer -- ASCII everywhere, for the
+//! phone that could not draw the glyphs -- and the phones people read from
+//! have overtaken it; ADR-1f70ce2c3eac's scope is the CLI's renderer and not
+//! this one.
 //!
 //! **And focus is not decoration: the focused one of the two middle panels
 //! takes four fifths of the width.** A corpus reader has exactly two things
@@ -142,7 +142,7 @@
 //! # The confirmation, which is the fourth act
 //!
 //! **No verb that writes is spawned without the exact command line having been
-//! on the screen first** (TASK-d4a882345837, ADR-0b55983421dd). What
+//! on the screen first** (TASK-d4a882345837, ADR-c07e2694f0e1). What
 //! [`App::propose`] leaves behind is a `Pending`: the verb, the argv, and the
 //! line spelled as a shell would have to spell it. The band under the panels
 //! shows that line, `y` runs it and every other key on the keyboard drops it
@@ -313,7 +313,7 @@ impl Focus {
 /// person with a keyboard reads the letter, a person with a thumb touches the
 /// word, and neither is using a feature the other has not got.
 ///
-/// None of the keys named here is a chord, which is ADR-0b55983421dd's rule
+/// None of the keys named here is a chord, which is ADR-c07e2694f0e1's rule
 /// showing on the screen rather than only in `keys`: a target offering
 /// Control-something would be an offer a phone cannot take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -444,7 +444,7 @@ pub struct App {
     /// screen whose answer could differ between two rows of one frame.
     ink: Ink,
     /// Which characters this screen draws its structure with, decided once
-    /// when it opens (ADR-c07e2694f0e1, proposed).
+    /// when it opens (ADR-c07e2694f0e1).
     ///
     /// **Beside the ink and never inside it.** The two are decided from one
     /// probe and they are two fields, so taking the paint away moves no
@@ -1805,10 +1805,9 @@ impl App {
     ///
     /// **What the block buys is the screen this panel was spending on text a
     /// person had to read as YAML.** That is the ground ADR-c07e2694f0e1 stands
-    /// on -- the reader spends its screen on the corpus -- which is proposed and
-    /// not ratified: a successor to ADR-0b55983421dd rather than a decision this
-    /// code may yet lean on. What binds here is still ADR-0b55983421dd, and
-    /// nothing above needs the successor to be true.
+    /// on -- the reader spends its screen on the corpus -- and it is ratified,
+    /// so the argument this block was built on and the decision that binds it
+    /// are one document rather than two that happened to agree.
     fn block(&self, width: usize) -> Vec<(Composed, Option<String>)> {
         let Some(detail) = &self.detail else {
             return Vec::new();
@@ -2224,14 +2223,14 @@ impl App {
 /// Which characters this reader draws its structure with.
 ///
 /// **A second field beside [`paint::Ink`], and never the ink itself**
-/// (ADR-c07e2694f0e1, proposed successor to ADR-0b55983421dd). The two share
-/// one probe -- [`paint::declared_dumb`], the terminal's own word that it can
-/// render nothing rich -- and nothing else: `NO_COLOR` reaches the ink and
-/// reaches no glyph. That separation is not tidiness. "Nothing on this screen
-/// is carried by colour alone" is measured by drawing one corpus with the
-/// paint and once without it and requiring the two frames to be identical
-/// character for character, and a border that moved with the ink would leave
-/// the property with no measurement at all.
+/// (ADR-c07e2694f0e1). The two share one probe -- [`paint::declared_dumb`],
+/// the terminal's own word that it can render nothing rich -- and nothing
+/// else: `NO_COLOR` reaches the ink and reaches no glyph. That separation is
+/// not tidiness. "Nothing on this screen is carried by colour alone" is
+/// measured by drawing one corpus with the paint and once without it and
+/// requiring the two frames to be identical character for character, and a
+/// border that moved with the ink would leave the property with no measurement
+/// at all.
 ///
 /// Copied rather than referenced, and constructed in three places: [`detect`]
 /// below, and the two constants the suite uses to state both halves of the
@@ -2704,8 +2703,7 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 pub const PROMPT: &str = ": ";
 // `KEYS`, `PANEL_KEYS`, `ACT_KEYS` and `RATIFY_KEY` stood here
 // (TASK-4d2eb2b4e193). Four sentences about a key table, written beside two
-// other renderings of the same table, and ADR-c07e2694f0e1 -- proposed --
-// records what they
+// other renderings of the same table, and ADR-c07e2694f0e1 records what they
 // cost: the trailer taught a vocabulary the reader did not have, and left out
 // `v`, Space, every arrow and the whole of the ring. The trailer now draws
 // `bindings::screen_line` and `bindings::write_line`, over
@@ -2987,7 +2985,7 @@ mod tests {
     }
 
     /// Structure is box-drawing, and the ASCII rules are what a terminal that
-    /// declared itself dumb gets back (ADR-c07e2694f0e1, proposed).
+    /// declared itself dumb gets back (ADR-c07e2694f0e1).
     ///
     /// Both sets on one test, because either alone is half of it: a reader
     /// that had gone to glyphs and taken the fallback with it would pass the
