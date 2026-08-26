@@ -17,7 +17,16 @@
 //! No dependency, direct or transitive: `std::io::IsTerminal` has been stable
 //! since 1.70 and the floor here is 1.95. The task that ordered this feature
 //! expected to reach for `libc`, and did not need to.
+//!
+//! **What a status means is not decided here.** ADR-1f70ce2c3eac moved the
+//! meaning to `ank-contract::meaning`, where the terminal reader can read it
+//! too, and left the escape sequences behind. So this file holds two things and
+//! not three: the eight codes, and a [`Role`] -> code mapping that is total. It
+//! holds no table of statuses at all — a status reaches a code by way of the
+//! shared table, in one lookup, and a second opinion about `done` would have to
+//! be written somewhere there is now no room for it.
 
+use ank_contract::meaning::{self, Role};
 use std::io::IsTerminal;
 
 /// The structure alphabet of §4 (ADR-1f70ce2c3eac).
@@ -113,8 +122,14 @@ impl Style {
     }
 
     /// `TASK-8ebd`, `ADR-962c`. The register `git log` uses for a sha.
+    ///
+    /// Painted from the role every kind carries rather than from a colour
+    /// picked here: the shared table declares one row per kind and lands them
+    /// all on [`Role::Identifier`], which is what makes "an identifier reads the
+    /// same whatever it names" a decision a surface can be held to instead of a
+    /// coincidence of two call sites.
     pub fn id(&self, s: &str) -> String {
-        self.yellow(s)
+        self.role(Role::Identifier, s)
     }
 
     /// The trailing `> ank claim … to start` every output ends on.
@@ -124,28 +139,27 @@ impl Style {
 
     /// A bracketed status marker, styled by what it says.
     ///
-    /// The mapping lives here rather than beside each `marker()` because two
-    /// modules build these strings — `context` and `find` — and two copies of a
-    /// colour table are two chances for `[done]` to be green in one listing and
-    /// not the other.
+    /// The lookup is the shared table's and the brackets are its business too
+    /// (`meaning::role_of_marker`), because two modules build these strings —
+    /// `context` and `find` — and a third surface builds them again; a copy of
+    /// the reading is a chance for `[done]` to land in one register here and
+    /// another there.
+    ///
+    /// A string the table declares no row for is returned untouched. That is
+    /// the answer for something that is not a status at all, not a default for
+    /// a status the table forgot, and `[blocked]` is the case it is for.
     pub fn status(&self, marker: &str) -> String {
-        let inner = marker.trim_start_matches('[').trim_end_matches(']');
-        match state_sgr(inner) {
-            Some(sgr) => self.paint(sgr, marker),
-            None => marker.to_string(),
-        }
+        self.by(meaning::role_of_marker(marker), marker)
     }
 
     /// The state a transition landed on: the `done` of `TASK-8ebd -> done`.
     ///
-    /// Deliberately the same table `status` reads. `-> done` and `[done]` are
-    /// the same fact seen twice, and §4 asks that a reader who has learned one
-    /// have learned the other — which is only true if one lookup answers both.
+    /// Deliberately the same table `status` reads, reached without the
+    /// brackets. `-> done` and `[done]` are the same fact seen twice, and §4
+    /// asks that a reader who has learned one have learned the other — which is
+    /// only true if one lookup answers both.
     pub fn landed(&self, state: &str) -> String {
-        match state_sgr(state) {
-            Some(sgr) => self.paint(sgr, state),
-            None => state.to_string(),
-        }
+        self.by(meaning::role_of_status(state), state)
     }
 
     /// A transition word for something the corpus gained: `created`, `claimed`,
@@ -183,33 +197,45 @@ impl Style {
             PLAIN
         }
     }
-}
 
-/// The colour a state carries, from the one table §4 declares.
-///
-/// Free rather than a method because it answers about the state and not about
-/// the [`Style`] asking: `status` reads it for `[done]` and `landed` for the
-/// `done` of `-> done`, and the two must not be able to drift apart.
-fn state_sgr(state: &str) -> Option<&'static str> {
-    // Checked before the split: an expired marker is `[open expired:who]`,
-    // whose leading word is the status it expired from.
-    if state.contains("expired") {
-        return Some("33");
+    /// A [`Role`] of the shared table, in the register §4 gives it.
+    ///
+    /// **This is the whole of what this binary decides about meaning**, and it
+    /// is a total function of the role: a variant added to
+    /// `ank-contract::meaning` stops this compiling, which is the question the
+    /// CLI has to be asked whenever a surface learns a new part to play. A
+    /// lookup table keyed on strings would have answered the new role with a
+    /// default and shipped it unpainted.
+    pub fn role(&self, role: Role, s: &str) -> String {
+        self.paint(
+            match role {
+                Role::Available => "34",
+                // One state seen twice: `in_progress` is what the file says,
+                // `claimed` is what the ref says. A reader who sees them in two
+                // colours has to learn that they are the same fact; a reader who
+                // sees one colour does not.
+                Role::Underway => "36",
+                Role::Accomplished => "32",
+                Role::Retired => "2",
+                Role::Awaiting => "35",
+                Role::Attention => "33",
+                Role::Fault => "31",
+                Role::Identifier => "33",
+            },
+            s,
+        )
     }
-    match state.split(':').next().unwrap_or(state) {
-        "done" | "finished" | "accepted" => Some("32"),
-        // One state seen twice: `in_progress` is what the file says, `claimed`
-        // is what the ref says. A reader who sees them in two colours has to
-        // learn that they are the same fact; a reader who sees one colour does
-        // not.
-        "claimed" | "in_progress" => Some("36"),
-        "closed" | "superseded" => Some("2"),
-        "open" => Some("34"),
-        "proposed" => Some("35"),
-        // Nothing else is a status. Returning None here is not a default for a
-        // state the table forgot -- it is the answer for a string that is not a
-        // state at all, and §4 is now checkable against that.
-        _ => None,
+
+    /// [`Self::role`] where the table may have answered nothing.
+    ///
+    /// `None` returns the input byte for byte, which is the same guarantee
+    /// [`PLAIN`] gives and for the same reason: a caller must be able to hand a
+    /// string to a painter without first knowing whether it is a status.
+    fn by(&self, role: Option<Role>, s: &str) -> String {
+        match role {
+            Some(role) => self.role(role, s),
+            None => s.to_string(),
+        }
     }
 }
 
@@ -485,6 +511,128 @@ mod tests {
                 "{state} reaches a reader with no colour"
             );
             assert_ne!(s.landed(state), state, "{state} lands with no colour");
+        }
+    }
+
+    /// **Every row of the shared table reaches a code**, walked over the table
+    /// itself rather than over a list typed here.
+    ///
+    /// This is the "renders that table" half of ADR-1f70ce2c3eac from the CLI's
+    /// side: a row added in `ank-contract` that this binary had no register for
+    /// would reach a reader unpainted, and a bare array here would have gone
+    /// stale in silence — which is exactly how `in_progress` came to be missing
+    /// from the palette for as long as it was. The `match` in [`Style::role`]
+    /// stops compiling on a new *role*; this stops the suite on a new *row*.
+    #[test]
+    fn every_row_of_the_shared_table_is_painted() {
+        let s = COLOR;
+        for m in meaning::MEANINGS {
+            let painted = s.role(m.role, m.name);
+            assert_ne!(
+                painted, m.name,
+                "{:?} {} reaches a reader with no colour",
+                m.subject, m.name
+            );
+            assert!(
+                painted.ends_with(RESET),
+                "{painted:?} did not reset: an unreset attribute bleeds into the prompt"
+            );
+            assert_eq!(
+                undo_sgr(&painted),
+                m.name,
+                "{} was moved, not painted",
+                m.name
+            );
+            assert_eq!(PLAIN.role(m.role, m.name), m.name, "{} leaked", m.name);
+        }
+    }
+
+    /// The bytes a terminal receives, pinned to the literal sequence.
+    ///
+    /// The one assertion in this file written against escape literals, and it is
+    /// the one that has to be: everything else compares two renders of the same
+    /// table, and two renders of a table that moved together agree. What must
+    /// not move is what a terminal is actually sent — ADR-1f70ce2c3eac permits
+    /// the meaning to move crates precisely because "nothing a caller reads
+    /// changes by a byte", and this is where that is measured.
+    #[test]
+    fn a_role_reaches_a_terminal_as_the_bytes_it_always_did() {
+        let s = COLOR;
+        for (role, bytes) in [
+            (Role::Available, "\x1b[34mx\x1b[0m"),
+            (Role::Underway, "\x1b[36mx\x1b[0m"),
+            (Role::Accomplished, "\x1b[32mx\x1b[0m"),
+            (Role::Retired, "\x1b[2mx\x1b[0m"),
+            (Role::Awaiting, "\x1b[35mx\x1b[0m"),
+            (Role::Attention, "\x1b[33mx\x1b[0m"),
+            (Role::Fault, "\x1b[31mx\x1b[0m"),
+            (Role::Identifier, "\x1b[33mx\x1b[0m"),
+        ] {
+            assert_eq!(
+                s.role(role, "x"),
+                bytes,
+                "{role:?} changed what a terminal is sent"
+            );
+        }
+    }
+
+    /// **The one opinion, asserted as an identity rather than as agreement.**
+    ///
+    /// `status` and `landed` are required to be the shared table's lookup
+    /// followed by this file's register, and nothing else. Comparing them
+    /// against a second table written here would pass while two tables existed,
+    /// which is the state ADR-1f70ce2c3eac forbids; comparing them against the
+    /// composition fails the moment either accessor grows a case of its own.
+    #[test]
+    fn the_status_accessors_are_the_shared_table_and_no_second_opinion() {
+        let s = COLOR;
+        for m in meaning::MEANINGS {
+            if m.subject != meaning::Subject::Status {
+                continue;
+            }
+            for state in [
+                m.name.to_string(),
+                format!("{}:who@host", m.name),
+                format!("{} expired:who@host", m.name),
+            ] {
+                let expected = meaning::role_of_status(&state)
+                    .map(|r| s.role(r, &state))
+                    .unwrap_or_else(|| state.clone());
+                assert_eq!(s.landed(&state), expected, "landed decided about {state:?}");
+                let marker = format!("[{state}]");
+                let expected = meaning::role_of_marker(&marker)
+                    .map(|r| s.role(r, &marker))
+                    .unwrap_or_else(|| marker.clone());
+                assert_eq!(
+                    s.status(&marker),
+                    expected,
+                    "status decided about {marker:?}"
+                );
+            }
+        }
+    }
+
+    /// The severity rows, held to the two call sites that still name a colour.
+    ///
+    /// `check`'s tags are built in `human.rs` with `red("error:")` and
+    /// `yellow("signal:")`. Those call sites are outside this task's perimeter
+    /// and were not moved, so what keeps them and the table one fact is this
+    /// equality: it fails the day either the row or the call site moves alone,
+    /// which is the whole of what a second reading can cost.
+    #[test]
+    fn a_severity_reads_as_the_tag_check_already_prints() {
+        let s = COLOR;
+        for (severity, tag, expected) in [
+            ("fault", "error:", s.red("error:")),
+            ("signal", "signal:", s.yellow("signal:")),
+        ] {
+            let role = meaning::role_of_severity(severity)
+                .unwrap_or_else(|| panic!("the table declares no {severity}"));
+            assert_eq!(
+                s.role(role, tag),
+                expected,
+                "{severity} and the tag `check` prints have come apart"
+            );
         }
     }
 

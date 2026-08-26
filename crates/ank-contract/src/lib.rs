@@ -27,6 +27,12 @@
 //! change stream has a writer in one crate and a reader in another, so its key
 //! names and its vocabulary are exactly the pair this crate exists to keep from
 //! disagreeing.
+//!
+//! [`meaning`] is the third of that shape and the widest: what a status, a kind
+//! or a severity *means* has two renderers now — the CLI's hand-written ANSI and
+//! the terminal reader's — and ADR-1f70ce2c3eac permits the two renderers while
+//! forbidding the second table. So the table is here, holding roles and no
+//! escape sequence, and each surface paints those roles its own way.
 
 /// The version of the machine contract every `--json` document is written
 /// against, and carries (ADR-6fd69efb629c).
@@ -51,11 +57,13 @@ pub const CONTRACT_VERSION: u32 = 1;
 pub mod events;
 pub mod exit;
 pub mod json;
+pub mod meaning;
 pub mod renews;
 pub mod shape;
 pub mod verbs;
 
 pub use exit::ExitCode;
+pub use meaning::{Meaning, Role, Subject, MEANINGS};
 pub use renews::Renews;
 pub use verbs::{
     find_flag, known_flags, long_of, short_of, spec_of, usage, CommandSpec, FlagSpec, Refusal,
