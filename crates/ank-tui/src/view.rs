@@ -36,9 +36,10 @@
 //! * **2 ENTITIES** -- every entity of every kind with its status, filtered by
 //!   `f` and `/`, windowed. Where a session opens, because it is the question a
 //!   reader arrives with.
-//! * **3 BODY** -- the entity somebody opened, whole: what holds it, what binds
-//!   its declared scope, and its body paged rather than cut. `c` swaps it for
-//!   the constraints, listed whole.
+//! * **3 BODY** -- the entity somebody opened, whole: its frontmatter as a
+//!   block of labelled fields, who holds it, the constraints binding its
+//!   declared scope, and its prose under them, paged rather than cut
+//!   (TASK-082301b40a27). `c` swaps it for the constraints alone.
 //! * **4 QUEUE** -- what is proposed and waiting for a signature, and which
 //!   regime the corpus is in. Full width for the same reason the claims are:
 //!   the sentence saying a corpus has declared no ratification key is
@@ -195,6 +196,14 @@
 //! ADR's prose is full of them, and a reader that painted every occurrence would
 //! be telling its person that a sentence is a state.
 //!
+//! **The body panel is where that boundary is drawn twice on one screen**
+//! (TASK-082301b40a27). Its field block is paintable because it is fields --
+//! `status`, `type` and the identifiers, lifted out of the frontmatter by
+//! [`crate::model::frontmatter`] and laid out here, reaching the shared table
+//! through the same lookup a listing row uses. What follows the frontmatter is
+//! the document's reasoning, and not one character of it is painted. Same rule,
+//! two answers, four rows apart.
+//!
 //! **The split on what reaches the screen is the crate header's, applied to an
 //! answer.** The chrome is this crate's own -- the line naming the command that
 //! ran, the markers, the panel titles -- and every value under it is the
@@ -207,11 +216,11 @@ use crate::ank::{Ank, Failed, Ran};
 use crate::bindings::{self, Holding};
 use crate::input::{Act, Command};
 use crate::keys::{self, Editing, Press};
-use crate::model::{short_of, Detail, Queue, Row, Snapshot};
+use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
 use crate::paint::{self, role_of_id, Composed, Ink};
 use crate::stream::Stream;
 use crate::text::{self, fit, pad, window, wrap};
-use ank_contract::meaning::role_of_status;
+use ank_contract::meaning::{role_of_kind, role_of_status, Role};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -266,11 +275,18 @@ impl Focus {
         Focus::ALL[at as usize]
     }
 
-    /// Whether this panel holds rows a cursor moves through.
+    /// Whether this panel holds the rows of a *listing*.
     ///
-    /// Three of the four do. The body is the one that does not: what moves
-    /// there is an offset into lines, because a document has no rows to select
-    /// and paging it is what "whole rather than cut" means.
+    /// Three of the four do. The body is the one that does not, and what
+    /// answers for it is everything written for a listing: the digit that names
+    /// a row, the tap that selects one, the shared clamp. A document is not a
+    /// list -- the window over it is an offset into lines, because paging it is
+    /// what "whole rather than cut" means.
+    ///
+    /// It still has a cursor of its own, over the rows of its field block
+    /// (TASK-082301b40a27), kept inside that window by [`App::clamp_body`]. Two
+    /// cursors and one rule: a listing's is a row of an answer, and the body's
+    /// is a place in a document.
     pub fn holds_rows(self) -> bool {
         self != Focus::Body
     }
@@ -388,7 +404,9 @@ pub struct App {
     detail: Option<Detail>,
     note: Option<String>,
     /// One cursor per panel, indexed by [`Focus::number`] less one. The body's
-    /// slot is never read: what moves there is `offset`.
+    /// slot carries only its `at`: the window over a document is `offset`, and
+    /// what the cursor is for there is the row of the field block Enter opens
+    /// (TASK-082301b40a27).
     cursors: [Cursor; 4],
     kind: Option<String>,
     search: Option<String>,
@@ -622,13 +640,17 @@ impl App {
     }
 
     /// The identifier the row under a listing's cursor names.
+    ///
+    /// The body panel answers too, and what it answers about is the field
+    /// block: a row of it that names a constraint names one, and every other
+    /// row of the document names nothing (TASK-082301b40a27).
     fn selected_id(&self, focus: Focus) -> Option<String> {
         let at = self.cursors[focus.number() - 1].at;
         match focus {
             Focus::Claims => self.snapshot.as_ref()?.claims.get(at).map(|c| c.id.clone()),
             Focus::Entities => self.entity_rows().get(at).map(|r| r.id.clone()),
             Focus::Queue => self.queue_rows().get(at).map(|r| r.id.clone()),
-            Focus::Body => None,
+            Focus::Body => self.pane_target(),
         }
     }
 
@@ -840,8 +862,14 @@ impl App {
             }
             Command::Panel(focus) => self.focus_on(focus, ank),
             Command::Move(by) => match self.focus {
+                // The body's cursor walks its rows and the window follows it:
+                // one motion through the field block and the prose under it,
+                // rather than a cursor for the one and a scroll for the other.
                 Focus::Body => {
-                    self.offset = step(self.offset, by, self.pane_lines().len());
+                    let rows = self.pane_lines().len();
+                    let at = self.cursors[Focus::Body.number() - 1].at;
+                    self.cursors[Focus::Body.number() - 1].at = step(at, by, rows);
+                    self.clamp_body();
                 }
                 listing => {
                     let total = self.count(listing);
@@ -852,12 +880,11 @@ impl App {
             },
             Command::Page(by) => match self.focus {
                 Focus::Body => {
-                    let page = self.page(Focus::Body).max(1);
-                    let lines = self.pane_lines().len();
-                    self.offset = match by {
-                        b if b < 0 => self.offset.saturating_sub(page),
-                        _ => (self.offset + page).min(lines.saturating_sub(1)),
-                    };
+                    let page = self.page(Focus::Body).max(1) as isize;
+                    let rows = self.pane_lines().len();
+                    let at = self.cursors[Focus::Body.number() - 1].at;
+                    self.cursors[Focus::Body.number() - 1].at = step(at, by * page, rows);
+                    self.clamp_body();
                 }
                 listing => {
                     let page = self.page(listing).max(1) as isize;
@@ -868,7 +895,10 @@ impl App {
                 }
             },
             Command::Top => match self.focus {
-                Focus::Body => self.offset = 0,
+                Focus::Body => {
+                    self.cursors[Focus::Body.number() - 1] = Cursor::default();
+                    self.offset = 0;
+                }
                 listing => self.cursors[listing.number() - 1] = Cursor::default(),
             },
             Command::Open => self.open_selected(ank),
@@ -933,6 +963,7 @@ impl App {
                     Pane::Constraints => Pane::Body,
                 };
                 self.offset = 0;
+                self.cursors[Focus::Body.number() - 1] = Cursor::default();
                 // The pane that was asked for is the pane to be looking at.
                 self.focus = Focus::Body;
             }
@@ -1071,12 +1102,20 @@ impl App {
 
     /// Opens the row the focused listing names into the body panel, and hands
     /// the panel the focus and the width with it.
+    ///
+    /// **The body panel opens too, and what it opens is a constraint**
+    /// (TASK-082301b40a27): a row of the field block that names one is a way
+    /// into the decision binding this entity, without going back to a listing
+    /// to look it up. Every other row of a document names nothing, and Enter on
+    /// one says so rather than opening whatever happened to be selected.
     fn open_selected(&mut self, ank: &Ank) {
-        if !self.focus.holds_rows() {
-            return;
-        }
         let Some(id) = self.selected_id(self.focus) else {
-            self.note = Some("no row to open".to_string());
+            self.note = Some(match self.focus {
+                Focus::Body => {
+                    "nothing here to open: Enter opens a constraint of the block".to_string()
+                }
+                _ => "no row to open".to_string(),
+            });
             return;
         };
         self.show(ank, &id);
@@ -1099,7 +1138,11 @@ impl App {
                 let same = self.detail.as_ref().is_some_and(|d| d.id == detail.id);
                 self.detail = Some(detail);
                 if !same {
+                    // A different document is a different set of rows: an
+                    // offset and a cursor kept across the change would be a
+                    // window into a document nobody is looking at any more.
                     self.offset = 0;
+                    self.cursors[Focus::Body.number() - 1] = Cursor::default();
                 }
                 self.focus = Focus::Body;
             }
@@ -1268,24 +1311,15 @@ impl App {
             // The regime line sits on the panel's last row: which regime a
             // corpus is in is a fact about every proposal above it.
             Focus::Queue => 1,
-            Focus::Body => self.body_over(inside.width as usize),
+            // Nothing on the body panel: the field block is the head of what it
+            // is paging rather than a band standing over it (TASK-082301b40a27).
+            // A block of standing chrome would have to be short enough to leave
+            // the document room, and a frontmatter is as long as it is -- the
+            // one that could not fit would be silently cut, which is the defect
+            // `pane_rows` exists to refuse.
             _ => 0,
         };
         (inside.height as usize).saturating_sub(taken).max(1)
-    }
-
-    /// How many rows the body panel spends before the document itself: what
-    /// holds it, what binds it, and the blank under them.
-    ///
-    /// Zero on the constraints pane, which heads its list in the panel's title
-    /// and needs no block of its own.
-    fn body_over(&self, width: usize) -> usize {
-        if self.pane != Pane::Body || self.detail.is_none() {
-            return 0;
-        }
-        // The title, the coordination, the scope, the constraints heading,
-        // whatever the summary is, and the blank line under it.
-        4 + self.constraint_summary(width).len() + 1
     }
 
     // -----------------------------------------------------------------------
@@ -1651,9 +1685,13 @@ impl App {
         out
     }
 
-    /// The open document: what holds it, what binds it, and its body.
+    /// The open document, as much of it as the panel has room for.
+    ///
+    /// One list and one offset: the field block is the head of the rows this
+    /// panel pages, not a band standing over them, so `j` walks out of the
+    /// frontmatter and into the prose without a second arithmetic.
     fn body_lines(&self, width: usize, height: usize) -> Vec<Composed> {
-        let Some(detail) = &self.detail else {
+        if self.detail.is_none() {
             return [
                 "  nothing is open here",
                 "  Enter opens the row a listing's cursor is on, and hands this panel the",
@@ -1663,51 +1701,16 @@ impl App {
             .iter()
             .map(|l| Composed::of(l).fitted(width))
             .collect();
-        };
-        let row = self.snapshot.as_ref().and_then(|s| s.row(&detail.id));
-        let mut out = Vec::new();
-        if self.pane == Pane::Body {
-            out.push(
-                Composed::of(
-                    &row.map(|r| r.title.clone())
-                        .unwrap_or_else(|| detail.id.clone()),
-                )
-                .fitted(width),
-            );
-            out.push(
-                Composed::of(detail.coordination.as_deref().unwrap_or("no claim on this"))
-                    .fitted(width),
-            );
-            out.push(
-                Composed::of(&format!(
-                    "scope {}",
-                    join_or(&detail.scopes, "declared on nothing")
-                ))
-                .fitted(width),
-            );
-            out.push(
-                Composed::of(&format!(
-                    "CONSTRAINTS ({} active, {} over this scope)",
-                    active(&detail.constraints),
-                    detail.constraints.len()
-                ))
-                .fitted(width),
-            );
-            out.extend(self.constraint_summary(width));
-            out.push(Composed::new());
         }
-        let over = out.len();
-        let rows = self.pane_rows(width);
-        out.extend(
-            rows.into_iter()
-                .skip(self.offset)
-                .take(height.saturating_sub(over))
-                .map(|line| line.fitted(width)),
-        );
-        out
+        self.pane_rows(width)
+            .into_iter()
+            .skip(self.offset)
+            .take(height)
+            .map(|line| line.fitted(width))
+            .collect()
     }
 
-    /// The lines the body panel is paging through, at a stated width.
+    /// The rows the body panel is paging through, at a stated width.
     ///
     /// Never trimmed and never elided: `content` is the entity as `show`
     /// printed it, and "the body of a selected entity whole" is what the
@@ -1717,58 +1720,196 @@ impl App {
     /// crate's rather than `Paragraph`'s for the reason `text.rs` gives: a
     /// widget that wraps inside its own render reports no count, and the title
     /// over it states one.
-    /// **The document's own body is not painted, and the constraints beside it
-    /// are** (TASK-6cd41d23b7d1). A row of the constraint list is a row this
-    /// crate composed out of fields -- an identifier, a status, a title -- and
-    /// the table has something to say about two of them. `content` is the
-    /// entity as `show` printed it: prose, in which `done` and `accepted` are
-    /// English words, and a reader that painted every occurrence of one would
-    /// be telling its person that a sentence is a status.
     fn pane_rows(&self, width: usize) -> Vec<Composed> {
+        self.pane_content(width)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    /// The same rows, each saying what it opens where it opens anything.
+    ///
+    /// **The pair is what makes Enter mean something on this panel.** A row of
+    /// the field block that names a constraint carries that constraint's
+    /// identifier, and every other row carries nothing -- so the cursor can
+    /// stand anywhere in the document and the verb that opens is offered
+    /// exactly where there is something to open, rather than on a rule of
+    /// arithmetic about which rows the block spent.
+    fn pane_content(&self, width: usize) -> Vec<(Composed, Option<String>)> {
         let Some(detail) = &self.detail else {
             return Vec::new();
         };
         match self.pane {
-            Pane::Body => detail
-                .content
-                .lines()
-                .flat_map(|l| wrap(l, width.max(1)))
-                .map(|l| Composed::of(&l))
-                .collect(),
-            Pane::Constraints => detail.constraints.iter().map(constraint_row).collect(),
+            Pane::Body => {
+                let mut out = self.block(width);
+                out.extend(self.prose_rows(width).into_iter().map(|line| (line, None)));
+                out
+            }
+            // The list whole, and the same rows: `c` is the block's constraints
+            // with the document taken away, not a second rendering of them.
+            Pane::Constraints => {
+                let at = self.cursors[Focus::Body.number() - 1].at;
+                detail
+                    .constraints
+                    .iter()
+                    .enumerate()
+                    .map(|(n, c)| {
+                        (
+                            constraint_row(c, self.marker(n == at)).fitted(width),
+                            Some(c.id.clone()),
+                        )
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// The document's own prose, wrapped to the panel and painted with nothing.
+    ///
+    /// **This is the far side of the paint boundary** (TASK-6cd41d23b7d1). The
+    /// field block above is composed out of fields this crate lifted and the
+    /// shared table has something to say about several of them; what follows
+    /// the frontmatter is an ADR's reasoning, in which `done` and `accepted`
+    /// are ordinary English words, and a reader that painted every occurrence
+    /// of one would be telling its person that a sentence is a status.
+    ///
+    /// It is also the half that is served byte for byte: the rows are the lines
+    /// `show` printed, wrapped and never cut, and joining them back gives the
+    /// prose exactly.
+    fn prose_rows(&self, width: usize) -> Vec<Composed> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        model::prose(&detail.content)
+            .lines()
+            .flat_map(|l| wrap(l, width.max(1)))
+            .map(|l| Composed::of(&l))
+            .collect()
+    }
+
+    /// The field block: the entity's frontmatter as labelled rows, who holds
+    /// it, and the constraints binding its scope (TASK-082301b40a27).
+    ///
+    /// **The block is paintable because it is fields this crate parsed out and
+    /// composed.** `id`, `type` and `status` reach a colour through the shared
+    /// table's own lookup, exactly as the same three values do on a listing row
+    /// -- there is one table and this is not a second opinion about it. The
+    /// labels are the corpus's own words, `done_criteria` and not `Criterion`:
+    /// a screen that renamed a field would teach a vocabulary the CLI does not
+    /// answer to.
+    ///
+    /// The coordination line is `show`'s and not the frontmatter's -- who holds
+    /// a task is a fact about a ref rather than about the file -- and it is a
+    /// row of the same block because a person asking "what is this" is asking
+    /// both halves at once.
+    ///
+    /// **What the block buys is the screen this panel was spending on text a
+    /// person had to read as YAML.** That is the ground ADR-c07e2694f0e1 stands
+    /// on -- the reader spends its screen on the corpus -- which is proposed and
+    /// not ratified: a successor to ADR-0b55983421dd rather than a decision this
+    /// code may yet lean on. What binds here is still ADR-0b55983421dd, and
+    /// nothing above needs the successor to be true.
+    fn block(&self, width: usize) -> Vec<(Composed, Option<String>)> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        let mut out: Vec<(Composed, Option<String>)> = Vec::new();
+        for field in model::frontmatter(&detail.content) {
+            out.extend(
+                field_rows(&field, width)
+                    .into_iter()
+                    .map(|line| (line, None)),
+            );
+        }
+        out.push((
+            Composed::of(&format!(
+                "  {}",
+                detail.coordination.as_deref().unwrap_or("no claim on this")
+            ))
+            .fitted(width),
+            None,
+        ));
+        out.push((Composed::new(), None));
+        out.push((
+            Composed::of(&format!(
+                "  CONSTRAINTS ({} active, {} over this scope)",
+                active(&detail.constraints),
+                detail.constraints.len()
+            ))
+            .fitted(width),
+            None,
+        ));
+        if detail.constraints.is_empty() {
+            out.push((
+                Composed::of("  nothing binds this scope").fitted(width),
+                None,
+            ));
+        }
+        let at = self.cursors[Focus::Body.number() - 1].at;
+        for c in &detail.constraints {
+            let here = self.marker(out.len() == at);
+            out.push((constraint_row(c, here).fitted(width), Some(c.id.clone())));
+        }
+        // The blank that says the block has ended and the document has begun.
+        out.push((Composed::new(), None));
+        out
+    }
+
+    /// The two columns every listing in this tool spends on its left margin,
+    /// carrying the cursor where this panel has the focus.
+    ///
+    /// The marker is withheld off-focus for the reason every other panel
+    /// withholds it: a screen with four cursors on it says nothing about where
+    /// the person is.
+    fn marker(&self, here: bool) -> &'static str {
+        match here && self.focus == Focus::Body {
+            true => text::CURSOR,
+            false => text::PLAIN,
         }
     }
 
     /// The same, at whatever width the body panel has now.
     fn pane_lines(&self) -> Vec<Composed> {
-        let width = inside(self.rect_of(Focus::Body, self.area())).width as usize;
-        self.pane_rows(width)
+        self.pane_rows(self.body_width())
     }
 
-    /// The first few constraints, so the body panel still answers "what binds
-    /// this" without a command. `c` gives the list whole.
-    fn constraint_summary(&self, width: usize) -> Vec<Composed> {
-        let Some(detail) = &self.detail else {
-            return Vec::new();
-        };
-        let room = 3.min(detail.constraints.len());
-        let mut out: Vec<Composed> = detail.constraints[..room]
-            .iter()
-            .map(|c| constraint_row(c).fitted(width))
-            .collect();
-        if detail.constraints.len() > room {
-            out.push(
-                Composed::of(&format!(
-                    "  +{} more, c for the list",
-                    detail.constraints.len() - room
-                ))
-                .fitted(width),
-            );
+    /// What the row under the body panel's cursor opens, where it opens
+    /// anything.
+    fn pane_target(&self) -> Option<String> {
+        let at = self.cursors[Focus::Body.number() - 1].at;
+        self.pane_content(self.body_width())
+            .into_iter()
+            .nth(at)
+            .and_then(|(_, id)| id)
+    }
+
+    /// The width the body panel's rows are composed at.
+    fn body_width(&self) -> usize {
+        inside(self.rect_of(Focus::Body, self.area())).width as usize
+    }
+
+    /// The cursor inside the rows the body panel holds, and the window
+    /// containing it.
+    ///
+    /// **`offset` is the window and the cursor is separate**, which is what
+    /// lets the prose keep its own characters: a row of the document is drawn
+    /// as the file wrote it, with no margin for a marker to sit in, so the
+    /// cursor shows on the rows the block composed and rides invisibly through
+    /// the rest.
+    fn clamp_body(&mut self) {
+        let total = self.pane_lines().len();
+        let page = self.page(Focus::Body).max(1);
+        let at = self.cursors[Focus::Body.number() - 1]
+            .at
+            .min(total.saturating_sub(1));
+        self.cursors[Focus::Body.number() - 1].at = at;
+        if at < self.offset {
+            self.offset = at;
         }
-        if detail.constraints.is_empty() {
-            out.push(Composed::of("  nothing binds this scope").fitted(width));
+        if at >= self.offset + page {
+            self.offset = at + 1 - page;
         }
-        out
+        self.offset = self.offset.min(total.saturating_sub(1));
     }
 
     /// The offer to ratify, where the body panel holds a document that can be
@@ -1832,8 +1973,7 @@ impl App {
         // bottom of a listing that was fine a moment ago, and a narrower one
         // rewraps a body under an offset that was inside it.
         self.clamp_all();
-        let lines = self.pane_lines().len();
-        self.offset = self.offset.min(lines.saturating_sub(1));
+        self.clamp_body();
     }
 
     fn width(&self) -> usize {
@@ -2408,14 +2548,130 @@ fn flat(value: &crate::ank::Value) -> String {
 /// filtered out either -- a superseded decision is where the reasoning of the
 /// live one came from, and hiding it would be answering a different question
 /// than the CLI was asked.
-fn constraint_row(c: &Row) -> Composed {
+fn constraint_row(c: &Row, here: &str) -> Composed {
     Composed::new()
-        .plain("  ")
+        .plain(here)
         .column(&c.short(), 10, role_of_id(&c.id))
         .plain("  ")
         .column(&c.status, 12, role_of_status(&c.status))
         .plain("  ")
         .plain(&c.title)
+}
+
+/// The column a field's label is drawn in.
+///
+/// Wide enough for the longest name this format writes -- `done_criteria` and
+/// `superseded_by` are thirteen, and the colon is a fourteenth -- with a gap
+/// after it. A name is never cut to fit: a field's name is the thing that says
+/// what the value is, and `done_criter~` is a reader deciding a name is
+/// decoration.
+const LABEL: usize = 16;
+
+/// The narrowest value column worth having.
+///
+/// Under this the value goes below its label instead of beside it: a panel that
+/// gave a criterion six columns would be spending a row on the label and
+/// getting almost nothing back for it.
+const NARROW: usize = 16;
+
+/// One field of the frontmatter, as rows of the block.
+///
+/// **The value is wrapped and never cut**, which is the same promise the prose
+/// below carries and for the same reason: a `done_criteria` losing its last
+/// clause to the right edge is a criterion nobody read.
+///
+/// Three shapes and one rule. A scalar goes in the value column. A list puts
+/// its first item there and the rest under it, so `scope` reads as the several
+/// globs it is rather than as one line of commas. A block scalar keeps its own
+/// lines exactly as the file wrote them, indent included -- they are laid out
+/// already, and re-indenting them here would move every wrap boundary on the
+/// screen for no gain.
+fn field_rows(field: &model::Field, width: usize) -> Vec<Composed> {
+    let label = format!("{}:", field.name);
+    if field.is_list() {
+        let items = field.items();
+        if items.is_empty() {
+            // An empty list is a fact and not an absence: `blocked_by: []` says
+            // this task waits on nothing, which is what a person opening it
+            // wants to know. `(none)` is the word this reader already gives an
+            // empty sequence in `answered`.
+            return valued(&label, "(none)", None, width);
+        }
+        return items
+            .iter()
+            .enumerate()
+            .flat_map(|(n, item)| {
+                let head = match n {
+                    0 => label.clone(),
+                    _ => String::new(),
+                };
+                valued(&head, item, role_of_field(&field.name, item), width)
+            })
+            .collect();
+    }
+    let mut out = match field.head.is_empty() {
+        true => vec![Composed::of(&format!("  {label}"))],
+        false => valued(
+            &label,
+            &field.head,
+            role_of_field(&field.name, &field.head),
+            width,
+        ),
+    };
+    for line in &field.body {
+        out.extend(wrap(line, width.max(1)).iter().map(|l| Composed::of(l)));
+    }
+    out
+}
+
+/// One value in the block's value column, under its label, as many rows as it
+/// needs.
+///
+/// The label is empty on a continuation, which pads to the same column: what
+/// makes a block readable is that the values line up, and a second item of a
+/// list is a value like the first.
+fn valued(label: &str, value: &str, role: Option<Role>, width: usize) -> Vec<Composed> {
+    let column = 2 + LABEL;
+    let room = width.saturating_sub(column);
+    if room < NARROW {
+        let mut out = match label.is_empty() {
+            true => Vec::new(),
+            false => vec![Composed::of(&format!("  {label}"))],
+        };
+        out.extend(
+            wrap(value, width.saturating_sub(2).max(1))
+                .iter()
+                .map(|row| Composed::of(&format!("  {row}"))),
+        );
+        return out;
+    }
+    wrap(value, room)
+        .into_iter()
+        .enumerate()
+        .map(|(n, row)| {
+            let head = match n {
+                0 => format!("  {}", pad(label, LABEL)),
+                _ => " ".repeat(column),
+            };
+            Composed::new().plain(&head).named(&row, role)
+        })
+        .collect()
+}
+
+/// What the shared table says about a field's value.
+///
+/// Three questions and no fourth, because there are three the table answers: a
+/// kind, a status, and whether a value is an identifier. The lookup is keyed on
+/// the field's name rather than on the value, which is what keeps `type: task`
+/// a kind instead of a `TASK-` that lost its digits -- and every value the table
+/// declares nothing for is left alone, which is how a date and an author's
+/// handle reach the screen unpainted.
+fn role_of_field(name: &str, value: &str) -> Option<Role> {
+    match name {
+        "type" => role_of_kind(value),
+        "status" => role_of_status(value),
+        _ => role_of_id(value),
+    }
 }
 
 /// How many of them are accepted, which is what `context` calls active.
@@ -2424,14 +2680,6 @@ fn active(constraints: &[Row]) -> usize {
         .iter()
         .filter(|c| c.status == "accepted")
         .count()
-}
-
-fn join_or(items: &[String], empty: &str) -> String {
-    if items.is_empty() {
-        empty.to_string()
-    } else {
-        items.join(", ")
-    }
 }
 
 /// A cursor move, clamped rather than wrapped: a list that jumped from the last
@@ -3325,29 +3573,37 @@ mod tests {
         assert_eq!(step(0, 1, 0), 0, "an empty list has nowhere to move");
     }
 
-    /// The body is served whole: paged down it, and joining the rows back gives
-    /// the file.
+    /// The prose is served whole: paged down it, and joining the rows back gives
+    /// what `show` printed under the frontmatter, byte for byte.
     #[test]
     fn the_body_is_paged_and_never_cut() {
-        let body: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+        let prose: String = (1..=200).map(|n| format!("line {n}\n")).collect();
+        let content = format!("---\nid: TASK-49746735127f\ntype: task\n---\n{prose}");
         let mut a = app();
         a.detail = Some(Detail {
-            content: body,
+            content: content.clone(),
             ..detail("TASK-49746735127f", "")
         });
         a.focus = Focus::Body;
-        assert_eq!(a.pane_lines().len(), 200, "the body is carried whole");
+        let width = a.body_width();
+        assert_eq!(a.prose_rows(width).len(), 200, "the prose is carried whole");
         assert_eq!(
-            texts(&a.pane_lines()).join("\n") + "\n",
-            a.detail.as_ref().unwrap().content,
-            "the rows join back to the body byte for byte"
+            texts(&a.prose_rows(width)).join("\n") + "\n",
+            model::prose(&content),
+            "the rows join back to the prose byte for byte"
         );
+        // And what the reader was given is untouched by the block being drawn
+        // out of it: the frontmatter is still in `content`, where `show` put it.
+        assert_eq!(a.detail.as_ref().unwrap().content, content);
 
         let first = a.frame();
         assert!(first.contains("line 1"), "{first}");
         assert!(first.contains("claimed by claude-code/opus-5+tui-verb"));
         assert!(first.contains("ADR-8bd7"), "the constraints are on screen");
-        assert!(first.contains("crates/ank-tui/**"), "the scope is named");
+        assert!(
+            first.contains("id:"),
+            "the frontmatter is a field block:\n{first}"
+        );
 
         let ank = nowhere();
         a.act(Command::Page(1), &ank);
@@ -3359,11 +3615,12 @@ mod tests {
         for _ in 0..500 {
             a.act(Command::Page(1), &ank);
         }
-        assert!(a.offset < 200, "the offset stayed inside the body");
+        assert!(a.offset < 210, "the offset stayed inside the document");
         assert!(a.frame().contains("line 200"));
 
         a.act(Command::Top, &ank);
         assert_eq!(a.offset, 0);
+        assert_eq!(a.cursors[Focus::Body.number() - 1].at, 0);
     }
 
     /// A body line wider than the panel keeps its end, at both stated widths.
@@ -3389,13 +3646,19 @@ mod tests {
                 ..detail("TASK-49746735127f", "")
             });
             a.focus = Focus::Body;
-            // Nothing lost and nothing invented: the rows carry exactly the
-            // characters the file does, a wrap having added no separator of its
-            // own.
+            // Nothing lost and nothing invented: the field's own lines carry
+            // exactly the characters the file does, a wrap having added no
+            // separator of its own. The criterion is a block scalar, so the
+            // rows under the label are the file's lines and the join is exact.
+            let field = model::frontmatter(&content)
+                .into_iter()
+                .find(|f| f.name == "done_criteria")
+                .expect("the frontmatter carries the field");
+            let rows = field_rows(&field, a.body_width());
             assert_eq!(
-                texts(&a.pane_lines()).concat(),
-                content.lines().collect::<String>(),
-                "the rows are not the body's own characters at {size:?}"
+                texts(&rows).concat(),
+                format!("  done_criteria:{}", field.body.concat()),
+                "the rows are not the field's own characters at {size:?}"
             );
             let mut on_screen = a.frame().contains(TAIL);
             for _ in 0..8 {
@@ -3446,8 +3709,15 @@ mod tests {
         );
     }
 
+    /// Every constraint is a row of the block, and `c` is the same rows with the
+    /// document taken away.
+    ///
+    /// **Nothing is summarised into `+27 more`.** The block is the head of what
+    /// the panel pages rather than a band standing over it, so a scope bound by
+    /// thirty decisions costs thirty rows a person scrolls past instead of
+    /// twenty-seven a person is told about.
     #[test]
-    fn the_constraints_pane_shows_them_whole() {
+    fn every_constraint_is_a_row_of_the_block_and_c_shows_them_alone() {
         let many: Vec<Row> = (1..=30)
             .map(|n| row(&format!("ADR-{n:04}0000000f"), "adr", "accepted", "A rule"))
             .collect();
@@ -3460,12 +3730,217 @@ mod tests {
             )
         });
         a.focus = Focus::Body;
-        assert!(a.frame().contains("+27 more, c for the list"));
+        let width = a.body_width();
+        let named: Vec<String> = a
+            .pane_content(width)
+            .into_iter()
+            .filter_map(|(_, id)| id)
+            .collect();
+        assert_eq!(
+            named.len(),
+            30,
+            "the block carries them all, and each opens"
+        );
+        assert!(a
+            .frame()
+            .contains("CONSTRAINTS (30 active, 30 over this scope)"));
 
         a.act(Command::Constraints, &nowhere());
         assert_eq!(a.pane_lines().len(), 30);
         assert_eq!(a.focus(), Focus::Body, "the pane asked for is the pane in");
         assert!(a.frame().contains("3 CONSTRAINTS"), "{}", a.frame());
+    }
+
+    // -----------------------------------------------------------------------
+    // The field block (TASK-082301b40a27)
+    // -----------------------------------------------------------------------
+
+    /// An entity carrying a whole frontmatter, as `show` prints one.
+    fn shown() -> String {
+        "---\n\
+         id: TASK-49746735127f\n\
+         type: task\n\
+         title: ank tui opens\n\
+         created: 2026-08-26T17:07:37Z\n\
+         author: claude-code/opus-5+tui-verb\n\
+         status: done\n\
+         scope:\n  \
+         - crates/ank-tui/**\n\
+         done_criteria: |\n  \
+         The reader draws the fields.\n\
+         schema: 4\n\
+         ---\n\
+         \n\
+         A decision is accepted when somebody signs it, and done is a word this\n\
+         paragraph uses in English.\n"
+            .to_string()
+    }
+
+    fn opened(content: &str) -> App {
+        let mut a = app();
+        a.detail = Some(Detail {
+            content: content.to_string(),
+            ..detail("TASK-49746735127f", content)
+        });
+        a.focus = Focus::Body;
+        a
+    }
+
+    /// The frontmatter reaches the screen as labelled fields and not as the text
+    /// `show` printed: the fences are gone, the block markers are gone, and
+    /// every label is the word the corpus itself writes.
+    #[test]
+    fn the_frontmatter_is_drawn_as_labelled_fields_in_the_corpus_own_words() {
+        let a = opened(&shown());
+        let f = a.frame();
+        for label in [
+            "id:",
+            "type:",
+            "title:",
+            "status:",
+            "scope:",
+            // The one the CLI suite names too: a field is headed by the word
+            // the format uses, never by a prettier one.
+            "done_criteria:",
+        ] {
+            assert!(f.contains(label), "the block has no {label} row:\n{f}");
+        }
+        assert!(
+            !f.contains("done_criteria: |"),
+            "the YAML marker was drawn as though it were a value:\n{f}"
+        );
+        let rows = texts(&a.pane_rows(a.body_width()));
+        assert!(
+            !rows.iter().any(|r| r.trim_end() == "---"),
+            "a fence is on the screen, so the frontmatter is still text:\n{rows:?}"
+        );
+        // The values are the file's, and the prose below the block is still
+        // there under it.
+        assert!(f.contains("2026-08-26T17:07:37Z"), "{f}");
+        assert!(f.contains("crates/ank-tui/**"), "{f}");
+        assert!(f.contains("The reader draws the fields."), "{f}");
+        assert!(f.contains("A decision is accepted when somebody"), "{f}");
+        // And what the reader was given is untouched: the block is drawn out of
+        // `content`, never instead of it.
+        assert_eq!(a.detail.as_ref().unwrap().content, shown());
+    }
+
+    /// The block is painted and the prose under it is not
+    /// (TASK-6cd41d23b7d1, TASK-082301b40a27).
+    ///
+    /// **The boundary is what the crate composed.** `status` and `type` are
+    /// fields this reader lifted and laid out, so they reach a colour through
+    /// the shared table exactly as the same two values do on a listing row.
+    /// The paragraph below says `accepted` and `done` in English, and nothing
+    /// there is painted at all -- which is the difference between a field and a
+    /// sentence.
+    #[test]
+    fn the_block_is_painted_through_the_table_and_the_prose_is_not() {
+        let mut a = opened(&shown());
+        a.ink = paint::COLOUR;
+        let width = a.body_width();
+
+        let painted: Vec<(String, Style)> = a
+            .block(width)
+            .iter()
+            .flat_map(|(line, _)| line.line(paint::COLOUR).spans.clone())
+            .filter(|s| s.style != Style::new())
+            .map(|s| (s.content.trim_end().to_string(), s.style))
+            .collect();
+        // The status and the kind, in the register a listing row gives them.
+        assert!(
+            painted.contains(&("done".to_string(), paint::COLOUR.of(role_of_status("done")))),
+            "the status was not painted as the table paints one: {painted:?}"
+        );
+        assert!(
+            painted.contains(&("task".to_string(), paint::COLOUR.of(role_of_kind("task")))),
+            "the kind was not painted as the table paints one: {painted:?}"
+        );
+        assert!(
+            painted.contains(&(
+                "TASK-49746735127f".to_string(),
+                paint::COLOUR.of(role_of_id("TASK-49746735127f"))
+            )),
+            "the identifier was not painted as the table paints one: {painted:?}"
+        );
+        // And nothing the table says nothing about: a date, a handle, a glob.
+        for left in ["2026-08-26T17:07:37Z", "claude-code/opus-5+tui-verb"] {
+            assert!(
+                !painted.iter().any(|(text, _)| text == left),
+                "{left} was painted, and the table declares nothing for it"
+            );
+        }
+
+        for row in a.prose_rows(width) {
+            let line = row.line(paint::COLOUR);
+            assert!(
+                line.spans.iter().all(|s| s.style == Style::new()),
+                "the prose was painted: {:?}",
+                row.text()
+            );
+        }
+    }
+
+    /// Enter on the constraint under the cursor opens it, and `j` is what puts
+    /// the cursor there.
+    ///
+    /// The road is the reader's own: a key moves the cursor through the rows of
+    /// the block, and the verb that opens reaches for `show` on the identifier
+    /// the row names -- which is the same road a listing takes, off the same
+    /// `Command::Open`.
+    #[test]
+    fn enter_on_a_constraint_of_the_block_opens_it() {
+        let mut a = opened(&shown());
+        let ank = nowhere();
+        let width = a.body_width();
+        let at = a
+            .pane_content(width)
+            .iter()
+            .position(|(_, id)| id.is_some())
+            .expect("the block carries a constraint row");
+
+        for _ in 0..at {
+            tap(&mut a, &ank, KeyCode::Char('j'));
+        }
+        assert_eq!(a.cursors[Focus::Body.number() - 1].at, at);
+        assert_eq!(
+            a.pane_target().as_deref(),
+            Some("ADR-8bd76e8d7c4e"),
+            "the cursor is not on the constraint row"
+        );
+        // The marker is on that row and on no other: a person can see where
+        // Enter would land, without colour.
+        let rows = texts(&a.pane_rows(width));
+        assert_eq!(
+            rows.iter().filter(|r| r.starts_with(text::CURSOR)).count(),
+            1,
+            "the block draws {} cursors:\n{rows:?}",
+            rows.iter().filter(|r| r.starts_with(text::CURSOR)).count()
+        );
+        assert!(rows[at].starts_with(text::CURSOR), "{:?}", rows[at]);
+
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert!(
+            a.note
+                .clone()
+                .unwrap_or_default()
+                .contains("ADR-8bd76e8d7c4e"),
+            "Enter did not reach for the constraint: {:?}",
+            a.note
+        );
+    }
+
+    /// And on a row that names nothing, Enter says so rather than opening
+    /// whatever happened to be selected.
+    #[test]
+    fn enter_on_a_row_that_names_nothing_opens_nothing() {
+        let mut a = opened(&shown());
+        let ank = nowhere();
+        assert_eq!(a.pane_target(), None, "the block opens with a field row");
+        tap(&mut a, &ank, KeyCode::Enter);
+        let said = a.note.clone().unwrap_or_default();
+        assert!(said.contains("nothing here to open"), "{said}");
+        assert!(!said.contains("cannot run"), "a verb was spawned: {said}");
     }
 
     #[test]

@@ -19,12 +19,17 @@
 //! sources that can disagree.
 //!
 //! **Nothing here derives a fact the CLI did not state.** The one exception is
-//! the `scope:` block, which is lifted out of the frontmatter the CLI printed
-//! in `content` -- and lifted, not parsed: the round trip is guaranteed on
-//! canonical form (ADR-63b59c5c26f7), so the block is a `scope:` line followed
-//! by `  - ` lines, and finding it needs no YAML reader. The alternative was to
-//! ask a fifth verb for it, and there is none that answers "what does this
-//! entity declare".
+//! the frontmatter, which is lifted out of the text the CLI printed in
+//! `content` -- and lifted, not parsed: the round trip is guaranteed on
+//! canonical form (ADR-63b59c5c26f7), so a field is a key at column zero and
+//! whatever is indented under it, and finding one needs no YAML reader. The
+//! alternative was to ask a fifth verb for it, and there is none that answers
+//! "what does this entity declare".
+//!
+//! [`frontmatter`] is that walk and there is one of it. [`declared_scopes`] is
+//! it asked for the `scope` field, and the reader's field block is it asked for
+//! all of them: `content` stays the bytes `show` printed either way, because
+//! what the walk returns are borrowed halves of it and never a rewriting.
 
 use crate::ank::{self, Ank, Failed};
 use ank_contract::json::Obj;
@@ -309,54 +314,172 @@ impl Detail {
     }
 }
 
-/// The globs an entity declares, lifted out of the frontmatter `show` printed.
+/// One field of an entity's frontmatter, lifted out of the text `show` printed.
+///
+/// The name is the corpus's own spelling and nothing here renames it: a screen
+/// that headed a value `Criterion` where the file says `done_criteria` would be
+/// teaching a vocabulary the CLI does not answer to, and the person who learned
+/// it would type the wrong word at the shell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Field {
+    /// The key, as the file spells it.
+    pub name: String,
+    /// What followed the colon on the key's own line: a scalar, or the flow
+    /// form of a list. Empty where the value is below instead of beside, and
+    /// the block markers `|` and `>` never appear -- they are how YAML says
+    /// "the value is below", which is plumbing rather than something the field
+    /// says.
+    pub head: String,
+    /// The lines under the key, as the file has them, indent included. The
+    /// items of a list, or the lines of a block scalar.
+    pub body: Vec<String>,
+}
+
+impl Field {
+    /// Whether the value is a list rather than a scalar.
+    ///
+    /// Either form: the flow one beside the key, or `- ` items under it. Asked
+    /// of the shape and not of the field's name, so a list this reader has
+    /// never heard of reads as one the day it arrives.
+    pub fn is_list(&self) -> bool {
+        if self.head.starts_with('[') && self.head.ends_with(']') {
+            return true;
+        }
+        self.head.is_empty()
+            && !self.body.is_empty()
+            && self
+                .body
+                .iter()
+                .all(|l| l.trim().is_empty() || l.trim_start().starts_with("- "))
+    }
+
+    /// The items, where the value is a list: either form, with the `- ` and any
+    /// quoting off.
+    pub fn items(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        // The flow form, `scope: [a, b]`, which canonical form does not write
+        // but which a hand-edited file may carry.
+        if let Some(items) = self
+            .head
+            .strip_prefix('[')
+            .and_then(|r| r.strip_suffix(']'))
+        {
+            for item in items.split(',') {
+                push_item(&mut out, item);
+            }
+            return out;
+        }
+        for line in &self.body {
+            if let Some(item) = line.trim_start().strip_prefix("- ") {
+                push_item(&mut out, item);
+            }
+        }
+        out
+    }
+}
+
+/// The frontmatter of an entity, field by field, in the order the file has them.
 ///
 /// Canonical form is what the store round-trips (ADR-63b59c5c26f7): the
-/// frontmatter is the text between the first two `---` lines, and a list field
-/// is the key followed by `  - ` items. That is the whole grammar this needs,
-/// and reading it costs no parser -- which matters, because a parser here would
-/// be a second implementation of the format, and the crate that holds the first
-/// one is exactly the crate this one may not link.
-pub fn declared_scopes(content: &str) -> Vec<String> {
-    let mut lines = content.lines();
-    if lines.next().map(str::trim_end) != Some("---") {
+/// frontmatter is the text between the first two `---` lines, a field opens at
+/// column zero with its key and a colon, and everything indented under it
+/// belongs to it. That is the whole grammar this needs, and reading it costs no
+/// parser -- which matters, because a parser here would be a second
+/// implementation of the format, and the crate that holds the first one is
+/// exactly the crate this one may not link.
+///
+/// **One walk and not two.** [`declared_scopes`] used to have a walk of its own
+/// that knew only about `scope:`; it is this one now, asked for one field. A
+/// second walk would be a second answer to "where does the frontmatter end",
+/// and the two would disagree on the first file that surprised either.
+pub fn frontmatter(content: &str) -> Vec<Field> {
+    let Some((inside, _)) = fenced(content) else {
         return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in lines {
-        if line.trim_end() == "---" {
-            break;
-        }
-        if let Some(rest) = line.strip_prefix("scope:") {
-            inside = true;
-            // The flow form, `scope: [a, b]`, which canonical form does not
-            // write for `scope` but which a hand-edited file may carry.
-            let rest = rest.trim();
-            if let Some(items) = rest.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
-                for item in items.split(',') {
-                    push_glob(&mut out, item);
+    };
+    let mut out: Vec<Field> = Vec::new();
+    for line in inside.lines() {
+        match opens(line) {
+            Some((name, head)) => out.push(Field {
+                name: name.to_string(),
+                head: head.to_string(),
+                body: Vec::new(),
+            }),
+            // Anything that does not open a field belongs to the one above it.
+            // A line before the first key belongs to nothing and is dropped:
+            // canonical form does not write one, and inventing an owner for it
+            // would be this reader deciding what the format means.
+            None => {
+                if let Some(field) = out.last_mut() {
+                    field.body.push(line.to_string());
                 }
-                inside = false;
-            }
-            continue;
-        }
-        if inside {
-            match line.strip_prefix("  - ") {
-                Some(item) => push_glob(&mut out, item),
-                // Any other line at column zero ends the block; a deeper line
-                // that is not an item is not one either.
-                None => inside = false,
             }
         }
     }
     out
 }
 
-fn push_glob(out: &mut Vec<String>, item: &str) {
-    let glob = item.trim().trim_matches(['"', '\'']).trim();
-    if !glob.is_empty() && !out.iter().any(|g| g == glob) {
-        out.push(glob.to_string());
+/// The document's own prose: everything after the frontmatter's closing fence.
+///
+/// The whole of the content where there is no frontmatter, so a file without
+/// fences is prose rather than nothing.
+pub fn prose(content: &str) -> &str {
+    fenced(content).map_or(content, |(_, prose)| prose)
+}
+
+/// The globs an entity declares, out of the `scope` field of its frontmatter.
+pub fn declared_scopes(content: &str) -> Vec<String> {
+    frontmatter(content)
+        .iter()
+        .find(|f| f.name == "scope")
+        .map(Field::items)
+        .unwrap_or_default()
+}
+
+/// The two halves of an entity: what is between the fences, and what follows
+/// them.
+///
+/// `None` where the file does not open with a fence, or opens with one that is
+/// never closed -- both of which are prose and not a frontmatter half-read.
+fn fenced(content: &str) -> Option<(&str, &str)> {
+    let mut at = 0;
+    let mut from: Option<usize> = None;
+    for line in content.split_inclusive('\n') {
+        let end = at + line.len();
+        if line.trim_end() == "---" {
+            match from {
+                Some(from) => return Some((&content[from..at], &content[end..])),
+                None if at == 0 => from = Some(end),
+                None => return None,
+            }
+        }
+        at = end;
+    }
+    None
+}
+
+/// The key a line opens a field with, and whatever followed its colon.
+///
+/// `None` for a line that continues the field above: anything indented, and
+/// anything with no key in front of a colon.
+fn opens(line: &str) -> Option<(&str, &str)> {
+    if line.starts_with([' ', '\t']) {
+        return None;
+    }
+    let (name, rest) = line.split_once(':')?;
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return None;
+    }
+    let head = match rest.trim() {
+        "|" | "|-" | "|+" | ">" | ">-" | ">+" => "",
+        value => value,
+    };
+    Some((name, head))
+}
+
+fn push_item(out: &mut Vec<String>, item: &str) {
+    let value = item.trim().trim_matches(['"', '\'']).trim();
+    if !value.is_empty() && !out.iter().any(|g| g == value) {
+        out.push(value.to_string());
     }
 }
 
@@ -389,6 +512,74 @@ mod tests {
     fn a_body_without_frontmatter_declares_nothing() {
         assert!(declared_scopes("just prose\nscope:\n  - src/**\n").is_empty());
         assert!(declared_scopes("").is_empty());
+    }
+
+    /// The whole frontmatter, in the file's own order and with the file's own
+    /// words: what the reader's field block is drawn from.
+    #[test]
+    fn every_field_is_lifted_with_the_name_the_file_gave_it() {
+        let names: Vec<String> = frontmatter(ENTITY).iter().map(|f| f.name.clone()).collect();
+        assert_eq!(
+            names,
+            ["id", "type", "title", "scope", "blocked_by", "schema"],
+            "a field was dropped, renamed or reordered"
+        );
+        let by = |name: &str| frontmatter(ENTITY).into_iter().find(|f| f.name == name);
+        assert_eq!(by("type").unwrap().head, "task");
+        assert_eq!(by("title").unwrap().head, "A title");
+        // A list: nothing beside the key, and the items below it.
+        let scope = by("scope").unwrap();
+        assert_eq!(scope.head, "");
+        assert_eq!(
+            scope.items(),
+            ["crates/ank-tui/**", "crates/ank-cli/src/cli.rs"]
+        );
+    }
+
+    /// A block scalar is the lines under the key, and the `|` is not one of
+    /// them: it is how YAML says "below", not something the field says.
+    #[test]
+    fn a_block_scalar_is_its_lines_and_not_its_marker() {
+        let content = "---\nid: TASK-0001\ndone_criteria: |\n  The first line.\n  The second.\nschema: 4\n---\n\nbody\n";
+        let fields = frontmatter(content);
+        let criteria = fields
+            .iter()
+            .find(|f| f.name == "done_criteria")
+            .expect("the field is there");
+        assert_eq!(criteria.head, "", "the marker was taken for a value");
+        assert_eq!(criteria.body, ["  The first line.", "  The second."]);
+        // And the field after it is a field, not more of the block.
+        assert_eq!(fields.last().unwrap().name, "schema");
+    }
+
+    /// The prose is what follows the closing fence, byte for byte, and the
+    /// whole of a file that has no fences at all.
+    #[test]
+    fn the_prose_is_what_follows_the_fence_and_nothing_is_rewritten() {
+        assert_eq!(prose(ENTITY), "\nThe body.\n");
+        assert_eq!(prose("just prose\n"), "just prose\n");
+        assert_eq!(prose(""), "");
+        // An opened fence that never closes is prose and not a frontmatter
+        // half-read: a reader that swallowed it would lose the file.
+        assert_eq!(prose("---\nid: TASK-0001\n"), "---\nid: TASK-0001\n");
+        assert!(frontmatter("---\nid: TASK-0001\n").is_empty());
+        // The two halves and the fences are the whole file: nothing the walk
+        // returns was invented, and nothing it passed over was lost.
+        let inside: String = frontmatter(ENTITY)
+            .iter()
+            .map(|f| {
+                let head = match f.head.is_empty() {
+                    true => String::new(),
+                    false => format!(" {}", f.head),
+                };
+                let body = f.body.join("\n");
+                match body.is_empty() {
+                    true => format!("{}:{head}\n", f.name),
+                    false => format!("{}:{head}\n{body}\n", f.name),
+                }
+            })
+            .collect();
+        assert_eq!(format!("---\n{inside}---\n{}", prose(ENTITY)), ENTITY);
     }
 
     #[test]
