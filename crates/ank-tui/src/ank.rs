@@ -94,22 +94,28 @@ const FINDINGS_ARE_AN_ANSWER: &[&str] = &["review"];
 pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend", "accept"];
 
 /// A call that did not produce a document, in the three ways it can fail.
+///
+/// The `shown` every variant carries is [`Ank::spelling`]'s: the command line
+/// as a shell would have had to spell it, program word and `--json` included.
+/// One spelling for a refusal, for the chrome over an answer and for the
+/// confirmation shown before a write, because three renderings of one command
+/// line are three chances for the screen to name something other than what ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Failed {
     /// The CLI could not be run at all: the binary moved, or the directory it
     /// was to run in went away. An environment to repair.
-    Spawn { args: String, error: String },
+    Spawn { shown: String, error: String },
     /// The CLI ran and refused. The code and the bytes are the CLI's own, which
     /// is the whole point of this crate: a refusal shown here is a refusal the
     /// binary gave.
     Refused {
-        args: String,
+        shown: String,
         code: i32,
         stderr: String,
     },
     /// The CLI answered and the answer did not parse. A defect on this side of
     /// the pipe, and it is reported as one rather than as an empty screen.
-    Unreadable { args: String, error: String },
+    Unreadable { shown: String, error: String },
     /// A verb outside [`READS`], asked for on the reading road. Never reached
     /// from a running reader; reached by the next edit that tries to make a
     /// repaint write.
@@ -162,19 +168,23 @@ fn from_i32(code: i32) -> ExitCode {
 impl fmt::Display for Failed {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Failed::Spawn { args, error } => write!(f, "cannot run `ank {args}`: {error}"),
-            Failed::Refused { args, code, stderr } => {
+            Failed::Spawn { shown, error } => write!(f, "cannot run `{shown}`: {error}"),
+            Failed::Refused {
+                shown,
+                code,
+                stderr,
+            } => {
                 let said = stderr.trim();
                 if said.is_empty() {
-                    write!(f, "`ank {args}` refused with code {code}")
+                    write!(f, "`{shown}` refused with code {code}")
                 } else {
                     write!(f, "{said}")
                 }
             }
-            Failed::Unreadable { args, error } => {
+            Failed::Unreadable { shown, error } => {
                 write!(
                     f,
-                    "`ank {args} --json` answered a document this reader cannot read: {error}"
+                    "`{shown}` answered a document this reader cannot read: {error}"
                 )
             }
             Failed::NotARead { verb } => {
@@ -238,42 +248,108 @@ impl Ank {
         self.spawn(verb, args)
     }
 
-    /// The one road out of this process, and there is deliberately only one.
+    /// The argv one call is made with, and the only place one is composed.
     ///
     /// `--json` is appended here and never by a caller, so no call site can
     /// forget it and read a human page by mistake. The address flags go in
     /// front of the verb's own arguments, which is where a caller typed them.
-    fn spawn(&self, verb: &str, args: &[String]) -> Result<Ran, Failed> {
+    ///
+    /// Separate from [`Ank::spawn`] because [`Ank::spelling`] has to answer
+    /// *before* a spawn: the confirmation TASK-d4a882345837 puts in front of
+    /// every write shows a command line, and a command line composed twice is
+    /// two command lines. This one is composed once and read by both.
+    fn argv(&self, verb: &str, args: &[String]) -> Vec<String> {
         let mut argv: Vec<String> = self.address.flags();
         argv.push(verb.to_string());
         argv.extend(args.iter().cloned());
         argv.push("--json".to_string());
-        let shown = argv.join(" ");
+        argv
+    }
+
+    /// One call, spelled as a shell would have to spell it.
+    ///
+    /// **This is what a person is shown before anything is spawned**
+    /// (TASK-d4a882345837), and it is also the chrome over the answer and the
+    /// name in a refusal -- one spelling for all three, because a confirmation
+    /// that spelled a command differently from the way it ran would be a
+    /// confirmation of something else.
+    ///
+    /// "As a shell would have to spell it" is [`quoted`]'s whole job and it is
+    /// not decoration: a `log` message is one argument with spaces in it, and
+    /// showing it bare would show a command line that, typed back into a
+    /// terminal, would run something different. The program word is `ank` --
+    /// the word a person types -- rather than the absolute path this process
+    /// resolved, because the point of the line is that it is checkable against
+    /// what they could have typed themselves.
+    pub fn spelling(&self, verb: &str, args: &[String]) -> String {
+        let mut line = String::from("ank");
+        for word in self.argv(verb, args) {
+            line.push(' ');
+            line.push_str(&quoted(&word));
+        }
+        line
+    }
+
+    /// The one road out of this process, and there is deliberately only one.
+    fn spawn(&self, verb: &str, args: &[String]) -> Result<Ran, Failed> {
+        let argv = self.argv(verb, args);
+        let shown = self.spelling(verb, args);
         let out = Command::new(&self.address.exe)
             .args(&argv)
             .current_dir(&self.address.cwd)
             .output()
             .map_err(|e| Failed::Spawn {
-                args: shown.clone(),
+                shown: shown.clone(),
                 error: e.to_string(),
             })?;
         if !out.status.success() && !answered_with_findings(verb, &out.status) {
             return Err(Failed::Refused {
-                args: shown,
+                shown,
                 code: out.status.code().unwrap_or(ExitCode::Generic.code()),
                 stderr: String::from_utf8_lossy(&out.stderr).to_string(),
             });
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
         let answered = serde_yaml::from_str(&text).map_err(|e| Failed::Unreadable {
-            args: shown.clone(),
+            shown: shown.clone(),
             error: e.to_string(),
         })?;
-        Ok(Ran {
-            shown: format!("ank {shown}"),
-            answered,
-        })
+        Ok(Ran { shown, answered })
     }
+}
+
+/// One word of a command line, quoted where a shell would need it quoted.
+///
+/// The rule is the conservative one and it is deliberately not clever: a word
+/// made only of characters no shell gives a meaning to is left alone, and
+/// everything else is wrapped in single quotes, where the only byte that still
+/// means anything is the closing quote itself -- so an embedded `'` leaves the
+/// quoting, is escaped, and comes back in. That is `'\''`, which is what every
+/// POSIX shell reads back as one apostrophe.
+///
+/// Single quotes rather than double, because inside double quotes `$`, a
+/// backtick and a backslash all still act, and a criterion carrying a `$` is
+/// not a hypothetical in a corpus whose scopes are globs. An empty word is
+/// `''`: `--reason ""` is a caller saying something, and a word that vanished
+/// would shift every argument after it.
+pub fn quoted(word: &str) -> String {
+    const SAFE: &str = "_@%+=:,./-";
+    let plain = !word.is_empty()
+        && word
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || SAFE.contains(c));
+    if plain {
+        return word.to_string();
+    }
+    let mut out = String::from("'");
+    for c in word.chars() {
+        match c {
+            '\'' => out.push_str("'\\''"),
+            c => out.push(c),
+        }
+    }
+    out.push('\'');
+    out
 }
 
 /// Whether a non-zero exit is this verb saying "there are findings" (§4).
@@ -284,9 +360,11 @@ fn answered_with_findings(verb: &str, status: &std::process::ExitStatus) -> bool
 /// A call that answered: the command line it was, and the document it gave.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ran {
-    /// The invocation, spelled as a shell would have had to spell it. Shown
-    /// above the answer so that what a screen reports is checkable against what
-    /// a person could have typed themselves.
+    /// The invocation, spelled as a shell would have had to spell it
+    /// ([`Ank::spelling`]). Shown above the answer so that what a screen
+    /// reports is checkable against what a person could have typed themselves
+    /// -- and it is the same string the confirmation showed before the verb
+    /// ran, because both ask one function.
     pub shown: String,
     pub answered: Value,
 }
@@ -492,7 +570,7 @@ mod tests {
     #[test]
     fn a_refusal_carries_the_clis_own_code_and_bytes() {
         let f = Failed::Refused {
-            args: "show TASK-0001".to_string(),
+            shown: "ank show TASK-0001 --json".to_string(),
             code: 2,
             stderr: "error[2]: no entity matches 'TASK-0001'\n> ank find TASK\n".to_string(),
         };
@@ -501,12 +579,83 @@ mod tests {
         // A code outside the table is not invented into a variant.
         assert_eq!(
             Failed::Refused {
-                args: String::new(),
+                shown: String::new(),
                 code: 42,
                 stderr: String::new()
             }
             .code(),
             ExitCode::Generic
+        );
+    }
+
+    /// A word a shell would read as one word is left alone, and everything else
+    /// is quoted so that reading the line back gives the same argument
+    /// (TASK-d4a882345837).
+    ///
+    /// The cases are the ones this reader actually composes: an identifier, a
+    /// proof, a flag, a scope glob, a `log` message, and the empty argument a
+    /// `--reason ""` is.
+    #[test]
+    fn a_word_is_spelled_the_way_a_shell_would_have_to_spell_it() {
+        for plain in [
+            "claim",
+            "--proof",
+            "TASK-d4a882345837",
+            "commit:2d9c847",
+            "crates/ank-tui/src/view.rs",
+            "4h",
+        ] {
+            assert_eq!(quoted(plain), plain, "{plain} was quoted for nothing");
+        }
+        assert_eq!(quoted(""), "''", "an empty argument is still an argument");
+        assert_eq!(quoted("two words"), "'two words'");
+        assert_eq!(quoted("crates/ank tui/**"), "'crates/ank tui/**'");
+        assert_eq!(quoted("$HOME `id`"), "'$HOME `id`'");
+        // The one byte that still means something inside single quotes.
+        assert_eq!(quoted("it's"), "'it'\\''s'");
+        assert_eq!(quoted("'"), "''\\'''");
+    }
+
+    /// The confirmation and the chrome over the answer are one string, composed
+    /// once (TASK-d4a882345837).
+    ///
+    /// This is the property the whole confirmation rests on: what a person is
+    /// shown before a write is spelled by the same function that spells what
+    /// ran, from the same argv the child is given. A second composition here
+    /// would be a screen that can name something other than what it spawned.
+    #[test]
+    fn the_spelling_shown_is_the_argv_the_child_is_given() {
+        let ank = nowhere();
+        let args = vec![
+            "TASK-49746735127f".to_string(),
+            "a message with spaces".to_string(),
+        ];
+        assert_eq!(
+            ank.spelling("log", &args),
+            "ank log TASK-49746735127f 'a message with spaces' --json"
+        );
+        // Word for word, the argv and the spelling are the same call: the
+        // program word, then every argument quoted.
+        let spelled: Vec<String> = ank.argv("log", &args).iter().map(|w| quoted(w)).collect();
+        assert_eq!(
+            ank.spelling("log", &args),
+            format!("ank {}", spelled.join(" "))
+        );
+    }
+
+    /// The caller's own address flags are in the line, in front of the verb,
+    /// because they are in the argv.
+    #[test]
+    fn the_spelling_carries_the_address_the_child_is_given() {
+        let ank = Ank::new(Address {
+            exe: "/nonexistent/ank".into(),
+            cwd: ".".into(),
+            repo: Some("/two words".to_string()),
+            worktree: None,
+        });
+        assert_eq!(
+            ank.spelling("claim", &["TASK-0001".to_string()]),
+            "ank --repo '/two words' claim TASK-0001 --json"
         );
     }
 }

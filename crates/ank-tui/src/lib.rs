@@ -19,9 +19,10 @@
 //! (ADR-8bd76e8d7c4e). Repainting runs the verbs that only read, so a screen
 //! left open all night runs no command at all and renews no claim; the six that
 //! write -- `claim`, `log`, `release`, `done`, `amend` and `accept` -- run once
-//! each, when their word is typed whole into the prompt. Nothing here is on a
-//! timer, and there is no timer to put anything on. The assertion is in the
-//! suite, not in this sentence.
+//! each, when their word is typed whole into the prompt *and* the command that
+//! composed has been shown and answered with one key (TASK-d4a882345837).
+//! Nothing here is on a timer, and there is no timer to put anything on. The
+//! assertion is in the suite, not in this sentence.
 //!
 //! **A change reaches the screen as an event, never as a poll**
 //! (TASK-2f7777a1fdff). `ank-daemon` appends a line when a corpus it watches
@@ -72,14 +73,15 @@
 //! one-line prompt and what is typed there goes through [`input`], which is the
 //! grammar that spells the six whole. `/` opens the same prompt on a search.
 //!
-//! **What the line discipline used to guarantee is not yet replaced, and this
-//! is the honest state of it.** Under a line reader a slipped finger typed
-//! nothing, because a command was a word and Enter and no word was one letter.
-//! Under a keystroke reader the guarantee is the confirmation that shows the
-//! argv before anything is spawned, which ADR-0b55983421dd requires and
-//! TASK-d4a882345837 builds. Until it lands, what stands between a slip and a
-//! write is that no key writes at all: the road to a spawned verb runs through
-//! a prompt somebody opened and a word somebody spelled.
+//! **What the line discipline used to guarantee is replaced, and this is what
+//! replaced it.** Under a line reader a slipped finger typed nothing, because a
+//! command was a word and Enter and no word was one letter. Under a keystroke
+//! reader the guarantee is the confirmation that shows the argv before anything
+//! is spawned, which ADR-0b55983421dd requires and TASK-d4a882345837 built: a
+//! submitted line composes the command and shows it spelled as a shell would
+//! have to spell it, `y` runs that command, and every other key on the keyboard
+//! dismisses it. So no key writes, no line writes, and what writes is a person
+//! reading an argv and saying yes to it.
 //!
 //! # The layout
 //!
@@ -122,6 +124,14 @@
 //! through this process because the child is given no stdin; and a screen left
 //! open all night still runs nothing at all, because `accept` is on the acting
 //! list and a repaint only ever reads.
+//!
+//! The confirmation sits in front of this verb like it sits in front of the
+//! other five, and it takes nothing away from any of the above: what a person
+//! is shown is `ank accept <id> --json`, composed on the document they had
+//! open, and what `y` spawns is that and nothing else. Nor does it give a held
+//! key a way in: `y` means nothing on a screen with no command waiting, so the
+//! presses after the one that answered reach a reader for which that letter is
+//! not a command at all.
 
 use ratatui::crossterm::event::KeyEvent;
 use std::io::IsTerminal;

@@ -32,15 +32,27 @@
 //! the document and refuses a tail after it. `/` opens the same prompt seeded
 //! with a slash, which is that grammar's search.
 //!
-//! **The asymmetry the line discipline used to provide is gone, and this is not
-//! where it comes back.** Under a line reader a slipped finger typed nothing,
-//! because a command was a word and Enter. Under a keystroke reader `a` then
-//! `claim` then Enter is three deliberate acts, which is better than one Enter
-//! but is not the guarantee: that is the confirmation showing the argv, and it
-//! is TASK-d4a882345837. Until it lands, what stands between a slip and a write
-//! is the prompt and the word spelled whole -- stated here rather than implied,
-//! because a reader of this file should know which of the two regimes it is
-//! looking at.
+//! # The fourth act, which is the guarantee
+//!
+//! **The asymmetry the line discipline used to provide is back, and it is one
+//! key** (TASK-d4a882345837). Under a line reader a slipped finger typed
+//! nothing, because a command was a word and Enter. Under a keystroke reader
+//! `a` then `claim` then Enter is three deliberate acts, and this file used to
+//! say outright that three is better than one and still not the guarantee. The
+//! fourth is [`confirming`]: the composed argv is on the screen, [`CONFIRM`]
+//! runs it, and **every other key dismisses it**.
+//!
+//! Which way round that is decided matters more than which letter was chosen.
+//! One key runs and the rest of the keyboard declines, rather than one key
+//! declining and the rest running -- so a keystroke nobody meant, a key held
+//! down, a paste, a stray arrow and a `q` all reach the same place, and "no
+//! keystroke that dismisses the confirmation runs anything" is true of the
+//! whole keyboard rather than of a list somebody has to keep complete.
+//!
+//! `y` is a letter and not a chord, which ADR-0b55983421dd requires and a
+//! phone makes literal, and it is not Enter: Enter is the key that submitted
+//! the line a moment earlier, and a confirmation answered by the same key that
+//! opened it is a confirmation a repeated keypress walks straight through.
 
 use crate::input::Command;
 use crate::view::Focus;
@@ -67,6 +79,35 @@ pub enum Press {
 pub const ACT: char = 'a';
 /// The key that opens it seeded with the grammar's search.
 pub const FIND: char = '/';
+/// The one key that runs a command a person has been shown
+/// (TASK-d4a882345837).
+///
+/// Public because the suites drive the binary and have to type it, and a suite
+/// carrying its own copy of this letter would agree with a mapping that moved.
+pub const CONFIRM: char = 'y';
+
+/// What one key did to a confirmation waiting on the screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Answer {
+    /// [`CONFIRM`], pressed alone: run the command that is on the screen.
+    Run,
+    /// Anything else at all. The command is dropped and nothing is spawned.
+    Dismiss,
+}
+
+/// The confirmation's whole grammar: one key runs, and the keyboard dismisses.
+///
+/// The modifiers are read and not ignored, in the strict direction: a `y` with
+/// anything held is not the `y` this asks for. So no chord runs a verb, which
+/// is ADR-0b55983421dd's rule applied to the one keystroke in this reader that
+/// can move a corpus, and Control-C over a confirmation dismisses it rather
+/// than doing the thing the person was interrupting.
+pub fn confirming(key: KeyEvent) -> Answer {
+    match key.code {
+        KeyCode::Char(CONFIRM) if key.modifiers.is_empty() => Answer::Run,
+        _ => Answer::Dismiss,
+    }
+}
 
 pub fn typed(key: KeyEvent, focus: Focus) -> Press {
     // The one chord, and it is the way out rather than a command: raw mode has
@@ -374,6 +415,75 @@ mod tests {
         assert_eq!(line, "clai");
         assert_eq!(edit(&mut line, key(KeyCode::Enter)), Editing::Submit);
         assert_eq!(edit(&mut line, key(KeyCode::Esc)), Editing::Cancel);
+    }
+
+    /// One key runs a confirmed command, and the whole of the rest of the
+    /// keyboard dismisses it (TASK-d4a882345837).
+    ///
+    /// Stated over every key this crate can name rather than over a list of
+    /// likely ones: "no keystroke that dismisses the confirmation runs
+    /// anything" is a claim about every keystroke there is, and a test that
+    /// checked three of them would be a claim about three.
+    #[test]
+    fn one_key_runs_a_confirmed_command_and_every_other_key_dismisses_it() {
+        assert_eq!(confirming(key(KeyCode::Char(CONFIRM))), Answer::Run);
+        for c in ' '..='~' {
+            if c == CONFIRM {
+                continue;
+            }
+            assert_eq!(
+                confirming(key(KeyCode::Char(c))),
+                Answer::Dismiss,
+                "'{c}' ran a verb"
+            );
+        }
+        for named in [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Backspace,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Delete,
+            KeyCode::Insert,
+            KeyCode::F(5),
+        ] {
+            assert_eq!(
+                confirming(key(named)),
+                Answer::Dismiss,
+                "{named:?} ran a verb"
+            );
+        }
+    }
+
+    /// And no chord runs one either: the key that writes is the bare letter
+    /// (ADR-0b55983421dd, which forbids a command requiring a modifier -- and
+    /// this is the one command that moves a corpus).
+    #[test]
+    fn no_modifier_held_over_the_confirming_key_still_runs_it() {
+        for held in [
+            KeyModifiers::CONTROL,
+            KeyModifiers::ALT,
+            KeyModifiers::SHIFT,
+            KeyModifiers::SUPER,
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ] {
+            assert_eq!(
+                confirming(KeyEvent::new(KeyCode::Char(CONFIRM), held)),
+                Answer::Dismiss,
+                "{held:?} and the letter ran a verb"
+            );
+        }
+        // The letter a shifted `y` actually arrives as is not the letter
+        // either: a person holding a modifier is not the person this asks for.
+        assert_eq!(confirming(key(KeyCode::Char('Y'))), Answer::Dismiss);
     }
 
     /// Backspacing off the end of an empty line closes the prompt, and clearing

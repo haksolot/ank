@@ -820,6 +820,10 @@ fn drive(repo: &Repo, agent: &str, keys: &[&str]) -> Seen {
 /// for Enter. That is the shape of the reader now (ADR-0b55983421dd): every
 /// command that only moves the screen is one key, and the four verbs that carry
 /// a message, a reason, a proof or a flag are spelled into a prompt.
+///
+/// A line that spells one of the six verbs that write composes a command and
+/// shows it rather than running it, so an entry that spells one is followed by
+/// [`confirm`] wherever the verb is meant to land (TASK-d4a882345837).
 #[cfg(unix)]
 fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen {
     let mut live = Live::open_with(repo, agent, args, &[]);
@@ -1062,6 +1066,22 @@ impl Live {
 /// its own copy of it would agree with a mapping that moved.
 #[cfg(unix)]
 const ACT: char = ank_tui::keys::ACT;
+
+/// The key that answers the confirmation every write now passes through
+/// (TASK-d4a882345837), read out of the reader for the reason [`ACT`] is.
+///
+/// **Every entry of a key list that spells one of the six is followed by this
+/// one**, and that is the shape of the reader rather than a wrinkle of the
+/// suite: a submitted line composes the `argv` and shows it, and nothing is
+/// spawned until a person says yes to what they were shown. A drive that
+/// stopped at the line would now be driving a reader that had been asked for a
+/// write and given none -- which `crates/ank-tui/tests/confirmation.rs`
+/// asserts on purpose, and which every test here that expects a verb to have
+/// landed must not do by accident.
+#[cfg(unix)]
+fn confirm() -> String {
+    ank_tui::keys::CONFIRM.to_string()
+}
 
 #[cfg(unix)]
 #[test]
@@ -1563,7 +1583,7 @@ fn a_claim_taken_through_the_reader_is_the_ref_a_shell_claim_makes() {
         "Claimed twice over, once from the screen and once from a shell.",
     );
 
-    let seen = drive(&repo, READER, &[&open(&task), ":claim", "q"]);
+    let seen = drive(&repo, READER, &[&open(&task), ":claim", &confirm(), "q"]);
     assert!(
         seen.contains(&format!("ank claim {task}")),
         "the reader ran the verb, and said which one:\n{seen}"
@@ -1612,7 +1632,7 @@ fn a_done_refused_for_a_missing_proof_leaves_the_task_untouched() {
     let before = corpus_files(&repo);
     let names = ref_names(&repo);
 
-    let seen = drive(&repo, HOLDER, &[":f task", "\r", ":done", "q"]);
+    let seen = drive(&repo, HOLDER, &[":f task", "\r", ":done", &confirm(), "q"]);
 
     let code = declared("done", "no proof");
     assert_eq!(code, ank_contract::ExitCode::Proof, "the table moved");
@@ -1721,9 +1741,13 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
         &[
             &open(&task),
             ":claim",
+            &confirm(),
             ":log the glob was one directory short",
+            &confirm(),
             ":amend --scope src/deeper/**",
+            &confirm(),
             ":release the criterion measures the wrong thing",
+            &confirm(),
             "q",
         ],
     );
@@ -1756,7 +1780,14 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
     let seen = drive(
         &repo,
         READER,
-        &[&open(&task), ":claim", &format!(":done commit:{head}"), "q"],
+        &[
+            &open(&task),
+            ":claim",
+            &confirm(),
+            &format!(":done commit:{head}"),
+            &confirm(),
+            "q",
+        ],
     );
     assert!(!seen.contains("error["), "the finish was refused:\n{seen}");
     let shown = repo.stdout(READER, &["show", &task, "--json"]);
@@ -2284,7 +2315,11 @@ fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
     let by_screen = proposal(&repo, TITLE);
     let by_shell = proposal(&repo, TITLE);
 
-    let seen = drive(&repo, READER, &[&format!(":{by_screen}"), ":accept", "q"]);
+    let seen = drive(
+        &repo,
+        READER,
+        &[&format!(":{by_screen}"), ":accept", &confirm(), "q"],
+    );
     assert!(
         seen.contains(&format!("ank accept {by_screen}")),
         "the reader ran the verb, and said which one:\n{seen}"
@@ -2461,7 +2496,11 @@ fn a_ratification_off_the_default_branch_shows_the_clis_refusal_and_the_way_out(
     repo.warm(READER);
     let before = corpus_files(&repo);
 
-    let seen = drive(&repo, READER, &[&open(&waiting), ":accept", "q"]);
+    let seen = drive(
+        &repo,
+        READER,
+        &[&open(&waiting), ":accept", &confirm(), "q"],
+    );
 
     let code = declared("accept", "not on the default branch");
     assert_eq!(
