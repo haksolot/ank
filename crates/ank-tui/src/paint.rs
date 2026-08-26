@@ -34,9 +34,17 @@
 //! is no path by which half a style reaches a cell -- and every distinction the
 //! screen makes is still on it, because the distinctions are characters:
 //! the `> ` on the row a cursor is on, the `*` on a claim its reader holds, the
-//! `=` rule and the `> ` in the title of the panel with the focus, and the
+//! heavier rule and the `> ` in the title of the panel with the focus, and the
 //! status spelled as a word in its own column. Colour repeats those; it carries
 //! none of them alone.
+//!
+//! **And the characters do not move when the paint is taken away.** That is
+//! what [`declared_dumb`] is for: the glyph set `view` draws its structure with
+//! is a second field beside the ink, and the one thing the two share is that
+//! probe. `NO_COLOR` reaches the ink alone, so the frame drawn with the paint
+//! and the frame drawn without it are the same characters -- which is the only
+//! way "nothing is carried by colour alone" can be measured at all
+//! (ADR-c07e2694f0e1, proposed).
 //!
 //! # Composing a row, and what is deliberately left alone
 //!
@@ -96,7 +104,7 @@ impl Ink {
         if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
             return PLAIN;
         }
-        if std::env::var_os("TERM").is_some_and(|v| v == "dumb") {
+        if declared_dumb() {
             return PLAIN;
         }
         COLOUR
@@ -155,6 +163,25 @@ impl Ink {
             None => Style::new(),
         }
     }
+}
+
+/// The terminal's own declaration that it can render nothing rich.
+///
+/// **One probe, read by two fields, which is the whole of what makes the
+/// degradation honest** (ADR-c07e2694f0e1, proposed successor to
+/// ADR-0b55983421dd). A terminal that says `dumb` is saying it can draw
+/// neither the colours [`Ink`] would paint nor the box-drawing glyphs
+/// `view`'s borders are made of, and it gets one answer to that rather than
+/// two: the plain palette *and* the ASCII rules, from this function.
+///
+/// `NO_COLOR` is deliberately not here. Refusing colour is refusing colour and
+/// nothing else, so it reaches [`Ink::detect`] above and reaches no glyph: a
+/// reader whose characters moved when the paint was taken away would make
+/// "nothing is carried by colour alone" unmeasurable, and that property is
+/// measured by drawing one corpus twice and finding the two frames identical
+/// character for character (`tests/colour.rs`).
+pub fn declared_dumb() -> bool {
+    std::env::var_os("TERM").is_some_and(|v| v == "dumb")
 }
 
 /// The role an identifier carries, read out of the kind it names.

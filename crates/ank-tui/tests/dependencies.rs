@@ -297,6 +297,58 @@ fn one_function_in_this_crate_spawns_a_verb_that_writes() {
     );
 }
 
+/// **An act reaches the confirmation, and there is one arm that answers one**
+/// (TASK-4d2eb2b4e193, TASK-d4a882345837).
+///
+/// This is the half of `keys::no_bare_key_can_write` that survives the wave.
+/// That test said no bare key could produce a [`ank_tui::input::Command::Act`]
+/// at all, and it was worth having because reaching a verb took a key *and* a
+/// word. ADR-c07e2694f0e1, proposed, spends that asymmetry:
+/// TASK-1a415107fd56 gives the
+/// six their own letters, and the rule that has to hold afterwards is not that
+/// an act is unreachable by a key -- it is that *however* an act is reached, it
+/// is composed and shown rather than run.
+///
+/// So it is stated over the dispatch instead of over the keyboard. Exactly one
+/// arm in this crate answers a `Command::Act`, it is in `view.rs`, and what it
+/// does is `propose` -- which composes the argv, draws it, and spawns nothing.
+/// Together with the count above of one `ank.act(` in `src/`, that is what the
+/// old asymmetry bought: there is one road from an act to a spawn, and the
+/// confirmation is on it.
+#[test]
+fn one_arm_answers_an_act_and_what_it_does_is_show_it() {
+    let arms: Vec<String> = sources()
+        .into_iter()
+        .flat_map(|(file, source)| {
+            code_of(&source)
+                .lines()
+                .filter(|line| line.contains("Command::Act(") && line.contains("=>"))
+                .map(|line| format!("{file}  {}", line.trim()))
+                .collect::<Vec<String>>()
+        })
+        .collect();
+    assert_eq!(
+        arms.len(),
+        1,
+        "an act is answered in {} places, and only one of them can have the \
+         confirmation on it:\n{}",
+        arms.len(),
+        arms.join("\n")
+    );
+    assert!(
+        arms[0].starts_with("view.rs"),
+        "the answer to an act moved out of the view, where the confirmation \
+         is: {}",
+        arms[0]
+    );
+    assert!(
+        arms[0].contains("propose"),
+        "an act is answered by something other than composing it and showing \
+         it: {}",
+        arms[0]
+    );
+}
+
 /// A source with its comments removed.
 ///
 /// The prose is allowed to name `.ank/` and `refs/ank/*` -- it has to, since

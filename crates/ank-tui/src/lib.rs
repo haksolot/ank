@@ -187,6 +187,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 
 pub mod ank;
+pub mod bindings;
 pub mod input;
 pub mod keys;
 pub mod model;

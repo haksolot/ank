@@ -62,19 +62,25 @@
 //! # Focus is where the width goes
 //!
 //! One panel has focus at a time, `Tab` and `1`..`4` move it, and the focused
-//! panel is drawn with a doubled border and the `> ` marker every listing in
+//! panel is drawn with a heavier border and the `> ` marker every listing in
 //! this tool already spends on the row a cursor is on ([`text::CURSOR`]). Both
-//! signals are characters, and both are ASCII: the screen answers "which panel
-//! am I in" with no colour at all. Colour arrived on top of that frame rather
-//! than into it (TASK-6cd41d23b7d1): what it paints is what a row *is* -- an
-//! identifier, a status -- and never where the reader is standing, so
-//! `NO_COLOR` takes away a repetition and no signal at all.
+//! signals are characters: the screen answers "which panel am I in" with no
+//! colour at all. Colour arrived on top of that frame rather than into it
+//! (TASK-6cd41d23b7d1): what it paints is what a row *is* -- an identifier, a
+//! status -- and never where the reader is standing, so `NO_COLOR` takes away
+//! a repetition and no signal at all.
 //!
-//! The borders are `-`, `|`, `+` and `=` rather than the box-drawing glyphs,
-//! deliberately. Structure in this tool is text emitted identically to every
-//! reader on every platform (ADR-1f70ce2c3eac), the markers this crate already
-//! draws are, and the terminal least likely to carry the glyphs is the one on a
-//! phone -- which is the reader TASK-dd9747e5e305 is about to serve.
+//! **The borders are box-drawing glyphs, and drop to `-`, `|`, `+` and `=` on
+//! the terminal that declares it can render neither those nor colour**
+//! (ADR-c07e2694f0e1, proposed successor to ADR-0b55983421dd). [`Glyphs`] is
+//! that choice, and it is a field of its own beside the ink rather than a part
+//! of it: the probe is the terminal's own word and never `NO_COLOR`, because
+//! refusing colour is not refusing glyphs and a frame whose characters moved
+//! when the paint went would leave "nothing is carried by colour alone" with
+//! nothing to measure it by. LOG-ed57116ba141 recorded the older answer --
+//! ASCII everywhere, for the phone that could not draw the glyphs -- and the
+//! phones people read from have overtaken it; ADR-1f70ce2c3eac's scope is the
+//! CLI's renderer and not this one.
 //!
 //! **And focus is not decoration: the focused one of the two middle panels
 //! takes four fifths of the width.** A corpus reader has exactly two things
@@ -207,10 +213,11 @@
 //! it.
 
 use crate::ank::{Ank, Failed, Ran};
+use crate::bindings::{self, Holding};
 use crate::input::{Act, Command};
 use crate::keys::{self, Editing, Press};
 use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
-use crate::paint::{role_of_id, Composed, Ink};
+use crate::paint::{self, role_of_id, Composed, Ink};
 use crate::stream::Stream;
 use crate::text::{self, fit, pad, window, wrap};
 use ank_contract::meaning::{role_of_kind, role_of_status, Role};
@@ -321,26 +328,22 @@ impl Action {
     /// The target as it is drawn: the key, then what it does, in brackets.
     ///
     /// The brackets are the whole of what says "this is a thing to touch".
-    /// ASCII, on the reasoning the borders are (ADR-1f70ce2c3eac): the terminal
-    /// least likely to carry a box-drawing glyph is the one this is drawn for.
+    /// ASCII whatever the terminal is, unlike the borders ([`Glyphs`]): a
+    /// bracket is a character every terminal has, so there is nothing here for
+    /// a poor one to be given back.
     pub fn label(&self) -> String {
         format!("[{} {}]", named(self.key), self.does)
     }
 }
 
-/// What a key is called on the screen.
+/// What a key is called on the screen, which is what the key list calls it
+/// (TASK-4d2eb2b4e193).
 ///
-/// The character itself where there is one, so the offer and the mapping are
-/// the same letter rather than two spellings of it, and the terminal's own name
-/// otherwise.
-fn named(key: KeyCode) -> String {
-    match key {
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
-        other => format!("{other:?}"),
-    }
-}
+/// [`bindings::named`] and not a second spelling of the same keys: a target
+/// reading `Esc` beside a key list reading `Escape` would be one vocabulary
+/// pretending to be two, and the whole of what the table is for is that there
+/// is one.
+pub use crate::bindings::named;
 
 /// One action, and where on the band it was laid out.
 struct Target {
@@ -440,6 +443,13 @@ pub struct App {
     /// under a session, and a screen that read `NO_COLOR` per paint would be a
     /// screen whose answer could differ between two rows of one frame.
     ink: Ink,
+    /// Which characters this screen draws its structure with, decided once
+    /// when it opens (ADR-c07e2694f0e1, proposed).
+    ///
+    /// **Beside the ink and never inside it.** The two are decided from one
+    /// probe and they are two fields, so taking the paint away moves no
+    /// character on this frame -- see [`Glyphs`].
+    glyphs: Glyphs,
 }
 
 impl App {
@@ -463,11 +473,14 @@ impl App {
             queue: None,
             prompt: None,
             pending: None,
-            // The one read of the environment this crate makes. A session is
-            // at a terminal by construction -- `tui` refuses where it is not
-            // -- so what is left of ADR-1f70ce2c3eac's condition is the
-            // variable, and [`Ink::detect`] is the CLI's own rule for it.
+            // The two reads of the environment this crate makes, and they
+            // ask it one thing between them. A session is at a terminal by
+            // construction -- `tui` refuses where it is not -- so what is left
+            // of ADR-1f70ce2c3eac's condition is the variable, and
+            // [`Ink::detect`] is the CLI's own rule for it. The glyph set asks
+            // only the half of that rule the terminal itself answered.
             ink: Ink::detect(),
+            glyphs: Glyphs::detect(),
         }
     }
 
@@ -479,6 +492,16 @@ impl App {
     /// cargo happened to run it in.
     pub fn inked(mut self, ink: Ink) -> App {
         self.ink = ink;
+        self
+    }
+
+    /// The same screen, drawing its structure with the set it is told to.
+    ///
+    /// [`inked`](App::inked)'s counterpart, and for the same reason: a suite
+    /// that exported `TERM` would be reporting the machine it ran on rather
+    /// than the reader.
+    pub fn drawn_with(mut self, glyphs: Glyphs) -> App {
+        self.glyphs = glyphs;
         self
     }
 
@@ -946,7 +969,7 @@ impl App {
             }
             Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
-            Command::Help => self.note = Some(format!("{KEYS}\n{PANEL_KEYS}\n{ACT_KEYS}")),
+            Command::Help => self.note = Some(bindings::listing().join("\n")),
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
@@ -1359,7 +1382,7 @@ impl App {
                         ),
                         width,
                     ),
-                    text::rule(width),
+                    text::rule(width, self.glyphs.rule()),
                 ])
                 .render(panels.header, buf);
             }
@@ -1371,7 +1394,7 @@ impl App {
                 paragraph(&[
                     fit("ank tui", width),
                     fit("the corpus has not been read", width),
-                    text::rule(width),
+                    text::rule(width, self.glyphs.rule()),
                 ])
                 .render(panels.header, buf);
             }
@@ -1384,9 +1407,12 @@ impl App {
         paragraph(&self.note_lines()).render(panels.note, buf);
         paragraph(&self.action_lines()).render(panels.actions, buf);
 
-        let mut keys = vec![fit(KEYS, width), fit(ACT_KEYS, width)];
+        let mut keys = vec![
+            fit(&bindings::screen_line(), width),
+            fit(&bindings::write_line(), width),
+        ];
         if let Some(ratify) = self.ratify_line() {
-            keys.push(fit(ratify, width));
+            keys.push(fit(&ratify, width));
         }
         paragraph(&keys).render(panels.keys, buf);
     }
@@ -1394,8 +1420,9 @@ impl App {
     /// One panel: its border, its title, and the lines it holds.
     ///
     /// **The focused one is told apart by two things and no colour.** Its
-    /// border is doubled -- `=` where the others rule with `-` -- and its title
-    /// carries the same `> ` this tool puts on the row a cursor is on. Two
+    /// border is heavier -- the thick rule where the others are rounded, or `=`
+    /// against `-` where the terminal has said it draws no glyphs -- and its
+    /// title carries the same `> ` this tool puts on the row a cursor is on. Two
     /// independent signals, because a reader looking at the middle of a panel
     /// still sees the rule under it. Colour arrived after both
     /// (TASK-6cd41d23b7d1) and took neither away: what it paints is what a row
@@ -1414,7 +1441,7 @@ impl App {
             .then(self.title_of(focus, width))
             .fitted(area.width as usize - 2);
         let block = Block::bordered()
-            .border_set(if focused { FOCUSED } else { UNFOCUSED })
+            .border_set(self.glyphs.border(focused))
             .title(title.line(self.ink));
         block.render(area, buf);
         if inside.is_empty() {
@@ -1901,11 +1928,11 @@ impl App {
     /// snapshot does not carry the row -- `find` answers within a budget -- no
     /// line is drawn, which errs towards saying nothing rather than towards
     /// offering something.
-    fn ratify_line(&self) -> Option<&'static str> {
+    fn ratify_line(&self) -> Option<String> {
         let detail = self.detail.as_ref()?;
         let row = self.snapshot.as_ref()?.row(&detail.id)?;
         let ratifiable = row.status == "proposed" && matches!(row.kind.as_str(), "adr" | "spec");
-        ratifiable.then_some(RATIFY_KEY)
+        ratifiable.then(bindings::ratify_line)
     }
 
     /// The frame as text, row by row, for a test to read.
@@ -2053,87 +2080,44 @@ impl App {
     /// them would be a target for the thing the screen is already answering.
     /// The body has no rows to land on, so paging is the one movement offered.
     ///
-    /// **Two states come before the focus and both are modal.** A command
-    /// waiting to be answered offers the key that runs it and the key that
-    /// drops it and nothing else, because nothing else is what the rest of the
-    /// keyboard does (TASK-d4a882345837); and an open prompt offers the two
-    /// ways out of a line. Anything else drawn under either would be an offer
-    /// the reader would refuse.
+    /// **Which of them is drawn is declared beside the key rather than here**
+    /// (TASK-4d2eb2b4e193). Every row of [`bindings::BINDINGS`] carries what
+    /// the screen must hold before it is offered at all, so this is a filter
+    /// over that table in its own order rather than a second list per panel --
+    /// and the word a target says is the word the key list says, because it is
+    /// the same string.
+    ///
+    /// A binding with no key is never a target, whatever it is offered on: the
+    /// six verbs are still spelled into the prompt, and a word a finger could
+    /// touch with no key to press would be an offer only half the reader can
+    /// take.
     pub fn actions(&self) -> Vec<Action> {
+        bindings::offered(self.holding())
+            .map(|binding| Action {
+                key: binding
+                    .key
+                    .expect("a binding with no key is never offered as a target"),
+                does: binding.word,
+            })
+            .collect()
+    }
+
+    /// What the screen is holding, which is what decides the offer.
+    ///
+    /// The two modal states come before the focus and both of them are modal in
+    /// the same direction: a command waiting to be answered offers the key that
+    /// runs it and the key that drops it and nothing else, because nothing else
+    /// is what the rest of the keyboard does (TASK-d4a882345837); and an open
+    /// prompt offers the two ways out of a line. Anything else drawn under
+    /// either would be an offer the reader would refuse.
+    fn holding(&self) -> Holding {
         if self.pending.is_some() {
-            return vec![
-                Action {
-                    key: KeyCode::Char(keys::CONFIRM),
-                    does: "run",
-                },
-                Action {
-                    key: KeyCode::Esc,
-                    does: "dismiss",
-                },
-            ];
+            return Holding::Waiting;
         }
         if self.prompt.is_some() {
-            return vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "run",
-                },
-                Action {
-                    key: KeyCode::Esc,
-                    does: "cancel",
-                },
-            ];
+            return Holding::Typing;
         }
-        let quit = Action {
-            key: KeyCode::Char('q'),
-            does: "quit",
-        };
-        let act = Action {
-            key: KeyCode::Char(keys::ACT),
-            does: "act",
-        };
-        match self.focus {
-            Focus::Body => vec![
-                Action {
-                    key: KeyCode::Char('n'),
-                    does: "page",
-                },
-                Action {
-                    key: KeyCode::Char('c'),
-                    does: "rules",
-                },
-                Action {
-                    key: KeyCode::Char('b'),
-                    does: "back",
-                },
-                act,
-                quit,
-            ],
-            Focus::Entities => vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "open",
-                },
-                act,
-                Action {
-                    key: KeyCode::Char('f'),
-                    does: "kind",
-                },
-                Action {
-                    key: KeyCode::Char(keys::FIND),
-                    does: "find",
-                },
-                quit,
-            ],
-            _ => vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "open",
-                },
-                act,
-                quit,
-            ],
-        }
+        Holding::Panel(self.focus)
     }
 
     /// The offer laid out on the band it is drawn in.
@@ -2237,14 +2221,83 @@ impl App {
     }
 }
 
-/// The border of a panel nobody is in.
+/// Which characters this reader draws its structure with.
 ///
-/// ASCII, and that is a decision rather than an omission: structure in this
-/// tool is text emitted identically to every reader on every platform
-/// (ADR-1f70ce2c3eac), the markers this crate already draws are, and the
-/// terminal least likely to carry the box-drawing glyphs is the one on a phone
-/// -- which is the reader TASK-dd9747e5e305 is about to serve.
-const UNFOCUSED: border::Set = border::Set {
+/// **A second field beside [`paint::Ink`], and never the ink itself**
+/// (ADR-c07e2694f0e1, proposed successor to ADR-0b55983421dd). The two share
+/// one probe -- [`paint::declared_dumb`], the terminal's own word that it can
+/// render nothing rich -- and nothing else: `NO_COLOR` reaches the ink and
+/// reaches no glyph. That separation is not tidiness. "Nothing on this screen
+/// is carried by colour alone" is measured by drawing one corpus with the
+/// paint and once without it and requiring the two frames to be identical
+/// character for character, and a border that moved with the ink would leave
+/// the property with no measurement at all.
+///
+/// Copied rather than referenced, and constructed in three places: [`detect`]
+/// below, and the two constants the suite uses to state both halves of the
+/// rule without an environment variable.
+///
+/// [`detect`]: Glyphs::detect
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glyphs {
+    rich: bool,
+}
+
+/// Box-drawing. What an ordinary terminal gets.
+pub const BOXES: Glyphs = Glyphs { rich: true };
+/// `+`, `-`, `|` and `=`. What a terminal that has declared itself dumb gets,
+/// and what this reader drew everywhere before ADR-c07e2694f0e1.
+pub const ASCII: Glyphs = Glyphs { rich: false };
+
+impl Glyphs {
+    /// The glyph half of ADR-c07e2694f0e1, evaluated once when the screen
+    /// opens.
+    ///
+    /// The whole of it is [`paint::declared_dumb`]. There is deliberately no
+    /// second condition: a terminal is asked once whether it is poor, and the
+    /// palette and the border set are two answers to that one question rather
+    /// than two questions.
+    pub fn detect() -> Glyphs {
+        match paint::declared_dumb() {
+            true => ASCII,
+            false => BOXES,
+        }
+    }
+
+    /// The border of a panel, focused or not.
+    ///
+    /// **The focus is carried by the weight of the rule**, which is a
+    /// character in both sets: heavy against rounded where the terminal draws
+    /// glyphs, `=` against `-` where it does not. Every set here is one column
+    /// wide on every side, so two panels sharing a row are the same one column
+    /// of characters apart whichever of them has the focus.
+    pub const fn border(self, focused: bool) -> border::Set<'static> {
+        match (self.rich, focused) {
+            (true, false) => border::ROUNDED,
+            (true, true) => border::THICK,
+            (false, false) => ASCII_UNFOCUSED,
+            (false, true) => ASCII_FOCUSED,
+        }
+    }
+
+    /// The character a full-width rule of chrome is drawn with.
+    ///
+    /// The same horizontal the unfocused panels below it are ruled with, so
+    /// the header does not sit over a frame drawn in a different alphabet.
+    pub fn rule(self) -> &'static str {
+        self.border(false).horizontal_top
+    }
+}
+
+/// The border of a panel nobody is in, on a terminal that declared itself
+/// dumb.
+///
+/// Kept to the character, and it is what this reader drew everywhere before
+/// ADR-c07e2694f0e1: LOG-ed57116ba141's reasoning was that structure is text
+/// emitted identically to every reader on every platform, and for the terminal
+/// that has said it can render neither glyphs nor colour that reasoning still
+/// holds.
+const ASCII_UNFOCUSED: border::Set = border::Set {
     top_left: "+",
     top_right: "+",
     bottom_left: "+",
@@ -2255,13 +2308,9 @@ const UNFOCUSED: border::Set = border::Set {
     horizontal_bottom: "-",
 };
 
-/// The border of the panel with the focus: the same box, ruled twice.
-///
-/// The verticals stay `|` so that two panels sharing a row are the same one
-/// column of characters apart whichever of them has the focus. What changes is
-/// the rule above and below, which is where a title sits and where the eye
-/// goes.
-const FOCUSED: border::Set = border::Set {
+/// The border of the panel with the focus, on the same terminal: the same box,
+/// ruled twice.
+const ASCII_FOCUSED: border::Set = border::Set {
     top_left: "+",
     top_right: "+",
     bottom_left: "+",
@@ -2653,33 +2702,16 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 /// leading slash included: a person about to press Enter is looking at exactly
 /// what will be read.
 pub const PROMPT: &str = ": ";
-/// The keys that move the screen.
-pub const KEYS: &str =
-    "j/k move  n/p page  g top  Enter open  b back  c constraints  f kind  / find  r reload  a act  ? keys  q quit";
-/// The keys that move the focus, on a line of their own.
-///
-/// Separate because they are a different kind of command: the line above moves
-/// what is inside a panel, and this one moves which panel that is. A person who
-/// has lost track of where they are needs the second line and not the first.
-pub const PANEL_KEYS: &str =
-    "Tab next panel  1 claims  2 entities  3 body  4 queue  Left/Right the pair in the middle   (the marked panel is the one keys reach)";
-/// The writing half, on its own line and spelled whole.
-///
-/// Separate from the other two because it is a different kind of offer: those
-/// keys move a screen, and these five move the corpus. A person reading the
-/// trailer should be able to see at a glance which of the two they are about to
-/// do, and one line mixing them would make that a matter of remembering.
-pub const ACT_KEYS: &str =
-    "a then  claim | log <message> | release <reason> | done <proof> | amend <flags>   (the marked panel's entity, then y)";
-/// The sixth act, on a line of its own, and only where the verb would take it.
-///
-/// A third line for a third kind of offer, on the reasoning [`ACT_KEYS`] gives
-/// for being a second one: those five move the corpus, and this one asks a
-/// person for a signature that ank has no way to produce. It says so, because
-/// somebody about to type it should know what they are being asked for and
-/// where it has to happen.
-pub const RATIFY_KEY: &str =
-    "a then  accept   (this document, on the default branch -- ank signs nothing, your key does)";
+// `KEYS`, `PANEL_KEYS`, `ACT_KEYS` and `RATIFY_KEY` stood here
+// (TASK-4d2eb2b4e193). Four sentences about a key table, written beside two
+// other renderings of the same table, and ADR-c07e2694f0e1 -- proposed --
+// records what they
+// cost: the trailer taught a vocabulary the reader did not have, and left out
+// `v`, Space, every arrow and the whole of the ring. The trailer now draws
+// `bindings::screen_line` and `bindings::write_line`, over
+// `bindings::ratify_line` where the document takes it, and `?` answers with
+// `bindings::listing` -- all of them generated from the rows they describe, so
+// what the reader teaches is what the reader answers to.
 
 /// What the confirmation says above the command line it is showing
 /// (TASK-d4a882345837).
@@ -2742,6 +2774,38 @@ mod tests {
         }
     }
 
+    /// The glyph set every screen below is pinned to, for the reason the ink
+    /// is: `App::new` reads `TERM`, and a suite that took the developer's
+    /// would be a suite that draws one frame on one machine and another on the
+    /// next. [`BOXES`] and not [`ASCII`], because an ordinary terminal is what
+    /// the reader is drawn for; the test that is about the fallback says so.
+    const SCREEN: Glyphs = BOXES;
+
+    /// How many of a line's characters are a panel's vertical border, at
+    /// either weight.
+    ///
+    /// Read off [`SCREEN`] rather than written as a character here: the border
+    /// set moved once already (ADR-c07e2694f0e1), and a suite carrying its own
+    /// copy of `|` would have gone on counting a glyph the reader no longer
+    /// draws -- which is a test that quietly stops testing rather than one that
+    /// fails.
+    fn verticals(line: &str) -> usize {
+        let of = |set: border::Set| {
+            set.vertical_left
+                .chars()
+                .next()
+                .expect("a border set has a vertical")
+        };
+        let (thin, thick) = (of(SCREEN.border(false)), of(SCREEN.border(true)));
+        line.chars().filter(|c| *c == thin || *c == thick).count()
+    }
+
+    /// A run of one panel's rule, long enough that nothing else on a frame is
+    /// it: the focused weight, or the other one.
+    fn rule_of(focused: bool) -> String {
+        SCREEN.border(focused).horizontal_top.repeat(10)
+    }
+
     /// A screen with a corpus on it, painting nothing.
     ///
     /// [`crate::paint::PLAIN`] and not whatever the environment says, so that
@@ -2750,7 +2814,9 @@ mod tests {
     /// running a different suite from one who has not. The two tests that are
     /// about the painting say which ink they mean.
     fn app() -> App {
-        let mut a = App::new((120, 40), None).inked(paint::PLAIN);
+        let mut a = App::new((120, 40), None)
+            .inked(paint::PLAIN)
+            .drawn_with(SCREEN);
         a.snapshot = Some(snapshot());
         a
     }
@@ -2848,10 +2914,7 @@ mod tests {
         // A row carrying four verticals is a row two bordered panels share,
         // which is what "side by side" is when it is measured rather than
         // described.
-        let shared = f
-            .lines()
-            .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
-            .count();
+        let shared = f.lines().filter(|l| verticals(l) >= 4).count();
         assert!(shared >= 4, "no row of the frame carries two panels:\n{f}");
     }
 
@@ -2878,13 +2941,137 @@ mod tests {
                     "{other:?} is marked as well as {focus:?}:\n{f}"
                 );
             }
-            // And the doubled rule, which no unfocused panel is drawn with.
+            // And the heavier rule, which no unfocused panel is drawn with.
             assert!(
-                f.contains("=========="),
-                "no panel is drawn with the doubled border:\n{f}"
+                f.contains(&rule_of(true)),
+                "no panel is drawn with the focused border:\n{f}"
             );
             assert!(
-                f.contains("----------"),
+                f.contains(&rule_of(false)),
+                "every panel is drawn as the focused one:\n{f}"
+            );
+        }
+    }
+
+    /// Every cell of every panel's outline, less the top rule.
+    ///
+    /// The top rule is left out because a title is drawn into it, and a title
+    /// carries the identifier of the document a panel is showing -- so a
+    /// hyphen there is `TASK-4974`'s and not a border's. What is left is the
+    /// four corners, both verticals and the bottom rule, which is where a
+    /// character this reader chose is the only thing that can be.
+    fn outlines(a: &App) -> Vec<String> {
+        let area = a.area();
+        let mut buf = Buffer::empty(area);
+        a.render(area, &mut buf);
+        let mut out = Vec::new();
+        let mut at = |x: u16, y: u16, buf: &Buffer| {
+            if let Some(cell) = buf.cell((x, y)) {
+                out.push(cell.symbol().to_string());
+            }
+        };
+        for focus in Focus::ALL {
+            let r = a.rect_of(focus, area);
+            if r.width < 2 || r.height < 2 {
+                continue;
+            }
+            for x in r.x..r.right() {
+                at(x, r.bottom() - 1, &buf);
+            }
+            for y in r.y..r.bottom() {
+                at(r.x, y, &buf);
+                at(r.right() - 1, y, &buf);
+            }
+        }
+        out
+    }
+
+    /// Structure is box-drawing, and the ASCII rules are what a terminal that
+    /// declared itself dumb gets back (ADR-c07e2694f0e1, proposed).
+    ///
+    /// Both sets on one test, because either alone is half of it: a reader
+    /// that had gone to glyphs and taken the fallback with it would pass the
+    /// first, and one that never left ASCII would pass the second.
+    ///
+    /// What is asserted is the cells the border is drawn into, by way of
+    /// [`outlines`], rather than the frame as a string: `+`, `-` and `|` are
+    /// ordinary characters of an identity, an identifier and the line of act
+    /// forms, and a test that banned them from the whole screen would be
+    /// asserting something the reader was never supposed to do. What `ank tui`
+    /// puts on a real terminal at each of the two is `tests/panels.rs`, on the
+    /// rule CLAUDE.md states: a criterion about the binary is measured through
+    /// the binary.
+    #[test]
+    fn structure_is_box_drawing_and_ascii_where_the_terminal_says_it_is_dumb() {
+        /// [`app`], drawn with a stated set: the one thing this test varies.
+        fn screen(glyphs: Glyphs) -> App {
+            let mut a = App::new((120, 40), None)
+                .inked(paint::PLAIN)
+                .drawn_with(glyphs);
+            a.snapshot = Some(snapshot());
+            a.focus = Focus::Entities;
+            a
+        }
+
+        let boxed = screen(BOXES);
+        let outline = outlines(&boxed);
+        assert!(
+            outline.len() > 200,
+            "the outlines were not read: {outline:?}"
+        );
+        for ascii in ["+", "-", "|", "="] {
+            assert!(
+                !outline.iter().any(|cell| cell == ascii),
+                "a border cell carries {ascii}:\n{}",
+                boxed.frame()
+            );
+        }
+        // The corners say which weight a panel is drawn at, and both weights
+        // are on this frame -- which is what makes the focus a character.
+        let frame = boxed.frame();
+        for corner in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
+            assert!(
+                frame.contains(corner),
+                "no unfocused panel carries the rounded corner {corner}:\n{frame}"
+            );
+        }
+        for corner in ["\u{250f}", "\u{2513}", "\u{2517}", "\u{251b}"] {
+            assert!(
+                frame.contains(corner),
+                "the focused panel carries no heavy corner {corner}:\n{frame}"
+            );
+        }
+
+        // And the terminal that has said it can render nothing rich gets back
+        // exactly what this reader drew everywhere before.
+        let plain = screen(ASCII);
+        for run in ["+---", "+===", "----------", "=========="] {
+            assert!(
+                plain.frame().contains(run),
+                "the ASCII fallback is missing {run}:\n{}",
+                plain.frame()
+            );
+        }
+        for glyph in [
+            "\u{2500}", "\u{2501}", "\u{2502}", "\u{2503}", "\u{256d}", "\u{250f}",
+        ] {
+            assert!(
+                !plain.frame().contains(glyph),
+                "a terminal that declared itself dumb was sent {glyph}:\n{}",
+                plain.frame()
+            );
+        }
+
+        // The focus is told apart by characters at both, which is the half of
+        // the criterion the fallback could quietly lose.
+        for glyphs in [BOXES, ASCII] {
+            let f = screen(glyphs).frame();
+            assert!(
+                f.contains(&glyphs.border(true).horizontal_top.repeat(10)),
+                "no panel carries the focused rule:\n{f}"
+            );
+            assert!(
+                f.contains(&glyphs.border(false).horizontal_top.repeat(10)),
                 "every panel is drawn as the focused one:\n{f}"
             );
         }
@@ -2901,7 +3088,7 @@ mod tests {
     /// what the *table* is asked about, and a corpus carrying one status would
     /// have let a palette with seven arms missing pass.
     fn coloured(ink: paint::Ink) -> App {
-        let mut a = App::new((120, 40), None).inked(ink);
+        let mut a = App::new((120, 40), None).inked(ink).drawn_with(SCREEN);
         let mut snapshot = snapshot();
         snapshot.entities.push(row(
             "TASK-0000ffff0004",
@@ -3024,10 +3211,11 @@ mod tests {
         let f = a.frame();
         // The focus: the doubled rule and the marker in the title.
         assert!(f.contains("> 2 ENTITIES"), "the focus is unmarked:\n{f}");
-        assert!(f.contains("=========="), "no doubled rule:\n{f}");
+        assert!(f.contains(&rule_of(true)), "no heavier rule:\n{f}");
         // The cursor, in the two columns every listing spends on its margin.
         assert!(
-            f.lines().any(|l| l.contains("|>     1  ")),
+            f.lines()
+                .any(|l| l.contains(&format!("{}>     1  ", SCREEN.border(true).vertical_left))),
             "the row the cursor is on is unmarked:\n{f}"
         );
         // Whose claim it is, which is what `*` means in `find`.
@@ -4389,7 +4577,7 @@ mod tests {
     const PHONE: (usize, usize) = ((ONE_COLUMN - 7) as usize, 30);
 
     fn phone() -> App {
-        let mut a = App::new(PHONE, None).inked(paint::PLAIN);
+        let mut a = App::new(PHONE, None).inked(paint::PLAIN).drawn_with(SCREEN);
         a.snapshot = Some(snapshot());
         a
     }
@@ -4426,10 +4614,7 @@ mod tests {
 
     /// How many rows of a frame carry two panels, which is what a column is.
     fn shared(frame: &str) -> usize {
-        frame
-            .lines()
-            .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
-            .count()
+        frame.lines().filter(|l| verticals(l) >= 4).count()
     }
 
     /// **Below the width the code states, the panels reflow to one column and
