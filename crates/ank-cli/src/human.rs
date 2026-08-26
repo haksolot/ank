@@ -670,6 +670,9 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     check_entries(&entities, &in_scope, &unread, &mut report);
     check_prose_identifiers(&entities, &in_scope, &unread, &mut report);
     check_accounting(&entities, &in_scope, &mut report);
+    // Over the file list already walked above for the scopes, so the tree is
+    // read once for both questions (ADR-3b6ba766a42e).
+    check_stale_citations(&entities, &in_scope, &repo.worktree, &files, &mut report);
 
     check_cycles(&entities, &mut report);
     check_authorship(&entities, &coord, &in_scope, &mut report);
@@ -1140,6 +1143,86 @@ fn tracked_files(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     walk(root, root, &mut out, 0);
     out
+}
+
+/// One line of the workspace that names a document, with the file and the line
+/// a reader opens to repair it.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct Citation {
+    /// The document named. Carried on the site rather than implied by the
+    /// caller, because one walk answers for many documents at once and `check`
+    /// asks about every retired one there is.
+    cited: String,
+    /// Repository-relative, `/`-separated, as `tracked_files` yields it.
+    file: String,
+    /// One-based, as an editor counts and as `file:line` is read.
+    line: usize,
+}
+
+/// Every line outside a `.ank/` directory that names one of these documents,
+/// over one walk of the tree.
+///
+/// **This is the one implementation, and it answers both callers.**
+/// ADR-3b6ba766a42e is explicit about why: `accept` refuses on this condition
+/// and `check` reports it as a fault, and two implementations would be two
+/// answers to "is this citation stale" — the day they disagreed, the one nobody
+/// ran would be the one that was right. So the walk lives here and the verdict
+/// lives here; what differs between the callers is which documents they ask
+/// about and what they do with the answer.
+///
+/// **`.ank/` is excluded, and that is not an omission.** ADR-1e6bcbf62e61 holds
+/// a superseded identifier legitimate in the prose of the corpus, where history
+/// is written and `ank show` carries the chain. The source has no chain to
+/// follow: a comment in a module header hands the next reader a constraint with
+/// the authority of a decision record and no command attached. Same identifier,
+/// opposite verdict, and the place is what separates them.
+///
+/// **Anchored at the root and never at one directory**, because what excludes
+/// `.ank/` is what a corpus is and not where one sits: a repository may read a
+/// corpus that is not at its root at all (ADR-9e56318631f3), and a nested one
+/// was reported as stale source once already (TASK-0e5a00f98cfe).
+///
+/// A file that is not text answers `Err` and is skipped, which is the whole of
+/// what this walk owes a binary. The tree is read rather than the index: a file
+/// git does not track yet is named too, which is the honest answer, since a
+/// stale citation costs the next reader the same whether or not it has been
+/// added.
+///
+/// Sorted, so two runs over one tree print one order. Nothing is truncated,
+/// because the list is the repair.
+fn citations_of(worktree: &Path, files: &[String], cited: &[String]) -> Vec<Citation> {
+    let mut sites: Vec<Citation> = Vec::new();
+    if cited.is_empty() {
+        return sites;
+    }
+    for rel in files {
+        if rel.split('/').any(|part| part == ".ank") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(worktree.join(rel)) else {
+            continue;
+        };
+        // Asked of the whole file first, so the per-line scan below runs only
+        // over the files that hold something. `check` walks this tree on every
+        // run and most files name no document at all.
+        let present: Vec<&String> = cited.iter().filter(|c| text.contains(c.as_str())).collect();
+        if present.is_empty() {
+            continue;
+        }
+        for (n, line) in text.lines().enumerate() {
+            for needle in &present {
+                if line.contains(needle.as_str()) {
+                    sites.push(Citation {
+                        cited: (*needle).clone(),
+                        file: rel.clone(),
+                        line: n + 1,
+                    });
+                }
+            }
+        }
+    }
+    sites.sort();
+    sites
 }
 
 /// Every distinct scope pattern in the corpus, and whether any tracked file
@@ -2288,6 +2371,102 @@ fn chain_head(target: &EntityId, entities: &[(PathBuf, Entity)]) -> Option<Entit
         head = next;
     }
     Some(head)
+}
+
+/// The workspace still citing a document the corpus has retired, reported as a
+/// fault over the same walk `accept` refuses on (ADR-3b6ba766a42e).
+///
+/// **One implementation answers both**, which is the whole reason this lives
+/// beside [`refuse_stale_citations`] and calls the same [`citations_of`]: two
+/// walks would be two answers to "is this citation stale", and the day they
+/// disagreed the one nobody ran would be the one that was right.
+///
+/// **`check` had never looked, and it is the verb whose stated job this is.**
+/// The guard that kept failing the build lived in `crates/ank-cli/tests/cli.rs`
+/// and ran only under `cargo test`, over the crates alone; `ank check` reported
+/// `0 faults` on a red tree twice in one day. A corpus that can be validated
+/// without cargo and on any platform is one of the things `check` is for, and
+/// this walk reaches `docs/`, `.github/` and the installers, which the test
+/// never did.
+///
+/// **Only a retired document is asked about.** A citation naming a *proposed*
+/// successor is not a defect and is never reported as one: it is the state the
+/// refusal exists to produce, honest because `ank show` answers
+/// `status: proposed`, and correct at the signature that follows. So the needles
+/// are exactly the entities reading `superseded`, and a proposal is never among
+/// them.
+///
+/// The successor named in the note is the **end of the chain**, not the first
+/// step of it: a document superseded twice is repaired by pointing at what is
+/// binding now, and [`chain_head`] is what the citation half of `check` already
+/// tells a citing entity to write. Where nothing supersedes the retired
+/// document at all the note says so instead of naming a document that does not
+/// exist — that absence is a fault of its own, reported against the target by
+/// [`check_succession`].
+///
+/// The tree is walked once for the whole corpus, from the file list `inspect`
+/// already holds: one walk, however many retired documents there are.
+fn check_stale_citations(
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    worktree: &Path,
+    files: &[String],
+    report: &mut Report,
+) {
+    let retired: Vec<&EntityId> = entities
+        .iter()
+        .filter(|(_, e)| in_scope(e))
+        .filter_map(|(_, e)| {
+            Anchored::of(e)
+                .filter(|v| v.status == AdrStatus::Superseded)
+                .map(|v| v.id)
+        })
+        .collect();
+    let needles: Vec<String> = retired.iter().map(|id| id.to_string()).collect();
+    let sites = citations_of(worktree, files, &needles);
+    if sites.is_empty() {
+        return;
+    }
+    // One finding per retired document and never one per line. Nineteen
+    // citations in nine files are one repair, and nineteen findings would bury
+    // every other thing this pass has to say.
+    for id in retired {
+        let needle = id.to_string();
+        let mine: Vec<&Citation> = sites.iter().filter(|c| c.cited == needle).collect();
+        if mine.is_empty() {
+            continue;
+        }
+        let distinct: BTreeSet<&String> = mine.iter().map(|c| &c.file).collect();
+        let mut note: Vec<String> = mine
+            .iter()
+            .map(|c| format!("{}:{}", c.file, c.line))
+            .collect();
+        note.push(match chain_head(id, entities) {
+            Some(head) => format!(
+                "write {head} instead, or drop the citation and leave the history to `ank show`"
+            ),
+            None => "nothing supersedes it, so there is no successor to write: drop the \
+                     citation and leave the history to `ank show`"
+                .to_string(),
+        });
+        report.findings.push(
+            Finding::fault(
+                id,
+                format!(
+                    "superseded, and the workspace still cites it in {} {}: {} {} outside .ank/",
+                    distinct.len(),
+                    if distinct.len() == 1 { "file" } else { "files" },
+                    mine.len(),
+                    if mine.len() == 1 {
+                        "citation"
+                    } else {
+                        "citations"
+                    },
+                ),
+            )
+            .with_note(note),
+        );
+    }
 }
 
 /// The succession half, for either kind that has one.
@@ -4231,6 +4410,16 @@ pub fn accept(
     // make authoritative, and `accept` has no second pass to repair it.
     let replaced = succession(&store, &entity)?;
 
+    // And the last of them, on the workspace rather than on the corpus
+    // (ADR-3b6ba766a42e). It sits here for the reason the comment above states:
+    // the condition has to be true *before* the commit, because after it there
+    // is nothing to review and no gate left to fail. It used to be a warning
+    // printed after the commit, which arrived too late to stop anything and was
+    // silenced by `--quiet`.
+    if let Some(target) = replaced.target() {
+        refuse_stale_citations(repo, target.id(), &id)?;
+    }
+
     // The promotion itself is written here, and it was missing: the transition
     // was checked above and never performed, so `accept` wrote `ratified` onto
     // an ADR that stayed `proposed`. Neither test reached this line — both
@@ -4343,106 +4532,62 @@ pub fn accept(
             );
         }
     }
-    // The citations this ratification just orphaned, named where the knowledge
-    // exists (TASK-3f47e6fd3598). Ratifying a successor is the act that makes
-    // every mention of its predecessor in the source stale, and it was the one
-    // act in the corpus whose damage was invisible to the person performing it:
-    // two ratifications on 2026-08-22 left thirty-three citations behind in nine
-    // files across three crates, both correct, both signed, and neither saying
-    // anything. The default branch went red at the next push on a test that had
-    // been green minutes before.
-    //
-    // **After the commit, because the commit is the act.** A ratification that
-    // failed to commit superseded nothing, and a warning about it would send a
-    // reader to repair citations that are still perfectly alive.
-    if let Some(target) = replaced.target() {
-        warn_orphaned_citations(inv, repo, target.id(), &id);
-    }
-
     Ok(ExitCode::Ok)
 }
 
-/// Every line outside `.ank/` that mentions `superseded`, on standard error,
-/// with the successor named as what to write instead.
+/// The refusal that keeps a supersession from landing while the workspace still
+/// cites what it retires (ADR-3b6ba766a42e).
 ///
-/// **It warns and never refuses**, and the exit code does not move. A citation
-/// left behind is stale source; the decision is sound the moment it is signed.
-/// Refusing on the state of the working tree would make a correct human act
-/// fail on somebody else's comment, and would give the person holding the
-/// signing key a reason to look for a way around a ratification.
+/// **It refuses and never warns**, and the difference is when it runs. This was
+/// a warning for a while, printed after the commit with the sites named, and it
+/// was measured three times in one day: two ratifications left thirty-three
+/// citations behind in nine files and `main` went red on all three platforms;
+/// the one that did not had a re-pointing task filed by hand beforehand. Three
+/// ratifications, two red branches, and the difference between them was whether
+/// somebody remembered. That is the shape of a rule that belongs in the tool.
+///
+/// **`accept` is the one verb that writes into history**, authoritative the
+/// instant it exists, on the branch where it exists — no pull request between it
+/// and the default branch, and no CI in front of it. That is why the branch
+/// precondition is a refusal and not advice, and this condition has the same
+/// shape: it must be true *before* the commit, because after it there is
+/// nothing to review and no gate left to fail. A warning also arrives silenced
+/// by a flag somebody running in a script has every reason to pass, which is
+/// exactly how `ank accept -q` broke the default branch without saying a word.
+///
+/// **The order this makes mandatory**: re-point the citations, then sign. A
+/// citation naming a proposed successor is provisional and honest — `ank show`
+/// answers `status: proposed`, so a reader following it learns exactly where the
+/// document stands, and it becomes correct at the signature. A citation naming
+/// the retired one is not provisional: it becomes false at that same signature
+/// and stays false until somebody sweeps it. That is why the walk is asked only
+/// about the retired document and never about the successor, and why neither
+/// this verb nor `check` reports a citation of a proposal.
 ///
 /// **It says where the repair is owed and never performs it.**
 /// ADR-c88f99e1c16e refused the re-pointing itself inside this verb, because
 /// writing to nine entities in one act would deposit nine machinery entries and
-/// pollute the trace the corpus keeps to watch itself. A message writes
+/// pollute the trace the corpus keeps to watch itself. A refusal writes
 /// nothing: no amend, no version, no entry, no commit. What was refused there
 /// was the repair performing itself, not the tool saying where it is due.
 ///
-/// **`.ank/` is excluded, and that is not an omission.** ADR-1e6bcbf62e61 holds
-/// a superseded identifier legitimate in the prose of the corpus, where history
-/// is written and `ank show` carries the chain. The source has no chain to
-/// follow: a comment in a module header hands the next reader a constraint with
-/// the authority of a decision record and no command attached. Same identifier,
-/// opposite verdict, and the place is what separates them.
-///
-/// **Here and not in `check`, and the reason is cost.** `check` runs on every
-/// edit to the corpus, and reading every file in the tree on each of those runs
-/// would spend that budget on a question that has a new answer only at a
-/// ratification. `accept` is rare, human, signed, on the default branch, and
-/// already slow.
-///
-/// The walk is the workspace's, rooted where a scope glob is confronted
-/// (ADR-9e56318631f3), and it reads the working tree rather than the index: a
-/// file git does not track yet is named too, which is the honest answer, since
-/// a stale citation costs the next reader the same whether or not it has been
-/// added. Nothing is truncated, because the list is the repair.
-fn warn_orphaned_citations(
-    inv: &Invocation,
-    repo: &Repo,
-    superseded: &EntityId,
-    successor: &EntityId,
-) {
-    if inv.quiet() {
-        return;
-    }
-    let needle = superseded.to_string();
-    let mut sites: Vec<String> = Vec::new();
-    let mut files: BTreeSet<String> = BTreeSet::new();
-    for rel in tracked_files(&repo.worktree) {
-        // Anchored at the root until a nested corpus was reported as stale
-        // source (TASK-0e5a00f98cfe). What excludes `.ank/` is what a corpus
-        // is, not where one sits: a superseded identifier is legitimate in the
-        // prose of any of them, and a repository may read a corpus that is not
-        // at its root at all (ADR-9e56318631f3).
-        if rel.split('/').any(|part| part == ".ank") {
-            continue;
-        }
-        // A file that is not text answers `Err` and is skipped, which is the
-        // whole of what this walk owes a binary.
-        let Ok(text) = std::fs::read_to_string(repo.worktree.join(&rel)) else {
-            continue;
-        };
-        if !text.contains(&needle) {
-            continue;
-        }
-        for (n, line) in text.lines().enumerate() {
-            if line.contains(&needle) {
-                sites.push(format!("{rel}:{}", n + 1));
-                files.insert(rel.clone());
-            }
-        }
-    }
-    // A ratification that supersedes nothing never reaches here, and one whose
-    // predecessor no file mentions says nothing at all: a verb that announced
-    // its own silence would be noise on the ordinary case.
+/// The code is the one §4 gives a missing prerequisite, and it is declared in
+/// the verb table beside the branch refusal it stands next to. It reaches the
+/// caller through the error path, so `--quiet` does not touch it — a refusal is
+/// not output, and there is no bypass flag: `accept` has none and gains none.
+fn refuse_stale_citations(repo: &Repo, retired: &EntityId, successor: &EntityId) -> Result<()> {
+    let needle = retired.to_string();
+    let files = tracked_files(&repo.worktree);
+    let sites = citations_of(&repo.worktree, &files, std::slice::from_ref(&needle));
     if sites.is_empty() {
-        return;
+        return Ok(());
     }
-    sites.sort();
-    let style = inv.style().on_stderr();
-    eprintln!(
-        "{} {} {} of {superseded}, superseded by this ratification, {} in {} {}",
-        style.yellow("warning:"),
+    let distinct: BTreeSet<&String> = sites.iter().map(|c| &c.file).collect();
+    // The count, then every site on its own line. Nothing is truncated: the
+    // list is the repair, and a caller told there are nineteen of them and
+    // shown five has to run something else to find the rest.
+    let mut message = format!(
+        "{} {} of {retired}, which ratifying {successor} would retire, {} in {} {}",
         sites.len(),
         if sites.len() == 1 {
             "citation"
@@ -4454,15 +4599,17 @@ fn warn_orphaned_citations(
         } else {
             "remain"
         },
-        files.len(),
-        if files.len() == 1 { "file" } else { "files" },
+        distinct.len(),
+        if distinct.len() == 1 { "file" } else { "files" },
     );
     for site in &sites {
-        eprintln!("  {site}");
+        message.push_str(&format!("\n  {}:{}", site.file, site.line));
     }
-    eprintln!(
-        "  -> write {successor} instead, or drop the citation and leave the history to `ank show`"
-    );
+    Err(
+        CliError::new(ExitCode::Prerequisite, message).with_hint(format!(
+            "write {successor} instead, or drop the citation and leave the history to `ank show`"
+        )),
+    )
 }
 
 /// Records that somebody read this entity and stands behind it.

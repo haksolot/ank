@@ -19978,22 +19978,61 @@ fn the_json_document_of_context_is_served_under_the_same_budget() {
     );
 }
 
-/// Ratifying a successor names the citations it just orphaned
-/// (TASK-3f47e6fd3598).
+/// Every file of the tree with its bytes, so a refusal can be held to having
+/// written nothing at all.
 ///
-/// **The act and the damage are the same instant, and only one of them used to
-/// be visible.** `accept` holds the predecessor's identifier, it has just
-/// written the transition that made it superseded, and the working tree is
-/// right there. Two ratifications on this project's own corpus left
-/// thirty-three citations behind in nine files and said nothing, and the
-/// default branch went red at the next push on a test that had been green
-/// minutes before.
+/// `.git` is the repository and not the tree, and `.ank/index.db` is derived,
+/// disposable and gitignored (§6): any verb may open one, and a cache
+/// appearing is not what "wrote nothing" is about. Everything else is compared
+/// byte for byte, `version:` included.
+fn worktree_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn walk(root: &Path, dir: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" || name == "index.db" {
+                continue;
+            }
+            if p.is_dir() {
+                walk(root, &p, out);
+            } else {
+                let rel = p
+                    .strip_prefix(root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                out.insert(rel, std::fs::read(&p).unwrap());
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// `accept` refuses a supersession the workspace still cites, before it writes
+/// anything (ADR-3b6ba766a42e, TASK-c90651901f22).
+///
+/// **The act and the damage are the same instant, and this used to arrive after
+/// it.** The sites were named -- correctly, with their lines -- by a warning
+/// printed once the ratification commit already existed, and `--quiet` dropped
+/// it entirely, so `ank accept -q` broke the default branch in silence. Three
+/// ratifications in one day, two red branches on all three platforms, and the
+/// difference between them was whether somebody remembered to file a
+/// re-pointing task. The logic is the same walk; what moved is when it runs and
+/// what it does with the answer.
+///
+/// What the refusal owes is what every refusal in this verb owes: the corpus
+/// exactly as it was found. `accept` has no second pass, so a half-performed
+/// succession would be a state the ratification commit then makes
+/// authoritative. Asserted as the entity still reading `proposed`, HEAD
+/// unmoved, and the tree byte for byte.
 ///
 /// Driven through the binary, on a repository whose source mentions the
 /// predecessor, because the walk is of a working tree and no unit test over
 /// `accept` has one.
 #[test]
-fn ratifying_a_successor_names_the_citations_it_orphaned() {
+fn accept_refuses_a_supersession_the_workspace_still_cites() {
     let r = ready_to_ratify();
     let first = new_adr(&r, "human:marie", "Do not do X.");
     r.git(&["add", "-A"]);
@@ -20038,12 +20077,16 @@ fn main() {{}}
     r.git(&[
         "commit",
         "-qm",
-        "the successor, and the citation it will orphan",
+        "the successor, and the citation that stops it",
     ]);
 
+    let before = r.head();
+    let tree_before = worktree_bytes(&r.0);
+
     let out = r.ank("human:marie", &["accept", &second]);
-    // The exit code does not move: the ratification is not what is wrong.
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    // 7 is the code §4 gives a missing prerequisite, and it is what the verb
+    // table declares beside the branch refusal it stands next to.
+    assert_eq!(code(&out), 7, "{}", both_streams(&out));
     let err = stderr(&out);
     assert!(
         err.contains("src/main.rs:1"),
@@ -20051,28 +20094,102 @@ fn main() {{}}
     );
     assert!(
         err.contains(&first),
-        "the identifier that just went stale: {err}"
+        "the identifier the ratification would retire: {err}"
     );
     assert!(err.contains(&second), "and the one to write instead: {err}");
+    // Both ways out, because one of them is not always available: a citation
+    // whose successor does not fit is dropped, and `ank show` still carries the
+    // chain for anybody following the history.
+    assert!(
+        err.contains("drop the citation"),
+        "the second way out is named too: {err}"
+    );
     // `.ank/` is where a superseded identifier belongs (ADR-1e6bcbf62e61), and
     // the successor's own file carries it in `supersedes:`. Naming that would
     // send a reader to repair the corpus for recording its own history.
     assert!(
-        !err.contains(".ank"),
+        !err.contains(".ank/entities"),
         "the corpus is not the source, and its prose is not stale: {err}"
+    );
+
+    // Nothing was written. Three ways of saying it, because each one failed on
+    // its own once: the entity, the history, and the bytes.
+    let text = r.adr_text(&second);
+    assert!(
+        text.contains("status: proposed"),
+        "a refused accept promotes nothing: {text}"
+    );
+    assert!(!text.contains("ratified:"), "and anchors nothing: {text}");
+    assert_eq!(before, r.head(), "a refusal makes no ratification commit");
+    assert_eq!(
+        tree_before,
+        worktree_bytes(&r.0),
+        "a refused accept leaves the worktree byte for byte as it found it"
+    );
+
+    // **`--quiet` is not a bypass.** A refusal reaches the caller through the
+    // error path, so the flag that used to silence the warning cannot touch it;
+    // this is the exact invocation that broke the default branch without saying
+    // a word.
+    let out = r.ank("human:marie", &["accept", "-q", &second]);
+    assert_eq!(code(&out), 7, "{}", both_streams(&out));
+    assert!(
+        stderr(&out).contains("src/main.rs:1"),
+        "quiet suppresses output, never a refusal: {}",
+        both_streams(&out)
+    );
+    assert_eq!(before, r.head(), "and it still commits nothing");
+
+    // And the same `accept` lands once the citation names the successor. This
+    // is the order the refusal exists to force -- re-point, then sign -- and the
+    // citation is provisional for exactly as long as this test's two statements
+    // are apart: `ank show` answers `status: proposed` until the signature.
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        format!(
+            "//! The shape below is what {second} asks for.
+fn main() {{}}
+"
+        ),
+    )
+    .unwrap();
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    assert!(
+        stdout(&out).contains("superseded"),
+        "the succession happened: {}",
+        stdout(&out)
+    );
+    assert_ne!(before, r.head(), "and the ratification commit exists");
+    assert!(
+        r.adr_text(&second).contains("status: accepted"),
+        "{}",
+        r.adr_text(&second)
+    );
+
+    // The citation of the successor is now correct, and `check` says so: this
+    // is the state the refusal produces, and neither surface reports it.
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "the tree cites what is binding: {}",
+        both_streams(&out)
     );
 }
 
-/// The two silences, which are what keeps the warning readable: a ratification
-/// that supersedes nothing, and one whose predecessor no file mentions, print
-/// nothing at all (TASK-3f47e6fd3598).
+/// The two silences, which are what keeps the gate honest: a ratification that
+/// supersedes nothing, and one whose predecessor no file mentions, land and say
+/// nothing at all (TASK-3f47e6fd3598, ADR-3b6ba766a42e).
 ///
-/// A verb announcing that it found nothing would put a line on the ordinary
-/// case, which is every ratification that is not a succession, and a warning
-/// that fires on ordinary work is one people learn to scroll past.
+/// A refusal that fired on the ordinary case -- every ratification that is not a
+/// succession -- would be the kind of gate people go looking for a way around,
+/// and `accept` has none to offer. The marker is a fragment of the refusal
+/// itself, so this stays a measurement of that message and not of a sentence
+/// nothing prints any more.
 #[test]
 fn a_ratification_that_orphans_nothing_says_nothing() {
-    const MARKER: &str = "superseded by this ratification";
+    const MARKER: &str = "would retire";
     let r = ready_to_ratify();
     let first = new_adr(&r, "human:marie", "Do not do X.");
     r.git(&["add", "-A"]);
@@ -20083,7 +20200,7 @@ fn a_ratification_that_orphans_nothing_says_nothing() {
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
         !stderr(&out).contains(MARKER),
-        "a ratification replacing nothing orphans nothing: {}",
+        "a ratification replacing nothing retires nothing: {}",
         stderr(&out)
     );
 
@@ -20483,19 +20600,21 @@ fn a_scope_matching_only_another_checkout_is_dead() {
     );
 }
 
-/// The orphaned-citation warning names files of this tree, and a corpus is
-/// excluded wherever one sits (TASK-0e5a00f98cfe).
+/// The citation refusal names files of this tree, and a corpus is excluded
+/// wherever one sits (TASK-0e5a00f98cfe).
 ///
 /// This is what found the walk. Ratifying a specification named seven citations
 /// of the document it superseded, and six were `.ank/` files inside other
 /// agents' checkouts of this same repository. One was real.
 ///
 /// Both halves matter and each was a hole of its own: the checkout is skipped by
-/// the walk, and a `.ank/` anywhere is skipped by the warning, because what
+/// the walk, and a `.ank/` anywhere is skipped by the verdict, because what
 /// excludes a corpus is what a corpus is rather than where it sits
-/// (ADR-1e6bcbf62e61, ADR-9e56318631f3).
+/// (ADR-1e6bcbf62e61, ADR-9e56318631f3). It matters more now than it did as a
+/// warning: a false site here does not cost a reader a wasted look, it refuses
+/// a correct human act (ADR-3b6ba766a42e).
 #[test]
-fn the_citation_warning_names_only_this_tree() {
+fn the_citation_refusal_names_only_this_tree() {
     let r = ready_to_ratify();
     let first = new_adr(&r, "human:marie", "Do not do X.");
     r.git(&["add", "-A"]);
@@ -20577,7 +20696,7 @@ fn main() {{}}
     ]);
 
     let out = r.ank("human:marie", &["accept", &second]);
-    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(code(&out), 7, "{}", both_streams(&out));
     let err = stderr(&out);
     assert!(
         err.contains("src/main.rs:1"),
@@ -20595,4 +20714,206 @@ fn main() {{}}
         err.contains(&second),
         "and the successor is still named as what to write instead: {err}"
     );
+
+    // The one real site repaired, and the three that were never sites stand as
+    // they are: the ratification lands. A false positive here would be a
+    // ratification no repair could unblock.
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        format!(
+            "//! The shape below is what {second} asks for.
+fn main() {{}}
+"
+        ),
+    )
+    .unwrap();
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+}
+
+/// `check` reports a stale citation as a fault, over the same walk and reaching
+/// where no cargo test ever did (ADR-3b6ba766a42e, TASK-c90651901f22).
+///
+/// **This is the hole that cost two red branches.** The guard for this lived in
+/// this very file, ran only under `cargo test`, and walked the crates alone --
+/// so `ank check`, the verb whose stated job is the mechanical invariants,
+/// reported `0 faults` on a tree that was already red, twice in one day. The
+/// walk `accept` refuses on reaches `docs/`, `.github/` and the installers, and
+/// a corpus that can be judged without cargo and on any platform is one of the
+/// things `check` is for.
+///
+/// The sites are in `docs/` and `.github/` for exactly that reason: put them in
+/// `src/` and this test would pass over a `check` that had learned nothing.
+#[test]
+fn check_reports_a_stale_citation_where_no_cargo_test_reaches() {
+    let r = ready_to_ratify();
+    let first = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    assert_eq!(code(&r.ank("human:marie", &["accept", &first])), 0);
+
+    let out = r.ank(
+        "human:marie",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "The replacement",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do Y.",
+            "--supersedes",
+            &first,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let second = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+    // Nothing cites it yet, so the ratification lands and `first` becomes the
+    // retired document the rest of this test is about.
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(code(&out), 0, "a clean tree first: {}", both_streams(&out));
+
+    // The citations arrive afterwards, which is the case a gate at `accept`
+    // cannot see: a branch cut before the ratification, merged after it.
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(
+        r.0.join("docs/guide.md"),
+        format!(
+            "The rule is stated in {first}.
+
+And restated here, in {first}, on another line.
+"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(r.0.join(".github/workflows")).unwrap();
+    std::fs::write(
+        r.0.join(".github/workflows/ci.yml"),
+        format!(
+            "# what {first} asks of a pipeline
+on: push
+"
+        ),
+    )
+    .unwrap();
+
+    let out = r.ank("human:marie", &["check"]);
+    let said = both_streams(&out);
+    assert_eq!(code(&out), 8, "a fault, and 8 is what CI routes on: {said}");
+    assert!(
+        said.contains(&format!("error: {first}")),
+        "reported against the document that was retired: {said}"
+    );
+    for site in [
+        "docs/guide.md:1",
+        "docs/guide.md:3",
+        ".github/workflows/ci.yml:1",
+    ] {
+        assert!(said.contains(site), "every site with its line: {said}");
+    }
+    assert!(
+        said.contains(&second),
+        "and the successor to write instead: {said}"
+    );
+
+    // The repair clears it, and nothing else in this corpus was reporting it.
+    std::fs::write(
+        r.0.join("docs/guide.md"),
+        format!("The rule is stated in {second}.\n"),
+    )
+    .unwrap();
+    std::fs::write(
+        r.0.join(".github/workflows/ci.yml"),
+        format!("# what {second} asks of a pipeline\non: push\n"),
+    )
+    .unwrap();
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+}
+
+/// A citation naming a **proposed** successor is reported by neither surface
+/// (ADR-3b6ba766a42e, TASK-c90651901f22).
+///
+/// **It is the state the refusal exists to produce, not a defect.** The order
+/// the gate forces is re-point, then sign, and that order was argued against
+/// twice in one day on the grounds that the workspace would name as binding a
+/// document nobody has signed. It does not: `ank show` answers
+/// `status: proposed`, so a reader following the citation learns exactly where
+/// the document stands, and the citation becomes correct at the signature.
+/// Between a citation that is briefly incomplete and one that will be wrong,
+/// the choice is not close -- and a `check` that faulted here would make the
+/// only route through `accept` impossible to take.
+#[test]
+fn a_citation_of_a_proposed_successor_is_reported_by_neither() {
+    let r = ready_to_ratify();
+    let first = new_adr(&r, "human:marie", "Do not do X.");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    assert_eq!(code(&r.ank("human:marie", &["accept", &first])), 0);
+
+    let out = r.ank(
+        "human:marie",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "The replacement",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "Do not do Y.",
+            "--supersedes",
+            &first,
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let second = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    // The workspace re-pointed while the successor is still a proposal, which
+    // is the window the refusal opens and closes.
+    std::fs::write(
+        r.0.join("src/main.rs"),
+        format!(
+            "//! The shape below is what {second} asks for.
+fn main() {{}}
+"
+        ),
+    )
+    .unwrap();
+    assert!(
+        r.adr_text(&second).contains("status: proposed"),
+        "the fixture is the window, or this test measures nothing: {}",
+        r.adr_text(&second)
+    );
+
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a citation of a proposal is honest, not a fault: {}",
+        both_streams(&out)
+    );
+    assert!(
+        !both_streams(&out).contains("still cites"),
+        "and it is not reported at all: {}",
+        both_streams(&out)
+    );
+
+    // And the signature is what makes it correct, with nothing standing in its
+    // way.
+    let out = r.ank("human:marie", &["accept", &second]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let out = r.ank("human:marie", &["check"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
 }

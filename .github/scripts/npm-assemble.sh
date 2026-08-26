@@ -96,7 +96,7 @@ cp ../../LICENSE LICENSE
 # hashes the contract into `ank --version`, tests/skill.rs holds every skill to
 # its declared revision -- and a copy committed beside them would have no such
 # anchor and would drift with nothing turning red, which is what
-# ADR-e3cb36646d77 refuses. So the copies are made here, from the one file per
+# ADR-8b3045cf11db refuses. So the copies are made here, from the one file per
 # skill, on every run, and .gitignore keeps them out of the tree, the same
 # arrangement as LICENSE on the line above. The release smoke job is what checks
 # they arrived.
