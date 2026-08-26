@@ -102,8 +102,8 @@ stable too:
     error[2]: entity not found: TASK-9999
       -> ank find TASK-9999
 
-    $ ank claim TASK-a0a7
-    error[4]: TASK-a0a7a75fbb9c held by tool/1.0 (expires in 30m)
+    $ ank claim TASK-6da1
+    error[4]: TASK-6da126c832be held by tool/1.0 (expires in 30m)
       -> ank context
 
 ## A task's state is not in its file
@@ -121,30 +121,51 @@ are not in it:
 - the **log entities** whose `about` names the task, one file per entry, stored
   beside the entities and not inside them:
 
-      $ cat .ank/entities/LOG-bc49fad834f1.md
+      $ cat .ank/entities/LOG-c0f96bc669ae.md
       ---
-      id: LOG-bc49fad834f1
+      id: LOG-c0f96bc669ae
       type: log
       title: the layout is not the contract
-      created: 2026-08-17T19:09:30Z
+      created: 2026-08-26T00:22:04Z
       author: tool/1.0
       scope:
         - src/**
-      about: TASK-a0a7a75fbb9c
+      about: TASK-6da126c832be
+      seq: 1
+      schema: 4
+      version: 1
+      ---
+
+  An entry carrying `records` is **machinery** rather than work: written by a
+  verb that changed the entity's content, not by the agent holding it. This
+  task carries one, because the criterion in the file below was amended before
+  a claim froze it, and the entry's message is the whole of that accounting:
+
+      $ cat .ank/entities/LOG-e6c24bc5f3e2.md
+      ---
+      id: LOG-e6c24bc5f3e2
+      type: log
+      title: done_criteria (version 1 to 2, replaced b1f3aa97873c, produced 83947c872580)
+      created: 2026-08-26T00:22:04Z
+      author: tool/1.0
+      scope:
+        - src/**
+      about: TASK-6da126c832be
       seq: 0
-      schema: 3
+      records: edit
+      schema: 4
       version: 1
       ---
 
 Read the file alone and here is what you see:
 
-    $ cat .ank/entities/TASK-a0a7a75fbb9c.md
+    $ cat .ank/entities/TASK-6da126c832be.md
     ---
-    id: TASK-a0a7a75fbb9c
+    id: TASK-6da126c832be
     type: task
     slug: the-parser-reads-a-corpus-without-opening-a-file
     title: The parser reads a corpus without opening a file
-    created: 2026-08-17T19:09:19Z
+    created: 2026-08-26T00:22:04Z
     author: tool/1.0
     status: in_progress
     scope:
@@ -153,18 +174,25 @@ Read the file alone and here is what you see:
     done_criteria: |
       A caller reads every entity through the CLI.
     criteria_by: creator
-    schema: 3
-    version: 2
+    schema: 4
+    version: 3
     ---
 
-`in_progress`, and not one word about who is holding it, when the lease expires,
-or what they have learned. Ask the CLI instead and the same task answers whole:
+`in_progress`, `version: 3`, and not one word about who is holding it, when the
+lease expires, what they have learned, or what the two versions before this one
+were. Ask the CLI instead and the same task answers whole:
 
-    $ ank show TASK-a0a7 --json
-    {"contract":1,"id":"TASK-a0a7a75fbb9c","coordination":"claimed by tool/1.0","blocked_by":[],"unblocks":[],"detached_proofs":[],"log_total":1,"log_shown":1,"log":[{"id":"LOG-bc49fad834f1","timestamp":"2026-08-17T19:09:30Z","who":"tool/1.0","message":"the layout is not the contract"}],"content":"---\nid: TASK-a0a7a75fbb9c\ntype: task\n…"}
+    $ ank show TASK-6da1 --json
+    {"contract":1,"id":"TASK-6da126c832be","coordination":"claimed by tool/1.0","blocked_by":[],"unblocks":[],"detached_proofs":[],"log_total":1,"log_shown":1,"log":[{"id":"LOG-c0f96bc669ae","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"the layout is not the contract","records":null}],"machinery":[{"id":"LOG-e6c24bc5f3e2","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"done_criteria (version 1 to 2, replaced b1f3aa97873c, produced 83947c872580)","records":"edit"}],"content":"---\nid: TASK-6da126c832be\ntype: task\nslug: the-parser-reads-a-corpus-without-opening-a-file\ntitle: The parser reads a corpus without opening a file\ncreated: 2026-08-26T00:22:04Z\nauthor: tool/1.0\nstatus: in_progress\nscope:\n  - src/**\nblocked_by: []\ndone_criteria: |\n  A caller reads every entity through the CLI.\ncriteria_by: creator\nschema: 4\nversion: 3\n---\n"}
 
-`coordination` came from the ref. `log` came from the log entities. `content` is
-the file, byte for byte, so nothing is lost by going through the verb.
+`coordination` came from the ref. `log` and `machinery` came from the log
+entities, split on `records`: the work trace is what a holder wrote and is what
+the budget is spent on, the machinery is what the verbs wrote and is listed
+under it, so a task edited eight times does not answer "what did the last holder
+learn" with eight mechanical lines. `records` is `null` on a work entry, and a
+client reading `log` alone still sees the field. `log_total` and `log_shown`
+count the work trace and never the machinery. `content` is the file, byte for
+byte, so nothing is lost by going through the verb.
 
 **So read through the CLI, not through the directory.** Not as a matter of taste:
 a reader that walks `.ank/` is reading one of the three sources and will report a
@@ -212,7 +240,7 @@ Exit 8 is findings, meaning faults. Signals leave it 0, and that is deliberate:
 reddening a build over an observation teaches a team to stop reading `check`.
 
     $ ank check --json
-    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"pruned":[],"findings":[{"level":"signal","subject":"ADR-4bed8b557e89","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-a0a7a75fbb9c","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
+    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
 
 ## The conformance suite is offered to you
 
