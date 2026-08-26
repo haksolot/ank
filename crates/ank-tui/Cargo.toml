@@ -12,21 +12,50 @@ rust-version = "1.95"
 license = "Apache-2.0"
 description = "The Ank terminal reader: it draws what the CLI prints, and reaches the corpus only by running it."
 
-# **The dependency list is the constraint made mechanical** (ADR-8bd76e8d7c4e).
-# `ank-core` is absent and must stay absent, and so is every git library: this
-# crate reaches the corpus by running `ank ... --json` and by nothing else, so
-# the refusals it shows are the refusals the binary gave and there is no second
-# dispatch path to keep in step. `tests/dependencies.rs` reads the graph back
-# out of cargo and fails when either arrives.
+# **The dependency list is the constraint made mechanical** (ADR-8bd76e8d7c4e,
+# ADR-0b55983421dd). `ank-core` is absent and must stay absent, and so is every
+# git library: this crate reaches the corpus by running `ank ... --json` and by
+# nothing else, so the refusals it shows are the refusals the binary gave and
+# there is no second dispatch path to keep in step. `tests/dependencies.rs`
+# reads the graph back out of cargo and fails when either arrives, holds this
+# list to what is declared below, and reads the sources for the `extern` block
+# ADR-0b55983421dd forbids on any platform.
 [dependencies]
 # The exit codes, read out of the contract rather than typed as numbers
 # (ADR-6fd69efb629c). This is what `ank-daemon` takes from it and for the same
 # reason: this crate dispatches no verb, so the verb table is not its business.
 ank-contract = { path = "../ank-contract" }
-# **No new crate enters the tree for this.** The CLI's `--json` has to be
-# *read*, and `ank-contract::json` writes and does not read. `serde_yaml` is
-# already a dependency of `ank-core`, `ank-cli`, `ank-daemon` and `ank-mcp`, and
-# YAML 1.2 is a superset of JSON, so a one-line document parses as flow YAML.
+# **The two the decision spends, and the whole of what they buy**
+# (ADR-0b55983421dd). The reader is a full-screen application: raw mode, the
+# alternate buffer, a keystroke, a resize, and a layout with panels to come.
+# Every one of those is two implementations of one behaviour -- `tcsetattr` and
+# `SetConsoleMode`, an `ioctl` and a console call, a byte and a key record --
+# and CLAUDE.md's rule is that OS-dependent behaviour is not verified until it
+# has run on all three platforms. crossterm *is* that implementation, so what
+# this crate spends is a dependency and not an `extern` block: `tests/
+# dependencies.rs` reads back out of the sources that none arrived.
+#
+# **The number, written here rather than left for whoever runs `cargo tree`.**
+# This crate compiled 15 crates before and compiles 82 now. The workspace
+# lockfile went from 50 entries to 200, and the two counts differ because a
+# lockfile carries a package whether or not a feature enables it: the termion
+# and termwiz backends, `palette` and their trees are locked and never built.
+# ADR-0b55983421dd priced this at fifty-five, which is what ratatui 0.29 costs
+# by the same instrument; 0.30 is 8 crates more compiled than that, and it is
+# the current release rather than a major this project would owe an upgrade.
+#
+# The default features are off and four are named. `all-widgets` and
+# `widget-calendar` are what they buy back: this reader draws no calendar, and
+# §13 spends a dependency only on necessity. `layout-cache` is what makes the
+# solver's answer cheap enough to ask for at every paint *and* while a key is
+# being answered, which `view.rs` does deliberately so that the heading over a
+# window and the rows inside it are one arithmetic.
+crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
+ratatui = { version = "0.30", default-features = false, features = ["std", "crossterm", "layout-cache", "underline-color"] }
+# **The CLI's `--json` has to be *read*, and no crate entered for that.**
+# `ank-contract::json` writes and does not read, and `serde_yaml` is already a
+# dependency of `ank-core`, `ank-cli`, `ank-daemon` and `ank-mcp`. YAML 1.2 is a
+# superset of JSON, so a one-line document parses as flow YAML.
 # `ank-mcp` reads JSON-RPC requests this way already (§13 spends a dependency
 # only on necessity), and the escaper on the other side emits only `\"`, `\\`,
 # `\n` and `\u00xx`, every one of which a double-quoted YAML scalar carries.

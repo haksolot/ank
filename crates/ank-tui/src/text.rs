@@ -1,38 +1,25 @@
-//! Drawing primitives: the screen control, and fitting text to a window.
+//! Fitting text to a window: the arithmetic a paged reader owes its content.
 //!
-//! **Three escape sequences, and they are the whole of what this crate emits.**
-//! They move the cursor and swap the screen buffer; none of them is colour.
-//! That is where this crate stands today, and the reason is still worth
-//! stating: the palette of §4 lives in `ank-cli`'s `style.rs`, this crate may
-//! not link `ank-cli`, and a second palette would be a second place deciding
-//! what a status looks like. With no route to the first one, monochrome was
-//! the only answer left rather than the answer that was chosen.
+//! **This is what survived the move to ratatui, and the reason it survived is
+//! that it is not drawing** (TASK-4fa385c1772d). The escape sequences that used
+//! to live here -- the alternate screen, the cursor home, the erase -- are
+//! crossterm's now, and the row-by-row painting is ratatui's. What neither of
+//! them can do for this reader is decide *how many rows a body is*: a criterion
+//! that asks for a body whole means the reader pages through it, and paging
+//! needs the count before the frame is drawn, while a key is being answered.
+//! `Paragraph`'s own wrapping happens inside the render and reports nothing, so
+//! a heading that said `41-60 of 1275` over it would be a count that agrees with
+//! nothing. The wrap is therefore done here, the rows are counted, and the slice
+//! that fits is what the widget is given.
 //!
-//! **The other route is open now, and this file has not taken it yet.**
-//! ADR-1f70ce2c3eac makes what a status means one table, held where every
-//! surface reads it and holding no escape sequence, and each surface paints
-//! that meaning its own way: two renderers are allowed and a second table is
-//! not. The reason above is the one that decision keeps; the monochrome it
-//! forced is not.
+//! [`fit`] is the other half and the same argument: ratatui clips a line that
+//! overruns its area, silently. A summary that was cut has to *say* it was cut,
+//! which is a decision about meaning rather than about pixels.
 //!
-//! TASK-4fa385c1772d is where this file is drawn again through ratatui, and
-//! TASK-6cd41d23b7d1 is where the reader paints that table and NO_COLOR
-//! reaches it. Until then nothing here is carried by colour, so what is given
-//! up is decoration and not information.
-//!
-//! The structure layer is ADR-1f70ce2c3eac's and the supersession left it
-//! word for word: the tree connectors and the marker on a held row are text,
-//! and they are the same bytes on every platform.
-
-/// The alternate screen buffer. What a full-screen reader owes the shell it was
-/// launched from: leaving restores the scrollback the session was covering.
-pub const ENTER: &str = "\x1b[?1049h";
-/// Leaving it again, on every road out of the loop.
-pub const LEAVE: &str = "\x1b[?1049l";
-/// The cursor home, then erase. Repainting the whole window rather than diffing
-/// it: a frame is at most a few kilobytes, and a differ is state that can
-/// disagree with the screen.
-pub const HOME: &str = "\x1b[H\x1b[2J";
+//! The structure layer is ADR-1f70ce2c3eac's and nothing here paints: the
+//! marker on the row the cursor is on and the marker on a held row are text,
+//! and they are the same bytes on every platform. Colour is TASK-6cd41d23b7d1's,
+//! and what is given up until then is decoration and not information.
 
 /// The marker on the row the cursor is on, in the two columns every listing in
 /// this tool already spends on its left margin (ADR-1f70ce2c3eac).

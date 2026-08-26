@@ -1,11 +1,13 @@
-//! The constraint made mechanical (ADR-8bd76e8d7c4e, TASK-49746735127f).
+//! The constraint made mechanical (ADR-8bd76e8d7c4e, ADR-0b55983421dd).
 //!
 //! ADR-8bd76e8d7c4e forbids the terminal reader from linking `ank-core`, from
 //! reading `.ank/` and from touching `refs/ank/*`, so that the refusals it shows
 //! are the refusals the CLI gave and there is no second dispatch path to keep in
-//! step. A rule that lives only in prose is a rule the second contributor breaks
-//! for a good reason, on a Tuesday, in a commit whose message explains why it is
-//! fine.
+//! step. ADR-0b55983421dd adds one of the same kind on the other side: the
+//! reader is drawn with ratatui over crossterm, and **no FFI enters this tree
+//! for any of it, on any platform**. A rule that lives only in prose is a rule
+//! the second contributor breaks for a good reason, on a Tuesday, in a commit
+//! whose message explains why it is fine.
 //!
 //! So the rule is read back out of the build. `cargo tree` answers what this
 //! crate links, and the crate's own sources answer what it reaches for -- and
@@ -95,8 +97,9 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 /// The list is the manifest's argument written as an assertion. `ank-contract`
 /// is the machine contract every surface consumes (ADR-6fd69efb629c);
 /// `serde_yaml` is already in the tree four times over and is what reads the
-/// CLI's `--json`; the rest is what those two bring with them and nothing this
-/// crate chose.
+/// CLI's `--json`; `ratatui` and `crossterm` are what ADR-0b55983421dd spends
+/// and the whole of what it spends; the rest is what those four bring with them
+/// and nothing this crate chose.
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     let tree = tree();
@@ -112,11 +115,46 @@ fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     direct.sort();
     assert_eq!(
         direct,
-        ["ank-contract", "serde_yaml"],
+        ["ank-contract", "crossterm", "ratatui", "serde_yaml"],
         "a dependency arrived. It may well be the right call -- and the \
          argument for it belongs in the manifest beside the two that are \
          there, and in this list.\n{tree}"
     );
+}
+
+/// No `extern` block, on any platform (ADR-0b55983421dd).
+///
+/// **This is the assertion the whole decision rests on.** What sent the reader
+/// to a line discipline in the first place was that raw mode is `tcsetattr` on
+/// Unix and `SetConsoleMode` on Windows, each behind an `extern` this workspace
+/// does not otherwise have, and that only one of the two could be run from
+/// where the code was written. Taking crossterm is worth what it costs
+/// precisely because it answers that on all three platforms without this crate
+/// declaring a single foreign symbol -- so if one ever arrives, the trade this
+/// decision made has quietly stopped being the trade that was made.
+///
+/// Read off the sources with their prose removed, like the check below it: this
+/// file and the module headers have to be able to say the word.
+#[test]
+fn no_foreign_symbol_is_declared_in_this_tree() {
+    for (file, source) in sources() {
+        let text = code_of(&source);
+        for forbidden in ["extern \"C\"", "extern \"system\"", "#[link"] {
+            assert!(
+                !text.contains(forbidden),
+                "{file} declares {forbidden}: the reader reaches raw mode, the \
+                 window and a keystroke through crossterm, which is what \
+                 ADR-0b55983421dd bought and the only reason it was worth \
+                 buying"
+            );
+        }
+        // `unsafe` is the wider net, and it catches a foreign call reached
+        // through a dependency's own binding as well as one declared here.
+        assert!(
+            !text.contains("unsafe "),
+            "{file} is unsafe: nothing this reader does needs to be"
+        );
+    }
 }
 
 /// The other half of the constraint: what the sources reach for.

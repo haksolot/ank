@@ -1,28 +1,27 @@
-//! The command grammar: one short word, and Enter.
+//! The grammar of the one-line prompt: a verb spelled whole, and its tail.
 //!
-//! The reader takes a line rather than a keystroke, for the reason the crate
-//! header gives, and the grammar is shaped around what that buys: a command may
-//! carry an argument, so filtering and jumping are commands rather than modes
-//! with a prompt of their own.
+//! **This is no longer how the screen is moved, and that is the whole of what
+//! ADR-0b55983421dd changed here.** Every command that only moves the screen is
+//! a key now, and `keys.rs` is where those live. What is left for a line is
+//! what a key cannot carry: `log <what you learned>`, `done --proof <p>`,
+//! `release <reason>`, `amend <flags>` -- four of the six verbs that write take
+//! something a keystroke has no room for, so `a` opens a prompt and this reads
+//! what is typed into it. `/` opens the same prompt on a search.
 //!
-//! **An empty line means "the obvious next thing", and what that is depends on
-//! the view**: opening the row under the cursor in the list, turning the page in
-//! an entity. That is the one place the parse consults the view, and it is why
-//! [`parse`] takes one.
+//! The reading commands stay in the grammar, spelled whole, and that is not
+//! vestigial: `q`, `open`, `top` and the rest cost nothing to keep, a row
+//! number and an identifier are lines by nature, and a person who reaches the
+//! prompt and types the word they know gets what they meant.
 //!
-//! # A reading command is one letter, and an act never is
+//! # A verb that writes is spelled whole, and none of the six is a key
 //!
-//! `j`, `k`, `n`, `p`, `c`, `b`, `g`, `r`, `v`, `q` -- every command that only
-//! moves the screen is a single letter, and it is the whole word too. The six
-//! that write are `claim`, `log`, `release`, `done`, `amend` and `accept`,
-//! spelled whole, with no abbreviation and no letter of their own.
-//!
-//! That asymmetry is the criterion's "no action is taken without an explicit
-//! keystroke", made into something the grammar enforces rather than something
-//! the renderer is careful about. A finger that slips onto `d` and Enter has
-//! typed nothing; there is no `d`. And it costs the reading half nothing,
-//! because a one-letter command is what a reader types a hundred times a
-//! session and a `done` is what they type once.
+//! The six are `claim`, `log`, `release`, `done`, `amend` and `accept`, with no
+//! abbreviation and no letter of their own. Under the line discipline that
+//! asymmetry *was* the guarantee -- a slipped finger typed nothing, because
+//! there was no `d`. It is still worth having and it is no longer the whole of
+//! it: what replaces it is the confirmation that shows the argv before anything
+//! is spawned, which ADR-0b55983421dd requires and TASK-d4a882345837 builds.
+//! `keys.rs` says which of the two regimes this reader is in today.
 //!
 //! # What `accept` costs on top of that, and why
 //!
@@ -37,9 +36,8 @@
 //!
 //! **It is only a command where the document is open.** In the list it is
 //! refused, naming the way in: a proposal binds nobody until somebody reads it,
-//! and a queue that could be ratified from a row is a queue nobody reads. The
-//! parse already takes the view for the empty line, so this costs no new input
-//! and puts the rule where a later edit has to see it.
+//! and a queue that could be ratified from a row is a queue nobody reads. That
+//! is why [`parse`] takes a view, and it is now the only reason it takes one.
 
 use crate::view::View;
 
@@ -87,8 +85,8 @@ pub enum Command {
     /// on the state of the corpus stays the CLI's (ADR-8bd76e8d7c4e).
     Malformed(String),
     Help,
-    /// A line that asked for nothing: whitespace in the list, where an empty
-    /// line already means open.
+    /// A line that asked for nothing: an empty prompt, or one carrying only
+    /// whitespace.
     Nothing,
     Unknown(String),
 }
@@ -159,11 +157,12 @@ const ACTS: &[(&str, Tail)] = &[
 
 pub fn parse(line: &str, view: View) -> Command {
     let line = line.trim();
+    // A prompt opened and submitted empty asked for nothing, and answering it
+    // with the obvious next thing would be the reader choosing a command for
+    // somebody who chose none. Under the line discipline this was Enter and
+    // meant "open"; Enter is a key now, and it still does.
     if line.is_empty() {
-        return match view {
-            View::List | View::Queue => Command::Open,
-            View::Entity => Command::Page(1),
-        };
+        return Command::Nothing;
     }
     if let Some(text) = line.strip_prefix('/') {
         return Command::Search(non_empty(text));
@@ -314,12 +313,15 @@ mod tests {
         parse(line, View::List)
     }
 
+    /// A prompt submitted empty runs nothing, in every view. Enter is a key and
+    /// opening a row is what it does; a line that says nothing must not be
+    /// turned into a command nobody typed.
     #[test]
-    fn an_empty_line_means_the_obvious_next_thing_in_each_view() {
-        assert_eq!(parse("", View::List), Command::Open);
-        assert_eq!(parse("", View::Queue), Command::Open);
-        assert_eq!(parse("", View::Entity), Command::Page(1));
-        assert_eq!(parse("   ", View::Entity), Command::Page(1));
+    fn an_empty_line_asks_for_nothing_in_every_view() {
+        for view in [View::List, View::Queue, View::Entity] {
+            assert_eq!(parse("", view), Command::Nothing, "{view:?}");
+            assert_eq!(parse("   ", view), Command::Nothing, "{view:?}");
+        }
     }
 
     #[test]
@@ -451,9 +453,9 @@ mod tests {
         }
     }
 
-    /// An act is never one letter, and a reading command always is. That is what
-    /// makes "no action without an explicit keystroke" a property of the grammar
-    /// rather than a habit of the renderer.
+    /// An act is never one letter, so no key can be one either: `keys.rs` maps
+    /// letters to commands, and a letter this grammar refuses to read as a verb
+    /// is a letter no mapping can quietly turn into one.
     #[test]
     fn no_single_letter_line_can_write() {
         for view in [View::List, View::Queue, View::Entity] {
