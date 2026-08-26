@@ -1,6 +1,14 @@
 //! One key per command, and the one place a line is still typed
 //! (ADR-0b55983421dd).
 //!
+//! **The keys themselves are declared in [`crate::bindings`] and not here**
+//! (TASK-4d2eb2b4e193). What this module is now is the two grammars a table
+//! cannot state -- the modifiers, and what a line editor does with a keystroke
+//! -- and the whole-domain suite at the foot of the file that measures the
+//! table over every key a terminal can report. The prose below says what the
+//! table says and is answerable to it, not the other way round: a key named
+//! here that no row declares fails the suite in `bindings.rs`.
+//!
 //! **Every command that only moves the screen is a key.** `j` and `k` move, `n`
 //! and `p` page, `g` goes to the top, Enter opens, `b` goes back, `c` shows the
 //! constraints, `v` opens the queue, `r` reads the corpus again, `f` narrows to
@@ -54,6 +62,7 @@
 //! the line a moment earlier, and a confirmation answered by the same key that
 //! opened it is a confirmation a repeated keypress walks straight through.
 
+use crate::bindings;
 use crate::input::Command;
 use crate::view::Focus;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -109,58 +118,35 @@ pub fn confirming(key: KeyEvent) -> Answer {
     }
 }
 
+/// What one key asks for, read out of [`crate::bindings::BINDINGS`].
+///
+/// **The mapping is a lookup and no longer a `match`** (TASK-4d2eb2b4e193).
+/// What was here was one arm per key, written beside three other renderings of
+/// the same list, and ADR-c07e2694f0e1 -- proposed, and the successor this
+/// wave is built on -- records what that cost: a key list that
+/// omitted `v`, Space, every arrow and the whole of the ring. The table is now
+/// the single declaration and this reads it, so a key that moves moves on every
+/// surface at once.
+///
+/// The modifiers are read exactly where they were: Control alone, and the only
+/// thing it reaches is the way out. Every other way of holding a key is
+/// transparent, because the lookup is on the code -- which is what the table at
+/// the foot of this file measures over every key a terminal can report.
 pub fn typed(key: KeyEvent, focus: Focus) -> Press {
     // The one chord, and it is the way out rather than a command: raw mode has
     // taken the line discipline's interrupt, so a reader that did not answer
     // this would be a full-screen program a person cannot leave without knowing
-    // its own vocabulary.
+    // its own vocabulary. Not a row of the table, because it is not a command:
+    // `q` is the binding, and it reaches the same place with no modifier.
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
             KeyCode::Char('c') => Press::Run(Command::Quit),
             _ => Press::Ignored,
         };
     }
-    match key.code {
-        KeyCode::Char('q') => Press::Run(Command::Quit),
-        KeyCode::Char('j') | KeyCode::Down => Press::Run(Command::Move(1)),
-        KeyCode::Char('k') | KeyCode::Up => Press::Run(Command::Move(-1)),
-        KeyCode::Char('n') | KeyCode::PageDown | KeyCode::Char(' ') => Press::Run(Command::Page(1)),
-        KeyCode::Char('p') | KeyCode::PageUp => Press::Run(Command::Page(-1)),
-        KeyCode::Char('g') | KeyCode::Home => Press::Run(Command::Top),
-        KeyCode::Enter => Press::Run(Command::Open),
-        KeyCode::Char('b') | KeyCode::Esc | KeyCode::Backspace => Press::Run(Command::Back),
-        KeyCode::Char('c') => Press::Run(Command::Constraints),
-        KeyCode::Char('r') => Press::Run(Command::Reload),
-        KeyCode::Char('v') => Press::Run(Command::Queue),
-        KeyCode::Char('?') => Press::Run(Command::Help),
-        KeyCode::Char('f') => Press::Cycle,
-        KeyCode::Char(ACT) => Press::Prompt(""),
-        KeyCode::Char(FIND) => Press::Prompt("/"),
-        // The ring, forward and back, and both of them answered as the panel
-        // they land on rather than as a step (TASK-dd9747e5e305). `BackTab` is
-        // what a terminal sends for Shift-Tab, and while it produced a step of
-        // its own it was the one command in this table that a bare key could
-        // not reach -- true only of the *value*, since a digit has always
-        // reached every panel, and false of anything a person could do. Naming
-        // the destination here makes the two agree, so "no command requires a
-        // modifier" is a claim the whole table can be measured against instead
-        // of an argument about which steps are the same place.
-        KeyCode::Tab => Press::Run(Command::Panel(focus.stepped(1))),
-        KeyCode::BackTab => Press::Run(Command::Panel(focus.stepped(-1))),
-        // A digit reaches its panel directly, which is what the number in a
-        // panel's title is for.
-        KeyCode::Char(c) if Focus::of_digit(c).is_some() => {
-            Press::Run(Command::Panel(Focus::of_digit(c).expect("a panel")))
-        }
-        // Left and Right reach the pair that shares a row, which is the only
-        // place on this screen where sideways means anything: a phone's arrow
-        // cluster is how a person who never read the key line moves, and going
-        // *into* what a row names is what Right means everywhere else. They are
-        // the one pair of keys that had to change meaning for panels, and `b`
-        // and Escape still go back.
-        KeyCode::Right if focus != Focus::Body => Press::Run(Command::Panel(Focus::Body)),
-        KeyCode::Left if focus != Focus::Entities => Press::Run(Command::Panel(Focus::Entities)),
-        _ => Press::Ignored,
+    match bindings::of_key(key.code) {
+        Some(binding) => binding.press(focus),
+        None => Press::Ignored,
     }
 }
 
@@ -291,22 +277,37 @@ mod tests {
         }
     }
 
-    /// A key that writes does not exist: the six are spelled into the prompt,
-    /// and the prompt is where the grammar refuses them.
+    /// **A key that writes reaches the confirmation, and never the spawn**
+    /// (TASK-4d2eb2b4e193).
+    ///
+    /// This replaces `no_bare_key_can_write`, which said that no key could
+    /// produce a [`Command::Act`] at all. That was worth having because
+    /// reaching a verb took a key *and* a word -- a slipped finger typed
+    /// nothing, because there was no `d` -- and the asymmetry is what
+    /// ADR-c07e2694f0e1 spends: TASK-1a415107fd56 gives the six their letters,
+    /// and the old assertion would then be a rule against the decision rather
+    /// than a rule the decision keeps.
+    ///
+    /// What survives is narrower and still sufficient, and it is stated over
+    /// the whole key table rather than over the letters: whatever an act a key
+    /// composes turns out to be, it is one of the six [`crate::ank::ACTS`]
+    /// allows, and it arrives as a [`Command::Act`] -- which
+    /// [`crate::view::App`] answers by composing an argv and showing it.
+    /// `tests/dependencies.rs` holds the other half over the crate's whole
+    /// source: one function spawns a verb that writes, and the confirmation is
+    /// in front of it.
     #[test]
-    fn no_bare_key_can_write() {
+    fn a_key_that_writes_composes_one_of_the_six_and_spawns_nothing() {
         for view in Focus::ALL {
-            for c in 'a'..='z' {
+            for code in table::every_key() {
+                let Press::Run(Command::Act(act)) = typed(key(code), view) else {
+                    continue;
+                };
                 assert!(
-                    !matches!(press(c, view), Press::Run(Command::Act(_))),
-                    "'{c}' writes in {view:?}"
+                    crate::ank::ACTS.contains(&act.verb),
+                    "{code:?} composes '{}' in {view:?}, and the gate refuses it",
+                    act.verb
                 );
-            }
-            for named in [KeyCode::Enter, KeyCode::Esc, KeyCode::Down, KeyCode::Home] {
-                assert!(!matches!(
-                    typed(key(named), view),
-                    Press::Run(Command::Act(_))
-                ));
             }
         }
     }

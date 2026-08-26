@@ -42,6 +42,7 @@
 //! -- and the focused panel is the one the screen has marked, so the document a
 //! ratification lands on is the one under the reader's eyes.
 
+use crate::bindings::{self, Tail, Verb};
 use crate::view::Focus;
 
 /// What a typed line asks for.
@@ -117,51 +118,21 @@ pub struct Act {
     pub args: Vec<String>,
 }
 
-/// How the rest of a typed line becomes a verb's arguments.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tail {
-    /// Split into words, so flags can be typed: `claim --ttl 4h`,
-    /// `amend --scope "crates/ank tui/**"`. Empty is legitimate and the CLI
-    /// answers for what it needs.
-    Words,
-    /// The rest of the line whole, as one positional. `log <message>`, where
-    /// splitting on spaces would turn a sentence into twelve arguments.
-    ///
-    /// Required: `ank log <id>` with no message *reads* the log, which is a
-    /// different act than the one the word was typed for, and silently doing
-    /// the other one is the surprise this refuses instead.
-    Message,
-    /// The rest of the line whole, behind a flag: `done --proof <p>`,
-    /// `release --reason <r>`. Absent, the flag is not passed at all and the
-    /// CLI is left to answer for the missing one -- which is exactly the
-    /// refusal a person typing `done` on a task with no verifier needs to see.
-    Behind(&'static str),
-    /// Nothing at all: the verb takes the identifier the view supplies and not
-    /// one byte more, and a line that carries a tail is refused rather than
-    /// trimmed.
-    ///
-    /// Refused and not ignored, because the two read identically on the screen
-    /// and only one of them is honest: somebody who typed `accept ADR-8bd7`
-    /// meant that identifier, and running the verb against whatever is open
-    /// while silently dropping what they wrote would be the reader choosing a
-    /// document for them. §4 gives `accept` no flags either, so there is
-    /// nothing a tail could legitimately be.
-    Nothing,
-}
-
 /// The writing half of the loop, and how each verb reads a line.
 ///
-/// The verbs here are [`crate::ank::ACTS`], and `ank.rs` refuses anything else
-/// before spawning; the test below holds the two lists to each other, so a verb
-/// added to one and forgotten in the other fails rather than half-works.
-const ACTS: &[(&str, Tail)] = &[
-    ("claim", Tail::Words),
-    ("log", Tail::Message),
-    ("release", Tail::Behind("--reason")),
-    ("done", Tail::Behind("--proof")),
-    ("amend", Tail::Words),
-    ("accept", Tail::Nothing),
-];
+/// **Not a list any more** (TASK-4d2eb2b4e193). The six verbs, their tails and
+/// the flags they spell are rows of [`crate::bindings::BINDINGS`], which is
+/// also where the keys and the key list are read from; this module looks a word
+/// up there rather than carrying a second copy of it. What used to be here was
+/// one of the five parallel tables ADR-c07e2694f0e1, proposed, was written
+/// against.
+///
+/// [`crate::ank::ACTS`] still gates the spawn and is still hand-written, and
+/// the dependency runs the other way: the bindings are measured against the
+/// gate, and the gate reads nothing from them.
+fn spelled(word: &str) -> Option<Verb> {
+    bindings::of_verb(word).and_then(|binding| binding.verb)
+}
 
 pub fn parse(line: &str, focus: Focus) -> Command {
     let line = line.trim();
@@ -193,8 +164,8 @@ pub fn parse(line: &str, focus: Focus) -> Command {
         "v" | "queue" => Command::Queue,
         "n" | "next" => Command::Page(1),
         "p" | "prev" => Command::Page(-1),
-        _ => match ACTS.iter().find(|(name, _)| *name == word) {
-            Some((verb, tail)) => act(verb, *tail, rest, focus),
+        _ => match spelled(word) {
+            Some(verb) => act(verb.name, verb.tail, rest, focus),
             None => repeated(word).unwrap_or_else(|| other(line)),
         },
     }
@@ -531,12 +502,31 @@ mod tests {
         }
     }
 
-    /// The two lists are one list, kept in two places for two jobs: this one
-    /// reads a line, `ank.rs`'s gates a spawn. They must name the same verbs.
+    /// Every verb the gate allows is a word this grammar reads, and the reverse
+    /// (TASK-4d2eb2b4e193).
+    ///
+    /// The list itself moved to [`crate::bindings`], where the keys and the key
+    /// list are read from too, and `crate::bindings` is where it is held to
+    /// `ank.rs`'s gate. What is left to say here is the thing this module is
+    /// answerable for: a line naming one of the six reaches an act rather than
+    /// falling through to [`Command::Unknown`], so the two surfaces spell the
+    /// same six words.
     #[test]
-    fn the_grammar_and_the_gate_name_the_same_verbs() {
-        let mine: Vec<&str> = ACTS.iter().map(|(name, _)| *name).collect();
-        assert_eq!(mine, crate::ank::ACTS.to_vec());
+    fn the_grammar_reads_every_verb_the_gate_allows() {
+        for verb in crate::ank::ACTS {
+            assert!(
+                spelled(verb).is_some(),
+                "'{verb}' may be spawned and this grammar does not read it"
+            );
+        }
+        for binding in crate::bindings::BINDINGS {
+            let Some(spelt) = binding.verb else { continue };
+            assert!(
+                crate::ank::ACTS.contains(&spelt.name),
+                "'{}' is read here and the gate would refuse it",
+                spelt.name
+            );
+        }
     }
 
     #[test]

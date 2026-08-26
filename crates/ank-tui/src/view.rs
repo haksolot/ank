@@ -198,6 +198,7 @@
 //! it.
 
 use crate::ank::{Ank, Failed, Ran};
+use crate::bindings::{self, Holding};
 use crate::input::{Act, Command};
 use crate::keys::{self, Editing, Press};
 use crate::model::{short_of, Detail, Queue, Row, Snapshot};
@@ -312,19 +313,14 @@ impl Action {
     }
 }
 
-/// What a key is called on the screen.
+/// What a key is called on the screen, which is what the key list calls it
+/// (TASK-4d2eb2b4e193).
 ///
-/// The character itself where there is one, so the offer and the mapping are
-/// the same letter rather than two spellings of it, and the terminal's own name
-/// otherwise.
-fn named(key: KeyCode) -> String {
-    match key {
-        KeyCode::Char(c) => c.to_string(),
-        KeyCode::Enter => "Enter".to_string(),
-        KeyCode::Esc => "Esc".to_string(),
-        other => format!("{other:?}"),
-    }
-}
+/// [`bindings::named`] and not a second spelling of the same keys: a target
+/// reading `Esc` beside a key list reading `Escape` would be one vocabulary
+/// pretending to be two, and the whole of what the table is for is that there
+/// is one.
+pub use crate::bindings::named;
 
 /// One action, and where on the band it was laid out.
 struct Target {
@@ -915,7 +911,7 @@ impl App {
             }
             Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
-            Command::Help => self.note = Some(format!("{KEYS}\n{PANEL_KEYS}\n{ACT_KEYS}")),
+            Command::Help => self.note = Some(bindings::listing().join("\n")),
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
@@ -1350,9 +1346,12 @@ impl App {
         paragraph(&self.note_lines()).render(panels.note, buf);
         paragraph(&self.action_lines()).render(panels.actions, buf);
 
-        let mut keys = vec![fit(KEYS, width), fit(ACT_KEYS, width)];
+        let mut keys = vec![
+            fit(&bindings::screen_line(), width),
+            fit(&bindings::write_line(), width),
+        ];
         if let Some(ratify) = self.ratify_line() {
-            keys.push(fit(ratify, width));
+            keys.push(fit(&ratify, width));
         }
         paragraph(&keys).render(panels.keys, buf);
     }
@@ -1760,11 +1759,11 @@ impl App {
     /// snapshot does not carry the row -- `find` answers within a budget -- no
     /// line is drawn, which errs towards saying nothing rather than towards
     /// offering something.
-    fn ratify_line(&self) -> Option<&'static str> {
+    fn ratify_line(&self) -> Option<String> {
         let detail = self.detail.as_ref()?;
         let row = self.snapshot.as_ref()?.row(&detail.id)?;
         let ratifiable = row.status == "proposed" && matches!(row.kind.as_str(), "adr" | "spec");
-        ratifiable.then_some(RATIFY_KEY)
+        ratifiable.then(bindings::ratify_line)
     }
 
     /// The frame as text, row by row, for a test to read.
@@ -1913,87 +1912,44 @@ impl App {
     /// them would be a target for the thing the screen is already answering.
     /// The body has no rows to land on, so paging is the one movement offered.
     ///
-    /// **Two states come before the focus and both are modal.** A command
-    /// waiting to be answered offers the key that runs it and the key that
-    /// drops it and nothing else, because nothing else is what the rest of the
-    /// keyboard does (TASK-d4a882345837); and an open prompt offers the two
-    /// ways out of a line. Anything else drawn under either would be an offer
-    /// the reader would refuse.
+    /// **Which of them is drawn is declared beside the key rather than here**
+    /// (TASK-4d2eb2b4e193). Every row of [`bindings::BINDINGS`] carries what
+    /// the screen must hold before it is offered at all, so this is a filter
+    /// over that table in its own order rather than a second list per panel --
+    /// and the word a target says is the word the key list says, because it is
+    /// the same string.
+    ///
+    /// A binding with no key is never a target, whatever it is offered on: the
+    /// six verbs are still spelled into the prompt, and a word a finger could
+    /// touch with no key to press would be an offer only half the reader can
+    /// take.
     pub fn actions(&self) -> Vec<Action> {
+        bindings::offered(self.holding())
+            .map(|binding| Action {
+                key: binding
+                    .key
+                    .expect("a binding with no key is never offered as a target"),
+                does: binding.word,
+            })
+            .collect()
+    }
+
+    /// What the screen is holding, which is what decides the offer.
+    ///
+    /// The two modal states come before the focus and both of them are modal in
+    /// the same direction: a command waiting to be answered offers the key that
+    /// runs it and the key that drops it and nothing else, because nothing else
+    /// is what the rest of the keyboard does (TASK-d4a882345837); and an open
+    /// prompt offers the two ways out of a line. Anything else drawn under
+    /// either would be an offer the reader would refuse.
+    fn holding(&self) -> Holding {
         if self.pending.is_some() {
-            return vec![
-                Action {
-                    key: KeyCode::Char(keys::CONFIRM),
-                    does: "run",
-                },
-                Action {
-                    key: KeyCode::Esc,
-                    does: "dismiss",
-                },
-            ];
+            return Holding::Waiting;
         }
         if self.prompt.is_some() {
-            return vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "run",
-                },
-                Action {
-                    key: KeyCode::Esc,
-                    does: "cancel",
-                },
-            ];
+            return Holding::Typing;
         }
-        let quit = Action {
-            key: KeyCode::Char('q'),
-            does: "quit",
-        };
-        let act = Action {
-            key: KeyCode::Char(keys::ACT),
-            does: "act",
-        };
-        match self.focus {
-            Focus::Body => vec![
-                Action {
-                    key: KeyCode::Char('n'),
-                    does: "page",
-                },
-                Action {
-                    key: KeyCode::Char('c'),
-                    does: "rules",
-                },
-                Action {
-                    key: KeyCode::Char('b'),
-                    does: "back",
-                },
-                act,
-                quit,
-            ],
-            Focus::Entities => vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "open",
-                },
-                act,
-                Action {
-                    key: KeyCode::Char('f'),
-                    does: "kind",
-                },
-                Action {
-                    key: KeyCode::Char(keys::FIND),
-                    does: "find",
-                },
-                quit,
-            ],
-            _ => vec![
-                Action {
-                    key: KeyCode::Enter,
-                    does: "open",
-                },
-                act,
-                quit,
-            ],
-        }
+        Holding::Panel(self.focus)
     }
 
     /// The offer laid out on the band it is drawn in.
@@ -2405,33 +2361,16 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 /// leading slash included: a person about to press Enter is looking at exactly
 /// what will be read.
 pub const PROMPT: &str = ": ";
-/// The keys that move the screen.
-pub const KEYS: &str =
-    "j/k move  n/p page  g top  Enter open  b back  c constraints  f kind  / find  r reload  a act  ? keys  q quit";
-/// The keys that move the focus, on a line of their own.
-///
-/// Separate because they are a different kind of command: the line above moves
-/// what is inside a panel, and this one moves which panel that is. A person who
-/// has lost track of where they are needs the second line and not the first.
-pub const PANEL_KEYS: &str =
-    "Tab next panel  1 claims  2 entities  3 body  4 queue  Left/Right the pair in the middle   (the marked panel is the one keys reach)";
-/// The writing half, on its own line and spelled whole.
-///
-/// Separate from the other two because it is a different kind of offer: those
-/// keys move a screen, and these five move the corpus. A person reading the
-/// trailer should be able to see at a glance which of the two they are about to
-/// do, and one line mixing them would make that a matter of remembering.
-pub const ACT_KEYS: &str =
-    "a then  claim | log <message> | release <reason> | done <proof> | amend <flags>   (the marked panel's entity, then y)";
-/// The sixth act, on a line of its own, and only where the verb would take it.
-///
-/// A third line for a third kind of offer, on the reasoning [`ACT_KEYS`] gives
-/// for being a second one: those five move the corpus, and this one asks a
-/// person for a signature that ank has no way to produce. It says so, because
-/// somebody about to type it should know what they are being asked for and
-/// where it has to happen.
-pub const RATIFY_KEY: &str =
-    "a then  accept   (this document, on the default branch -- ank signs nothing, your key does)";
+// `KEYS`, `PANEL_KEYS`, `ACT_KEYS` and `RATIFY_KEY` stood here
+// (TASK-4d2eb2b4e193). Four sentences about a key table, written beside two
+// other renderings of the same table, and ADR-c07e2694f0e1 -- proposed --
+// records what they
+// cost: the trailer taught a vocabulary the reader did not have, and left out
+// `v`, Space, every arrow and the whole of the ring. The trailer now draws
+// `bindings::screen_line` and `bindings::write_line`, over
+// `bindings::ratify_line` where the document takes it, and `?` answers with
+// `bindings::listing` -- all of them generated from the rows they describe, so
+// what the reader teaches is what the reader answers to.
 
 /// What the confirmation says above the command line it is showing
 /// (TASK-d4a882345837).
