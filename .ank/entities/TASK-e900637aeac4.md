@@ -11,8 +11,8 @@ scope:
   - crates/ank-cli/tests/tui.rs
 blocked_by: []
 done_criteria: |
-  With NO_COLOR unset, a frame of the built binary carries the rounded corners of an unfocused panel and the heavy corners of the focused one. With NO_COLOR set it carries neither and carries the ASCII rules it carries today. At both, the focused panel is told from the others by characters alone, with no colour read. The identifier scan in crates/ank-cli/tests/tui.rs reads a frame carrying a box-drawing glyph beside a truncated identifier and does not panic.
+  With TERM naming an ordinary terminal, a frame of the built binary carries the rounded corners of an unfocused panel and the heavy corners of the focused one, and no border cell carries +, - or |. With TERM=dumb it carries the ASCII rules it carries today. NO_COLOR changes neither: the frame drawn with the paint and the frame drawn without it are the same characters, which is how 'nothing is carried by colour alone' stays measurable, so the glyph choice is a second field beside the ink and never the ink itself. At every one of the three, the focused panel is told from the others by characters alone. The identifier scan in crates/ank-cli/tests/tui.rs reads a frame carrying a box-drawing glyph beside a truncated identifier without panicking at either end of its slice -- the left boundary it takes from rfind is a byte index too.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
