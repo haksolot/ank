@@ -5,15 +5,20 @@ slug: the-workspace-cites-the-successor-and-no-comment
 title: The workspace cites the successor, and no comment sources a claim it does not make
 created: 2026-08-26T17:07:37Z
 author: claude-code/opus-5+reader-redesign
-status: in_progress
+status: done
 scope:
   - crates/**
 blocked_by: []
 done_criteria: |
   No tracked file outside a .ank/ directory names ADR-0b55983421dd, in that form or abbreviated. Every citation that moved names the successor only where the successor carries that rule forward; where the supersession made the sentence false, the sentence is rewritten or gone with the code it described, and no comment cites the successor in support of a claim it does not make. cargo test --workspace is green on all three platforms and ank check reports no fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 1e1e19c0309c32b9ec850bab4f89d2f9f165ffca
+    criteria: 9cfe413d950e
+    via: submitted
 schema: 4
-version: 5
+version: 6
 ---
 
 The ordering this task carried was written on one assumption: that the
