@@ -848,12 +848,24 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
             refuses(ExitCode::Prerequisite, "not on the default branch, and there is no way around it"),
+            // Beside the branch refusal, and it carries the same code for the
+            // same reason: both are conditions that must hold before the commit,
+            // because after it there is nothing to review and no gate left to
+            // fail (ADR-3b6ba766a42e). Declared here so `ank help accept` states
+            // it, and so no caller meets a 7 the page never promised.
+            refuses(
+                ExitCode::Prerequisite,
+                "a tracked file outside .ank/ still cites the document this supersession retires",
+            ),
             refuses(
                 ExitCode::Environment,
                 "the default branch cannot be determined, from config.yml or from origin",
             ),
         ],
-        notes: &["the one act ank commits for; it is a human act, signed"],
+        notes: &[
+            "the one act ank commits for; it is a human act, signed",
+            "the citations of the retired document are re-pointed first: the refusal names every site with its line, is not suppressed by --quiet, and there is no flag around it",
+        ],
         refuses_globals: &[],
         output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), opt("superseded", Type::Str), f("commit", Type::Str), f("anchor", Type::Str)])],
         owner_task: None,
