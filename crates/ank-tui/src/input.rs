@@ -65,8 +65,6 @@ pub enum Command {
     /// Focus one named panel (TASK-bb43cfe2192b). A digit names one, and a
     /// digit is what the panel's own title carries.
     Panel(Focus),
-    /// Focus the panel this many steps along the ring, wrapping.
-    NextPanel(isize),
     /// An identifier, whole or abbreviated.
     Select(String),
     /// A row number, as the list prints them: one-based.
