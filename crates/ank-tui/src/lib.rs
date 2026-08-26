@@ -109,6 +109,28 @@
 //! is decided, and it is the one function TASK-dd9747e5e305 has to extend for a
 //! phone.
 //!
+//! # The painting, and what `NO_COLOR` takes away
+//!
+//! **What a status means is one table, and this is one of the two surfaces
+//! that paint it** (ADR-1f70ce2c3eac, TASK-6cd41d23b7d1). The meaning lives in
+//! `ank_contract::meaning` -- `done` is an accomplishment, `proposed` is
+//! waiting on somebody -- and [`paint::Ink::role`] is this crate's render of
+//! it, through ratatui rather than in the hand-written ANSI `ank-cli` uses.
+//! Two renderers are allowed and a second table is not, so no source here
+//! names a colour but that one and no name reaches a colour except through the
+//! shared lookup: `src/paint.rs` walks the crate and fails if either stops
+//! being true.
+//!
+//! **`NO_COLOR` reaches this reader and takes nothing away.** The variable is
+//! read once when the screen opens, by the CLI's own rule, and what it turns
+//! off is a repetition: every distinction on this screen is already a
+//! character. Where the focus is, is `=` and `> `; where the cursor is, is
+//! `> `; whose claim a row is, is `*`; what state an entity is in, is the word
+//! spelled in its own column. `crates/ank-tui/tests/colour.rs` drives the
+//! binary on a pseudo-terminal with the variable set and with it unset, and
+//! compares the two screens character for character -- anything colour carried
+//! alone would be a difference, and there is none.
+//!
 //! # Ratification, and the two words that are not the same
 //!
 //! ADR-8bd76e8d7c4e lets this reader *drive* `ank accept` and forbids it
@@ -141,6 +163,7 @@ pub mod ank;
 pub mod input;
 pub mod keys;
 pub mod model;
+pub mod paint;
 pub mod stream;
 pub mod term;
 pub mod text;

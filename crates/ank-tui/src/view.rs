@@ -64,9 +64,10 @@
 //! panel is drawn with a doubled border and the `> ` marker every listing in
 //! this tool already spends on the row a cursor is on ([`text::CURSOR`]). Both
 //! signals are characters, and both are ASCII: the screen answers "which panel
-//! am I in" with no colour at all -- which matters twice over: `NO_COLOR` is
-//! honoured (ADR-1f70ce2c3eac), and colour is TASK-6cd41d23b7d1's to add on top
-//! of a frame that already reads without it.
+//! am I in" with no colour at all. Colour arrived on top of that frame rather
+//! than into it (TASK-6cd41d23b7d1): what it paints is what a row *is* -- an
+//! identifier, a status -- and never where the reader is standing, so
+//! `NO_COLOR` takes away a repetition and no signal at all.
 //!
 //! The borders are `-`, `|`, `+` and `=` rather than the box-drawing glyphs,
 //! deliberately. Structure in this tool is text emitted identically to every
@@ -143,6 +144,27 @@
 //! wrong branch, a document already ratified, a signature git would not make --
 //! is the CLI's, shown in the CLI's own bytes.
 //!
+//! # What is painted, and what is deliberately not
+//!
+//! **Every colour on this screen is the render of a role the shared table
+//! declares** (ADR-1f70ce2c3eac, TASK-6cd41d23b7d1). [`crate::paint::Ink::role`]
+//! is that render and the only place in this crate where a colour is named;
+//! what reaches it is `ank_contract::meaning`'s own lookup, so `done` has one
+//! meaning here and in `ank find` and there is nowhere for a second opinion to
+//! be written. [`crate::paint::Composed`] is how a row carries that: the line is
+//! built as the characters it always was, with the pieces the table named
+//! recorded beside them, which is what keeps [`fit`], [`pad`] and every window
+//! count arithmetic on characters and lets [`rows_of`] still read a frame as
+//! text.
+//!
+//! **This reader paints the rows it composes.** A field carries a meaning -- the
+//! status column of a listing, the identifier a row is addressed by, the state
+//! in the body panel's title -- and a field is something this crate put there. A
+//! document's own body, a refusal the CLI wrote and the fields of an answer are
+//! drawn as they arrived: `done` and `accepted` are ordinary English words, an
+//! ADR's prose is full of them, and a reader that painted every occurrence would
+//! be telling its person that a sentence is a state.
+//!
 //! **The split on what reaches the screen is the crate header's, applied to an
 //! answer.** The chrome is this crate's own -- the line naming the command that
 //! ran, the markers, the panel titles -- and every value under it is the
@@ -155,8 +177,10 @@ use crate::ank::{Ank, Failed, Ran};
 use crate::input::{Act, Command};
 use crate::keys::{self, Editing, Press};
 use crate::model::{short_of, Detail, Queue, Row, Snapshot};
+use crate::paint::{role_of_id, Composed, Ink};
 use crate::stream::Stream;
 use crate::text::{self, fit, pad, window, wrap};
+use ank_contract::meaning::role_of_status;
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::KeyEvent;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -309,6 +333,14 @@ pub struct App {
     /// but the one immediately after a writing verb was spelled. While it is
     /// `Some`, no key does anything but run that command or drop it.
     pending: Option<Pending>,
+    /// Whether this screen may paint, decided once when it opens
+    /// (TASK-6cd41d23b7d1, ADR-1f70ce2c3eac).
+    ///
+    /// Held rather than asked for at every frame, on the reasoning `ank-cli`
+    /// gives for detecting once in `main`: the environment does not change
+    /// under a session, and a screen that read `NO_COLOR` per paint would be a
+    /// screen whose answer could differ between two rows of one frame.
+    ink: Ink,
 }
 
 impl App {
@@ -332,7 +364,23 @@ impl App {
             queue: None,
             prompt: None,
             pending: None,
+            // The one read of the environment this crate makes. A session is
+            // at a terminal by construction -- `tui` refuses where it is not
+            // -- so what is left of ADR-1f70ce2c3eac's condition is the
+            // variable, and [`Ink::detect`] is the CLI's own rule for it.
+            ink: Ink::detect(),
         }
+    }
+
+    /// The same screen, painting the way it is told to.
+    ///
+    /// For the suite, which has to be able to state both halves of the rule
+    /// without setting a variable on the process running it: a test that
+    /// exported `NO_COLOR` would be a test whose answer depended on the order
+    /// cargo happened to run it in.
+    pub fn inked(mut self, ink: Ink) -> App {
+        self.ink = ink;
+        self
     }
 
     pub fn focus(&self) -> Focus {
@@ -1051,7 +1099,9 @@ impl App {
     /// border is doubled -- `=` where the others rule with `-` -- and its title
     /// carries the same `> ` this tool puts on the row a cursor is on. Two
     /// independent signals, because a reader looking at the middle of a panel
-    /// still sees the rule under it.
+    /// still sees the rule under it. Colour arrived after both
+    /// (TASK-6cd41d23b7d1) and took neither away: what it paints is what a row
+    /// *is* -- an identifier, a status -- and never where the reader is.
     fn panel(&self, focus: Focus, area: Rect, buf: &mut Buffer) {
         if area.width < 2 || area.height < 2 {
             return;
@@ -1060,13 +1110,14 @@ impl App {
         let inside = inside(area);
         let width = inside.width as usize;
         let marker = if focused { text::CURSOR } else { text::PLAIN };
-        let title = fit(
-            &format!("{marker}{} {}", focus.number(), self.title_of(focus, width)),
-            area.width as usize - 2,
-        );
+        let title = Composed::new()
+            .plain(marker)
+            .plain(&format!("{} ", focus.number()))
+            .then(self.title_of(focus, width))
+            .fitted(area.width as usize - 2);
         let block = Block::bordered()
             .border_set(if focused { FOCUSED } else { UNFOCUSED })
-            .title(Line::from(title));
+            .title(title.line(self.ink));
         block.render(area, buf);
         if inside.is_empty() {
             return;
@@ -1077,7 +1128,7 @@ impl App {
             Focus::Queue => self.queue_lines(width),
             Focus::Body => self.body_lines(width, inside.height as usize),
         };
-        paragraph(&lines).render(inside, buf);
+        painted(&lines, self.ink).render(inside, buf);
     }
 
     /// What a panel's title says after its number: its name, and the state of
@@ -1085,53 +1136,66 @@ impl App {
     ///
     /// The name is [`Focus::name`] and never a string written here, so the
     /// title a person reads and the title a test looks for are one constant.
-    fn title_of(&self, focus: Focus, width: usize) -> String {
+    ///
+    /// The body panel's title is the one that carries fields rather than a
+    /// count -- the identifier of the document and the status it is in -- so it
+    /// is the one composed piece by piece; the other three are sentences about
+    /// a window and there is nothing in them for the table to say.
+    fn title_of(&self, focus: Focus, width: usize) -> Composed {
         let name = focus.name();
         match focus {
-            Focus::Claims => format!("{name} ({})", self.count(Focus::Claims)),
+            Focus::Claims => Composed::of(&format!("{name} ({})", self.count(Focus::Claims))),
             Focus::Entities => {
                 let total = self.snapshot.as_ref().map_or(0, |s| s.total);
                 let rows = self.count(Focus::Entities);
                 let c = self.cursors[Focus::Entities.number() - 1];
                 let shown = self.page(Focus::Entities).min(rows.saturating_sub(c.top));
-                format!(
+                Composed::of(&format!(
                     "{name} {}{}   ({total} in the corpus)",
                     window(c.top, shown, rows),
                     self.filter_note()
-                )
+                ))
             }
             Focus::Queue => match &self.queue {
-                None => format!("{name}   (not asked)"),
+                None => Composed::of(&format!("{name}   (not asked)")),
                 Some(_) => {
                     let rows = self.count(Focus::Queue);
                     let c = self.cursors[Focus::Queue.number() - 1];
                     let shown = self.page(Focus::Queue).min(rows.saturating_sub(c.top));
-                    format!(
+                    Composed::of(&format!(
                         "{name} {}{}   (waiting for a person)",
                         window(c.top, shown, rows),
                         self.filter_note()
-                    )
+                    ))
                 }
             },
             Focus::Body => {
                 let Some(detail) = &self.detail else {
-                    return name.to_string();
+                    return Composed::of(name);
                 };
                 let row = self.snapshot.as_ref().and_then(|s| s.row(&detail.id));
                 let counted = self.counted(width);
+                let short = short_of(&detail.id);
                 match self.pane {
-                    Pane::Body => format!(
-                        "{name}   {}  {}  {}   rows {counted}",
-                        short_of(&detail.id),
-                        row.map(|r| r.kind.clone()).unwrap_or_default(),
-                        row.map(|r| r.status.clone()).unwrap_or_default(),
-                    ),
+                    Pane::Body => {
+                        let status = row.map(|r| r.status.clone()).unwrap_or_default();
+                        Composed::new()
+                            .plain(&format!("{name}   "))
+                            .named(&short, role_of_id(&detail.id))
+                            .plain(&format!(
+                                "  {}  ",
+                                row.map(|r| r.kind.clone()).unwrap_or_default()
+                            ))
+                            .named(&status, role_of_status(&status))
+                            .plain(&format!("   rows {counted}"))
+                    }
                     // The one title that is not the panel's name: the panel is
                     // showing the other thing it can show, and saying `BODY`
                     // over a list of decisions would be a heading that lies.
-                    Pane::Constraints => {
-                        format!("CONSTRAINTS   {}   {counted}", short_of(&detail.id))
-                    }
+                    Pane::Constraints => Composed::new()
+                        .plain("CONSTRAINTS   ")
+                        .named(&short, role_of_id(&detail.id))
+                        .plain(&format!("   {counted}")),
                 }
             }
         }
@@ -1157,12 +1221,12 @@ impl App {
     /// the next two say whose claim it is. `*` is what `find` prints on a row
     /// the caller holds, and it stays against the identifier rather than moving
     /// to make room for a cursor that arrived later.
-    fn claim_lines(&self, width: usize) -> Vec<String> {
+    fn claim_lines(&self, width: usize) -> Vec<Composed> {
         let Some(snapshot) = &self.snapshot else {
-            return vec![fit("  the corpus has not been read", width)];
+            return vec![Composed::of("  the corpus has not been read").fitted(width)];
         };
         if snapshot.claims.is_empty() {
-            return vec![fit("  nothing is held", width)];
+            return vec![Composed::of("  nothing is held").fitted(width)];
         }
         let c = self.cursors[Focus::Claims.number() - 1];
         let page = self.page(Focus::Claims);
@@ -1183,24 +1247,24 @@ impl App {
                     .row(&claim.id)
                     .map(|r| r.title.clone())
                     .unwrap_or_default();
-                fit(
-                    &format!(
-                        "{here}{whose}{}  {}  until {}  {title}",
-                        pad(&short_of(&claim.id), 10),
-                        claim.holder,
-                        claim.expires
-                    ),
-                    width,
-                )
+                Composed::new()
+                    .plain(here)
+                    .plain(whose)
+                    .column(&short_of(&claim.id), 10, role_of_id(&claim.id))
+                    .plain(&format!(
+                        "  {}  until {}  {title}",
+                        claim.holder, claim.expires
+                    ))
+                    .fitted(width)
             })
             .collect()
     }
 
     /// The entity rows the panel has room for.
-    fn entity_lines(&self, width: usize, height: usize) -> Vec<String> {
+    fn entity_lines(&self, width: usize, height: usize) -> Vec<Composed> {
         let rows = self.entity_rows();
         if rows.is_empty() {
-            return vec![fit("  no entity matches this filter", width)];
+            return vec![Composed::of("  no entity matches this filter").fitted(width)];
         }
         let c = self.cursors[Focus::Entities.number() - 1];
         let held = |id: &str| {
@@ -1218,17 +1282,16 @@ impl App {
                 } else {
                     text::PLAIN
                 };
-                fit(
-                    &format!(
-                        "{here}{:>5}  {}  {}  {}{}",
-                        at + 1,
-                        pad(&row.short(), 10),
-                        pad(&row.status, 12),
-                        row.title,
-                        if held(&row.id) { "  [held]" } else { "" }
-                    ),
-                    width,
-                )
+                Composed::new()
+                    .plain(here)
+                    .plain(&format!("{:>5}  ", at + 1))
+                    .column(&row.short(), 10, role_of_id(&row.id))
+                    .plain("  ")
+                    .column(&row.status, 12, role_of_status(&row.status))
+                    .plain("  ")
+                    .plain(&row.title)
+                    .plain(if held(&row.id) { "  [held]" } else { "" })
+                    .fitted(width)
             })
             .collect()
     }
@@ -1242,23 +1305,24 @@ impl App {
     /// which is a different fact from "nobody may sign", and a panel that drew
     /// nothing where the signers go would let a person mistake one for the
     /// other.
-    fn queue_lines(&self, width: usize) -> Vec<String> {
-        let regime = fit(
-            &match &self.queue {
-                None => "  4 or v runs 'ank review', which inspects the whole corpus".to_string(),
-                Some(queue) if queue.signers.is_empty() => {
-                    "  no ratification key declared: permissions are advisory, not enforced (§8)"
-                        .to_string()
-                }
-                Some(queue) => format!("  may ratify: {}", queue.signers.join("; ")),
-            },
-            width,
-        );
+    fn queue_lines(&self, width: usize) -> Vec<Composed> {
+        let regime = Composed::of(&match &self.queue {
+            None => "  4 or v runs 'ank review', which inspects the whole corpus".to_string(),
+            Some(queue) if queue.signers.is_empty() => {
+                "  no ratification key declared: permissions are advisory, not enforced (§8)"
+                    .to_string()
+            }
+            Some(queue) => format!("  may ratify: {}", queue.signers.join("; ")),
+        })
+        .fitted(width);
         if self.queue.is_none() {
-            return vec![fit("  nothing asked for yet", width), regime];
+            return vec![
+                Composed::of("  nothing asked for yet").fitted(width),
+                regime,
+            ];
         }
         let rows = self.queue_rows();
-        let mut out: Vec<String> = if rows.is_empty() {
+        let mut out: Vec<Composed> = if rows.is_empty() {
             // Said even where there is nothing to say, on `review`'s own
             // reasoning: an empty queue and an unprinted queue read
             // identically, and this panel is where the question has an answer.
@@ -1266,7 +1330,7 @@ impl App {
                 true => "  nothing in the queue matches this filter",
                 false => "  nothing proposed for ratification",
             };
-            vec![fit(said, width)]
+            vec![Composed::of(said).fitted(width)]
         } else {
             let c = self.cursors[Focus::Queue.number() - 1];
             let page = self.page(Focus::Queue);
@@ -1284,15 +1348,11 @@ impl App {
                     // proposed, and a word repeated on every row is a column
                     // spent saying nothing. The kind is not -- an ADR and a
                     // specification are signed for different reasons.
-                    fit(
-                        &format!(
-                            "{here}{}  {}  {}",
-                            pad(&row.short(), 10),
-                            pad(&row.kind, 5),
-                            row.title
-                        ),
-                        width,
-                    )
+                    Composed::new()
+                        .plain(here)
+                        .column(&row.short(), 10, role_of_id(&row.id))
+                        .plain(&format!("  {}  {}", pad(&row.kind, 5), row.title))
+                        .fitted(width)
                 })
                 .collect()
         };
@@ -1301,58 +1361,57 @@ impl App {
     }
 
     /// The open document: what holds it, what binds it, and its body.
-    fn body_lines(&self, width: usize, height: usize) -> Vec<String> {
+    fn body_lines(&self, width: usize, height: usize) -> Vec<Composed> {
         let Some(detail) = &self.detail else {
-            return vec![
-                fit("  nothing is open here", width),
-                fit(
-                    "  Enter opens the row a listing's cursor is on, and hands this panel the",
-                    width,
-                ),
-                fit(
-                    "  width. Nothing is previewed: 'show' renews the lease on a task you hold,",
-                    width,
-                ),
-                fit(
-                    "  so a body that followed a cursor would renew a claim by being scrolled.",
-                    width,
-                ),
-            ];
+            return [
+                "  nothing is open here",
+                "  Enter opens the row a listing's cursor is on, and hands this panel the",
+                "  width. Nothing is previewed: 'show' renews the lease on a task you hold,",
+                "  so a body that followed a cursor would renew a claim by being scrolled.",
+            ]
+            .iter()
+            .map(|l| Composed::of(l).fitted(width))
+            .collect();
         };
         let row = self.snapshot.as_ref().and_then(|s| s.row(&detail.id));
         let mut out = Vec::new();
         if self.pane == Pane::Body {
-            out.push(fit(
-                &row.map(|r| r.title.clone())
-                    .unwrap_or_else(|| detail.id.clone()),
-                width,
-            ));
-            out.push(fit(
-                detail.coordination.as_deref().unwrap_or("no claim on this"),
-                width,
-            ));
-            out.push(fit(
-                &format!("scope {}", join_or(&detail.scopes, "declared on nothing")),
-                width,
-            ));
-            out.push(fit(
-                &format!(
+            out.push(
+                Composed::of(
+                    &row.map(|r| r.title.clone())
+                        .unwrap_or_else(|| detail.id.clone()),
+                )
+                .fitted(width),
+            );
+            out.push(
+                Composed::of(detail.coordination.as_deref().unwrap_or("no claim on this"))
+                    .fitted(width),
+            );
+            out.push(
+                Composed::of(&format!(
+                    "scope {}",
+                    join_or(&detail.scopes, "declared on nothing")
+                ))
+                .fitted(width),
+            );
+            out.push(
+                Composed::of(&format!(
                     "CONSTRAINTS ({} active, {} over this scope)",
                     active(&detail.constraints),
                     detail.constraints.len()
-                ),
-                width,
-            ));
+                ))
+                .fitted(width),
+            );
             out.extend(self.constraint_summary(width));
-            out.push(String::new());
+            out.push(Composed::new());
         }
         let over = out.len();
         let rows = self.pane_rows(width);
         out.extend(
-            rows.iter()
+            rows.into_iter()
                 .skip(self.offset)
                 .take(height.saturating_sub(over))
-                .map(|line| fit(line, width)),
+                .map(|line| line.fitted(width)),
         );
         out
     }
@@ -1367,7 +1426,14 @@ impl App {
     /// crate's rather than `Paragraph`'s for the reason `text.rs` gives: a
     /// widget that wraps inside its own render reports no count, and the title
     /// over it states one.
-    fn pane_rows(&self, width: usize) -> Vec<String> {
+    /// **The document's own body is not painted, and the constraints beside it
+    /// are** (TASK-6cd41d23b7d1). A row of the constraint list is a row this
+    /// crate composed out of fields -- an identifier, a status, a title -- and
+    /// the table has something to say about two of them. `content` is the
+    /// entity as `show` printed it: prose, in which `done` and `accepted` are
+    /// English words, and a reader that painted every occurrence of one would
+    /// be telling its person that a sentence is a status.
+    fn pane_rows(&self, width: usize) -> Vec<Composed> {
         let Some(detail) = &self.detail else {
             return Vec::new();
         };
@@ -1376,39 +1442,40 @@ impl App {
                 .content
                 .lines()
                 .flat_map(|l| wrap(l, width.max(1)))
+                .map(|l| Composed::of(&l))
                 .collect(),
             Pane::Constraints => detail.constraints.iter().map(constraint_row).collect(),
         }
     }
 
     /// The same, at whatever width the body panel has now.
-    fn pane_lines(&self) -> Vec<String> {
+    fn pane_lines(&self) -> Vec<Composed> {
         let width = inside(self.rect_of(Focus::Body, self.area())).width as usize;
         self.pane_rows(width)
     }
 
     /// The first few constraints, so the body panel still answers "what binds
     /// this" without a command. `c` gives the list whole.
-    fn constraint_summary(&self, width: usize) -> Vec<String> {
+    fn constraint_summary(&self, width: usize) -> Vec<Composed> {
         let Some(detail) = &self.detail else {
             return Vec::new();
         };
         let room = 3.min(detail.constraints.len());
-        let mut out: Vec<String> = detail.constraints[..room]
+        let mut out: Vec<Composed> = detail.constraints[..room]
             .iter()
-            .map(|c| fit(&constraint_row(c), width))
+            .map(|c| constraint_row(c).fitted(width))
             .collect();
         if detail.constraints.len() > room {
-            out.push(fit(
-                &format!(
+            out.push(
+                Composed::of(&format!(
                     "  +{} more, c for the list",
                     detail.constraints.len() - room
-                ),
-                width,
-            ));
+                ))
+                .fitted(width),
+            );
         }
         if detail.constraints.is_empty() {
-            out.push(fit("  nothing binds this scope", width));
+            out.push(Composed::of("  nothing binds this scope").fitted(width));
         }
         out
     }
@@ -1706,6 +1773,21 @@ fn paragraph(lines: &[String]) -> Paragraph<'static> {
     ))
 }
 
+/// The same, for the rows this crate composed rather than the bands of chrome
+/// it writes as sentences (TASK-6cd41d23b7d1).
+///
+/// The one place a [`Composed`] line becomes something ratatui can draw, so
+/// "every colour on this screen came out of `Ink::role`" is a claim about one
+/// call rather than about however many render sites there happen to be. Under
+/// `NO_COLOR` the [`Ink`] is [`crate::paint::PLAIN`] and every line comes back
+/// as one unstyled span, which is the same `Line` [`paragraph`] would have
+/// built.
+fn painted(lines: &[Composed], ink: Ink) -> Paragraph<'static> {
+    Paragraph::new(Text::from(
+        lines.iter().map(|l| l.line(ink)).collect::<Vec<Line>>(),
+    ))
+}
+
 /// A buffer as text, one row per line, for a test to read.
 ///
 /// The symbol out of every cell and nothing else: no colour, no attribute, no
@@ -1789,13 +1871,14 @@ fn flat(value: &crate::ank::Value) -> String {
 /// filtered out either -- a superseded decision is where the reasoning of the
 /// live one came from, and hiding it would be answering a different question
 /// than the CLI was asked.
-fn constraint_row(c: &Row) -> String {
-    format!(
-        "  {}  {}  {}",
-        pad(&c.short(), 10),
-        pad(&c.status, 12),
-        c.title
-    )
+fn constraint_row(c: &Row) -> Composed {
+    Composed::new()
+        .plain("  ")
+        .column(&c.short(), 10, role_of_id(&c.id))
+        .plain("  ")
+        .column(&c.status, 12, role_of_status(&c.status))
+        .plain("  ")
+        .plain(&c.title)
 }
 
 /// How many of them are accepted, which is what `context` calls active.
@@ -1888,7 +1971,10 @@ pub const DISMISSED: &str = "dismissed, and nothing was run:";
 mod tests {
     use super::*;
     use crate::model::Claim;
+    use crate::paint;
+    use ank_contract::meaning::{Role, MEANINGS};
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    use ratatui::style::Style;
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -1920,8 +2006,15 @@ mod tests {
         }
     }
 
+    /// A screen with a corpus on it, painting nothing.
+    ///
+    /// [`crate::paint::PLAIN`] and not whatever the environment says, so that
+    /// no assertion below reports the machine it ran on: `App::new` reads
+    /// `NO_COLOR` and a developer who has it exported would otherwise be
+    /// running a different suite from one who has not. The two tests that are
+    /// about the painting say which ink they mean.
     fn app() -> App {
-        let mut a = App::new((120, 40), None);
+        let mut a = App::new((120, 40), None).inked(paint::PLAIN);
         a.snapshot = Some(snapshot());
         a
     }
@@ -1975,6 +2068,14 @@ mod tests {
 
     fn tap(a: &mut App, ank: &Ank, code: KeyCode) -> bool {
         a.press(KeyEvent::new(code, KeyModifiers::NONE), ank)
+    }
+
+    /// The characters of a list of composed lines, which is what every
+    /// assertion about a body is about: a `Composed` is a string with the
+    /// pieces the shared table named recorded beside it, and what a person
+    /// reads is the string.
+    fn texts(lines: &[Composed]) -> Vec<String> {
+        lines.iter().map(|l| l.text().to_string()).collect()
     }
 
     /// The identifiers the entity rows carry, which is what a filter narrows.
@@ -2051,6 +2152,264 @@ mod tests {
                 "every panel is drawn as the focused one:\n{f}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // The painting (TASK-6cd41d23b7d1, ADR-1f70ce2c3eac)
+    // -----------------------------------------------------------------------
+
+    /// A screen with something of every family on it: rows in four statuses,
+    /// a claim, a queue of proposals and an open document.
+    ///
+    /// Written out rather than reused from [`app`] because the question here is
+    /// what the *table* is asked about, and a corpus carrying one status would
+    /// have let a palette with seven arms missing pass.
+    fn coloured(ink: paint::Ink) -> App {
+        let mut a = App::new((120, 40), None).inked(ink);
+        let mut snapshot = snapshot();
+        snapshot.entities.push(row(
+            "TASK-0000ffff0004",
+            "task",
+            "done",
+            "A task that landed",
+        ));
+        snapshot.entities.push(row(
+            "TASK-0000ffff0005",
+            "task",
+            "open",
+            "A task there to be taken",
+        ));
+        snapshot.entities.push(row(
+            "ADR-0000ffff0006",
+            "adr",
+            "superseded",
+            "A decision retired",
+        ));
+        snapshot.total = snapshot.entities.len() as u64;
+        a.snapshot = Some(snapshot);
+        a.queue = Some(queued());
+        a.detail = Some(detail("TASK-49746735127f", "a body, in prose\n"));
+        a
+    }
+
+    /// The style a cell nobody painted carries.
+    ///
+    /// Taken off an untouched buffer rather than written out: ratatui's empty
+    /// cell is `Reset` in three fields where `Style::default()` is `None` in
+    /// all of them, and a test that compared against the wrong one of those
+    /// would call an unpainted screen painted. Asking the buffer means this
+    /// stays true of whatever ratatui calls empty next.
+    fn blank() -> Style {
+        Buffer::empty(Rect::new(0, 0, 1, 1))
+            .cell((0, 0))
+            .expect("a one-cell buffer has a cell")
+            .style()
+    }
+
+    /// Every style on the frame, with the cells that carry it.
+    fn styles(a: &App) -> Vec<(Style, String)> {
+        let area = a.area();
+        let mut buf = Buffer::empty(area);
+        a.render(area, &mut buf);
+        let mut out: Vec<(Style, String)> = Vec::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let Some(cell) = buf.cell((x, y)) else {
+                    continue;
+                };
+                let style = cell.style();
+                match out.iter_mut().find(|(s, _)| *s == style) {
+                    Some((_, seen)) => seen.push_str(cell.symbol()),
+                    None => out.push((style, cell.symbol().to_string())),
+                }
+            }
+        }
+        out
+    }
+
+    /// With `NO_COLOR` set the reader draws no colour at all
+    /// (ADR-1f70ce2c3eac).
+    ///
+    /// Asserted on the cells and not on the code that filled them: every cell
+    /// of a full screen -- four panels, their borders, their titles, the three
+    /// bands of chrome -- carries the default style, so there is no row, no
+    /// column and no corner where half a style got through.
+    #[test]
+    fn with_no_colour_not_one_cell_of_the_frame_carries_a_style() {
+        let seen = styles(&coloured(paint::PLAIN));
+        assert_eq!(
+            seen.len(),
+            1,
+            "the frame carries {} styles with colour off",
+            seen.len()
+        );
+        assert_eq!(seen[0].0, blank());
+        assert!(
+            seen[0].1.contains("TASK-4974"),
+            "the frame was empty, so this asserted nothing"
+        );
+    }
+
+    /// And every distinction it makes is still carried by text.
+    ///
+    /// The whole of the claim, stated the strongest way there is: the frame a
+    /// painting reader draws and the frame a monochrome one draws are the same
+    /// characters, at every focus and in both panes. Anything a colour said
+    /// that a character did not would show up here as a difference.
+    #[test]
+    fn a_painted_frame_and_a_plain_one_are_the_same_characters() {
+        for focus in Focus::ALL {
+            for pane in [Pane::Body, Pane::Constraints] {
+                let (mut painted, mut plain) = (coloured(paint::COLOUR), coloured(paint::PLAIN));
+                painted.focus = focus;
+                plain.focus = focus;
+                painted.pane = pane;
+                plain.pane = pane;
+                assert_eq!(
+                    painted.frame(),
+                    plain.frame(),
+                    "the painted frame says something the plain one does not, \
+                     at {focus:?} in {pane:?}"
+                );
+            }
+        }
+    }
+
+    /// And the distinctions are named, one by one, on the monochrome frame.
+    ///
+    /// The frame above says the two agree; this says what they agree *on*, so
+    /// that two equally blank screens could not pass. Four signals, each of a
+    /// different kind: where the focus is, where the cursor is, whose claim a
+    /// row is, and what state an entity is in.
+    #[test]
+    fn every_distinction_the_plain_frame_makes_is_a_character_on_it() {
+        let mut a = coloured(paint::PLAIN);
+        a.focus = Focus::Entities;
+        let f = a.frame();
+        // The focus: the doubled rule and the marker in the title.
+        assert!(f.contains("> 2 ENTITIES"), "the focus is unmarked:\n{f}");
+        assert!(f.contains("=========="), "no doubled rule:\n{f}");
+        // The cursor, in the two columns every listing spends on its margin.
+        assert!(
+            f.lines().any(|l| l.contains("|>     1  ")),
+            "the row the cursor is on is unmarked:\n{f}"
+        );
+        // Whose claim it is, which is what `*` means in `find`.
+        assert!(
+            f.contains("* TASK-4974"),
+            "the caller's own claim is unmarked:\n{f}"
+        );
+        // And the status, spelled as the word it is rather than shown as a hue.
+        for state in ["in_progress", "accepted", "done", "open", "superseded"] {
+            assert!(f.contains(state), "{state} is on no row of:\n{f}");
+        }
+    }
+
+    /// Every colour the reader draws comes from the one table.
+    ///
+    /// Not "a colour appears" -- the set of styles on a full frame is collected
+    /// and each one is required to be the render of a [`Role`] the shared table
+    /// declares. A palette added anywhere in this crate would show up here as a
+    /// style nothing in `MEANINGS` accounts for, whatever file it was written
+    /// in.
+    #[test]
+    fn every_colour_on_the_frame_is_the_render_of_a_role_the_table_declares() {
+        let allowed: Vec<Style> = MEANINGS
+            .iter()
+            .map(|m| blank().patch(paint::COLOUR.role(m.role)))
+            .chain([blank()])
+            .collect();
+        let seen = styles(&coloured(paint::COLOUR));
+        for (style, cells) in &seen {
+            assert!(
+                allowed.contains(style),
+                "{style:?} is on the frame over {cells:?}, and the shared table \
+                 renders to none of {allowed:?}"
+            );
+        }
+        assert!(
+            seen.len() > 1,
+            "nothing on the frame was painted at all, so this asserted nothing"
+        );
+    }
+
+    /// What is painted is a field and never a sentence.
+    ///
+    /// The row of a listing carries an identifier and a status in columns of
+    /// their own, and a title after them; a title reading "A task that landed"
+    /// contains no status, but an ADR's body is full of `done` and `accepted`
+    /// as ordinary English, and this is the rule that keeps the reader from
+    /// telling a person that a sentence is a state.
+    #[test]
+    fn a_status_written_in_prose_is_not_painted_as_a_status() {
+        let mut a = coloured(paint::COLOUR);
+        a.focus = Focus::Body;
+        // `closed` is a status the table declares and no row of this corpus
+        // carries, so every occurrence of it on the frame is the one in the
+        // body -- which is what lets "it was not painted" be asserted over the
+        // whole screen rather than over a rectangle.
+        a.detail = Some(Detail {
+            content: "the word closed is prose here, and it is prose in an ADR too\n".to_string(),
+            ..detail("TASK-49746735127f", "")
+        });
+        let seen = styles(&a);
+        for (style, cells) in &seen {
+            if *style == blank() {
+                continue;
+            }
+            assert!(
+                !cells.contains("closed"),
+                "a word of the document's own body was painted: {cells:?}"
+            );
+        }
+        let unpainted: String = seen
+            .iter()
+            .filter(|(s, _)| *s == blank())
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert!(
+            unpainted.contains("closed"),
+            "the body never reached the screen, so this asserted nothing"
+        );
+        // And the row of the listing, which is a field and not a sentence, was.
+        let painted: String = seen
+            .iter()
+            .filter(|(s, _)| *s == blank().patch(paint::COLOUR.role(Role::Underway)))
+            .map(|(_, cells)| cells.clone())
+            .collect();
+        assert!(
+            painted.contains("in_progress"),
+            "the status column was not painted at all: {painted:?}"
+        );
+    }
+
+    /// The focus is drawn in characters, and colour did not quietly take that
+    /// over (TASK-bb43cfe2192b).
+    ///
+    /// The panel with the focus and a panel without it are asked for their
+    /// styles separately: if focus had become a colour, moving it would change
+    /// which cells are painted. It does not, because what the table names is
+    /// what a row *is* and never where a reader is standing.
+    #[test]
+    fn moving_the_focus_paints_nothing_differently() {
+        let mut here = coloured(paint::COLOUR);
+        here.focus = Focus::Claims;
+        let mut there = coloured(paint::COLOUR);
+        there.focus = Focus::Queue;
+        let painted = |a: &App| -> Vec<Style> {
+            let mut styles: Vec<Style> = styles(a)
+                .into_iter()
+                .filter(|(s, _)| *s != blank())
+                .map(|(s, _)| s)
+                .collect();
+            styles.sort_by_key(|s| format!("{s:?}"));
+            styles
+        };
+        assert_eq!(
+            painted(&here),
+            painted(&there),
+            "the focus changed the palette, so it is being drawn in colour"
+        );
     }
 
     /// Focus moves by key, in both of the two ways a person reaches for.
@@ -2303,7 +2662,7 @@ mod tests {
         a.focus = Focus::Body;
         assert_eq!(a.pane_lines().len(), 200, "the body is carried whole");
         assert_eq!(
-            a.pane_lines().join("\n") + "\n",
+            texts(&a.pane_lines()).join("\n") + "\n",
             a.detail.as_ref().unwrap().content,
             "the rows join back to the body byte for byte"
         );
@@ -2358,7 +2717,7 @@ mod tests {
             // characters the file does, a wrap having added no separator of its
             // own.
             assert_eq!(
-                a.pane_lines().concat(),
+                texts(&a.pane_lines()).concat(),
                 content.lines().collect::<String>(),
                 "the rows are not the body's own characters at {size:?}"
             );

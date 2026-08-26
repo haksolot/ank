@@ -369,6 +369,14 @@ struct Screen {
     /// a frame in whatever pieces it likes, and half a `MoveTo` is not a
     /// character.
     pending: Vec<u8>,
+    /// Everything the session wrote, kept alongside the grid.
+    ///
+    /// The grid is what a person would have been looking at and it is what
+    /// almost every assertion is about. `NO_COLOR` is the exception and it is
+    /// exactly the other question: whether an escape sequence was on the wire
+    /// at all. A grid cannot answer that, because an emulator's whole job is to
+    /// consume the sequences and show what is left.
+    raw: Vec<u8>,
 }
 
 impl Screen {
@@ -380,10 +388,12 @@ impl Screen {
             x: 0,
             y: 0,
             pending: Vec::new(),
+            raw: Vec::new(),
         }
     }
 
     fn feed(&mut self, bytes: &[u8]) {
+        self.raw.extend_from_slice(bytes);
         self.pending.extend_from_slice(bytes);
         let taken = self.apply();
         self.pending.drain(..taken);
@@ -567,7 +577,24 @@ pub struct Live {
 }
 
 impl Live {
+    /// A session that may not paint, which is what every suite but the one
+    /// about painting wants: `NO_COLOR` makes the frames the characters they
+    /// are and nothing else.
     pub fn open(repo: &Repo, columns: u16, rows: u16) -> Live {
+        Live::opened(repo, columns, rows, false)
+    }
+
+    /// A session that may paint (TASK-6cd41d23b7d1).
+    ///
+    /// `NO_COLOR` is *removed* from the child's environment rather than left
+    /// unset here, and `TERM` is stated: this suite inherits whatever the
+    /// developer running it has exported, and a test whose subject is colour
+    /// must not be a test that reports the machine.
+    pub fn painting(repo: &Repo, columns: u16, rows: u16) -> Live {
+        Live::opened(repo, columns, rows, true)
+    }
+
+    fn opened(repo: &Repo, columns: u16, rows: u16, colour: bool) -> Live {
         use std::io::Read;
 
         let (master, slave_path) = pty::open();
@@ -580,11 +607,17 @@ impl Live {
             pty::slave(&slave_path),
         );
         pty::resize(&slave_path, columns, rows);
-        let child = Command::new(ank())
+        let mut command = Command::new(ank());
+        command
             .arg("tui")
             .current_dir(&repo.0)
             .env("ANK_AGENT", AGENT)
-            .env("NO_COLOR", "1")
+            .env("TERM", "xterm-256color");
+        match colour {
+            true => command.env_remove("NO_COLOR"),
+            false => command.env("NO_COLOR", "1"),
+        };
+        let child = command
             .stdin(pty::stdio(stdin))
             .stdout(pty::stdio(stdout))
             .stderr(pty::stdio(stderr))
@@ -655,6 +688,11 @@ impl Live {
             .write_all(bytes.as_bytes())
             .expect("the terminal must accept a keystroke");
         self.writer.flush().unwrap();
+    }
+
+    /// Every byte the session wrote, sequences included.
+    pub fn raw(&self) -> Vec<u8> {
+        self.screen.lock().unwrap().raw.clone()
     }
 
     pub fn quit(mut self) {
