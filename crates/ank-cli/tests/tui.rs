@@ -406,12 +406,15 @@ mod pty {
 
     /// The master side as a `File`, and the path of the slave to hand the
     /// child.
-    pub fn open(columns: u16, rows: u16) -> (File, PathBuf) {
+    ///
+    /// The window is not set here: it is set through a slave, and the caller is
+    /// what holds one open. See [`resize`].
+    pub fn open() -> (File, PathBuf) {
         // SAFETY: the four calls are the POSIX pseudo-terminal sequence, in
         // order, and every return is checked before the next is made. The
         // pointer `ptsname` answers with is owned by the C library and is
         // copied out before anything else can invalidate it.
-        let (master, path) = unsafe {
+        unsafe {
             let master = posix_openpt(O_RDWR);
             assert!(master >= 0, "posix_openpt failed");
             assert_eq!(grantpt(master), 0, "grantpt failed");
@@ -425,24 +428,35 @@ mod pty {
                     .to_string(),
             );
             (File::from_raw_fd(master), path)
-        };
-        resize(&master, columns, rows);
-        (master, path)
+        }
     }
 
-    /// The window, stated on the master side, which is where a terminal
-    /// emulator states it.
-    pub fn resize(master: &File, columns: u16, rows: u16) {
+    /// The window, stated on the slave side.
+    ///
+    /// **On the slave and never on the master, and macOS is why.** Linux takes
+    /// `TIOCSWINSZ` on `/dev/ptmx` and this suite did that first; macOS does
+    /// not, because there the master is a cloning device answering only the
+    /// three ioctls `grantpt`, `unlockpt` and `ptsname` are built out of, and a
+    /// general tty ioctl on it answers `-1`. The slave is a tty on both, which
+    /// is where a window size belongs anyway: it is a property of the terminal
+    /// the program is looking at.
+    pub fn resize(slave_path: &PathBuf, columns: u16, rows: u16) {
+        let tty = slave(slave_path);
         let size = WinSize {
             rows,
             columns,
             x_pixels: 0,
             y_pixels: 0,
         };
-        // SAFETY: the descriptor is open and owned by `master`, and the third
-        // argument is a `winsize` by value, which is what TIOCSWINSZ reads.
-        let set = unsafe { ioctl(master.as_raw_fd(), TIOCSWINSZ, &size) };
-        assert_eq!(set, 0, "the window could not be set on the pseudo-terminal");
+        // SAFETY: the descriptor is open and owned by `tty`, and the third
+        // argument is a pointer to a `winsize`, which is what TIOCSWINSZ reads.
+        let set = unsafe { ioctl(tty.as_raw_fd(), TIOCSWINSZ, &size) };
+        assert_eq!(
+            set,
+            0,
+            "the window could not be set on the pseudo-terminal: {}",
+            std::io::Error::last_os_error()
+        );
     }
 
     /// The signal a terminal sends when its window changed.
@@ -847,6 +861,9 @@ fn idle(repo: &Repo, agent: &str, quiet: std::time::Duration) -> Seen {
 struct Live {
     child: std::process::Child,
     writer: std::fs::File,
+    /// The slave's path, kept because the window is set through it: see
+    /// [`pty::resize`] for why it cannot be set through the master.
+    slave_path: PathBuf,
     screen: std::sync::Arc<std::sync::Mutex<Screen>>,
     /// The thread draining the master side. Held so that a session read after
     /// it ended is read *after* the last frame arrived: a child that has
@@ -867,7 +884,18 @@ impl Live {
     fn open_with(repo: &Repo, agent: &str, args: &[&str], env: &[(&str, String)]) -> Live {
         use std::io::Read;
 
-        let (master, slave_path) = pty::open(WINDOW.0, WINDOW.1);
+        let (master, slave_path) = pty::open();
+        // **The child's streams are opened before the window is set, and that
+        // ordering is deliberate.** A pseudo-terminal whose last slave
+        // descriptor closes is a terminal that hung up, and how permanently
+        // depends on the platform. Holding these three from here means one is
+        // always open from before the size is stated until the session ends.
+        let (stdin, stdout, stderr) = (
+            pty::slave(&slave_path),
+            pty::slave(&slave_path),
+            pty::slave(&slave_path),
+        );
+        pty::resize(&slave_path, WINDOW.0, WINDOW.1);
         let mut command = Command::new(ANK);
         command
             .args(args)
@@ -878,9 +906,9 @@ impl Live {
             command.env(key, value);
         }
         let child = command
-            .stdin(pty::stdio(pty::slave(&slave_path)))
-            .stdout(pty::stdio(pty::slave(&slave_path)))
-            .stderr(pty::stdio(pty::slave(&slave_path)))
+            .stdin(pty::stdio(stdin))
+            .stdout(pty::stdio(stdout))
+            .stderr(pty::stdio(stderr))
             .spawn()
             .expect("the binary must have been built");
 
@@ -906,6 +934,7 @@ impl Live {
         Live {
             child,
             writer: master,
+            slave_path,
             screen,
             drain: Some(drain),
         }
@@ -1017,7 +1046,7 @@ impl Live {
 
     /// The window moved, and the session was told.
     fn resize(&mut self, columns: u16, rows: u16) {
-        pty::resize(&self.writer, columns, rows);
+        pty::resize(&self.slave_path, columns, rows);
         self.screen.lock().unwrap().resized(columns, rows);
         pty::winch(&self.child);
     }

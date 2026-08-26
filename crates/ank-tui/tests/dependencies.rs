@@ -13,65 +13,129 @@
 //! crate links, and the crate's own sources answer what it reaches for -- and
 //! either one going wrong fails here rather than surviving review.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// The dependency graph of this crate, as cargo resolves it.
+/// The dependency graph of this crate, as the lockfile records it: every
+/// package reachable from `ank-tui`, and the lockfile itself for the message.
 ///
-/// `--target all` on purpose: a dependency that only appears on one platform is
-/// still a dependency, and a graph read for the host alone would have called
-/// this crate clean while a `git2` sat behind a `cfg(windows)`.
+/// **Read out of `Cargo.lock` and not out of `cargo tree`, and the reason is
+/// worth stating.** This used to run `cargo tree --target all --offline`, on
+/// the argument that a dependency behind a `cfg(windows)` is still a
+/// dependency and a host-only graph would have called this crate clean while a
+/// `git2` sat behind one. That argument is right and this keeps it. What
+/// stopped working is the instrument: `--target all` needs the manifest of
+/// every package on every target, `--offline` forbids fetching one, and a host
+/// build downloads only what it compiles. Before ratatui the two happened to
+/// agree; ratatui's graph reaches `bumpalo` through a `wasm32`-only edge of
+/// `time`, nothing on a CI runner ever downloads it, and the test went red
+/// asking for the network it is forbidden to use.
 ///
-/// `--offline` because a test must not reach the network. The lockfile is
-/// complete by the time anything is compiled, so there is nothing to fetch.
-fn tree() -> String {
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
-    let out = Command::new(cargo)
-        .args([
-            "tree",
-            "-p",
-            "ank-tui",
-            "--edges",
-            "normal",
-            "--target",
-            "all",
-            "--offline",
-            "--prefix",
-            "none",
-        ])
-        .current_dir(manifest())
-        .output()
-        .expect("cargo must be runnable: it is what built this test");
-    assert!(
-        out.status.success(),
-        "cargo tree failed, and a graph that cannot be read is not a graph that \
-         is clean: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    String::from_utf8_lossy(&out.stdout).to_string()
+/// The lockfile answers the same question without asking anything: it records
+/// the resolution for every target and every optional dependency, checked in,
+/// which is *broader* than `--target all` rather than narrower. For a rule that
+/// says a name must not appear, broader is the safe direction -- a package that
+/// is locked and never compiled still fails this, and the comment below says
+/// why that is the outcome to want.
+fn graph() -> (String, Vec<String>) {
+    let text = std::fs::read_to_string(lockfile()).expect("the workspace has a lockfile");
+    let mut edges: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for block in text.split("[[package]]").skip(1) {
+        let Some(name) = field(block, "name") else {
+            continue;
+        };
+        edges.entry(name).or_default().extend(dependencies(block));
+    }
+    // Every package reachable from this crate, which is what "in ank-tui's
+    // graph" means: a crate the workspace carries for `ank-cli` alone is not
+    // this crate's business.
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut walking = vec!["ank-tui".to_string()];
+    while let Some(name) = walking.pop() {
+        if !seen.insert(name.clone()) {
+            continue;
+        }
+        if let Some(deps) = edges.get(&name) {
+            walking.extend(deps.iter().cloned());
+        }
+    }
+    (text, seen.into_iter().collect())
+}
+
+fn lockfile() -> PathBuf {
+    manifest()
+        .parent()
+        .and_then(|crates| crates.parent())
+        .expect("the crate sits two directories under the workspace root")
+        .join("Cargo.lock")
+}
+
+/// One `key = "value"` of a lockfile block.
+fn field(block: &str, key: &str) -> Option<String> {
+    block
+        .lines()
+        .find_map(|line| line.strip_prefix(&format!("{key} = \"")))
+        .and_then(|rest| rest.strip_suffix('"'))
+        .map(|value| value.to_string())
+}
+
+/// The names in a block's `dependencies` list.
+///
+/// An entry is `"name"`, or `"name version"` where the lockfile carries two
+/// versions of one package. The version is dropped: what every assertion here
+/// asks about is which crates are in the graph, never which release of one.
+fn dependencies(block: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in block.lines() {
+        if line.starts_with("dependencies = [") {
+            inside = true;
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if line.starts_with(']') {
+            break;
+        }
+        if let Some(entry) = line.trim().trim_end_matches(',').strip_prefix('"') {
+            if let Some(entry) = entry.strip_suffix('"') {
+                out.push(
+                    entry
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+        }
+    }
+    out
 }
 
 fn manifest() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The crate names the graph carries, one per line, without their versions.
-fn crates_of(tree: &str) -> Vec<String> {
-    tree.lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|name| !name.is_empty())
-        .map(|name| name.to_string())
-        .collect()
-}
-
 #[test]
 fn the_graph_carries_neither_ank_core_nor_git() {
-    let tree = tree();
-    let names = crates_of(&tree);
+    let (tree, names) = graph();
+    // The walk starts at this crate by name, so a rename that lost it would
+    // leave an empty graph and every assertion below would pass on nothing.
     assert!(
         names.iter().any(|n| n == "ank-tui"),
-        "the graph is not this crate's:\n{tree}"
+        "the lockfile carries no ank-tui, so this graph is nobody's"
     );
+    // And the walk reaches what the manifest declares. Without this the two
+    // assertions below would pass on a graph that lost its edges: "ank-core is
+    // not in it" is worth nothing when nothing is in it.
+    for declared in ["ank-contract", "crossterm", "ratatui", "serde_yaml"] {
+        assert!(
+            names.iter().any(|n| n == declared),
+            "the walk did not reach {declared}, which the manifest declares: \
+             the lockfile was not read as a graph"
+        );
+    }
     assert!(
         !names.iter().any(|n| n == "ank-core"),
         "ank-tui links ank-core, and ADR-8bd76e8d7c4e forbids it: the reader \
@@ -102,7 +166,7 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 /// and nothing this crate chose.
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
-    let tree = tree();
+    let (tree, _) = graph();
     let mut direct: Vec<String> = std::fs::read_to_string(manifest().join("Cargo.toml"))
         .expect("this crate has a manifest")
         .lines()
