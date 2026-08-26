@@ -106,8 +106,35 @@
 //! It also decides the width: the focused column takes four fifths of it, which
 //! is what lets a list of sentences and a body of prose share eighty columns
 //! without both being too narrow. [`view::App::arrange`] is where all of that
-//! is decided, and it is the one function TASK-dd9747e5e305 has to extend for a
-//! phone.
+//! is decided.
+//!
+//! # A person holding a phone
+//!
+//! **Below [`view::ONE_COLUMN`] the panels stack and the focused one is the
+//! only one open** (TASK-dd9747e5e305). That width is where the focused one of
+//! the pair can no longer carry a row's identifier and its status, so it is the
+//! width at which two columns have stopped being two answers, and it is well
+//! above anything a phone in portrait reports. The three panels without the
+//! focus keep their top border and the number on it, so all four stay on the
+//! frame and all four stay one digit -- or one touch -- away.
+//!
+//! **A tap is a mouse press, and this reader asked the terminal for them.**
+//! [`term`] turns capture on with raw mode and gives it back with it; a press
+//! resolves against [`view::App::arrange`] run backwards, which is why that
+//! function decides every rectangle from the window and the focus and nothing
+//! else. A press on a row selects it, a press on a panel focuses it, a swipe
+//! moves the cursor the way `j` and `k` do, and a press on one of the targets
+//! under the panels is that target's key, pressed. Nothing here reaches a place
+//! a keyboard cannot: [`view::App::actions`] draws what the focused panel
+//! offers with the key beside the word, so the two roads carry one vocabulary.
+//!
+//! **No command anywhere requires a modifier chord** (ADR-0b55983421dd), and
+//! that is now measured rather than reviewed: `keys`'s own table walks every
+//! key a terminal can report against every way a modifier can be held and holds
+//! this reader to it. It is what turned `Tab` and Shift-`Tab` into the panel
+//! they land on rather than a step, since the backward step was the one value
+//! in the table no bare key produced -- while the place it reached had been one
+//! digit away from the beginning.
 //!
 //! # The painting, and what `NO_COLOR` takes away
 //!
@@ -155,7 +182,7 @@
 //! presses after the one that answered reach a reader for which that letter is
 //! not a command at all.
 
-use ratatui::crossterm::event::KeyEvent;
+use ratatui::crossterm::event::{KeyEvent, MouseEvent};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 
@@ -272,13 +299,18 @@ pub fn run(
     session(&ank, &mut wakes, &mut screen, stream)
 }
 
-/// What can wake a drawn screen. There are exactly three things, and a fourth
+/// What can wake a drawn screen. There are exactly four things, and a fifth
 /// that ends the session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Wake {
     /// A key the person pressed, which is a press or a repeat and never a
     /// release (see [`term::typing`]).
     Key(KeyEvent),
+    /// A mouse button or a scroll, which is what a terminal sends for a tap and
+    /// for a swipe (TASK-dd9747e5e305). A pointer merely crossing the window is
+    /// not one of these: [`term::typing`] drops movement, because a frame drawn
+    /// for a mouse nobody clicked is a frame drawn for nobody.
+    Mouse(MouseEvent),
     /// The terminal is a different size now. It carries the new one, and what
     /// the screen does about it is draw again -- nothing is read, and no verb
     /// runs, because a window is a fact about the terminal and never about the
@@ -345,9 +377,10 @@ fn refused_by_the_cli(failed: ank::Failed) -> Refused {
 ///
 /// `screen` is a [`Painter`] and not the terminal, so the loop's own edges can
 /// be stated without owning one. What a session does on a real terminal is the
-/// suite's question and it drives a real one; what is asserted here is that a
-/// resize redraws, a broken terminal ends the session with an environment code,
-/// and an exhausted stream of wakes is a quit.
+/// suite's question and it drives a real one -- `crates/ank-tui/tests/phone.rs`
+/// sends a mouse press down a pseudo-terminal at a phone-sized window; what is
+/// asserted here is that a resize redraws, a broken terminal ends the session
+/// with an environment code, and an exhausted stream of wakes is a quit.
 ///
 /// `stream` is what the screen says about how it is being kept current, and
 /// `None` where there is nothing to follow.
@@ -393,6 +426,15 @@ pub fn session(
             Wake::Changed => app.repaint(ank),
             Wake::Key(key) => {
                 if app.press(key, ank) {
+                    break ExitCode::Ok;
+                }
+            }
+            // The other road in, and it arrives at the same places: a tap on a
+            // target is the key that target names, pressed, and a tap on a
+            // panel is that panel focused with the row under the finger
+            // selected. There is no command here a keyboard cannot reach.
+            Wake::Mouse(mouse) => {
+                if app.pointed(mouse, ank) {
                     break ExitCode::Ok;
                 }
             }

@@ -690,12 +690,41 @@ impl Live {
         self.writer.flush().unwrap();
     }
 
+    /// A press of the left button at a point on the screen, and the release
+    /// after it (TASK-dd9747e5e305).
+    ///
+    /// **SGR, which is the encoding the reader asked the terminal for.**
+    /// `EnableMouseCapture` turns on `?1006`, and it is the one encoding whose
+    /// coordinates are decimal text rather than bytes offset by thirty-two --
+    /// so it carries a column past two hundred and twenty-three, and so a suite
+    /// can spell one by hand. The parameters are one-based, which is what a
+    /// terminal counts in and what the reader's crossterm subtracts back out.
+    ///
+    /// The release is sent because a terminal sends one. Nothing in this reader
+    /// answers it, and a suite that left it out would be asserting on a stream
+    /// no terminal produces.
+    pub fn tap(&mut self, column: u16, row: u16) {
+        self.send(&format!("\x1b[<0;{};{}M", column + 1, row + 1));
+        self.send(&format!("\x1b[<0;{};{}m", column + 1, row + 1));
+    }
+
     /// Every byte the session wrote, sequences included.
     pub fn raw(&self) -> Vec<u8> {
         self.screen.lock().unwrap().raw.clone()
     }
 
-    pub fn quit(mut self) {
+    pub fn quit(self) {
+        let _ = self.ended();
+    }
+
+    /// The session quit, and every byte it wrote, the teardown included.
+    ///
+    /// Separate from [`Live::quit`] because what a reader writes on its way out
+    /// is only readable once it has gone: the drain thread is still feeding the
+    /// screen while the child restores the terminal, and a stream read before
+    /// the join is a stream missing exactly the sequences that say the terminal
+    /// was given back.
+    pub fn ended(mut self) -> Vec<u8> {
         self.send("q");
         let status = self.child.wait().expect("the session must end");
         assert!(status.success(), "a reader that quits answers 0: {status}");
@@ -703,5 +732,6 @@ impl Live {
         if let Some(drain) = self.drain.take() {
             drain.join().expect("the drain must not panic");
         }
+        self.screen.lock().unwrap().raw.clone()
     }
 }

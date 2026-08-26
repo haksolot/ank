@@ -79,6 +79,16 @@ fn no_frame_overflows_the_window_at_eighty_columns_or_at_forty() {
 /// palette at all and every difference this test can see is a character. That
 /// is the criterion's "without colour", measured where it is true or not: on
 /// the wire.
+///
+/// **The forty-column window is the one that changed** (TASK-dd9747e5e305).
+/// Two panels shared a row there when this was written, and forty is under
+/// [`ank_tui::view::ONE_COLUMN`] -- the width at which the focused one of the
+/// pair can no longer carry a row's identifier and its status -- so the frame
+/// there is now one column and the pair is stacked. What the assertion below
+/// says is therefore the arrangement each window actually has, rather than the
+/// one that used to be true of both; everything bb43 measured about the panel
+/// set is asserted at both windows still, and the sharing is asserted where
+/// sharing is what the layout does.
 #[test]
 fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
     let repo = Repo::seeded();
@@ -92,15 +102,25 @@ fn the_panels_are_side_by_side_and_the_focused_one_is_marked_in_characters() {
                 "{panel} is not on a {columns}x{rows} frame:\n{frame}"
             );
         }
-        // A row carrying two vertical borders is a row two panels share.
+        // A row carrying two vertical borders is a row two panels share. Above
+        // the stated width that is what the pair in the middle does; below it
+        // the four are stacked and no row carries two, which is the same fact
+        // about the same function read at two windows.
         let shared = frame
             .lines()
             .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
             .count();
-        assert!(
-            shared >= 4,
-            "no row of a {columns}x{rows} frame carries two panels:\n{frame}"
-        );
+        match columns >= ank_tui::view::ONE_COLUMN {
+            true => assert!(
+                shared >= 4,
+                "no row of a {columns}x{rows} frame carries two panels:\n{frame}"
+            ),
+            false => assert_eq!(
+                shared, 0,
+                "two panels share a row at {columns} columns, under the width \
+                 the code states for one column:\n{frame}"
+            ),
+        }
         // The session opens on the entities, and the mark is there and nowhere
         // else.
         assert!(

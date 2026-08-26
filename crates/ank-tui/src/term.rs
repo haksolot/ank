@@ -12,6 +12,15 @@
 //! could give it, so what this crate spends is a dependency and not an
 //! `extern`. `tests/dependencies.rs` reads that back out of the sources.
 //!
+//! **The mouse is captured, and that is a decision rather than a nicety**
+//! (TASK-dd9747e5e305). A terminal does not report a press until it is asked
+//! to, and the reader that asked is the reader a person holding a phone can
+//! use at all: a tap is a mouse press on that wire and there is no other way it
+//! arrives. What it costs is the terminal's own selection -- with capture on, a
+//! drag is reported here instead of highlighting text -- and that is the trade
+//! every full-screen reader with a pointer makes. It is given back on every
+//! road out, beside raw mode and the alternate buffer.
+//!
 //! **Every road out of a session gives the terminal back.** A process that
 //! exits in raw mode leaves a shell nobody can type into, and a process that
 //! exits on the alternate buffer leaves a screen nobody asked for. So the
@@ -20,8 +29,8 @@
 //! own on top, because a panic message painted onto the alternate screen is a
 //! message the teardown then hides.
 //!
-//! **What the session is woken by is three things and no clock.** A key, a
-//! resize, and the change stream (`stream`). Nothing here is on a timer and
+//! **What the session is woken by is four things and no clock.** A key, a tap,
+//! a resize, and the change stream (`stream`). Nothing here is on a timer and
 //! there is no timer to put anything on: with nobody typing, nothing changing
 //! and the window still, this reader is a process asleep on a channel. That is
 //! what keeps ADR-0bb7ea8991bc's "a claim is renewed by working" true of a
@@ -30,7 +39,9 @@
 use crate::view::App;
 use crate::Wake;
 use ratatui::backend::CrosstermBackend;
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -71,8 +82,8 @@ impl Screen {
         hook();
         enable_raw_mode()?;
         let mut out = std::io::stdout();
-        if let Err(e) = execute!(out, EnterAlternateScreen) {
-            let _ = disable_raw_mode();
+        if let Err(e) = execute!(out, EnterAlternateScreen, EnableMouseCapture) {
+            let _ = restore();
             return Err(e);
         }
         match ratatui::Terminal::new(CrosstermBackend::new(out)) {
@@ -109,7 +120,7 @@ impl Drop for Screen {
 /// alternate buffer is no reason to leave the terminal raw as well, and there
 /// is nobody left to report either failure to.
 fn restore() -> std::io::Result<()> {
-    let left = execute!(std::io::stdout(), LeaveAlternateScreen);
+    let left = execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen);
     let cooked = disable_raw_mode();
     left.and(cooked)
 }
@@ -143,13 +154,25 @@ fn hook() {
 /// exists to catch, and one no Linux run would ever show. A repeat is taken,
 /// because holding `j` is somebody moving down a list on purpose.
 ///
-/// Mouse, focus and paste are read and dropped: no capture is enabled, so none
-/// of them arrives, and turning them on is TASK-dd9747e5e305's business rather
-/// than something to half-do here.
+/// **A mouse crossing the window is not a wake** (TASK-dd9747e5e305). Capture
+/// is on, so a terminal reports movement and drags as well as presses, and a
+/// reader woken by a pointer travelling over it would be a reader drawing a
+/// frame per pixel for nobody. What is sent on is what a person did: a press, a
+/// release and a scroll. The release is sent rather than dropped here because
+/// which of them means something is the screen's question and not this thread's
+/// -- the same line [`crate::view::App`] draws for a key.
+///
+/// Focus and paste are still read and dropped: neither is enabled, so neither
+/// arrives.
 pub fn typing(wake: Sender<Wake>) {
     std::thread::spawn(move || loop {
         let said = match event::read() {
             Ok(Event::Key(key)) if key.kind != KeyEventKind::Release => Wake::Key(key),
+            Ok(Event::Mouse(mouse))
+                if !matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) =>
+            {
+                Wake::Mouse(mouse)
+            }
             Ok(Event::Resize(columns, rows)) => Wake::Resize(columns, rows),
             Ok(_) => continue,
             Err(e) => Wake::Broken(e.to_string()),

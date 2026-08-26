@@ -1,0 +1,287 @@
+//! A person holding a phone, through the binary, on a real terminal
+//! (TASK-dd9747e5e305).
+//!
+//! CLAUDE.md leaves no choice about where this is measured and the criterion
+//! says so outright: a test drives the built binary through a pseudo-terminal
+//! at a phone-sized window, sends a mouse event, and shows the row it selected
+//! and the action it reached. Every part of that sentence is about a process.
+//! Whether a *terminal* reports a tap at all is decided by whether this reader
+//! asked it to -- `EnableMouseCapture` on the way in, and given back on the way
+//! out -- and no unit test can reach that: `src/view.rs` can be handed a
+//! `MouseEvent` all day by a suite that constructs one, on a build whose
+//! terminal was never told to send any.
+//!
+//! **So the bytes are spelled the way a terminal spells them.** `Live::tap`
+//! writes `ESC [ < 0 ; column ; row M` down the pseudo-terminal, which is the
+//! SGR encoding `?1006` turns on, and what comes back is read off the grid a
+//! person would have been looking at. Between the two there is a real crossterm
+//! parsing real bytes in a real raw-mode session.
+//!
+//! `src/view.rs` states the same properties of the layout and the hit-testing
+//! at more sizes and on every platform, which is where they belong: this is
+//! `ank tui`, on a phone, answering a finger.
+//!
+//! `#[cfg(unix)]` for the reason the other three suites give: a pseudo-terminal
+//! on Windows is ConPTY, and reaching it means the console API this workspace
+//! does not otherwise call.
+
+#![cfg(unix)]
+
+mod terminal;
+
+use terminal::{Live, Repo};
+
+/// A phone in portrait, as this suite states one.
+///
+/// Well under [`ank_tui::view::ONE_COLUMN`] and read out of it rather than
+/// written here, so a window that stopped being narrow enough would fail as a
+/// changed constant rather than as a test that quietly stopped testing
+/// anything. Thirty rows, because a phone is tall.
+const PHONE: (u16, u16) = (ank_tui::view::ONE_COLUMN - 7, 30);
+
+/// How many rows of a frame carry two panels side by side.
+fn shared(frame: &str) -> usize {
+    frame
+        .lines()
+        .filter(|l| l.chars().filter(|c| *c == '|').count() >= 4)
+        .count()
+}
+
+/// The rows of the frame that name an entity, with where each one is drawn.
+fn listed(frame: &str) -> Vec<(usize, String)> {
+    frame
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.contains("ADR-") || l.contains("TASK-"))
+        .map(|(at, l)| (at, l.to_string()))
+        .collect()
+}
+
+/// Where a piece of text is drawn, as a column and a row a finger can be aimed
+/// at.
+fn drawn_at(frame: &str, needle: &str) -> (u16, u16) {
+    let (row, line) = frame
+        .lines()
+        .enumerate()
+        .find(|(_, l)| l.contains(needle))
+        .unwrap_or_else(|| panic!("'{needle}' is not on the frame:\n{frame}"));
+    let column = line.find(needle).expect("the line carries it");
+    (column as u16, row as u16)
+}
+
+/// **Below the width the code states the panels reflow to one column, and every
+/// panel remains reachable** (TASK-dd9747e5e305), through the binary.
+///
+/// Reachable is asserted the way a person would find out: every panel's title
+/// is on the frame, and touching one makes it the panel the mark is on. A
+/// screen that had dropped two panels to fit would pass "no two panels share a
+/// row" and fail a person entirely.
+#[test]
+fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable() {
+    let repo = Repo::seeded();
+    let mut live = Live::open(&repo, PHONE.0, PHONE.1);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    let frame = live.frame();
+    assert_eq!(
+        shared(&frame),
+        0,
+        "two panels share a row at {PHONE:?}:\n{frame}"
+    );
+    for line in frame.lines() {
+        assert!(
+            line.chars().count() <= PHONE.0 as usize,
+            "{} columns in a {} column window: {line}\n{frame}",
+            line.chars().count(),
+            PHONE.0
+        );
+    }
+    for panel in ["1 CLAIMS", "2 ENTITIES", "3 BODY", "4 QUEUE"] {
+        assert!(
+            frame.contains(panel),
+            "{panel} is not on a {PHONE:?} frame:\n{frame}"
+        );
+    }
+    // Touched in turn, and each one becomes the panel the mark is on. The
+    // queue last, because focusing it is a person asking for `ank review` and
+    // that is a read of the whole corpus.
+    for panel in ["3 BODY", "1 CLAIMS", "4 QUEUE", "2 ENTITIES"] {
+        let frame = live.frame();
+        let (column, row) = drawn_at(&frame, panel);
+        live.tap(column, row);
+        live.until(&format!("the focus to reach {panel}"), |t| {
+            t.contains(&format!("> {panel}"))
+        });
+    }
+    live.quit();
+}
+
+/// **A row is selected by a mouse press, and the actions on the focused panel
+/// are targets that carry the key that also triggers them**
+/// (TASK-dd9747e5e305), through the binary at a phone-sized window.
+///
+/// The criterion's own sentence, driven: a tap lands on a row of the listing
+/// and the frame afterwards shows the mark on *that* row and on no other; a tap
+/// lands on the target reading `[Enter open]` and the frame afterwards shows
+/// that entity open in the body panel. Both halves are read off the grid, so
+/// what is asserted is what a person would have been looking at.
+#[test]
+fn a_tap_selects_a_row_and_a_tap_on_a_target_reaches_the_action_it_names() {
+    let repo = Repo::seeded();
+    let mut live = Live::open(&repo, PHONE.0, PHONE.1);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    let frame = live.frame();
+
+    // The row a session did not open on, so that a mark arriving on it is the
+    // tap's doing and not the cursor's starting place.
+    let rows = listed(&frame);
+    assert!(
+        rows.len() >= 2,
+        "this corpus has one row, so a tap on another cannot be measured:\n{frame}"
+    );
+    let (at, line) = rows
+        .iter()
+        .find(|(_, l)| !l.contains("> "))
+        .unwrap_or_else(|| panic!("every row is already marked:\n{frame}"));
+    let short = line
+        .split_whitespace()
+        .find(|w| w.contains('-'))
+        .expect("a row names an entity")
+        .to_string();
+
+    // The tap: on that row, one column inside the panel's border.
+    live.tap(2, *at as u16);
+    live.until("the row under the finger to be selected", |t| {
+        t.lines()
+            .any(|l| l.contains(&short) && l.trim_start_matches('|').starts_with("> "))
+    });
+    let selected = live.frame();
+    let marked: Vec<&str> = selected
+        .lines()
+        .filter(|l| l.contains('-') && l.trim_start_matches('|').starts_with("> "))
+        .collect();
+    assert_eq!(
+        marked.len(),
+        1,
+        "the press marked {} rows rather than the one it landed on:\n{selected}",
+        marked.len()
+    );
+    assert!(
+        marked[0].contains(&short),
+        "the press selected a row other than the one under it:\n{selected}"
+    );
+
+    // The action: the target that says what Enter does, touched rather than
+    // typed.
+    let (column, row) = drawn_at(&selected, "[Enter open]");
+    live.tap(column + 1, row);
+    live.until(
+        "the entity the tap selected to open in the body panel",
+        |t| t.contains("> 3 BODY") && t.contains(&short),
+    );
+    let opened = live.frame();
+    assert!(
+        opened
+            .lines()
+            .any(|l| l.contains("> 3 BODY") && l.contains(&short)),
+        "the body panel is not holding the row the tap selected:\n{opened}"
+    );
+    // And the reader is still the reader it was: one column, inside its window.
+    assert_eq!(shared(&opened), 0, "{opened}");
+    for line in opened.lines() {
+        assert!(
+            line.chars().count() <= PHONE.0 as usize,
+            "{} columns in a {} column window: {line}\n{opened}",
+            line.chars().count(),
+            PHONE.0
+        );
+    }
+    live.quit();
+}
+
+/// A tap dismisses a command waiting to be answered, and a tap on the target
+/// that says so runs it (TASK-d4a882345837, TASK-dd9747e5e305).
+///
+/// The confirmation is the one thing in this reader a second road to a command
+/// could quietly take away, and a mouse is that second road. Both directions
+/// through the binary: a touch anywhere else drops the command and says what it
+/// dropped, and the target reading `[y run]` is the one touch that spawns
+/// anything.
+#[test]
+fn a_touch_answers_a_waiting_command_only_where_the_target_says_it_does() {
+    let repo = Repo::seeded();
+    let task = repo.task();
+    let before = repo.refs();
+    let mut live = Live::open(&repo, PHONE.0, PHONE.1);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+
+    // A claim, spelled whole into the prompt and left waiting.
+    live.send(&format!("{}{task}\r", ank_tui::keys::ACT));
+    live.until("the document to open", |t| t.contains("> 3 BODY"));
+    live.send(&format!("{}claim\r", ank_tui::keys::ACT));
+    live.until("the command to be shown", |t| t.contains("ank claim"));
+    let waiting = live.frame();
+    assert!(
+        waiting.contains("[y run]") && waiting.contains("[Esc dismiss]"),
+        "the offer is not drawn as targets:\n{waiting}"
+    );
+
+    // A touch somewhere that is not a target: the command is dropped, and the
+    // corpus did not move.
+    let (column, row) = drawn_at(&waiting, "1 CLAIMS");
+    live.tap(column, row);
+    live.until("the command to be dismissed", |t| t.contains("dismissed"));
+    assert_eq!(
+        repo.refs(),
+        before,
+        "a touch that dismissed a command still moved the corpus"
+    );
+
+    // And the target that says it runs, runs it.
+    live.send(&format!("{}claim\r", ank_tui::keys::ACT));
+    live.until("the command to be shown again", |t| t.contains("ank claim"));
+    let (column, row) = drawn_at(&live.frame(), "[y run]");
+    live.tap(column + 1, row);
+    live.until("the claim to land", |t| t.contains("holder"));
+    assert_ne!(
+        repo.refs(),
+        before,
+        "the target that says it runs the command ran nothing:\n{}",
+        live.frame()
+    );
+    live.quit();
+}
+
+/// **The reader asks the terminal for mouse events, and gives them back**
+/// (TASK-dd9747e5e305).
+///
+/// The one assertion in this suite that only the wire can answer, and the one
+/// nothing else here would catch. Every test above sends bytes a terminal sends
+/// on a tap and reads what came back; all of them would pass just as well on a
+/// build that never asked for mouse reporting at all, because a pseudo-terminal
+/// forwards whatever is written to it whether or not the program asked. What
+/// makes a real phone's tap arrive is `?1006h` going out, and what keeps the
+/// shell somebody came from usable is `?1006l` coming back on the way out --
+/// beside raw mode and the alternate buffer, on the same [`Drop`].
+///
+/// The SGR mode is the one asserted on because it is the one the coordinates
+/// are spelled in: crossterm turns on five modes and this is the last of them,
+/// so a reader that had asked for the older encodings alone would report a tap
+/// past two hundred and twenty-three columns as a tap somewhere else.
+#[test]
+fn the_session_asks_the_terminal_for_taps_and_gives_the_mouse_back() {
+    let repo = Repo::seeded();
+    let live = Live::open(&repo, PHONE.0, PHONE.1);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    let opened = String::from_utf8_lossy(&live.raw()).to_string();
+    assert!(
+        opened.contains("\x1b[?1006h"),
+        "the session never asked the terminal for mouse events, so a tap on a \
+         phone would never arrive"
+    );
+    let whole = String::from_utf8_lossy(&live.ended()).to_string();
+    assert!(
+        whole.contains("\x1b[?1006l"),
+        "the session kept the mouse on the way out, and the shell it came back \
+         to cannot select text"
+    );
+}

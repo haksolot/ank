@@ -136,12 +136,17 @@ pub fn typed(key: KeyEvent, focus: Focus) -> Press {
         KeyCode::Char('f') => Press::Cycle,
         KeyCode::Char(ACT) => Press::Prompt(""),
         KeyCode::Char(FIND) => Press::Prompt("/"),
-        // The ring, forward and back. `BackTab` is what a terminal sends for
-        // Shift-Tab and it is an alias rather than a command: `Tab` alone
-        // reaches all four panels, so nothing here *requires* the modifier
-        // ADR-0b55983421dd forbids requiring.
-        KeyCode::Tab => Press::Run(Command::NextPanel(1)),
-        KeyCode::BackTab => Press::Run(Command::NextPanel(-1)),
+        // The ring, forward and back, and both of them answered as the panel
+        // they land on rather than as a step (TASK-dd9747e5e305). `BackTab` is
+        // what a terminal sends for Shift-Tab, and while it produced a step of
+        // its own it was the one command in this table that a bare key could
+        // not reach -- true only of the *value*, since a digit has always
+        // reached every panel, and false of anything a person could do. Naming
+        // the destination here makes the two agree, so "no command requires a
+        // modifier" is a claim the whole table can be measured against instead
+        // of an argument about which steps are the same place.
+        KeyCode::Tab => Press::Run(Command::Panel(focus.stepped(1))),
+        KeyCode::BackTab => Press::Run(Command::Panel(focus.stepped(-1))),
         // A digit reaches its panel directly, which is what the number in a
         // panel's title is for.
         KeyCode::Char(c) if Focus::of_digit(c).is_some() => {
@@ -348,11 +353,11 @@ mod tests {
         for focus in Focus::ALL {
             assert_eq!(
                 typed(key(KeyCode::Tab), focus),
-                Press::Run(Command::NextPanel(1))
+                Press::Run(Command::Panel(focus.stepped(1)))
             );
             assert_eq!(
                 typed(key(KeyCode::BackTab), focus),
-                Press::Run(Command::NextPanel(-1))
+                Press::Run(Command::Panel(focus.stepped(-1)))
             );
         }
         // A digit reaches the panel whose title carries it.
@@ -498,5 +503,358 @@ mod tests {
         let cleared = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
         assert_eq!(edit(&mut line, cleared), Editing::Typing);
         assert!(line.is_empty());
+    }
+}
+
+/// The whole key table, stated as a domain rather than as a list of the likely
+/// keys (TASK-dd9747e5e305).
+///
+/// ADR-0b55983421dd's rule is that **no command anywhere requires a modifier
+/// chord**, and a phone makes it literal: a terminal keyboard on a phone has no
+/// comfortable Control, and a command reachable only with one is a command that
+/// reader cannot run at all. What was here before was that rule checked by
+/// inspection -- Control and the twenty-six letters, and a comment saying
+/// `BackTab` is an alias. This is the same rule measured over every key a
+/// terminal can report and every way a modifier can be held.
+///
+/// It is what turned `Tab` and `BackTab` into [`Command::Panel`]: as a step,
+/// `NextPanel(-1)` was a value no bare key produced, while the *place* it
+/// reached had been one digit away all along. Naming the destination made the
+/// screen's behaviour and the table's arithmetic the same fact, which is what a
+/// rule stated over the whole table needs them to be.
+#[cfg(test)]
+mod table {
+    use super::*;
+    use ratatui::crossterm::event::{MediaKeyCode, ModifierKeyCode};
+
+    /// A name for every key there is.
+    ///
+    /// **The `match` is the point and the name is the by-product.** It is total
+    /// over `KeyCode`, so a crossterm release that adds a key stops this file
+    /// compiling rather than quietly leaving one the rule below was never
+    /// stated about -- which is the difference between a domain and a list
+    /// somebody has to remember to extend.
+    fn family(code: KeyCode) -> &'static str {
+        match code {
+            KeyCode::Backspace => "Backspace",
+            KeyCode::Enter => "Enter",
+            KeyCode::Left => "Left",
+            KeyCode::Right => "Right",
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PageUp",
+            KeyCode::PageDown => "PageDown",
+            KeyCode::Tab => "Tab",
+            KeyCode::BackTab => "BackTab",
+            KeyCode::Delete => "Delete",
+            KeyCode::Insert => "Insert",
+            KeyCode::F(_) => "F",
+            KeyCode::Char(_) => "Char",
+            KeyCode::Null => "Null",
+            KeyCode::Esc => "Esc",
+            KeyCode::CapsLock => "CapsLock",
+            KeyCode::ScrollLock => "ScrollLock",
+            KeyCode::NumLock => "NumLock",
+            KeyCode::PrintScreen => "PrintScreen",
+            KeyCode::Pause => "Pause",
+            KeyCode::Menu => "Menu",
+            KeyCode::KeypadBegin => "KeypadBegin",
+            KeyCode::Media(_) => "Media",
+            KeyCode::Modifier(_) => "Modifier",
+        }
+    }
+
+    /// Every family named above, so the domain can be held to the match.
+    const FAMILIES: [&str; 27] = [
+        "Backspace",
+        "Enter",
+        "Left",
+        "Right",
+        "Up",
+        "Down",
+        "Home",
+        "End",
+        "PageUp",
+        "PageDown",
+        "Tab",
+        "BackTab",
+        "Delete",
+        "Insert",
+        "F",
+        "Char",
+        "Null",
+        "Esc",
+        "CapsLock",
+        "ScrollLock",
+        "NumLock",
+        "PrintScreen",
+        "Pause",
+        "Menu",
+        "KeypadBegin",
+        "Media",
+        "Modifier",
+    ];
+
+    /// Every key a terminal can report to this reader.
+    ///
+    /// The three variants that carry a value are enumerated over their own
+    /// ranges: every character of the ASCII range a terminal sends as a `Char`
+    /// and a handful beyond it, every function key a keyboard protocol can
+    /// name, and the two nested enums whole.
+    pub fn every_key() -> Vec<KeyCode> {
+        let mut out = vec![
+            KeyCode::Backspace,
+            KeyCode::Enter,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Home,
+            KeyCode::End,
+            KeyCode::PageUp,
+            KeyCode::PageDown,
+            KeyCode::Tab,
+            KeyCode::BackTab,
+            KeyCode::Delete,
+            KeyCode::Insert,
+            KeyCode::Null,
+            KeyCode::Esc,
+            KeyCode::CapsLock,
+            KeyCode::ScrollLock,
+            KeyCode::NumLock,
+            KeyCode::PrintScreen,
+            KeyCode::Pause,
+            KeyCode::Menu,
+            KeyCode::KeypadBegin,
+        ];
+        out.extend((0u8..=0x7f).map(|b| KeyCode::Char(b as char)));
+        // Not ASCII, because a person typing into the prompt is not either: a
+        // log message carries whatever their keyboard sends.
+        out.extend(['é', '€', '中', '🙂'].map(KeyCode::Char));
+        out.extend((1u8..=35).map(KeyCode::F));
+        out.extend(
+            [
+                MediaKeyCode::Play,
+                MediaKeyCode::Pause,
+                MediaKeyCode::PlayPause,
+                MediaKeyCode::Reverse,
+                MediaKeyCode::Stop,
+                MediaKeyCode::FastForward,
+                MediaKeyCode::Rewind,
+                MediaKeyCode::TrackNext,
+                MediaKeyCode::TrackPrevious,
+                MediaKeyCode::Record,
+                MediaKeyCode::LowerVolume,
+                MediaKeyCode::RaiseVolume,
+                MediaKeyCode::MuteVolume,
+            ]
+            .map(KeyCode::Media),
+        );
+        out.extend(
+            [
+                ModifierKeyCode::LeftShift,
+                ModifierKeyCode::LeftControl,
+                ModifierKeyCode::LeftAlt,
+                ModifierKeyCode::LeftSuper,
+                ModifierKeyCode::LeftHyper,
+                ModifierKeyCode::LeftMeta,
+                ModifierKeyCode::RightShift,
+                ModifierKeyCode::RightControl,
+                ModifierKeyCode::RightAlt,
+                ModifierKeyCode::RightSuper,
+                ModifierKeyCode::RightHyper,
+                ModifierKeyCode::RightMeta,
+                ModifierKeyCode::IsoLevel3Shift,
+                ModifierKeyCode::IsoLevel5Shift,
+            ]
+            .map(KeyCode::Modifier),
+        );
+        out
+    }
+
+    /// Every way a modifier can be held, the empty hand included.
+    ///
+    /// The bits and not a chosen few: `KeyModifiers` is six flags, so there are
+    /// sixty-four ways, and a rule about chords that had only been tried
+    /// against Control would be a rule about Control.
+    pub fn every_modifier() -> Vec<KeyModifiers> {
+        (0..=KeyModifiers::all().bits())
+            .map(KeyModifiers::from_bits_truncate)
+            .collect()
+    }
+
+    /// The domain is the whole enumeration, and it stays that way.
+    #[test]
+    fn the_domain_names_every_key_there_is_and_every_way_to_hold_one() {
+        let named: Vec<&str> = every_key().into_iter().map(family).collect();
+        for expected in FAMILIES {
+            assert!(
+                named.contains(&expected),
+                "no {expected} is in the domain, so the rule below is not \
+                 stated over it"
+            );
+        }
+        // Sixty-four, and the bare hand is one of them: a rule stated only over
+        // held modifiers would never check that a command is reachable at all.
+        assert_eq!(every_modifier().len(), 64);
+        assert!(every_modifier().contains(&KeyModifiers::NONE));
+    }
+
+    /// **No command anywhere requires a modifier chord** (ADR-0b55983421dd),
+    /// over the whole table.
+    ///
+    /// Every key, every way of holding it, every panel: whatever a chord
+    /// reaches, a bare key reaches the same thing from the same place. Stated
+    /// this way round rather than as "these letters are not chords", because
+    /// what the rule protects is a person who has no Control -- and what they
+    /// need is not that a chord does nothing, it is that nothing is *only* a
+    /// chord.
+    #[test]
+    fn no_command_in_the_key_table_requires_a_modifier() {
+        for focus in Focus::ALL {
+            let mut bare: Vec<Press> = Vec::new();
+            for code in every_key() {
+                let press = typed(KeyEvent::new(code, KeyModifiers::NONE), focus);
+                if press != Press::Ignored && !bare.contains(&press) {
+                    bare.push(press);
+                }
+            }
+            // Not vacuous: the bare hand reaches this reader's whole
+            // vocabulary, so the containment below is a real test.
+            assert!(
+                bare.len() > 10,
+                "{focus:?} answers {} bare keys, which is not a key table",
+                bare.len()
+            );
+            for code in every_key() {
+                for held in every_modifier() {
+                    if held.is_empty() {
+                        continue;
+                    }
+                    let reached = typed(KeyEvent::new(code, held), focus);
+                    if reached == Press::Ignored {
+                        continue;
+                    }
+                    assert!(
+                        bare.contains(&reached),
+                        "{code:?} with {held:?} reaches {reached:?} in {focus:?}, \
+                         and no bare key does: that command requires a chord"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The only modifier this table reads at all is Control, and the only
+    /// thing it reaches with it is the way out.
+    ///
+    /// Two halves, and the second is the one worth having. Control-C is
+    /// answered because raw mode took the line discipline's interrupt, and `q`
+    /// reaches the same place without it -- which the rule above already
+    /// proves. Every *other* way of holding a key is transparent: a stray
+    /// Shift, an Alt a phone keyboard sends with a long press, a Super nobody
+    /// meant, and the key does exactly what it does bare. So there is no second
+    /// vocabulary hiding in the modifiers, which is what makes the table above
+    /// the whole of the table.
+    #[test]
+    fn the_only_modifier_the_table_reads_is_the_one_that_leaves() {
+        for focus in Focus::ALL {
+            for code in every_key() {
+                let alone = typed(KeyEvent::new(code, KeyModifiers::NONE), focus);
+                for held in every_modifier() {
+                    let reached = typed(KeyEvent::new(code, held), focus);
+                    if !held.contains(KeyModifiers::CONTROL) {
+                        assert_eq!(
+                            reached, alone,
+                            "{code:?} means something else with {held:?} held in {focus:?}"
+                        );
+                        continue;
+                    }
+                    let way_out = code == KeyCode::Char('c');
+                    match way_out {
+                        true => assert_eq!(reached, Press::Run(Command::Quit)),
+                        false => assert_eq!(
+                            reached,
+                            Press::Ignored,
+                            "Control and {code:?} is a command in {focus:?}"
+                        ),
+                    }
+                }
+            }
+        }
+    }
+
+    /// The confirmation's own table, over the same domain: one bare key runs,
+    /// and nothing else on the keyboard does (TASK-d4a882345837).
+    #[test]
+    fn no_chord_runs_a_confirmed_command_over_the_whole_table() {
+        let mut ran = 0;
+        for code in every_key() {
+            for held in every_modifier() {
+                let answer = confirming(KeyEvent::new(code, held));
+                let the_key = code == KeyCode::Char(CONFIRM) && held.is_empty();
+                match the_key {
+                    true => {
+                        ran += 1;
+                        assert_eq!(answer, Answer::Run);
+                    }
+                    false => assert_eq!(
+                        answer,
+                        Answer::Dismiss,
+                        "{code:?} with {held:?} ran the command on the screen"
+                    ),
+                }
+            }
+        }
+        assert_eq!(ran, 1, "exactly one keystroke in the whole table runs it");
+    }
+
+    /// The prompt's table, over the same domain.
+    ///
+    /// Two chords are answered there -- Control-C leaves and Control-U clears
+    /// the line -- and neither is the only road to what it does: Escape leaves,
+    /// and Backspace held down empties. So the state a chord reaches in the
+    /// prompt is a state a bare key reaches too, which is the same rule as
+    /// above wearing the prompt's clothes.
+    #[test]
+    fn no_way_through_the_prompt_requires_a_modifier() {
+        for code in every_key() {
+            for held in every_modifier() {
+                if held.is_empty() {
+                    continue;
+                }
+                let mut line = String::from("done commit:2d9c847");
+                let outcome = edit(&mut line, KeyEvent::new(code, held));
+                // Whatever it did, a bare key does it too: Escape cancels,
+                // Enter submits, and any character is typing.
+                let bare = match outcome {
+                    Editing::Cancel => KeyCode::Esc,
+                    Editing::Submit => KeyCode::Enter,
+                    Editing::Typing => KeyCode::Char('x'),
+                };
+                let mut same = String::from("done commit:2d9c847");
+                assert_eq!(
+                    edit(&mut same, KeyEvent::new(bare, KeyModifiers::NONE)),
+                    outcome,
+                    "{code:?} with {held:?} does something no bare key does"
+                );
+            }
+        }
+        // And the one state a chord is a shortcut to -- an emptied line with
+        // the prompt still open -- is reached by holding Backspace, which is
+        // what makes Control-U a convenience rather than a requirement.
+        let mut line = String::from("done");
+        for _ in 0..4 {
+            assert_eq!(
+                edit(
+                    &mut line,
+                    KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+                ),
+                Editing::Typing
+            );
+        }
+        assert!(line.is_empty(), "the prompt empties without a chord");
     }
 }
