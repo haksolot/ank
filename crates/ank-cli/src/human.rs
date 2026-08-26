@@ -4060,7 +4060,8 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
         // The structure alphabet of §4 and nothing outside it: a note is the
         // last child of its finding, so `LAST` opens it and `CLEAR` continues
         // it. Text and never colour — it carries the command to run next, and a
-        // reader who piped this to a file must read the same bytes (ADR-0c8a).
+        // reader who piped this to a file must read the same bytes
+        // (ADR-1f70ce2c3eac).
         //
         // The breakdown comes first and the note after it, in one run of
         // children: the numbers are what the note's advice is about, and a

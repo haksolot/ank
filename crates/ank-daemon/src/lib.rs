@@ -214,8 +214,8 @@ pub fn run(
 
 /// What is watched, as text and only as text.
 ///
-/// No colour here at all, under ADR-0c8a12b4e0a1's split: the structure layer is
-/// emitted identically to every reader, and this process has no half that
+/// No colour here at all, under ADR-1f70ce2c3eac's split: the structure layer
+/// is emitted identically to every reader, and this process has no half that
 /// depends on who is reading -- its ordinary destination is a log file.
 fn report(declared: &Declaration, out: &mut dyn Write) {
     let watched = &declared.watch;
