@@ -34,12 +34,14 @@
 //! identifier the view puts in front -- "nothing beyond the single document",
 //! held by there being no shape in which a second argument could travel.
 //!
-//! **It is only a command where the document is open.** In the list it is
+//! **It is only a command where the body panel has focus.** At a row it is
 //! refused, naming the way in: a proposal binds nobody until somebody reads it,
 //! and a queue that could be ratified from a row is a queue nobody reads. That
-//! is why [`parse`] takes a view, and it is now the only reason it takes one.
+//! is why [`parse`] takes the focus, and it is now the only reason it takes it
+//! -- and the focused panel is the one the screen has marked, so the document a
+//! ratification lands on is the one under the reader's eyes.
 
-use crate::view::View;
+use crate::view::Focus;
 
 /// What a typed line asks for.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,8 +59,13 @@ pub enum Command {
     Top,
     /// Open the row under the cursor.
     Open,
-    /// Back to the list.
+    /// Back to the listing a session opens on.
     Back,
+    /// Focus one named panel (TASK-bb43cfe2192b). A digit names one, and a
+    /// digit is what the panel's own title carries.
+    Panel(Focus),
+    /// Focus the panel this many steps along the ring, wrapping.
+    NextPanel(isize),
     /// An identifier, whole or abbreviated.
     Select(String),
     /// A row number, as the list prints them: one-based.
@@ -70,7 +77,7 @@ pub enum Command {
     Search(Option<String>),
     /// Show the constraints binding the open entity, or hide them for the body.
     Constraints,
-    /// The ratification queue: what is proposed, and who may sign it
+    /// Focus the ratification queue, and ask `review` for it
     /// (TASK-d90e94afca08). A read and nothing else -- `ank review` writes no
     /// file, takes no ref and renews no lease (§4).
     Queue,
@@ -155,7 +162,7 @@ const ACTS: &[(&str, Tail)] = &[
     ("accept", Tail::Nothing),
 ];
 
-pub fn parse(line: &str, view: View) -> Command {
+pub fn parse(line: &str, focus: Focus) -> Command {
     let line = line.trim();
     // A prompt opened and submitted empty asked for nothing, and answering it
     // with the obvious next thing would be the reader choosing a command for
@@ -186,7 +193,7 @@ pub fn parse(line: &str, view: View) -> Command {
         "n" | "next" => Command::Page(1),
         "p" | "prev" => Command::Page(-1),
         _ => match ACTS.iter().find(|(name, _)| *name == word) {
-            Some((verb, tail)) => act(verb, *tail, rest, view),
+            Some((verb, tail)) => act(verb, *tail, rest, focus),
             None => repeated(word).unwrap_or_else(|| other(line)),
         },
     }
@@ -194,12 +201,12 @@ pub fn parse(line: &str, view: View) -> Command {
 
 /// One act, with the rest of the line read the way its verb reads one.
 ///
-/// The view is consulted for exactly one verb, and the module header says why:
+/// The focus is consulted for exactly one verb, and the module header says why:
 /// a ratification is typed on the document, not at a row that names it.
-fn act(verb: &'static str, tail: Tail, rest: &str, view: View) -> Command {
-    if verb == "accept" && view != View::Entity {
+fn act(verb: &'static str, tail: Tail, rest: &str, focus: Focus) -> Command {
+    if verb == "accept" && focus != Focus::Body {
         return Command::Malformed(
-            "'accept' is typed on the document itself: open it first, and read it              (Enter opens the row under the cursor)"
+            "'accept' is typed on the document itself: open it first, and read it in              the body panel (Enter opens the row under the cursor)"
                 .to_string(),
         );
     }
@@ -310,17 +317,17 @@ mod tests {
     use super::*;
 
     fn list(line: &str) -> Command {
-        parse(line, View::List)
+        parse(line, Focus::Entities)
     }
 
-    /// A prompt submitted empty runs nothing, in every view. Enter is a key and
-    /// opening a row is what it does; a line that says nothing must not be
-    /// turned into a command nobody typed.
+    /// A prompt submitted empty runs nothing, whichever panel is focused. Enter
+    /// is a key and opening a row is what it does; a line that says nothing must
+    /// not be turned into a command nobody typed.
     #[test]
-    fn an_empty_line_asks_for_nothing_in_every_view() {
-        for view in [View::List, View::Queue, View::Entity] {
-            assert_eq!(parse("", view), Command::Nothing, "{view:?}");
-            assert_eq!(parse("   ", view), Command::Nothing, "{view:?}");
+    fn an_empty_line_asks_for_nothing_in_any_panel() {
+        for focus in Focus::ALL {
+            assert_eq!(parse("", focus), Command::Nothing, "{focus:?}");
+            assert_eq!(parse("   ", focus), Command::Nothing, "{focus:?}");
         }
     }
 
@@ -378,7 +385,7 @@ mod tests {
                 verb: "claim",
                 args: Vec::new()
             }),
-            "the identifier is the view's, not the parse's"
+            "the identifier is the panel's, not the parse's"
         );
         assert_eq!(
             list("claim --ttl 4h"),
@@ -458,26 +465,26 @@ mod tests {
     /// is a letter no mapping can quietly turn into one.
     #[test]
     fn no_single_letter_line_can_write() {
-        for view in [View::List, View::Queue, View::Entity] {
+        for focus in Focus::ALL {
             for c in 'a'..='z' {
                 let line = c.to_string();
                 assert!(
-                    !matches!(parse(&line, view), Command::Act(_)),
-                    "'{line}' writes in {view:?}, and one letter must not"
+                    !matches!(parse(&line, focus), Command::Act(_)),
+                    "'{line}' writes in {focus:?}, and one letter must not"
                 );
             }
             // Nor does a near miss on one of the six.
             for line in ["d", "cl", "clai", "don", "rel", "am", "acce", "close"] {
                 assert!(
-                    !matches!(parse(line, view), Command::Act(_)),
-                    "'{line}' writes in {view:?}"
+                    !matches!(parse(line, focus), Command::Act(_)),
+                    "'{line}' writes in {focus:?}"
                 );
             }
         }
     }
 
-    /// `accept` is a command where the document is open, and a refusal
-    /// everywhere else (TASK-d90e94afca08).
+    /// `accept` is a command in the body panel, and a refusal in every other
+    /// (TASK-d90e94afca08).
     ///
     /// The refusal is the reader's own and names the way in, because the person
     /// who typed it wants to ratify and the answer is "read it first" rather
@@ -485,19 +492,19 @@ mod tests {
     #[test]
     fn accept_is_typed_on_the_document_and_nowhere_else() {
         assert_eq!(
-            parse("accept", View::Entity),
+            parse("accept", Focus::Body),
             Command::Act(Act {
                 verb: "accept",
                 args: Vec::new()
             }),
-            "the identifier is the view's, and there is nothing else to pass"
+            "the identifier is the panel's, and there is nothing else to pass"
         );
-        for view in [View::List, View::Queue] {
-            match parse("accept", view) {
+        for focus in Focus::ALL.into_iter().filter(|f| *f != Focus::Body) {
+            match parse("accept", focus) {
                 Command::Malformed(said) => {
-                    assert!(said.contains("open it first"), "{view:?}: {said}");
+                    assert!(said.contains("open it first"), "{focus:?}: {said}");
                 }
-                other => panic!("{view:?} took an accept off a row: {other:?}"),
+                other => panic!("{focus:?} took an accept off a row: {other:?}"),
             }
         }
     }
@@ -510,7 +517,7 @@ mod tests {
     #[test]
     fn accept_takes_no_tail_and_says_so_rather_than_dropping_it() {
         for line in ["accept ADR-8bd7", "accept --force", "accept  everything"] {
-            match parse(line, View::Entity) {
+            match parse(line, Focus::Body) {
                 Command::Malformed(said) => {
                     assert!(said.contains("takes nothing after it"), "{line}: {said}");
                     assert!(

@@ -65,11 +65,12 @@
 //!
 //! # Input is a key, and the one line that is left
 //!
-//! Every command that only moves the screen is one key ([`keys`]). Four of the
-//! six that write carry something a key has no room for -- a message, a reason,
-//! a proof, a flag -- so `a` opens a one-line prompt and what is typed there
-//! goes through [`input`], which is the grammar that spells the six whole. `/`
-//! opens the same prompt on a search.
+//! Every command that only moves the screen is one key ([`keys`]), focus
+//! included: `Tab` walks the panels, `1` to `4` name one, and Left and Right
+//! cross the columns. Four of the six verbs that write carry something a key
+//! has no room for -- a message, a reason, a proof, a flag -- so `a` opens a
+//! one-line prompt and what is typed there goes through [`input`], which is the
+//! grammar that spells the six whole. `/` opens the same prompt on a search.
 //!
 //! **What the line discipline used to guarantee is not yet replaced, and this
 //! is the honest state of it.** Under a line reader a slipped finger typed
@@ -82,19 +83,29 @@
 //!
 //! # The layout
 //!
-//! Three views, one screen each, because a criterion that asks for a body
-//! *whole* and a list of every kind on one screen asks for two screens, and the
-//! ratification queue asks a different question from either. Panels with focus
-//! are TASK-bb43cfe2192b, and this is the engine they will be drawn on.
+//! Four panels on one screen, two columns of two, one of them focused
+//! (TASK-bb43cfe2192b). What used to be three views one at a time is now four
+//! places at once, and the reason is that a corpus reader is read across rather
+//! than down: what binds this, who holds it, what is waiting, and what does it
+//! say are four questions a person carries together.
 //!
-//! * [`view::View::List`] -- who holds what, then every entity of every kind
-//!   with its status, windowed and filterable.
-//! * [`view::View::Queue`] -- what is proposed and waiting for a signature, and
-//!   who may give one: `ank review`, asked when its person presses `v` and never
-//!   on the reader's own initiative.
-//! * [`view::View::Entity`] -- one entity: what holds it, the constraints
+//! * [`view::Focus::Claims`] -- who holds what, the caller's own marked.
+//! * [`view::Focus::Entities`] -- every entity of every kind with its status,
+//!   windowed and filterable. Where a session opens.
+//! * [`view::Focus::Queue`] -- what is proposed and waiting for a signature,
+//!   and which regime the corpus is in: `ank review`, run when its person
+//!   focuses the panel and never on the reader's own initiative.
+//! * [`view::Focus::Body`] -- one entity: what holds it, the constraints
 //!   binding its declared scope, and its body, paged rather than cut. This is
-//!   the only screen `accept` can be typed on.
+//!   the only panel `accept` can be typed in.
+//!
+//! Focus moves by key and is drawn in characters -- a heavy border and the
+//! `> ` marker -- so the screen says where a reader is with no colour at all.
+//! It also decides the width: the focused column takes four fifths of it, which
+//! is what lets a list of sentences and a body of prose share eighty columns
+//! without both being too narrow. [`view::App::arrange`] is where all of that
+//! is decided, and it is the one function TASK-dd9747e5e305 has to extend for a
+//! phone.
 //!
 //! # Ratification, and the two words that are not the same
 //!
@@ -106,7 +117,8 @@
 //! prompt, or moving more than one document at a time -- and none of the three
 //! is reachable from here. No key is `accept` and no key is any of the six, so
 //! a held key repeats a movement and nothing else; the queue is never accepted
-//! in bulk because the grammar has no shape for it; no secret can reach git
+//! in bulk because the grammar has no shape for it and because the word is
+//! refused anywhere but the body panel; no secret can reach git
 //! through this process because the child is given no stdin; and a screen left
 //! open all night still runs nothing at all, because `accept` is on the acting
 //! list and a repaint only ever reads.
