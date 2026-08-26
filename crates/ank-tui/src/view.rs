@@ -100,14 +100,32 @@
 //!
 //! # Acting, and where the words come from
 //!
-//! [`App::run`] is the writing half and the only road to a spawned verb: it
-//! puts the identifier the focused panel names in front of what was typed and
-//! hands the whole to [`Ank::act`]. Nothing else here writes, and nothing runs
-//! without a line having been typed -- there is no timer in this crate, and
-//! [`App::frame`] is a pure function of what the last command left behind. One
-//! choke point, deliberately, because TASK-d4a882345837 puts a confirmation in
-//! front of it: the argv every write is about to run is composed in exactly one
-//! function, so the dialog that shows it has one thing to intercept.
+//! [`App::propose`] is the writing half and the only road to a spawned verb: it
+//! puts the identifier the focused panel names in front of what was typed,
+//! asks [`Ank::spelling`] for the command line that argv is, and **stops**.
+//! Nothing else here writes, and nothing runs without a line having been typed
+//! -- there is no timer in this crate, and [`App::frame`] is a pure function of
+//! what the last command left behind.
+//!
+//! # The confirmation, which is the fourth act
+//!
+//! **No verb that writes is spawned without the exact command line having been
+//! on the screen first** (TASK-d4a882345837, ADR-0b55983421dd). What
+//! [`App::propose`] leaves behind is a `Pending`: the verb, the argv, and the
+//! line spelled as a shell would have to spell it. The band under the panels
+//! shows that line, `y` runs it and every other key on the keyboard drops it
+//! ([`keys::confirming`]). So the road from a key to a moved corpus is four
+//! deliberate acts -- open the prompt, spell the verb whole, submit it, and say
+//! yes to what that composed -- and the last of them is the one the reader had
+//! been missing since a command stopped being a typed line.
+//!
+//! Three properties hold it together, and each is somewhere a later edit would
+//! have to go out of its way to break. The argv is composed once, so the line
+//! shown and the line run are one string rather than two renderings. The
+//! confirmation is *modal*, so nothing -- not a cursor, not the focus, not an
+//! opened document -- moves between the showing and the running. And
+//! [`App::confirmed`] is the only caller of [`Ank::act`] in this crate, so a
+//! command that was never shown has no road to a spawn at all.
 //!
 //! **`accept` runs through that same function, and the difference is what it is
 //! *not* allowed to be** (TASK-d90e94afca08). It is one more verb spawned
@@ -118,9 +136,12 @@
 //! the entity a ratification lands on is always the document somebody opened
 //! and is looking at; [`App::ratify_line`] offers the word only where the verb
 //! would accept it; and the child is spawned with no stdin, so nothing in this
-//! process can answer a passphrase prompt on a person's behalf. Every refusal
-//! that follows -- the wrong branch, a document already ratified, a signature
-//! git would not make -- is the CLI's, shown in the CLI's own bytes.
+//! process can answer a passphrase prompt on a person's behalf. The
+//! confirmation adds a fourth subtraction of the same kind: the argv it shows
+//! is the one composed on the document that was open, so a `y` cannot ratify
+//! anything but what the person just read. Every refusal that follows -- the
+//! wrong branch, a document already ratified, a signature git would not make --
+//! is the CLI's, shown in the CLI's own bytes.
 //!
 //! **The split on what reaches the screen is the crate header's, applied to an
 //! answer.** The chrome is this crate's own -- the line naming the command that
@@ -217,6 +238,29 @@ enum Pane {
     Constraints,
 }
 
+/// A verb composed, shown, and waiting for one key (TASK-d4a882345837).
+///
+/// **The command line is frozen here and never recomposed.** What a person is
+/// shown is `shown`, what is spawned is `verb` and `args`, and both were taken
+/// from one [`Ank::spelling`] over one argv at the moment the word was typed --
+/// so nothing the screen does between the showing and the running can move what
+/// runs. That matters more than it sounds: the identifier comes from whichever
+/// panel had focus, and a confirmation that resolved the target again on the way
+/// out would be a verb landing on whatever the cursor had reached by then.
+///
+/// It is also why the confirmation is modal. While one is on the screen every
+/// key either runs it or drops it ([`keys::confirming`]), so there is no key
+/// that moves a cursor, opens a document or changes focus underneath a command
+/// somebody is reading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Pending {
+    verb: &'static str,
+    /// The identifier the focused panel named, then the tail as it was typed.
+    args: Vec<String>,
+    /// The whole call, spelled as a shell would have to spell it.
+    shown: String,
+}
+
 /// Where one listing is, and what of it is on the screen.
 ///
 /// One per listing rather than one shared, which is what makes a panel a place
@@ -255,8 +299,16 @@ pub struct App {
     /// `None` is the ordinary state and it is where every key is a command. The
     /// prompt is what a verb carrying a message, a reason, a proof or a flag is
     /// spelled into, and what a search is typed into; it is opened by a key,
-    /// dismissed by a key, and runs nothing until Enter.
+    /// dismissed by a key, and runs nothing until Enter -- at which point what
+    /// it produced is a [`Pending`] and still not a spawned verb.
     prompt: Option<String>,
+    /// The verb that has been composed and shown and not yet run
+    /// (TASK-d4a882345837).
+    ///
+    /// `None` on every screen where nothing is waiting, which is every screen
+    /// but the one immediately after a writing verb was spelled. While it is
+    /// `Some`, no key does anything but run that command or drop it.
+    pending: Option<Pending>,
 }
 
 impl App {
@@ -279,6 +331,7 @@ impl App {
             stream,
             queue: None,
             prompt: None,
+            pending: None,
         }
     }
 
@@ -468,9 +521,19 @@ impl App {
     /// `accept` is refused off the body panel.
     ///
     /// So there is exactly one road from a key press to a spawned verb, and it
-    /// passes through a line somebody typed. That is what TASK-d4a882345837
-    /// will put the confirmation on.
+    /// passes through a line somebody typed *and then through a confirmation*
+    /// (TASK-d4a882345837). A submitted line composes the argv and shows it;
+    /// nothing is spawned until a third regime answers.
+    ///
+    /// **The confirmation is read first and it is modal**, which is the whole
+    /// of what makes it one. With a command on the screen there is no key that
+    /// moves a cursor, opens a document, quits, or reopens the prompt: every
+    /// key runs the command that is being read or drops it, so what a person
+    /// says yes to is what they were shown and nothing has moved underneath it.
     pub fn press(&mut self, key: KeyEvent, ank: &Ank) -> bool {
+        if self.pending.is_some() {
+            return self.answer(key, ank);
+        }
         if let Some(line) = &mut self.prompt {
             return match keys::edit(line, key) {
                 Editing::Typing => false,
@@ -615,7 +678,7 @@ impl App {
                 // The pane that was asked for is the pane to be looking at.
                 self.focus = Focus::Body;
             }
-            Command::Act(act) => self.run(act, ank),
+            Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
             Command::Help => self.note = Some(format!("{KEYS}\n{PANEL_KEYS}\n{ACT_KEYS}")),
             Command::Nothing => {}
@@ -652,24 +715,27 @@ impl App {
         }
     }
 
-    /// Runs one verb of the writing half against the entity the focused panel
-    /// names.
+    /// Composes one verb of the writing half against the entity the focused
+    /// panel names, and shows it. **Nothing is spawned here.**
     ///
     /// The identifier goes in front of what was typed, because `<id>` is the
     /// first positional of all six verbs and the person at the keyboard already
     /// said which entity they meant by being in the panel that names it.
     /// Everything after it is theirs, untouched.
     ///
-    /// **This is the one place an argv is composed**, which is what
-    /// TASK-d4a882345837 needs: a confirmation that shows the exact command
-    /// before anything is spawned has exactly one function to sit in front of.
+    /// **This is the one place an argv is composed**, and it is now also the
+    /// one place a write is refused a keystroke (TASK-d4a882345837). Every road
+    /// to [`Ank::act`] runs through the [`Pending`] this leaves behind and
+    /// through [`App::confirmed`], which is the only caller of it in this
+    /// crate: a command that is not on the screen cannot be run, and a command
+    /// on the screen runs on one key and no other.
     ///
-    /// **The reread afterwards is part of the same keystroke.** A `claim` moves
-    /// a ref and a `done` moves a status, so the frame still on the screen is
-    /// stale the instant the verb answers; leaving it would be the reader
-    /// showing a task as open that it has just finished. This is not a timer
-    /// and there is none: nothing here runs unless a line was typed.
-    fn run(&mut self, act: Act, ank: &Ank) {
+    /// The refusal for an act with nothing to act on stays here, in front of
+    /// the confirmation rather than inside it. A person who typed `claim` with
+    /// no row under the cursor has not composed a command, and showing them
+    /// `ank claim  --json` to say no to would be offering a command that could
+    /// never run.
+    fn propose(&mut self, act: Act, ank: &Ank) {
         let Some(id) = self.target() else {
             self.note = Some(
                 "no entity is named here: move onto a row, or open one into the body".to_string(),
@@ -677,8 +743,45 @@ impl App {
             return;
         };
         let verb = act.verb;
-        let mut args = vec![id.clone()];
+        let mut args = vec![id];
         args.extend(act.args);
+        let shown = ank.spelling(verb, &args);
+        self.pending = Some(Pending { verb, args, shown });
+    }
+
+    /// One key, answered against the command waiting on the screen.
+    ///
+    /// Two outcomes and no third: the command runs, or it is dropped. The
+    /// session never ends here -- `q` over a confirmation is a person saying no
+    /// to *this*, not a person leaving, and a key that both declined a write and
+    /// closed the screen it was on would be the one keystroke whose effect
+    /// nobody could read afterwards.
+    fn answer(&mut self, key: KeyEvent, ank: &Ank) -> bool {
+        match keys::confirming(key) {
+            keys::Answer::Run => self.confirmed(ank),
+            keys::Answer::Dismiss => {
+                // What it was is said in full, because "nothing ran" is only
+                // reassuring to somebody who can see what did not.
+                let dropped = self.pending.take();
+                self.note = dropped.map(|p| format!("{DISMISSED}\n{}", p.shown));
+            }
+        }
+        false
+    }
+
+    /// Runs the command that was on the screen, and nothing else.
+    ///
+    /// **The reread afterwards is part of the same keystroke.** A `claim` moves
+    /// a ref and a `done` moves a status, so the frame still on the screen is
+    /// stale the instant the verb answers; leaving it would be the reader
+    /// showing a task as open that it has just finished. This is not a timer
+    /// and there is none: nothing here runs unless a line was typed and a key
+    /// was pressed on what that line composed.
+    fn confirmed(&mut self, ank: &Ank) {
+        let Some(pending) = self.pending.take() else {
+            return;
+        };
+        let Pending { verb, args, .. } = pending;
         let said = match ank.act(verb, &args) {
             Ok(ran) => answered(&ran),
             // Whole and unaltered: `error[N]:` and the command the CLI named as
@@ -1404,11 +1507,37 @@ impl App {
     /// was there comes back when the prompt is dismissed, because cancelling
     /// runs nothing and nothing clears it.
     ///
+    /// **And a confirmation is drawn here too, above both of them**
+    /// (TASK-d4a882345837). It belongs in this band for the reason the prompt
+    /// does -- it is what the reader is asking -- and it belongs in the *chrome*
+    /// rather than in a panel or a box of its own for two reasons that outlive
+    /// this task. The chrome is full width and unbordered, so the command line
+    /// is never cut by a column and never costs two characters to a border;
+    /// and the panels are what TASK-dd9747e5e305 reflows to one column, so a
+    /// confirmation that lived in [`App::arrange`]'s rectangles would be a
+    /// second arrangement to keep in step with the first. Here it is one band
+    /// that wraps, at eighty columns and at twenty.
+    ///
+    /// The command is on its own line, whole and wrapped rather than cut: a
+    /// confirmation showing three quarters of an argv would be worse than none,
+    /// because it reads as the whole of it.
+    ///
     /// Always at least one row, empty where there is nothing to say: the blank
     /// line above the key line is what keeps the trailer from moving under a
     /// reader every time a command has something to report.
     fn note_lines(&self) -> Vec<String> {
         let width = self.width();
+        if let Some(pending) = &self.pending {
+            return [
+                ABOUT.to_string(),
+                pending.shown.clone(),
+                CONFIRM_KEY.to_string(),
+            ]
+            .iter()
+            .flat_map(|l| wrap(l, width))
+            .map(|l| fit(&l, width))
+            .collect();
+        }
         if let Some(line) = &self.prompt {
             return vec![fit(&format!("{PROMPT}{line}"), width)];
         }
@@ -1722,7 +1851,7 @@ pub const PANEL_KEYS: &str =
 /// trailer should be able to see at a glance which of the two they are about to
 /// do, and one line mixing them would make that a matter of remembering.
 pub const ACT_KEYS: &str =
-    "a then  claim | log <message> | release <reason> | done <proof> | amend <flags>   (the entity the marked panel names)";
+    "a then  claim | log <message> | release <reason> | done <proof> | amend <flags>   (the marked panel's entity, then y)";
 /// The sixth act, on a line of its own, and only where the verb would take it.
 ///
 /// A third line for a third kind of offer, on the reasoning [`ACT_KEYS`] gives
@@ -1732,6 +1861,28 @@ pub const ACT_KEYS: &str =
 /// where it has to happen.
 pub const RATIFY_KEY: &str =
     "a then  accept   (this document, on the default branch -- ank signs nothing, your key does)";
+
+/// What the confirmation says above the command line it is showing
+/// (TASK-d4a882345837).
+///
+/// "would run" and not "is running": the whole of what this band is saying is
+/// that nothing has happened yet.
+pub const ABOUT: &str = "this would run, as a shell would have to spell it:";
+/// What it offers under it: the one key that runs the command, and what the
+/// rest of the keyboard does.
+///
+/// The dismissing half is named rather than left to be inferred from silence,
+/// because a person who wants to say no needs to know that they cannot say it
+/// wrongly -- there is no key here that runs the command by mistake. The letter
+/// is [`keys::CONFIRM`] and the suite holds this sentence to it, so a mapping
+/// that moved would not leave a screen offering the key it used to be.
+pub const CONFIRM_KEY: &str = "y runs it -- every other key dismisses it, and nothing has run yet";
+/// What is said afterwards where a person said no, over the command that was
+/// dropped.
+///
+/// The command and not only the verdict: "nothing ran" is reassuring only to
+/// somebody who can see what did not.
+pub const DISMISSED: &str = "dismissed, and nothing was run:";
 
 #[cfg(test)]
 mod tests {
@@ -1802,6 +1953,24 @@ mod tests {
             unblocks: Vec::new(),
             unresolved: Vec::new(),
         }
+    }
+
+    /// The key that answers a confirmation, pressed on whatever is waiting.
+    ///
+    /// Every test below that wants a verb actually spawned has to press it,
+    /// which is the point: there is no road to a spawn that does not.
+    fn confirm(a: &mut App, ank: &Ank) -> bool {
+        tap(a, ank, KeyCode::Char(keys::CONFIRM))
+    }
+
+    /// Spells one act into the prompt the way a person does -- `a`, the word,
+    /// Enter -- and answers nothing.
+    fn spell(a: &mut App, ank: &Ank, line: &str) {
+        tap(a, ank, KeyCode::Char(keys::ACT));
+        for c in line.chars() {
+            tap(a, ank, KeyCode::Char(c));
+        }
+        tap(a, ank, KeyCode::Enter);
     }
 
     fn tap(a: &mut App, ank: &Ank, code: KeyCode) -> bool {
@@ -2280,22 +2449,36 @@ mod tests {
         );
     }
 
+    /// An act composes the verb against the row under the cursor, shows it, and
+    /// runs it when it is answered (TASK-d4a882345837).
+    ///
+    /// Two halves, because the identifier has to be right in both: the command
+    /// that is *shown* names the entity, and the command that *runs* is that
+    /// same one -- read here off the refusal, which carries the argv the
+    /// missing binary was to be spawned with.
     #[test]
     fn an_act_runs_the_verb_with_the_selected_identifier_in_front() {
         let mut a = app();
+        let ank = nowhere();
         a.act(
             Command::Act(Act {
                 verb: "claim",
                 args: Vec::new(),
             }),
-            &nowhere(),
+            &ank,
         );
+        let shown = a.pending.clone().expect("a command is waiting").shown;
+        assert_eq!(shown, "ank claim ADR-8bd76e8d7c4e --json");
+        assert_eq!(a.note, None, "the verb ran before it was answered");
+
+        confirm(&mut a, &ank);
         let said = a.note.clone().unwrap_or_default();
         assert!(
             said.contains("ADR-8bd76e8d7c4e"),
             "the row under the cursor is the entity acted on:\n{said}"
         );
         assert!(said.contains("claim"), "{said}");
+        assert_eq!(a.pending, None, "the command outlived the keystroke");
     }
 
     #[test]
@@ -2305,13 +2488,15 @@ mod tests {
         a.focus = Focus::Body;
         // The cursor in the entities is somewhere else entirely.
         a.cursors[Focus::Entities.number() - 1].at = 0;
+        let ank = nowhere();
         a.act(
             Command::Act(Act {
                 verb: "log",
                 args: vec!["something".to_string()],
             }),
-            &nowhere(),
+            &ank,
         );
+        confirm(&mut a, &ank);
         let said = a.note.clone().unwrap_or_default();
         assert!(
             said.contains("TASK-49746735127f"),
@@ -2332,6 +2517,10 @@ mod tests {
         assert!(
             a.note.unwrap().contains("no entity is named here"),
             "the reader's own refusal, not the CLI's"
+        );
+        assert_eq!(
+            a.pending, None,
+            "a command that could never run was offered to be run"
         );
     }
 
@@ -2488,13 +2677,22 @@ mod tests {
         let mut a = app();
         a.detail = Some(detail("ADR-8bd76e8d7c4e", "body\n"));
         a.focus = Focus::Body;
+        let ank = nowhere();
         a.act(
             Command::Act(Act {
                 verb: "accept",
                 args: Vec::new(),
             }),
-            &nowhere(),
+            &ank,
         );
+        // Nothing beyond the single identifier reaches the verb, and the
+        // confirmation is where that is now legible: the whole command line is
+        // on the screen before a signature is asked for (TASK-d90e94afca08).
+        let waiting = a.pending.clone().expect("a ratification is waiting");
+        assert_eq!(waiting.args, ["ADR-8bd76e8d7c4e"]);
+        assert_eq!(waiting.shown, "ank accept ADR-8bd76e8d7c4e --json");
+
+        confirm(&mut a, &ank);
         let said = a.note.clone().unwrap_or_default();
         assert!(said.contains("accept"), "{said}");
         assert!(said.contains("ADR-8bd76e8d7c4e"), "{said}");
@@ -2564,15 +2762,211 @@ mod tests {
         a.search = None;
         a.cursors = [Cursor::default(); 4];
         a.note = None;
-        tap(&mut a, &ank, KeyCode::Char(keys::ACT));
-        for c in "claim".chars() {
-            tap(&mut a, &ank, KeyCode::Char(c));
-        }
-        tap(&mut a, &ank, KeyCode::Enter);
+        spell(&mut a, &ank, "claim");
+        assert_eq!(a.note, None, "the prompt alone spawned a verb");
+        confirm(&mut a, &ank);
         assert!(
             a.note.clone().unwrap_or_default().contains("ank claim"),
-            "the prompt did not reach the verb: {:?}",
+            "the prompt and the confirmation did not reach the verb: {:?}",
             a.note
+        );
+    }
+
+    /// Every one of the six is composed, shown whole, and spawned by nothing
+    /// but the one key (TASK-d4a882345837).
+    ///
+    /// The instrument is the binary not being there: a spawn that happened
+    /// leaves `cannot run` and the argv behind, so "nothing ran" is readable
+    /// rather than inferred. What is asserted for each verb is the pair the
+    /// criterion names -- the exact command line is on the screen first, and
+    /// dismissing it runs nothing.
+    #[test]
+    fn each_verb_that_writes_is_shown_whole_before_it_can_be_spawned() {
+        // The tails a person types, and the argv each composes. `accept` is
+        // last because it is the one that has to be typed on a document.
+        let spelled = [
+            ("claim", "ank claim TASK-49746735127f --json"),
+            (
+                "log the probe counts the marker",
+                "ank log TASK-49746735127f 'the probe counts the marker' --json",
+            ),
+            (
+                "release the criterion measures the wrong thing",
+                "ank release TASK-49746735127f --reason 'the criterion measures the wrong thing' \
+                 --json",
+            ),
+            (
+                "done commit:2d9c847",
+                "ank done TASK-49746735127f --proof commit:2d9c847 --json",
+            ),
+            (
+                "amend --scope \"crates/ank tui/**\"",
+                "ank amend TASK-49746735127f --scope 'crates/ank tui/**' --json",
+            ),
+            ("accept", "ank accept TASK-49746735127f --json"),
+        ];
+        let ank = nowhere();
+        for (line, argv) in spelled {
+            let mut a = app();
+            // On the document, which is where `accept` is a command at all and
+            // where the other five are equally legitimate.
+            a.detail = Some(detail("TASK-49746735127f", "body\n"));
+            a.focus = Focus::Body;
+            spell(&mut a, &ank, line);
+
+            let waiting = a
+                .pending
+                .clone()
+                .unwrap_or_else(|| panic!("'{line}' composed nothing"));
+            assert_eq!(waiting.shown, argv, "'{line}' was spelled wrongly");
+            assert!(
+                a.frame().contains(&waiting.verb.to_string()),
+                "'{line}' is not on the screen:\n{}",
+                a.frame()
+            );
+            assert_eq!(a.note, None, "'{line}' spawned before it was answered");
+
+            // Dismissed, by the key most likely to be pressed by accident.
+            tap(&mut a, &ank, KeyCode::Esc);
+            assert_eq!(a.pending, None, "'{line}' survived being dismissed");
+            let said = a.note.clone().unwrap_or_default();
+            assert!(
+                said.contains(DISMISSED) && said.contains(argv),
+                "'{line}' said nothing about what it did not do:\n{said}"
+            );
+            assert!(
+                !said.contains("cannot run"),
+                "'{line}' spawned on a dismissal:\n{said}"
+            );
+        }
+    }
+
+    /// The key the screen offers is the key the reader answers to.
+    ///
+    /// Two places for two jobs -- one is a sentence a person reads and one is a
+    /// mapping a keystroke goes through -- and a screen offering the letter that
+    /// used to run a command would be the worst kind of wrong: it reads as an
+    /// offer and behaves as a dismissal.
+    #[test]
+    fn the_offer_on_the_screen_names_the_key_that_runs_the_command() {
+        assert!(
+            CONFIRM_KEY.starts_with(&format!("{} runs it", keys::CONFIRM)),
+            "the screen offers a key the reader does not answer to: {CONFIRM_KEY}"
+        );
+    }
+
+    /// The exact command line is on the screen, in the band that belongs to
+    /// what the reader is asking, at eighty columns and at twenty
+    /// (TASK-d4a882345837, and TASK-dd9747e5e305 will draw one column).
+    ///
+    /// Whole rather than cut, which is the half that matters: an argv shown
+    /// three quarters of the way through reads as the whole of it. So the
+    /// assertion at the narrow window is on the *last* word of the line, and
+    /// the frame is still one that fits its window.
+    #[test]
+    fn the_command_line_is_drawn_whole_and_wraps_rather_than_being_cut() {
+        for (columns, rows) in [(80, 24), (20, 24)] {
+            let mut a = app();
+            a.resize(columns, rows);
+            let ank = nowhere();
+            spell(
+                &mut a,
+                &ank,
+                "log a message long enough to need two rows of a narrow window",
+            );
+            let shown = a.pending.clone().expect("a command is waiting").shown;
+            let frame = a.frame();
+            let flat: String = frame
+                .lines()
+                .map(|l| l.trim().to_string())
+                .collect::<Vec<String>>()
+                .join(" ");
+            for word in shown.split_whitespace() {
+                assert!(
+                    flat.contains(word.trim_matches('\'')),
+                    "{word} is not on a {columns}x{rows} frame:\n{frame}"
+                );
+            }
+            assert!(
+                flat.contains(&format!("{} runs it", keys::CONFIRM)),
+                "the offer is not on a {columns}x{rows} frame:\n{frame}"
+            );
+            assert_eq!(frame.lines().count(), rows as usize, "{frame}");
+            for line in frame.lines() {
+                assert!(
+                    line.chars().count() <= columns as usize,
+                    "{} columns in a {columns} column window: {line}",
+                    line.chars().count()
+                );
+            }
+        }
+    }
+
+    /// A confirmation is modal: while one is on the screen no key moves a
+    /// cursor, opens a document, changes a filter or ends the session
+    /// (TASK-d4a882345837).
+    ///
+    /// This is what makes "what was shown is what runs" true of the target as
+    /// well as of the tail. A `j` that still moved would be a row selected
+    /// under a command already composed against another one.
+    #[test]
+    fn nothing_moves_underneath_a_command_waiting_to_be_answered() {
+        let ank = nowhere();
+        for code in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('f'),
+            KeyCode::Tab,
+            KeyCode::Char('3'),
+            KeyCode::Enter,
+            KeyCode::Char('b'),
+            KeyCode::Char('v'),
+            KeyCode::Char('c'),
+            // `q` included: over a confirmation it is a person saying no to
+            // this, not a person leaving.
+            KeyCode::Char('q'),
+            KeyCode::Char(keys::ACT),
+            KeyCode::Char(keys::FIND),
+        ] {
+            let mut a = app();
+            spell(&mut a, &ank, "claim");
+            let (focus, cursors, kind, pane) = (a.focus, a.cursors, a.kind.clone(), a.pane);
+
+            assert!(!tap(&mut a, &ank, code), "{code:?} ended the session");
+
+            // The key did the one thing a key does here, and none of the
+            // things it does everywhere else.
+            assert_eq!(a.pending, None, "{code:?} left the command waiting");
+            assert_eq!(a.prompt, None, "{code:?} opened the prompt");
+            assert_eq!(a.focus, focus, "{code:?} moved the focus");
+            assert_eq!(a.cursors, cursors, "{code:?} moved a cursor");
+            assert_eq!(a.kind, kind, "{code:?} moved the filter");
+            assert_eq!(a.pane, pane, "{code:?} swapped the pane");
+            let said = a.note.clone().unwrap_or_default();
+            assert!(said.starts_with(DISMISSED), "{code:?}: {said}");
+            assert!(!said.contains("cannot run"), "{code:?} spawned: {said}");
+        }
+    }
+
+    /// A watcher's news and a resize both leave a waiting command exactly where
+    /// it was: neither answers it and neither drops it.
+    ///
+    /// The repaint is the one that matters. `ank-daemon` can wake this session
+    /// at any moment (TASK-2f7777a1fdff), and an event that confirmed a command
+    /// would be the corpus writing itself; an event that dismissed one would be
+    /// a person's answer thrown away by news they never saw.
+    #[test]
+    fn news_from_the_watcher_neither_confirms_nor_dismisses() {
+        let mut a = app();
+        let ank = nowhere();
+        spell(&mut a, &ank, "claim");
+        let waiting = a.pending.clone().expect("a command is waiting");
+        a.repaint(&ank);
+        a.resize(60, 20);
+        assert_eq!(
+            a.pending.as_ref(),
+            Some(&waiting),
+            "the corpus moving answered a command nobody did"
         );
     }
 

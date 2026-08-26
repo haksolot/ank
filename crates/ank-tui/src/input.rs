@@ -19,9 +19,10 @@
 //! abbreviation and no letter of their own. Under the line discipline that
 //! asymmetry *was* the guarantee -- a slipped finger typed nothing, because
 //! there was no `d`. It is still worth having and it is no longer the whole of
-//! it: what replaces it is the confirmation that shows the argv before anything
-//! is spawned, which ADR-0b55983421dd requires and TASK-d4a882345837 builds.
-//! `keys.rs` says which of the two regimes this reader is in today.
+//! it: what a verb read here produces is a [`Command::Act`], and an act is a
+//! command *composed* rather than a command run. It reaches the screen spelled
+//! as a shell would spell it and waits for one key (TASK-d4a882345837,
+//! ADR-0b55983421dd). `keys.rs` and `view.rs` are where that half lives.
 //!
 //! # What `accept` costs on top of that, and why
 //!
@@ -81,10 +82,12 @@ pub enum Command {
     /// (TASK-d90e94afca08). A read and nothing else -- `ank review` writes no
     /// file, takes no ref and renews no lease (§4).
     Queue,
-    /// Run one verb of the writing half against the entity under the cursor.
+    /// One verb of the writing half, against the entity under the cursor.
     ///
     /// The identifier is not in here: it is the selected entity, which the view
-    /// knows and the parse does not.
+    /// knows and the parse does not. Nor is this a verb *run*: what the view
+    /// does with it is compose the argv and show it, and a person answers that
+    /// (TASK-d4a882345837).
     Act(Act),
     /// A line that named an act and did not give it what it needs. The reader's
     /// own refusal and not the CLI's, and the line between the two is where the

@@ -251,6 +251,52 @@ fn the_sources_reach_for_nothing_but_the_binary() {
     }
 }
 
+/// One function in this crate spawns a verb that writes, and it is the one
+/// behind the confirmation (TASK-d4a882345837).
+///
+/// The criterion says no verb that writes can be spawned without the exact
+/// command line having been shown first. What makes that a property of the code
+/// rather than a habit of whoever wrote it is that [`ank_tui::ank::Ank::act`]
+/// has exactly one caller: `App::confirmed`, which runs only on a command
+/// `App::propose` composed and the screen drew, and which takes it rather than
+/// borrowing it so the same one cannot be answered twice.
+///
+/// A second call site would be a second road to a spawn, and it would be a road
+/// with no confirmation on it. It fails here rather than in review, on the same
+/// reasoning as everything else in this file: a rule that lives only in prose is
+/// a rule the second contributor breaks for a good reason, on a Tuesday.
+///
+/// `ank.rs` is exempt and it is the one exemption: the gate is defined there and
+/// its own suite drives it, so the calls in that file are the assertion that the
+/// gate refuses what it should rather than a road around it.
+#[test]
+fn one_function_in_this_crate_spawns_a_verb_that_writes() {
+    let calls: Vec<String> = sources()
+        .into_iter()
+        .filter(|(file, _)| file != "ank.rs")
+        .flat_map(|(file, source)| {
+            code_of(&source)
+                .lines()
+                .filter(|line| line.contains("ank.act("))
+                .map(|line| format!("{file}  {}", line.trim()))
+                .collect::<Vec<String>>()
+        })
+        .collect();
+    assert_eq!(
+        calls.len(),
+        1,
+        "a verb that writes is spawned from {} places, and the confirmation is \
+         in front of one of them:\n{}",
+        calls.len(),
+        calls.join("\n")
+    );
+    assert!(
+        calls[0].starts_with("view.rs"),
+        "the spawn moved out of the view, where the confirmation is: {}",
+        calls[0]
+    );
+}
+
 /// A source with its comments removed.
 ///
 /// The prose is allowed to name `.ank/` and `refs/ank/*` -- it has to, since
