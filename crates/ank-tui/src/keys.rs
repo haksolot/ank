@@ -8,6 +8,14 @@
 //! a named key beside it -- Down for `j`, PageDown for `n`, Home for `g`, Escape
 //! for `b` -- because a person who has never read the key line still has hands.
 //!
+//! **And focus is a key too** (TASK-bb43cfe2192b). `Tab` walks the four panels
+//! in a ring, `1` to `4` reach one directly, and Left and Right cross between
+//! the two columns. Three ways to the same place, deliberately: the digit is
+//! what the panel's own title carries, so a reader who can see `3` on the queue
+//! never has to remember which key opens it; the arrows are what a hand reaches
+//! for with nothing read at all; and `Tab` is what a person who has used one of
+//! these before will press first.
+//!
 //! **No command requires a modifier chord**, which ADR-0b55983421dd asks for and
 //! a phone makes literal: a terminal keyboard on a phone has no comfortable
 //! Control. Control-C is the one exception and it is not a command -- it is the
@@ -35,16 +43,16 @@
 //! looking at.
 
 use crate::input::Command;
-use crate::view::View;
+use crate::view::Focus;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// What a key press asks for, once the view is known.
+/// What a key press asks for, once the focused panel is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Press {
     /// A command of the grammar, ready to run.
     Run(Command),
     /// `f`: narrow to the next kind, which needs the one in force and is
-    /// therefore the view's to compute rather than this module's.
+    /// therefore the screen's to compute rather than this module's.
     Cycle,
     /// Open the one-line prompt, seeded with this much of a line.
     Prompt(&'static str),
@@ -60,7 +68,7 @@ pub const ACT: char = 'a';
 /// The key that opens it seeded with the grammar's search.
 pub const FIND: char = '/';
 
-pub fn typed(key: KeyEvent, view: View) -> Press {
+pub fn typed(key: KeyEvent, focus: Focus) -> Press {
     // The one chord, and it is the way out rather than a command: raw mode has
     // taken the line discipline's interrupt, so a reader that did not answer
     // this would be a full-screen program a person cannot leave without knowing
@@ -79,9 +87,7 @@ pub fn typed(key: KeyEvent, view: View) -> Press {
         KeyCode::Char('p') | KeyCode::PageUp => Press::Run(Command::Page(-1)),
         KeyCode::Char('g') | KeyCode::Home => Press::Run(Command::Top),
         KeyCode::Enter => Press::Run(Command::Open),
-        KeyCode::Char('b') | KeyCode::Esc | KeyCode::Backspace | KeyCode::Left => {
-            Press::Run(Command::Back)
-        }
+        KeyCode::Char('b') | KeyCode::Esc | KeyCode::Backspace => Press::Run(Command::Back),
         KeyCode::Char('c') => Press::Run(Command::Constraints),
         KeyCode::Char('r') => Press::Run(Command::Reload),
         KeyCode::Char('v') => Press::Run(Command::Queue),
@@ -89,11 +95,25 @@ pub fn typed(key: KeyEvent, view: View) -> Press {
         KeyCode::Char('f') => Press::Cycle,
         KeyCode::Char(ACT) => Press::Prompt(""),
         KeyCode::Char(FIND) => Press::Prompt("/"),
-        // Right opens, on the listings only: a phone's arrow cluster is how a
-        // person who never read the key line moves, and going *into* a row is
-        // what right means everywhere else. On a document there is nothing to
-        // the right, so it is left alone rather than given a second meaning.
-        KeyCode::Right if view != View::Entity => Press::Run(Command::Open),
+        // The ring, forward and back. `BackTab` is what a terminal sends for
+        // Shift-Tab and it is an alias rather than a command: `Tab` alone
+        // reaches all four panels, so nothing here *requires* the modifier
+        // ADR-0b55983421dd forbids requiring.
+        KeyCode::Tab => Press::Run(Command::NextPanel(1)),
+        KeyCode::BackTab => Press::Run(Command::NextPanel(-1)),
+        // A digit reaches its panel directly, which is what the number in a
+        // panel's title is for.
+        KeyCode::Char(c) if Focus::of_digit(c).is_some() => {
+            Press::Run(Command::Panel(Focus::of_digit(c).expect("a panel")))
+        }
+        // Left and Right reach the pair that shares a row, which is the only
+        // place on this screen where sideways means anything: a phone's arrow
+        // cluster is how a person who never read the key line moves, and going
+        // *into* what a row names is what Right means everywhere else. They are
+        // the one pair of keys that had to change meaning for panels, and `b`
+        // and Escape still go back.
+        KeyCode::Right if focus != Focus::Body => Press::Run(Command::Panel(Focus::Body)),
+        KeyCode::Left if focus != Focus::Entities => Press::Run(Command::Panel(Focus::Entities)),
         _ => Press::Ignored,
     }
 }
@@ -174,15 +194,15 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn press(c: char, view: View) -> Press {
-        typed(key(KeyCode::Char(c)), view)
+    fn press(c: char, focus: Focus) -> Press {
+        typed(key(KeyCode::Char(c)), focus)
     }
 
-    /// Every command that only moves the screen is one key, in every view
+    /// Every command that only moves the screen is one key, in every panel
     /// (ADR-0b55983421dd).
     #[test]
     fn a_reading_command_is_one_key_and_the_named_keys_agree_with_the_letters() {
-        for view in [View::List, View::Queue, View::Entity] {
+        for view in Focus::ALL {
             for (letter, named, expected) in [
                 ('j', KeyCode::Down, Command::Move(1)),
                 ('k', KeyCode::Up, Command::Move(-1)),
@@ -212,7 +232,7 @@ mod tests {
     /// command (ADR-0b55983421dd: no command anywhere requires a modifier).
     #[test]
     fn nothing_but_the_way_out_is_reached_with_a_modifier() {
-        for view in [View::List, View::Queue, View::Entity] {
+        for view in Focus::ALL {
             for c in 'a'..='z' {
                 let held = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
                 let press = typed(held, view);
@@ -229,7 +249,7 @@ mod tests {
     /// and the prompt is where the grammar refuses them.
     #[test]
     fn no_bare_key_can_write() {
-        for view in [View::List, View::Queue, View::Entity] {
+        for view in Focus::ALL {
             for c in 'a'..='z' {
                 assert!(
                     !matches!(press(c, view), Press::Run(Command::Act(_))),
@@ -247,19 +267,19 @@ mod tests {
 
     #[test]
     fn the_two_prompt_keys_seed_the_grammar_they_open() {
-        assert_eq!(press(ACT, View::List), Press::Prompt(""));
-        assert_eq!(press(FIND, View::List), Press::Prompt("/"));
+        assert_eq!(press(ACT, Focus::Entities), Press::Prompt(""));
+        assert_eq!(press(FIND, Focus::Entities), Press::Prompt("/"));
         // And what they seed is what the grammar reads: a bare line is a verb,
         // a slashed one is a search.
         assert_eq!(
-            crate::input::parse("claim", View::List),
+            crate::input::parse("claim", Focus::Entities),
             Command::Act(Act {
                 verb: "claim",
                 args: Vec::new()
             })
         );
         assert_eq!(
-            crate::input::parse("/a needle", View::List),
+            crate::input::parse("/a needle", Focus::Entities),
             Command::Search(Some("a needle".to_string()))
         );
     }
@@ -267,14 +287,63 @@ mod tests {
     #[test]
     fn an_unmapped_key_is_ignored_rather_than_named() {
         for code in [KeyCode::F(5), KeyCode::Insert, KeyCode::Char('z')] {
-            assert_eq!(typed(key(code), View::List), Press::Ignored, "{code:?}");
+            assert_eq!(
+                typed(key(code), Focus::Entities),
+                Press::Ignored,
+                "{code:?}"
+            );
         }
-        // Right opens a row and means nothing on a document.
+        // A digit no panel carries is not a panel.
+        for c in ['0', '5', '9'] {
+            assert_eq!(press(c, Focus::Entities), Press::Ignored, "'{c}'");
+        }
+    }
+
+    /// Focus moves by key, three ways, and none of the three is a chord
+    /// (TASK-bb43cfe2192b, ADR-0b55983421dd).
+    #[test]
+    fn focus_moves_by_key_in_a_ring_by_digit_and_across_the_columns() {
+        // The ring, forward from every panel and back again.
+        for focus in Focus::ALL {
+            assert_eq!(
+                typed(key(KeyCode::Tab), focus),
+                Press::Run(Command::NextPanel(1))
+            );
+            assert_eq!(
+                typed(key(KeyCode::BackTab), focus),
+                Press::Run(Command::NextPanel(-1))
+            );
+        }
+        // A digit reaches the panel whose title carries it.
+        for panel in Focus::ALL {
+            let digit = char::from_digit(panel.number() as u32, 10).expect("a digit");
+            assert_eq!(
+                press(digit, Focus::Entities),
+                Press::Run(Command::Panel(panel)),
+                "'{digit}'"
+            );
+        }
+        // Left and Right reach the pair that shares a row, from anywhere.
+        for (focus, sideways, arrived) in [
+            (Focus::Claims, KeyCode::Right, Focus::Body),
+            (Focus::Entities, KeyCode::Right, Focus::Body),
+            (Focus::Queue, KeyCode::Left, Focus::Entities),
+            (Focus::Body, KeyCode::Left, Focus::Entities),
+        ] {
+            assert_eq!(
+                typed(key(sideways), focus),
+                Press::Run(Command::Panel(arrived)),
+                "{focus:?} {sideways:?}"
+            );
+        }
+        // And the arrow that points at the panel already focused does nothing,
+        // rather than becoming a second way back: `b` and Escape are that.
+        assert_eq!(typed(key(KeyCode::Left), Focus::Entities), Press::Ignored);
+        assert_eq!(typed(key(KeyCode::Right), Focus::Body), Press::Ignored);
         assert_eq!(
-            typed(key(KeyCode::Right), View::List),
-            Press::Run(Command::Open)
+            typed(key(KeyCode::Esc), Focus::Body),
+            Press::Run(Command::Back)
         );
-        assert_eq!(typed(key(KeyCode::Right), View::Entity), Press::Ignored);
     }
 
     /// `f` walks the registry and comes back to every kind, so a person who
