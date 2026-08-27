@@ -25,8 +25,8 @@
 //! +-  4 QUEUE all 2 -----------------------------------+
 //! |   ADR-2b7c  adr  A decision waiting for a person    |
 //! +-----------------------------------------------------+
-//! whatever the reader is being told, or the prompt            <- chrome
-//! the keys, and the five verbs that write                     <- chrome
+//! whatever the reader is being told, or the search line      <- chrome
+//! the keys, and the six verbs that write                      <- chrome
 //! ```
 //!
 //! * **1 CLAIMS** -- who holds what, the caller's own marked. Full width,
@@ -133,11 +133,11 @@
 //! # Acting, and where the words come from
 //!
 //! [`App::propose`] is the writing half and the only road to a spawned verb: it
-//! puts the identifier the focused panel names in front of what was typed,
-//! asks [`Ank::spelling`] for the command line that argv is, and **stops**.
-//! Nothing else here writes, and nothing runs without a line having been typed
-//! -- there is no timer in this crate, and [`App::frame`] is a pure function of
-//! what the last command left behind.
+//! puts the identifier the focused panel names in front of the verb the key
+//! composed, asks [`Ank::spelling`] for the command line that argv is, and
+//! **stops**. Nothing else here writes, and nothing runs that a person did not
+//! press twice -- there is no timer in this crate, and [`App::frame`] is a pure
+//! function of what the last command left behind.
 //!
 //! # The confirmation, which is the fourth act
 //!
@@ -146,10 +146,12 @@
 //! [`App::propose`] leaves behind is a `Pending`: the verb, the argv, and the
 //! line spelled as a shell would have to spell it. The band under the panels
 //! shows that line, `y` runs it and every other key on the keyboard drops it
-//! ([`keys::confirming`]). So the road from a key to a moved corpus is four
-//! deliberate acts -- open the prompt, spell the verb whole, submit it, and say
-//! yes to what that composed -- and the last of them is the one the reader had
-//! been missing since a command stopped being a typed line.
+//! ([`keys::confirming`]). So the road from a key to a moved corpus is two
+//! deliberate acts -- press the verb's own letter, and say yes to what it
+//! composed (TASK-1a415107fd56) -- and the second is the whole of the
+//! guarantee. It was three acts while a verb was spelled into a prompt, and the
+//! two that went away were never the ones doing the work: a person who types
+//! `claim` and presses Enter has said what they want, not agreed to it.
 //!
 //! Three properties hold it together, and each is somewhere a later edit would
 //! have to go out of its way to break. The argv is composed once, so the line
@@ -163,12 +165,15 @@
 //! *not* allowed to be** (TASK-d90e94afca08). It is one more verb spawned
 //! against one identifier, which is the point: a ratification taken from this
 //! screen is the ratification a shell takes, because it *is* the command a
-//! shell runs. What the reader adds is subtraction. The grammar takes no tail
-//! after the word and takes the word only where the body panel has focus, so
+//! shell runs. What the reader adds is subtraction. The key composes no tail
+//! and is a command only where the body panel has focus, so
 //! the entity a ratification lands on is always the document somebody opened
 //! and is looking at; [`App::ratify_line`] offers the word only where the verb
 //! would accept it; and the child is spawned with no stdin, so nothing in this
-//! process can answer a passphrase prompt on a person's behalf. The
+//! process can answer a passphrase prompt on a person's behalf. There is no
+//! shape in which a second argument could travel at all now, which is what
+//! "nothing beyond the single document" became when the line went away
+//! (TASK-1a415107fd56). The
 //! confirmation adds a fourth subtraction of the same kind: the argv it shows
 //! is the one composed on the document that was open, so a `y` cannot ratify
 //! anything but what the person just read. Every refusal that follows -- the
@@ -685,23 +690,21 @@ impl App {
 
     /// One key press. `true` means the session is over.
     ///
-    /// **Two regimes, and which one is in force is the prompt.** With it closed
-    /// every key is a command that moves the screen, and none of them can
-    /// write: `keys::typed` has no shape in which a bare key becomes an act,
-    /// and the test beside it holds that. With it open every key is a
-    /// character, an edit or one of the two ways out, and nothing runs until
-    /// Enter -- at which point the line goes through the grammar this reader
-    /// already had, which is where the six verbs are spelled whole and where
-    /// `accept` is refused off the body panel.
+    /// **Two regimes, and which one is in force is the search line.** With it
+    /// closed every key is a command, the six that write included
+    /// (TASK-1a415107fd56): `keys::typed` reads the row the key belongs to and
+    /// a row of the writing half composes an act. With it open every key is a
+    /// character, an edit or one of the two ways out, and what Enter submits
+    /// goes through a grammar that reads no verb at all -- so the line cannot
+    /// reach one however it is spelled.
     ///
     /// So there is exactly one road from a key press to a spawned verb, and it
-    /// passes through a line somebody typed *and then through a confirmation*
-    /// (TASK-d4a882345837). A submitted line composes the argv and shows it;
-    /// nothing is spawned until a third regime answers.
+    /// passes through a confirmation (TASK-d4a882345837). A letter composes the
+    /// argv and shows it; nothing is spawned until a third regime answers.
     ///
     /// **The confirmation is read first and it is modal**, which is the whole
     /// of what makes it one. With a command on the screen there is no key that
-    /// moves a cursor, opens a document, quits, or reopens the prompt: every
+    /// moves a cursor, opens a document, quits, or opens the search: every
     /// key runs the command that is being read or drops it, so what a person
     /// says yes to is what they were shown and nothing has moved underneath it.
     pub fn press(&mut self, key: KeyEvent, ank: &Ank) -> bool {
@@ -717,7 +720,7 @@ impl App {
                 }
                 Editing::Submit => {
                     let line = self.prompt.take().unwrap_or_default();
-                    let command = crate::input::parse(&line, self.focus);
+                    let command = crate::input::parse(&line);
                     self.act(command, ank)
                 }
             };
@@ -970,6 +973,7 @@ impl App {
             Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
             Command::Help => self.note = Some(bindings::listing().join("\n")),
+            Command::Further => self.note = Some(bindings::further().join("\n")),
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
@@ -2086,16 +2090,13 @@ impl App {
     /// and the word a target says is the word the key list says, because it is
     /// the same string.
     ///
-    /// A binding with no key is never a target, whatever it is offered on: the
-    /// six verbs are still spelled into the prompt, and a word a finger could
-    /// touch with no key to press would be an offer only half the reader can
-    /// take.
+    /// Every row carries a key since TASK-1a415107fd56, the six verbs
+    /// included, so what is drawn here is what the table declares and there is
+    /// no row this has to leave out for want of a key to name.
     pub fn actions(&self) -> Vec<Action> {
         bindings::offered(self.holding())
             .map(|binding| Action {
-                key: binding
-                    .key
-                    .expect("a binding with no key is never offered as a target"),
+                key: binding.key,
                 does: binding.word,
             })
             .collect()
@@ -2196,10 +2197,16 @@ impl App {
     /// It says a stream exists, never that a watcher is running: nothing here
     /// can honestly say the second without polling something, and polling
     /// something is what the stream exists to remove.
-    fn route(&self) -> &'static str {
+    fn route(&self) -> String {
         match &self.stream {
-            Some(s) if s.following() => "stream following",
-            _ => "stream none, r to reload",
+            Some(s) if s.following() => "stream following".to_string(),
+            // The letter is the table's and not this sentence's: it was `r`
+            // until `release` took it (TASK-1a415107fd56), and a note that had
+            // gone on saying so would be teaching a key that claims a task.
+            _ => format!(
+                "stream none, {} to reload",
+                bindings::spelling_of(&Command::Reload)
+            ),
         }
     }
 
@@ -2856,14 +2863,14 @@ mod tests {
         tap(a, ank, KeyCode::Char(keys::CONFIRM))
     }
 
-    /// Spells one act into the prompt the way a person does -- `a`, the word,
-    /// Enter -- and answers nothing.
-    fn spell(a: &mut App, ank: &Ank, line: &str) {
-        tap(a, ank, KeyCode::Char(keys::ACT));
-        for c in line.chars() {
-            tap(a, ank, KeyCode::Char(c));
-        }
-        tap(a, ank, KeyCode::Enter);
+    /// Presses the letter one verb of the writing half is bound to, and answers
+    /// nothing (TASK-1a415107fd56).
+    ///
+    /// Read out of the table rather than spelled here, so a suite carrying its
+    /// own copy of a letter cannot agree with a binding that moved.
+    fn spell(a: &mut App, ank: &Ank, verb: &str) {
+        let binding = bindings::of_verb(verb).expect("a verb of the writing half");
+        tap(a, ank, binding.key);
     }
 
     fn tap(a: &mut App, ank: &Ank, code: KeyCode) -> bool {
@@ -3523,13 +3530,13 @@ mod tests {
     fn the_list_says_which_route_is_keeping_it_current() {
         let mut a = app();
         assert!(
-            a.frame().contains("stream none, r to reload"),
+            a.frame().contains("stream none, u to reload"),
             "with no stream at all:\n{}",
             a.frame()
         );
         a.stream = Some(Stream::stated(false));
         assert!(
-            a.frame().contains("stream none, r to reload"),
+            a.frame().contains("stream none, u to reload"),
             "a stream that is not there is not a stream:\n{}",
             a.frame()
         );
@@ -4235,15 +4242,22 @@ mod tests {
         assert!(tap(&mut a, &ank, KeyCode::Char('q')), "q ends the session");
     }
 
-    /// No bare key spawns a verb that writes, and the prompt does.
+    /// **No key spawns a verb that writes, and the key and the confirmation
+    /// together do** (TASK-1a415107fd56, replacing the version of this test
+    /// that said the prompt was the road).
+    ///
+    /// The letters write now, so what a bare key must not do is no longer
+    /// "compose an act" -- it is *spawn* one. Every letter of the alphabet is
+    /// pressed in every panel and none of them reaches the CLI; then one of
+    /// them is pressed and answered, and that one does.
     ///
     /// The instrument is the binary not being there: every call leaves
     /// `cannot run` and the argv behind, so the command the reader *would* have
     /// run is on the screen and can be read. Keys that only read are expected
-    /// to appear there -- `r` is a `status` and a `find` -- and what is
+    /// to appear there -- `u` is a `status` and a `find` -- and what is
     /// asserted is that none of the six ever does.
     #[test]
-    fn no_key_reaches_a_verb_that_writes_and_the_prompt_does() {
+    fn no_key_spawns_a_verb_that_writes_and_the_key_with_the_confirmation_does() {
         const WRITES: [&str; 6] = ["claim", "log", "release", "done", "amend", "accept"];
         let mut a = app();
         let ank = nowhere();
@@ -4253,7 +4267,10 @@ mod tests {
                 a.focus = panel;
                 a.note = None;
                 tap(&mut a, &ank, KeyCode::Char(c));
+                // Whatever the key left waiting or open is dropped rather than
+                // answered: what is being measured is the keystroke alone.
                 a.prompt = None;
+                a.pending = None;
                 let said = a.note.clone().unwrap_or_default();
                 for verb in WRITES {
                     assert!(
@@ -4263,19 +4280,20 @@ mod tests {
                 }
             }
         }
-        // And the prompt does: `a`, the word, Enter. The filter the loop above
-        // left cycling is cleared first, so the panel names a row to act on.
+        // And the letter with the confirmation behind it does. The filter the
+        // loop above left cycling is cleared first, so the panel names a row to
+        // act on.
         a.focus = Focus::Entities;
         a.kind = None;
         a.search = None;
         a.cursors = [Cursor::default(); 4];
         a.note = None;
         spell(&mut a, &ank, "claim");
-        assert_eq!(a.note, None, "the prompt alone spawned a verb");
+        assert_eq!(a.note, None, "the letter alone spawned a verb");
         confirm(&mut a, &ank);
         assert!(
             a.note.clone().unwrap_or_default().contains("ank claim"),
-            "the prompt and the confirmation did not reach the verb: {:?}",
+            "the letter and the confirmation did not reach the verb: {:?}",
             a.note
         );
     }
@@ -4290,27 +4308,15 @@ mod tests {
     /// dismissing it runs nothing.
     #[test]
     fn each_verb_that_writes_is_shown_whole_before_it_can_be_spawned() {
-        // The tails a person types, and the argv each composes. `accept` is
-        // last because it is the one that has to be typed on a document.
+        // The letter a person presses, and the argv it composes. Each is the
+        // verb and the identifier the focused panel names and nothing else:
+        // there is no line to carry a tail on (TASK-1a415107fd56).
         let spelled = [
             ("claim", "ank claim TASK-49746735127f --json"),
-            (
-                "log the probe counts the marker",
-                "ank log TASK-49746735127f 'the probe counts the marker' --json",
-            ),
-            (
-                "release the criterion measures the wrong thing",
-                "ank release TASK-49746735127f --reason 'the criterion measures the wrong thing' \
-                 --json",
-            ),
-            (
-                "done commit:2d9c847",
-                "ank done TASK-49746735127f --proof commit:2d9c847 --json",
-            ),
-            (
-                "amend --scope \"crates/ank tui/**\"",
-                "ank amend TASK-49746735127f --scope 'crates/ank tui/**' --json",
-            ),
+            ("log", "ank log TASK-49746735127f --json"),
+            ("release", "ank release TASK-49746735127f --json"),
+            ("done", "ank done TASK-49746735127f --json"),
+            ("amend", "ank amend TASK-49746735127f --json"),
             ("accept", "ank accept TASK-49746735127f --json"),
         ];
         let ank = nowhere();
@@ -4377,11 +4383,11 @@ mod tests {
             let mut a = app();
             a.resize(columns, rows);
             let ank = nowhere();
-            spell(
-                &mut a,
-                &ank,
-                "log a message long enough to need two rows of a narrow window",
-            );
+            // On a document whose identifier is long enough that the composed
+            // line needs two rows of the narrow window.
+            a.detail = Some(detail("TASK-49746735127f", "body\n"));
+            a.focus = Focus::Body;
+            spell(&mut a, &ank, "release");
             let shown = a.pending.clone().expect("a command is waiting").shown;
             let frame = a.frame();
             let flat: String = frame
@@ -4433,7 +4439,6 @@ mod tests {
             // `q` included: over a confirmation it is a person saying no to
             // this, not a person leaving.
             KeyCode::Char('q'),
-            KeyCode::Char(keys::ACT),
             KeyCode::Char(keys::FIND),
         ] {
             let mut a = app();
@@ -4482,8 +4487,8 @@ mod tests {
     fn a_prompt_dismissed_runs_nothing() {
         let mut a = app();
         let ank = nowhere();
-        tap(&mut a, &ank, KeyCode::Char(keys::ACT));
-        for c in "claim".chars() {
+        tap(&mut a, &ank, KeyCode::Char(keys::FIND));
+        for c in "needle".chars() {
             tap(&mut a, &ank, KeyCode::Char(c));
         }
         tap(&mut a, &ank, KeyCode::Esc);
@@ -4912,7 +4917,7 @@ mod tests {
         let ank = nowhere();
         let mut a = phone();
         a.cursors[Focus::Entities.number() - 1].at = 1;
-        spell(&mut a, &ank, "log a message");
+        spell(&mut a, &ank, "log");
         let waiting = a.pending.clone().expect("a command is waiting");
         // A touch on a row underneath it: the command is dropped, and nothing
         // moved.

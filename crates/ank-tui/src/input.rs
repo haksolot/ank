@@ -1,54 +1,59 @@
-//! The grammar of the one-line prompt: a verb spelled whole, and its tail.
+//! The grammar of the one-line prompt, which is a search and the words that
+//! only move a screen.
 //!
-//! **This is no longer how the screen is moved** (ADR-c07e2694f0e1). Every
-//! command that only moves the screen is a key now, and `keys.rs` is where
-//! those live. What is left for a line is what a key cannot carry: `log <what
-//! you learned>`, `done --proof <p>`, `release <reason>`, `amend <flags>` --
-//! four of the six verbs that write take something a keystroke has no room
-//! for, so `a` opens a prompt and this reads what is typed into it. `/` opens
-//! the same prompt on a search.
+//! **No word typed here reaches a verb** (TASK-1a415107fd56,
+//! ADR-c07e2694f0e1). The six that write have their own letters now -- `c`,
+//! `l`, `d`, `r`, `m`, `a` -- and the prompt that used to spell them whole is
+//! gone with the key that opened it. What is left is `/`, which is this
+//! grammar's search, and the words a line is the natural shape for: a row
+//! number, an identifier, a filter.
 //!
-//! The reading commands stay in the grammar, spelled whole, and that is not
-//! vestigial: `q`, `open`, `top` and the rest cost nothing to keep, a row
-//! number and an identifier are lines by nature, and a person who reaches the
-//! prompt and types the word they know gets what they meant.
+//! # Why the verbs left rather than staying as a second road
 //!
-//! # A verb that writes is spelled whole here, and that is a state not a rule
+//! They could have stayed. A word is still a word, and `claim` typed whole
+//! would still have composed the same act. What that would have been is a
+//! second vocabulary for the same six commands -- one a person learns from the
+//! key list and one they learn from nowhere -- and a second road to
+//! [`Command::Act`] for every rule about reaching one to be restated on.
+//! ADR-c07e2694f0e1 asks for the opposite: a key *is* the verb it runs, and
+//! the surface a person already learned at the shell is where the letters come
+//! from. One road, and it is a keystroke.
 //!
-//! The six are `claim`, `log`, `release`, `done`, `amend` and `accept`, and
-//! today none of them has an abbreviation or a letter of its own. Under the
-//! line discipline that asymmetry *was* the guarantee -- a slipped finger typed
-//! nothing, because there was no `d` -- and it stopped being the guarantee when
-//! the reader took keystrokes. ADR-c07e2694f0e1 ends the asymmetry outright: a
-//! key is the verb it runs, the reader binds the initial the CLI already
-//! spells, and TASK-1a415107fd56 is where those letters arrive here.
+//! So [`parse`] cannot produce a [`Command::Act`] at all, and that is held
+//! twice over: by the tests at the foot of this file, over every verb §4
+//! declares rather than over the six -- a grammar that had quietly kept
+//! `attest` would be exactly as much of a second road as one that kept `claim`
+//! -- and by `tests/dependencies.rs`, which reads this file's own source and
+//! finds nothing outside its tests that so much as names the variant.
 //!
-//! What survives that is this module's actual half of the guarantee, which
-//! never depended on the road the verb was reached by. What a verb read here
-//! produces is a [`Command::Act`], and an act is a command *composed* rather
-//! than a command run. It reaches the screen spelled as a shell would spell it
-//! and waits for one key (TASK-d4a882345837, ADR-c07e2694f0e1). `keys.rs` and
-//! `view.rs` are where that half lives.
+//! # What a line is still the right shape for
 //!
-//! # What `accept` costs on top of that, and why
+//! A search, above all: `/` opens the prompt seeded with a slash and the rest
+//! of the line is the needle, spaces and all. That is the whole of what a
+//! person is offered, and it is the whole of what the key list names. What is
+//! under it is the rest of this grammar, reached by clearing the seed --
+//! Control-U, or Backspace -- and it costs nothing to keep: `open`, `top`, a
+//! row number and an identifier are lines by nature, and none of them writes.
 //!
-//! Ratification is the act this project guards hardest, so the word alone is
-//! not the whole of the gate (TASK-d90e94afca08). Two more things are true of
-//! it here, and both are the grammar's rather than the renderer's.
+//! # No letter means two things
 //!
-//! **It takes no tail.** [`Tail::Nothing`] refuses the rest of the line instead
-//! of forwarding it, so what leaves this module is always the verb and the one
-//! identifier the view puts in front -- "nothing beyond the single document",
-//! held by there being no shape in which a second argument could travel.
+//! **A single letter is a word here only where the key of that letter means the
+//! same** (TASK-1a415107fd56). `c` and `r` were `constraints` and `reload` for
+//! as long as those were what the keys did; the keys are `claim` and `release`
+//! now, and a line where `c` shows the rules while the keyboard's `c` claims a
+//! task would be two vocabularies wearing one letter -- which is the drift
+//! ADR-c07e2694f0e1 was written against, one surface further down.
 //!
-//! **It is only a command where the body panel has focus.** At a row it is
-//! refused, naming the way in: a proposal binds nobody until somebody reads it,
-//! and a queue that could be ratified from a row is a queue nobody reads. That
-//! is why [`parse`] takes the focus, and it is now the only reason it takes it
-//! -- and the focused panel is the one the screen has marked, so the document a
-//! ratification lands on is the one under the reader's eyes.
+//! So the letters that survive are the ones that agree with the table -- `q`,
+//! `g`, `b`, `v`, `?`, and `j`/`k` with a count in front -- and everything else
+//! is spelled whole. `h`, `n` and `p` are gone from here for the same reason
+//! from the other end: the decision empties those keys, and a word that filled
+//! one back in would be putting the meaning somewhere a person could still find
+//! it. `f` goes for a third reason, and it is the one that shows the rule is
+//! not about which wave moved what: the key *cycles* the kinds and the word
+//! *sets* one, so they were never the same command and the letter was standing
+//! for two things all along.
 
-use crate::bindings::{self, Tail, Verb};
 use crate::view::Focus;
 
 /// What a typed line asks for.
@@ -90,9 +95,14 @@ pub enum Command {
     /// One verb of the writing half, against the entity under the cursor.
     ///
     /// The identifier is not in here: it is the selected entity, which the view
-    /// knows and the parse does not. Nor is this a verb *run*: what the view
-    /// does with it is compose the argv and show it, and a person answers that
-    /// (TASK-d4a882345837).
+    /// knows and the key press does not. Nor is this a verb *run*: what the
+    /// view does with it is compose the argv and show it, and a person answers
+    /// that (TASK-d4a882345837).
+    ///
+    /// **Nothing in this module builds one** (TASK-1a415107fd56). It is
+    /// [`crate::bindings`] that composes an act, from the row whose key was
+    /// pressed, and this type is here because it is what a command *is* rather
+    /// than because a line makes one.
     Act(Act),
     /// A line that named an act and did not give it what it needs. The reader's
     /// own refusal and not the CLI's, and the line between the two is where the
@@ -100,6 +110,10 @@ pub enum Command {
     /// on the state of the corpus stays the CLI's (ADR-8bd76e8d7c4e).
     Malformed(String),
     Help,
+    /// The verbs past the six, named (TASK-1a415107fd56). `x`, and no word:
+    /// what it opens is a list of what this reader does not run, so there is
+    /// nothing for a person to have typed.
+    Further,
     /// A line that asked for nothing: an empty prompt, or one carrying only
     /// whitespace.
     Nothing,
@@ -116,30 +130,18 @@ const IDENTIFIER_KINDS: &[&str] = &["task", "adr", "spec", "log"];
 /// One verb of the writing half, with the arguments a typed line gave it.
 ///
 /// `args` is the verb's own tail and never carries the identifier: the view
-/// puts that in front, because `<id>` is the first positional of all five and
-/// the view is what knows which entity is selected.
+/// puts that in front, because `<id>` is the first positional of all six and
+/// the view is what knows which entity is selected. It is empty on every act
+/// this reader composes today -- there is no longer a line to type a tail on --
+/// and it is a `Vec` rather than nothing because the form that fills it is
+/// TASK-d832452630d2's and TASK-e8da6a00564a's.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Act {
     pub verb: &'static str,
     pub args: Vec<String>,
 }
 
-/// The writing half of the loop, and how each verb reads a line.
-///
-/// **Not a list any more** (TASK-4d2eb2b4e193). The six verbs, their tails and
-/// the flags they spell are rows of [`crate::bindings::BINDINGS`], which is
-/// also where the keys and the key list are read from; this module looks a word
-/// up there rather than carrying a second copy of it. What used to be here was
-/// one of the five parallel tables ADR-c07e2694f0e1 was written against.
-///
-/// [`crate::ank::ACTS`] still gates the spawn and is still hand-written, and
-/// the dependency runs the other way: the bindings are measured against the
-/// gate, and the gate reads nothing from them.
-fn spelled(word: &str) -> Option<Verb> {
-    bindings::of_verb(word).and_then(|binding| binding.verb)
-}
-
-pub fn parse(line: &str, focus: Focus) -> Command {
+pub fn parse(line: &str) -> Command {
     let line = line.trim();
     // A prompt opened and submitted empty asked for nothing, and answering it
     // with the obvious next thing would be the reader choosing a command for
@@ -157,97 +159,24 @@ pub fn parse(line: &str, focus: Focus) -> Command {
     };
     match word {
         "q" | "quit" => Command::Quit,
-        "r" | "reload" => Command::Reload,
+        "reload" => Command::Reload,
         "g" | "top" => Command::Top,
         "b" | "back" => Command::Back,
-        "c" | "constraints" => Command::Constraints,
-        "o" | "open" => Command::Open,
-        "?" | "h" | "help" => Command::Help,
-        "f" | "filter" => Command::Kind(non_empty(rest).map(|k| k.to_ascii_lowercase())),
+        "constraints" => Command::Constraints,
+        "open" => Command::Open,
+        "?" | "help" => Command::Help,
+        "filter" => Command::Kind(non_empty(rest).map(|k| k.to_ascii_lowercase())),
         // `v` and not a letter closer to the word: `q` is quit, and a queue one
         // keystroke from the way out is a queue nobody opens twice.
         "v" | "queue" => Command::Queue,
-        "n" | "next" => Command::Page(1),
-        "p" | "prev" => Command::Page(-1),
-        _ => match spelled(word) {
-            Some(verb) => act(verb.name, verb.tail, rest, focus),
-            None => repeated(word).unwrap_or_else(|| other(line)),
-        },
+        "next" => Command::Page(1),
+        "prev" => Command::Page(-1),
+        // And a word this grammar does not know is named back, whether or not
+        // it happens to be a verb. `claim` here is `Command::Unknown("claim")`
+        // and reaches nothing: the six are keys, and a second road to them is
+        // exactly what TASK-1a415107fd56 closed.
+        _ => repeated(word).unwrap_or_else(|| other(line)),
     }
-}
-
-/// One act, with the rest of the line read the way its verb reads one.
-///
-/// The focus is consulted for exactly one verb, and the module header says why:
-/// a ratification is typed on the document, not at a row that names it.
-fn act(verb: &'static str, tail: Tail, rest: &str, focus: Focus) -> Command {
-    if verb == "accept" && focus != Focus::Body {
-        return Command::Malformed(
-            "'accept' is typed on the document itself: open it first, and read it in              the body panel (Enter opens the row under the cursor)"
-                .to_string(),
-        );
-    }
-    let args = match tail {
-        Tail::Words => words(rest),
-        Tail::Message => match non_empty(rest) {
-            Some(message) => vec![message],
-            None => {
-                return Command::Malformed(format!(
-                    "'{verb}' needs a message: {verb} <what you learned>"
-                ))
-            }
-        },
-        Tail::Behind(flag) => match non_empty(rest) {
-            Some(value) => vec![flag.to_string(), value],
-            None => Vec::new(),
-        },
-        Tail::Nothing => match non_empty(rest) {
-            None => Vec::new(),
-            Some(said) => {
-                return Command::Malformed(format!(
-                    "'{verb}' takes nothing after it, and '{said}' is something: it                      ratifies the document on the screen and no other"
-                ))
-            }
-        },
-    };
-    Command::Act(Act { verb, args })
-}
-
-/// A line split into words, with double quotes grouping one.
-///
-/// Not a shell: there is no escaping, no variable and no single quote, and the
-/// three lines that would add them would be three lines of a language this
-/// reader is not. What it buys is the one case that actually occurs -- a scope
-/// glob or a criterion with a space in it -- and an unclosed quote runs to the
-/// end of the line rather than being an error, because the alternative is
-/// refusing a line over a character the person can plainly see is missing.
-fn words(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut word = String::new();
-    let mut open = false;
-    let mut started = false;
-    for c in line.chars() {
-        match c {
-            '"' => {
-                open = !open;
-                started = true;
-            }
-            c if c.is_whitespace() && !open => {
-                if started {
-                    out.push(std::mem::take(&mut word));
-                    started = false;
-                }
-            }
-            c => {
-                word.push(c);
-                started = true;
-            }
-        }
-    }
-    if started {
-        out.push(word);
-    }
-    out
 }
 
 /// `j`, `k`, and the same with a count in front: `5j`.
@@ -294,34 +223,77 @@ mod tests {
     use super::*;
 
     fn list(line: &str) -> Command {
-        parse(line, Focus::Entities)
+        parse(line)
     }
 
-    /// A prompt submitted empty runs nothing, whichever panel is focused. Enter
-    /// is a key and opening a row is what it does; a line that says nothing must
-    /// not be turned into a command nobody typed.
+    /// A prompt submitted empty runs nothing. Enter is a key and opening a row
+    /// is what it does; a line that says nothing must not be turned into a
+    /// command nobody typed.
     #[test]
-    fn an_empty_line_asks_for_nothing_in_any_panel() {
-        for focus in Focus::ALL {
-            assert_eq!(parse("", focus), Command::Nothing, "{focus:?}");
-            assert_eq!(parse("   ", focus), Command::Nothing, "{focus:?}");
-        }
+    fn an_empty_line_asks_for_nothing() {
+        assert_eq!(parse(""), Command::Nothing);
+        assert_eq!(parse("   "), Command::Nothing);
     }
 
+    /// The words this grammar reads, and the letters that are allowed to stand
+    /// for one.
     #[test]
     fn the_short_words_and_their_long_forms_agree() {
         for (short, long, expected) in [
             ("q", "quit", Command::Quit),
-            ("r", "reload", Command::Reload),
             ("g", "top", Command::Top),
             ("b", "back", Command::Back),
-            ("c", "constraints", Command::Constraints),
             ("v", "queue", Command::Queue),
-            ("n", "next", Command::Page(1)),
-            ("p", "prev", Command::Page(-1)),
         ] {
             assert_eq!(list(short), expected, "{short}");
             assert_eq!(list(long), expected, "{long}");
+        }
+        for (long, expected) in [
+            ("reload", Command::Reload),
+            ("constraints", Command::Constraints),
+            ("open", Command::Open),
+            ("next", Command::Page(1)),
+            ("prev", Command::Page(-1)),
+            ("filter", Command::Kind(None)),
+        ] {
+            assert_eq!(list(long), expected, "{long}");
+        }
+    }
+
+    /// **No letter means one thing typed and another pressed**
+    /// (TASK-1a415107fd56).
+    ///
+    /// The trap this closes is `c`: it was `constraints` here while it was the
+    /// constraints key, and the key is `claim` now. A grammar that had kept the
+    /// old meaning would be a second vocabulary on the same letter, in the one
+    /// place a person is least able to tell which surface they are on.
+    ///
+    /// Stated over every letter and both ways round, rather than over the two
+    /// that moved: the letter that gets it wrong next will be the one the next
+    /// wave reassigns.
+    #[test]
+    fn a_letter_is_a_word_here_only_where_the_key_means_the_same() {
+        use crate::keys::{typed, Press};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        for c in 'a'..='z' {
+            let word = parse(&c.to_string());
+            // A letter this grammar does not read is not a second meaning for
+            // it. Everything else is measured, `j` and `k` included: they are
+            // the same command typed and pressed, which is what the rule looks
+            // like when it holds.
+            if matches!(word, Command::Unknown(_)) {
+                continue;
+            }
+            let key = typed(
+                KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
+                Focus::Entities,
+            );
+            assert_eq!(
+                Press::Run(word.clone()),
+                key,
+                "'{c}' is {word:?} typed and {key:?} pressed"
+            );
         }
     }
 
@@ -348,207 +320,89 @@ mod tests {
 
     #[test]
     fn a_filter_carries_its_argument_and_an_empty_one_clears_it() {
-        assert_eq!(list("f adr"), Command::Kind(Some("adr".to_string())));
-        assert_eq!(list("f ADR"), Command::Kind(Some("adr".to_string())));
-        assert_eq!(list("f"), Command::Kind(None));
+        assert_eq!(list("filter adr"), Command::Kind(Some("adr".to_string())));
+        assert_eq!(list("filter ADR"), Command::Kind(Some("adr".to_string())));
+        assert_eq!(list("filter"), Command::Kind(None));
         assert_eq!(list("filter task"), Command::Kind(Some("task".to_string())));
+        // And not `f`, which is the key that walks to the *next* kind: one
+        // letter, two commands, is what this grammar no longer has.
+        assert_eq!(list("f"), Command::Unknown("f".to_string()));
     }
 
+    /// **No word typed anywhere reaches a verb** (TASK-1a415107fd56,
+    /// ADR-c07e2694f0e1).
+    ///
+    /// The claim this module is answerable for after the wave, and it is stated
+    /// over every verb the contract declares rather than over the six: the six
+    /// are what a person is most likely to type, and a grammar that had quietly
+    /// kept `attest` or `edit` would be exactly as much of a second road as one
+    /// that kept `claim`.
+    ///
+    /// Every shape a line could carry them in, too. A bare word, a word with a
+    /// tail, a word behind its own flag: the verbs left this grammar, so none
+    /// of the three is an act and none of them is a refusal *about* an act
+    /// either -- they are words this reader does not know, and it says so.
     #[test]
-    fn each_act_reads_its_line_the_way_its_verb_takes_one() {
-        assert_eq!(
-            list("claim"),
-            Command::Act(Act {
-                verb: "claim",
-                args: Vec::new()
-            }),
-            "the identifier is the panel's, not the parse's"
-        );
-        assert_eq!(
-            list("claim --ttl 4h"),
-            Command::Act(Act {
-                verb: "claim",
-                args: vec!["--ttl".to_string(), "4h".to_string()]
-            })
-        );
-        assert_eq!(
-            list("log the probe counts the marker, not the question"),
-            Command::Act(Act {
-                verb: "log",
-                args: vec!["the probe counts the marker, not the question".to_string()]
-            }),
-            "a message is one argument and keeps its commas and spaces"
-        );
-        assert_eq!(
-            list("done commit:2d9c847"),
-            Command::Act(Act {
-                verb: "done",
-                args: vec!["--proof".to_string(), "commit:2d9c847".to_string()]
-            })
-        );
-        assert_eq!(
-            list("release the criterion measures the wrong thing"),
-            Command::Act(Act {
-                verb: "release",
-                args: vec![
-                    "--reason".to_string(),
-                    "the criterion measures the wrong thing".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            list("amend --drop-blocked-by TASK-4974"),
-            Command::Act(Act {
-                verb: "amend",
-                args: vec!["--drop-blocked-by".to_string(), "TASK-4974".to_string()]
-            })
-        );
-    }
-
-    /// `done` and `release` with nothing after them are passed through bare, and
-    /// the CLI answers for the flag it wants. That is the whole point: the
-    /// refusal a person meets on `done` with no proof has to be the binary's,
-    /// with its code and its way out.
-    #[test]
-    fn a_flag_nobody_typed_is_not_invented_and_not_refused_here() {
-        for (line, verb) in [("done", "done"), ("release", "release")] {
-            assert_eq!(
-                list(line),
-                Command::Act(Act {
-                    verb,
-                    args: Vec::new()
-                }),
-                "{line}"
-            );
-        }
-    }
-
-    /// `ank log <id>` with no message reads the log, which is not what the word
-    /// was typed for. The reader says so rather than quietly doing the other
-    /// thing.
-    #[test]
-    fn log_with_no_message_is_named_and_nothing_is_run() {
-        match list("log") {
-            Command::Malformed(said) => {
-                assert!(said.contains("needs a message"), "{said}");
-                assert!(said.contains("log <"), "it names the form: {said}");
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-
-    /// An act is never one letter, so no key can be one either: `keys.rs` maps
-    /// letters to commands, and a letter this grammar refuses to read as a verb
-    /// is a letter no mapping can quietly turn into one.
-    #[test]
-    fn no_single_letter_line_can_write() {
-        for focus in Focus::ALL {
-            for c in 'a'..='z' {
-                let line = c.to_string();
+    fn no_verb_of_the_contract_is_a_word_this_grammar_reads() {
+        for spec in ank_contract::verbs::COMMANDS {
+            for line in [
+                spec.name.to_string(),
+                format!("{} something", spec.name),
+                format!("{} --reason 'a reason'", spec.name),
+            ] {
                 assert!(
-                    !matches!(parse(&line, focus), Command::Act(_)),
-                    "'{line}' writes in {focus:?}, and one letter must not"
-                );
-            }
-            // Nor does a near miss on one of the six.
-            for line in ["d", "cl", "clai", "don", "rel", "am", "acce", "close"] {
-                assert!(
-                    !matches!(parse(line, focus), Command::Act(_)),
-                    "'{line}' writes in {focus:?}"
+                    !matches!(parse(&line), Command::Act(_)),
+                    "'{line}' reaches a verb, and no typed word may"
                 );
             }
         }
     }
 
-    /// `accept` is a command in the body panel, and a refusal in every other
-    /// (TASK-d90e94afca08).
+    /// And the six the gate allows are named back like any other word
+    /// (TASK-1a415107fd56).
     ///
-    /// The refusal is the reader's own and names the way in, because the person
-    /// who typed it wants to ratify and the answer is "read it first" rather
-    /// than "no".
+    /// The half above cannot see: "not an act" would also be true of a grammar
+    /// that refused them with a sentence, and a refusal reads as a road that is
+    /// closed today. What the prompt does with `claim` is what it does with
+    /// `zzz` -- it does not know the word -- because the letters are where the
+    /// verbs are and there is nothing here to explain.
     #[test]
-    fn accept_is_typed_on_the_document_and_nowhere_else() {
-        assert_eq!(
-            parse("accept", Focus::Body),
-            Command::Act(Act {
-                verb: "accept",
-                args: Vec::new()
-            }),
-            "the identifier is the panel's, and there is nothing else to pass"
-        );
-        for focus in Focus::ALL.into_iter().filter(|f| *f != Focus::Body) {
-            match parse("accept", focus) {
-                Command::Malformed(said) => {
-                    assert!(said.contains("open it first"), "{focus:?}: {said}");
-                }
-                other => panic!("{focus:?} took an accept off a row: {other:?}"),
-            }
-        }
-    }
-
-    /// Nothing travels after the word, and a line that carries something is
-    /// refused rather than trimmed.
-    ///
-    /// This is "accepts nothing beyond the single document", held by the
-    /// grammar: there is no shape in which a second argument reaches the verb.
-    #[test]
-    fn accept_takes_no_tail_and_says_so_rather_than_dropping_it() {
-        for line in ["accept ADR-8bd7", "accept --force", "accept  everything"] {
-            match parse(line, Focus::Body) {
-                Command::Malformed(said) => {
-                    assert!(said.contains("takes nothing after it"), "{line}: {said}");
-                    assert!(
-                        said.contains("the document on the screen"),
-                        "it names what it would have ratified: {said}"
-                    );
-                }
-                other => panic!("'{line}' carried a tail: {other:?}"),
-            }
-        }
-    }
-
-    /// Every verb the gate allows is a word this grammar reads, and the reverse
-    /// (TASK-4d2eb2b4e193).
-    ///
-    /// The list itself moved to [`crate::bindings`], where the keys and the key
-    /// list are read from too, and `crate::bindings` is where it is held to
-    /// `ank.rs`'s gate. What is left to say here is the thing this module is
-    /// answerable for: a line naming one of the six reaches an act rather than
-    /// falling through to [`Command::Unknown`], so the two surfaces spell the
-    /// same six words.
-    #[test]
-    fn the_grammar_reads_every_verb_the_gate_allows() {
+    fn the_verbs_the_gate_allows_are_words_this_grammar_does_not_know() {
         for verb in crate::ank::ACTS {
-            assert!(
-                spelled(verb).is_some(),
-                "'{verb}' may be spawned and this grammar does not read it"
-            );
-        }
-        for binding in crate::bindings::BINDINGS {
-            let Some(spelt) = binding.verb else { continue };
-            assert!(
-                crate::ank::ACTS.contains(&spelt.name),
-                "'{}' is read here and the gate would refuse it",
-                spelt.name
+            // `log` is the exception and it is not one: it is a *kind* of this
+            // corpus, so a bare `log` is read as the front of an identifier and
+            // selects, exactly as `task` and `adr` do. A read, and the same one
+            // it was before the verbs left.
+            let expected = match *verb {
+                "log" => Command::Select(verb.to_string()),
+                _ => Command::Unknown(verb.to_string()),
+            };
+            assert_eq!(
+                parse(verb),
+                expected,
+                "'{verb}' is still a word of this grammar"
             );
         }
     }
 
+    /// No single letter writes either, which is the same claim from the other
+    /// end: the letters that write are keys, and `keys::typed` never reads one
+    /// through this grammar.
     #[test]
-    fn a_quoted_word_keeps_its_spaces_and_an_unclosed_one_runs_to_the_end() {
-        assert_eq!(words(""), Vec::<String>::new());
-        assert_eq!(words("  a   b  "), ["a", "b"]);
-        assert_eq!(
-            words("--scope \"crates/ank tui/**\" --scope src/**"),
-            ["--scope", "crates/ank tui/**", "--scope", "src/**"]
-        );
-        assert_eq!(
-            words("--criteria \"unclosed and long"),
-            ["--criteria", "unclosed and long"]
-        );
-        // An empty quoted word is a word, and not nothing: `--reason ""` is a
-        // caller saying so.
-        assert_eq!(words("--reason \"\""), ["--reason", ""]);
+    fn no_line_of_this_grammar_can_write() {
+        for c in 'a'..='z' {
+            let line = c.to_string();
+            assert!(
+                !matches!(parse(&line), Command::Act(_)),
+                "'{line}' writes, and no line may"
+            );
+        }
+        for line in ["d", "cl", "clai", "don", "rel", "am", "acce", "close"] {
+            assert!(
+                !matches!(parse(line), Command::Act(_)),
+                "'{line}' writes, and no line may"
+            );
+        }
     }
 
     #[test]
@@ -561,5 +415,8 @@ mod tests {
         // A slash is not a word boundary, so a query starting with a command
         // letter is still a query.
         assert_eq!(list("/q"), Command::Search(Some("q".to_string())));
+        // Nor is a verb, which is the search a person looking for the six
+        // would actually type.
+        assert_eq!(list("/claim"), Command::Search(Some("claim".to_string())));
     }
 }

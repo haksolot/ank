@@ -31,6 +31,25 @@ mod terminal;
 
 use terminal::{Live, Repo};
 
+/// The letter `claim` is bound to, read out of the reader's own table
+/// (TASK-1a415107fd56).
+///
+/// Never spelled here: the point of the wave is that a key *is* the verb, and a
+/// suite typing `c` because that is what claim happens to be bound to today
+/// would go on passing against a table that moved the letter.
+fn claim() -> String {
+    let binding = ank_tui::bindings::of_verb("claim").expect("claim is a verb of the reader");
+    // The reader's own spelling of the key, which is the character itself
+    // where there is one: a suite must send a keystroke and not a name.
+    let letter = ank_tui::bindings::named(binding.key);
+    assert_eq!(
+        letter.chars().count(),
+        1,
+        "the key is named '{letter}', which is not one keystroke to send"
+    );
+    letter
+}
+
 /// A phone in portrait, as this suite states one.
 ///
 /// Well under [`ank_tui::view::ONE_COLUMN`] and read out of it rather than
@@ -240,10 +259,15 @@ fn a_touch_answers_a_waiting_command_only_where_the_target_says_it_does() {
     let mut live = Live::open(&repo, PHONE.0, PHONE.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
 
-    // A claim, spelled whole into the prompt and left waiting.
-    live.send(&format!("{}{task}\r", ank_tui::keys::ACT));
+    // A claim, reached by its own letter and left waiting
+    // (TASK-1a415107fd56).
+    live.send(&format!("{}{task}\r", ank_tui::keys::FIND));
+    live.until("the listing to narrow to one row", |t| {
+        t.contains("ENTITIES all 1")
+    });
+    live.send("\r");
     live.until("the document to open", |t| t.contains("> 3 BODY"));
-    live.send(&format!("{}claim\r", ank_tui::keys::ACT));
+    live.send(&claim());
     live.until("the command to be shown", |t| t.contains("ank claim"));
     let waiting = live.frame();
     assert!(
@@ -263,7 +287,7 @@ fn a_touch_answers_a_waiting_command_only_where_the_target_says_it_does() {
     );
 
     // And the target that says it runs, runs it.
-    live.send(&format!("{}claim\r", ank_tui::keys::ACT));
+    live.send(&claim());
     live.until("the command to be shown again", |t| t.contains("ank claim"));
     let (column, row) = drawn_at(&live.frame(), "[y run]");
     live.tap(column + 1, row);

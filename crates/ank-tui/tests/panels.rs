@@ -63,7 +63,10 @@ const WINDOWS: [(u16, u16); 2] = [(80, 24), (40, 24)];
 /// The key that opens the prompt, read out of the reader rather than typed as a
 /// letter here: it is the one key this suite has to know, and a suite carrying
 /// its own copy of it would agree with a mapping that moved.
-const ACT: char = ank_tui::keys::ACT;
+///
+/// A search since TASK-1a415107fd56, which is the only line this reader still
+/// takes: `/` narrows the listing to one row and Enter opens it.
+const FIND: char = ank_tui::keys::FIND;
 
 /// A frame never overflows the window the terminal reported, at eighty columns
 /// and at forty (TASK-bb43cfe2192b).
@@ -94,8 +97,16 @@ fn no_frame_overflows_the_window_at_eighty_columns_or_at_forty() {
                 line.chars().count()
             );
         }
+        // The trailer's own first entry, read out of the reader rather than
+        // spelled here: it was `a then` for as long as a verb was spelled into
+        // a prompt, and TASK-1a415107fd56 made it the first verb's letter.
+        let trailer = ank_tui::bindings::write_line();
+        let first = trailer
+            .split("  ")
+            .next()
+            .expect("the trailer names a verb");
         assert!(
-            lines[rows as usize - 1].starts_with("a then"),
+            lines[rows as usize - 1].starts_with(first),
             "the key line is not on the last row of a {columns}x{rows} window:\n{frame}"
         );
         live.quit();
@@ -286,11 +297,17 @@ fn the_body_of_a_selected_entity_is_served_whole() {
     for (columns, rows) in WINDOWS {
         let mut live = Live::open(&repo, columns, rows);
         live.until("the session to open", |t| t.contains("2 ENTITIES"));
-        // Opened by identifier rather than by counting rows: an identifier is a
-        // line by nature and the prompt is where the grammar reads one, so this
-        // says which entity is meant instead of depending on where `find`
-        // happens to have put it.
-        live.send(&format!("{ACT}{task}\r"));
+        // Reached by identifier rather than by counting rows: the search
+        // narrows the listing to the one entity meant and Enter opens the row
+        // under the cursor, instead of this depending on where `find` happens
+        // to have put it.
+        live.send(&format!("{FIND}{task}\r"));
+        // On the count the panel's own title carries and not on the needle:
+        // the filter note is cut by the narrow window, and the count is not.
+        live.until("the listing to narrow to one row", |t| {
+            t.contains("ENTITIES all 1")
+        });
+        live.send("\r");
         live.until("the document to open in the body panel", |t| {
             t.contains("> 3 BODY")
         });
@@ -302,7 +319,9 @@ fn the_body_of_a_selected_entity_is_served_whole() {
                 found = true;
                 break;
             }
-            live.send("n");
+            // Space pages the body: `n` went to the verbs' side of the ledger
+            // (TASK-1a415107fd56).
+            live.send(" ");
         }
         let frame = live.frame();
         assert!(found, "the body was cut at {columns}x{rows}:\n{frame}");

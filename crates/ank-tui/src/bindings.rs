@@ -16,9 +16,26 @@
 //! facts, in one place, because every one of them was previously stated
 //! somewhere a different surface could read a different answer.
 //!
-//! **The word is one word and it is used for both.** A target says `[c rules]`
-//! and the key list says `c rules`, and they are the same string rather than
+//! **The word is one word and it is used for both.** A target says `[s rules]`
+//! and the key list says `s rules`, and they are the same string rather than
 //! two spellings that happen to agree today.
+//!
+//! # Every binding has a key, and the writing half has one too
+//!
+//! TASK-1a415107fd56 is where that became true (ADR-c07e2694f0e1: *a key is the
+//! verb it runs*). The six verbs used to be rows with no key, reached by
+//! spelling the word into a prompt, and the table said so in an `Option`. There
+//! is no prompt for a verb any more and no row without a key, so [`Binding::key`]
+//! is a [`KeyCode`] and not an `Option<KeyCode>` -- which is what makes every
+//! row a target a thumb can take and every row a line the key list can name the
+//! same way.
+//!
+//! What the letters cost is stated in the decision and paid here: `c`, `l`,
+//! `d`, `r`, `m` and `a` belong to `claim`, `log`, `done`, `release`, `amend`
+//! and `accept`, so the constraints pane moved to `s` -- `ank scope` is the
+//! verb whose answer it draws -- reload moved to `u`, and `h`, `l`, `n` and `p`
+//! move nothing at all. Paging is Space and the two named keys, which is what
+//! a reader who has used `less` presses first.
 //!
 //! # What is deliberately not computed from this table
 //!
@@ -34,7 +51,9 @@
 //! way out of a program that took the terminal. `q` is the binding, and it
 //! reaches the same place with no modifier -- which is what
 //! ADR-c07e2694f0e1's "no command anywhere requires a modifier chord" asks for
-//! and what the table in `keys.rs` measures over every key there is.
+//! and what the table in `keys.rs` measures over every key there is. Every
+//! other row is reached bare and only bare: a letter that writes must not also
+//! be a letter something was holding a modifier over.
 //!
 //! # What a verb may never be handed
 //!
@@ -44,23 +63,22 @@
 //! pipe that was never opened, for as long as the reader is up. Held by a test
 //! over every string field rather than by whoever writes the next row.
 
-use crate::input::Command;
-use crate::keys::{Press, ACT, CONFIRM, FIND};
+use crate::input::{Act, Command};
+use crate::keys::{Press, CONFIRM, FIND};
 use crate::view::Focus;
 use ratatui::crossterm::event::KeyCode;
 
 /// One binding of the reader: a key, what it runs, and what it is called.
 #[derive(Debug, Clone)]
 pub struct Binding {
-    /// The key that runs it, where a key does.
+    /// The key that runs it.
     ///
-    /// `None` for the writing half, which is still reached by spelling the verb
-    /// whole into the prompt. That is a state and no longer a decision:
-    /// ADR-c07e2694f0e1 says a key is the verb it runs and that the reader
-    /// binds the CLI's own initial for it, and TASK-1a415107fd56 is the
-    /// asymmetry being spent. Nothing else about a verb's row changes when its
-    /// letter arrives, which is the point of declaring the row now.
-    pub key: Option<KeyCode>,
+    /// Not an `Option` any more (TASK-1a415107fd56). It was one for exactly as
+    /// long as the writing half had no letters, and ADR-c07e2694f0e1 ends that:
+    /// a key is the verb it runs, and every row of this table now carries one.
+    /// What the type buys is that no surface has to ask -- a target is drawn
+    /// for every offer, and the key list names every row the same way.
+    pub key: KeyCode,
     /// The other keys that reach the same thing.
     ///
     /// A named key beside every letter, because a person who has never read the
@@ -81,10 +99,11 @@ pub struct Binding {
 
 /// What a binding runs.
 ///
-/// Three of these are the focus arithmetic and cannot be a value: where `Tab`
-/// lands depends on where the reader already is. The rest are the commands
-/// themselves, held whole rather than named by a parallel enumeration nobody
-/// would keep in step.
+/// Four of these are answered against the focused panel and cannot be a value:
+/// where `Tab` lands depends on where the reader already is, and so does
+/// whether `accept` is a command at all. The rest are the commands themselves,
+/// held whole rather than named by a parallel enumeration nobody would keep in
+/// step.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Runs {
     /// A press of the key table, the same wherever the reader is standing.
@@ -96,6 +115,11 @@ pub enum Runs {
     Sideways(Focus),
     /// The verb this binding spells, composed against the entity under the
     /// cursor and shown for an answer (TASK-d4a882345837). Never spawned here.
+    ///
+    /// It carries no arguments beyond the identifier the view puts in front,
+    /// because there is nothing left to carry them: the line a tail used to be
+    /// typed on is gone (TASK-1a415107fd56), and the form that gives them back
+    /// is TASK-d832452630d2's and TASK-e8da6a00564a's.
     Compose,
     /// The command on the screen, run.
     Run,
@@ -162,19 +186,29 @@ pub struct Verb {
     pub tail: Tail,
 }
 
-/// How the rest of a typed line becomes a verb's arguments.
+/// The tail a verb takes at the shell, and how a line would become it.
+///
+/// **Nothing types one into this reader any more** (TASK-1a415107fd56). The
+/// prompt a verb was spelled into is gone, so a press composes the verb and the
+/// identifier and not one byte more, and the form that gives the tails back is
+/// TASK-d832452630d2's and TASK-e8da6a00564a's. What the field is for in the
+/// meantime is the fact itself: `release` takes `--reason` and `done` takes
+/// `--proof`, declared once beside the verb and held to
+/// [`ank_contract::verbs::FlagSpec`] by the test at the foot of this file, so
+/// the row is already true on the day a form reads it.
+///
+/// It is deliberately not drawn. [`Binding::entry`] names the verb and its key
+/// and stops there: a key list advertising `done <proof>` where no line takes
+/// one would be this reader making an offer its dispatch does not keep, which
+/// is the defect TASK-84cfad83c308 named on `help`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tail {
-    /// Split into words, so flags can be typed: `claim --ttl 4h`,
+    /// Words, so flags can travel: `claim --ttl 4h`,
     /// `amend --scope "crates/ank tui/**"`. Empty is legitimate and the CLI
     /// answers for what it needs.
     Words,
-    /// The rest of the line whole, as one positional. `log <message>`, where
-    /// splitting on spaces would turn a sentence into twelve arguments.
-    ///
-    /// Required: `ank log <id>` with no message *reads* the log, which is a
-    /// different act than the one the word was typed for, and silently doing
-    /// the other one is the surprise this refuses instead.
+    /// One positional carrying a whole sentence. `log <message>`, where
+    /// splitting on spaces would turn it into twelve arguments.
     Message,
     /// The rest of the line whole, behind a flag: `done --proof <p>`,
     /// `release --reason <r>`. Absent, the flag is not passed at all and the
@@ -185,32 +219,13 @@ pub enum Tail {
     /// a test: a form this reader offers is a form the CLI takes.
     Behind(&'static str),
     /// Nothing at all: the verb takes the identifier the view supplies and not
-    /// one byte more, and a line that carries a tail is refused rather than
-    /// trimmed.
+    /// one byte more.
     ///
-    /// Refused and not ignored, because the two read identically on the screen
-    /// and only one of them is honest: somebody who typed `accept ADR-8bd7`
-    /// meant that identifier, and running the verb against whatever is open
-    /// while silently dropping what they wrote would be the reader choosing a
-    /// document for them. §4 gives `accept` no flags either, so there is
-    /// nothing a tail could legitimately be.
+    /// §4 gives `accept` no flags, so there is nothing a tail could
+    /// legitimately be -- which is one of the three things that keep a
+    /// ratification the single document on the screen and no other
+    /// (TASK-d90e94afca08).
     Nothing,
-}
-
-impl Tail {
-    /// What the key list shows after the verb, which is what a person has to
-    /// type.
-    ///
-    /// Read off the tail rather than written beside it, so a verb whose grammar
-    /// changes cannot go on advertising the old form.
-    pub fn form(self) -> String {
-        match self {
-            Tail::Words => " <flags>".to_string(),
-            Tail::Message => " <message>".to_string(),
-            Tail::Behind(flag) => format!(" <{}>", flag.trim_start_matches('-')),
-            Tail::Nothing => String::new(),
-        }
-    }
 }
 
 /// What the screen is holding, which is what decides the offer.
@@ -241,7 +256,7 @@ pub static BINDINGS: &[Binding] = &[
     // What moves the screen (ADR-c07e2694f0e1: every one of them is one key)
     // -----------------------------------------------------------------------
     Binding {
-        key: Some(KeyCode::Char('j')),
+        key: KeyCode::Char('j'),
         aliases: &[KeyCode::Down],
         runs: Runs::Press(Press::Run(Command::Move(1))),
         word: "down",
@@ -250,7 +265,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('k')),
+        key: KeyCode::Char('k'),
         aliases: &[KeyCode::Up],
         runs: Runs::Press(Press::Run(Command::Move(-1))),
         word: "up",
@@ -258,9 +273,14 @@ pub static BINDINGS: &[Binding] = &[
         offered: Offered::Never,
         verb: None,
     },
+    // Space and the two named keys, and no letter: `n` and `p` went to the
+    // verbs' side of the ledger (ADR-c07e2694f0e1 prices that loss and takes
+    // it). Space is what a reader who has used `less` presses first and the
+    // one paging key a phone keyboard shows without a second layer, so it is
+    // the key rather than the third alias it used to be.
     Binding {
-        key: Some(KeyCode::Char('n')),
-        aliases: &[KeyCode::PageDown, KeyCode::Char(' ')],
+        key: KeyCode::Char(' '),
+        aliases: &[KeyCode::PageDown],
         runs: Runs::Press(Press::Run(Command::Page(1))),
         word: "page",
         group: Group::Screen,
@@ -270,8 +290,8 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('p')),
-        aliases: &[KeyCode::PageUp],
+        key: KeyCode::PageUp,
+        aliases: &[],
         runs: Runs::Press(Press::Run(Command::Page(-1))),
         word: "page back",
         group: Group::Screen,
@@ -279,7 +299,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('g')),
+        key: KeyCode::Char('g'),
         aliases: &[KeyCode::Home],
         runs: Runs::Press(Press::Run(Command::Top)),
         word: "top",
@@ -288,7 +308,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Enter),
+        key: KeyCode::Enter,
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Open)),
         word: "open",
@@ -296,8 +316,13 @@ pub static BINDINGS: &[Binding] = &[
         offered: Offered::Panels(&[Focus::Claims, Focus::Entities, Focus::Queue]),
         verb: None,
     },
+    // `s` and no longer `c`, which is `claim`'s now. The letter is not a
+    // leftover: what this draws is `ank scope`'s answer over the open
+    // document's globs, so the reader binds the initial of the verb whose
+    // answer it is showing -- ADR-c07e2694f0e1's rule about the letters, on a
+    // command that reads rather than writes.
     Binding {
-        key: Some(KeyCode::Char('c')),
+        key: KeyCode::Char('s'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Constraints)),
         word: "rules",
@@ -306,7 +331,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('b')),
+        key: KeyCode::Char('b'),
         aliases: &[KeyCode::Esc, KeyCode::Backspace],
         runs: Runs::Press(Press::Run(Command::Back)),
         word: "back",
@@ -315,16 +340,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char(ACT)),
-        aliases: &[],
-        runs: Runs::Press(Press::Prompt("")),
-        word: "act",
-        group: Group::Screen,
-        offered: Offered::Anywhere,
-        verb: None,
-    },
-    Binding {
-        key: Some(KeyCode::Char('f')),
+        key: KeyCode::Char('f'),
         aliases: &[],
         runs: Runs::Press(Press::Cycle),
         word: "kind",
@@ -333,7 +349,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char(FIND)),
+        key: KeyCode::Char(FIND),
         aliases: &[],
         runs: Runs::Press(Press::Prompt("/")),
         word: "find",
@@ -341,8 +357,11 @@ pub static BINDINGS: &[Binding] = &[
         offered: Offered::Panels(&[Focus::Entities]),
         verb: None,
     },
+    // `u` and no longer `r`, which is `release`'s now: the corpus is a working
+    // tree that moves under a screen left open, and this is how a reader
+    // brings it up to date.
     Binding {
-        key: Some(KeyCode::Char('r')),
+        key: KeyCode::Char('u'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Reload)),
         word: "reload",
@@ -351,7 +370,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('v')),
+        key: KeyCode::Char('v'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Queue)),
         word: "queue",
@@ -360,7 +379,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('?')),
+        key: KeyCode::Char('?'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Help)),
         word: "keys",
@@ -368,8 +387,23 @@ pub static BINDINGS: &[Binding] = &[
         offered: Offered::Never,
         verb: None,
     },
+    // The verbs past the six, named and not bound (TASK-1a415107fd56). `close`,
+    // `attest` and `read` are §4 verbs this reader does not run: they are
+    // absent from [`crate::ank::ACTS`] and the gate refuses them, so a letter
+    // apiece would be six offers and three pretences. `x` says what they are
+    // and where they are spelled instead, out of the contract's own table, and
+    // TASK-e8da6a00564a is where the list stops being only a list.
     Binding {
-        key: Some(KeyCode::Char('q')),
+        key: KeyCode::Char('x'),
+        aliases: &[],
+        runs: Runs::Press(Press::Run(Command::Further)),
+        word: "more verbs",
+        group: Group::Screen,
+        offered: Offered::Never,
+        verb: None,
+    },
+    Binding {
+        key: KeyCode::Char('q'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Quit)),
         word: "quit",
@@ -390,7 +424,7 @@ pub static BINDINGS: &[Binding] = &[
     // be measured against instead of an argument about which steps are the same
     // place.
     Binding {
-        key: Some(KeyCode::Tab),
+        key: KeyCode::Tab,
         aliases: &[],
         runs: Runs::Stepped(1),
         word: "next panel",
@@ -399,7 +433,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::BackTab),
+        key: KeyCode::BackTab,
         aliases: &[],
         runs: Runs::Stepped(-1),
         word: "previous panel",
@@ -412,7 +446,7 @@ pub static BINDINGS: &[Binding] = &[
     // which key opens it. Four rows and not one rule, so the key list can name
     // each of them by the panel it reaches.
     Binding {
-        key: Some(KeyCode::Char('1')),
+        key: KeyCode::Char('1'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Panel(Focus::Claims))),
         word: "claims",
@@ -421,7 +455,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('2')),
+        key: KeyCode::Char('2'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Panel(Focus::Entities))),
         word: "entities",
@@ -430,7 +464,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('3')),
+        key: KeyCode::Char('3'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Panel(Focus::Body))),
         word: "body",
@@ -439,7 +473,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Char('4')),
+        key: KeyCode::Char('4'),
         aliases: &[],
         runs: Runs::Press(Press::Run(Command::Panel(Focus::Queue))),
         word: "queue",
@@ -455,7 +489,7 @@ pub static BINDINGS: &[Binding] = &[
     // back -- which is why the arrow pointing at the panel already focused
     // reaches nothing rather than becoming a second way out.
     Binding {
-        key: Some(KeyCode::Right),
+        key: KeyCode::Right,
         aliases: &[],
         runs: Runs::Sideways(Focus::Body),
         word: "body",
@@ -464,7 +498,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Left),
+        key: KeyCode::Left,
         aliases: &[],
         runs: Runs::Sideways(Focus::Entities),
         word: "entities",
@@ -473,12 +507,22 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     // -----------------------------------------------------------------------
-    // What moves the corpus. No key yet: the verb is spelled whole into the
-    // prompt `a` opens, and TASK-1a415107fd56 is what gives these their
-    // letters. Every other field of the row is already true of them.
+    // What moves the corpus, one letter each (TASK-1a415107fd56).
+    //
+    // The verb's own initial, which is ADR-c07e2694f0e1's rule and the whole of
+    // why these letters and not others: a person who knows `ank claim` knows
+    // `c` here, and a person who learns `c` here has learned something the
+    // shell takes. `m` for `amend` is the one that is not an initial, because
+    // `a` is `accept`'s -- the act this project guards hardest, and the one
+    // whose letter should be the one a hand goes to.
+    //
+    // A press composes and shows; nothing here spawns. `Runs::Compose` reaches
+    // `App::propose` through a `Command::Act`, and `App::confirmed` is the only
+    // caller of `Ank::act` in this crate: that is the road, and the
+    // confirmation is on it.
     // -----------------------------------------------------------------------
     Binding {
-        key: None,
+        key: KeyCode::Char('c'),
         aliases: &[],
         runs: Runs::Compose,
         word: "claim",
@@ -490,7 +534,7 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     Binding {
-        key: None,
+        key: KeyCode::Char('l'),
         aliases: &[],
         runs: Runs::Compose,
         word: "log",
@@ -502,7 +546,7 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     Binding {
-        key: None,
+        key: KeyCode::Char('r'),
         aliases: &[],
         runs: Runs::Compose,
         word: "release",
@@ -514,7 +558,7 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     Binding {
-        key: None,
+        key: KeyCode::Char('d'),
         aliases: &[],
         runs: Runs::Compose,
         word: "done",
@@ -526,7 +570,7 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     Binding {
-        key: None,
+        key: KeyCode::Char('m'),
         aliases: &[],
         runs: Runs::Compose,
         word: "amend",
@@ -538,7 +582,7 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     Binding {
-        key: None,
+        key: KeyCode::Char('a'),
         aliases: &[],
         runs: Runs::Compose,
         word: "accept",
@@ -559,7 +603,7 @@ pub static BINDINGS: &[Binding] = &[
     // rows are the keys the screen *offers*, not the whole of what it reads.
     // -----------------------------------------------------------------------
     Binding {
-        key: Some(KeyCode::Char(CONFIRM)),
+        key: KeyCode::Char(CONFIRM),
         aliases: &[],
         runs: Runs::Run,
         word: "run",
@@ -568,7 +612,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Esc),
+        key: KeyCode::Esc,
         aliases: &[],
         runs: Runs::Dismiss,
         word: "dismiss",
@@ -577,7 +621,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Enter),
+        key: KeyCode::Enter,
         aliases: &[],
         runs: Runs::Submit,
         word: "run",
@@ -586,7 +630,7 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     Binding {
-        key: Some(KeyCode::Esc),
+        key: KeyCode::Esc,
         aliases: &[],
         runs: Runs::Cancel,
         word: "cancel",
@@ -599,36 +643,39 @@ pub static BINDINGS: &[Binding] = &[
 impl Binding {
     /// Whether this key reaches this binding, by its own letter or by an alias.
     pub fn answers(&self, code: KeyCode) -> bool {
-        self.key == Some(code) || self.aliases.contains(&code)
+        self.key == code || self.aliases.contains(&code)
     }
 
     /// What pressing it asks for, once the focused panel is known.
     ///
-    /// The focus is consulted by three rows and no others: the ring, which is
-    /// relative by nature, and the two arrows that cross between the columns,
-    /// which do nothing where they point at the panel already focused.
+    /// The focus is consulted by four rows and no others: the ring, which is
+    /// relative by nature; the two arrows that cross between the columns, which
+    /// do nothing where they point at the panel already focused; and `accept`,
+    /// which is a command on the document and a refusal off it.
     pub fn press(&self, focus: Focus) -> Press {
         match &self.runs {
             Runs::Press(press) => press.clone(),
             Runs::Stepped(by) => Press::Run(Command::Panel(focus.stepped(*by))),
             Runs::Sideways(to) if focus != *to => Press::Run(Command::Panel(*to)),
-            // The writing half has no key yet, and the two modal grammars are
-            // read by `confirming` and `edit` rather than from here.
+            Runs::Compose => match self.verb {
+                Some(verb) => composed(verb, focus),
+                // Unreachable from this table -- a composing row spells a verb,
+                // and the test below holds that -- and `Ignored` rather than a
+                // panic all the same: a reader must not die on a keystroke.
+                None => Press::Ignored,
+            },
+            // The two modal grammars are read by `confirming` and `edit`
+            // rather than from here.
             _ => Press::Ignored,
         }
     }
 
     /// Whether the screen holding this offers it as a target.
     ///
-    /// A binding with no key is never a target, whatever it is offered on: a
-    /// word a finger can touch and no key to press would be an offer only half
-    /// the reader can take. That is what makes the six verbs' rows honest
-    /// today and what makes them targets on the day TASK-1a415107fd56 gives
-    /// them their letters, with nothing else here changing.
+    /// Every row carries a key now, so the offer is the row's own declaration
+    /// and nothing else: what was a guard against drawing a word with no key
+    /// behind it went away with the last keyless row (TASK-1a415107fd56).
     pub fn is_offered(&self, holding: Holding) -> bool {
-        if self.key.is_none() {
-            return false;
-        }
         match (self.offered, holding) {
             (Offered::Waiting, Holding::Waiting) => true,
             (Offered::Typing, Holding::Typing) => true,
@@ -642,8 +689,7 @@ impl Binding {
 
     /// Every key that reaches it, as the key list spells them.
     pub fn spelling(&self) -> String {
-        self.key
-            .into_iter()
+        std::iter::once(self.key)
             .chain(self.aliases.iter().copied())
             .map(named)
             .collect::<Vec<String>>()
@@ -652,35 +698,61 @@ impl Binding {
 
     /// One entry of the key list: the keys that reach it, then what it does.
     ///
-    /// A verb says its own name and the form a person has to type after it,
-    /// because that *is* what it does -- and a key that only moves the screen
-    /// says the word it is called by. Where a verb has a key, it carries both,
-    /// which is the shape TASK-1a415107fd56 arrives into rather than one this
-    /// has to be taught then.
+    /// One shape for every row (TASK-1a415107fd56), because there is no longer
+    /// a row that is reached any other way. A verb says its own name, which is
+    /// the word it is called by and the word a shell takes; everything else
+    /// says the word it is called by too.
+    ///
+    /// And the verb says nothing after it. The form its tail takes is declared
+    /// on the row and is not drawn, because no line reaches a verb any more:
+    /// a list reading `d done <proof>` would be teaching a grammar this reader
+    /// does not have.
     pub fn entry(&self) -> String {
-        let does = match self.verb {
-            Some(verb) => format!("{}{}", verb.name, verb.tail.form()),
-            None => self.word.to_string(),
-        };
-        match self.key {
-            Some(_) => format!("{} {does}", self.spelling()),
-            // The writing half has no key yet: it is spelled whole into the
-            // prompt, and the word is the whole of what there is to know.
-            None => does,
-        }
+        format!("{} {}", self.spelling(), self.word)
     }
 }
 
+/// One verb of the writing half, composed against the entity the focused panel
+/// names and handed back for the screen to show.
+///
+/// **Composed and never spawned.** What leaves here is a [`Command::Act`],
+/// which `view.rs` answers by putting the argv on the screen and waiting for
+/// one key; `Ank::act` is reached from exactly one function in this crate and
+/// that function runs only on a command a person has been shown.
+///
+/// **`accept` is refused off the body panel**, and the refusal is the reader's
+/// own (TASK-d90e94afca08). A proposal binds nobody until somebody reads it, so
+/// a ratification driven from a row that merely names the document would be a
+/// queue nobody reads. It names the way in rather than saying no, because the
+/// person who pressed the key meant to ratify.
+fn composed(verb: Verb, focus: Focus) -> Press {
+    if verb.name == "accept" && focus != Focus::Body {
+        return Press::Run(Command::Malformed(OFF_THE_DOCUMENT.to_string()));
+    }
+    let act = Act {
+        verb: verb.name,
+        args: Vec::new(),
+    };
+    Press::Run(Command::Act(act))
+}
+
+/// What `a` says where the document is not open in front of the person pressing
+/// it.
+pub const OFF_THE_DOCUMENT: &str =
+    "'accept' is the document itself: open it into the body panel first (Enter \
+     opens the row under the cursor)";
+
 /// The binding a key reaches, or `None` where the key reaches none.
 ///
-/// Only the two groups a key press answers are searched. The writing half has
-/// no key, and the two modal grammars are the confirmation's and the prompt's
-/// -- so an `Esc` here is the one that goes back, and never the one that
-/// dismisses a command that is not on the screen.
+/// The three groups a key press answers, the writing half included since
+/// TASK-1a415107fd56 gave it letters. What stays out is [`Group::Answer`],
+/// whose two grammars are the confirmation's and the prompt's and are modal --
+/// so an `Esc` here is the one that goes back, and never the one that dismisses
+/// a command that is not on the screen.
 pub fn of_key(code: KeyCode) -> Option<&'static Binding> {
     BINDINGS
         .iter()
-        .filter(|b| matches!(b.group, Group::Screen | Group::Panel))
+        .filter(|b| matches!(b.group, Group::Screen | Group::Panel | Group::Write))
         .find(|b| b.answers(code))
 }
 
@@ -694,6 +766,24 @@ pub fn of_verb(name: &str) -> Option<&'static Binding> {
 /// What the screen holding this offers, in the order it is drawn.
 pub fn offered(holding: Holding) -> impl Iterator<Item = &'static Binding> {
     BINDINGS.iter().filter(move |b| b.is_offered(holding))
+}
+
+/// What one command is spelled with, for a sentence that has to name a key.
+///
+/// **Read out of the table rather than written into the sentence.** The header
+/// says how the screen is being kept current and names the key that reads the
+/// corpus again, and it said `r` -- which TASK-1a415107fd56 gave to `release`.
+/// A sentence carrying its own copy of a letter is one of the five parallel
+/// tables ADR-c07e2694f0e1 was written against, in prose.
+///
+/// The empty string where no binding runs it, which no caller has: a sentence
+/// naming a key that does not exist would be worse than one naming none.
+pub fn spelling_of(command: &Command) -> String {
+    BINDINGS
+        .iter()
+        .find(|b| b.runs == Runs::Press(Press::Run(command.clone())))
+        .map(|b| named(b.key))
+        .unwrap_or_default()
 }
 
 /// What a key is called on the screen.
@@ -716,6 +806,16 @@ pub fn named(key: KeyCode) -> String {
 const PANEL_NOTE: &str = "   (the marked panel is the one keys reach)";
 /// What it says after the five, about where they land and what runs them.
 const WRITE_NOTE: &str = "   (the marked panel's entity, then";
+/// The verbs `x` names, in §4's order, and the whole of them.
+///
+/// Not rows of [`BINDINGS`]: a row is a key this reader answers, and these
+/// three are absent from [`crate::ank::ACTS`], so the gate refuses them and a
+/// binding would be an offer nothing keeps. What is drawn is read out of
+/// [`ank_contract::verbs`] -- the name, the positional and the flags the verb
+/// itself declares -- so the list cannot teach a form the CLI does not take.
+const FURTHER: &[&str] = &["close", "attest", "read"];
+/// What `x` says under them, which is the fact that makes the list honest.
+const FURTHER_NOTE: &str = "   (a shell runs these: this reader does not, yet)";
 /// What it says after `accept`, which is a different kind of offer: the other
 /// five move a corpus, and this one asks a person for a signature ank has no
 /// way to produce.
@@ -788,8 +888,8 @@ fn panel() -> Line {
 fn write() -> Line {
     Line {
         bindings: writing(|offered| offered != Offered::Ratifiable),
-        lead: format!("{} then  ", named(KeyCode::Char(ACT))),
-        between: " | ",
+        lead: String::new(),
+        between: "  ",
         note: format!("{WRITE_NOTE} {})", named(KeyCode::Char(CONFIRM))),
     }
 }
@@ -798,8 +898,8 @@ fn write() -> Line {
 fn ratify() -> Line {
     Line {
         bindings: writing(|offered| offered == Offered::Ratifiable),
-        lead: format!("{} then  ", named(KeyCode::Char(ACT))),
-        between: " | ",
+        lead: String::new(),
+        between: "  ",
         note: RATIFY_NOTE.to_string(),
     }
 }
@@ -858,6 +958,40 @@ pub fn ratify_line() -> String {
 /// is the whole of what this table is for.
 pub fn listing() -> Vec<String> {
     lines().iter().map(Line::drawn).collect()
+}
+
+/// What `x` answers with: the verbs past the six, named and placed
+/// (TASK-1a415107fd56).
+///
+/// **A list and not an offer.** `close`, `attest` and `read` are §4 verbs this
+/// reader has no road to -- [`crate::ank::ACTS`] does not carry them and
+/// [`crate::ank::Ank::act`] refuses anything it does not -- so what this says
+/// is what they are and where they are spelled, and the note says which of the
+/// two it is. TASK-e8da6a00564a is where they stop being only a list, and it
+/// widens the gate to do it.
+///
+/// Read out of the contract's own table, name, positional and flags alike, so
+/// a form drawn here is a form `ank` takes (ADR-c07e2694f0e1: what the reader
+/// offers is read out of the verb table rather than transcribed beside it).
+pub fn further() -> Vec<String> {
+    let named: Vec<String> = FURTHER
+        .iter()
+        .map(|verb| {
+            let spec = ank_contract::verbs::spec_of(verb);
+            let mut said = match spec {
+                Some(spec) => format!("{verb} {}", spec.positional_help),
+                // A verb this build's contract does not carry: named alone
+                // rather than dressed in a form nothing declared.
+                None => verb.to_string(),
+            };
+            for flag in spec.map(|spec| spec.flags).unwrap_or_default() {
+                said.push(' ');
+                said.push_str(flag.name);
+            }
+            said
+        })
+        .collect();
+    vec![named.join("   "), FURTHER_NOTE.to_string()]
 }
 
 /// Every binding of a group, in the table's order.
@@ -1056,7 +1190,7 @@ mod tests {
         let bare = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
         let mut answered = 0;
         for binding in BINDINGS.iter().filter(|b| b.group == Group::Answer) {
-            let key = bare(binding.key.expect("a key the screen offers"));
+            let key = bare(binding.key);
             answered += 1;
             match binding.runs {
                 Runs::Run => assert_eq!(confirming(key), Answer::Run, "{binding:?}"),
@@ -1106,13 +1240,9 @@ mod tests {
         let mut claimed: Vec<KeyCode> = Vec::new();
         for binding in BINDINGS
             .iter()
-            .filter(|b| matches!(b.group, Group::Screen | Group::Panel))
+            .filter(|b| matches!(b.group, Group::Screen | Group::Panel | Group::Write))
         {
-            for key in binding
-                .key
-                .into_iter()
-                .chain(binding.aliases.iter().copied())
-            {
+            for key in std::iter::once(binding.key).chain(binding.aliases.iter().copied()) {
                 assert!(
                     !claimed.contains(&key),
                     "{key:?} is claimed twice, and the second is unreachable"

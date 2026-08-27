@@ -26,7 +26,7 @@
 //! **How the session is driven did move, twice.** A command is a key now
 //! (ADR-c07e2694f0e1), so a list of lines became a list of keystrokes, with the
 //! four verbs that carry a message, a reason, a proof or a flag spelled into
-//! the prompt that `a` opens -- see [`on_a_terminal`] for what an entry of one
+//! the one line `/` opens -- see [`on_a_terminal`] for what an entry of one
 //! of those lists is.
 //!
 //! And the screen is no longer the byte stream. ratatui draws by diffing: it
@@ -815,17 +815,16 @@ fn drive(repo: &Repo, agent: &str, keys: &[&str]) -> Seen {
 /// The same, for a call that takes flags and ends on its own.
 ///
 /// **What an entry of `keys` is.** Anything beginning with `:` is a line typed
-/// into the prompt: the key that opens it, the rest of the entry, and Enter.
-/// Anything else is the keys themselves, byte for byte -- `"q"`, `"j"`, `"\r"`
-/// for Enter. Every command that only moves the screen is one key
-/// (ADR-c07e2694f0e1), and the four verbs that carry a message, a reason, a
-/// proof or a flag are spelled into a prompt -- which is the shape of the
-/// reader today and not a shape the decision asks for: TASK-1a415107fd56 is
-/// where the writing verbs take letters of their own.
+/// into the prompt: the key that opens it, Control-U to take the search seed
+/// off, the rest of the entry, and Enter. Anything else is the keys themselves,
+/// byte for byte -- `"q"`, `"j"`, `"\r"` for Enter.
 ///
-/// A line that spells one of the six verbs that write composes a command and
-/// shows it rather than running it, so an entry that spells one is followed by
-/// [`confirm`] wherever the verb is meant to land (TASK-d4a882345837).
+/// **No `:` entry names a verb any more** (TASK-1a415107fd56). Every command is
+/// one key, the six that write included, so a verb is reached by [`verb`] and
+/// what a line is still the shape for is a row number and an identifier. The
+/// letter composes the command and shows it rather than running it, so an entry
+/// that presses one is followed by [`confirm`] wherever the verb is meant to
+/// land (TASK-d4a882345837).
 #[cfg(unix)]
 fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen {
     let mut live = Live::open_with(repo, agent, args, &[]);
@@ -1034,7 +1033,8 @@ impl Live {
     fn press(&mut self, entry: &str) {
         match entry.strip_prefix(':') {
             Some(line) => {
-                self.send(&ACT.to_string());
+                self.send(&FIND.to_string());
+                self.send(CLEAR);
                 self.send(line);
                 self.send("\r");
             }
@@ -1063,23 +1063,58 @@ impl Live {
     }
 }
 
-/// The key that opens the prompt, read out of the reader rather than typed as a
-/// letter here: it is the one key this suite has to know, and a suite carrying
-/// its own copy of it would agree with a mapping that moved.
+/// The key that opens the one line this reader still takes, read out of the
+/// reader rather than typed as a letter here: a suite carrying its own copy of
+/// it would agree with a mapping that moved.
+///
+/// It opens a *search*, seeded with a slash (TASK-1a415107fd56). The prompt a
+/// verb used to be spelled into is gone, and the six verbs are letters now, so
+/// what a `:` entry of a key list means is "clear the seed and type the line",
+/// which is what [`Live::press`] does.
 #[cfg(unix)]
-const ACT: char = ank_tui::keys::ACT;
+const FIND: char = ank_tui::keys::FIND;
+
+/// The byte a terminal sends for Control-U, which clears the open line and
+/// leaves the prompt open (`ank_tui::keys::edit`).
+///
+/// How a line that is not a search is reached: the seed is a slash, and this
+/// takes it off. Not Backspace, which closes the prompt on the keystroke after
+/// the line empties -- one key with one meaning is what a suite should send.
+#[cfg(unix)]
+const CLEAR: &str = "\u{15}";
+
+/// The letter one verb of the writing half is bound to, out of the reader's own
+/// table (TASK-1a415107fd56).
+///
+/// Never spelled here. The point of the wave is that a key *is* the verb, and a
+/// suite typing `c` because that is what claim happens to be bound to today
+/// would go on passing against a table that moved the letter.
+#[cfg(unix)]
+fn verb(name: &str) -> String {
+    let binding = ank_tui::bindings::of_verb(name)
+        .unwrap_or_else(|| panic!("'{name}' is a verb of the writing half"));
+    // The reader's own spelling of the key, which is the character itself
+    // where there is one: a suite must send a keystroke and not a name.
+    let letter = ank_tui::bindings::named(binding.key);
+    assert_eq!(
+        letter.chars().count(),
+        1,
+        "the key is named '{letter}', which is not one keystroke to send"
+    );
+    letter
+}
 
 /// The key that answers the confirmation every write now passes through
-/// (TASK-d4a882345837), read out of the reader for the reason [`ACT`] is.
+/// (TASK-d4a882345837), read out of the reader for the reason [`FIND`] is.
 ///
-/// **Every entry of a key list that spells one of the six is followed by this
+/// **Every entry of a key list that presses one of the six is followed by this
 /// one**, and that is the shape of the reader rather than a wrinkle of the
-/// suite: a submitted line composes the `argv` and shows it, and nothing is
-/// spawned until a person says yes to what they were shown. A drive that
-/// stopped at the line would now be driving a reader that had been asked for a
-/// write and given none -- which `crates/ank-tui/tests/confirmation.rs`
-/// asserts on purpose, and which every test here that expects a verb to have
-/// landed must not do by accident.
+/// suite: a letter composes the `argv` and shows it, and nothing is spawned
+/// until a person says yes to what they were shown. A drive that stopped at the
+/// letter would now be driving a reader that had been asked for a write and
+/// given none -- which `crates/ank-tui/tests/confirmation.rs` asserts on
+/// purpose, and which every test here that expects a verb to have landed must
+/// not do by accident.
 #[cfg(unix)]
 fn confirm() -> String {
     ank_tui::keys::CONFIRM.to_string()
@@ -1096,7 +1131,7 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
     // this suite took: "which claim is held by whom", with a name on it. The
     // task is what is opened, because the criterion is written into its body
     // and that is what "whole" is asserted against.
-    let seen = drive(&repo, HOLDER, &[":f task", "\r", "b", ":f", "q"]);
+    let seen = drive(&repo, HOLDER, &[":filter task", "\r", "b", ":filter", "q"]);
 
     // The one assertion here that is genuinely about the bytes rather than
     // about the screen: what a full-screen reader owes the shell it was
@@ -1301,8 +1336,16 @@ fn a_terminal_resized_redraws_to_its_new_size_with_nothing_typed() {
     // used the new height rather than the old one.
     let rows: Vec<&str> = narrow.lines().collect();
     assert_eq!(rows.len(), 20, "{narrow}");
+    // The trailer's own first entry, read out of the reader rather than spelled
+    // here: it was `a then` for as long as a verb was spelled into a prompt,
+    // and TASK-1a415107fd56 made it the first verb's letter.
+    let trailer = ank_tui::bindings::write_line();
+    let first = trailer
+        .split("  ")
+        .next()
+        .expect("the trailer names a verb");
     assert!(
-        rows[19].starts_with("a then"),
+        rows[19].starts_with(first),
         "the key line is not on the last row of the new window:\n{narrow}"
     );
 
@@ -1355,7 +1398,19 @@ fn quitting_leaves_no_file_and_no_ref_changed() {
         &repo,
         HOLDER,
         &[
-            ":f adr", "\r", "n", "c", "g", "b", ":f", "/task\r", "j", "k", "q",
+            // Space pages and `s` opens the constraints: `n` and `c` went to
+            // the verbs' side of the ledger (TASK-1a415107fd56).
+            ":filter adr",
+            "\r",
+            " ",
+            "s",
+            "g",
+            "b",
+            ":filter",
+            "/task\r",
+            "j",
+            "k",
+            "q",
         ],
     );
     assert!(seen.contains("ENTITIES"), "the session ran:\n{seen}");
@@ -1391,7 +1446,7 @@ fn opening_the_task_you_hold_takes_nothing_and_creates_nothing() {
 
     let files = corpus_files(&repo);
     let names = ref_names(&repo);
-    let seen = drive(&repo, HOLDER, &[":f task", "\r", "q"]);
+    let seen = drive(&repo, HOLDER, &[":filter task", "\r", "q"]);
     assert!(seen.contains(TAIL), "the held task was opened:\n{seen}");
 
     assert_eq!(
@@ -1641,7 +1696,11 @@ fn a_claim_taken_through_the_reader_is_the_ref_a_shell_claim_makes() {
         "Claimed twice over, once from the screen and once from a shell.",
     );
 
-    let seen = drive(&repo, READER, &[&open(&task), ":claim", &confirm(), "q"]);
+    let seen = drive(
+        &repo,
+        READER,
+        &[&open(&task), &verb("claim"), &confirm(), "q"],
+    );
     assert!(
         seen.contains(&format!("ank claim {task}")),
         "the reader ran the verb, and said which one:\n{seen}"
@@ -1690,7 +1749,11 @@ fn a_done_refused_for_a_missing_proof_leaves_the_task_untouched() {
     let before = corpus_files(&repo);
     let names = ref_names(&repo);
 
-    let seen = drive(&repo, HOLDER, &[":f task", "\r", ":done", &confirm(), "q"]);
+    let seen = drive(
+        &repo,
+        HOLDER,
+        &[":filter task", "\r", &verb("done"), &confirm(), "q"],
+    );
 
     let code = declared("done", "no proof");
     assert_eq!(code, ank_contract::ExitCode::Proof, "the table moved");
@@ -1773,14 +1836,24 @@ fn a_session_left_idle_renews_no_claim() {
     );
 }
 
-/// All five verbs of the writing half, from a selected entity, through the
-/// verbs (TASK-b50b340c0bb1).
+/// All five verbs of the writing half, from a selected entity, each by its own
+/// letter (TASK-b50b340c0bb1, TASK-1a415107fd56).
 ///
-/// One task carried through the loop the way a person would: claim it, log what
-/// they learned, amend its scope, hand it back with a reason, take it again and
-/// finish it with a proof. What is asserted is not the screen but the corpus
-/// afterwards -- the entry is in the log, the glob is in the scope, the reason
-/// is recorded, and the task is done with the proof that was typed.
+/// **What this test measures moved when the letters arrived, and it moved onto
+/// firmer ground.** It used to carry one task around the loop by spelling a
+/// tail after each word -- a message, a glob, a reason, a proof -- and to
+/// assert the corpus afterwards. There is no line to spell a tail on now
+/// (ADR-c07e2694f0e1: input is a keystroke), so a press composes the verb and
+/// the identifier and nothing else, and three of the five reach a verb that
+/// wants something the reader cannot yet give it.
+///
+/// So what is asserted is what the reader is answerable for either way: each
+/// letter reaches the CLI with the entity the panel names, and the answer on
+/// the screen is the binary's own. `claim` lands, `log` reads the log the way
+/// `ank log <id>` does at a shell, and `amend`, `release` and `done` come back
+/// with the refusal §4 declares and the command that resolves it -- which is
+/// exactly what a person typing the bare verb in a shell would meet.
+/// TASK-e8da6a00564a is where the tails come back, as a form.
 #[cfg(unix)]
 #[test]
 fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
@@ -1789,73 +1862,57 @@ fn every_verb_of_the_writing_half_is_reachable_from_a_selected_entity() {
         "A task the reader works",
         "Claimed, logged, amended, released and finished, all from the screen.",
     );
-    let head = String::from_utf8_lossy(&repo.git(&["rev-parse", "HEAD"]).stdout)
-        .trim()
-        .to_string();
 
     let seen = drive(
         &repo,
         READER,
         &[
             &open(&task),
-            ":claim",
+            &verb("claim"),
             &confirm(),
-            ":log the glob was one directory short",
+            &verb("log"),
             &confirm(),
-            ":amend --scope src/deeper/**",
+            &verb("amend"),
             &confirm(),
-            ":release the criterion measures the wrong thing",
+            &verb("release"),
+            &confirm(),
+            &verb("done"),
             &confirm(),
             "q",
         ],
     );
+    // Every one of the five was spelled against the entity the panel named,
+    // and spelled whole: the verb, the identifier, and `--json`.
+    for name in ["claim", "log", "amend", "release", "done"] {
+        assert!(
+            seen.contains(&format!("ank {name} {task} --json")),
+            "'{name}' was not composed against the open entity:\n{seen}"
+        );
+    }
+    // `claim` landed, which is what keeps the rest of this from being a test
+    // of a reader that reaches nothing.
+    let record = masked_record(&repo, &task);
     assert!(
-        seen.contains(&format!("ank claim {task}")),
-        "the verbs are named as they run:\n{seen}"
+        record.contains(READER),
+        "the claim the screen took is not on the ref:\n{record}"
     );
 
-    let entries = repo.stdout(READER, &["log", &task, "--json"]);
-    assert!(
-        entries.contains("the glob was one directory short"),
-        "the entry the reader logged is in the log:\n{entries}"
-    );
-    assert!(
-        entries.contains("the criterion measures the wrong thing"),
-        "and so is the reason it was handed back:\n{entries}"
-    );
-    let shown = repo.stdout(READER, &["show", &task, "--json"]);
-    assert!(
-        shown.contains("src/deeper/**"),
-        "the amended glob is on the entity:\n{shown}"
-    );
+    // And the three that want a tail came back with the binary's own refusal
+    // and the way out, rather than with anything this crate wrote.
+    for (name, refusal) in [
+        ("amend", "nothing to amend"),
+        ("release", "--reason is required"),
+        ("done", "--proof"),
+    ] {
+        assert!(
+            seen.contains(refusal),
+            "'{name}' did not answer with the CLI's own refusal:\n{seen}"
+        );
+    }
     let found = repo.stdout(READER, &["find", "--type", "task", "--json"]);
     assert!(
-        found.contains("\"status\":\"open\""),
-        "the release put it back:\n{found}"
-    );
-
-    // And the last one, which needs the claim back.
-    let seen = drive(
-        &repo,
-        READER,
-        &[
-            &open(&task),
-            ":claim",
-            &confirm(),
-            &format!(":done commit:{head}"),
-            &confirm(),
-            "q",
-        ],
-    );
-    assert!(!seen.contains("error["), "the finish was refused:\n{seen}");
-    let shown = repo.stdout(READER, &["show", &task, "--json"]);
-    assert!(
-        shown.contains("status: done"),
-        "the task is finished:\n{shown}"
-    );
-    assert!(
-        shown.contains(&head),
-        "with the proof that was typed:\n{shown}"
+        found.contains("\"status\":\"in_progress\""),
+        "a verb the CLI refused moved the task anyway:\n{found}"
     );
 }
 
@@ -2025,7 +2082,11 @@ fn the_event_and_the_reload_reach_the_same_displayed_state() {
     told.until("the event to reach the screen", |t| t.contains(&needle));
     let by_event = told.frame();
 
-    asking.press("r");
+    // The reload key, out of the reader's own table: it was `r` until `release`
+    // took the letter (TASK-1a415107fd56).
+    asking.press(&ank_tui::bindings::spelling_of(
+        &ank_tui::input::Command::Reload,
+    ));
     asking.until("the reload to reach the screen", |t| t.contains(&needle));
     let by_reload = asking.frame();
 
@@ -2376,7 +2437,7 @@ fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
     let seen = drive(
         &repo,
         READER,
-        &[&format!(":{by_screen}"), ":accept", &confirm(), "q"],
+        &[&format!(":{by_screen}"), &verb("accept"), &confirm(), "q"],
     );
     assert!(
         seen.contains(&format!("ank accept {by_screen}")),
@@ -2557,7 +2618,7 @@ fn a_ratification_off_the_default_branch_shows_the_clis_refusal_and_the_way_out(
     let seen = drive(
         &repo,
         READER,
-        &[&open(&waiting), ":accept", &confirm(), "q"],
+        &[&open(&waiting), &verb("accept"), &confirm(), "q"],
     );
 
     let code = declared("accept", "not on the default branch");
@@ -2585,38 +2646,58 @@ fn a_ratification_off_the_default_branch_shows_the_clis_refusal_and_the_way_out(
     );
 }
 
-/// The word is refused off the document, and refused with a tail, and neither
-/// refusal spawns anything (TASK-d90e94afca08).
+/// The letter is refused off the document, and on the document it carries the
+/// document and nothing else (TASK-d90e94afca08, TASK-1a415107fd56).
 ///
-/// Both are the reader's own and both are about the line that was typed, which
-/// is the line this crate draws: a refusal on the state of the corpus is always
-/// the CLI's, and a refusal about what somebody wrote is always this one's.
+/// **The second half is stronger than the refusal it replaces.** `accept` used
+/// to be refused when a tail was typed after it, which was the grammar saying
+/// no to something a person could write. There is no line to write it on now,
+/// so "nothing beyond the single document" is held by there being no shape in
+/// which a second argument could travel: what the key composes is the verb, the
+/// identifier the body panel names, and `--json`. That is asserted here as the
+/// whole of the composed line rather than as a sentence about what was
+/// refused.
+///
+/// The first half is unchanged and is still the reader's own: a refusal on the
+/// state of the corpus is always the CLI's, and a proposal binds nobody until
+/// somebody reads it, so a ratification driven off a row that merely names the
+/// document names the way in instead.
 #[cfg(unix)]
 #[test]
-fn accept_is_refused_off_the_document_and_refused_with_a_tail() {
+fn accept_is_refused_off_the_document_and_carries_nothing_but_it() {
     let repo = Repo::seeded("accept-grammar");
     let waiting = proposal(&repo, "A decision typed at wrongly");
     repo.warm(READER);
     let before = corpus_files(&repo);
 
     // From the queue, where the row is under the cursor and the body is not on
-    // the screen; then on the document, with something after the word.
+    // the screen; then on the document, and dismissed rather than answered.
+    //
+    // Dismissed with a letter and not with Escape, and that is about this
+    // terminal rather than about this reader: an escape byte with another key
+    // straight behind it is an *Alt chord* to any terminal decoder, and a suite
+    // that writes a key list in one breath produces exactly that. `b` reaches
+    // the same place, because over a command waiting every key but the one
+    // dismisses (TASK-d4a882345837).
     let seen = drive(
         &repo,
         READER,
-        &["v", ":accept", &open(&waiting), ":accept ADR-0000", "q"],
+        &[
+            "v",
+            &verb("accept"),
+            &open(&waiting),
+            &verb("accept"),
+            "b",
+            "q",
+        ],
     );
     assert!(
-        seen.contains("open it first"),
+        seen.contains("open it into the body"),
         "a ratification off a row named the way in:\n{seen}"
     );
     assert!(
-        seen.contains("takes nothing after it"),
-        "a ratification carrying a tail was refused:\n{seen}"
-    );
-    assert!(
-        !seen.contains("ank accept"),
-        "one of the two reached the verb:\n{seen}"
+        seen.contains(&format!("ank accept {waiting} --json")),
+        "the document was not what the letter composed:\n{seen}"
     );
     let found = repo.stdout(READER, &["find", "--type", "adr", "--json"]);
     assert!(
