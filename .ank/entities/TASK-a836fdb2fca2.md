@@ -5,7 +5,7 @@ slug: the-contract-s-note-and-the-header-diagram-descr
 title: The contract's note and the header diagram describe a reader with six verbs and a band of chrome
 created: 2026-08-27T04:06:48Z
 author: claude-code/opus-5
-status: open
+status: in_progress
 scope:
   - crates/ank-contract/**
   - crates/ank-tui/**
@@ -14,7 +14,7 @@ done_criteria: |
   ank help tui names every verb the reader spells, new included, and describes them in terms true of all of them rather than of the six that act on the focused panel's entity. The header diagram in crates/ank-tui/src/view.rs draws the frame the built binary actually paints: no band of keys, no trailer, and no comment in that file says six verbs. A test in crates/ank-tui fails when the contract's tui note and the reader's own binding table disagree on which verbs the reader spells, so a verb added to the reader cannot leave the note behind a second time. cargo test --workspace green, cargo fmt --check clean, ank check green.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 Two agents found these in sequence, each declared them out of its own perimeter,

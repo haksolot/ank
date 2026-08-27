@@ -236,6 +236,14 @@ pub enum Offered {
 pub struct Verb {
     /// The verb, as `ank` spells it. Held to `ank_contract::verbs::COMMANDS` by
     /// a test, so a verb this reader offers is a verb the CLI has.
+    ///
+    /// It is held to that contract's *prose* as well, and in both directions
+    /// (TASK-a836fdb2fca2). `ank help tui` names the verbs this reader spells,
+    /// and `crates/ank-tui/tests/note.rs` reads that page back off the binary
+    /// and compares it with this field and with [`FURTHER`]. The note went a
+    /// wave and a half naming six of them because it was transcribed beside
+    /// this table rather than measured against it; a row added here now fails
+    /// that suite until the note has it too.
     pub name: &'static str,
     /// How the rest of the line reaches it.
     pub tail: Tail,
