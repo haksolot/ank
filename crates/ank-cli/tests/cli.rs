@@ -16,6 +16,8 @@
 //! and `ank-cli` has no library target — so there is no unit test that could
 //! spawn the binary even if we wanted one.
 
+mod scratch;
+
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::io::Write;
@@ -49,7 +51,7 @@ const ANK: &str = env!("CARGO_BIN_EXE_ank");
 fn isolated_git_config() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let p = std::env::temp_dir().join(format!("ank-cli-it-gitconfig-{}", std::process::id()));
+        let p = scratch::root().join(format!("ank-cli-it-gitconfig-{}", std::process::id()));
         std::fs::write(&p, "[commit]\n\tgpgsign = false\n").unwrap();
         p
     })
@@ -95,7 +97,7 @@ struct Repo(PathBuf);
 impl Repo {
     fn new() -> Repo {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!(
+        let p = scratch::root().join(format!(
             "ank-cli-it-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
@@ -2093,7 +2095,7 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("build.rs");
 
-    let dir = std::env::temp_dir().join(format!("ank-stamp-{}", std::process::id()));
+    let dir = scratch::root().join(format!("ank-stamp-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(dir.join("src")).unwrap();
     std::fs::copy(&script, dir.join("build.rs")).unwrap();
@@ -2235,7 +2237,7 @@ fn the_version_answers_before_anything_can_stop_it() {
 
     // Nowhere in particular: no `.ank/`, no git repository, no config. This is
     // where a stale or unidentified binary is actually met.
-    let nowhere = std::env::temp_dir().join("ank-cli-it-nowhere");
+    let nowhere = scratch::root().join("ank-cli-it-nowhere");
     std::fs::create_dir_all(&nowhere).unwrap();
     let bare = ank_command()
         .arg("--version")
@@ -2674,7 +2676,7 @@ fn the_foundation_is_crossed_before_the_verb_and_names_its_own_failures() {
     // before checking git.
     let out = ank_command()
         .args(["claim", ID, "--repo"])
-        .arg(std::env::temp_dir().join("ank-does-not-exist"))
+        .arg(scratch::root().join("ank-does-not-exist"))
         .output()
         .unwrap();
     assert_eq!(code(&out), 1);
@@ -2785,7 +2787,7 @@ struct Bare(PathBuf);
 impl Bare {
     fn new() -> Bare {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!(
+        let p = scratch::root().join(format!(
             "ank-cli-bare-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
@@ -3908,7 +3910,7 @@ fn a_corpus_is_keyed_on_its_root_commit_and_not_on_its_path() {
     // The same repository, a second path. A worktree is the case the ADR names
     // first, and it is the one a path gets wrong every time: two directories,
     // one corpus.
-    let second = std::env::temp_dir().join(format!("ank-wt-{}", std::process::id()));
+    let second = scratch::root().join(format!("ank-wt-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&second);
     r.git(&["worktree", "add", "-q", second.to_str().unwrap(), "HEAD"]);
     let out = ank_command()
@@ -5175,7 +5177,7 @@ fn log_decides_between_reading_and_writing_by_what_resolves() {
 fn init_runs_where_there_is_no_ank_directory_yet() {
     // The one verb that precedes the foundation. Kept here because the reason
     // it bypasses `startup` is only observable from outside the process.
-    let dir = std::env::temp_dir().join(format!("ank-cli-init-{}", std::process::id()));
+    let dir = scratch::root().join(format!("ank-cli-init-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     assert!(git_command(&dir)
@@ -5207,7 +5209,7 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
 #[test]
 fn init_refuses_repo_and_writes_into_neither_repository() {
     let inside = Repo::new();
-    let named = std::env::temp_dir().join(format!("ank-cli-init-named-{}", std::process::id()));
+    let named = scratch::root().join(format!("ank-cli-init-named-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&named);
     std::fs::create_dir_all(&named).unwrap();
     assert!(git_command(&named)
@@ -7232,7 +7234,7 @@ fn the_readers_exit_with_the_codes_their_pages_declare() {
 /// assertion about the file's content while proving nothing.
 #[test]
 fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
-    let dir = std::env::temp_dir().join(format!("ank-cli-ignore-{}", std::process::id()));
+    let dir = scratch::root().join(format!("ank-cli-ignore-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
 
@@ -9053,7 +9055,7 @@ struct Declared {
 impl Declared {
     fn new() -> Declared {
         static SEQ: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
+        let root = scratch::root().join(format!(
             "ank-declared-{}-{}",
             std::process::id(),
             SEQ.fetch_add(1, Ordering::Relaxed)
@@ -9994,7 +9996,7 @@ fn the_walk_reaches_a_crate_that_is_not_this_one() {
     let dead = superseded_ids(&root);
     let planted = dead.first().expect("the corpus has superseded documents");
 
-    let tree = std::env::temp_dir().join(format!("ank-guard-{}", std::process::id()));
+    let tree = scratch::root().join(format!("ank-guard-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tree);
     for crate_name in ["ank-cli", "ank-other"] {
         std::fs::create_dir_all(tree.join("crates").join(crate_name).join("src")).unwrap();
@@ -13463,7 +13465,7 @@ fn no_verb_puts_anything_but_json_on_stdout_under_json() {
 /// one. Named by the caller so two of them never collide.
 fn fresh_git_dir(what: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
+    let p = scratch::root().join(format!(
         "ank-cli-{what}-{}-{}",
         std::process::id(),
         SEQ.fetch_add(1, Ordering::Relaxed)
@@ -14712,7 +14714,7 @@ fn every_ratification_signature_is_verified_in_one_call() {
         .parent()
         .and_then(Path::parent)
         .expect("the workspace root is two levels up from this crate");
-    let trace = std::env::temp_dir().join(format!("ank-sig-trace-{}.json", std::process::id()));
+    let trace = scratch::root().join(format!("ank-sig-trace-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&trace);
     let out = ank_command()
         .args(["check", "--repo"])
@@ -15127,7 +15129,7 @@ fn init_refspec() -> &'static str {
 /// changes its mind.
 #[test]
 fn init_writes_the_same_refspec_this_suite_assumes() {
-    let dir = std::env::temp_dir().join(format!("ank-cli-refspec-{}", std::process::id()));
+    let dir = scratch::root().join(format!("ank-cli-refspec-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let out = git_command(&dir)
@@ -18058,7 +18060,7 @@ fn kind_of(v: &serde_yaml::Value) -> &'static str {
 /// name is the whole of the assertion it carries.
 fn code_tree(tag: &str) -> PathBuf {
     static SEQ: AtomicU64 = AtomicU64::new(0);
-    let p = std::env::temp_dir().join(format!(
+    let p = scratch::root().join(format!(
         "ank-cli-code-{}-{}-{}",
         tag,
         std::process::id(),
@@ -18288,7 +18290,7 @@ fn a_commit_of_the_code_is_unfindable_from_the_corpus_alone() {
 fn a_work_tree_that_is_no_repository_is_refused_by_name() {
     let r = Repo::new();
     r.seed_task(ID, Some("A criterion."));
-    let plain = std::env::temp_dir().join(format!("ank-cli-plain-{}", std::process::id()));
+    let plain = scratch::root().join(format!("ank-cli-plain-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&plain);
     std::fs::create_dir_all(&plain).unwrap();
 

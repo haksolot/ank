@@ -79,17 +79,80 @@ pub const TERM: &str = "xterm-256color";
 const TASK_TITLE: &str =
     "A task whose title is wider than any panel this reader draws at forty columns";
 
+/// One root per test process, swept by the next run (TASK-553740e7af11).
+///
+/// **A second copy of what `crates/ank-cli/tests/scratch/mod.rs` does**, and
+/// deliberately: two crates cannot share a test helper without a dev-dependency
+/// between them, and this crate's dependency tree is itself asserted by
+/// `tests/dependencies.rs`. Adding a crate to be tidy here would have to be
+/// declared there, which is a worse trade than thirty duplicated lines.
+///
+/// The reasoning is written out once, where the original lives. In short: a
+/// `Drop` cannot run on `SIGKILL`, so the run that cleans up is the next one,
+/// and a root's `.owner` lock is free exactly when its owner is gone.
+mod scratch {
+    use std::fs::{self, File};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    const PREFIX: &str = "ank-it-";
+    const OWNER: &str = ".owner";
+    static HELD: OnceLock<File> = OnceLock::new();
+
+    pub fn dir(what: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = root().join(format!("{what}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("the root must be writable");
+        p
+    }
+
+    fn root() -> &'static Path {
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let base = std::env::temp_dir();
+            let mine = base.join(format!("{PREFIX}{}", std::process::id()));
+            let _ = fs::remove_dir_all(&mine);
+            fs::create_dir_all(&mine).expect("the temporary directory must be writable");
+            let lock = File::create(mine.join(OWNER)).expect("the root takes its own lock");
+            lock.try_lock()
+                .expect("a fresh root cannot already be held");
+            let _ = HELD.set(lock);
+            sweep(&base, &mine);
+            mine
+        })
+        .as_path()
+    }
+
+    fn sweep(base: &Path, mine: &Path) {
+        let Ok(entries) = fs::read_dir(base) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let named = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(PREFIX));
+            if p == mine || !named || !p.is_dir() {
+                continue;
+            }
+            let Ok(file) = File::options().read(true).write(true).open(p.join(OWNER)) else {
+                continue;
+            };
+            if file.try_lock().is_ok() {
+                let _ = file.unlock();
+                drop(file);
+                let _ = fs::remove_dir_all(&p);
+            }
+        }
+    }
+}
+
 impl Repo {
     pub fn seeded() -> Repo {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "ank-tui-panels-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).unwrap();
+        let root = scratch::dir("panels");
         let repo = Repo(root);
         repo.git(&["init", "--initial-branch=main"]);
         repo.git(&["config", "user.email", "suite@example.invalid"]);
