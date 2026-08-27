@@ -129,7 +129,7 @@ fn the_graph_carries_neither_ank_core_nor_git() {
     // And the walk reaches what the manifest declares. Without this the two
     // assertions below would pass on a graph that lost its edges: "ank-core is
     // not in it" is worth nothing when nothing is in it.
-    for declared in ["ank-contract", "crossterm", "ratatui", "serde_yaml"] {
+    for declared in ["ank-contract", "crossterm", "ratatui", "serde_json"] {
         assert!(
             names.iter().any(|n| n == declared),
             "the walk did not reach {declared}, which the manifest declares: \
@@ -141,6 +141,26 @@ fn the_graph_carries_neither_ank_core_nor_git() {
         "ank-tui links ank-core, and ADR-8bd76e8d7c4e forbids it: the reader \
          reaches the corpus by running the CLI, or there are two dispatch \
          paths.\n{tree}"
+    );
+    // **And no YAML reader, by the same instrument** (TASK-f0c6372d8dc0). The
+    // CLI answers this reader in JSON and in nothing else, so a YAML parser in
+    // this graph is a parser for a language nothing here is written in --
+    // reached, when it was, because the grammar happens to accept the bytes and
+    // not because anybody wanted its tag resolution deciding whether `yes` is a
+    // boolean. Stated the way `ank-core` is stated, on the graph and not on the
+    // manifest, because the manifest only says what this crate chose: a
+    // dependency that arrived underneath one of the four would be just as much
+    // a second reading of `ank_contract::json`, and the walk is what sees it.
+    //
+    // `serde_yaml` by name and not a substring: the workspace carries it for
+    // `ank-core`, `ank-cli`, `ank-daemon` and `ank-mcp`, all of which read the
+    // corpus files themselves and are right to, and none of which is in this
+    // graph.
+    assert!(
+        !names.iter().any(|n| n == "serde_yaml"),
+        "serde_yaml is in ank-tui's graph, and the reader reads JSON: the CLI \
+         answers `--json` and the language of an answer is read with a parser \
+         for that language.\n{tree}"
     );
     // Not a list of the git libraries there are, which would go stale the day a
     // new one is published: anything whose name carries `git` is refused, and a
@@ -160,10 +180,12 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 ///
 /// The list is the manifest's argument written as an assertion. `ank-contract`
 /// is the machine contract every surface consumes (ADR-6fd69efb629c);
-/// `serde_yaml` is already in the tree four times over and is what reads the
-/// CLI's `--json`; `ratatui` and `crossterm` are what ADR-c07e2694f0e1 spends
-/// and the whole of what it spends; the rest is what those four bring with them
-/// and nothing this crate chose.
+/// `serde_json` is what reads the CLI's `--json`, and is the crate this list
+/// gained when `serde_yaml` left it (TASK-f0c6372d8dc0) -- the argument for
+/// spending it is in the manifest beside the declaration, where
+/// ADR-c07e2694f0e1's first clause puts it; `ratatui` and `crossterm` are what
+/// that decision spends and the whole of what it spends; the rest is what those
+/// four bring with them and nothing this crate chose.
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     let (tree, _) = graph();
@@ -179,7 +201,7 @@ fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     direct.sort();
     assert_eq!(
         direct,
-        ["ank-contract", "crossterm", "ratatui", "serde_yaml"],
+        ["ank-contract", "crossterm", "ratatui", "serde_json"],
         "a dependency arrived. It may well be the right call -- and the \
          argument for it belongs in the manifest beside the two that are \
          there, and in this list.\n{tree}"
