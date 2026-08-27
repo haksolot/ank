@@ -88,6 +88,16 @@ pub enum Command {
     Search(Option<String>),
     /// Show the constraints binding the open entity, or hide them for the body.
     Constraints,
+    /// Show what `ank config` declares and what each key is set to, or hide it
+    /// for the body (TASK-b08d090f699c).
+    ///
+    /// A key and no word, like [`Command::Further`] and [`Command::Form`]. It
+    /// is a *read* -- what it opens is a pane, asked for once when it opens --
+    /// and what writes is a row of that pane, which reaches the form and then
+    /// the confirmation. So there is nothing here for a line to have carried,
+    /// and a word that spelled `config` would be the second road to a write
+    /// ADR-c07e2694f0e1 closed.
+    Config,
     /// Focus the ratification queue, and ask `review` for it
     /// (TASK-d90e94afca08). A read and nothing else -- `ank review` writes no
     /// file, takes no ref and renews no lease (§4).

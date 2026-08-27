@@ -401,16 +401,15 @@ pub fn declarations() -> Result<BTreeMap<String, String>> {
 // and leaves every other byte alone.
 
 /// The keys this verb addresses, spelled the way §4's table spells them.
-pub const KEYS: &[&str] = &[
-    "schema",
-    "context_budget",
-    "claim_ttl_max",
-    "claim_ttl_default",
-    "default_branch",
-    "peers.<name>",
-    "verifiers.<name>.run",
-    "verifiers.<name>.timeout",
-];
+///
+/// **The contract's own set, and no longer a literal here**
+/// (TASK-b08d090f699c). It was written out below and compared with `config`'s
+/// note by a test, which held two renderings in step; the terminal reader is a
+/// third consumer and may not link this crate (ADR-8bd76e8d7c4e), so the set
+/// moved to `ank-contract` -- where the note is rendered from it too. One
+/// table, three surfaces, and the test that compared the first two is now
+/// measuring a rendering rather than arbitrating between two memories.
+pub const KEYS: &[&str] = ank_contract::verbs::CONFIG_KEYS;
 
 /// A dotted path, resolved against the closed key set.
 #[derive(Debug, Clone, PartialEq, Eq)]

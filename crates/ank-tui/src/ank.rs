@@ -1,15 +1,23 @@
 //! The one road to the corpus: running `ank <verb> --json` (ADR-8bd76e8d7c4e).
 //!
-//! Eleven verbs are reached from here, in two lists that are policy made
+//! Twelve verbs are reached from here, in two lists that are policy made
 //! mechanical rather than policy stated in prose. [`READS`] is the five that
 //! only read -- `status`, `find`, `show`, `scope` and `review` -- and
 //! [`Ank::json`] refuses anything else before spawning. [`ACTS`] is what the
 //! person at the keyboard may ask for -- `claim`, `log`, `release`, `done`,
-//! `amend`, `accept`, `new`, `edit`, `close`, `attest` and `read` -- and
-//! [`Ank::act`] refuses anything else the same way.
+//! `amend`, `accept`, `new`, `edit`, `close`, `attest`, `read` and `config` --
+//! and [`Ank::act`] refuses anything else the same way.
 //! Two gates and not one, because the difference between them is the whole of
 //! what a reader is allowed to do on its own: a screen repaints by reading, and
 //! it writes only where a command was typed.
+//!
+//! **One verb is on both, and it is one verb by name rather than by kind**
+//! (TASK-b08d090f699c). `ank config <key>` reads and `ank config <key> <value>`
+//! writes, which is one word for two verbs -- so [`BOTH_ROADS`] names it, and
+//! [`reading_shape`] is what actually decides: the reading road takes exactly
+//! one positional and refuses everything else, the writing shape included. The
+//! two lists still do not overlap, and the sentence they hold up is unchanged:
+//! nothing a repaint can reach writes.
 //!
 //! **`accept` is on the acting list, and the reader still never performs one**
 //! (TASK-d90e94afca08). ADR-8bd76e8d7c4e lets the reader *drive* a
@@ -61,6 +69,47 @@ pub use serde_yaml::Value;
 /// on a watcher's news renews no lease and takes no ref -- which is what lets
 /// the queue be repainted at all (ADR-0bb7ea8991bc).
 pub const READS: &[&str] = &["status", "find", "show", "scope", "review"];
+
+/// The one verb that is on both roads, and the whole of the exception
+/// (TASK-b08d090f699c).
+///
+/// **A named list of one, because the property the two gates hold is that
+/// nothing is on both.** `ank config <key>` answers what a key is set to and
+/// writes nothing; `ank config <key> <value>` writes the file. One name, two
+/// verbs, and §4 tells them apart by the arguments rather than by the word --
+/// so this reader does too, in [`reading_shape`], and the name alone buys
+/// nothing.
+///
+/// The property being spent is real and is worth stating in full. A repaint
+/// calls [`Ank::json`] and only that, so a verb reachable from the reading road
+/// is a verb a watcher's news can reach: a screen left open all night would
+/// have a road to it with nobody at the keyboard. What keeps that shut is that
+/// the *writing shape* never passes [`Ank::json`] -- one positional is a read,
+/// anything else is refused there -- so the news can reach `ank config <key>`
+/// and can reach nothing that writes.
+///
+/// One verb and not a category. A second name here would need the same argument
+/// made again about its own arguments, and the shape gate below is `config`'s
+/// grammar rather than a rule about verbs in general.
+pub const BOTH_ROADS: &[&str] = &["config"];
+
+/// Whether these arguments are the reading shape of a verb on both roads.
+///
+/// **The shape and never the name** (TASK-b08d090f699c). §4 gives `config`
+/// `max_positionals: 2` and says it outright: the key alone reads, a value
+/// writes, `--unset` removes. So one positional is a read and everything else
+/// is refused on the reading road -- the second positional that writes a value,
+/// and every flag, because `--unset` is one positional and removes a line from
+/// the file. "Exactly one word, and it is not a flag" is the whole of it, and
+/// it errs towards refusing: a shape this does not recognise is refused on the
+/// reading road and remains reachable on the acting one, where a person has
+/// read the command line and answered it.
+fn reading_shape(args: &[String]) -> bool {
+    match args {
+        [only] => !only.starts_with('-'),
+        _ => false,
+    }
+}
 
 /// The verbs whose exit 8 carries a document rather than a refusal.
 ///
@@ -118,11 +167,23 @@ const FINDINGS_ARE_AN_ANSWER: &[&str] = &["review"];
 /// is measured against this constant in both directions, by the suite beside
 /// the key table itself.
 ///
+/// **`config` is the twelfth, and it is the one that is also on the reading
+/// road** (TASK-b08d090f699c). Every other name here is refused by
+/// [`Ank::json`] outright; this one is refused in every shape but
+/// `ank config <key>`, and what reaches this list is the writing shape -- a
+/// value to set, or `--unset` to remove one. It is here because a reader that
+/// could list what a corpus is configured to do and not change it would be
+/// showing a person a screen and telling them to leave it, and what keeps the
+/// act deliberate is what keeps every other one deliberate: the form composes,
+/// `App::propose` shows the command line, and `App::confirmed` is still the one
+/// caller of [`Ank::act`].
+///
 /// `check` and `init` are not here and must not arrive. `check` answers a
 /// question about the corpus that the reader has no screen for, and `init`
 /// makes the corpus this reader is already looking at.
 pub const ACTS: &[&str] = &[
     "claim", "log", "release", "done", "amend", "accept", "new", "edit", "close", "attest", "read",
+    "config",
 ];
 
 /// A call that did not produce a document, in the three ways it can fail.
@@ -156,6 +217,15 @@ pub enum Failed {
     /// next edit that adds a command for a verb the list does not carry --
     /// `accept` above all, which is the one this gate exists for.
     NotAnAct { verb: String },
+    /// A verb of [`BOTH_ROADS`], asked for on the reading road in a shape that
+    /// is not the reading one (TASK-b08d090f699c).
+    ///
+    /// Its own variant and not [`Failed::NotARead`], because the two say
+    /// different things and only one of them is true here: `config` *is* a verb
+    /// this reader may read with, and this call is not a read. Never reached
+    /// from a running reader -- the pane asks for one positional -- and reached
+    /// by the next edit that tries to make a repaint set a key.
+    NotAReadingShape { verb: String, args: Vec<String> },
 }
 
 impl Failed {
@@ -231,6 +301,14 @@ impl fmt::Display for Failed {
                     "'{verb}' is not one of the verbs this reader may act with"
                 )
             }
+            Failed::NotAReadingShape { verb, args } => {
+                let said: Vec<String> = args.iter().map(|a| quoted(a)).collect();
+                write!(
+                    f,
+                    "'{verb} {}' writes, and the reading road takes '{verb} <key>' alone",
+                    said.join(" ")
+                )
+            }
         }
     }
 }
@@ -251,13 +329,28 @@ impl Ank {
     /// The gate is [`READS`] and it is checked before anything is spawned, so a
     /// later edit that reached for `claim` from a repaint would fail here rather
     /// than write.
+    ///
+    /// **[`BOTH_ROADS`] is the one way past that list, and it is a gate of its
+    /// own rather than a hole in this one** (TASK-b08d090f699c). A verb named
+    /// there is admitted only in [`reading_shape`] -- one positional, no flag --
+    /// so what a repaint can reach is `ank config <key>` and nothing that
+    /// writes. The arguments are read before anything is spawned, exactly as
+    /// the name is.
     pub fn json(&self, verb: &str, args: &[&str]) -> Result<Value, Failed> {
-        if !READS.contains(&verb) {
-            return Err(Failed::NotARead {
-                verb: verb.to_string(),
-            });
-        }
         let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        if !READS.contains(&verb) {
+            if !BOTH_ROADS.contains(&verb) {
+                return Err(Failed::NotARead {
+                    verb: verb.to_string(),
+                });
+            }
+            if !reading_shape(&owned) {
+                return Err(Failed::NotAReadingShape {
+                    verb: verb.to_string(),
+                    args: owned,
+                });
+            }
+        }
         Ok(self.spawn(verb, &owned)?.answered)
     }
 
@@ -511,6 +604,66 @@ mod tests {
         }
     }
 
+    /// **The one verb on both roads is admitted by its arguments and never by
+    /// its name** (TASK-b08d090f699c).
+    ///
+    /// Both halves, because either alone is half a claim. The reading shape --
+    /// one positional -- passes the gate, so the pane can ask what a key is set
+    /// to; and every writing shape is refused *before anything is spawned*,
+    /// which is what the address of a binary that does not exist measures:
+    /// reaching a refusal at all proves nothing ran.
+    ///
+    /// The shapes are the verb's own, out of §4: a value to set, `--unset` to
+    /// remove one, and `--user` to address the other file. The second and third
+    /// are one positional apiece, which is why the gate asks for a positional
+    /// rather than counting words.
+    #[test]
+    fn the_verb_on_both_roads_is_read_in_one_shape_and_refused_in_the_others() {
+        let ank = nowhere();
+        assert_eq!(BOTH_ROADS, &["config"], "the exception is one verb");
+        for verb in BOTH_ROADS {
+            assert!(
+                !READS.contains(verb),
+                "{verb} is on the reading list, and then the shape gate says nothing"
+            );
+            assert!(
+                ACTS.contains(verb),
+                "{verb} is excepted onto the reading road and cannot be written with"
+            );
+            // The reading shape reaches the spawn, which is the only thing that
+            // can fail against a binary that is not there.
+            assert!(
+                matches!(
+                    ank.json(verb, &["claim_ttl_max"]),
+                    Err(Failed::Spawn { .. })
+                ),
+                "the reading shape of '{verb}' was refused by the gate"
+            );
+            for shape in [
+                vec!["claim_ttl_max", "4h"],
+                vec!["claim_ttl_max", "--unset"],
+                vec!["--unset", "claim_ttl_max"],
+                vec!["claim_ttl_max", "4h", "--user"],
+                vec![],
+            ] {
+                let refused = ank.json(verb, &shape);
+                assert!(
+                    matches!(refused, Err(Failed::NotAReadingShape { .. })),
+                    "'{verb} {}' reached the spawn on the reading road: {refused:?}",
+                    shape.join(" ")
+                );
+            }
+        }
+        // And what it says names the shape rather than the verb: `config` is a
+        // verb this reader reads with, and this call is not a read.
+        let said = ank
+            .json("config", &["claim_ttl_max", "4h"])
+            .expect_err("the writing shape is refused")
+            .to_string();
+        assert!(said.contains("config claim_ttl_max 4h"), "{said}");
+        assert!(said.contains("<key>"), "{said}");
+    }
+
     /// The acting gate, and the same proof that it comes first.
     ///
     /// **`close` and `attest` left this list too** (TASK-e8da6a00564a), by the
@@ -545,10 +698,19 @@ mod tests {
     /// is what makes "the reader never performs one unattended" a property of
     /// the code: there is no road from a watcher's news to this verb, whatever
     /// a screen is showing when the news arrives.
+    ///
+    /// **It is on neither list but the writing one, and that is now something
+    /// to say** (TASK-b08d090f699c). `config` arrived on both, so "an act is
+    /// not a read" stopped being a property of the two constants alone; what
+    /// holds it up is stated here in the shape it would break in. Every act
+    /// outside [`BOTH_ROADS`] is refused by name, the one inside it is refused
+    /// in every shape that writes, and `accept` is measured against the first
+    /// of those two by being asked for.
     #[test]
     fn accept_is_an_act_and_never_a_read() {
         let ank = nowhere();
         assert!(!READS.contains(&"accept"));
+        assert!(!BOTH_ROADS.contains(&"accept"), "accept is excepted");
         assert_eq!(
             ank.json("accept", &["ADR-0001"]),
             Err(Failed::NotARead {
@@ -562,6 +724,21 @@ mod tests {
                 !READS.contains(verb),
                 "{verb} is on both roads, and the gates then say nothing"
             );
+            if BOTH_ROADS.contains(verb) {
+                continue;
+            }
+            // Every other act is refused on the reading road by its name, in
+            // every shape: a verb that writes has no reading shape at all.
+            for shape in [vec![], vec!["TASK-0001"], vec!["TASK-0001", "--json"]] {
+                assert_eq!(
+                    ank.json(verb, &shape),
+                    Err(Failed::NotARead {
+                        verb: verb.to_string()
+                    }),
+                    "'{verb} {}' is not refused by name",
+                    shape.join(" ")
+                );
+            }
         }
     }
 

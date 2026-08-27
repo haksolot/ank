@@ -252,6 +252,88 @@ fn waiting(value: &ank::Value) -> Row {
     }
 }
 
+/// One key of `.ank`'s configuration, as `ank config <key> --json` answers it
+/// (TASK-b08d090f699c).
+///
+/// Three facts and the reader derives none of them. The key is the contract's,
+/// the value and the source are the CLI's own two fields, and a key the CLI
+/// refused about carries what it said instead -- because "where that value came
+/// from" is a question with an answer even when the answer is that the shape
+/// names a family rather than a key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Setting {
+    /// The key, as `ank config` declares it.
+    pub key: &'static str,
+    /// What it is set to, and `None` where the CLI answered null -- which is
+    /// what an unset key answers, and what a refused one has.
+    pub value: Option<String>,
+    /// Where that value came from, in the CLI's own word: `file`, `default`,
+    /// `unset`.
+    pub source: String,
+    /// What the CLI said instead of answering, where it refused the key.
+    ///
+    /// A row and never a whole-pane failure: `peers.<name>` names a family and
+    /// the peer name in it is not one a peer could have, so the verb refuses --
+    /// and a pane that showed nothing because one row of it was a placeholder
+    /// would be a pane that hides seven answers to protect one.
+    pub refused: Option<String>,
+}
+
+impl Setting {
+    /// Whether this row is the CLI declining rather than answering.
+    pub fn is_refusal(&self) -> bool {
+        self.refused.is_some()
+    }
+}
+
+/// Every key `ank config` declares, with what it is set to
+/// (TASK-b08d090f699c).
+///
+/// **The keys are the contract's and the reader holds no copy of them.**
+/// `ank_contract::verbs::CONFIG_KEYS` is the one table -- `ank-cli`'s own list
+/// is that constant and `config`'s note is rendered from it -- so a key added
+/// to the CLI is a row of this pane with no second edit anywhere.
+///
+/// **One call per key, and there is no verb that answers them together.** §4
+/// gives `config` one key at a time, so this is what asking costs; it is why
+/// the pane is charged when it is opened and on no repaint, exactly as the
+/// ratification queue is (ADR-0bb7ea8991bc's reasoning, applied to a price
+/// rather than to a lease).
+#[derive(Debug, Clone, Default)]
+pub struct Settings {
+    pub keys: Vec<Setting>,
+}
+
+impl Settings {
+    /// Every declared key, asked for once.
+    ///
+    /// **The reading shape and only ever the reading shape**: one positional,
+    /// which is what `crate::ank::Ank::json` admits `config` on. A call from
+    /// here that carried a value would be refused by that gate before anything
+    /// was spawned, which is the point of it.
+    pub fn load(ank: &Ank) -> Settings {
+        Settings {
+            keys: ank_contract::verbs::CONFIG_KEYS
+                .iter()
+                .map(|key| match ank.json(crate::form::SET, &[key]) {
+                    Ok(answer) => Setting {
+                        key,
+                        value: ank::maybe(&answer, "value"),
+                        source: ank::text(&answer, "source"),
+                        refused: None,
+                    },
+                    Err(failed) => Setting {
+                        key,
+                        value: None,
+                        source: String::new(),
+                        refused: Some(failed.to_string()),
+                    },
+                })
+                .collect(),
+        }
+    }
+}
+
 /// One entity, opened.
 #[derive(Debug, Clone)]
 pub struct Detail {

@@ -1361,8 +1361,15 @@ mod tests {
     /// and the mirror of that is a key the verb takes and the note never names:
     /// the note is where a caller looks before typing, and `claim_ttl_default`
     /// was one edit away from being addressable and undocumented
-    /// (ADR-0bb7ea8991bc). The list is a literal because a note is one, and this
-    /// is what keeps it the same list.
+    /// (ADR-0bb7ea8991bc).
+    ///
+    /// **It measures a rendering now rather than arbitrating between two
+    /// memories** (TASK-b08d090f699c). Both halves are
+    /// `ank_contract::verbs::CONFIG_KEYS` -- the note is `concat!`-ed from it
+    /// and `config::KEYS` is it -- so what is left to go wrong is the shape:
+    /// the prefix the note is found by, and the split that reads the set back
+    /// out of the sentence. A reader that has only the note to go on splits it
+    /// exactly this way, so this is the assertion that keeps that road open.
     #[test]
     fn the_config_note_names_every_key_the_verb_addresses() {
         let note = spec_of("config")
