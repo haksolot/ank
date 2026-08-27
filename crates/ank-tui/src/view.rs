@@ -15,19 +15,36 @@
 //! decided by one question: whether a row of the panel is a *line* or a *list*.
 //!
 //! ```text
-//! ank tui   corpus ...   branch ...                          <- chrome
+//! ank tui   corpus ...   branch main (default main)  [?]  <- chrome
+//! identity ...   0 claim(s) live   stream none            <- chrome
+//! ------------------------------------------------------  <- chrome
 //! +-  1 CLAIMS (2) ------------------------------------+
-//! |  * TASK-4974  claude-code/opus-5+wave14  until ...  |
-//! +-----------------------------------------------------+
-//! +=> 2 ENTITIES 1-9 of 41 ====++-  3 BODY ------------+
-//! |>     1  ADR-8bd7  accepted ||   nothing is open    |
-//! +============================++----------------------+
+//! |  * TASK-4974  claude-code/opus-5+wave14  until ... |
+//! +----------------------------------------------------+
+//! +=> 2 ENTITIES 1-9 of 41 ==========++-  3 BODY ------+
+//! |>     1  ADR-8bd7  accepted~      ||  nothing open  |
+//! +==================================++----------------+
 //! +-  4 QUEUE all 2 -----------------------------------+
-//! |   ADR-2b7c  adr  A decision waiting for a person    |
-//! +-----------------------------------------------------+
-//! whatever the reader is being told, or the search line      <- chrome
-//! the keys, and the six verbs that write                      <- chrome
+//! |   ADR-2b7c  adr  A decision waiting for a person   |
+//! +----------------------------------------------------+
+//! whatever the reader is being told, or the search line   <- chrome
 //! ```
+//!
+//! **Four rows go on chrome, and that is what the binary paints**
+//! (TASK-a836fdb2fca2, LOG-1afc1b09f95b). Two of the header's rows carry
+//! sentences, the third is the rule under them, and the note band is one row
+//! that is blank when the reader has nothing to say. What this sketch drew
+//! until TASK-9a402a54886f landed was a band of touch targets and two rows of
+//! trailer under the panels -- the frame ADR-c07e2694f0e1 measured at roughly
+//! thirteen of twenty-four rows spent on furniture. `tests/chrome.rs` takes
+//! the count off the built binary at five windows rather than off this
+//! drawing, and finds four non-panel rows against a budget of five. What those
+//! bands offered is the `[?]` on the header's right edge and the overlay
+//! behind it, which costs no row at all until somebody asks for it.
+//!
+//! It is drawn here in the ASCII border set, which is what a terminal that has
+//! declared itself dumb gets; an ordinary terminal draws the same frame with
+//! box-drawing glyphs in the same places ([`Glyphs`]).
 //!
 //! * **1 CLAIMS** -- who holds what, the caller's own marked. Full width,
 //!   because a row of it is one line: an identifier, an identity, an instant
@@ -61,11 +78,11 @@
 //! down a list *in order to* open something, and wants the list still there
 //! when they have.
 //!
-//! **The chrome is not a panel and cannot be focused.** The three bands that
-//! stay full width and unbordered -- the corpus line, whatever the reader is
-//! being told, and the keys -- hold sentences rather than rows. A refusal the
-//! CLI gave is the clearest case: it carries a code and the command that
-//! resolves it, and a border would cost it two columns for nothing.
+//! **The chrome is not a panel and cannot be focused.** The two bands that
+//! stay full width and unbordered -- the header, and whatever the reader is
+//! being told -- hold sentences rather than rows. A refusal the CLI gave is
+//! the clearest case: it carries a code and the command that resolves it, and
+//! a border would cost it two columns for nothing.
 //!
 //! # Focus is where the width goes
 //!
@@ -812,7 +829,7 @@ impl App {
     /// One key press. `true` means the session is over.
     ///
     /// **Two regimes, and which one is in force is the search line.** With it
-    /// closed every key is a command, the six that write included
+    /// closed every key is a command, the writing half included
     /// (TASK-1a415107fd56): `keys::typed` reads the row the key belongs to and
     /// a row of the writing half composes an act. With it open every key is a
     /// character, an edit or one of the two ways out, and what Enter submits
@@ -1444,8 +1461,9 @@ impl App {
     /// panel names, and shows it. **Nothing is spawned here.**
     ///
     /// The identifier goes in front of what was typed, because `<id>` is the
-    /// first positional of all six verbs and the person at the keyboard already
-    /// said which entity they meant by being in the panel that names it.
+    /// first positional of every verb of the writing half and the person at the
+    /// keyboard already said which entity they meant by being in the panel that
+    /// names it.
     /// Everything after it is theirs, untouched.
     ///
     /// **This is the one place an argv is composed**, and it is now also the
@@ -2712,7 +2730,7 @@ impl App {
     /// and the word a target says is the word the key list says, because it is
     /// the same string.
     ///
-    /// Every row carries a key since TASK-1a415107fd56, the six verbs
+    /// Every row carries a key since TASK-1a415107fd56, the writing half
     /// included, so what is drawn here is what the table declares and there is
     /// no row this has to leave out for want of a key to name.
     pub fn actions(&self) -> Vec<Action> {

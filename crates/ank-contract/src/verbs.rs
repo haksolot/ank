@@ -1127,7 +1127,24 @@ pub const COMMANDS: &[CommandSpec] = &[
             // binary is read as the binary refusing, which is the failure §9
             // exists to prevent.
             "every command is one key; ? lists them, q leaves",
-            "claim, log, release, done, amend and accept act on the entity the focused panel names, each by running that verb after showing the command line it composed",
+            // **Six names stood here, and the sentence under them was true of
+            // six** (TASK-a836fdb2fca2). It said the verbs *act on the entity
+            // the focused panel names*, which is how the writing half works and
+            // is false of `ank new`, whose first positional is a kind, and of
+            // `ank config`, which names no entity at all. A note true of most
+            // of a list is a note the list cannot be held to, so this one is
+            // stated over the whole of them: what is true of every verb the
+            // reader spells is that none of them writes unconfirmed
+            // (ADR-c07e2694f0e1).
+            //
+            // **The names are §4's own order, and they are measured rather
+            // than remembered.** `crates/ank-tui` reads this note back through
+            // the binary and holds the list to its own key table, so a verb
+            // added to the reader and not to this line is a red suite instead
+            // of a help page that is short one verb. That check parses the
+            // names off the front: everything between "are " and the `;` is
+            // the list, separated by ", " and " and ".
+            "the verbs it spells are claim, log, done, release, new, accept, read, close, amend, attest, edit and config; none of them writes until the command line it composed is on the screen and confirmed",
             "--json answers the opening frame as data and opens no session",
         ],
         refuses_globals: &[],
