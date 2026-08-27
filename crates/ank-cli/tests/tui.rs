@@ -59,6 +59,8 @@
 //! facts about a process and a git repository, so all three are asserted
 //! against a real one.
 
+mod scratch;
+
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
@@ -78,16 +80,7 @@ impl Drop for Repo {
 }
 
 fn scratch(what: &str) -> PathBuf {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "ank-tui-it-{what}-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+    scratch::dir(what)
 }
 
 impl Repo {

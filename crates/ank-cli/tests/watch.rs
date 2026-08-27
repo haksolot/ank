@@ -30,11 +30,12 @@
 //! being trusted -- the moment a warm listing and a cold one differ, the daemon
 //! has become a source of truth nobody voted for.
 
+mod scratch;
 use ank_contract::events;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
@@ -51,7 +52,7 @@ use std::time::{Duration, Instant};
 fn isolated_git_config() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
-        let p = std::env::temp_dir().join(format!("ank-watch-it-gitconfig-{}", std::process::id()));
+        let p = scratch::path("gitconfig");
         std::fs::write(&p, "[commit]\n\tgpgsign = false\n").unwrap();
         p
     })
@@ -69,15 +70,7 @@ fn ank_bin() -> PathBuf {
 
 /// A temporary directory nothing else in this suite uses.
 fn scratch(what: &str) -> PathBuf {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "ank-watch-it-{what}-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
-    std::fs::create_dir_all(&root).unwrap();
-    root
+    scratch::dir(what)
 }
 
 /// A reader's configuration home, holding the watch file and nothing else.

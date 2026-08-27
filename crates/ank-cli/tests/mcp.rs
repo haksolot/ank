@@ -30,11 +30,12 @@
 //! one `ank --version` prints (TASK-ae64d1c5678d). It is read out of the process
 //! for the same reason everything else here is.
 
+mod scratch;
+
 use ank_contract::{ExitCode, COMMANDS};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 const ANK: &str = env!("CARGO_BIN_EXE_ank");
 
@@ -50,13 +51,7 @@ fn corpus() -> PathBuf {
 /// task" is asserted on content rather than on an id alone; a home is what makes
 /// the reader's declarations the test's and not the machine's.
 fn corpus_titled(title: &str, home: Option<&Path>) -> PathBuf {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let root = std::env::temp_dir().join(format!(
-        "ank-mcp-it-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&root);
+    let root = scratch::dir("corpus");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
 
@@ -482,15 +477,7 @@ fn the_server_refuses_a_flag_that_would_make_it_two_corpora() {
 
 /// A reader's home, empty, with no corpus declared in it yet.
 fn declaring_home() -> PathBuf {
-    static SEQ: AtomicU64 = AtomicU64::new(0);
-    let home = std::env::temp_dir().join(format!(
-        "ank-mcp-home-{}-{}",
-        std::process::id(),
-        SEQ.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    home
+    scratch::dir("home")
 }
 
 /// The repository identity of a corpus, read out of the binary.
