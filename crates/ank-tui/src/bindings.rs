@@ -68,7 +68,7 @@
 //! pipe that was never opened, for as long as the reader is up. Held by a test
 //! over every string field rather than by whoever writes the next row.
 
-use crate::input::{Act, Command};
+use crate::input::{Act, Command, Subject};
 use crate::keys::{Press, CONFIRM, FIND};
 use crate::view::Focus;
 use ratatui::crossterm::event::KeyCode;
@@ -127,9 +127,20 @@ pub enum Runs {
     ///
     /// It carries no arguments beyond the identifier the view puts in front,
     /// because there is nothing left to carry them: the line a tail used to be
-    /// typed on is gone (TASK-1a415107fd56), and the form that gives them back
-    /// is TASK-d832452630d2's and TASK-e8da6a00564a's.
+    /// typed on is gone (TASK-1a415107fd56). A form is what gives one back and
+    /// the shape of it is settled -- [`crate::form`] arrived with `ank new`
+    /// (TASK-d832452630d2) -- but these six still compose the identifier and
+    /// nothing else, and TASK-e8da6a00564a is where their tails come back.
     Compose,
+    /// The form `ank new` is filled in on, opened (TASK-d832452630d2).
+    ///
+    /// Not [`Runs::Compose`], and the difference is the verb's first
+    /// positional: the six compose against the entity the focused panel names,
+    /// and `ank new <kind>` names a kind no panel holds. So this opens a form
+    /// and composes nothing, and what the form composes goes through the same
+    /// confirmation the other seven rows do -- `crate::form::Form::composed` is
+    /// the one road out of it, and `App::propose` is where it lands.
+    Form,
     /// The command on the screen, run.
     Run,
     /// The command on the screen, dropped.
@@ -154,6 +165,15 @@ pub enum Group {
     Panel,
     /// Composes a verb that writes.
     Write,
+    /// Makes an entity that does not exist yet (TASK-d832452630d2).
+    ///
+    /// Its own group and not [`Group::Write`], because the key list's line for
+    /// the writing half says what those keys land on -- the marked panel's
+    /// entity -- and `ank new` lands on nothing: it is the one verb here whose
+    /// first positional is a kind rather than a row. A note that was true of
+    /// six rows and false of the seventh would be prose the table cannot be
+    /// held to.
+    Create,
     /// Answers what the reader is asking: a command waiting, or a line open.
     Answer,
 }
@@ -198,13 +218,17 @@ pub struct Verb {
 /// The tail a verb takes at the shell, and how a line would become it.
 ///
 /// **Nothing types one into this reader any more** (TASK-1a415107fd56). The
-/// prompt a verb was spelled into is gone, so a press composes the verb and the
-/// identifier and not one byte more, and the form that gives the tails back is
-/// TASK-d832452630d2's and TASK-e8da6a00564a's. What the field is for in the
-/// meantime is the fact itself: `release` takes `--reason` and `done` takes
-/// `--proof`, declared once beside the verb and held to
-/// [`ank_contract::verbs::FlagSpec`] by the test at the foot of this file, so
-/// the row is already true on the day a form reads it.
+/// prompt a verb was spelled into is gone, so a press of one of the six
+/// composes the verb and the identifier and not one byte more, and
+/// TASK-e8da6a00564a is where their tails come back. [`Tail::Form`] is the one
+/// that has arrived, on `ank new` (TASK-d832452630d2): what it means is that
+/// the tail is the flags the contract declares, read by [`crate::form`] rather
+/// than named on this row.
+///
+/// What the field is for on the other six in the meantime is the fact itself:
+/// `release` takes `--reason` and `done` takes `--proof`, declared once beside
+/// the verb and held to [`ank_contract::verbs::FlagSpec`] by the test at the
+/// foot of this file, so the row is already true on the day a form reads it.
 ///
 /// It is deliberately not drawn. [`Binding::entry`] names the verb and its key
 /// and stops there: a key list advertising `done <proof>` where no line takes
@@ -227,6 +251,12 @@ pub enum Tail {
     /// The flag is held to the verb's own [`ank_contract::verbs::FlagSpec`] by
     /// a test: a form this reader offers is a form the CLI takes.
     Behind(&'static str),
+    /// The flags the verb declares, filled in on a form (TASK-d832452630d2).
+    ///
+    /// `ank new` takes nine of them and no line was ever going to carry that;
+    /// what reads them is [`crate::form`], out of the contract's own table, so
+    /// there is nothing for this row to declare beyond which shape the tail is.
+    Form,
     /// Nothing at all: the verb takes the identifier the view supplies and not
     /// one byte more.
     ///
@@ -607,6 +637,31 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     // -----------------------------------------------------------------------
+    // What makes an entity (TASK-d832452630d2)
+    //
+    // `n` is `new`'s own initial, which is ADR-c07e2694f0e1's rule and the same
+    // reason the six above have theirs -- and the letter was free: paging went
+    // to Space and the two named keys when TASK-1a415107fd56 priced `n` and `p`
+    // out of movement, so the verb takes a key nothing else wanted.
+    //
+    // A press opens a form and composes nothing. What the form composes is an
+    // act like any other, and it reaches the same confirmation: there is no
+    // second road to `Ank::act` here, and `crates/ank-tui/tests/entity.rs`
+    // drives the binary to say so.
+    // -----------------------------------------------------------------------
+    Binding {
+        key: KeyCode::Char('n'),
+        aliases: &[],
+        runs: Runs::Form,
+        word: "new",
+        group: Group::Create,
+        offered: Offered::Anywhere,
+        verb: Some(Verb {
+            name: crate::form::VERB,
+            tail: Tail::Form,
+        }),
+    },
+    // -----------------------------------------------------------------------
     // What answers the reader (TASK-d4a882345837). Both states are modal, and
     // both grammars are stated over the whole keyboard in `keys.rs`: these two
     // rows are the keys the screen *offers*, not the whole of what it reads.
@@ -666,6 +721,7 @@ impl Binding {
             Runs::Press(press) => press.clone(),
             Runs::Stepped(by) => Press::Run(Command::Panel(focus.stepped(*by))),
             Runs::Sideways(to) if focus != *to => Press::Run(Command::Panel(*to)),
+            Runs::Form => Press::Run(Command::Form),
             Runs::Compose => match self.verb {
                 Some(verb) => composed(verb, focus),
                 // Unreachable from this table -- a composing row spells a verb,
@@ -741,6 +797,9 @@ fn composed(verb: Verb, focus: Focus) -> Press {
     let act = Act {
         verb: verb.name,
         args: Vec::new(),
+        // All six take `<id>` first, and the view is what knows which entity
+        // the person meant.
+        subject: Subject::Selected,
     };
     Press::Run(Command::Act(act))
 }
@@ -761,7 +820,12 @@ pub const OFF_THE_DOCUMENT: &str =
 pub fn of_key(code: KeyCode) -> Option<&'static Binding> {
     BINDINGS
         .iter()
-        .filter(|b| matches!(b.group, Group::Screen | Group::Panel | Group::Write))
+        .filter(|b| {
+            matches!(
+                b.group,
+                Group::Screen | Group::Panel | Group::Write | Group::Create
+            )
+        })
         .find(|b| b.answers(code))
 }
 
@@ -835,6 +899,10 @@ const WRITE_NOTE: &str = "   (the marked panel's entity, then";
 const FURTHER: &[&str] = &["close", "attest", "read"];
 /// What `x` says under them, which is the fact that makes the list honest.
 const FURTHER_NOTE: &str = "   (a shell runs these: this reader does not, yet)";
+/// What it says after the verb that makes one: the fields are the flags the CLI
+/// declares, and nothing on that form is typed at a corpus until it has been
+/// through the confirmation the other seven rows go through.
+const CREATE_NOTE: &str = "   (a form of the flags ank new takes, then";
 /// What it says after `accept`, which is a different kind of offer: the other
 /// five move a corpus, and this one asks a person for a signature ank has no
 /// way to produce.
@@ -958,6 +1026,22 @@ fn write() -> Line {
     }
 }
 
+/// The verb that makes an entity, on a line of its own (TASK-d832452630d2).
+///
+/// Separate from the writing half above for the reason [`Group::Create`] gives:
+/// those keys land on the marked panel's entity and this one lands on nothing,
+/// so one line carrying both would end on a sentence that is false of one of
+/// its rows.
+fn create() -> Line {
+    Line {
+        title: "make",
+        bindings: of_group(Group::Create),
+        lead: String::new(),
+        between: "  ",
+        note: format!("{CREATE_NOTE} {})", named(KeyCode::Char(CONFIRM))),
+    }
+}
+
 /// The sixth act, on a line of its own, and only where the verb would take it.
 fn ratify() -> Line {
     Line {
@@ -999,7 +1083,15 @@ fn typing() -> Line {
 /// ones are named rather than left to be discovered: a person who has a command
 /// waiting on the screen cannot press `?` to find out what answers it.
 fn lines() -> Vec<Line> {
-    vec![screen(), panel(), write(), ratify(), waiting(), typing()]
+    vec![
+        screen(),
+        panel(),
+        write(),
+        create(),
+        ratify(),
+        waiting(),
+        typing(),
+    ]
 }
 
 // `screen_line` and `write_line` stood here (TASK-9a402a54886f). They were the
@@ -1142,7 +1234,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!(named, 6, "the writing half is six verbs");
+        assert_eq!(
+            named, 7,
+            "the verbs this reader spells are the six that move an entity and \
+             the one that makes one (TASK-d832452630d2)"
+        );
     }
 
     /// **The gate is measured against the table and never generated from it**
@@ -1159,8 +1255,8 @@ mod tests {
     fn every_binding_that_writes_is_in_the_gate_and_the_gate_reads_nothing_from_here() {
         let spelled: Vec<&str> = BINDINGS
             .iter()
-            .filter(|b| b.group == Group::Write)
-            .map(|b| b.verb.expect("a verb of the writing half").name)
+            .filter_map(|b| b.verb)
+            .map(|verb| verb.name)
             .collect();
         for verb in &spelled {
             assert!(
@@ -1371,10 +1467,12 @@ mod tests {
     #[test]
     fn no_key_of_the_table_is_claimed_twice() {
         let mut claimed: Vec<KeyCode> = Vec::new();
-        for binding in BINDINGS
-            .iter()
-            .filter(|b| matches!(b.group, Group::Screen | Group::Panel | Group::Write))
-        {
+        for binding in BINDINGS.iter().filter(|b| {
+            matches!(
+                b.group,
+                Group::Screen | Group::Panel | Group::Write | Group::Create
+            )
+        }) {
             for key in std::iter::once(binding.key).chain(binding.aliases.iter().copied()) {
                 assert!(
                     !claimed.contains(&key),

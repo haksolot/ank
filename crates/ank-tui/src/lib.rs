@@ -64,18 +64,25 @@
 //! a reader whose screen is wrong for as long as its person is reading rather
 //! than acting.
 //!
-//! # Input is a key, and the one line that is left
+//! # Input is a key, and the two places a word is still typed
 //!
 //! Every command that only moves the screen is one key ([`keys`]), focus
 //! included: `Tab` walks the panels, `1` to `4` name one, and Left and Right
-//! cross the columns. The verbs that write have no letter of their own here
-//! yet: `a` opens a one-line prompt and what is typed there goes through
-//! [`input`], which is the grammar that spells them whole. That is where the
-//! reader stands and no longer where it is going -- ADR-c07e2694f0e1 decides
-//! that a key is the verb it runs, and TASK-1a415107fd56 is where the letters
-//! arrive. The prompt outlives them rather than being replaced by them: four
-//! of the six carry something a key has no room for -- a message, a reason, a
-//! proof, a flag. `/` opens the same prompt on a search.
+//! cross the columns. **And so is every verb that writes**
+//! (TASK-1a415107fd56, ADR-c07e2694f0e1: a key *is* the verb it runs): `c`
+//! claims, `l` logs, `d` finishes, `r` releases, `m` amends, `a` ratifies, and
+//! `n` makes one. What each of them is bound to is [`bindings`], declared once,
+//! and every surface -- the mapping, the offer, the key list -- is computed
+//! from it.
+//!
+//! What is left of the typed word is two places, and neither of them reaches a
+//! verb by being read. `/` opens the one-line prompt on a search, and
+//! [`input`]'s grammar carries no verb at all. `n` opens the form
+//! (TASK-d832452630d2), whose fields are the flags `ank help --json` declares
+//! for `ank new` and which is modal: a letter typed into it is a letter, and
+//! what reaches the verb is Enter, and what Enter reaches is the confirmation.
+//! What the other six carried in a tail comes back the same way, and
+//! TASK-e8da6a00564a is where.
 //!
 //! **What the line discipline used to guarantee is replaced, and this is what
 //! replaced it.** Under a line reader a slipped finger typed nothing, because a
@@ -194,6 +201,7 @@ use std::path::PathBuf;
 
 pub mod ank;
 pub mod bindings;
+pub mod form;
 pub mod input;
 pub mod keys;
 pub mod model;

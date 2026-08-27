@@ -57,7 +57,12 @@
 //! [`crate::input::parse`]; no word that grammar reads writes anything, and the
 //! prompt a verb used to be spelled into is gone with the key that opened it.
 //! What the six carried in a tail -- a message, a reason, a proof, a flag --
-//! comes back as a form, which is TASK-d832452630d2's and TASK-e8da6a00564a's.
+//! comes back as a form, and TASK-e8da6a00564a is where. The form itself
+//! arrived with TASK-d832452630d2, on the seventh verb: `n` opens
+//! [`crate::form`], whose fields are the flags the contract declares for `ank
+//! new` and which is modal, so no letter typed into it is a command and no
+//! word typed into it reaches a verb -- what reaches one is Enter, and what
+//! Enter reaches is the confirmation.
 //!
 //! # The guarantee, now that the letter is one keystroke
 //!
@@ -246,7 +251,7 @@ pub fn edit(line: &mut String, key: KeyEvent) -> Editing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::Act;
+    use crate::input::{Act, Subject};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -311,7 +316,8 @@ mod tests {
                     press(letter, view),
                     Press::Run(Command::Act(Act {
                         verb,
-                        args: Vec::new()
+                        args: Vec::new(),
+                        subject: Subject::Selected,
                     })),
                     "'{letter}' in {view:?}"
                 );
@@ -322,7 +328,8 @@ mod tests {
             press('a', Focus::Body),
             Press::Run(Command::Act(Act {
                 verb: "accept",
-                args: Vec::new()
+                args: Vec::new(),
+                subject: Subject::Selected,
             }))
         );
         for view in Focus::ALL.into_iter().filter(|f| *f != Focus::Body) {
@@ -339,13 +346,18 @@ mod tests {
     ///
     /// The price ADR-c07e2694f0e1 puts on the letters, stated as what it is: a
     /// person pressing `l` for "right" or `n` for "next page" gets no movement,
-    /// and `l` gets the log confirmation instead. Three of the four reach
-    /// nothing at all, which is the honest answer -- a key that quietly did
+    /// and `l` gets the log confirmation instead. What the four do *instead* is
+    /// what the verbs made of them, and the claim this holds is about movement:
+    /// none of them steps a cursor, pages a body or crosses a panel.
+    ///
+    /// `n` stopped being one of the three that reach nothing at all
+    /// (TASK-d832452630d2): it is `new`'s own initial, and what it opens is the
+    /// form. `h` and `p` are still the honest answer -- a key that quietly did
     /// something else would be worse than one that does nothing.
     #[test]
     fn the_four_letters_the_verbs_cost_move_nothing() {
         for view in Focus::ALL {
-            for c in ['h', 'n', 'p'] {
+            for c in ['h', 'p'] {
                 assert_eq!(press(c, view), Press::Ignored, "'{c}' in {view:?}");
             }
             // `l` is `log`, which composes a verb and moves no cursor.
@@ -354,6 +366,12 @@ mod tests {
                 panic!("'l' in {view:?} is {reached:?}");
             };
             assert_eq!(act.verb, "log");
+            // `n` is `new`, which opens a form and moves no cursor either.
+            assert_eq!(
+                press('n', view),
+                Press::Run(Command::Form),
+                "'n' in {view:?}"
+            );
         }
     }
 

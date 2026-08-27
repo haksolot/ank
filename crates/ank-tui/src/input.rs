@@ -114,6 +114,13 @@ pub enum Command {
     /// what it opens is a list of what this reader does not run, so there is
     /// nothing for a person to have typed.
     Further,
+    /// The form `ank new` is filled in on (TASK-d832452630d2).
+    ///
+    /// A key and no word, like [`Command::Further`]: what it opens is a form
+    /// whose fields are read out of the contract, and a line that spelled the
+    /// verb would be the second road to a write ADR-c07e2694f0e1 closed. It
+    /// carries nothing, because what the form holds is the form's.
+    Form,
     /// A line that asked for nothing: an empty prompt, or one carrying only
     /// whitespace.
     Nothing,
@@ -127,18 +134,41 @@ pub enum Command {
 /// is named rather than swallowed.
 const IDENTIFIER_KINDS: &[&str] = &["task", "adr", "spec", "log"];
 
-/// One verb of the writing half, with the arguments a typed line gave it.
+/// One verb of the writing half, with the arguments the key or the form gave
+/// it.
 ///
-/// `args` is the verb's own tail and never carries the identifier: the view
-/// puts that in front, because `<id>` is the first positional of all six and
-/// the view is what knows which entity is selected. It is empty on every act
-/// this reader composes today -- there is no longer a line to type a tail on --
-/// and it is a `Vec` rather than nothing because the form that fills it is
-/// TASK-d832452630d2's and TASK-e8da6a00564a's.
+/// `args` is what follows the verb, and [`Act::subject`] says whether the view
+/// still has to put an identifier in front of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Act {
     pub verb: &'static str,
     pub args: Vec<String>,
+    /// What the verb's first positional is, which is the one thing the view has
+    /// to know before it can compose an argv.
+    pub subject: Subject,
+}
+
+/// Where a verb's first positional comes from.
+///
+/// **Two answers, because there are two shapes of act and there always were.**
+/// The six that move an entity take `<id>` first, and the identifier is the
+/// view's to supply: the person at the keyboard said which entity they meant by
+/// being in the panel that names it, and a key press does not carry it. `ank
+/// new` takes a kind first, which is nothing the panels name at all -- so the
+/// act arrives carrying its own front, and the view must not put a row's
+/// identifier in front of it (TASK-d832452630d2).
+///
+/// Stated on the act rather than decided from the verb's name, so a second verb
+/// of this shape is a field on its row and never an arm somewhere that has to
+/// be remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject {
+    /// The entity the focused panel names goes in front. What all six of the
+    /// writing half take.
+    Selected,
+    /// The act already carries its own first positional, and nothing is put in
+    /// front of it.
+    Given,
 }
 
 pub fn parse(line: &str) -> Command {

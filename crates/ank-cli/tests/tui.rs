@@ -2571,10 +2571,16 @@ fn with_the_word_withheld_nothing_in_the_queue_changes_state() {
         .trim()
         .to_string();
 
+    // Space and not `n` (TASK-d832452630d2). `n` paged this body when the line
+    // was written, stopped paging it when TASK-1a415107fd56 spent the letter on
+    // the verbs, and is `ank new` now -- so the two presses opened a form and
+    // every key after them went into a title, `q` included, and this session
+    // never ended. The paging key is Space, which is what a reader who has used
+    // `less` presses first; the rest of the sequence is untouched.
     let seen = drive(
         &repo,
         READER,
-        &["v", &open(&waiting), "n", "n", "c", "b", "v", "q"],
+        &["v", &open(&waiting), " ", " ", "c", "b", "v", "q"],
     );
     assert!(
         seen.contains(&short_of(&waiting)),

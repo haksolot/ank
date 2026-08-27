@@ -90,8 +90,18 @@ const FINDINGS_ARE_AN_ANSWER: &[&str] = &["review"];
 /// takes it only where the document is open on the screen; and the child is
 /// given no stdin, so no prompt of git's can be answered from this process.
 ///
+/// **`new` is the seventh, and it arrived the same way** (TASK-d832452630d2).
+/// It is the one verb here that moves no entity and names none: what it takes
+/// first is a kind, and what follows is the flags the contract declares, filled
+/// in on a form. It is here because a reader that could not make a task is a
+/// reader half the loop is missing from, and what keeps the act deliberate is
+/// the confirmation every other row goes through -- the form composes and never
+/// spawns, `App::confirmed` is still the one caller of [`Ank::act`], and the
+/// form itself cannot compose the flagless call that would open `$EDITOR` into
+/// a child with no stdin.
+///
 /// `close`, `check`, `attest` and `init` are not here and must not arrive.
-pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend", "accept"];
+pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend", "accept", "new"];
 
 /// A call that did not produce a document, in the three ways it can fail.
 ///
