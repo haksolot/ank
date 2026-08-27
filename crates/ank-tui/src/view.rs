@@ -3548,9 +3548,9 @@ fn rows_of(buf: &Buffer) -> String {
 /// construction and says nothing about the act.
 fn answered(ran: &Ran) -> String {
     let mut lines = vec![ran.shown.clone()];
-    if let Some(fields) = ran.answered.as_mapping() {
+    if let Some(fields) = ran.answered.as_object() {
         for (key, value) in fields {
-            let name = key.as_str().unwrap_or_default();
+            let name = key.as_str();
             if name.is_empty() || name == "contract" {
                 continue;
             }
@@ -3570,6 +3570,14 @@ fn answered(ran: &Ran) -> String {
 /// here, because the alternative is a field that arrives one day and is silently
 /// dropped -- which is the strict-reader failure ADR-6fd69efb629c warns against,
 /// wearing the other mask.
+///
+/// **Six shapes and not seven** (TASK-f0c6372d8dc0). The reader used to arrive
+/// here through a YAML parser, whose value carries a seventh -- a scalar under
+/// an explicit `!tag` -- that this arm had to unwrap because the type declared
+/// it and never because a document could hold one. JSON has no tags, so the
+/// match below is the document's own grammar exactly: totality is now the
+/// language saying there is nothing else, rather than a rendering standing by
+/// for a shape the CLI cannot write.
 fn flat(value: &crate::ank::Value) -> String {
     use crate::ank::Value;
     match value {
@@ -3577,14 +3585,15 @@ fn flat(value: &crate::ank::Value) -> String {
         Value::Bool(b) => b.to_string(),
         Value::Number(n) => n.to_string(),
         Value::String(s) => s.replace('\n', " "),
-        Value::Sequence(items) if items.is_empty() => "(none)".to_string(),
-        Value::Sequence(items) => items.iter().map(flat).collect::<Vec<_>>().join(", "),
-        Value::Mapping(fields) => fields
+        Value::Array(items) if items.is_empty() => "(none)".to_string(),
+        Value::Array(items) => items.iter().map(flat).collect::<Vec<_>>().join(", "),
+        // A key is a string in this language and never a value, so it is written
+        // rather than rendered: `flat` on it would be quoting nothing.
+        Value::Object(fields) => fields
             .iter()
-            .map(|(k, v)| format!("{}={}", flat(k), flat(v)))
+            .map(|(k, v)| format!("{k}={}", flat(v)))
             .collect::<Vec<_>>()
             .join(", "),
-        Value::Tagged(t) => flat(&t.value),
     }
 }
 
@@ -5420,8 +5429,8 @@ mod tests {
     fn an_answer_is_the_documents_own_fields_under_the_command_that_ran() {
         let ran = Ran {
             shown: "ank claim TASK-49746735127f".to_string(),
-            answered: serde_yaml::from_str(
-                "{contract: 4, id: TASK-49746735127f, expires: 2026-08-25T04:36:32Z, warnings: []}",
+            answered: crate::ank::document(
+                r#"{"contract":4,"id":"TASK-49746735127f","expires":"2026-08-25T04:36:32Z","warnings":[]}"#,
             )
             .expect("a document"),
         };
@@ -5437,7 +5446,7 @@ mod tests {
     fn a_field_this_reader_never_heard_of_is_shown_rather_than_dropped() {
         let ran = Ran {
             shown: "ank done TASK-49746735127f".to_string(),
-            answered: serde_yaml::from_str("{invented_later: {a: 1, b: [x, y]}}")
+            answered: crate::ank::document(r#"{"invented_later":{"a":1,"b":["x","y"]}}"#)
                 .expect("a document"),
         };
         let said = answered(&ran);

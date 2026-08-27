@@ -181,9 +181,12 @@ impl Follower {
 
     /// Whether one line is an event about the corpus this reader is on.
     ///
-    /// Read with `serde_yaml`, which is how this crate reads every document the
-    /// CLI answers with, and by the key names [`events`] declares rather than by
-    /// strings written here.
+    /// Read with [`crate::ank::document`], which is how this crate reads every
+    /// document the CLI answers with, and by the key names [`events`] declares
+    /// rather than by strings written here. Asked of that function rather than
+    /// of a parser named here (TASK-f0c6372d8dc0): a watcher's line and a
+    /// verb's answer are the same language, and one call is what keeps them
+    /// from becoming two readings of it.
     ///
     /// **A line of a schema this build does not read is skipped**, on the rule
     /// `watch.yml` already holds: a reader that guessed at a shape it does not
@@ -191,7 +194,7 @@ impl Follower {
     /// parse is skipped for the same reason and neither is an error, because
     /// there is nobody to report it to and nothing depends on it.
     fn mine(&self, line: &str) -> bool {
-        let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(line) else {
+        let Ok(value) = crate::ank::document(line) else {
             return false;
         };
         let schema = value

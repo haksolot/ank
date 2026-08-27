@@ -53,11 +53,26 @@ ank-contract = { path = "../ank-contract" }
 # window and the rows inside it are one arithmetic.
 crossterm = { version = "0.29", default-features = false, features = ["events", "windows"] }
 ratatui = { version = "0.30", default-features = false, features = ["std", "crossterm", "layout-cache", "underline-color"] }
-# **The CLI's `--json` has to be *read*, and no crate entered for that.**
-# `ank-contract::json` writes and does not read, and `serde_yaml` is already a
-# dependency of `ank-core`, `ank-cli`, `ank-daemon` and `ank-mcp`. YAML 1.2 is a
-# superset of JSON, so a one-line document parses as flow YAML.
-# `ank-mcp` reads JSON-RPC requests this way already (§13 spends a dependency
-# only on necessity), and the escaper on the other side emits only `\"`, `\\`,
-# `\n` and `\u00xx`, every one of which a double-quoted YAML scalar carries.
-serde_yaml = "0.9"
+# **The CLI's `--json` has to be *read*, and this is what reads it.**
+# `ank-contract::json` writes and does not read, so something here has to.
+#
+# **What this replaces, and why the replacement is worth a crate.** This was
+# `serde_yaml`, on the argument that YAML 1.2 is a superset of JSON and a crate
+# already in the tree four times over costs nothing more. The argument is true
+# about the grammar and was the wrong instrument all the same: `ank find --json`
+# answers this corpus with 216 KB, every byte of which is JSON, and a YAML
+# reader arrives at it through a resolver that has to decide whether `yes` is a
+# boolean, whether `2026-08-25` is a timestamp and whether `TASK-0001` opens a
+# tag -- questions the document's own language does not ask. §13 spends a
+# dependency only on necessity, and reading a language with a parser for that
+# language is the necessity: the alternative to this crate is not the previous
+# crate, it is a JSON reader written in this tree, which would be a second
+# reading of `ank_contract::json`'s escaping convention to keep in step with the
+# first. serde_json is the neutral referee between the two sides, and `serde`,
+# which it brings, is already a workspace dependency pinned at `=1.0.210`.
+# `preserve_order` is not decoration. `view.rs::answered` draws a document's own
+# fields "in the order it wrote them", which is what lets a person check a
+# screen against the bytes the CLI printed; serde_json's default map is sorted,
+# and the feature is what keeps that sentence true. It costs `indexmap` and its
+# two, all three of which this workspace's lockfile already carries.
+serde_json = { version = "1", features = ["preserve_order"] }

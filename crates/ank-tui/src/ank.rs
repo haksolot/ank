@@ -41,19 +41,44 @@
 //! `error[N]:` and the command that resolves it on stderr whatever `--json`
 //! says, so a refusal arrives in the CLI's own bytes either way.
 //!
-//! **The document is read with `serde_yaml`, not with a parser written here.**
-//! YAML 1.2 is a superset of JSON, `ank-mcp` already reads JSON-RPC that way,
-//! and the escaper on the other side (`ank_contract::json::string`) emits only
-//! `\"`, `\\`, `\n` and `\u00xx` -- every one of which a double-quoted YAML
-//! scalar carries with the same meaning. So no crate enters the tree for this
-//! and there is no second escaping convention to keep in step.
+//! **The document is read with `serde_json`, and it is read here alone.**
+//! [`document`] is the only call in this crate that turns bytes into a
+//! [`Value`], and the follower asks it too -- so there is one answer to "what
+//! language is an answer written in" and the escaper on the other side
+//! (`ank_contract::json::string`) faces one reader rather than two.
+//!
+//! **What that replaced, and why it had to** (TASK-f0c6372d8dc0). This was
+//! `serde_yaml`, on the argument that YAML 1.2 is a superset of JSON so a
+//! document parses as flow YAML and no crate enters the tree. The grammar half
+//! of that is true. What it left out is that a YAML reader does not stop at the
+//! grammar: it resolves every unquoted scalar against a tag schema, deciding
+//! whether `yes` is a boolean and `2026-08-25` a timestamp -- questions JSON
+//! does not ask and this corpus should not be answering, over the 216 KB that
+//! `ank find --json` hands back here. A parser for the language the bytes are
+//! in asks none of them.
 
 use crate::Address;
 use ank_contract::ExitCode;
 use std::fmt;
 use std::process::Command;
 
-pub use serde_yaml::Value;
+pub use serde_json::Value;
+
+/// One document, read out of the language the CLI wrote it in
+/// (TASK-f0c6372d8dc0).
+///
+/// **The one place this crate turns bytes into a [`Value`]**, which is the same
+/// argument [`Ank::spawn`] is: a second parse would be a second reading of
+/// `ank_contract::json`'s escaping convention, free to drift from the first.
+/// [`Ank::spawn`] reads an answer with it and `stream::Follower` reads a
+/// watcher's line with it, and neither names a parser of its own.
+///
+/// The error is a `String` because both callers want a sentence and neither
+/// wants the parser in its signature: `spawn` puts it in [`Failed::Unreadable`]
+/// beside the command line that produced it, and the follower drops the line.
+pub fn document(text: &str) -> Result<Value, String> {
+    serde_json::from_str(text).map_err(|e| e.to_string())
+}
 
 /// The verbs this reader may run on its own, and the whole of them.
 ///
@@ -435,9 +460,9 @@ impl Ank {
             });
         }
         let text = String::from_utf8_lossy(&out.stdout).to_string();
-        let answered = serde_yaml::from_str(&text).map_err(|e| Failed::Unreadable {
+        let answered = document(&text).map_err(|error| Failed::Unreadable {
             shown: shown.clone(),
-            error: e.to_string(),
+            error,
         })?;
         Ok(Ran { shown, answered })
     }
@@ -525,7 +550,7 @@ pub fn maybe(value: &Value, key: &str) -> Option<String> {
 pub fn rows<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
         .get(key)
-        .and_then(|v| v.as_sequence())
+        .and_then(|v| v.as_array())
         .map(|s| s.as_slice())
         .unwrap_or(&[])
 }
@@ -540,22 +565,95 @@ mod tests {
     use super::*;
 
     fn doc(s: &str) -> Value {
-        serde_yaml::from_str(s).expect("the CLI's own shape must parse")
+        document(s).expect("the CLI's own shape must parse")
     }
 
-    /// The premise this crate rests on: the CLI's escaper and a YAML reader
-    /// agree. If they ever stop agreeing, this is where it shows.
+    /// The premise this crate rests on: what the CLI's escaper writes is what
+    /// this reader reads back (TASK-f0c6372d8dc0).
+    ///
+    /// **Asked of the escaper and no longer of a literal copied from it**, which
+    /// is the whole reason this is worth a test. The version of this that read
+    /// the corpus with a YAML parser wrote the document out by hand, and the
+    /// hand slipped: it put a raw tab inside a string, JSON forbids an unescaped
+    /// byte under 0x20 there, and the test passed for years because a YAML
+    /// reader takes one. So the assertion that the two sides agree was being
+    /// made against bytes the CLI has never emitted -- `ank_contract::json`
+    /// writes that tab as `\u0009` -- and the one thing it existed to catch was
+    /// the one thing it could not see. Asking the escaper closes that: the
+    /// strings below go through the function the CLI calls, and what comes back
+    /// is compared against what went in.
     #[test]
-    fn the_clis_json_reads_as_flow_yaml() {
-        let line = r#"{"contract":1,"total":2,"results":[{"id":"TASK-0001","title":"a \"quoted\" title"},{"id":"ADR-0002","title":"two\nlines and a tab 	 in the middle"}]}"#;
-        let v = doc(line);
-        assert_eq!(count(&v, "contract"), 1);
-        assert_eq!(rows(&v, "results").len(), 2);
-        assert_eq!(text(&rows(&v, "results")[0], "title"), "a \"quoted\" title");
-        assert_eq!(
-            text(&rows(&v, "results")[1], "title"),
-            "two\nlines and a tab \t in the middle"
+    fn what_the_clis_escaper_writes_is_what_this_reader_reads() {
+        use ank_contract::json;
+        // The characters a criterion, a title and a log message actually carry:
+        // a quote, a backslash, a newline, a tab, and a character past ASCII.
+        let awkward = [
+            "a \"quoted\" title",
+            "a windows glob crates\\ank-tui\\**",
+            "two\nlines and a tab \t in the middle",
+            "an em dash -- and a caf\u{e9}",
+            "",
+        ];
+        let mut results = String::new();
+        for (i, title) in awkward.iter().enumerate() {
+            if i > 0 {
+                results.push(',');
+            }
+            results.push_str(&format!(
+                r#"{{"id":"TASK-{i:04}","title":{}}}"#,
+                json::string(title)
+            ));
+        }
+        let line = format!(
+            r#"{{"contract":1,"total":{},"results":[{results}]}}"#,
+            awkward.len()
         );
+        // The escaper's own output has no raw control byte in it, which is the
+        // property the old literal violated without anyone noticing.
+        assert!(
+            !line.chars().any(|c| (c as u32) < 0x20),
+            "the escaper emitted a raw control character: {line:?}"
+        );
+        let v = doc(&line);
+        assert_eq!(count(&v, "contract"), 1);
+        assert_eq!(count(&v, "total"), awkward.len() as u64);
+        assert_eq!(rows(&v, "results").len(), awkward.len());
+        for (i, title) in awkward.iter().enumerate() {
+            let row = &rows(&v, "results")[i];
+            assert_eq!(text(row, "id"), format!("TASK-{i:04}"));
+            assert_eq!(text(row, "title"), *title, "round trip {i}");
+        }
+    }
+
+    /// A raw control byte inside a string is refused rather than accepted
+    /// (TASK-f0c6372d8dc0).
+    ///
+    /// The other half of the test above, and the one that says the parser
+    /// changed rather than only the crate name. JSON forbids an unescaped byte
+    /// under 0x20 in a string; the YAML reader this replaced took one and
+    /// handed back a document. Nothing the CLI writes contains one, so refusing
+    /// it costs this reader nothing -- and a document that does contain one did
+    /// not come from `ank_contract::json`, which is worth finding out about.
+    #[test]
+    fn a_raw_control_byte_in_a_string_is_not_a_document() {
+        let refused = document("{\"title\":\"a tab \t in the middle\"}");
+        assert!(
+            refused.is_err(),
+            "a raw tab inside a string was read as a document: {refused:?}"
+        );
+        // And the escaped spelling of the same character is read.
+        let read = doc(r#"{"title":"a tab \u0009 in the middle"}"#);
+        assert_eq!(text(&read, "title"), "a tab \t in the middle");
+    }
+
+    /// The reader is handed one document per call and never a stream of them.
+    ///
+    /// `--json` answers with exactly one, so trailing bytes after it are a sign
+    /// something went wrong upstream rather than a second answer to read.
+    #[test]
+    fn bytes_after_the_document_are_a_refusal() {
+        assert!(document(r#"{"contract":1} {"contract":1}"#).is_err());
+        assert!(document("").is_err(), "no answer is not an empty document");
     }
 
     #[test]
