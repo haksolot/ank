@@ -257,7 +257,7 @@ use crate::bindings::{self, Binding, Holding};
 use crate::form::{Filled, Form, SET as SETTING};
 use crate::input::{Act, Command, Subject};
 use crate::keys::{self, Editing, Press};
-use crate::model::{self, short_of, Detail, Queue, Row, Setting, Settings, Snapshot};
+use crate::model::{self, short_of, Detail, Held, Queue, Row, Setting, Settings, Snapshot};
 use crate::paint::{self, role_of_id, Composed, Ink};
 use crate::stream::Stream;
 use crate::text::{self, fit, pad, window, wrap};
@@ -478,6 +478,12 @@ pub struct App {
     focus: Focus,
     pane: Pane,
     snapshot: Option<Snapshot>,
+    /// Who holds what, and the chrome `status` answers with it
+    /// (TASK-fff0a98511b2). `None` until the claims panel is focused, on the
+    /// road [`App::requeue`] takes for the queue and for the same reason: this
+    /// is the costliest verb the reader runs, and a panel nobody is looking at
+    /// is not stale.
+    held: Option<Held>,
     detail: Option<Detail>,
     note: Option<String>,
     /// One cursor per panel, indexed by [`Focus::number`] less one. The body's
@@ -602,6 +608,7 @@ impl App {
             focus: Focus::Entities,
             pane: Pane::Body,
             snapshot: None,
+            held: None,
             detail: None,
             note: None,
             cursors: [Cursor::default(); 4],
@@ -665,6 +672,7 @@ impl App {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
                 self.note = None;
+                self.rehold(ank);
                 self.requeue(ank);
                 if let Some(id) = held {
                     if let Some(at) = self.entity_rows().iter().position(|r| r.id == id) {
@@ -675,6 +683,49 @@ impl App {
             }
             Err(failed) => self.fail(failed),
         }
+    }
+
+    /// Asks `status` again, but only where the claims panel has focus
+    /// (TASK-fff0a98511b2).
+    ///
+    /// **The same condition as [`App::requeue`], for a sharper reason.**
+    /// `status` counts what it reports by reading the corpus to do it, which on
+    /// this project's own corpus is about twenty seconds against `find`'s
+    /// three. Asking it to open a session put seven eighths of the wait on the
+    /// panel a reader is least often looking at -- and asking it on every
+    /// reload would put that same price on every event a watcher sends, which
+    /// is what TASK-2f7777a1fdff bought and this would spend again.
+    ///
+    /// So the claims arrive when a person asks for them, and the panel says it
+    /// has not asked until then, in the words the queue already uses. Nothing
+    /// is hidden and nothing is guessed: what is drawn is what was read.
+    fn rehold(&mut self, ank: &Ank) {
+        if self.focus != Focus::Claims {
+            return;
+        }
+        match Held::load(ank) {
+            Ok(held) => self.held = Some(held),
+            Err(failed) => self.fail(failed),
+        }
+    }
+
+    /// The corpus this screen is on, for the follower to name its lines by.
+    ///
+    /// Empty until the first read answers, which is exactly when
+    /// [`crate::session`] asks: a follower started on an empty identity is
+    /// `None`, and this reader falls back to reading when its person asks.
+    pub fn corpus(&self) -> &str {
+        self.snapshot.as_ref().map_or("", |s| s.corpus.as_str())
+    }
+
+    /// Attaches the follower, once there is a corpus to have started it with.
+    ///
+    /// It arrives after the first frame for the reason [`crate::session`]
+    /// gives, so it is set rather than constructed with: an `App` is drawable
+    /// before anything about the corpus is known, and that is the property the
+    /// opening rests on.
+    pub fn follow(&mut self, stream: Option<Stream>) {
+        self.stream = stream;
     }
 
     /// Asks `review` again, but only where the queue panel has focus.
@@ -775,7 +826,7 @@ impl App {
     /// How many rows a listing holds.
     fn count(&self, focus: Focus) -> usize {
         match focus {
-            Focus::Claims => self.snapshot.as_ref().map_or(0, |s| s.claims.len()),
+            Focus::Claims => self.held.as_ref().map_or(0, |h| h.claims.len()),
             Focus::Entities => self.entity_rows().len(),
             Focus::Queue => self.queue_rows().len(),
             Focus::Body => 0,
@@ -790,7 +841,7 @@ impl App {
     fn selected_id(&self, focus: Focus) -> Option<String> {
         let at = self.cursors[focus.number() - 1].at;
         match focus {
-            Focus::Claims => self.snapshot.as_ref()?.claims.get(at).map(|c| c.id.clone()),
+            Focus::Claims => self.held.as_ref()?.claims.get(at).map(|c| c.id.clone()),
             Focus::Entities => self.entity_rows().get(at).map(|r| r.id.clone()),
             Focus::Queue => self.queue_rows().get(at).map(|r| r.id.clone()),
             Focus::Body => self.pane_target(),
@@ -1427,14 +1478,20 @@ impl App {
 
     /// Move focus, and pay whatever the panel arriving costs.
     ///
-    /// Two panels cost something now and both are charged here rather than at
-    /// every repaint: focusing the queue is a person asking for `ank review`,
-    /// which is a whole inspection of the corpus, and arriving at the body
-    /// panel with the config pane open is a person asking for one
-    /// `ank config <key>` per key the contract declares. Neither price is paid
+    /// Three panels cost something now and all three are charged here rather
+    /// than at every repaint: focusing the claims is a person asking for
+    /// `ank status`, which counts what it reports by reading the corpus to do
+    /// it (TASK-fff0a98511b2); focusing the queue is a person asking for
+    /// `ank review`, which is a whole inspection of the corpus; and arriving at
+    /// the body panel with the config pane open is a person asking for one
+    /// `ank config <key>` per key the contract declares. No price here is paid
     /// by a screen nobody is at.
     fn focus_on(&mut self, focus: Focus, ank: &Ank) {
         self.focus = focus;
+        if focus == Focus::Claims {
+            self.rehold(ank);
+            self.clamp(Focus::Claims);
+        }
         if focus == Focus::Queue {
             self.requeue(ank);
             self.clamp(Focus::Queue);
@@ -1916,19 +1973,33 @@ impl App {
         let panels = self.arrange(area);
 
         let (corpus, identity) = match &self.snapshot {
+            // **The branch, the identity and the count come from the claims
+            // panel's own verb, so the header says so until it is asked**
+            // (TASK-fff0a98511b2). Drawing a blank where a branch goes would
+            // read as "no branch"; naming the price reads as what it is, and it
+            // is the same word the queue's panel uses one screen down.
             Some(snapshot) => (
-                format!(
-                    "ank tui   corpus {}   branch {} (default {})",
-                    &snapshot.corpus[..12.min(snapshot.corpus.len())],
-                    snapshot.branch,
-                    snapshot.default_branch
-                ),
-                format!(
-                    "identity {}   {} claim(s) live   {}",
-                    snapshot.identity,
-                    snapshot.claims.len(),
-                    self.route()
-                ),
+                match &self.held {
+                    Some(held) => format!(
+                        "ank tui   corpus {}   branch {} (default {})",
+                        &snapshot.corpus[..12.min(snapshot.corpus.len())],
+                        held.branch,
+                        held.default_branch
+                    ),
+                    None => format!(
+                        "ank tui   corpus {}   branch (not asked)",
+                        &snapshot.corpus[..12.min(snapshot.corpus.len())]
+                    ),
+                },
+                match &self.held {
+                    Some(held) => format!(
+                        "identity {}   {} claim(s) live   {}",
+                        held.identity,
+                        held.claims.len(),
+                        self.route()
+                    ),
+                    None => format!("identity (not asked)   {}", self.route()),
+                },
             ),
             // Nothing has been read yet, or the first read refused. The panels
             // below still draw -- empty, and saying so -- because a reader that
@@ -2016,7 +2087,14 @@ impl App {
     fn title_of(&self, focus: Focus, width: usize) -> Composed {
         let name = focus.name();
         match focus {
-            Focus::Claims => Composed::of(&format!("{name} ({})", self.count(Focus::Claims))),
+            // The queue's own shape, for the queue's own reason
+            // (TASK-fff0a98511b2): a panel that has not been asked has no count
+            // to give, and `(0)` over an unasked panel reads as "nothing is
+            // held" -- which is an answer, and the wrong one.
+            Focus::Claims => match &self.held {
+                None => Composed::of(&format!("{name}   (not asked)")),
+                Some(_) => Composed::of(&format!("{name} ({})", self.count(Focus::Claims))),
+            },
             Focus::Entities => {
                 let total = self.snapshot.as_ref().map_or(0, |s| s.total);
                 let rows = self.count(Focus::Entities);
@@ -2106,16 +2184,22 @@ impl App {
     /// the caller holds, and it stays against the identifier rather than moving
     /// to make room for a cursor that arrived later.
     fn claim_lines(&self, width: usize) -> Vec<Composed> {
+        let Some(held) = &self.held else {
+            // The title above already says it has not been asked, on the
+            // queue's own pattern (TASK-fff0a98511b2). What is left for the
+            // body is the way in, which is what the queue's body says too:
+            // nothing here is hidden, it is unasked, and focusing asks.
+            return vec![Composed::of("  focus this panel to ask").fitted(width)];
+        };
         let Some(snapshot) = &self.snapshot else {
             return vec![Composed::of("  the corpus has not been read").fitted(width)];
         };
-        if snapshot.claims.is_empty() {
+        if held.claims.is_empty() {
             return vec![Composed::of("  nothing is held").fitted(width)];
         }
         let c = self.cursors[Focus::Claims.number() - 1];
         let page = self.page(Focus::Claims);
-        snapshot
-            .claims
+        held.claims
             .iter()
             .enumerate()
             .skip(c.top)
@@ -2151,11 +2235,11 @@ impl App {
             return vec![Composed::of("  no entity matches this filter").fitted(width)];
         }
         let c = self.cursors[Focus::Entities.number() - 1];
-        let held = |id: &str| {
-            self.snapshot
-                .as_ref()
-                .is_some_and(|s| s.claim_on(id).is_some())
-        };
+        // The marker on a row somebody holds, and it is drawn only once the
+        // claims have been asked for (TASK-fff0a98511b2): an unmarked row means
+        // "not asked" here as much as it means "not held", and the panel one
+        // screen up is where a reader is told which.
+        let held = |id: &str| self.held.as_ref().is_some_and(|h| h.claim_on(id).is_some());
         rows.iter()
             .enumerate()
             .skip(c.top)
@@ -3876,16 +3960,7 @@ mod tests {
 
     fn snapshot() -> Snapshot {
         Snapshot {
-            branch: "wave4/tui-verb".to_string(),
-            default_branch: "main".to_string(),
-            identity: "claude-code/opus-5+tui-verb".to_string(),
             corpus: "5a02985accabde1a7365a01db237a245097ab4ca".to_string(),
-            claims: vec![Claim {
-                id: "TASK-49746735127f".to_string(),
-                holder: "claude-code/opus-5+tui-verb".to_string(),
-                expires: "2026-08-25T04:36:32Z".to_string(),
-                mine: true,
-            }],
             entities: vec![
                 row("ADR-8bd76e8d7c4e", "adr", "accepted", "A terminal reader"),
                 row("TASK-49746735127f", "task", "in_progress", "ank tui opens"),
@@ -3893,6 +3968,34 @@ mod tests {
             ],
             total: 3,
         }
+    }
+
+    /// What `status` answers, which a screen has only once the claims panel has
+    /// been focused (TASK-fff0a98511b2).
+    ///
+    /// Two fixtures where there was one, because there are two reads where
+    /// there was one. A test that is about the claims, the branch or the
+    /// identity sets this as well; a test that is about the listing does not,
+    /// and what it draws is the screen a session actually opens on.
+    fn held() -> Held {
+        Held {
+            branch: "wave4/tui-verb".to_string(),
+            default_branch: "main".to_string(),
+            identity: "claude-code/opus-5+tui-verb".to_string(),
+            claims: vec![Claim {
+                id: "TASK-49746735127f".to_string(),
+                holder: "claude-code/opus-5+tui-verb".to_string(),
+                expires: "2026-08-25T04:36:32Z".to_string(),
+                mine: true,
+            }],
+        }
+    }
+
+    /// An app that has read everything, which is what most of these tests are
+    /// about: they ask what a drawn screen says, not what an opening one costs.
+    fn has_read(a: &mut App) {
+        a.snapshot = Some(snapshot());
+        a.held = Some(held());
     }
 
     fn row(id: &str, kind: &str, status: &str, title: &str) -> Row {
@@ -3947,7 +4050,7 @@ mod tests {
         let mut a = App::new((120, 40), None)
             .inked(paint::PLAIN)
             .drawn_with(SCREEN);
-        a.snapshot = Some(snapshot());
+        has_read(&mut a);
         a
     }
 
@@ -4138,7 +4241,7 @@ mod tests {
             let mut a = App::new((120, 40), None)
                 .inked(paint::PLAIN)
                 .drawn_with(glyphs);
-            a.snapshot = Some(snapshot());
+            has_read(&mut a);
             a.focus = Focus::Entities;
             a
         }
@@ -4219,6 +4322,7 @@ mod tests {
     /// have let a palette with seven arms missing pass.
     fn coloured(ink: paint::Ink) -> App {
         let mut a = App::new((120, 40), None).inked(ink).drawn_with(SCREEN);
+        a.held = Some(held());
         let mut snapshot = snapshot();
         snapshot.entities.push(row(
             "TASK-0000ffff0004",
@@ -4857,7 +4961,7 @@ mod tests {
                     a.queue = Some(queued());
                     for read in [false, true] {
                         if read {
-                            a.snapshot = Some(snapshot());
+                            has_read(&mut a);
                             a.detail = Some(detail(
                                 "TASK-49746735127f",
                                 &(1..=200).map(|n| format!("line {n}\n")).collect::<String>(),
@@ -5028,7 +5132,7 @@ mod tests {
         let ank = nowhere();
         for size in [(80, 24), (40, 24)] {
             let mut a = App::new(size, None);
-            a.snapshot = Some(snapshot());
+            has_read(&mut a);
             a.detail = Some(Detail {
                 content: content.clone(),
                 ..detail("TASK-49746735127f", "")
@@ -5972,7 +6076,7 @@ mod tests {
 
     fn phone() -> App {
         let mut a = App::new(PHONE, None).inked(paint::PLAIN).drawn_with(SCREEN);
-        a.snapshot = Some(snapshot());
+        has_read(&mut a);
         a
     }
 
@@ -6142,7 +6246,7 @@ mod tests {
         let ank = nowhere();
         for size in [PHONE, (120, 40)] {
             let mut a = App::new(size, None).inked(paint::PLAIN);
-            a.snapshot = Some(snapshot());
+            has_read(&mut a);
             assert_eq!(a.cursors[Focus::Entities.number() - 1].at, 0);
             let at = row_of(&a, Focus::Entities, 2);
             touch(&mut a, &ank, at);
@@ -6179,7 +6283,7 @@ mod tests {
     fn a_press_on_an_unfocused_listing_takes_the_focus_and_the_row_it_landed_on() {
         let ank = nowhere();
         let mut a = App::new((120, 40), None).inked(paint::PLAIN);
-        a.snapshot = Some(snapshot());
+        has_read(&mut a);
         a.queue = Some(queued());
         a.focus = Focus::Entities;
         let at = row_of(&a, Focus::Queue, 1);
@@ -6350,7 +6454,7 @@ mod tests {
                 let mut a = App::new(window, None)
                     .inked(paint::PLAIN)
                     .drawn_with(SCREEN);
-                a.snapshot = Some(snapshot());
+                has_read(&mut a);
                 state(&mut a);
                 a
             };
@@ -6465,7 +6569,7 @@ mod tests {
         let mut a = App::new(window, None)
             .inked(paint::PLAIN)
             .drawn_with(SCREEN);
-        a.snapshot = Some(snapshot());
+        has_read(&mut a);
         a
     }
 

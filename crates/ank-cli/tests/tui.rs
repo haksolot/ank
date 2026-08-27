@@ -827,7 +827,7 @@ fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen
     // suite that wrote straight after spawning would be measuring the terminal
     // it opened rather than the program it started.
     if !args.contains(&"--json") {
-        live.until("the session to open", |t| t.contains("ank tui"));
+        live.opened();
     }
     for entry in keys {
         live.press(entry);
@@ -845,7 +845,7 @@ fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen
 #[cfg(unix)]
 fn idle(repo: &Repo, agent: &str, quiet: std::time::Duration) -> Seen {
     let mut live = Live::open(repo, agent, &[]);
-    live.until("the session to open", |t| t.contains("ank tui"));
+    live.opened();
     std::thread::sleep(quiet);
     live.press("q");
     live.finished("a reader that quits answers 0")
@@ -983,6 +983,26 @@ impl Live {
             "timed out waiting for {what}:\n{}",
             self.screen.lock().unwrap().text()
         );
+    }
+
+    /// The barrier a driven session starts from: the opening read has landed
+    /// (TASK-fff0a98511b2).
+    ///
+    /// **"A panel is on the screen" stopped meaning "the corpus was read".**
+    /// The reader draws its first frame before it spawns anything, so the
+    /// header and all four panels are up while the listing is still empty, and
+    /// a suite that pressed on at that point would be racing the read it is
+    /// about to assert on. What is waited for instead is the sentence the
+    /// listing itself puts there while it has nothing: the panel says it has
+    /// not read, and this waits for it to stop saying so.
+    ///
+    /// [`Live::until_screen`] and not [`Live::until`], because the question is
+    /// what is on the screen now: `until` asks whether something was ever on
+    /// it, and "the corpus has not been read" always was.
+    fn opened(&self) {
+        self.until_screen("the opening read to land", |t| {
+            t.contains("ank tui") && !t.contains("the corpus has not been read")
+        });
     }
 
     /// Waits for the screen to say something.
@@ -1124,7 +1144,14 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
     // this suite took: "which claim is held by whom", with a name on it. The
     // task is what is opened, because the criterion is written into its body
     // and that is what "whole" is asserted against.
-    let seen = drive(&repo, HOLDER, &[":filter task", "\r", "b", ":filter", "q"]);
+    // `1` is in the list for the reason the test above gives: the claims panel
+    // is asked for rather than drawn on opening (TASK-fff0a98511b2), and
+    // "CLAIMS (1)" below is an assertion about what it says once asked.
+    let seen = drive(
+        &repo,
+        HOLDER,
+        &[":filter task", "\r", "b", ":filter", "1", "q"],
+    );
 
     // The one assertion here that is genuinely about the bytes rather than
     // about the screen: what a full-screen reader owes the shell it was
@@ -1539,7 +1566,10 @@ fn a_claim_held_elsewhere_is_named_with_its_holder() {
         .expect("the second task exists");
     repo.ank(OTHER, &["claim", &theirs]);
 
-    let seen = drive(&repo, HOLDER, &["q"]);
+    // `1` focuses the claims panel, which is what asks `status` for them
+    // (TASK-fff0a98511b2): the price is charged where a person asks for it, so
+    // a suite that wants the claims asks for them like a person would.
+    let seen = drive(&repo, HOLDER, &["1", "q"]);
     assert!(seen.contains(OTHER), "the other holder is named:\n{seen}");
     assert!(seen.contains(HOLDER), "and so is this one:\n{seen}");
     assert!(seen.contains("CLAIMS (2)"), "{seen}");
@@ -2051,13 +2081,13 @@ fn the_event_and_the_reload_reach_the_same_displayed_state() {
         READER,
         &[("XDG_CONFIG_HOME".into(), following.0.display().to_string())],
     );
-    told.until("the told screen to open", |t| t.contains("ENTITIES"));
+    told.opened();
     let mut asking = Live::open(
         &repo,
         READER,
         &[("XDG_CONFIG_HOME".into(), alone.0.display().to_string())],
     );
-    asking.until("the asking screen to open", |t| t.contains("ENTITIES"));
+    asking.opened();
     assert!(
         told.text().contains("stream following"),
         "the first screen has a stream:\n{}",
@@ -2133,7 +2163,7 @@ fn a_screen_with_the_stream_connected_asks_nothing_while_it_is_idle() {
             ("ANK_GIT_LOG".into(), shim.log.display().to_string()),
         ],
     );
-    live.until("the screen to open", |t| t.contains("ENTITIES"));
+    live.opened();
     assert!(
         live.text().contains("stream following"),
         "the stream is connected:\n{}",
@@ -2202,7 +2232,7 @@ fn an_event_repaints_the_list_and_renews_no_claim() {
         HOLDER,
         &[("XDG_CONFIG_HOME".into(), home.0.display().to_string())],
     );
-    live.until("the screen to open", |t| t.contains("ENTITIES"));
+    live.opened();
     // Opening the task you hold renews the lease, and it is supposed to: it is
     // `ank show`, run because a person typed an identifier (TASK-49746735127f).
     // What follows is about what happens with nobody typing.

@@ -303,31 +303,34 @@ pub fn run(
     }
     let ank = Ank::new(address.clone());
     if json {
+        // **This road asks `status` and the interactive one does not**
+        // (TASK-fff0a98511b2). §4 gives this document `branch`,
+        // `default_branch` and `identity`, and a machine reader is owed every
+        // field the contract declares; what it is not owed is a screen drawn
+        // quickly, which is the only thing the other road spends this on.
         let snapshot = model::Snapshot::load(&ank).map_err(refused_by_the_cli)?;
-        let _ = writeln!(out, "{}", snapshot.document());
+        let held = model::Held::load(&ank).map_err(refused_by_the_cli)?;
+        let _ = writeln!(out, "{}", snapshot.document(&held));
         return Ok(ExitCode::Ok);
     }
-    // The corpus this reader is on, asked once and never again. The stream
-    // names corpora by the repository identity of ADR-621a7fd96ce1, so a
-    // follower has to know which lines are its own before the first one
-    // arrives, and an identity does not change under a session. A refusal here
-    // is not one: the reader simply has no stream to follow and falls back to
-    // reading when its person asks, which is what the next line already does.
-    let corpus = ank
-        .json("status", &[])
-        .map(|v| ank::text(&v, "corpus"))
-        .unwrap_or_default();
     let (wake, waking) = std::sync::mpsc::channel::<Wake>();
-    let stream = stream::follow(&corpus, wake.clone());
-    // The terminal is taken last, and given back by [`term::Screen`]'s `Drop`
-    // on every road out of what follows.
+    // The terminal is taken first now, and given back by [`term::Screen`]'s
+    // `Drop` on every road out of what follows.
+    //
+    // **Nothing has been read at this point, and that is the change**
+    // (TASK-fff0a98511b2). What used to stand here was `ank status --json`,
+    // asked for one field -- the corpus identity the stream names its lines by
+    // -- and answered in twenty seconds on a corpus of fifteen hundred
+    // entities, before a single cell had been painted. `find` carries that
+    // identity now, so the read that the screen was already waiting for is the
+    // read the stream waits for too, and the frame goes up in front of both.
     let mut screen = term::Screen::open().map_err(no_screen)?;
-    term::typing(wake);
+    term::typing(wake.clone());
     // Blocking, and there is nothing else in it: with nobody typing, nothing
     // changing and the window still, this reader is a process asleep on a
     // channel. No verb runs, no clock ticks and no claim moves.
     let mut wakes = std::iter::from_fn(move || waking.recv().ok());
-    session(&ank, &mut wakes, &mut screen, stream)
+    session(&ank, &mut wakes, &mut screen, Some(wake))
 }
 
 /// What can wake a drawn screen. There are exactly four things, and a fifth
@@ -413,8 +416,20 @@ fn refused_by_the_cli(failed: ank::Failed) -> Refused {
 /// asserted here is that a resize redraws, a broken terminal ends the session
 /// with an environment code, and an exhausted stream of wakes is a quit.
 ///
-/// `stream` is what the screen says about how it is being kept current, and
-/// `None` where there is nothing to follow.
+/// `news` is the channel a follower would send on, and `None` where this
+/// session is not to follow anything -- which is what the tests below pass, and
+/// what keeps a driven session from opening a thread on the caller's home.
+/// The follower is started here rather than by [`run`] because it cannot be
+/// started any earlier: it names its lines by the corpus identity, and the
+/// first thing this session knows that from is the `find` below
+/// (TASK-fff0a98511b2).
+///
+/// **The first frame goes up before anything is read**, which is the other half
+/// of the same task. The loop draws, and only then reads; the opening pass
+/// takes the `continue` so that the frame a person sees first costs no child at
+/// all, and the rows land on the second paint a few hundred milliseconds later.
+/// What that removes is not a slow read but a *blocking* one -- an empty panel
+/// saying it has not read yet is a screen, and twenty seconds of nothing is not.
 ///
 /// **The window is read from the terminal before every frame**, and the resize
 /// event is answered as well. Two roads to one fact, deliberately: the event is
@@ -425,11 +440,11 @@ pub fn session(
     ank: &Ank,
     wakes: &mut dyn Iterator<Item = Wake>,
     screen: &mut dyn Painter,
-    stream: Option<stream::Stream>,
+    news: Option<std::sync::mpsc::Sender<Wake>>,
 ) -> Result<ExitCode, Refused> {
     let opened = screen.size().unwrap_or((80, 24));
-    let mut app = view::App::new((opened.0 as usize, opened.1 as usize), stream);
-    app.reload(ank);
+    let mut app = view::App::new((opened.0 as usize, opened.1 as usize), None);
+    let mut opening = Some(news);
     let code = loop {
         if let Ok((columns, rows)) = screen.size() {
             app.resize(columns, rows);
@@ -439,6 +454,21 @@ pub fn session(
             // by stderr once the terminal has been given back.
             app.note(format!("cannot draw to the terminal: {e}"));
             break ExitCode::Environment;
+        }
+        // The opening reads, taken once and after the frame above rather than
+        // in front of it.
+        if let Some(news) = opening.take() {
+            app.reload(ank);
+            // And the follower, now that there is a corpus to name its lines
+            // by. It starts from the file's current length, so the window in
+            // which an event could be written and not delivered is the `find`
+            // that just answered -- narrower than the `status` it replaced,
+            // which this reader used to wait through before following anything.
+            if let Some(news) = news {
+                let following = stream::follow(app.corpus(), news);
+                app.follow(following);
+            }
+            continue;
         }
         // Exhausted means every sender is gone, which is the same end of input
         // by another road.
@@ -595,12 +625,15 @@ mod tests {
         let (mut paper, mut wakes, _size) = driven((120, 40), vec![Wake::Resize(60, 20)]);
         let code = session(&nowhere(), &mut wakes, &mut paper, None).expect("a session");
         assert_eq!(code, ExitCode::Ok);
+        // Three: the opening frame, the one the opening read produced, and the
+        // one the resize produced (TASK-fff0a98511b2). The first two are the
+        // same window and the third is the new one.
         assert_eq!(
             paper.frames.len(),
-            2,
+            3,
             "the screen was not drawn again for the resize"
         );
-        let (before, after) = (&paper.frames[0], &paper.frames[1]);
+        let (before, after) = (&paper.frames[1], &paper.frames[2]);
         assert_eq!(before.lines().count(), 40);
         assert_eq!(after.lines().count(), 20, "the new height:\n{after}");
         for line in after.lines() {
@@ -629,10 +662,10 @@ mod tests {
             session(&nowhere(), &mut wakes, &mut paper, None).expect("a session"),
             ExitCode::Ok
         );
-        // One for the opening frame, one after the `j`, and none after the quit:
-        // a session that drew again on its way out would be painting a screen
-        // it is about to take away.
-        assert_eq!(paper.frames.len(), 2);
+        // One for the opening frame, one for what the opening read produced,
+        // one after the `j`, and none after the quit: a session that drew again
+        // on its way out would be painting a screen it is about to take away.
+        assert_eq!(paper.frames.len(), 3);
     }
 
     /// Nothing left to wake it is a quit, not a fault: every sender is gone.
@@ -643,7 +676,47 @@ mod tests {
             session(&nowhere(), &mut wakes, &mut paper, None).expect("a session"),
             ExitCode::Ok
         );
-        assert_eq!(paper.frames.len(), 1, "the opening frame was drawn");
+        assert_eq!(paper.frames.len(), 2, "the opening frame was drawn");
+    }
+
+    /// **The first frame is drawn before anything is read**
+    /// (TASK-fff0a98511b2).
+    ///
+    /// The criterion measured where it can be measured exactly. `nowhere()`
+    /// addresses a binary that does not exist, so every read this session
+    /// attempts refuses -- and the frame that goes up first says the corpus has
+    /// not been read, while the frame after it carries the refusal. Two frames
+    /// and in that order is the whole property: had the read come first, there
+    /// would be one frame and it would carry the refusal.
+    ///
+    /// The wall-clock half of the same criterion is in
+    /// `crates/ank-tui/tests/opening.rs`, which drives the real binary on a
+    /// pseudo-terminal over a corpus of a thousand entities. This says the
+    /// ordering; that says the price.
+    #[test]
+    fn the_first_frame_is_drawn_before_the_corpus_is_read() {
+        let (mut paper, mut wakes, _size) = driven((100, 30), Vec::new());
+        assert_eq!(
+            session(&nowhere(), &mut wakes, &mut paper, None).expect("a session"),
+            ExitCode::Ok
+        );
+        assert_eq!(paper.frames.len(), 2, "the opening drew twice");
+        assert!(
+            paper.frames[0].contains("the corpus has not been read"),
+            "the first frame waited for a read:\n{}",
+            paper.frames[0]
+        );
+        assert!(
+            !paper.frames[0].contains("cannot run"),
+            "the first frame carries a read's outcome, so a read came before \
+             it:\n{}",
+            paper.frames[0]
+        );
+        assert!(
+            paper.frames[1].contains("cannot run"),
+            "the read that follows the first frame was never made:\n{}",
+            paper.frames[1]
+        );
     }
 
     /// A terminal that cannot be read from is an environment to repair, and it
