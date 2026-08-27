@@ -218,7 +218,7 @@
 //! it.
 
 use crate::ank::{Ank, Failed, Ran};
-use crate::bindings::{self, Holding};
+use crate::bindings::{self, Binding, Holding};
 use crate::input::{Act, Command};
 use crate::keys::{self, Editing, Press};
 use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
@@ -231,7 +231,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mou
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Paragraph, Widget};
+use ratatui::widgets::{Block, Clear, Paragraph, Widget};
 
 /// Which panel has focus.
 ///
@@ -401,6 +401,16 @@ struct Cursor {
     top: usize,
 }
 
+/// What the key list did with a key pressed over it (TASK-8a6578851244).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Listed {
+    /// The list answered it: it scrolled, went back to the top, or closed.
+    Answered,
+    /// The list has no answer for it. It closes, and the key goes on to the
+    /// reader as if the list had not been there.
+    Through,
+}
+
 pub struct App {
     size: (usize, usize),
     focus: Focus,
@@ -455,6 +465,21 @@ pub struct App {
     /// probe and they are two fields, so taking the paint away moves no
     /// character on this frame -- see [`Glyphs`].
     glyphs: Glyphs,
+    /// The key list, open, with the row of it the overlay starts at
+    /// (TASK-8a6578851244).
+    ///
+    /// `None` is the ordinary state, and it is the whole of what the list costs
+    /// at rest: nothing. Open, it is drawn *over* the panels rather than into
+    /// the band under them, so the arrangement beneath it does not move and
+    /// closing it gives back the frame that was there -- which is what a note
+    /// carrying thirty-three entries could not do at eighty by twenty-four,
+    /// where the panels were squeezed to make room for it.
+    ///
+    /// A row and not a flag, because the list is longer than the window at both
+    /// of the windows ADR-c07e2694f0e1 measures this reader on. The alternative
+    /// to scrolling it is cutting it, and a key list that stops at the bottom of
+    /// the screen is the omission that decision was written against.
+    overlay: Option<usize>,
 }
 
 impl App {
@@ -486,6 +511,7 @@ impl App {
             // only the half of that rule the terminal itself answered.
             ink: Ink::detect(),
             glyphs: Glyphs::detect(),
+            overlay: None,
         }
     }
 
@@ -725,6 +751,16 @@ impl App {
                 }
             };
         }
+        if self.overlay.is_some() {
+            match self.over_list(key) {
+                Listed::Answered => return false,
+                // The list closes on a key it has no answer for, and that key
+                // goes on to do what it does: a person who pressed `4` on the
+                // key list asked for the queue, and a reader that swallowed the
+                // press to close a window would be one press behind them.
+                Listed::Through => self.overlay = None,
+            }
+        }
         match keys::typed(key, self.focus) {
             Press::Run(command) => self.act(command, ank),
             Press::Cycle => {
@@ -770,6 +806,15 @@ impl App {
         let at = Position::new(event.column, event.row);
         match event.kind {
             MouseEventKind::Down(_) => {
+                // The list is over the panels and over the bands, so it is what
+                // a press lands on while it is open: one row, one binding, and
+                // no second road to whatever is drawn underneath it.
+                if self.overlay.is_some() {
+                    return match self.list_at(at) {
+                        Some(binding) => self.ran(binding, ank),
+                        None => false,
+                    };
+                }
                 if let Some(key) = self.target_at(at) {
                     return self.press(KeyEvent::new(key, KeyModifiers::NONE), ank);
                 }
@@ -801,7 +846,56 @@ impl App {
         if self.pending.is_some() || self.prompt.is_some() {
             return false;
         }
+        // A swipe over the key list scrolls the key list, which is the same
+        // rule: what a scroll moves is what the finger is on.
+        if self.overlay.is_some() {
+            self.scroll_list(by);
+            return false;
+        }
         self.act(Command::Move(by), ank)
+    }
+
+    /// What one key does to the key list that is open under it
+    /// (TASK-8a6578851244).
+    ///
+    /// **Read as commands and never as letters**, which is what keeps the
+    /// overlay's own grammar from being a fifth key table. What the list
+    /// answers to is what a person means by it: the movement commands scroll
+    /// the rows, `top` goes back to the first of them, and the two commands
+    /// that mean "out of this" -- the key the list is named after, and `back`,
+    /// which is where `Esc` lands -- close it. Every other key is the reader's
+    /// as usual.
+    ///
+    /// It is not modal, and deliberately: the confirmation is modal because
+    /// what a person says yes to must not move underneath them, and a list of
+    /// keys has nothing to say yes to.
+    fn over_list(&mut self, key: KeyEvent) -> Listed {
+        let Press::Run(command) = keys::typed(key, self.focus) else {
+            return Listed::Through;
+        };
+        match command {
+            Command::Move(by) => self.scroll_list(by),
+            Command::Page(by) => {
+                let page = self.list_rows().max(1) as isize;
+                self.scroll_list(by * page)
+            }
+            Command::Top => self.overlay = Some(0),
+            Command::Help | Command::Back => self.overlay = None,
+            _ => return Listed::Through,
+        }
+        Listed::Answered
+    }
+
+    /// The key list, moved by this many rows, and never past either end.
+    ///
+    /// Clamped against the rows the overlay can actually draw rather than
+    /// against the list's length: a window that scrolled past its last row
+    /// would answer `j` with a screen that did not move, which reads as a
+    /// reader that has stopped listening.
+    fn scroll_list(&mut self, by: isize) {
+        let last = self.list_lines().len().saturating_sub(self.list_rows());
+        let top = self.overlay.unwrap_or(0) as isize + by;
+        self.overlay = Some(top.clamp(0, last as isize) as usize);
     }
 
     /// A tap that landed on a panel: that panel focused, and the row under the
@@ -972,7 +1066,16 @@ impl App {
             }
             Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
-            Command::Help => self.note = Some(bindings::listing().join("\n")),
+            // Opened and never toggled here: a `?` pressed *on* the list is
+            // read by `press` before the dispatch is reached, so this arm only
+            // ever runs on a screen that has none.
+            Command::Help => self.overlay = Some(0),
+            // The three §4 verbs this reader has no road to, named in the note
+            // band and not over the panels (TASK-1a415107fd56). It is two rows
+            // and it is not a list a finger acts on: every row of the overlay
+            // *is* the key it names, and none of these three is a key at all,
+            // so drawing them there would be the one thing that list must never
+            // carry.
             Command::Further => self.note = Some(bindings::further().join("\n")),
             Command::Nothing => {}
             Command::Unknown(word) => {
@@ -1419,6 +1522,11 @@ impl App {
             keys.push(fit(&ratify, width));
         }
         paragraph(&keys).render(panels.keys, buf);
+
+        // Last, and over everything the header does not carry: the key list is
+        // an overlay (TASK-8a6578851244), so it is painted after the frame it
+        // covers rather than into a band the frame had to give up rows for.
+        self.list(area, buf);
     }
 
     /// One panel: its border, its title, and the lines it holds.
@@ -2190,6 +2298,150 @@ impl App {
             .into_iter()
             .find(|t| t.row == row && column >= t.at && column < t.at + t.label.chars().count())
             .map(|t| t.key)
+    }
+
+    // -----------------------------------------------------------------------
+    // The key list, and where a finger lands on it (TASK-8a6578851244)
+    // -----------------------------------------------------------------------
+
+    /// The rectangle the key list is drawn in: everything under the header.
+    ///
+    /// **Over the panels and over the bands under them, and never a rectangle
+    /// the layout was asked for.** [`App::arrange`] does not know this exists,
+    /// which is the whole of why closing the list gives back the frame that was
+    /// there: nothing moved to make room for it, so nothing has to move back.
+    ///
+    /// The header is left alone because it is where a person is told which
+    /// corpus and which branch they are on, and a list of keys is not a reason
+    /// to stop saying so.
+    fn list_rect(&self, area: Rect) -> Rect {
+        let header = self.arrange(area).header;
+        Rect {
+            x: area.x,
+            y: area.y + header.height,
+            width: area.width,
+            height: area.height.saturating_sub(header.height),
+        }
+    }
+
+    /// The rows of the key list, wrapped to the width the overlay draws them
+    /// at, each with the binding a press on it runs.
+    ///
+    /// **One function for drawing them and for hitting them**, which is the
+    /// reason [`App::targets`] gives for itself: a row a person can see and a
+    /// row a press resolves to are the same row or they are two, and two is a
+    /// screen that answers somewhere other than where it was touched.
+    ///
+    /// Wrapped rather than cut, because a heading is a sentence and the
+    /// sentences are what the trailer used to lose to a `~` before they
+    /// finished. Every row of a wrapped entry carries the same binding, so a
+    /// press anywhere on it reaches the key it names.
+    fn list_lines(&self) -> Vec<(String, Option<&'static Binding>)> {
+        let width = inside(self.list_rect(self.area())).width as usize;
+        bindings::listing()
+            .into_iter()
+            .flat_map(|item| {
+                let binding = item.binding;
+                wrap(&item.text, width.max(1))
+                    .into_iter()
+                    .map(move |line| (line, binding))
+            })
+            .collect()
+    }
+
+    /// How many of those rows the overlay has room for, which is what a page of
+    /// it is worth.
+    fn list_rows(&self) -> usize {
+        inside(self.list_rect(self.area())).height as usize
+    }
+
+    /// The binding a press on the key list reached.
+    ///
+    /// `None` on a heading, which is prose about the rows under it; on the
+    /// border; and on a row past the end of a list shorter than its window. A
+    /// press that named no binding does nothing at all rather than closing the
+    /// list -- a finger that missed is a finger that missed, and a reader that
+    /// took the list away for it would be answering a question nobody asked.
+    fn list_at(&self, at: Position) -> Option<&'static Binding> {
+        let top = self.overlay?;
+        let inside = inside(self.list_rect(self.area()));
+        if !inside.contains(at) {
+            return None;
+        }
+        let row = top + (at.y - inside.y) as usize;
+        self.list_lines().get(row).and_then(|(_, binding)| *binding)
+    }
+
+    /// One row of the key list, pressed. `true` means the session is over.
+    ///
+    /// **A row is the key it names, and it reaches it by pressing it**
+    /// (ADR-c07e2694f0e1). The same reasoning [`Action`] carries: a tap on a
+    /// word hands [`App::press`] the very [`KeyEvent`] that word names, so
+    /// there is one vocabulary on this screen rather than a second road that
+    /// happens to agree.
+    ///
+    /// **The writing half has its letters now** (TASK-1a415107fd56), so this is
+    /// one line and no longer two roads. It was written with a second arm --
+    /// a row of the writing half had no key to press, so it reached the verb
+    /// through the typed grammar, and a verb wanting a message opened the
+    /// prompt with its word in it. There is no keyless row left and no typed
+    /// grammar that reads a verb, so what remains is the rule the doc above
+    /// states, applied to every row: a row is the key it names, and pressing it
+    /// presses that key.
+    ///
+    /// The list closes on the press, whatever it reached. A person who has
+    /// asked for a verb is being shown the verb, and a key list still over the
+    /// screen would be covering the command they are about to answer for.
+    fn ran(&mut self, binding: &'static Binding, ank: &Ank) -> bool {
+        self.overlay = None;
+        self.press(KeyEvent::new(binding.key, KeyModifiers::NONE), ank)
+    }
+
+    /// The key list, drawn over the frame it was asked for from.
+    ///
+    /// Cleared first, because a `Block` paints a border and a `Paragraph` paints
+    /// the rows it was given: the cells between the last row and the bottom
+    /// border would otherwise still be carrying whatever panel is underneath,
+    /// which is a list with somebody else's rows showing through it.
+    fn list(&self, area: Rect, buf: &mut Buffer) {
+        let Some(top) = self.overlay else {
+            return;
+        };
+        let rect = self.list_rect(area);
+        if rect.width < 2 || rect.height < 2 {
+            return;
+        }
+        let lines = self.list_lines();
+        let inside = inside(rect);
+        let room = inside.height as usize;
+        let shown = lines.len().min(top + room);
+        // What is on the screen and what there is of it, because the list is
+        // longer than the window at both of the windows this reader is measured
+        // on: a person who cannot see that row nine of thirty-seven is under
+        // their thumb has no reason to scroll.
+        let heading = format!(
+            "KEYS {}-{} of {}   {} closes",
+            (top + 1).min(shown),
+            shown,
+            lines.len(),
+            named(KeyCode::Esc)
+        );
+        let title = Composed::new()
+            .plain(text::CURSOR)
+            .plain(&heading)
+            .fitted(rect.width as usize - 2);
+        Clear.render(rect, buf);
+        Block::bordered()
+            .border_set(self.glyphs.border(true))
+            .title(title.line(self.ink))
+            .render(rect, buf);
+        let rows: Vec<String> = lines
+            .iter()
+            .skip(top)
+            .take(room)
+            .map(|(line, _)| fit(line, inside.width as usize))
+            .collect();
+        paragraph(&rows).render(inside, buf);
     }
 
     /// How this screen is being kept current, in the two words a person needs.
@@ -4970,6 +5222,215 @@ mod tests {
                 &ank,
             );
             assert_eq!(a.cursors[Focus::Entities.number() - 1].at, expected);
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // The key list as an overlay (TASK-8a6578851244)
+    // -----------------------------------------------------------------------
+
+    /// A screen of a stated window with the corpus on it.
+    ///
+    /// The suite drives the built binary at the two windows the criterion
+    /// names; what is here is the same properties at more of them and on every
+    /// platform, which is where the layout and the hit test belong.
+    fn windowed(window: (usize, usize)) -> App {
+        let mut a = App::new(window, None)
+            .inked(paint::PLAIN)
+            .drawn_with(SCREEN);
+        a.snapshot = Some(snapshot());
+        a
+    }
+
+    /// The row of the list that names one verb, as the table spells it.
+    fn row_reading(verb: &str) -> String {
+        format!(
+            "  {}",
+            bindings::of_verb(verb)
+                .unwrap_or_else(|| panic!("the table spells {verb}"))
+                .entry()
+        )
+    }
+
+    /// The list scrolled so that one row of it is on the screen, and where on
+    /// the screen that row landed.
+    fn scrolled_to(a: &mut App, row: usize) -> Position {
+        let lines = a.list_lines();
+        let top = row.min(lines.len().saturating_sub(a.list_rows()));
+        a.overlay = Some(top);
+        let inside = inside(a.list_rect(a.area()));
+        Position::new(inside.x, inside.y + (row - top) as u16)
+    }
+
+    /// **The key list is drawn over the panels, and closing it gives the frame
+    /// back character for character** (TASK-8a6578851244).
+    ///
+    /// The second half is the one the overlay exists for. A list the layout had
+    /// to find rows for cost the panels those rows -- thirteen of twenty-four
+    /// on furniture is what ADR-c07e2694f0e1 measured -- and giving them back
+    /// afterwards is a second arrangement that has to agree with the first.
+    /// Nothing moved to make room, so nothing has to move back, and the
+    /// cheapest way to say so is that the two frames are the same characters.
+    #[test]
+    fn the_key_list_covers_the_panels_and_gives_the_frame_back_when_it_closes() {
+        for window in [(80, 24), (40, 30), (120, 40), (200, 50)] {
+            let ank = nowhere();
+            let mut a = windowed(window);
+            let before = a.frame();
+            assert!(
+                before.contains(Focus::Entities.name()),
+                "{window:?}: the screen drew no panel to cover:\n{before}"
+            );
+
+            tap(&mut a, &ank, KeyCode::Char('?'));
+            let frame = a.frame();
+            assert_eq!(
+                frame.lines().count(),
+                window.1,
+                "{window:?}: the list changed how many rows the frame is:\n{frame}"
+            );
+            for line in frame.lines() {
+                assert!(
+                    line.chars().count() <= window.0,
+                    "{window:?}: a row is past the right edge: {line}\n{frame}"
+                );
+            }
+            assert!(
+                !frame.contains(Focus::Entities.name()),
+                "{window:?}: the list left the panels showing rather than \
+                 covering them:\n{frame}"
+            );
+
+            tap(&mut a, &ank, KeyCode::Esc);
+            assert!(a.overlay.is_none(), "{window:?}: Esc left the list open");
+            assert_eq!(
+                a.frame(),
+                before,
+                "{window:?}: the key list did not give the frame back"
+            );
+        }
+    }
+
+    /// **Every row of the list that names a binding is reached by a press on
+    /// it, and every row that names none reaches nothing**
+    /// (TASK-8a6578851244, ADR-c07e2694f0e1).
+    ///
+    /// Over every row rather than over the one the criterion names, because
+    /// "every line of that list is a target" is a claim about all of them: a
+    /// hit test off by one would answer the row above for thirty-odd of these
+    /// and still pass a test that only pressed `claim`. The headings are in
+    /// here for the same reason from the other side -- a sentence about the
+    /// rows under it is the one row of this list that must run nothing.
+    #[test]
+    fn every_row_of_the_key_list_is_the_binding_it_names_and_a_heading_is_none() {
+        for window in [(80, 24), (40, 30), (120, 40)] {
+            let ank = nowhere();
+            let mut a = windowed(window);
+            tap(&mut a, &ank, KeyCode::Char('?'));
+            let lines = a.list_lines();
+            assert!(
+                lines.len() > a.list_rows(),
+                "{window:?}: the list is not longer than its window, so this \
+                 asserts nothing about scrolling it"
+            );
+            for row in 0..lines.len() {
+                let (text, binding) = lines[row].clone();
+                let at = scrolled_to(&mut a, row);
+                assert_eq!(
+                    a.list_at(at).map(|b| b.entry()),
+                    binding.map(|b| b.entry()),
+                    "{window:?}: a press on row {row} did not reach '{text}'"
+                );
+            }
+        }
+    }
+
+    /// **A press on the row reading `claim` composes a claim and shows it**
+    /// (TASK-8a6578851244, TASK-d4a882345837).
+    ///
+    /// A row is a road to a verb, and there is one road from a verb to a spawn
+    /// with the confirmation on it. So what a press reaches is the composed
+    /// command, waiting: the list closes -- a person answering for a command is
+    /// not reading a key list drawn over it -- and nothing has run.
+    #[test]
+    fn a_press_on_the_row_reading_claim_composes_a_claim_and_shows_it() {
+        for window in [(80, 24), (40, 30), (120, 40)] {
+            let ank = nowhere();
+            let mut a = windowed(window);
+            tap(&mut a, &ank, KeyCode::Char('?'));
+            let entry = row_reading("claim");
+            let row = a
+                .list_lines()
+                .iter()
+                .position(|(text, _)| *text == entry)
+                .unwrap_or_else(|| panic!("{window:?}: no row of the list reads '{entry}'"));
+            let at = scrolled_to(&mut a, row);
+            touch(&mut a, &ank, at);
+
+            assert!(
+                a.overlay.is_none(),
+                "{window:?}: the list stayed over the command it raised"
+            );
+            let pending = a
+                .pending
+                .as_ref()
+                .unwrap_or_else(|| panic!("{window:?}: no command is waiting"));
+            assert_eq!(pending.verb, "claim");
+            assert!(
+                pending.shown.starts_with("ank claim "),
+                "{window:?}: {}",
+                pending.shown
+            );
+        }
+    }
+
+    /// **A press while a command waits dismisses that command and opens no
+    /// list** (TASK-8a6578851244, TASK-d4a882345837).
+    ///
+    /// The confirmation is modal for a finger exactly as it is for a key, and
+    /// the key list is where a second road to one would appear: it is reachable
+    /// by a press, and a press is what the confirmation answers. Both roads are
+    /// stated -- the key the list is named after, and a touch on the screen --
+    /// because either alone would leave the other open.
+    #[test]
+    fn a_press_while_a_command_waits_dismisses_it_and_opens_no_list() {
+        for window in [(80, 24), (40, 30)] {
+            let ank = nowhere();
+            for by_key in [true, false] {
+                let mut a = windowed(window);
+                a.pending = Some(Pending {
+                    verb: "claim",
+                    args: vec!["TASK-4d2eb2b4e193".to_string()],
+                    shown: "ank claim TASK-4d2eb2b4e193 --json".to_string(),
+                });
+                match by_key {
+                    true => {
+                        tap(&mut a, &ank, KeyCode::Char('?'));
+                    }
+                    false => {
+                        let at = Position::new(1, (window.1 / 2) as u16);
+                        touch(&mut a, &ank, at);
+                    }
+                }
+                assert!(
+                    a.overlay.is_none(),
+                    "{window:?}: a press over a waiting command opened the key list"
+                );
+                assert!(
+                    a.pending.is_none(),
+                    "{window:?}: a press over a waiting command left it waiting"
+                );
+                assert!(
+                    a.note
+                        .as_deref()
+                        .is_some_and(|note| note.starts_with(DISMISSED)),
+                    "{window:?}: the reader did not say the command was declined"
+                );
+                assert!(
+                    !a.frame().contains("KEYS"),
+                    "{window:?}: the key list is on the frame"
+                );
+            }
         }
     }
 }
