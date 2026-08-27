@@ -285,19 +285,22 @@ fn the_four_letters_the_verbs_cost_move_nothing_on_the_screen() {
     live.quit();
 }
 
-/// **`x` opens a list naming close, attest and read** (TASK-1a415107fd56).
+/// **`x` opens a list naming close, attest and read**
+/// (TASK-1a415107fd56, TASK-e8da6a00564a).
 ///
-/// The three §4 verbs this reader has no road to. They are named rather than
-/// bound because `ank.rs`'s gate refuses them and a letter apiece would be
-/// three offers nothing keeps -- so what the list says is what they are and
-/// that a shell is where they are spelled, and TASK-e8da6a00564a is where that
-/// stops being true.
+/// The three §4 verbs with no letter of their own. They were named and not
+/// bound because the gate refused them; the gate carries them now, and they are
+/// still not bound -- a letter apiece would be three more keys spent on three
+/// verbs a person reaches once a fortnight, and the list is where the offer
+/// belongs. What this test is answerable for is the naming: the three are on
+/// the list, each with the form its verb declares, and opening the list runs
+/// nothing. That opening a *row* of it reaches the verb is
+/// `tests/edit.rs`'s.
 ///
-/// The forms are read back too, out of the contract's own table: a list that
-/// named `close` without `--reason` would be teaching a command the CLI
-/// refuses.
+/// The forms are read back out of the contract's own table: a list that named
+/// `close` without `--reason` would be teaching a command the CLI refuses.
 #[test]
-fn the_key_past_the_six_names_the_verbs_this_reader_does_not_run() {
+fn the_key_past_the_six_names_the_verbs_with_no_letter_of_their_own() {
     let _one = ONE_AT_A_TIME
         .lock()
         .unwrap_or_else(|held| held.into_inner());
@@ -316,6 +319,12 @@ fn the_key_past_the_six_names_the_verbs_this_reader_does_not_run() {
     );
     live.send("x");
     live.until("the list to be drawn", |t| t.contains("attest"));
+    // Over the panels and not in the note band, which is a row `arrange`
+    // measures: the list costs the frame nothing at rest and nothing while it
+    // is open (TASK-9a402a54886f's budget, TASK-e8da6a00564a's overlay).
+    live.until("the list to be an overlay of its own", |t| {
+        t.contains("MORE VERBS")
+    });
     let frame = live.frame();
     let shown = flat(&frame);
     for verb in ["close", "attest", "read"] {

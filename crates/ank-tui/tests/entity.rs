@@ -28,8 +28,7 @@
 
 mod terminal;
 
-use std::path::PathBuf;
-use terminal::{Live, Repo};
+use terminal::{Editor, Live, Repo};
 
 /// What the confirmation says above the command line, and what it says after a
 /// person has declined one. Read out of the reader, never spelled here.
@@ -48,7 +47,7 @@ const WINDOW: (u16, u16) = (120, 34);
 /// and a suite that typed the letter `new` happens to be bound to today would
 /// go on passing against a table that moved it.
 fn key_of_new() -> String {
-    let binding = ank_tui::bindings::of_verb(ank_tui::form::VERB)
+    let binding = ank_tui::bindings::of_verb(ank_tui::form::MAKE)
         .expect("the reader binds a key to 'ank new'");
     let letter = ank_tui::bindings::named(binding.key);
     assert_eq!(
@@ -61,7 +60,7 @@ fn key_of_new() -> String {
 
 /// The kinds `ank new` makes, in the order the form cycles them.
 fn kinds() -> Vec<&'static str> {
-    ank_tui::form::Form::open()
+    ank_tui::form::Form::open(ank_tui::form::MAKE)
         .expect("this build declares 'ank new'")
         .kinds()
         .to_vec()
@@ -69,63 +68,9 @@ fn kinds() -> Vec<&'static str> {
 
 /// The mandatory flags of one kind, as the reader has them.
 fn required(kind: &str) -> &'static [&'static str] {
-    ank_tui::form::required(kind)
-}
-
-// ---------------------------------------------------------------------------
-// The editor, and the sentinel that says it ran
-// ---------------------------------------------------------------------------
-
-/// An `$EDITOR` that writes a file and exits.
-///
-/// It writes and does not edit, deliberately: what is being measured is whether
-/// the editor was *reached*, and a script that filled the template in would
-/// make the reader's failure look like a success.
-struct Editor {
-    script: PathBuf,
-    sentinel: PathBuf,
-}
-
-impl Editor {
-    fn beside(repo: &Repo) -> Editor {
-        use std::os::unix::fs::PermissionsExt;
-        let script = repo.0.join("editor.sh");
-        let sentinel = repo.0.join("the-editor-ran");
-        std::fs::write(
-            &script,
-            format!(
-                "#!/bin/sh\nprintf 'the editor ran on %s\\n' \"$1\" > {}\n",
-                sentinel.display()
-            ),
-        )
-        .expect("the script must be writable");
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
-            .expect("the script must be executable");
-        Editor { script, sentinel }
-    }
-
-    fn env(&self) -> Vec<(&str, &str)> {
-        vec![("EDITOR", self.script.to_str().expect("a UTF-8 path"))]
-    }
-
-    fn ran(&self) -> bool {
-        self.sentinel.is_file()
-    }
-
-    fn forget(&self) {
-        let _ = std::fs::remove_file(&self.sentinel);
-    }
-
-    /// The assertion this whole suite turns on, made wherever it is worth
-    /// making: the reader never reached an editor.
-    fn never_ran(&self, when: &str) {
-        assert!(
-            !self.ran(),
-            "the reader opened $EDITOR {when}, into a child with no stdin and a \
-             terminal in raw mode on the alternate screen: {}",
-            self.sentinel.display()
-        );
-    }
+    ank_tui::form::need(ank_tui::form::MAKE, kind)
+        .expect("'ank new' declares what it will not compose without")
+        .flags()
 }
 
 // ---------------------------------------------------------------------------
@@ -255,7 +200,7 @@ fn to_kind(live: &mut Live, kind: &str) {
 /// walk that assumed where the cursor already was would be a suite driving a
 /// form it had not looked at.
 fn fill_required(live: &mut Live, kind: &str, value_of: impl Fn(&str) -> Option<String>) {
-    let form = ank_tui::form::Form::open().expect("a form");
+    let form = ank_tui::form::Form::open(ank_tui::form::MAKE).expect("a form");
     let mut wanted: Vec<(usize, &str, String)> = Vec::new();
     for flag in required(kind) {
         let Some(value) = value_of(flag) else {

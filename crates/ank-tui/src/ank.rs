@@ -3,9 +3,10 @@
 //! Eleven verbs are reached from here, in two lists that are policy made
 //! mechanical rather than policy stated in prose. [`READS`] is the five that
 //! only read -- `status`, `find`, `show`, `scope` and `review` -- and
-//! [`Ank::json`] refuses anything else before spawning. [`ACTS`] is the six the
+//! [`Ank::json`] refuses anything else before spawning. [`ACTS`] is what the
 //! person at the keyboard may ask for -- `claim`, `log`, `release`, `done`,
-//! `amend` and `accept` -- and [`Ank::act`] refuses anything else the same way.
+//! `amend`, `accept`, `new`, `edit`, `close`, `attest` and `read` -- and
+//! [`Ank::act`] refuses anything else the same way.
 //! Two gates and not one, because the difference between them is the whole of
 //! what a reader is allowed to do on its own: a screen repaints by reading, and
 //! it writes only where a command was typed.
@@ -21,9 +22,9 @@
 //! one, whatever a later edit intends. The signature is git's and the person's,
 //! and it is unreachable from here by construction rather than by restraint.
 //!
-//! The four that must stay out of both lists are `close`, `check`, `attest` and
-//! `init`, and a verb absent from a list is absent silently -- so the absence
-//! is asserted below rather than left to whoever reads the two constants next.
+//! The two that must stay out of both lists are `check` and `init`, and a verb
+//! absent from a list is absent silently -- so the absence is asserted below
+//! rather than left to whoever reads the two constants next.
 //!
 //! **An act runs with `--json` like a read does.** ADR-8bd76e8d7c4e and
 //! SPEC-93531977642f both say the reader reaches the corpus only by running the
@@ -100,8 +101,29 @@ const FINDINGS_ARE_AN_ANSWER: &[&str] = &["review"];
 /// form itself cannot compose the flagless call that would open `$EDITOR` into
 /// a child with no stdin.
 ///
-/// `close`, `check`, `attest` and `init` are not here and must not arrive.
-pub const ACTS: &[&str] = &["claim", "log", "release", "done", "amend", "accept", "new"];
+/// **`edit`, `close`, `attest` and `read` are the last four**
+/// (TASK-e8da6a00564a). `edit` is the one that had to be argued for and it is
+/// argued for on exactly `new`'s ground: `ank edit <id>` with no field named
+/// opens `$EDITOR`, so the verb is reached through a form that will not compose
+/// until one of `--title`, `--body` and `--constraint` is filled in, and the
+/// flagless call is a state `crate::form::Form::composed` cannot produce. The
+/// other three carry no editor at all -- `close` refuses without `--reason`,
+/// `attest` without `--proof`, and `read` takes no flag whatever -- and they
+/// are here because the alternative was a reader that draws three verbs it
+/// cannot run, which is an offer nothing keeps.
+///
+/// What they do *not* get is a letter. `edit` has one -- `e`, the verb's own
+/// initial -- and the other three are reached from the list `x` opens, which is
+/// why widening this constant by four widened the key table by one. That list
+/// is measured against this constant in both directions, by the suite beside
+/// the key table itself.
+///
+/// `check` and `init` are not here and must not arrive. `check` answers a
+/// question about the corpus that the reader has no screen for, and `init`
+/// makes the corpus this reader is already looking at.
+pub const ACTS: &[&str] = &[
+    "claim", "log", "release", "done", "amend", "accept", "new", "edit", "close", "attest", "read",
+];
 
 /// A call that did not produce a document, in the three ways it can fail.
 ///
@@ -491,15 +513,15 @@ mod tests {
 
     /// The acting gate, and the same proof that it comes first.
     ///
-    /// **`accept` left this list and the other four did not** (TASK-d90e94afca08).
-    /// The reader drives a ratification now, so the verb reaches the spawn; that
-    /// is a decision about one verb, and it says nothing whatever about `close`,
-    /// `check`, `attest` or `init`, which stay out for the reasons they always
-    /// had. The list below is the whole of what widened, and it widened by one.
+    /// **`close` and `attest` left this list too** (TASK-e8da6a00564a), by the
+    /// same road `accept` left it before them (TASK-d90e94afca08): a decision
+    /// about a named verb, taken because the reader now has a way to reach it
+    /// that passes the confirmation. `check` and `init` stay out for the
+    /// reasons they always had, and they are what is asserted here.
     #[test]
     fn a_verb_outside_the_acting_list_is_refused_before_anything_is_spawned() {
         let ank = nowhere();
-        for verb in ["close", "check", "attest", "init"] {
+        for verb in ["check", "init"] {
             assert_eq!(
                 ank.act(verb, &["TASK-0001".to_string()]),
                 Err(Failed::NotAnAct {
@@ -543,15 +565,15 @@ mod tests {
         }
     }
 
-    /// `review` is a read, and the four the reader may never run stay out of
+    /// `review` is a read, and the two the reader may never run stay out of
     /// both lists.
     #[test]
-    fn review_reads_and_the_four_that_must_stay_out_are_on_neither_road() {
+    fn review_reads_and_the_two_that_must_stay_out_are_on_neither_road() {
         assert!(
             READS.contains(&"review"),
             "the queue is read by asking review"
         );
-        for verb in ["close", "check", "attest", "init"] {
+        for verb in ["check", "init"] {
             assert!(
                 !READS.contains(&verb),
                 "{verb} is not a read of this reader"

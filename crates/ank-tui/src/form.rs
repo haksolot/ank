@@ -1,8 +1,15 @@
-//! The form `ank new` is filled in on, and the whole of why it cannot open an
-//! editor (TASK-d832452630d2, ADR-c07e2694f0e1).
+//! The form a verb with flags is filled in on, and the whole of why it cannot
+//! open an editor (TASK-d832452630d2, TASK-e8da6a00564a, ADR-c07e2694f0e1).
+//!
+//! **Four verbs and one form.** It arrived carrying `ank new` alone and
+//! TASK-e8da6a00564a puts `ank edit`, `ank close` and `ank attest` on it. What
+//! made that one form rather than four is that nothing here is written per
+//! verb: the fields are the contract's, the kinds are the contract's, and the
+//! only thing this file declares is [`NEEDS`] -- which flags a call cannot be
+//! composed without, the one fact `ank help --json` does not carry.
 //!
 //! **The fields are the contract's and not this file's.** `ank help --json`
-//! declares what `ank new` takes, [`ank_contract::verbs`] is where that
+//! declares what each verb takes, [`ank_contract::verbs`] is where that
 //! declaration lives, and [`Form::fields`] is that list read in its own order.
 //! Nothing here writes a flag name down: this crate has already been burned
 //! once by five parallel key tables (ADR-c07e2694f0e1 records what they cost),
@@ -16,33 +23,42 @@
 //!
 //! # The editor, and why this form is a `Result`
 //!
-//! `ank new` opens `$EDITOR` **precisely when every mandatory flag is absent**
-//! -- that is the CLI's `is_interactive`, and it is `all` and not `any`: `ank
-//! new task --title x` still refuses on the missing scope, and `ank new task`
-//! alone opens an editor. The reader's child is spawned with `output()`'s null
-//! stdin, into a process that has taken the terminal into raw mode on the
-//! alternate screen. An editor reached from here is therefore not an error that
-//! shows up on the screen; it is a full-screen program drawing into a captured
-//! pipe, reading from nothing, for as long as the reader is up.
+//! **Two verbs of the four reach `$EDITOR`, and they reach it by different
+//! doors.** `ank new` opens one **precisely when every mandatory flag is
+//! absent** -- that is the CLI's `is_interactive`, and it is `all` and not
+//! `any`: `ank new task --title x` still refuses on the missing scope, and
+//! `ank new task` alone opens an editor. `ank edit` opens one when **no field
+//! is named at all**: `ank edit <id> --title x` writes a title, and
+//! `ank edit <id>` alone opens the whole entity in an editor. Those are two
+//! different conditions and [`Need`] is the two of them, written down as the
+//! two shapes they are rather than as one rule that happens to cover both
+//! today.
+//!
+//! The reader's child is spawned with `output()`'s null stdin, into a process
+//! that has taken the terminal into raw mode on the alternate screen. An editor
+//! reached from here is therefore not an error that shows up on the screen; it
+//! is a full-screen program drawing into a captured pipe, reading from nothing,
+//! for as long as the reader is up.
 //!
 //! So the form is not *unlikely* to compose one, it is structurally incapable
 //! of it. [`Form::composed`] is the one road from a form to an [`Act`], it
-//! answers `Err` while a mandatory field is blank, and [`REQUIRED`] gives every
-//! kind at least one -- which is what makes "every mandatory flag absent"
-//! unreachable rather than merely unusual. The suite measures it the way the
-//! criterion asks: `$EDITOR` points at a script that writes a sentinel, and the
-//! sentinel is not there afterwards.
+//! answers `Err` until the verb's own [`Need`] is met, and [`Form::open`]
+//! refuses outright to build a form for a verb [`NEEDS`] does not name -- so
+//! "the flagless call" is a state this cannot produce rather than a state it is
+//! careful about. The suite measures it the way the criterion asks: `$EDITOR`
+//! points at a script that writes a sentinel, and the sentinel is not there
+//! afterwards.
 //!
 //! # Where the mandatory list comes from, and why it is here
 //!
 //! It is the one fact this form needs that the contract does not carry.
-//! `ank help --json` declares the flags of the *verb* `new`, and `new` makes
-//! three kinds out of one flag set; which of them a kind cannot do without is
-//! the CLI's own `mandatory_flags`, and it reaches no document. So [`REQUIRED`]
-//! is written below -- and it is *measured* rather than trusted: `tests/
-//! entity.rs` runs the built binary once per name in it with that flag left
-//! out and finds a refusal, and once with the whole set and finds an entity. A
-//! list that drifted from the CLI fails there rather than surviving review.
+//! `ank help --json` declares the flags of the *verb*, and `new` makes three
+//! kinds out of one flag set; which of them a call cannot do without is the
+//! CLI's own `mandatory_flags`, and it reaches no document. So [`NEEDS`] is
+//! written below -- and it is *measured* rather than trusted: `tests/entity.rs`
+//! runs the built binary once per name in it with that flag left out and finds
+//! a refusal, and once with the whole set and finds an entity. A list that
+//! drifted from the CLI fails there rather than surviving review.
 //!
 //! Every name in it is held to the contract's own flags by the suite at the
 //! foot of this file, so the two halves cannot disagree either.
@@ -52,49 +68,137 @@ use crate::text::fit;
 use ank_contract::verbs::{self, CommandSpec, FlagSpec};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// The verb this form spells, named once so the binding, the gate and the
+/// The verb that makes an entity, named once so the binding, the gate and the
 /// composed argv are the same string.
-pub const VERB: &str = "new";
+pub const MAKE: &str = "new";
 
-/// The flags `ank new` will not make an entity of this kind without.
+/// What a call cannot be composed without, in the two shapes the CLI has.
+///
+/// **Two variants because the editor is reached by two different doors**, and
+/// a single rule covering both would be a coincidence rather than a guarantee.
+/// `ank new` opens `$EDITOR` when *every* mandatory flag is absent, so a form
+/// for it must hold all of them. `ank edit` opens one when *no* field is named
+/// at all, so a form for it must hold at least one. Written down as two, so a
+/// verb added to [`NEEDS`] has to say which door it is standing in front of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// Every one of these, or the form composes nothing.
+    All(&'static [&'static str]),
+    /// At least one of these, or the form composes nothing.
+    Any(&'static [&'static str]),
+}
+
+impl Need {
+    /// The flags it names, whichever shape it is.
+    ///
+    /// What a row marks with `*` and what a refusal spells: the two surfaces
+    /// read the names off the requirement rather than off a second list, so a
+    /// flag that moves moves on both.
+    pub fn flags(&self) -> &'static [&'static str] {
+        match self {
+            Need::All(flags) | Need::Any(flags) => flags,
+        }
+    }
+}
+
+/// Every verb this reader fills in on a form, and what each will not compose
+/// without.
 ///
 /// **Not read from the contract, because the contract does not carry it** --
 /// see the module header for what is declared where, and `tests/entity.rs` for
 /// how this is held to the binary rather than to a memory of it.
 ///
-/// A kind the contract declares and this list does not name falls to
-/// [`BASE`], which is what all three kinds share: a title and a scope. That is
-/// the conservative direction -- it can only ask for more than the CLI needs,
-/// never less -- and asking for more is a refusal on this side of the pipe,
-/// where asking for less would be the editor.
-const REQUIRED: &[(&str, &[&str])] = &[
+/// The second column is the verb's own subcommand where it has them and the
+/// empty string where it has none, and an empty string is also the fallback: a
+/// kind the contract declares and no row names falls to the verb's own bare
+/// row. For `new` that is [`BASE`], what all three kinds share, which is the
+/// conservative direction -- it can only ask for more than the CLI needs, never
+/// less -- and asking for more is a refusal on this side of the pipe, where
+/// asking for less would be the editor.
+///
+/// **A verb absent from this table has no form at all**, and that is the point
+/// rather than an omission: [`Form::open`] answers `None` for it, so there is
+/// no way to build a form whose requirement is nothing and whose composed argv
+/// is therefore the flagless call.
+const NEEDS: &[(&str, &str, Need)] = &[
     // An ADR is a rule, and a rule with no sentence in it binds nothing.
-    ("adr", &["--title", "--scope", "--constraint"]),
+    (
+        MAKE,
+        "adr",
+        Need::All(&["--title", "--scope", "--constraint"]),
+    ),
+    (MAKE, "", Need::All(BASE)),
+    // The one `Any` (TASK-e8da6a00564a). `ank edit <id>` with no field named is
+    // the call that opens `$EDITOR`, and every one of these three names a field
+    // -- so a form that holds any of them has already spelled the verb out of
+    // the editor's reach.
+    (
+        "edit",
+        "",
+        Need::Any(&["--title", "--body", "--constraint"]),
+    ),
+    // "a closure nobody explained is one nobody can reopen" is the verb's own
+    // refusal, and this is that refusal on this side of the pipe.
+    ("close", "", Need::All(&["--reason"])),
+    ("attest", "", Need::All(&["--proof"])),
 ];
 
-/// What every kind needs: a title, and the scope that attaches it to something.
+/// What every kind of `ank new` needs: a title, and the scope that attaches it
+/// to something.
 ///
 /// "a scope is mandatory: an entity attached to nothing is invisible" is the
 /// verb's own note, and it is the sentence this form refuses on.
 const BASE: &[&str] = &["--title", "--scope"];
 
-/// The mandatory flags of one kind.
-pub fn required(kind: &str) -> &'static [&'static str] {
-    REQUIRED
+/// What a form for this verb and this kind will not compose without, or `None`
+/// where no form serves the verb at all.
+///
+/// The kind first and the verb's bare row after it, so a kind with a
+/// requirement of its own is answered by that one and every other kind falls to
+/// what the verb shares.
+pub fn need(verb: &str, kind: &str) -> Option<Need> {
+    NEEDS
         .iter()
-        .find(|(named, _)| *named == kind)
-        .map(|(_, flags)| *flags)
-        .unwrap_or(BASE)
+        .find(|(named, on, _)| *named == verb && *on == kind)
+        .or_else(|| {
+            NEEDS
+                .iter()
+                .find(|(named, on, _)| *named == verb && on.is_empty())
+        })
+        .map(|(_, _, need)| *need)
 }
 
-/// The verb's own declaration, or `None` where this build's contract has no
-/// `new` at all.
+/// Whether a form is what this verb is filled in on.
+///
+/// What [`crate::bindings::beyond`] asks before it composes: a verb with a form
+/// opens one, and a verb with none -- `ank read`, which declares no flag at all
+/// -- goes straight to the confirmation with the identifier and nothing else.
+pub fn serves(verb: &str) -> bool {
+    NEEDS.iter().any(|(named, _, _)| *named == verb)
+}
+
+/// Every verb a form serves, once each, in the order [`NEEDS`] declares them.
+///
+/// For the suite, which has to be able to say "every verb with a form is a verb
+/// the gate allows" over the table rather than over a list beside it.
+pub fn served() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for (verb, _, _) in NEEDS {
+        if !out.contains(verb) {
+            out.push(verb);
+        }
+    }
+    out
+}
+
+/// The declaration of the verb a form is for, or `None` where this build's
+/// contract has not got it.
 ///
 /// `None` rather than a panic, for [`crate::bindings::further`]'s reason: a
 /// reader must not die because a verb moved, and a form with no contract behind
 /// it is a form that refuses rather than one that invents a flag set.
-pub fn spec() -> Option<&'static CommandSpec> {
-    verbs::spec_of(VERB)
+pub fn spec_of(verb: &str) -> Option<&'static CommandSpec> {
+    verbs::spec_of(verb)
 }
 
 /// What one field of the form holds.
@@ -170,9 +274,20 @@ pub struct Missing {
 /// The form, open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Form {
+    /// The verb it is filled in for (TASK-e8da6a00564a).
+    ///
+    /// Carried rather than assumed, because there are four of them and every
+    /// other field of this struct is read out of the contract against it: the
+    /// rows, the kinds, the requirement and the composed argv all follow from
+    /// this one string.
+    verb: &'static str,
     /// Which of the verb's own subcommands this form is for, as an index into
     /// [`Form::kinds`]: the kind is the first positional of `ank new` and never
     /// a field, so it is drawn on the heading rather than in the rows.
+    ///
+    /// Zero and unread on the three verbs that declare no subcommand at all,
+    /// where [`Form::kind`] is the empty string and the verb takes `<id>`
+    /// first, which is the view's to supply.
     kind: usize,
     fields: Vec<Field>,
     /// The row the cursor is on.
@@ -187,31 +302,92 @@ pub struct Form {
 }
 
 impl Form {
-    /// A form for the first kind the contract declares, with every field empty.
+    /// A form for one verb, on the first kind the contract declares for it,
+    /// with every field empty.
     ///
-    /// `None` where this build's contract declares no `new`, or declares it
-    /// with no subcommands: a form with no kind has nothing to compose.
-    pub fn open() -> Option<Form> {
-        let spec = spec()?;
-        if spec.subcommands.is_empty() {
+    /// **`None` is a refusal to draw a form that could compose an editor**, and
+    /// it is answered in three cases. This build's contract has no such verb;
+    /// the verb declares no flag a form could carry; or [`NEEDS`] declares
+    /// nothing the verb -- on any one of its kinds -- cannot do without. The
+    /// last is the one that matters: a form with no requirement is a form whose
+    /// empty submission is the flagless call, and for `new` and `edit` alike
+    /// that call is `$EDITOR`.
+    pub fn open(verb: &'static str) -> Option<Form> {
+        let spec = verbs::spec_of(verb)?;
+        for kind in kinds_of(spec) {
+            need(verb, kind)?;
+        }
+        let fields: Vec<Field> = spec.flags.iter().filter(|f| f.listed).map(field).collect();
+        if fields.is_empty() {
             return None;
         }
         Some(Form {
+            verb,
             kind: 0,
-            fields: spec.flags.iter().filter(|f| f.listed).map(field).collect(),
+            fields,
             at: 0,
             said: None,
         })
     }
 
-    /// The kinds this form can be for, in the contract's own order.
-    pub fn kinds(&self) -> &'static [&'static str] {
-        spec().map(|s| s.subcommands).unwrap_or_default()
+    /// The verb this form is filled in for.
+    pub fn verb(&self) -> &'static str {
+        self.verb
     }
 
-    /// The kind it is for now.
+    /// The kinds this form can be for, in the contract's own order, and none at
+    /// all where the verb declares no subcommand.
+    pub fn kinds(&self) -> &'static [&'static str] {
+        verbs::spec_of(self.verb)
+            .map(|s| s.subcommands)
+            .unwrap_or_default()
+    }
+
+    /// The kind it is for now, and the empty string where the verb has none.
     pub fn kind(&self) -> &'static str {
         self.kinds().get(self.kind).copied().unwrap_or_default()
+    }
+
+    /// What the form's own border says it is: the verb, and the kind where the
+    /// verb has one.
+    ///
+    /// `NEW TASK`, `EDIT`, `CLOSE`, `ATTEST`. Read off the verb rather than
+    /// written per form, so a fifth form is a row of [`NEEDS`] and not a
+    /// heading somewhere to remember.
+    pub fn banner(&self) -> String {
+        match self.kind().is_empty() {
+            true => self.verb.to_ascii_uppercase(),
+            false => format!(
+                "{} {}",
+                self.verb.to_ascii_uppercase(),
+                self.kind().to_ascii_uppercase()
+            ),
+        }
+    }
+
+    /// What this form will not compose without, or `None` where this build
+    /// declares nothing.
+    ///
+    /// `Option` and not a default, because there is no safe default: a
+    /// requirement of nothing is met by an empty form, and an empty form
+    /// composes the call that opens an editor. [`Form::open`] refuses to build
+    /// one this answers `None` for, and [`Form::composed`] refuses to compose
+    /// one all the same -- two refusals, because the state is the one this
+    /// module exists to make unreachable.
+    pub fn need(&self) -> Option<Need> {
+        need(self.verb, self.kind())
+    }
+
+    /// The verb and its kind, as a command line names them.
+    ///
+    /// `ank new task` where there is a kind and `ank close` where there is not,
+    /// so a sentence about what the form will not compose says the same words a
+    /// person would have typed.
+    fn spelled(&self) -> String {
+        match self.kind().is_empty() {
+            true => format!("ank {}", self.verb),
+            false => format!("ank {} {}", self.verb, self.kind()),
+        }
     }
 
     pub fn fields(&self) -> &[Field] {
@@ -226,9 +402,16 @@ impl Form {
         self.said.as_deref()
     }
 
-    /// Whether this flag is one the kind cannot do without.
-    pub fn needed(&self, flag: &str) -> bool {
-        required(self.kind()).contains(&flag)
+    /// Whether this flag is one the form marks, which is one the requirement
+    /// names.
+    ///
+    /// The same answer for either shape of [`Need`], and the note over the rows
+    /// is what says which shape it is: under `All` a marked row is one the form
+    /// refuses without, and under `Any` a marked row is one of the set it needs
+    /// one of. A second marker for the second shape would be a legend to learn
+    /// where a sentence already says it.
+    pub fn marked(&self, flag: &str) -> bool {
+        self.need().is_some_and(|need| need.flags().contains(&flag))
     }
 
     /// The kind after this one, and back to the first after the last.
@@ -369,34 +552,27 @@ impl Form {
     /// The act this form composes, or the field that is still empty.
     ///
     /// **This is the one road from a form to an argv**, and it is a `Result`
-    /// for the reason the module header gives: `ank new` with every mandatory
-    /// flag absent opens `$EDITOR`, and an editor spawned by a child with no
-    /// stdin into a raw-mode alternate screen is a hang. Every kind has at
-    /// least one flag it refuses without ([`required`], held non-empty by the
-    /// suite below), so an argv this answers `Ok` to always carries one -- and
-    /// "every mandatory flag absent" is a state this cannot produce rather than
-    /// a state it is careful about.
+    /// for the reason the module header gives: the flagless call opens
+    /// `$EDITOR` on two of these four verbs, and an editor spawned by a child
+    /// with no stdin into a raw-mode alternate screen is a hang. Every verb a
+    /// form serves declares a [`Need`] and every `Need` names at least one flag
+    /// (both held by the suite below), so an argv this answers `Ok` to always
+    /// carries a flag with a value -- and "no field named" is a state this
+    /// cannot produce rather than a state it is careful about.
     ///
-    /// The kind goes in front because it is `ank new`'s first positional, and
-    /// the flags follow in the contract's own order, a blank field passing
-    /// nothing at all.
+    /// The kind goes in front where the verb has one, because it is `ank new`'s
+    /// first positional; the three that have none take `<id>` first and the
+    /// view supplies it. The flags follow in the contract's own order, a blank
+    /// field passing nothing at all.
     pub fn composed(&self) -> Result<Act, Missing> {
+        // The lone dash is the CLI's "the value is on stdin", and this reader's
+        // child has none: `Ank::spawn` gives it `output()`'s null pipe, so a
+        // dash reaching a composed argv would be a child waiting on a thing
+        // nothing will ever write. Refused here, where the person who typed it
+        // can read why, rather than left to hang. `ank edit --body -` is the
+        // call the CLI itself documents for it, which is why this is stated
+        // over every typed field and not over the ones that looked risky.
         for (at, field) in self.fields.iter().enumerate() {
-            if self.needed(field.flag) && field.entry.blank() {
-                return Err(Missing {
-                    at,
-                    said: format!(
-                        "{} is empty, and 'ank {VERB} {}' will not make one without it",
-                        field.flag,
-                        self.kind()
-                    ),
-                });
-            }
-            // The lone dash is the CLI's "the value is on stdin", and this
-            // reader's child has none: `Ank::spawn` gives it `output()`'s null
-            // pipe, so a dash reaching a composed argv would be a child waiting
-            // on a thing nothing will ever write. Refused here, where the person
-            // who typed it can read why, rather than left to hang.
             if let Entry::Typed(text) = &field.entry {
                 if text.trim() == "-" {
                     return Err(Missing {
@@ -410,7 +586,11 @@ impl Form {
                 }
             }
         }
-        let mut args = vec![self.kind().to_string()];
+        self.answered()?;
+        let mut args = Vec::new();
+        if !self.kind().is_empty() {
+            args.push(self.kind().to_string());
+        }
         for field in &self.fields {
             match &field.entry {
                 Entry::Typed(text) if !text.trim().is_empty() => {
@@ -422,12 +602,95 @@ impl Form {
             }
         }
         Ok(Act {
-            verb: VERB,
+            verb: self.verb,
             args,
-            // `ank new <kind>` names a kind and not an entity, so there is no
-            // row for the view to put in front of it.
-            subject: Subject::Given,
+            // The question is asked of the form's own first positional and
+            // never of the verb's name: `ank new <kind>` carries its own, so
+            // nothing goes in front of it, and the three that name an entity
+            // take the row the view has marked.
+            subject: match self.kind().is_empty() {
+                true => Subject::Selected,
+                false => Subject::Given,
+            },
         })
+    }
+
+    /// Whether what has been filled in answers what the verb needs.
+    ///
+    /// The two shapes of [`Need`], answered as the two different questions they
+    /// are. `All` walks the named flags and stops at the first blank one, which
+    /// is the field the cursor is sent to. `Any` asks one question of the whole
+    /// set and, where the answer is no, sends the cursor to the first of them --
+    /// there is no single field to blame, so the sentence names them all.
+    fn answered(&self) -> Result<(), Missing> {
+        let Some(need) = self.need() else {
+            // Unreachable from a form `open` built, which refuses a verb with
+            // no requirement declared. Stated all the same, because the state
+            // it guards against is the one the module exists for.
+            return Err(Missing {
+                at: self.at,
+                said: format!(
+                    "this build declares nothing '{}' cannot do without, and a call naming no \
+                     field opens $EDITOR",
+                    self.spelled()
+                ),
+            });
+        };
+        match need {
+            Need::All(flags) => {
+                for flag in flags {
+                    match self.fields.iter().position(|f| f.flag == *flag) {
+                        Some(at) if !self.fields[at].entry.blank() => {}
+                        Some(at) => {
+                            return Err(Missing {
+                                at,
+                                said: format!(
+                                    "{flag} is empty, and '{}' will not compose without it",
+                                    self.spelled()
+                                ),
+                            })
+                        }
+                        // A requirement naming a flag the verb does not
+                        // declare: the form cannot answer it, so it composes
+                        // nothing rather than composing without it. The suite
+                        // below holds the table to the contract so this is a
+                        // refusal nobody meets.
+                        None => {
+                            return Err(Missing {
+                                at: self.at,
+                                said: format!(
+                                    "{flag} is no field of this form, and '{}' needs it",
+                                    self.spelled()
+                                ),
+                            })
+                        }
+                    }
+                }
+                Ok(())
+            }
+            Need::Any(flags) => {
+                let answered = flags.iter().any(|flag| {
+                    self.fields
+                        .iter()
+                        .any(|f| f.flag == *flag && !f.entry.blank())
+                });
+                if answered {
+                    return Ok(());
+                }
+                Err(Missing {
+                    at: flags
+                        .iter()
+                        .find_map(|flag| self.fields.iter().position(|f| f.flag == *flag))
+                        .unwrap_or(self.at),
+                    said: format!(
+                        "every field is empty: '{}' needs one of {}, and a call naming none \
+                         opens $EDITOR",
+                        self.spelled(),
+                        flags.join(", ")
+                    ),
+                })
+            }
+        }
     }
 
     /// The act, with the cursor moved onto whatever is missing where there is
@@ -463,7 +726,11 @@ impl Form {
         // put: what this says is either how the form works or which field it
         // refused on, and a window too short for the whole form would have
         // scrolled the second one off the bottom exactly when it was needed.
-        for line in crate::text::wrap(self.said.as_deref().unwrap_or(REQUIRED_NOTE), width.max(1)) {
+        let note = match &self.said {
+            Some(said) => said.clone(),
+            None => self.legend(),
+        };
+        for line in crate::text::wrap(&note, width.max(1)) {
             out.push((fit(&line, width), None));
         }
         out.push((String::new(), None));
@@ -472,7 +739,7 @@ impl Form {
                 true => crate::text::CURSOR,
                 false => crate::text::PLAIN,
             };
-            let needed = match self.needed(field.flag) {
+            let needed = match self.marked(field.flag) {
                 true => '*',
                 false => ' ',
             };
@@ -504,8 +771,12 @@ impl Form {
             .unwrap_or(0)
     }
 
-    /// What stands over the rows: which kind is being made, and how to reach
-    /// the other two.
+    /// What stands over the rows: the command line being filled in, and how to
+    /// reach the other kinds where the verb has any.
+    ///
+    /// The verb's own positional after it where there is no kind, so a form for
+    /// `ank edit` says `ank edit <id>` -- the same words the list `x` opens
+    /// draws, out of the same table.
     fn heading(&self) -> String {
         let others: Vec<&str> = self
             .kinds()
@@ -513,20 +784,47 @@ impl Form {
             .copied()
             .filter(|k| *k != self.kind())
             .collect();
-        match others.is_empty() {
-            true => format!("ank {VERB} {}", self.kind()),
-            false => format!(
-                "ank {VERB} {}   (Left/Right for {})",
-                self.kind(),
-                others.join(", ")
+        if others.is_empty() {
+            let positional = spec_of(self.verb)
+                .map(|spec| spec.positional_help)
+                .unwrap_or_default();
+            return format!("{} {positional}", self.spelled())
+                .trim_end()
+                .to_string();
+        }
+        format!(
+            "{}   (Left/Right for {})",
+            self.spelled(),
+            others.join(", ")
+        )
+    }
+
+    /// What the form says over the rows while it has nothing else to say.
+    ///
+    /// **The sentence is the requirement's** (TASK-e8da6a00564a). `All` and
+    /// `Any` mark their rows the same way and mean different things by the
+    /// mark, so the legend is what tells them apart -- a person filling in
+    /// `ank edit` reads that one of the three is enough, and a person filling
+    /// in `ank new` reads that every mark is a refusal.
+    fn legend(&self) -> String {
+        let closes = format!(
+            "Enter composes, {} closes",
+            crate::bindings::named(KeyCode::Esc)
+        );
+        match self.need() {
+            Some(Need::All(_)) => format!(
+                "* is a flag '{}' will not compose without: {closes}",
+                self.spelled()
             ),
+            Some(Need::Any(_)) => format!(
+                "'{}' needs one of the fields marked *, and a call naming none opens $EDITOR: \
+                 {closes}",
+                self.spelled()
+            ),
+            None => closes,
         }
     }
 }
-
-/// What the form says under the rows while it has nothing else to say.
-const REQUIRED_NOTE: &str =
-    "* is a flag ank new will not make one without: Enter composes, Esc closes";
 
 /// The column the values line up in, which is wide enough for the longest flag
 /// `ank new` declares and its repeat marker.
@@ -553,6 +851,23 @@ fn shown(entry: &Entry, room: usize, focused: bool) -> String {
     text.chars().skip(over + 1).collect::<String>()
 }
 
+/// The kinds a verb's form can be for, and the one nameless kind where it
+/// declares no subcommand.
+///
+/// The empty string is what [`NEEDS`] keys a verb with no subcommands on, and
+/// it is what [`Form::kind`] answers with: one word for "this verb takes no
+/// kind", used by the table, the requirement and the composed argv alike rather
+/// than three ways of saying the same absence.
+fn kinds_of(spec: &'static CommandSpec) -> &'static [&'static str] {
+    match spec.subcommands.is_empty() {
+        true => NO_KIND,
+        false => spec.subcommands,
+    }
+}
+
+/// The one kind a verb with no subcommands has.
+const NO_KIND: &[&str] = &[""];
+
 /// One field, from the flag the contract declared.
 fn field(spec: &FlagSpec) -> Field {
     Field {
@@ -570,7 +885,19 @@ mod tests {
     use super::*;
 
     fn form() -> Form {
-        Form::open().expect("this build's contract declares 'ank new'")
+        Form::open(MAKE).expect("this build's contract declares 'ank new'")
+    }
+
+    /// The mandatory flags of one kind of `ank new`, which is what most of the
+    /// suite below is about.
+    fn required(kind: &str) -> &'static [&'static str] {
+        need(MAKE, kind)
+            .expect("'ank new' declares what it will not compose without")
+            .flags()
+    }
+
+    fn spec() -> Option<&'static CommandSpec> {
+        spec_of(MAKE)
     }
 
     fn filled(form: &mut Form, flag: &str, value: &str) {
@@ -666,13 +993,33 @@ mod tests {
             for flag in needed {
                 assert!(
                     spec.flags.iter().any(|f| f.name == *flag && f.listed),
-                    "'{flag}' is mandatory for '{kind}' and is no flag of 'ank {VERB}'"
+                    "'{flag}' is mandatory for '{kind}' and is no flag of 'ank {MAKE}'"
                 );
             }
         }
         // A kind the contract has not got falls to the base, which is what all
         // three share rather than nothing at all.
         assert_eq!(required("a kind nobody declared"), BASE);
+        // And every verb the table serves declares something, on every kind it
+        // has: a verb with nothing mandatory is a verb whose empty form
+        // composes the flagless call.
+        for verb in served() {
+            let spec = spec_of(verb).unwrap_or_else(|| panic!("'{verb}' is a verb of §4"));
+            for kind in kinds_of(spec) {
+                let need = need(verb, kind)
+                    .unwrap_or_else(|| panic!("'ank {verb} {kind}' needs nothing declared"));
+                assert!(
+                    !need.flags().is_empty(),
+                    "'ank {verb} {kind}' needs an empty list, which every form meets"
+                );
+                for flag in need.flags() {
+                    assert!(
+                        spec.flags.iter().any(|f| f.name == *flag && f.listed),
+                        "'{flag}' is needed by 'ank {verb} {kind}' and is no flag of it"
+                    );
+                }
+            }
+        }
     }
 
     /// **A form with a mandatory field empty composes nothing, and says which**
@@ -686,7 +1033,7 @@ mod tests {
         let mut form = form();
         for kind in form.kinds() {
             for left_out in required(kind) {
-                let mut form = Form::open().expect("a form");
+                let mut form = Form::open(MAKE).expect("a form");
                 on(&mut form, kind);
                 for flag in required(kind) {
                     if flag != left_out {
@@ -710,7 +1057,7 @@ mod tests {
             // Whitespace is not an answer: the CLI reads a blank `--title` as
             // absent, so a form that let one through would be a form composing
             // the editor.
-            let mut blank = Form::open().expect("a form");
+            let mut blank = Form::open(MAKE).expect("a form");
             on(&mut blank, kind);
             for flag in required(kind) {
                 filled(&mut blank, flag, "   ");
@@ -729,7 +1076,7 @@ mod tests {
         filled(&mut form, "--title", "The reader makes an entity");
         filled(&mut form, "--scope", "crates/ank-tui/**");
         let act = form.composed().expect("a filled form composes");
-        assert_eq!(act.verb, VERB);
+        assert_eq!(act.verb, MAKE);
         assert_eq!(act.subject, Subject::Given);
         assert_eq!(
             act.args,
@@ -748,6 +1095,105 @@ mod tests {
             "an empty field reached the argv: {:?}",
             act.args
         );
+    }
+
+    /// **No form this module serves composes anything while it is empty**
+    /// (TASK-e8da6a00564a).
+    ///
+    /// The structural half of the criterion, stated over every verb and every
+    /// kind rather than over the one that is dangerous. `ank new` and `ank edit`
+    /// open `$EDITOR` on the flagless call and `ank close` and `ank attest`
+    /// refuse it; what makes the first two unreachable is not that they are
+    /// treated carefully but that `composed` answers `Err` on an empty form,
+    /// whichever shape of [`Need`] it is holding. A verb added to [`NEEDS`] with
+    /// nothing mandatory fails here rather than surviving review.
+    #[test]
+    fn an_empty_form_composes_nothing_whatever_verb_it_is_for() {
+        for verb in served() {
+            let mut form = Form::open(verb).unwrap_or_else(|| panic!("a form for '{verb}'"));
+            for kind in form.kinds().to_vec() {
+                on(&mut form, kind);
+                assert!(
+                    form.composed().is_err(),
+                    "an empty form for 'ank {verb} {kind}' composed something"
+                );
+            }
+            if form.kinds().is_empty() {
+                assert!(
+                    form.composed().is_err(),
+                    "an empty form for 'ank {verb}' composed something"
+                );
+            }
+        }
+        // And a verb with no row of the table has no form at all, which is the
+        // other half: there is no way to build one whose requirement is
+        // nothing. `read` is the live case -- it declares no flag, and the list
+        // `x` opens composes it straight rather than drawing an empty form.
+        assert!(!serves("read"), "'read' has a form and declares no flag");
+        assert!(Form::open("read").is_none(), "a form was built for 'read'");
+    }
+
+    /// **`ank edit` composes on any one of its three fields and on none**
+    /// (TASK-e8da6a00564a).
+    ///
+    /// The `Any` shape, measured as what it is. `--title` alone is a complete
+    /// `ank edit` and so is `--body` alone and `--constraint` alone, so a form
+    /// that demanded all three would be refusing command lines the CLI takes;
+    /// and none of them is the call that opens an editor, which is what the
+    /// refusal is for. The identifier is not here because it is not the form's:
+    /// the act says [`Subject::Selected`] and the view puts the row in front.
+    #[test]
+    fn an_edit_composes_on_any_one_of_its_fields_and_never_on_none() {
+        let flags = need("edit", "")
+            .expect("'ank edit' declares what it will not compose without")
+            .flags();
+        assert!(flags.len() > 1, "the `Any` shape is worth stating over one");
+        for only in flags {
+            let mut form = Form::open("edit").expect("a form for 'ank edit'");
+            filled(&mut form, only, "a value");
+            let act = form
+                .composed()
+                .unwrap_or_else(|e| panic!("'{only}' alone did not compose: {}", e.said));
+            assert_eq!(act.verb, "edit");
+            assert_eq!(act.args, [only.to_string(), "a value".to_string()]);
+            // The view supplies `<id>`, so the form must not.
+            assert_eq!(act.subject, Subject::Selected);
+        }
+        // And with none of them, the refusal names all three -- there is no one
+        // field to blame -- and puts the cursor on the first.
+        let form = Form::open("edit").expect("a form");
+        let missing = form
+            .composed()
+            .expect_err("an edit naming no field composed");
+        for flag in flags {
+            assert!(missing.said.contains(flag), "{}", missing.said);
+        }
+        assert_eq!(form.fields()[missing.at].flag, flags[0]);
+    }
+
+    /// `close` and `attest` take the entity the view names, and each refuses
+    /// without the flag §4 refuses without (TASK-e8da6a00564a).
+    #[test]
+    fn close_and_attest_refuse_without_their_flag_and_take_the_views_entity() {
+        for (verb, flag) in [("close", "--reason"), ("attest", "--proof")] {
+            let form = Form::open(verb).unwrap_or_else(|| panic!("a form for 'ank {verb}'"));
+            let need = need(verb, "").unwrap_or_else(|| panic!("'ank {verb}' declares a need"));
+            assert!(matches!(need, Need::All(_)), "{need:?}");
+            assert_eq!(need.flags(), [flag]);
+            let missing = form
+                .composed()
+                .err()
+                .unwrap_or_else(|| panic!("an empty 'ank {verb}' composed"));
+            assert!(missing.said.contains(flag), "{}", missing.said);
+            let mut filled_in = form.clone();
+            filled(&mut filled_in, flag, "a value");
+            let act = filled_in
+                .composed()
+                .unwrap_or_else(|e| panic!("'ank {verb} {flag}' did not compose: {}", e.said));
+            assert_eq!(act.verb, verb);
+            assert_eq!(act.args, [flag.to_string(), "a value".to_string()]);
+            assert_eq!(act.subject, Subject::Selected);
+        }
     }
 
     /// The lone dash never reaches an argv (ADR-c07e2694f0e1's null stdin).
@@ -808,7 +1254,7 @@ mod tests {
         assert_eq!(form.press(bare(KeyCode::Enter)), Filled::Compose);
         assert_eq!(form.press(bare(KeyCode::Esc)), Filled::Close);
         // Backspacing an empty field is not a way out: a form is not a prompt.
-        let mut empty = Form::open().expect("a form");
+        let mut empty = Form::open(MAKE).expect("a form");
         assert_eq!(empty.press(bare(KeyCode::Backspace)), Filled::Filling);
         assert!(empty.fields()[0].entry.blank());
     }

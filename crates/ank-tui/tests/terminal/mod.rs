@@ -253,6 +253,67 @@ impl Repo {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The editor, and the sentinel that says it ran
+// ---------------------------------------------------------------------------
+
+/// An `$EDITOR` that writes a file and exits (TASK-d832452630d2).
+///
+/// It writes and does not edit, deliberately: what is being measured is whether
+/// the editor was *reached*, and a script that filled the template in would
+/// make the reader's failure look like a success.
+///
+/// Here rather than in one suite because two now need it (TASK-e8da6a00564a).
+/// `ank new` opens an editor when every mandatory flag is absent and `ank edit`
+/// opens one when no field is named at all, and both criteria are measured the
+/// same way: point `$EDITOR` at this, and find the sentinel absent.
+pub struct Editor {
+    pub script: std::path::PathBuf,
+    sentinel: std::path::PathBuf,
+}
+
+impl Editor {
+    pub fn beside(repo: &Repo) -> Editor {
+        use std::os::unix::fs::PermissionsExt;
+        let script = repo.0.join("editor.sh");
+        let sentinel = repo.0.join("the-editor-ran");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf 'the editor ran on %s\\n' \"$1\" > {}\n",
+                sentinel.display()
+            ),
+        )
+        .expect("the script must be writable");
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("the script must be executable");
+        Editor { script, sentinel }
+    }
+
+    pub fn env(&self) -> Vec<(&str, &str)> {
+        vec![("EDITOR", self.script.to_str().expect("a UTF-8 path"))]
+    }
+
+    pub fn ran(&self) -> bool {
+        self.sentinel.is_file()
+    }
+
+    pub fn forget(&self) {
+        let _ = std::fs::remove_file(&self.sentinel);
+    }
+
+    /// The assertion these suites turn on, made wherever it is worth making:
+    /// the reader never reached an editor.
+    pub fn never_ran(&self, when: &str) {
+        assert!(
+            !self.ran(),
+            "the reader opened $EDITOR {when}, into a child with no stdin and a \
+             terminal in raw mode on the alternate screen: {}",
+            self.sentinel.display()
+        );
+    }
+}
+
 /// Every `"id":"..."` of a document, in the order it carries them.
 pub fn ids_of(doc: &str) -> Vec<String> {
     let mut out = Vec::new();
