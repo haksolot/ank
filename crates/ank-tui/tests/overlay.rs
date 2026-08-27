@@ -119,9 +119,15 @@ fn drawn_at(frame: &str, needle: &str) -> Option<(u16, u16)> {
 
 /// **The frame is the window and nothing is past its right edge**, which the
 /// criterion asks for over every screen this suite draws.
+///
+/// Counted with `split` and not `lines` since TASK-9a402a54886f: the trailer
+/// was the last row of every frame and was never blank, and what is there now
+/// is the note band -- one row, blank where there is nothing to say. `lines`
+/// drops the empty piece the trailing separator leaves behind, which would read
+/// as a frame one row short of its window.
 fn fits(frame: &str, window: (u16, u16), said: &str) {
     assert_eq!(
-        frame.lines().count(),
+        frame.split('\n').count(),
         window.1 as usize,
         "{said}: the frame is not the window's rows at {window:?}:\n{frame}"
     );

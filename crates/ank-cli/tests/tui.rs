@@ -1314,7 +1314,9 @@ fn a_terminal_resized_redraws_to_its_new_size_with_nothing_typed() {
         s.contains(LONG)
     });
     let wide = live.frame();
-    assert_eq!(wide.lines().count(), WINDOW.1 as usize, "{wide}");
+    // `split` and not `lines`, for the reason given further down: the last row
+    // of every frame is the note band, and it is blank at rest.
+    assert_eq!(wide.split('\n').count(), WINDOW.1 as usize, "{wide}");
 
     live.resize(60, 20);
     live.until_screen("the narrow frame", |s| {
@@ -1332,28 +1334,31 @@ fn a_terminal_resized_redraws_to_its_new_size_with_nothing_typed() {
         narrow.contains('~'),
         "nothing was cut, so nothing was fitted to the narrower window:\n{narrow}"
     );
-    // The trailer is on the last row there is, which is what says the layout
-    // used the new height rather than the old one.
-    let rows: Vec<&str> = narrow.lines().collect();
+    // The bottom of the window is reached, which is what says the layout used
+    // the new height rather than the old one.
+    //
+    // **Read off the last panel's own bottom border since TASK-9a402a54886f.**
+    // It was read off the trailer, which was the last row and was never blank;
+    // the trailer is gone and what is there now is the note band -- one row,
+    // blank where there is nothing to say. So the count is taken with `split`,
+    // which keeps the empty piece a trailing separator leaves behind, and the
+    // bottom is the second-last row.
+    let rows: Vec<&str> = narrow.split('\n').collect();
     assert_eq!(rows.len(), 20, "{narrow}");
-    // The trailer's own first entry, read out of the reader rather than spelled
-    // here: it was `a then` for as long as a verb was spelled into a prompt,
-    // and TASK-1a415107fd56 made it the first verb's letter.
-    let trailer = ank_tui::bindings::write_line();
-    let first = trailer
-        .split("  ")
-        .next()
-        .expect("the trailer names a verb");
     assert!(
-        rows[19].starts_with(first),
-        "the key line is not on the last row of the new window:\n{narrow}"
+        rows[19].trim().is_empty(),
+        "something other than the note band is on the last row:\n{narrow}"
+    );
+    assert!(
+        !rows[18].trim().is_empty(),
+        "the layout did not reach the bottom of the new window:\n{narrow}"
     );
 
     // Wider again, and nothing was lost: the title is whole.
     live.resize(140, 44);
     live.until_screen("the wide frame again", |s| s.contains(LONG));
     let again = live.frame();
-    assert_eq!(again.lines().count(), 44, "{again}");
+    assert_eq!(again.split('\n').count(), 44, "{again}");
     assert!(again.contains("ENTITIES"), "{again}");
 
     // And a window being dragged about reads nothing and writes nothing: a

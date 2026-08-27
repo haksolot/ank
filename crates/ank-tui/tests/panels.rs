@@ -73,9 +73,16 @@ const FIND: char = ank_tui::keys::FIND;
 ///
 /// Both directions, because a frame overflows in two ways and only one of them
 /// is visible in a screenshot: a row wider than the window, and more rows than
-/// the window has. The trailer being on the last row is the third half of it --
-/// it is what says the layout used the size the terminal gave rather than a
-/// default it was born with.
+/// the window has.
+///
+/// **The third half of it is that the bottom of the window is reached**, which
+/// is what says the layout used the size the terminal gave rather than a
+/// default it was born with. It used to be read off the trailer, which was the
+/// last row and was never blank; TASK-9a402a54886f took the trailer away, and
+/// the last row of every frame is now the note band -- one row, blank where
+/// there is nothing to say. So the assertion moved one row up, onto the last
+/// panel's own bottom border, and says the same thing about the same layout:
+/// the chrome under the panels is exactly one row, and it is the window's last.
 #[test]
 fn no_frame_overflows_the_window_at_eighty_columns_or_at_forty() {
     let repo = Repo::seeded();
@@ -83,31 +90,36 @@ fn no_frame_overflows_the_window_at_eighty_columns_or_at_forty() {
         let live = Live::open(&repo, columns, rows);
         live.until("the session to open", |t| t.contains("ank tui"));
         let frame = live.frame();
-        let lines: Vec<&str> = frame.lines().collect();
+        // `split` and not `lines`, because the grid's last row is blank now and
+        // `lines` drops the empty piece a trailing separator leaves behind.
+        let grid: Vec<&str> = frame.split('\n').collect();
         assert_eq!(
-            lines.len(),
+            grid.len(),
             rows as usize,
             "the frame is {} rows in a {columns}x{rows} window:\n{frame}",
-            lines.len()
+            grid.len()
         );
-        for line in &lines {
+        for line in &grid {
             assert!(
                 line.chars().count() <= columns as usize,
                 "{} columns in a {columns} column window: {line}\n{frame}",
                 line.chars().count()
             );
         }
-        // The trailer's own first entry, read out of the reader rather than
-        // spelled here: it was `a then` for as long as a verb was spelled into
-        // a prompt, and TASK-1a415107fd56 made it the first verb's letter.
-        let trailer = ank_tui::bindings::write_line();
-        let first = trailer
-            .split("  ")
-            .next()
-            .expect("the trailer names a verb");
+        let last = grid
+            .iter()
+            .rposition(|line| !line.trim().is_empty())
+            .expect("a frame with something on it");
+        assert_eq!(
+            last,
+            rows as usize - 2,
+            "the last panel does not close on the window's second-last row \
+             of a {columns}x{rows} window:\n{frame}"
+        );
         assert!(
-            lines[rows as usize - 1].starts_with(first),
-            "the key line is not on the last row of a {columns}x{rows} window:\n{frame}"
+            grid[rows as usize - 1].trim().is_empty(),
+            "something other than the note band is on the last row of a \
+             {columns}x{rows} window:\n{frame}"
         );
         live.quit();
     }

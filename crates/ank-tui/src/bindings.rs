@@ -777,6 +777,18 @@ pub fn offered(holding: Holding) -> impl Iterator<Item = &'static Binding> {
     BINDINGS.iter().filter(move |b| b.is_offered(holding))
 }
 
+/// The binding one command is reached by, or `None` where no row runs it.
+///
+/// The reverse of [`Binding::press`], and it exists for the two callers that
+/// have a command and need the key: a sentence that names a letter, and a
+/// drawn target that has to hand [`crate::view::App::press`] the very key a
+/// keyboard would have sent (ADR-c07e2694f0e1).
+pub fn of_command(command: &Command) -> Option<&'static Binding> {
+    BINDINGS
+        .iter()
+        .find(|b| b.runs == Runs::Press(Press::Run(command.clone())))
+}
+
 /// What one command is spelled with, for a sentence that has to name a key.
 ///
 /// **Read out of the table rather than written into the sentence.** The header
@@ -788,9 +800,7 @@ pub fn offered(holding: Holding) -> impl Iterator<Item = &'static Binding> {
 /// The empty string where no binding runs it, which no caller has: a sentence
 /// naming a key that does not exist would be worse than one naming none.
 pub fn spelling_of(command: &Command) -> String {
-    BINDINGS
-        .iter()
-        .find(|b| b.runs == Runs::Press(Press::Run(command.clone())))
+    of_command(command)
         .map(|b| named(b.key))
         .unwrap_or_default()
 }
@@ -992,17 +1002,18 @@ fn lines() -> Vec<Line> {
     vec![screen(), panel(), write(), ratify(), waiting(), typing()]
 }
 
-/// The keys that move what is inside a panel, as the trailer draws them.
-pub fn screen_line() -> String {
-    screen().drawn()
-}
+// `screen_line` and `write_line` stood here (TASK-9a402a54886f). They were the
+// two lines of the trailer, drawn under every frame at every window, and
+// ADR-c07e2694f0e1 records what they cost the reader they were meant to serve.
+// The rows they named are on the key list, whole, one to a row, and nothing
+// else renders them now.
 
-/// The writing half, as the trailer draws it.
-pub fn write_line() -> String {
-    write().drawn()
-}
-
-/// The ratification offer, as the trailer draws it over a proposal.
+/// The ratification offer, as the note band draws it over a proposal.
+///
+/// The last of the three lines the trailer used to carry, and the one that
+/// survived it: it is a sentence about the document somebody has open rather
+/// than a table of keys, so it moved into the band that says what the reader is
+/// being told, where it costs a row that is drawn blank either way.
 pub fn ratify_line() -> String {
     ratify().drawn()
 }
