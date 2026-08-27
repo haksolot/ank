@@ -39,7 +39,15 @@
 //! * **3 BODY** -- the entity somebody opened, whole: its frontmatter as a
 //!   block of labelled fields, who holds it, the constraints binding its
 //!   declared scope, and its prose under them, paged rather than cut
-//!   (TASK-082301b40a27). `c` swaps it for the constraints alone.
+//!   (TASK-082301b40a27). `s` swaps it for the constraints alone, and `o` for
+//!   what `ank config` declares (TASK-b08d090f699c) -- a pane and not a fifth
+//!   panel, because a panel costs two rows at every window whether or not
+//!   anybody is looking at it (LOG-1afc1b09f95b), and a screen a person opens,
+//!   reads and leaves is what a pane is for. It is the one pane that names no
+//!   entity: what a corpus is configured to do is a fact about the repository,
+//!   so it draws with nothing open, and it is read when a person arrives at it
+//!   and on no repaint -- the queue's rule, over one `ank config <key>` per key
+//!   the contract declares.
 //! * **4 QUEUE** -- what is proposed and waiting for a signature, and which
 //!   regime the corpus is in. Full width for the same reason the claims are:
 //!   the sentence saying a corpus has declared no ratification key is
@@ -229,10 +237,10 @@
 
 use crate::ank::{Ank, Failed, Ran};
 use crate::bindings::{self, Binding, Holding};
-use crate::form::{Filled, Form};
+use crate::form::{Filled, Form, SET as SETTING};
 use crate::input::{Act, Command, Subject};
 use crate::keys::{self, Editing, Press};
-use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
+use crate::model::{self, short_of, Detail, Queue, Row, Setting, Settings, Snapshot};
 use crate::paint::{self, role_of_id, Composed, Ink};
 use crate::stream::Stream;
 use crate::text::{self, fit, pad, window, wrap};
@@ -372,10 +380,19 @@ struct Target {
 }
 
 /// What the body panel is paging through.
+///
+/// Three things now, and the third is the one that is not about an entity at
+/// all (TASK-b08d090f699c): what the corpus is configured to do is a fact about
+/// the repository, so the config pane draws with nothing open and says so on
+/// its own title. It is a pane and not a fifth panel for the reason
+/// LOG-1afc1b09f95b spends the whole of: rows are a budget, a panel costs two
+/// of them at every window whether or not anybody is looking at it, and this is
+/// a screen a person opens, reads and leaves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
     Body,
     Constraints,
+    Config,
 }
 
 /// A verb composed, shown, and waiting for one key (TASK-d4a882345837).
@@ -463,6 +480,23 @@ pub struct App {
     /// before that. Never loaded on the reader's own initiative: `review` is
     /// the one read here that inspects the whole corpus.
     queue: Option<Queue>,
+    /// Every key `ank config` declares with what it is set to, once somebody
+    /// has opened the pane that draws them, and `None` before that
+    /// (TASK-b08d090f699c).
+    ///
+    /// **Charged when the pane is focused and on no repaint**, which is the
+    /// queue's rule and it is here for the queue's reason with the price
+    /// counted differently: `review` is one expensive call and this is one call
+    /// per declared key, because §4 gives `config` one key at a time. A screen
+    /// left open all night with the pane closed asks nothing, and one with the
+    /// pane open asks again when its person comes back to it -- which is what
+    /// makes the values on it current rather than as old as the session.
+    ///
+    /// So [`App::reload`] does not touch it. That is deliberate and it is the
+    /// whole of the criterion's "on no repaint": a watcher's news reaches
+    /// `reload`, and a pane refreshed from there would be a stream of `ank
+    /// config` calls nobody asked for.
+    config: Option<Settings>,
     /// The one-line prompt, open, with what has been typed into it so far.
     ///
     /// `None` is the ordinary state and it is where every key is a command. The
@@ -559,6 +593,7 @@ impl App {
             offset: 0,
             stream,
             queue: None,
+            config: None,
             prompt: None,
             pending: None,
             // The two reads of the environment this crate makes, and they
@@ -1250,15 +1285,22 @@ impl App {
                 self.cursors[Focus::Entities.number() - 1] = Cursor::default();
                 self.cursors[Focus::Queue.number() - 1] = Cursor::default();
             }
-            Command::Constraints => {
-                self.pane = match self.pane {
-                    Pane::Body => Pane::Constraints,
-                    Pane::Constraints => Pane::Body,
-                };
-                self.offset = 0;
-                self.cursors[Focus::Body.number() - 1] = Cursor::default();
-                // The pane that was asked for is the pane to be looking at.
-                self.focus = Focus::Body;
+            Command::Constraints => self.pane_to(Pane::Constraints),
+            // The pane, opened, and the keys read once because it was
+            // (TASK-b08d090f699c). Closing it again reads nothing: `reconfig`
+            // asks what the pane is before it asks the CLI anything.
+            Command::Config => {
+                self.pane_to(Pane::Config);
+                self.reconfig(ank);
+                // On the first key and not on the sentence over it: the rows
+                // this pane opens are the keys, and a cursor parked on prose is
+                // a cursor Enter has no answer for. Done here rather than in
+                // `reconfig`, which runs again every time a person comes back
+                // to the pane and must not move the row they left it on.
+                if self.pane == Pane::Config {
+                    self.cursors[Focus::Body.number() - 1].at = self.first_key_row();
+                    self.clamp_body();
+                }
             }
             Command::Act(act) => self.propose(act, ank),
             Command::Malformed(said) => self.note = Some(said),
@@ -1323,16 +1365,65 @@ impl App {
         self.form = Some(form);
     }
 
+    /// The body panel showing one of the things it can show, or the document
+    /// again where it is showing that already.
+    ///
+    /// One toggle for the two panes that are reached by a key
+    /// (TASK-b08d090f699c). What it does is what `s` always did -- the pane
+    /// asked for, or back to the body if it was already there, and the window
+    /// and the cursor to the top because a different set of rows is a different
+    /// place -- and it is one function because two of them would be two answers
+    /// to "what does pressing this a second time do".
+    fn pane_to(&mut self, pane: Pane) {
+        self.pane = match self.pane == pane {
+            true => Pane::Body,
+            false => pane,
+        };
+        self.offset = 0;
+        self.cursors[Focus::Body.number() - 1] = Cursor::default();
+        // The pane that was asked for is the pane to be looking at.
+        self.focus = Focus::Body;
+    }
+
+    /// Asks `config` again for every declared key, but only where the pane that
+    /// draws them is the one in front of the person (TASK-b08d090f699c).
+    ///
+    /// **The condition is the whole of the design**, and it is
+    /// [`App::requeue`]'s condition with a different price behind it. §4 gives
+    /// `config` one key at a time, so this is one spawn per key the contract
+    /// declares -- eight of them today -- and putting that on every event a
+    /// watcher sends would undo what TASK-2f7777a1fdff bought as surely as
+    /// running `review` there would.
+    ///
+    /// A pane nobody is looking at is not stale, and one that is open has to be
+    /// current: a value somebody set at the shell a minute ago is exactly the
+    /// row a person would otherwise read wrongly. So it is charged where a
+    /// person arrives at the pane -- opening it with the key, or bringing the
+    /// focus back to the panel it is drawn in -- and nowhere else.
+    fn reconfig(&mut self, ank: &Ank) {
+        if self.focus != Focus::Body || self.pane != Pane::Config {
+            return;
+        }
+        self.config = Some(Settings::load(ank));
+        self.clamp_body();
+    }
+
     /// Move focus, and pay whatever the panel arriving costs.
     ///
-    /// The queue is the only one that costs anything, and it is charged here
-    /// rather than at every repaint: focusing it is a person asking for
-    /// `ank review`, which is a whole inspection of the corpus.
+    /// Two panels cost something now and both are charged here rather than at
+    /// every repaint: focusing the queue is a person asking for `ank review`,
+    /// which is a whole inspection of the corpus, and arriving at the body
+    /// panel with the config pane open is a person asking for one
+    /// `ank config <key>` per key the contract declares. Neither price is paid
+    /// by a screen nobody is at.
     fn focus_on(&mut self, focus: Focus, ank: &Ank) {
         self.focus = focus;
         if focus == Focus::Queue {
             self.requeue(ank);
             self.clamp(Focus::Queue);
+        }
+        if focus == Focus::Body {
+            self.reconfig(ank);
         }
     }
 
@@ -1475,6 +1566,14 @@ impl App {
                 self.queue = Some(queue);
             }
         }
+        // And a key that was set is a row of the pane that is wrong the moment
+        // it lands (TASK-b08d090f699c). Asked again here and nowhere else, for
+        // the queue's reason: `reload` refreshes the pane only where a person
+        // arrived at it, and nobody arrived -- they were already there and they
+        // asked for this.
+        if verb == SETTING {
+            self.reconfig(ank);
+        }
         // Under whatever the reread had to say, and never instead of it: a
         // reload that failed after a write that landed is the one moment a
         // reader most needs both halves.
@@ -1493,6 +1592,13 @@ impl App {
     /// to look it up. Every other row of a document names nothing, and Enter on
     /// one says so rather than opening whatever happened to be selected.
     fn open_selected(&mut self, ank: &Ank) {
+        // A row of the config pane names a key and never an entity, so what
+        // opening it reaches is the form that sets it and not `ank show`
+        // (TASK-b08d090f699c). Asked of the pane and before the row, because
+        // the pane is what decides which question the row is an answer to.
+        if self.focus == Focus::Body && self.pane == Pane::Config {
+            return self.open_setting();
+        }
         let Some(id) = self.selected_id(self.focus) else {
             self.note = Some(match self.focus {
                 Focus::Body => {
@@ -1502,7 +1608,52 @@ impl App {
             });
             return;
         };
+        // Opening a document puts the body panel back on the document
+        // (TASK-b08d090f699c). The constraints pane stays where it is, because
+        // it is about whatever entity is open and follows it; the config pane
+        // is about the repository, so a person who asked for an entity and got
+        // a list of settings would have been answered with something else. Here
+        // rather than in `show`, which `App::reopen` also calls: re-reading the
+        // document that is already open is not somebody asking for it.
+        if self.pane == Pane::Config {
+            self.pane = Pane::Body;
+        }
         self.show(ank, &id);
+    }
+
+    /// The form for the config key under the cursor, opened over the panels
+    /// (TASK-b08d090f699c).
+    ///
+    /// **The key is frozen into the form and never looked up again.** It is the
+    /// row the person opened, and a form that resolved the cursor a second time
+    /// when it composed would be a value landing on whatever the cursor had
+    /// reached by then -- the defect the confirmation avoids by freezing its
+    /// argv, one screen earlier.
+    ///
+    /// Nothing is composed here and nothing is spawned: what is filled in
+    /// reaches `App::propose` through [`App::filling`], and the confirmation is
+    /// on that road exactly as it is for every other act.
+    fn open_setting(&mut self) {
+        let Some(key) = self.pane_target() else {
+            self.note = Some(format!(
+                "nothing here to set: {} opens a key of the list",
+                bindings::spelling_of(&Command::Open)
+            ));
+            return;
+        };
+        match Form::on(SETTING, vec![key.clone()]) {
+            Some(form) => self.form = Some(form),
+            // A build whose contract does not declare the verb, or declares it
+            // with nothing this reader will compose without: said rather than
+            // drawn as an empty form, which is `App::open_form`'s reasoning and
+            // its sentence.
+            None => {
+                self.note = Some(format!(
+                    "this build of ank has no form for '{SETTING} {key}': it declares no such \
+                     verb, or nothing the verb cannot do without"
+                ))
+            }
+        }
     }
 
     /// Asks `show` for whatever the body panel is already holding, leaving the
@@ -1873,6 +2024,15 @@ impl App {
                 }
             },
             Focus::Body => {
+                // Before the document, because this pane names none
+                // (TASK-b08d090f699c). `CONFIG` and not `BODY`, for the reason
+                // the constraints pane has its own title: a heading that said
+                // `BODY` over a list of settings would be a heading that lies.
+                if self.pane == Pane::Config {
+                    let counted = self.counted(width);
+                    let keys = self.config.as_ref().map_or(0, |s| s.keys.len());
+                    return Composed::of(&format!("CONFIG   {counted}   ({keys} key(s))"));
+                }
                 let Some(detail) = &self.detail else {
                     return Composed::of(name);
                 };
@@ -1880,7 +2040,17 @@ impl App {
                 let counted = self.counted(width);
                 let short = short_of(&detail.id);
                 match self.pane {
-                    Pane::Body => {
+                    // The one title that is not the panel's name: the panel is
+                    // showing the other thing it can show about a document, and
+                    // saying `BODY` over a list of decisions would be a heading
+                    // that lies.
+                    Pane::Constraints => Composed::new()
+                        .plain("CONSTRAINTS   ")
+                        .named(&short, role_of_id(&detail.id))
+                        .plain(&format!("   {counted}")),
+                    // The document. The config pane answered above, before the
+                    // document was asked for at all.
+                    _ => {
                         let status = row.map(|r| r.status.clone()).unwrap_or_default();
                         Composed::new()
                             .plain(&format!("{name}   "))
@@ -1892,13 +2062,6 @@ impl App {
                             .named(&status, role_of_status(&status))
                             .plain(&format!("   rows {counted}"))
                     }
-                    // The one title that is not the panel's name: the panel is
-                    // showing the other thing it can show, and saying `BODY`
-                    // over a list of decisions would be a heading that lies.
-                    Pane::Constraints => Composed::new()
-                        .plain("CONSTRAINTS   ")
-                        .named(&short, role_of_id(&detail.id))
-                        .plain(&format!("   {counted}")),
                 }
             }
         }
@@ -2069,7 +2232,9 @@ impl App {
     /// panel pages, not a band standing over them, so `j` walks out of the
     /// frontmatter and into the prose without a second arithmetic.
     fn body_lines(&self, width: usize, height: usize) -> Vec<Composed> {
-        if self.detail.is_none() {
+        // The config pane is not about a document, so "nothing is open here"
+        // is not what it has to say (TASK-b08d090f699c).
+        if self.detail.is_none() && self.pane != Pane::Config {
             return [
                 "  nothing is open here",
                 "  Enter opens the row a listing's cursor is on, and hands this panel the",
@@ -2114,16 +2279,19 @@ impl App {
     /// exactly where there is something to open, rather than on a rule of
     /// arithmetic about which rows the block spent.
     fn pane_content(&self, width: usize) -> Vec<(Composed, Option<String>)> {
+        // Before the document is asked for, because this pane is not about one
+        // (TASK-b08d090f699c): what a corpus is configured to do is a fact
+        // about the repository, and a pane that drew nothing until somebody had
+        // opened an entity would be answering a question with an unrelated
+        // precondition.
+        if self.pane == Pane::Config {
+            return self.config_rows(width);
+        }
         let Some(detail) = &self.detail else {
             return Vec::new();
         };
         match self.pane {
-            Pane::Body => {
-                let mut out = self.block(width);
-                out.extend(self.prose_rows(width).into_iter().map(|line| (line, None)));
-                out
-            }
-            // The list whole, and the same rows: `c` is the block's constraints
+            // The list whole, and the same rows: `s` is the block's constraints
             // with the document taken away, not a second rendering of them.
             Pane::Constraints => {
                 let at = self.cursors[Focus::Body.number() - 1].at;
@@ -2139,7 +2307,61 @@ impl App {
                     })
                     .collect()
             }
+            // The document, and the pane above answered already.
+            _ => {
+                let mut out = self.block(width);
+                out.extend(self.prose_rows(width).into_iter().map(|line| (line, None)));
+                out
+            }
         }
+    }
+
+    /// The config pane's rows: what the pane says it is, then one row per key
+    /// `ank config` declares (TASK-b08d090f699c).
+    ///
+    /// **Every key, and the reader holds no list of them.** The keys are
+    /// `ank_contract::verbs::CONFIG_KEYS` -- the same constant `ank-cli`'s own
+    /// list is and the verb's note is rendered from -- so a key the CLI gains
+    /// reaches this pane with no edit here at all.
+    ///
+    /// Each row carries the key it would set, which is what makes Enter mean
+    /// something on this pane exactly as it does on the field block: a row that
+    /// names something to open carries it, and the two rows of prose above them
+    /// carry nothing.
+    ///
+    /// **A key the CLI refused is a row and never a missing row.**
+    /// `peers.<name>` names a family rather than a key and the verb says so;
+    /// the sentence it said is the row, because "where that value came from"
+    /// has an answer there too and hiding it would leave a person wondering
+    /// which keys the pane had decided not to show them.
+    fn config_rows(&self, width: usize) -> Vec<(Composed, Option<String>)> {
+        let mut out: Vec<(Composed, Option<String>)> = Vec::new();
+        for line in wrap(CONFIG_ABOUT, width.max(1)) {
+            out.push((Composed::of(&line).fitted(width), None));
+        }
+        for line in wrap(&config_offer(), width.max(1)) {
+            out.push((Composed::of(&line).fitted(width), None));
+        }
+        out.push((Composed::new(), None));
+        let Some(settings) = &self.config else {
+            // Never drawn from a running reader -- the pane is charged the
+            // moment it opens -- and said rather than left blank all the same,
+            // because a pane with no rows reads as a corpus with no keys.
+            out.push((
+                Composed::of("  the keys have not been read").fitted(width),
+                None,
+            ));
+            return out;
+        };
+        let at = self.cursors[Focus::Body.number() - 1].at;
+        for setting in &settings.keys {
+            let here = self.marker(out.len() == at);
+            out.push((
+                setting_row(setting, here, width),
+                Some(setting.key.to_string()),
+            ));
+        }
+        out
     }
 
     /// The document's own prose, wrapped to the panel and painted with nothing.
@@ -2258,6 +2480,20 @@ impl App {
             .into_iter()
             .nth(at)
             .and_then(|(_, id)| id)
+    }
+
+    /// The first row of the body panel that names something to open, and the
+    /// first row of all where none does.
+    ///
+    /// Read off [`App::pane_content`] rather than counted: the rows of prose
+    /// over the config pane's keys are wrapped to the panel, so how many there
+    /// are is a fact about the width and never an arithmetic to keep in step
+    /// with the sentence.
+    fn first_key_row(&self) -> usize {
+        self.pane_content(self.body_width())
+            .iter()
+            .position(|(_, opens)| opens.is_some())
+            .unwrap_or(0)
     }
 
     /// The width the body panel's rows are composed at.
@@ -3352,6 +3588,71 @@ fn constraint_row(c: &Row, here: &str) -> Composed {
         .plain(&c.title)
 }
 
+/// One key of the configuration, with what it is set to and where that came
+/// from (TASK-b08d090f699c).
+///
+/// **Three columns, and the reader composes none of the three.** The key is the
+/// contract's, the value and the source are the two fields `ank config <key>
+/// --json` answers with, and a key the CLI refused carries the first line of
+/// what it said in place of both -- which is what it has instead of a value,
+/// and is still an answer to where one would come from.
+///
+/// Painted with nothing. There is one table of what a word means
+/// (ADR-1f70ce2c3eac) and `file`, `default` and `unset` are not in it: a source
+/// is not a status, and colouring one here would be this reader inventing a
+/// second opinion about what a colour says.
+fn setting_row(setting: &Setting, here: &str, width: usize) -> Composed {
+    let said = match &setting.refused {
+        Some(refusal) => refusal.lines().next().unwrap_or_default().to_string(),
+        None => format!(
+            "{}  {}",
+            pad(setting.value.as_deref().unwrap_or_default(), SET_TO),
+            setting.source
+        ),
+    };
+    Composed::of(&format!("{here}{}  {said}", pad(setting.key, CONFIG_KEY))).fitted(width)
+}
+
+/// The column a config key is drawn in.
+///
+/// Wide enough for the longest key §4 declares -- `verifiers.<name>.timeout` is
+/// twenty-four -- so no key is cut. A key that was cut would be a key nobody
+/// could type back at the shell, which is the whole of what this pane is for.
+const CONFIG_KEY: usize = 25;
+
+/// The column a config value is drawn in.
+///
+/// A duration, a branch name, a number of tokens: values here are short, and
+/// the room left over goes to the source beside them.
+const SET_TO: usize = 18;
+
+/// What the config pane says it is, over its rows.
+///
+/// Public because the suite that drives the binary looks for it, and a suite
+/// carrying its own copy of a sentence would agree with a screen that had
+/// stopped saying it.
+pub const CONFIG_ABOUT: &str =
+    "  every key ank config declares, with the value in effect and where it came from";
+
+/// What the config pane says a row of it costs.
+///
+/// **Both keys are read out of the table and the shape out of the contract**
+/// (ADR-c07e2694f0e1). The key that opens a row is whatever runs
+/// [`Command::Open`], the key that runs a composed command is [`keys::CONFIRM`],
+/// and the command line is the verb's own usage. A sentence carrying its own
+/// copy of any of the three would be one of the five parallel tables that
+/// decision was written against, in prose.
+fn config_offer() -> String {
+    let shape = crate::form::spec_of(SETTING)
+        .map(|spec| spec.positional_help)
+        .unwrap_or_default();
+    format!(
+        "  {} on a key composes ank config {shape}, and {} runs it",
+        bindings::spelling_of(&Command::Open),
+        keys::CONFIRM
+    )
+}
+
 /// The column a field's label is drawn in.
 ///
 /// Wide enough for the longest name this format writes -- `done_criteria` and
@@ -4246,6 +4547,264 @@ mod tests {
             a.note.clone().unwrap_or_default().contains("ank review"),
             "focusing the queue did not run review at all: {:?}",
             a.note
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The config pane (TASK-b08d090f699c)
+    // -----------------------------------------------------------------------
+
+    /// A pane holding one row per key, planted so that "this was read again"
+    /// is a fact a test can see against a CLI that is not there.
+    fn planted() -> Settings {
+        Settings {
+            keys: vec![Setting {
+                key: "planted",
+                value: Some("a value nothing would answer".to_string()),
+                source: "planted".to_string(),
+                refused: None,
+            }],
+        }
+    }
+
+    /// **The pane lists every key the contract declares, and the reader holds
+    /// no copy of them** (TASK-b08d090f699c).
+    ///
+    /// Measured against `ank_contract::verbs::CONFIG_KEYS` -- which is what
+    /// `ank-cli`'s own list *is* and what the verb's note is rendered from --
+    /// in both directions: a key the CLI gains is a row here with no edit, and
+    /// a row here that the contract does not declare would be this reader
+    /// inventing one.
+    #[test]
+    fn the_config_pane_draws_one_row_per_key_the_contract_declares() {
+        let declared = ank_contract::verbs::CONFIG_KEYS;
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        let opened: Vec<String> = a
+            .pane_content(a.body_width())
+            .into_iter()
+            .filter_map(|(_, key)| key)
+            .collect();
+        assert_eq!(
+            opened, declared,
+            "the rows that open a key are not the keys the contract declares"
+        );
+        // And the key itself is on the row a person reads, whole: a key cut to
+        // fit is a key nobody can type back at the shell.
+        let frame = a.frame();
+        for key in declared {
+            assert!(frame.contains(key), "'{key}' is not on the pane:\n{frame}");
+        }
+    }
+
+    /// **The pane is charged when it is focused, and on no repaint**
+    /// (TASK-b08d090f699c).
+    ///
+    /// Three claims and each is measured in the shape it would break in. A
+    /// reader that has never opened the pane has asked nothing. A reload and a
+    /// watcher's news leave what the pane holds exactly as it was -- planted
+    /// here, because against a CLI that is not there every read answers the
+    /// same refusal and "it was read again" would otherwise be invisible. And
+    /// coming back to the panel with the pane open reads again, which is what
+    /// keeps a value somebody set at the shell from sitting stale on a screen.
+    #[test]
+    fn the_config_pane_is_read_when_it_is_focused_and_on_no_repaint() {
+        let mut a = app();
+        let ank = nowhere();
+        a.reload(&ank);
+        a.repaint(&ank);
+        for c in ['j', 'k', 'u', 'f', 'b', 's'] {
+            tap(&mut a, &ank, KeyCode::Char(c));
+        }
+        assert!(
+            a.config.is_none(),
+            "config was read while nobody had opened the pane"
+        );
+
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        assert_eq!(a.pane, Pane::Config, "'o' did not open the pane");
+        assert!(a.config.is_some(), "opening the pane read nothing");
+
+        // A repaint is a watcher's news, and it must not put one
+        // `ank config <key>` per declared key on every event.
+        a.config = Some(planted());
+        a.reload(&ank);
+        a.repaint(&ank);
+        assert_eq!(
+            a.config.as_ref().map(|s| s.keys.len()),
+            Some(1),
+            "a repaint charged the pane"
+        );
+
+        // Arriving at the panel again is a person coming back to it, and that
+        // is where the price is paid.
+        tap(&mut a, &ank, KeyCode::Char('2'));
+        assert_eq!(a.focus(), Focus::Entities);
+        assert_eq!(
+            a.config.as_ref().map(|s| s.keys.len()),
+            Some(1),
+            "leaving the panel charged the pane"
+        );
+        tap(&mut a, &ank, KeyCode::Char('3'));
+        assert_eq!(
+            a.config.as_ref().map(|s| s.keys.len()),
+            Some(ank_contract::verbs::CONFIG_KEYS.len()),
+            "coming back to the pane did not read it again"
+        );
+
+        // And closing it reads nothing at all: `o` a second time is the body
+        // again, which is what `s` does with the constraints.
+        a.config = Some(planted());
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        assert_eq!(a.pane, Pane::Body, "'o' did not close the pane");
+        assert_eq!(a.config.as_ref().map(|s| s.keys.len()), Some(1));
+    }
+
+    /// **A key the CLI refused is a row and never a missing row**
+    /// (TASK-b08d090f699c).
+    ///
+    /// `nowhere()` is a CLI that cannot be spawned, so every row is a refusal
+    /// -- which is the shape `peers.<name>` has against a real one, and the
+    /// question is the same either way: does the pane still name every key. A
+    /// pane that dropped what it could not answer for would be a pane hiding
+    /// which keys it had decided not to show.
+    #[test]
+    fn a_key_the_cli_refused_is_drawn_with_what_it_said() {
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        let settings = a.config.as_ref().expect("the pane was charged");
+        assert_eq!(settings.keys.len(), ank_contract::verbs::CONFIG_KEYS.len());
+        for setting in &settings.keys {
+            assert!(setting.is_refusal(), "'{}' answered", setting.key);
+        }
+        let frame = a.frame();
+        assert!(
+            frame.contains("ank config"),
+            "the pane does not say what it could not run:\n{frame}"
+        );
+    }
+
+    /// **Opening a row of the pane opens the form that sets that key, and
+    /// nothing is spawned** (TASK-b08d090f699c).
+    ///
+    /// The key is the row the person opened and it is frozen into the form:
+    /// what the form composes is `ank config <key> <value>`, on the key that
+    /// was under the cursor when Enter was pressed rather than on whatever the
+    /// cursor has reached since.
+    #[test]
+    fn a_row_of_the_config_pane_opens_the_form_that_sets_that_key() {
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        // The cursor opens on the first key and not on the sentence over it.
+        tap(&mut a, &ank, KeyCode::Enter);
+        let form = a.form.as_ref().expect("Enter on a key opens a form");
+        assert_eq!(form.verb(), SETTING);
+        assert_eq!(form.front(), [ank_contract::verbs::CONFIG_KEYS[0]]);
+        assert_eq!(
+            form.fields().first().map(|f| (f.flag, f.positional)),
+            Some(("<value>", true)),
+            "the first field is not the value the verb takes as a word"
+        );
+        assert!(a.pending.is_none(), "opening a row composed a command");
+        assert!(a.note.is_none(), "opening a row said something went wrong");
+
+        // And the key it carries is the row under the cursor, whichever that
+        // is: a second row opens a second form.
+        a.form = None;
+        tap(&mut a, &ank, KeyCode::Char('j'));
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert_eq!(
+            a.form.as_ref().map(|f| f.front().to_vec()),
+            Some(vec![ank_contract::verbs::CONFIG_KEYS[1].to_string()])
+        );
+    }
+
+    /// **The pane composes nothing until a value is in it, and what it composes
+    /// goes through the confirmation** (TASK-b08d090f699c).
+    ///
+    /// `ank config <key>` alone is the reading shape -- the pane has drawn that
+    /// answer already -- so a form submitted empty says so and spawns nothing.
+    /// Filled in, what reaches the screen is the command line and not a
+    /// document: `App::confirmed` is still the one caller of `Ank::act`, and
+    /// nothing here has called it.
+    #[test]
+    fn the_form_refuses_an_empty_value_and_the_filled_one_is_shown_before_it_runs() {
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char('o'));
+        tap(&mut a, &ank, KeyCode::Enter);
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert!(a.form.is_some(), "an empty form composed and closed");
+        assert!(a.pending.is_none(), "an empty form composed a command");
+        let said = a
+            .form
+            .as_ref()
+            .and_then(|f| f.said().map(|s| s.to_string()))
+            .expect("the form says which field it refused on");
+        assert!(said.contains("<value>"), "{said}");
+        assert!(said.contains("--unset"), "{said}");
+
+        for c in ['4', 'h'] {
+            tap(&mut a, &ank, KeyCode::Char(c));
+        }
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert!(a.form.is_none(), "a form that composed stayed open");
+        let pending = a.pending.as_ref().expect("the command is on the screen");
+        assert_eq!(pending.verb, SETTING);
+        assert_eq!(
+            pending.args,
+            [
+                ank_contract::verbs::CONFIG_KEYS[0].to_string(),
+                "4h".to_string()
+            ],
+            "the composed argv is not the key and the value"
+        );
+        assert!(
+            pending.shown.contains(&format!(
+                "ank config {} 4h",
+                ank_contract::verbs::CONFIG_KEYS[0]
+            )),
+            "the confirmation does not spell the command: {}",
+            pending.shown
+        );
+    }
+
+    /// **Opening a document puts the body panel back on the document**
+    /// (TASK-b08d090f699c).
+    ///
+    /// The config pane is the one thing that panel shows which is not about an
+    /// entity, so a person who pressed Enter on a row of the entities listing
+    /// and got a list of settings would have been answered with something else.
+    /// The constraints pane is the other way round and stays: it follows
+    /// whatever document is open, because that is what it is about.
+    #[test]
+    fn opening_an_entity_leaves_the_config_pane_and_the_constraints_pane_stays() {
+        let mut a = app();
+        let ank = nowhere();
+        a.detail = Some(detail(
+            "TASK-49746735127f",
+            "---\nid: TASK-49746735127f\n---\n",
+        ));
+
+        a.pane = Pane::Config;
+        a.focus = Focus::Entities;
+        a.open_selected(&ank);
+        assert_eq!(
+            a.pane,
+            Pane::Body,
+            "a document was opened and the settings stayed on the screen"
+        );
+
+        a.pane = Pane::Constraints;
+        a.focus = Focus::Entities;
+        a.open_selected(&ank);
+        assert_eq!(
+            a.pane,
+            Pane::Constraints,
+            "the constraints pane follows the document it is about"
         );
     }
 

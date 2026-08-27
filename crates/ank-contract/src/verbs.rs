@@ -587,6 +587,46 @@ pub const GROUPS: &[&str] = &[
     "set up a repository",
 ];
 
+/// The keys `ank config` addresses, and the note that names them, from one
+/// table (TASK-b08d090f699c).
+///
+/// **One declaration, two renderings.** The set was a literal in `ank-cli` and
+/// a space-separated sentence in `config`'s own note, held together by a test
+/// that compared them; a third consumer arrived when the terminal reader had to
+/// list every key -- and the reader may not link `ank-cli` (ADR-8bd76e8d7c4e),
+/// so it could reach neither the list nor anything but the note's own bytes to
+/// split. What a caller needs is the set, so the set is what is declared, and
+/// the note is `concat!`-ed from it at compile time rather than written beside
+/// it. `ank-cli`'s `KEYS` is this constant, the note below is this constant,
+/// and a key added here reaches all three surfaces with no second edit.
+///
+/// A macro because a note is a `&'static str` inside a `const` table: joining a
+/// slice at run time would need an allocation the table cannot hold, and
+/// `concat!` takes literals rather than constants. So the literals are written
+/// once, in the macro's own invocation, and expanded into both shapes.
+macro_rules! config_keys {
+    ($($key:literal),+ $(,)?) => {
+        /// The keys `ank config` addresses, spelled the way §4's table spells
+        /// them, and the whole of them.
+        pub const CONFIG_KEYS: &[&str] = &[$($key),+];
+
+        /// [`CONFIG_KEYS`] as `config`'s own note renders them: the word
+        /// `keys:` and the set, space-separated.
+        pub const CONFIG_KEYS_NOTE: &str = concat!("keys:" $(, " ", $key)+);
+    };
+}
+
+config_keys!(
+    "schema",
+    "context_budget",
+    "claim_ttl_max",
+    "claim_ttl_default",
+    "default_branch",
+    "peers.<name>",
+    "verifiers.<name>.run",
+    "verifiers.<name>.timeout",
+);
+
 /// The twelve verbs of §4, plus `init` and `help` (§9).
 ///
 /// **The order is the specification's, and it is load-bearing**: §4 puts the
@@ -1297,7 +1337,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(ExitCode::Prerequisite, "verifiers.<name>.timeout on a verifier that is not declared"),
         ],
         notes: &[
-            "keys: schema context_budget claim_ttl_max claim_ttl_default default_branch peers.<name> verifiers.<name>.run verifiers.<name>.timeout",
+            CONFIG_KEYS_NOTE,
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
             "--user reads and writes the reader's corpora.yml instead, whose only key is corpora.<identity>",

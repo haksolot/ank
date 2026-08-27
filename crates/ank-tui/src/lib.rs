@@ -3,8 +3,8 @@
 //!
 //! **It reaches the corpus by running the CLI, and by nothing else.** Every row
 //! of corpus data on the screen arrives as a `--json` document written by
-//! `ank find`, `ank status`, `ank show`, `ank scope` or `ank review`, spawned as
-//! a shell would spawn them. Nothing here links `ank-core`, opens `.ank/`, or touches
+//! `ank find`, `ank status`, `ank show`, `ank scope`, `ank review` or
+//! `ank config <key>`, spawned as a shell would spawn them. Nothing here links `ank-core`, opens `.ank/`, or touches
 //! `refs/ank/*`. That is slower than linking the core and the trade is taken
 //! deliberately: every refusal in this project is a refusal on state, a reader
 //! that reproduced them would get one subtly wrong, and the first symptom would
@@ -17,10 +17,12 @@
 //!
 //! **It writes nothing the person at the keyboard did not ask for**
 //! (ADR-8bd76e8d7c4e). Repainting runs the verbs that only read, so a screen
-//! left open all night runs no command at all and renews no claim; the six that
-//! write -- `claim`, `log`, `release`, `done`, `amend` and `accept` -- run once
-//! each, when their word is typed whole into the prompt *and* the command that
-//! composed has been shown and answered with one key (TASK-d4a882345837).
+//! left open all night runs no command at all and renews no claim; the verbs
+//! that write -- `crate::ank::ACTS`, which is `claim`, `log`, `release`,
+//! `done`, `amend`, `accept`, `new`, `edit`, `close`, `attest`, `read` and the
+//! writing shape of `config` -- run once each, when the key that spells one has
+//! been pressed *and* the command that composed has been shown and answered
+//! with one key (TASK-d4a882345837).
 //! Nothing here is on a timer, and there is no timer to put anything on. The
 //! assertion is in the suite, not in this sentence.
 //!
@@ -75,6 +77,17 @@
 //! and every surface -- the mapping, the offer, the key list -- is computed
 //! from it.
 //!
+//! **And one key spells a verb that reads before it writes** (`o`,
+//! TASK-b08d090f699c). `ank config <key>` reads and `ank config <key> <value>`
+//! writes, which is one word for two verbs; what `o` opens is the reading half,
+//! a pane listing every key the contract declares with the value in effect and
+//! where it came from, and what writes is a row of that pane opened onto a
+//! form. So `config` is the one verb on both roads, and which road an
+//! invocation takes is decided by its arguments rather than by its name --
+//! `crate::ank::BOTH_ROADS` names it and `crate::ank::json` refuses every shape
+//! but one positional, so a repaint can reach the reading half and nothing that
+//! writes.
+//!
 //! What is left of the typed word is two places, and neither of them reaches a
 //! verb by being read. `/` opens the one-line prompt on a search, and
 //! [`input`]'s grammar carries no verb at all. `n` opens the form
@@ -112,7 +125,10 @@
 //!   focuses the panel and never on the reader's own initiative.
 //! * [`view::Focus::Body`] -- one entity: what holds it, the constraints
 //!   binding its declared scope, and its body, paged rather than cut. This is
-//!   the only panel `accept` can be typed in.
+//!   the only panel `accept` can be typed in. It is also where the config pane
+//!   is drawn (TASK-b08d090f699c): the one thing this panel shows that is not
+//!   about an entity at all, opened with `o`, read when a person arrives at it
+//!   and on no repaint.
 //!
 //! Focus moves by key and is drawn in characters -- a heavy border and the
 //! `> ` marker -- so the screen says where a reader is with no colour at all.

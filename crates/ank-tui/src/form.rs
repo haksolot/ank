@@ -1,12 +1,26 @@
 //! The form a verb with flags is filled in on, and the whole of why it cannot
 //! open an editor (TASK-d832452630d2, TASK-e8da6a00564a, ADR-c07e2694f0e1).
 //!
-//! **Four verbs and one form.** It arrived carrying `ank new` alone and
-//! TASK-e8da6a00564a puts `ank edit`, `ank close` and `ank attest` on it. What
-//! made that one form rather than four is that nothing here is written per
-//! verb: the fields are the contract's, the kinds are the contract's, and the
-//! only thing this file declares is [`NEEDS`] -- which flags a call cannot be
-//! composed without, the one fact `ank help --json` does not carry.
+//! **Five verbs and one form.** It arrived carrying `ank new` alone,
+//! TASK-e8da6a00564a put `ank edit`, `ank close` and `ank attest` on it, and
+//! TASK-b08d090f699c puts `ank config` on it. What made that one form rather
+//! than five is that nothing here is written per verb: the fields are the
+//! contract's, the kinds are the contract's, the positionals are the
+//! contract's, and the only thing this file declares is [`NEEDS`] -- which
+//! flags a call cannot be composed without, the one fact `ank help --json` does
+//! not carry.
+//!
+//! # The one field that is not a flag
+//!
+//! `ank config <key> <value>` takes what it writes as a word rather than behind
+//! a flag, and a form over the flags alone could compose nothing but
+//! `ank config <key>` -- which is the *reading* shape, the one the pane has
+//! already asked and drawn. So a form can be opened on positionals the caller
+//! has already decided ([`Form::on`]), and the placeholder of the next one is
+//! read off the verb's own usage line ([`taken`]) and drawn as the first row.
+//! What differs about that row is one thing and it is stated on the field: it
+//! composes as a bare word. Everything else -- the requirement, the mark, the
+//! refusal, the cursor -- asks it the same questions it asks a flag.
 //!
 //! **The fields are the contract's and not this file's.** `ank help --json`
 //! declares what each verb takes, [`ank_contract::verbs`] is where that
@@ -23,7 +37,7 @@
 //!
 //! # The editor, and why this form is a `Result`
 //!
-//! **Two verbs of the four reach `$EDITOR`, and they reach it by different
+//! **Two verbs of the five reach `$EDITOR`, and they reach it by different
 //! doors.** `ank new` opens one **precisely when every mandatory flag is
 //! absent** -- that is the CLI's `is_interactive`, and it is `all` and not
 //! `any`: `ank new task --title x` still refuses on the missing scope, and
@@ -72,6 +86,16 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// composed argv are the same string.
 pub const MAKE: &str = "new";
 
+/// The verb that reads and sets one key of the configuration, named once for
+/// [`MAKE`]'s reason (TASK-b08d090f699c).
+///
+/// Four surfaces spell it and they spell this: the binding `o` carries, the
+/// pane that reads every key, the form one row of that pane opens, and the argv
+/// the form composes. The gate in `crate::ank` deliberately does *not* read it
+/// -- a gate built from what it guards guards nothing -- and the suite there
+/// measures the two against each other instead.
+pub const SET: &str = "config";
+
 /// What a call cannot be composed without, in the two shapes the CLI has.
 ///
 /// **Two variants because the editor is reached by two different doors**, and
@@ -80,12 +104,27 @@ pub const MAKE: &str = "new";
 /// for it must hold all of them. `ank edit` opens one when *no* field is named
 /// at all, so a form for it must hold at least one. Written down as two, so a
 /// verb added to [`NEEDS`] has to say which door it is standing in front of.
+///
+/// **And the second shape is not only about editors** (TASK-b08d090f699c).
+/// `ank config <key>` with no value *reads* -- it opens nothing and writes
+/// nothing -- and a form that composed it would be a write that read. It is the
+/// same refusal for a different reason, which is why the reason is a field of
+/// the variant rather than a sentence in the legend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Need {
     /// Every one of these, or the form composes nothing.
     All(&'static [&'static str]),
-    /// At least one of these, or the form composes nothing.
-    Any(&'static [&'static str]),
+    /// At least one of these, or the form composes nothing -- and what a call
+    /// naming none of them would do instead.
+    ///
+    /// **The sentence is carried on the row because it differs per verb**
+    /// (TASK-b08d090f699c). `ank edit <id>` with no field named opens `$EDITOR`
+    /// and `ank config <key>` with no value reads the key; both are calls this
+    /// form refuses to compose, and for different reasons. It was written into
+    /// the legend while `edit` was the only `Any`, and a second row would have
+    /// made the screen tell a person that setting nothing opens an editor,
+    /// which is not what the verb does.
+    Any(&'static [&'static str], &'static str),
 }
 
 impl Need {
@@ -96,7 +135,7 @@ impl Need {
     /// flag that moves moves on both.
     pub fn flags(&self) -> &'static [&'static str] {
         match self {
-            Need::All(flags) | Need::Any(flags) => flags,
+            Need::All(flags) | Need::Any(flags, _) => flags,
         }
     }
 }
@@ -135,13 +174,50 @@ const NEEDS: &[(&str, &str, Need)] = &[
     (
         "edit",
         "",
-        Need::Any(&["--title", "--body", "--constraint"]),
+        Need::Any(
+            &["--title", "--body", "--constraint"],
+            "a call naming none opens $EDITOR",
+        ),
     ),
     // "a closure nobody explained is one nobody can reopen" is the verb's own
     // refusal, and this is that refusal on this side of the pipe.
     ("close", "", Need::All(&["--reason"])),
     ("attest", "", Need::All(&["--proof"])),
+    // The one requirement naming a positional (TASK-b08d090f699c). `ank config
+    // <key>` alone is the *reading* shape, and a form that composed it would be
+    // a write that read: the pane has already asked that question and drawn the
+    // answer. So the form will not compose until it carries something that
+    // writes -- a value to set, or `--unset` to remove one -- and `Any` is the
+    // shape of that because either is enough and neither is required.
+    //
+    // `--user` is a row of this form like any other flag the verb declares, and
+    // that is deliberate rather than overlooked. It addresses the reader's own
+    // `corpora.yml` instead of the corpus, whose key set is a different one --
+    // so `ank config claim_ttl_max 4h --user` is a refusal the CLI gives
+    // precisely, and `ank config schema 1 --user` is a thing the verb does. A
+    // form that hid a declared flag would be this reader deciding which half of
+    // a verb a person is allowed to reach, and what stands between the switch
+    // and the file is what stands in front of every other act: the command line
+    // on the screen, and one key.
+    (
+        SET,
+        "",
+        Need::Any(
+            &[VALUE, "--unset"],
+            "a call naming neither reads the key rather than setting it",
+        ),
+    ),
 ];
+
+/// The placeholder `ank config`'s second positional is spelled with.
+///
+/// Written here because [`NEEDS`] is written here and for the same reason: what
+/// a call cannot be composed without is this file's one declaration. It is held
+/// to the contract's own usage line by the suite below -- [`taken`] reads the
+/// placeholder off `positional_help`, and a form's field carries what that read
+/// -- so a verb whose usage line moves fails there rather than composing a
+/// requirement no field answers.
+const VALUE: &str = "<value>";
 
 /// What every kind of `ank new` needs: a title, and the scope that attaches it
 /// to something.
@@ -240,9 +316,24 @@ impl Entry {
 /// One field: the flag the contract declared, and what has been put in it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Field {
-    /// The flag, as `ank` spells it. Copied from [`FlagSpec::name`] and never
-    /// written here.
+    /// The flag, as `ank` spells it -- or the placeholder of a positional the
+    /// form fills in, as the verb's own usage line spells that
+    /// (TASK-b08d090f699c). Copied from [`FlagSpec::name`] or from
+    /// [`CommandSpec::positional_help`] and never written here.
+    ///
+    /// One field for both because every surface asks the same question of it:
+    /// the requirement names what it will not compose without, the row marks it
+    /// with `*`, and the refusal spells it. `<value>` reads as what a person
+    /// would have typed, exactly as `--proof` does.
     pub flag: &'static str,
+    /// Whether it is a positional: composed as a bare word, with nothing in
+    /// front of it (TASK-b08d090f699c).
+    ///
+    /// The one thing that differs between the two kinds. `ank config <key>
+    /// <value>` takes its value as a word rather than behind a flag, so a form
+    /// that pushed the placeholder in front of what was typed would compose a
+    /// command line nobody could have typed.
+    pub positional: bool,
     /// Whether the CLI takes a repeat of it. Drawn as a fact about the flag,
     /// and not acted on: this form offers a repeatable flag once, which is a
     /// subset of what a shell can say and never a form the CLI refuses.
@@ -289,6 +380,15 @@ pub struct Form {
     /// where [`Form::kind`] is the empty string and the verb takes `<id>`
     /// first, which is the view's to supply.
     kind: usize,
+    /// The positionals the form supplies itself, in front of everything it
+    /// composes (TASK-b08d090f699c).
+    ///
+    /// Empty on the four forms that arrived before it, and one word on
+    /// `ank config <key>`: the key is what the row the person opened *is*, so
+    /// it is neither typed into a field nor looked up again when the form
+    /// composes -- frozen the way the confirmation freezes an argv, and for the
+    /// same reason.
+    front: Vec<String>,
     fields: Vec<Field>,
     /// The row the cursor is on.
     at: usize,
@@ -313,21 +413,55 @@ impl Form {
     /// empty submission is the flagless call, and for `new` and `edit` alike
     /// that call is `$EDITOR`.
     pub fn open(verb: &'static str) -> Option<Form> {
+        Form::on(verb, Vec::new())
+    }
+
+    /// The same form, with the positionals the caller has already decided
+    /// (TASK-b08d090f699c).
+    ///
+    /// **What `front` buys is a field the contract declares and no flag
+    /// carries.** `ank config <key> <value>` takes its value as a word, and a
+    /// form over the flags alone could compose only `ank config <key>` -- which
+    /// is the reading shape, and a write that read. So the verb's own usage
+    /// line is asked what positional comes after the ones supplied
+    /// ([`taken`]), and that placeholder is the first row of the form.
+    ///
+    /// The four forms that arrived before this supply nothing and are
+    /// untouched: `front` is empty, [`taken`] answers `None` on a verb whose
+    /// positionals the caller has not started filling in, and the fields are the
+    /// flags exactly as they were.
+    pub fn on(verb: &'static str, front: Vec<String>) -> Option<Form> {
         let spec = verbs::spec_of(verb)?;
         for kind in kinds_of(spec) {
             need(verb, kind)?;
         }
-        let fields: Vec<Field> = spec.flags.iter().filter(|f| f.listed).map(field).collect();
+        let mut fields: Vec<Field> = Vec::new();
+        if let Some(name) = taken(spec, front.len()) {
+            fields.push(Field {
+                flag: name,
+                positional: true,
+                repeatable: false,
+                entry: Entry::Typed(String::new()),
+            });
+        }
+        fields.extend(spec.flags.iter().filter(|f| f.listed).map(field));
         if fields.is_empty() {
             return None;
         }
         Some(Form {
             verb,
             kind: 0,
+            front,
             fields,
             at: 0,
             said: None,
         })
+    }
+
+    /// The positionals this form supplies itself, in the order they are
+    /// composed.
+    pub fn front(&self) -> &[String] {
+        &self.front
     }
 
     /// The verb this form is filled in for.
@@ -351,18 +485,25 @@ impl Form {
     /// What the form's own border says it is: the verb, and the kind where the
     /// verb has one.
     ///
-    /// `NEW TASK`, `EDIT`, `CLOSE`, `ATTEST`. Read off the verb rather than
-    /// written per form, so a fifth form is a row of [`NEEDS`] and not a
-    /// heading somewhere to remember.
+    /// `NEW TASK`, `EDIT`, `CLOSE`, `ATTEST`, `CONFIG CLAIM_TTL_MAX`. Read off
+    /// the verb rather than written per form, so a fifth form is a row of
+    /// [`NEEDS`] and not a heading somewhere to remember.
+    ///
+    /// The positionals the form supplies are on it too (TASK-b08d090f699c):
+    /// `ank config` is one form per key, and a border reading `CONFIG` over a
+    /// row that will write `claim_ttl_max` would be a heading that says less
+    /// than the form knows.
     pub fn banner(&self) -> String {
-        match self.kind().is_empty() {
-            true => self.verb.to_ascii_uppercase(),
-            false => format!(
-                "{} {}",
-                self.verb.to_ascii_uppercase(),
-                self.kind().to_ascii_uppercase()
-            ),
+        let mut said = self.verb.to_ascii_uppercase();
+        for word in &self.front {
+            said.push(' ');
+            said.push_str(&word.to_ascii_uppercase());
         }
+        if !self.kind().is_empty() {
+            said.push(' ');
+            said.push_str(&self.kind().to_ascii_uppercase());
+        }
+        said
     }
 
     /// What this form will not compose without, or `None` where this build
@@ -383,11 +524,22 @@ impl Form {
     /// `ank new task` where there is a kind and `ank close` where there is not,
     /// so a sentence about what the form will not compose says the same words a
     /// person would have typed.
+    ///
+    /// The positionals the form supplies are in it, in front of the kind:
+    /// `ank config claim_ttl_max` is what a person opening that row would have
+    /// typed, and a refusal naming `ank config` alone would name a command line
+    /// that is not the one being filled in (TASK-b08d090f699c).
     fn spelled(&self) -> String {
-        match self.kind().is_empty() {
-            true => format!("ank {}", self.verb),
-            false => format!("ank {} {}", self.verb, self.kind()),
+        let mut said = format!("ank {}", self.verb);
+        for word in &self.front {
+            said.push(' ');
+            said.push_str(word);
         }
+        if !self.kind().is_empty() {
+            said.push(' ');
+            said.push_str(self.kind());
+        }
+        said
     }
 
     pub fn fields(&self) -> &[Field] {
@@ -587,12 +739,18 @@ impl Form {
             }
         }
         self.answered()?;
-        let mut args = Vec::new();
+        let mut args = self.front.clone();
         if !self.kind().is_empty() {
             args.push(self.kind().to_string());
         }
         for field in &self.fields {
             match &field.entry {
+                // A positional is the word itself and nothing in front of it:
+                // `ank config <key> 4h`, which is what a person would have
+                // typed (TASK-b08d090f699c).
+                Entry::Typed(text) if !text.trim().is_empty() && field.positional => {
+                    args.push(text.trim().to_string())
+                }
                 Entry::Typed(text) if !text.trim().is_empty() => {
                     args.push(field.flag.to_string());
                     args.push(text.trim().to_string());
@@ -605,10 +763,11 @@ impl Form {
             verb: self.verb,
             args,
             // The question is asked of the form's own first positional and
-            // never of the verb's name: `ank new <kind>` carries its own, so
-            // nothing goes in front of it, and the three that name an entity
-            // take the row the view has marked.
-            subject: match self.kind().is_empty() {
+            // never of the verb's name: `ank new <kind>` carries its own and so
+            // does a form opened on a config key, so nothing goes in front of
+            // either, and the three that name an entity take the row the view
+            // has marked.
+            subject: match self.front.is_empty() && self.kind().is_empty() {
                 true => Subject::Selected,
                 false => Subject::Given,
             },
@@ -668,7 +827,7 @@ impl Form {
                 }
                 Ok(())
             }
-            Need::Any(flags) => {
+            Need::Any(flags, otherwise) => {
                 let answered = flags.iter().any(|flag| {
                     self.fields
                         .iter()
@@ -683,8 +842,7 @@ impl Form {
                         .find_map(|flag| self.fields.iter().position(|f| f.flag == *flag))
                         .unwrap_or(self.at),
                     said: format!(
-                        "every field is empty: '{}' needs one of {}, and a call naming none \
-                         opens $EDITOR",
+                        "every field is empty: '{}' needs one of {}, and {otherwise}",
                         self.spelled(),
                         flags.join(", ")
                     ),
@@ -785,6 +943,14 @@ impl Form {
             .filter(|k| *k != self.kind())
             .collect();
         if others.is_empty() {
+            // The verb's own usage line, where nothing of it has been supplied
+            // yet. Where the form carries a positional already, that line would
+            // spell it twice -- `ank config claim_ttl_max <key> [<value>]` --
+            // and what is left of it is a row of the form rather than a word of
+            // the heading (TASK-b08d090f699c).
+            if !self.front.is_empty() {
+                return self.spelled();
+            }
             let positional = spec_of(self.verb)
                 .map(|spec| spec.positional_help)
                 .unwrap_or_default();
@@ -816,9 +982,8 @@ impl Form {
                 "* is a flag '{}' will not compose without: {closes}",
                 self.spelled()
             ),
-            Some(Need::Any(_)) => format!(
-                "'{}' needs one of the fields marked *, and a call naming none opens $EDITOR: \
-                 {closes}",
+            Some(Need::Any(_, otherwise)) => format!(
+                "'{}' needs one of the fields marked *, and {otherwise}: {closes}",
                 self.spelled()
             ),
             None => closes,
@@ -868,10 +1033,36 @@ fn kinds_of(spec: &'static CommandSpec) -> &'static [&'static str] {
 /// The one kind a verb with no subcommands has.
 const NO_KIND: &[&str] = &[""];
 
+/// The positional a form fills in, where the caller has supplied the ones
+/// before it (TASK-b08d090f699c).
+///
+/// **Read off the verb's own usage line**, which is where §4 spells its
+/// positionals: `<key> [<value>]`, taken word by word, with the brackets that
+/// say "optional" trimmed off. So the placeholder a row draws is the one
+/// `ank help config` prints, and a verb whose usage line moves moves this with
+/// it.
+///
+/// `None` where the caller has supplied nothing, and that is the rule rather
+/// than a guard against an index. **The first positional is never the form's**:
+/// it is the kind `ank new` cycles, or the `<id>` the view supplies off the
+/// marked panel, and a form that typed either into a field would be offering to
+/// re-answer a question the screen has already answered. `None` too where the
+/// verb declares no positional that far along, which is every verb the four
+/// earlier forms serve.
+fn taken(spec: &'static CommandSpec, supplied: usize) -> Option<&'static str> {
+    if supplied == 0 || supplied >= spec.max_positionals {
+        return None;
+    }
+    let word = spec.positional_help.split_whitespace().nth(supplied)?;
+    let name = word.trim_matches(['[', ']']);
+    (!name.is_empty()).then_some(name)
+}
+
 /// One field, from the flag the contract declared.
 fn field(spec: &FlagSpec) -> Field {
     Field {
         flag: spec.name,
+        positional: false,
         repeatable: spec.repeatable,
         entry: match spec.takes_value {
             true => Entry::Typed(String::new()),
@@ -972,6 +1163,89 @@ mod tests {
         assert!(!spec.subcommands.is_empty(), "ank new makes something");
     }
 
+    /// **The positional a form fills in is the verb's own, read off its usage
+    /// line** (TASK-b08d090f699c).
+    ///
+    /// [`VALUE`] is written in this file because [`NEEDS`] is, and this is what
+    /// holds it to the contract rather than to a memory of it: the form for
+    /// `ank config <key>` draws a first row, that row is a positional, and the
+    /// placeholder on it is the word `ank help config` prints. A usage line
+    /// that moved would leave the requirement naming a field no row answers,
+    /// and it fails here rather than composing without it.
+    ///
+    /// The other half is the rule that keeps the four earlier forms untouched:
+    /// nothing is taken while the caller has supplied no positional, because
+    /// the first one is always somebody else's -- the kind `ank new` cycles, or
+    /// the `<id>` the view supplies.
+    #[test]
+    fn the_positional_a_form_fills_in_is_the_one_the_usage_line_declares() {
+        let spec = spec_of(SET).expect("'config' is a verb of the contract");
+        assert_eq!(
+            taken(spec, 1),
+            Some(VALUE),
+            "the second positional of '{}' is not what this file needs",
+            spec.positional_help
+        );
+        assert_eq!(taken(spec, 0), None, "the first positional is the caller's");
+        assert_eq!(
+            taken(spec, spec.max_positionals),
+            None,
+            "a positional past what the verb takes"
+        );
+
+        let form = Form::on(SET, vec!["claim_ttl_max".to_string()]).expect("a form for a key");
+        let first = form.fields().first().expect("the form has rows");
+        assert_eq!((first.flag, first.positional), (VALUE, true));
+        // And every verb served with nothing supplied draws flags alone, which
+        // is what the four earlier forms are and must stay.
+        for verb in served() {
+            for field in Form::open(verb)
+                .unwrap_or_else(|| panic!("a form for '{verb}'"))
+                .fields()
+            {
+                assert!(
+                    !field.positional,
+                    "'{}' is a positional on a form nobody supplied one to",
+                    field.flag
+                );
+            }
+        }
+    }
+
+    /// **A form opened on a key composes the key, the value and nothing else**
+    /// (TASK-b08d090f699c).
+    ///
+    /// The reading shape is what it refuses -- `ank config <key>` alone reads,
+    /// and the pane has drawn that answer already -- and either of the two
+    /// things that write satisfies it. The composed argv is the key in front,
+    /// because the form supplies it, and [`Subject::Given`] so that the view
+    /// puts no entity identifier there.
+    #[test]
+    fn a_form_on_a_key_composes_the_key_and_what_writes() {
+        let key = "claim_ttl_max";
+        let mut form = Form::on(SET, vec![key.to_string()]).expect("a form for a key");
+        assert!(form.composed().is_err(), "an empty form composed a read");
+
+        filled(&mut form, VALUE, "4h");
+        let act = form.composed().expect("a value is enough");
+        assert_eq!(act.verb, SET);
+        assert_eq!(act.args, [key.to_string(), "4h".to_string()]);
+        assert_eq!(act.subject, Subject::Given);
+
+        // The other thing that writes, on its own: `--unset` is a switch, and
+        // the value beside it is what a person would have cleared first.
+        let mut form = Form::on(SET, vec![key.to_string()]).expect("a form for a key");
+        let at = form
+            .fields()
+            .iter()
+            .position(|f| f.flag == "--unset")
+            .expect("the verb declares it");
+        form.select(at);
+        form.press(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        let act = form.composed().expect("--unset is enough");
+        assert_eq!(act.args, [key.to_string(), "--unset".to_string()]);
+    }
+
     /// **Every kind has a flag this form will not compose without, and every
     /// name in that list is a flag the verb declares.**
     ///
@@ -1013,9 +1287,19 @@ mod tests {
                     "'ank {verb} {kind}' needs an empty list, which every form meets"
                 );
                 for flag in need.flags() {
+                    // A flag of the verb, or the positional its own usage line
+                    // declares (TASK-b08d090f699c). Both are fields of the
+                    // form, and a requirement naming neither would be one no
+                    // field could ever answer -- which `Form::answered` refuses
+                    // rather than composes, and which nothing should ever
+                    // reach.
+                    let flagged = spec.flags.iter().any(|f| f.name == *flag && f.listed);
+                    let positional = (1..spec.max_positionals)
+                        .any(|supplied| taken(spec, supplied) == Some(*flag));
                     assert!(
-                        spec.flags.iter().any(|f| f.name == *flag && f.listed),
-                        "'{flag}' is needed by 'ank {verb} {kind}' and is no flag of it"
+                        flagged || positional,
+                        "'{flag}' is needed by 'ank {verb} {kind}' and is neither a flag of \
+                         it nor a positional of its usage line"
                     );
                 }
             }

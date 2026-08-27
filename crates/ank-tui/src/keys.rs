@@ -15,9 +15,9 @@
 //! spells, which is ADR-c07e2694f0e1's rule and the whole of why these letters. What only moves
 //! the screen takes what is left: `j` and `k` move, Space pages, `g` goes to
 //! the top, Enter opens, `b` goes back, `s` shows the constraints, `v` opens
-//! the queue, `u` reads the corpus again, `f` narrows to the next kind, `x`
-//! opens the three verbs with no letter of their own, `?` says what all of them
-//! are, `q` quits. Each has an arrow or a named key beside it -- Down for `j`,
+//! the queue, `o` shows what `ank config` declares, `u` reads the corpus again,
+//! `f` narrows to the next kind, `x` opens the three verbs with no letter of
+//! their own, `?` says what all of them are, `q` quits. Each has an arrow or a named key beside it -- Down for `j`,
 //! PageDown for Space, Home for `g`, Escape for `b` -- because a person who has
 //! never read the key line still has hands.
 //!

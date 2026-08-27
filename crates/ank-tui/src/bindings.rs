@@ -180,6 +180,17 @@ pub enum Group {
     /// six rows and false of the seventh would be prose the table cannot be
     /// held to.
     Create,
+    /// Reads what the corpus is configured to do, and sets one key of it
+    /// (TASK-b08d090f699c).
+    ///
+    /// Its own group for [`Group::Create`]'s and [`Group::Change`]'s reason,
+    /// from a third side. The key opens a *pane* and writes nothing -- so the
+    /// writing half's note, which says every one of its keys lands on the
+    /// marked panel's entity and then asks for `y`, is false of it twice over:
+    /// there is no entity, and pressing it composes nothing at all. What is
+    /// true of it is the sentence under this line: the pane lists what
+    /// `ank config` declares, and a row of it is where a value is typed.
+    Settings,
     /// Changes what an entity says, on a form (TASK-e8da6a00564a).
     ///
     /// Its own group for [`Group::Create`]'s reason, from the other side. It
@@ -706,6 +717,37 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     // -----------------------------------------------------------------------
+    // What the corpus is configured to do (TASK-b08d090f699c)
+    //
+    // `o` and not `c`, which is `claim`'s. ADR-c07e2694f0e1 binds a verb's own
+    // initial where the initial is free, and `m` for `amend` is already the row
+    // that shows what happens when it is not: the letter goes to the verb whose
+    // hand a person's should go to, and the other takes what is left of its own
+    // name. `o` is the second letter of `config` and the only one of the six
+    // nothing else had claimed.
+    //
+    // It is `Runs::Press` and not `Runs::Form`, which is the whole of why this
+    // row is not on the writing half's line: pressing it opens the pane that
+    // lists what `ank config` declares, which is a read. What writes is a row
+    // of that pane, opened the way every other row in this reader is opened,
+    // onto the form the value is typed on -- and that form reaches
+    // `App::propose` like every other act. The verb is named here all the same,
+    // because it is the verb this key spells, and the gate below is measured
+    // against that name.
+    // -----------------------------------------------------------------------
+    Binding {
+        key: KeyCode::Char('o'),
+        aliases: &[],
+        runs: Runs::Press(Press::Run(Command::Config)),
+        word: "config",
+        group: Group::Settings,
+        offered: Offered::Never,
+        verb: Some(Verb {
+            name: crate::form::SET,
+            tail: Tail::Form,
+        }),
+    },
+    // -----------------------------------------------------------------------
     // What answers the reader (TASK-d4a882345837). Both states are modal, and
     // both grammars are stated over the whole keyboard in `keys.rs`: these two
     // rows are the keys the screen *offers*, not the whole of what it reads.
@@ -873,7 +915,12 @@ pub fn of_key(code: KeyCode) -> Option<&'static Binding> {
         .filter(|b| {
             matches!(
                 b.group,
-                Group::Screen | Group::Panel | Group::Write | Group::Create | Group::Change
+                Group::Screen
+                    | Group::Panel
+                    | Group::Write
+                    | Group::Create
+                    | Group::Change
+                    | Group::Settings
             )
         })
         .find(|b| b.answers(code))
@@ -967,6 +1014,11 @@ const CREATE_NOTE: &str = "   (a form of the flags ank new takes, then";
 /// the entity is the marked panel's, and the fields are a form.
 const CHANGE_NOTE: &str = "   (a form of the fields ank edit takes, on the marked panel's entity, \
                            then";
+/// What it says after the key that opens the config pane
+/// (TASK-b08d090f699c): the key reads, and what writes is a row of what it
+/// opened.
+const SETTINGS_NOTE: &str = "   (what ank config declares, read when it opens; Enter on a row \
+                             sets that key, then";
 /// What it says after `accept`, which is a different kind of offer: the other
 /// five move a corpus, and this one asks a person for a signature ank has no
 /// way to produce.
@@ -1122,6 +1174,23 @@ fn change() -> Line {
     }
 }
 
+/// The key that opens the config pane, on a line of its own
+/// (TASK-b08d090f699c).
+///
+/// Separate from the three lines above it for the reason [`Group::Settings`]
+/// gives: this key composes nothing and lands on no entity, so both of their
+/// notes are false of it, and what is true of it -- that the pane is where a
+/// key is set, one row at a time -- is true of nothing else.
+fn settings() -> Line {
+    Line {
+        title: "settings",
+        bindings: of_group(Group::Settings),
+        lead: String::new(),
+        between: "  ",
+        note: format!("{SETTINGS_NOTE} {})", named(KeyCode::Char(CONFIRM))),
+    }
+}
+
 /// The sixth act, on a line of its own, and only where the verb would take it.
 fn ratify() -> Line {
     Line {
@@ -1169,6 +1238,7 @@ fn lines() -> Vec<Line> {
         write(),
         create(),
         change(),
+        settings(),
         ratify(),
         waiting(),
         typing(),
@@ -1369,10 +1439,11 @@ mod tests {
             }
         }
         assert_eq!(
-            named, 8,
+            named, 9,
             "the verbs this reader spells are the six that move an entity, the \
-             one that makes one (TASK-d832452630d2) and the one that changes \
-             what one says (TASK-e8da6a00564a)"
+             one that makes one (TASK-d832452630d2), the one that changes what \
+             one says (TASK-e8da6a00564a) and the one that reads and sets the \
+             config (TASK-b08d090f699c)"
         );
         // And the three the list `x` opens are verbs of the contract too, with
         // the flags this reader will draw for them: a row naming `close`
@@ -1637,7 +1708,12 @@ mod tests {
         for binding in BINDINGS.iter().filter(|b| {
             matches!(
                 b.group,
-                Group::Screen | Group::Panel | Group::Write | Group::Create | Group::Change
+                Group::Screen
+                    | Group::Panel
+                    | Group::Write
+                    | Group::Create
+                    | Group::Change
+                    | Group::Settings
             )
         }) {
             for key in std::iter::once(binding.key).chain(binding.aliases.iter().copied()) {
