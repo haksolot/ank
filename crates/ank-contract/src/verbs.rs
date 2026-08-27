@@ -818,7 +818,14 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--free keeps the open tasks no live claim's scope overlaps, and says how many it hid",
         ],
         refuses_globals: &[],
-        output: &[one(&[f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str)]))])],
+        // `corpus` and `results[].created` are the second demonstration of what
+        // CONTRACT_VERSION promises, after `status.corpus`: a document gains two
+        // fields, loses none, renames none, retypes none, and arrives at
+        // contract 1 (ADR-6fd69efb629c). `corpus` is optional and for the same
+        // reason it is optional on `status` -- a tree with no history is the one
+        // corpus that cannot be named, and `null` says so; `created` is not,
+        // because every entity the index holds has one.
+        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str)]))])],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
