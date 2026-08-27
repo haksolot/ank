@@ -12649,6 +12649,139 @@ fn find_json_carries_the_coordination_state_the_human_listing_shows() {
     );
 }
 
+/// `find --json` says when each row was created, and which corpus it answered
+/// about (TASK-b917fc12fee8).
+///
+/// Both facts the CLI already held and neither reached a caller. `created` is
+/// selected by `SELECT_ROW` and carried on `Row`, and was serialised nowhere:
+/// a listing that says what exists but not when it appeared leaves a reader one
+/// `show` per row away from ordering a backlog. `corpus` is the identity
+/// `status --json` reports, and a caller listing several repositories had to
+/// spend a whole second verb -- one that reads the corpus to count what it
+/// reports -- to learn which repository it had just listed.
+///
+/// **Three distinct instants, from three sources**, because one constant would
+/// pass against a field that returned the same string for every row. The task
+/// carries `2026-07-28T00:00:00Z` and the ADR `2026-07-20T00:00:00Z`, both
+/// written into the fixture; the third is minted by `ank new` and read back
+/// from `new --json`, which declares `created` in its own shape. So the
+/// comparison is binary against binary, and no side of it is this file's
+/// opinion about what the format writes.
+///
+/// **The corpus is asserted twice, before and after the first commit.** A tree
+/// with no history is the one corpus that cannot be named, and `null` is the
+/// answer both verbs owe there; a `corpus` that only agreed with `status` once
+/// there was a commit to agree about would be two computations that happen to
+/// coincide rather than one fact served twice.
+#[test]
+fn find_json_dates_every_row_and_names_the_corpus_it_answered_about() {
+    let task = "TASK-d00000000006";
+    let adr = "ADR-e00000000006";
+    let r = Repo::new();
+
+    // Before any commit: no history, so no identity, and the two verbs have to
+    // say the same nothing.
+    let corpus_of = |args: &[&str]| -> serde_yaml::Value {
+        let out = r.ank("claude-code@ank", args);
+        assert_eq!(code(&out), 0, "{args:?}: {}", stderr(&out));
+        let doc: serde_yaml::Value =
+            serde_yaml::from_str(&stdout(&out)).expect("the document must be readable JSON");
+        doc["corpus"].clone()
+    };
+    assert!(
+        corpus_of(&["find", "--json"]).is_null(),
+        "a tree with no history has no corpus to name, and find must say so"
+    );
+    assert_eq!(
+        corpus_of(&["find", "--json"]),
+        corpus_of(&["status", "--json"]),
+        "the two verbs disagree about a repository with no history"
+    );
+
+    // Two instants written into the fixture, and a third the binary mints.
+    r.seed_task(task, Some("A verifiable criterion."));
+    r.seed_adr(adr, "Nothing under src/ reaches the network.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "A minted task",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "It is done when it is done.",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "new: {}", stderr(&out));
+    let minted: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+    let minted_id = minted["id"].as_str().unwrap().to_string();
+    let minted_at = minted["created"].as_str().unwrap().to_string();
+
+    let out = r.ank("claude-code@ank", &["find", "--json"]);
+    assert_eq!(code(&out), 0, "find: {}", stderr(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+
+    // The contract does not move: two fields arrive, none leaves, none is
+    // renamed and none is retyped (ADR-6fd69efb629c).
+    assert_eq!(
+        doc["contract"].as_u64(),
+        Some(1),
+        "the contract version moved"
+    );
+
+    // Every row says when the entity it names was created, and the three
+    // answers are three different instants.
+    let want = [
+        (task.to_string(), "2026-07-28T00:00:00Z".to_string()),
+        (adr.to_string(), "2026-07-20T00:00:00Z".to_string()),
+        (minted_id.clone(), minted_at.clone()),
+    ];
+    assert_ne!(
+        minted_at, "2026-07-28T00:00:00Z",
+        "the fixture proves nothing if the minted instant is the seeded one"
+    );
+    let rows = doc["results"].as_sequence().expect("results is an array");
+    assert_eq!(rows.len(), 3, "the corpus holds three entities: {rows:?}");
+    for (id, created) in &want {
+        let row = rows
+            .iter()
+            .find(|r| r["id"].as_str() == Some(id.as_str()))
+            .unwrap_or_else(|| panic!("{id} is missing from the listing: {rows:?}"));
+        assert_eq!(
+            row["created"].as_str(),
+            Some(created.as_str()),
+            "{id} is dated by something other than its own created"
+        );
+        // The keys the document already carried, still carrying what they
+        // carried: this field arrives beside them and never through them.
+        assert!(
+            row["id"].as_str() == Some(id.as_str())
+                && row["kind"].as_str().is_some()
+                && row["status"].as_str().is_some()
+                && row["state"].as_str().is_some()
+                && row["title"].as_str().is_some(),
+            "{id} lost a key it used to carry: {row:?}"
+        );
+    }
+
+    // And the corpus, now that there is one to name.
+    let named = doc["corpus"]
+        .as_str()
+        .expect("a committed tree has an identity");
+    assert_eq!(named.len(), 40, "the identity is a commit: {named}");
+    assert_eq!(
+        doc["corpus"],
+        corpus_of(&["status", "--json"]),
+        "find and status disagree about which corpus they answered on"
+    );
+}
+
 #[test]
 fn new_stores_the_normalised_glob_and_never_the_string_as_typed() {
     let r = scoped_repo();

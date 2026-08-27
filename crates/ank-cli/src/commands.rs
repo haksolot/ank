@@ -1231,10 +1231,31 @@ pub fn find(
                     .str("status", &r.status.to_string())
                     .str("state", state.trim_matches(|c| c == '[' || c == ']'))
                     .str("title", &r.title)
+                    // The instant the index already holds, serialised at last.
+                    // A listing that says what exists and not when it appeared
+                    // leaves its caller one `show` per row away from ordering
+                    // them, and the ordering is the question a backlog is read
+                    // to answer. Additive, and free: `SELECT_ROW` already
+                    // selects it and `Row` already carries it, so this costs
+                    // the bytes and not a query.
+                    .str("created", &r.created)
                     .finish()
             })
             .collect();
+        // The corpus this listing is about, in the spelling and the position
+        // `status --json` already uses (ADR-621a7fd96ce1): the identity of the
+        // repository, `null` for a tree with no history, which is the one
+        // corpus that cannot be named. A reader keying rows on a repository had
+        // to call a second verb to learn which repository it had just listed,
+        // and that call reads the corpus to count what it reports — the whole
+        // of it, to answer one field. Here the field costs one
+        // `rev-list --max-parents=0`.
+        //
+        // Additive, like `state` above and like `corpus` on `status` before it:
+        // the four keys this document already carries keep their names, their
+        // types and their values, so contract 1 holds (ADR-6fd69efb629c).
         let doc = Obj::document()
+            .opt_str("corpus", crate::repo::identity(&repo.corpus).as_deref())
             .num("total", total)
             .num("shown", shown)
             .num("hidden", hidden)
