@@ -1080,8 +1080,14 @@ pub const COMMANDS: &[CommandSpec] = &[
             // A help line narrower than the binary is read as the binary
             // refusing, which is the failure §9 exists to prevent.
             "it reaches the corpus only by running this binary with --json, and writes nothing on its own",
-            "a command is a short word and Enter; ? lists them, q leaves",
-            "claim, log, release, done and amend act on the selected entity, each by running that verb",
+            // "a short word and Enter" stood here while the reader took a line,
+            // and stopped being true when input became a keystroke
+            // (ADR-c07e2694f0e1); TASK-1a415107fd56 gave the writing verbs
+            // their own letters too. A help line narrower or wider than the
+            // binary is read as the binary refusing, which is the failure §9
+            // exists to prevent.
+            "every command is one key; ? lists them, q leaves",
+            "claim, log, release, done, amend and accept act on the entity the focused panel names, each by running that verb after showing the command line it composed",
             "--json answers the opening frame as data and opens no session",
         ],
         refuses_globals: &[],

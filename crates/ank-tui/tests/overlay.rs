@@ -27,7 +27,10 @@
 
 mod terminal;
 
-use ank_tui::bindings;
+use ank_tui::bindings::{self, Runs};
+use ank_tui::input::Command;
+use ank_tui::keys::Press;
+use ratatui::crossterm::event::KeyCode;
 use std::sync::Mutex;
 use terminal::{Live, Repo};
 
@@ -60,6 +63,25 @@ fn claim_entry() -> String {
     bindings::of_verb("claim")
         .expect("the table spells claim")
         .entry()
+}
+
+/// The keystroke that pages the key list, out of the reader's own table.
+///
+/// **Not `n`, and not a letter written here** (TASK-1a415107fd56). It was `n`
+/// when this suite was written and `n` moves nothing now -- the verbs took the
+/// letters -- and what a key list scrolled by a key nobody bound does is close,
+/// because a key the overlay has no answer for goes through to the reader. So
+/// the suite asks the table which key pages, the way it already asks it which
+/// row reads `claim`.
+fn page_key() -> String {
+    let binding = bindings::BINDINGS
+        .iter()
+        .find(|b| b.runs == Runs::Press(Press::Run(Command::Page(1))))
+        .expect("the table pages");
+    match binding.key {
+        KeyCode::Char(c) => c.to_string(),
+        other => panic!("paging is {other:?}, which is not a keystroke to send"),
+    }
 }
 
 /// Every character the reader draws the left or right edge of a box with, at
@@ -189,7 +211,7 @@ fn list_at_claim(live: &mut Live) -> (u16, u16) {
             "the key list will not scroll any further and '{entry}' is not on \
              it:\n{frame}"
         );
-        live.send("n");
+        live.send(&page_key());
         live.until("the key list to scroll", |t| {
             t.contains(&format!("KEYS {next}-"))
         });
@@ -342,8 +364,12 @@ fn esc_closes_the_list_and_leaves_the_frame_the_one_it_was_at_both_windows() {
         live.send("?");
         live.until("the key list to be drawn", |t| t.contains("KEYS"));
         // Scrolled first, so what is being given back is a list somebody used
-        // rather than one that was opened and never touched.
-        live.send("n");
+        // rather than one that was opened and never touched. Waited for in
+        // between, because an escape byte with a key straight behind it is an
+        // Alt chord to any terminal decoder, and a modifier held reaches
+        // nothing but the way out (TASK-1a415107fd56).
+        live.send(&page_key());
+        live.until("the key list to scroll", |t| !t.contains("KEYS 1-"));
         live.send("\u{1b}");
         live.until("the key list to close", |t| !t.contains("KEYS"));
 

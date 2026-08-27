@@ -9,12 +9,21 @@
 //! table says and is answerable to it, not the other way round: a key named
 //! here that no row declares fails the suite in `bindings.rs`.
 //!
-//! **Every command that only moves the screen is a key.** `j` and `k` move, `n`
-//! and `p` page, `g` goes to the top, Enter opens, `b` goes back, `c` shows the
-//! constraints, `v` opens the queue, `r` reads the corpus again, `f` narrows to
-//! the next kind, `?` says what all of them are, `q` quits. Each has an arrow or
-//! a named key beside it -- Down for `j`, PageDown for `n`, Home for `g`, Escape
-//! for `b` -- because a person who has never read the key line still has hands.
+//! **Every command is a key, and the verbs are keys too**
+//! (TASK-1a415107fd56). `c` claims, `l` logs, `d` finishes, `r` releases, `m`
+//! amends and `a` ratifies -- the initial the CLI already spells, which is
+//! ADR-c07e2694f0e1's rule and the whole of why these letters. What only moves
+//! the screen takes what is left: `j` and `k` move, Space pages, `g` goes to
+//! the top, Enter opens, `b` goes back, `s` shows the constraints, `v` opens
+//! the queue, `u` reads the corpus again, `f` narrows to the next kind, `x`
+//! names the verbs this reader does not run, `?` says what all of them are,
+//! `q` quits. Each has an arrow or a named key beside it -- Down for `j`,
+//! PageDown for Space, Home for `g`, Escape for `b` -- because a person who has
+//! never read the key line still has hands.
+//!
+//! **`h`, `l`, `n` and `p` move nothing**, which is what the letters cost.
+//! ADR-c07e2694f0e1 prices it outright and takes it: `j`, `k`, the arrows, Tab
+//! and the digits are what a reader reaches for first and none of them moved.
 //!
 //! **And focus is a key too** (TASK-bb43cfe2192b). `Tab` walks the four panels
 //! in a ring, `1` to `4` reach one directly, and Left and Right cross between
@@ -31,24 +40,34 @@
 //! the line discipline from providing, and `q` reaches the same place without
 //! it.
 //!
+//! **And a modifier held reaches nothing at all** (TASK-1a415107fd56). The
+//! table used to read the modifiers only to answer the way out and to be
+//! transparent about the rest: a stray Alt over `j` moved a row, on the
+//! reasoning that a key doing what it does bare surprises nobody. That
+//! reasoning was priced against a keyboard where no letter wrote. Six of them
+//! do now, so a modifier nobody meant -- a phone keyboard's long press, a Shift
+//! still down from the character before -- is read as what it is: not the
+//! keystroke this table answers. Nothing is lost, because nothing was ever
+//! *only* a chord.
+//!
 //! # Why there is still a line, and where
 //!
-//! Four of the six verbs that write carry something a key cannot: a message, a
-//! reason, a proof, a flag. So `a` opens a one-line prompt and what is typed
-//! there goes through [`crate::input::parse`], which is the grammar this reader
-//! already had -- the same one that spells the six whole, refuses `accept` off
-//! the document and refuses a tail after it. `/` opens the same prompt seeded
-//! with a slash, which is that grammar's search.
+//! For the search, and for nothing else (TASK-1a415107fd56). `/` opens a
+//! one-line prompt seeded with a slash and what is typed there goes through
+//! [`crate::input::parse`]; no word that grammar reads writes anything, and the
+//! prompt a verb used to be spelled into is gone with the key that opened it.
+//! What the six carried in a tail -- a message, a reason, a proof, a flag --
+//! comes back as a form, which is TASK-d832452630d2's and TASK-e8da6a00564a's.
 //!
-//! # The fourth act, which is the guarantee
+//! # The guarantee, now that the letter is one keystroke
 //!
-//! **The asymmetry the line discipline used to provide is back, and it is one
-//! key** (TASK-d4a882345837). Under a line reader a slipped finger typed
-//! nothing, because a command was a word and Enter. Under a keystroke reader
-//! `a` then `claim` then Enter is three deliberate acts, and this file used to
-//! say outright that three is better than one and still not the guarantee. The
-//! fourth is [`confirming`]: the composed argv is on the screen, [`CONFIRM`]
-//! runs it, and **every other key dismisses it**.
+//! **It was never the length of the road** (TASK-d4a882345837). Under a line
+//! reader a slipped finger typed nothing, because a command was a word and
+//! Enter, and that asymmetry is what ADR-c07e2694f0e1 spends: `c` is one
+//! keystroke and it composes a claim. What stands in front of the spawn is
+//! [`confirming`], which never depended on how the verb was reached: the
+//! composed argv is on the screen, [`CONFIRM`] runs it, and **every other key
+//! dismisses it**.
 //!
 //! Which way round that is decided matters more than which letter was chosen.
 //! One key runs and the rest of the keyboard declines, rather than one key
@@ -58,9 +77,10 @@
 //! whole keyboard rather than of a list somebody has to keep complete.
 //!
 //! `y` is a letter and not a chord, which ADR-c07e2694f0e1 requires and a
-//! phone makes literal, and it is not Enter: Enter is the key that submitted
-//! the line a moment earlier, and a confirmation answered by the same key that
-//! opened it is a confirmation a repeated keypress walks straight through.
+//! phone makes literal, and it is not Enter: Enter opens the row under the
+//! cursor, and a confirmation answered by the key a person was already pressing
+//! is a confirmation a repeated keypress walks straight through. Nor is it any
+//! of the six: a `c` held down would compose a claim and answer it.
 
 use crate::bindings;
 use crate::input::Command;
@@ -84,9 +104,10 @@ pub enum Press {
     Ignored,
 }
 
-/// The key that opens the prompt on nothing, for a verb to be spelled into.
-pub const ACT: char = 'a';
-/// The key that opens it seeded with the grammar's search.
+/// The key that opens the prompt, seeded with the grammar's search.
+///
+/// The one key that still opens a line. What it opens is a search and not a
+/// verb: `crate::input::parse` reads no verb at all (TASK-1a415107fd56).
 pub const FIND: char = '/';
 /// The one key that runs a command a person has been shown
 /// (TASK-d4a882345837).
@@ -128,20 +149,22 @@ pub fn confirming(key: KeyEvent) -> Answer {
 /// the single declaration and this reads it, so a key that moves moves on every
 /// surface at once.
 ///
-/// The modifiers are read exactly where they were: Control alone, and the only
-/// thing it reaches is the way out. Every other way of holding a key is
-/// transparent, because the lookup is on the code -- which is what the table at
-/// the foot of this file measures over every key a terminal can report.
+/// **The table is read on the bare keystroke and on no other**
+/// (TASK-1a415107fd56). One keystroke in the whole domain of `KeyCode` by
+/// `KeyModifiers` reaches a command with something held, and it is the way out.
+/// The module header says why the transparency that used to be here was
+/// repriced: six letters write now.
 pub fn typed(key: KeyEvent, focus: Focus) -> Press {
     // The one chord, and it is the way out rather than a command: raw mode has
     // taken the line discipline's interrupt, so a reader that did not answer
     // this would be a full-screen program a person cannot leave without knowing
     // its own vocabulary. Not a row of the table, because it is not a command:
     // `q` is the binding, and it reaches the same place with no modifier.
-    if key.modifiers.contains(KeyModifiers::CONTROL) {
-        return match key.code {
-            KeyCode::Char('c') => Press::Run(Command::Quit),
-            _ => Press::Ignored,
+    if !key.modifiers.is_empty() {
+        let way_out = key.modifiers.contains(KeyModifiers::CONTROL) && key.code == CTRL_C;
+        return match way_out {
+            true => Press::Run(Command::Quit),
+            false => Press::Ignored,
         };
     }
     match bindings::of_key(key.code) {
@@ -149,6 +172,9 @@ pub fn typed(key: KeyEvent, focus: Focus) -> Press {
         None => Press::Ignored,
     }
 }
+
+/// The key the way out is held on, beside the modifier it needs.
+const CTRL_C: KeyCode = KeyCode::Char('c');
 
 /// The kinds `f` walks through, and back to every kind again.
 ///
@@ -238,8 +264,7 @@ mod tests {
             for (letter, named, expected) in [
                 ('j', KeyCode::Down, Command::Move(1)),
                 ('k', KeyCode::Up, Command::Move(-1)),
-                ('n', KeyCode::PageDown, Command::Page(1)),
-                ('p', KeyCode::PageUp, Command::Page(-1)),
+                (' ', KeyCode::PageDown, Command::Page(1)),
                 ('g', KeyCode::Home, Command::Top),
                 ('b', KeyCode::Esc, Command::Back),
             ] {
@@ -250,28 +275,110 @@ mod tests {
                 );
                 assert_eq!(typed(key(named), view), Press::Run(expected), "{named:?}");
             }
+            assert_eq!(
+                typed(key(KeyCode::PageUp), view),
+                Press::Run(Command::Page(-1))
+            );
             assert_eq!(press('q', view), Press::Run(Command::Quit));
-            assert_eq!(press('r', view), Press::Run(Command::Reload));
+            assert_eq!(press('u', view), Press::Run(Command::Reload));
             assert_eq!(press('v', view), Press::Run(Command::Queue));
-            assert_eq!(press('c', view), Press::Run(Command::Constraints));
+            assert_eq!(press('s', view), Press::Run(Command::Constraints));
+            assert_eq!(press('x', view), Press::Run(Command::Further));
             assert_eq!(press('?', view), Press::Run(Command::Help));
             assert_eq!(typed(key(KeyCode::Enter), view), Press::Run(Command::Open));
             assert_eq!(press('f', view), Press::Cycle);
         }
     }
 
+    /// **Each of the six verbs is its own letter, in every panel**
+    /// (TASK-1a415107fd56, ADR-c07e2694f0e1).
+    ///
+    /// What the key composes is the verb and nothing else: the identifier is
+    /// the view's, because the panel a person is standing in is what says which
+    /// entity they mean, and there is no tail because there is no longer a line
+    /// to type one on.
+    #[test]
+    fn each_verb_that_writes_is_its_own_letter_and_composes_that_verb() {
+        for view in Focus::ALL {
+            for (letter, verb) in [
+                ('c', "claim"),
+                ('l', "log"),
+                ('d', "done"),
+                ('r', "release"),
+                ('m', "amend"),
+            ] {
+                assert_eq!(
+                    press(letter, view),
+                    Press::Run(Command::Act(Act {
+                        verb,
+                        args: Vec::new()
+                    })),
+                    "'{letter}' in {view:?}"
+                );
+            }
+        }
+        // And `a` is the sixth, on the document and nowhere else.
+        assert_eq!(
+            press('a', Focus::Body),
+            Press::Run(Command::Act(Act {
+                verb: "accept",
+                args: Vec::new()
+            }))
+        );
+        for view in Focus::ALL.into_iter().filter(|f| *f != Focus::Body) {
+            match press('a', view) {
+                Press::Run(Command::Malformed(said)) => {
+                    assert!(said.contains("open it into the body"), "{view:?}: {said}");
+                }
+                other => panic!("{view:?} took an accept off a row: {other:?}"),
+            }
+        }
+    }
+
+    /// **`h`, `l`, `n` and `p` move nothing** (TASK-1a415107fd56).
+    ///
+    /// The price ADR-c07e2694f0e1 puts on the letters, stated as what it is: a
+    /// person pressing `l` for "right" or `n` for "next page" gets no movement,
+    /// and `l` gets the log confirmation instead. Three of the four reach
+    /// nothing at all, which is the honest answer -- a key that quietly did
+    /// something else would be worse than one that does nothing.
+    #[test]
+    fn the_four_letters_the_verbs_cost_move_nothing() {
+        for view in Focus::ALL {
+            for c in ['h', 'n', 'p'] {
+                assert_eq!(press(c, view), Press::Ignored, "'{c}' in {view:?}");
+            }
+            // `l` is `log`, which composes a verb and moves no cursor.
+            let reached = press('l', view);
+            let Press::Run(Command::Act(act)) = &reached else {
+                panic!("'l' in {view:?} is {reached:?}");
+            };
+            assert_eq!(act.verb, "log");
+        }
+    }
+
     /// No command is a chord, and the one that is is the way out rather than a
     /// command (ADR-c07e2694f0e1: no command anywhere requires a modifier).
+    ///
+    /// Over every modifier and not over Control alone (TASK-1a415107fd56): `c`
+    /// composes a claim now, so "a letter with something held is not that
+    /// letter" is a claim worth making about Shift and Alt too.
     #[test]
     fn nothing_but_the_way_out_is_reached_with_a_modifier() {
         for view in Focus::ALL {
-            for c in 'a'..='z' {
-                let held = KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
-                let press = typed(held, view);
-                if c == 'c' {
-                    assert_eq!(press, Press::Run(Command::Quit), "the way out");
-                } else {
-                    assert_eq!(press, Press::Ignored, "control-{c} is a command");
+            for held in table::every_modifier() {
+                if held.is_empty() {
+                    continue;
+                }
+                for c in 'a'..='z' {
+                    let press = typed(KeyEvent::new(KeyCode::Char(c), held), view);
+                    let way_out = c == 'c' && held.contains(KeyModifiers::CONTROL);
+                    match way_out {
+                        true => assert_eq!(press, Press::Run(Command::Quit), "the way out"),
+                        false => {
+                            assert_eq!(press, Press::Ignored, "{held:?} and '{c}' is a command")
+                        }
+                    }
                 }
             }
         }
@@ -298,11 +405,13 @@ mod tests {
     /// in front of it.
     #[test]
     fn a_key_that_writes_composes_one_of_the_six_and_spawns_nothing() {
+        let mut composed = 0;
         for view in Focus::ALL {
             for code in table::every_key() {
                 let Press::Run(Command::Act(act)) = typed(key(code), view) else {
                     continue;
                 };
+                composed += 1;
                 assert!(
                     crate::ank::ACTS.contains(&act.verb),
                     "{code:?} composes '{}' in {view:?}, and the gate refuses it",
@@ -310,30 +419,40 @@ mod tests {
                 );
             }
         }
+        // And it is not vacuous, which it was for as long as no key could
+        // write: five verbs in every panel, and the sixth in the body alone.
+        assert_eq!(
+            composed,
+            5 * Focus::ALL.len() + 1,
+            "the letters that write reach {composed} acts over the whole table"
+        );
     }
 
+    /// The one key that still opens a line opens it on a search, and what it
+    /// seeds is what the grammar reads (TASK-1a415107fd56).
     #[test]
-    fn the_two_prompt_keys_seed_the_grammar_they_open() {
-        assert_eq!(press(ACT, Focus::Entities), Press::Prompt(""));
+    fn the_one_prompt_key_seeds_the_search_it_opens() {
         assert_eq!(press(FIND, Focus::Entities), Press::Prompt("/"));
-        // And what they seed is what the grammar reads: a bare line is a verb,
-        // a slashed one is a search.
         assert_eq!(
-            crate::input::parse("claim", Focus::Entities),
-            Command::Act(Act {
-                verb: "claim",
-                args: Vec::new()
-            })
-        );
-        assert_eq!(
-            crate::input::parse("/a needle", Focus::Entities),
+            crate::input::parse("/a needle"),
             Command::Search(Some("a needle".to_string()))
         );
+        // And no key opens a line on nothing: the prompt a verb was spelled
+        // into is gone, so no binding of the table seeds an empty one.
+        for code in table::every_key() {
+            for view in Focus::ALL {
+                assert_ne!(
+                    typed(key(code), view),
+                    Press::Prompt(""),
+                    "{code:?} opens the prompt a verb was spelled into"
+                );
+            }
+        }
     }
 
     #[test]
     fn an_unmapped_key_is_ignored_rather_than_named() {
-        for code in [KeyCode::F(5), KeyCode::Insert, KeyCode::Char('z')] {
+        for code in [KeyCode::F(5), KeyCode::Insert, KeyCode::Char('w')] {
             assert_eq!(
                 typed(key(code), Focus::Entities),
                 Press::Ignored,
@@ -706,6 +825,13 @@ mod table {
     /// **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1),
     /// over the whole table.
     ///
+    /// Kept beside the rule under it, which is stronger, because they are not
+    /// the same claim: that one says a chord reaches nothing, and this one says
+    /// the vocabulary is complete without one. A build that answered no
+    /// modifier at all would pass the first and could still have left a command
+    /// with no bare key at all -- reachable by nobody, which is the failure a
+    /// phone actually meets.
+    ///
     /// Every key, every way of holding it, every panel: whatever a chord
     /// reaches, a bare key reaches the same thing from the same place. Stated
     /// this way round rather than as "these letters are not chords", because
@@ -748,43 +874,56 @@ mod table {
         }
     }
 
-    /// The only modifier this table reads at all is Control, and the only
-    /// thing it reaches with it is the way out.
+    /// **No keystroke in the whole domain reaches a command with a modifier
+    /// held, except the way out** (TASK-1a415107fd56, ADR-c07e2694f0e1).
     ///
-    /// Two halves, and the second is the one worth having. Control-C is
-    /// answered because raw mode took the line discipline's interrupt, and `q`
-    /// reaches the same place without it -- which the rule above already
-    /// proves. Every *other* way of holding a key is transparent: a stray
-    /// Shift, an Alt a phone keyboard sends with a long press, a Super nobody
-    /// meant, and the key does exactly what it does bare. So there is no second
-    /// vocabulary hiding in the modifiers, which is what makes the table above
-    /// the whole of the table.
+    /// This is the rule above turned round, and the turn is what
+    /// TASK-1a415107fd56 buys. "Nothing is *only* a chord" leaves a chord free
+    /// to reach whatever its bare key reaches, and that is what this table used
+    /// to do: a stray Shift, an Alt a phone keyboard sends on a long press, a
+    /// Super nobody meant, and the key did exactly what it does bare. Harmless
+    /// while no letter wrote. Six of them write now, and a `c` that arrives
+    /// with something held is not a person asking to claim -- it is a person
+    /// whose keyboard sent a modifier, and the honest answer is nothing.
+    ///
+    /// So the domain is partitioned rather than sampled: every key a terminal
+    /// can report, every one of the sixty-four ways to hold one, every panel.
+    /// Exactly one cell of it is a command, and it is the way out of a program
+    /// that took the terminal -- which `q` reaches bare, so nothing here is
+    /// reachable only this way.
     #[test]
-    fn the_only_modifier_the_table_reads_is_the_one_that_leaves() {
+    fn nothing_in_the_domain_is_a_command_with_a_modifier_but_the_way_out() {
+        let mut commands = 0;
         for focus in Focus::ALL {
             for code in every_key() {
-                let alone = typed(KeyEvent::new(code, KeyModifiers::NONE), focus);
                 for held in every_modifier() {
-                    let reached = typed(KeyEvent::new(code, held), focus);
-                    if !held.contains(KeyModifiers::CONTROL) {
-                        assert_eq!(
-                            reached, alone,
-                            "{code:?} means something else with {held:?} held in {focus:?}"
-                        );
+                    if held.is_empty() {
                         continue;
                     }
-                    let way_out = code == KeyCode::Char('c');
+                    let reached = typed(KeyEvent::new(code, held), focus);
+                    let way_out =
+                        code == KeyCode::Char('c') && held.contains(KeyModifiers::CONTROL);
                     match way_out {
-                        true => assert_eq!(reached, Press::Run(Command::Quit)),
+                        true => {
+                            commands += 1;
+                            assert_eq!(reached, Press::Run(Command::Quit));
+                        }
                         false => assert_eq!(
                             reached,
                             Press::Ignored,
-                            "Control and {code:?} is a command in {focus:?}"
+                            "{code:?} with {held:?} is a command in {focus:?}"
                         ),
                     }
                 }
             }
         }
+        // Half the modifier space carries Control, and every one of those
+        // combinations reaches the way out on `c`: thirty-two per panel.
+        assert_eq!(
+            commands,
+            32 * Focus::ALL.len(),
+            "the way out is not the one command a modifier reaches"
+        );
     }
 
     /// The confirmation's own table, over the same domain: one bare key runs,

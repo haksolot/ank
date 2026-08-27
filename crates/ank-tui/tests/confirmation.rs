@@ -10,6 +10,13 @@
 //! which was asked for six writes and given none of them left a git repository
 //! exactly as it found it.
 //!
+//! **How the six are reached changed under this suite and what it measures did
+//! not** (TASK-1a415107fd56). They used to be spelled whole into a prompt; each
+//! is one letter now. That is exactly the road the confirmation was never
+//! about: the guarantee is stated over what happens *after* an act is composed,
+//! so the keystrokes below are new and every assertion is the one that was
+//! here.
+//!
 //! **The negative is the assertion that matters and it is stated twice over.**
 //! Once on the files -- every byte under `.ank/` compared before and after --
 //! and once on the refs, by name and by object, because a claim renewed in
@@ -36,8 +43,28 @@ use terminal::{short_of, Live, Repo};
 /// The keys this suite has to know, read out of the reader rather than typed as
 /// letters here: a suite carrying its own copy of either would agree with a
 /// mapping that moved.
-const ACT: char = ank_tui::keys::ACT;
+const FIND: char = ank_tui::keys::FIND;
 const CONFIRM: char = ank_tui::keys::CONFIRM;
+
+/// The letter one verb of the writing half is bound to, out of the reader's own
+/// table (TASK-1a415107fd56).
+///
+/// Never spelled here. The point of the wave is that a key *is* the verb, and a
+/// suite that typed `c` because `c` is what claim happens to be bound to today
+/// would go on passing against a table that moved the letter.
+fn key_of(verb: &str) -> String {
+    let binding = ank_tui::bindings::of_verb(verb)
+        .unwrap_or_else(|| panic!("'{verb}' is a verb of the writing half"));
+    // The reader's own spelling of the key, which is the character itself
+    // where there is one: a suite must send a keystroke and not a name.
+    let letter = ank_tui::bindings::named(binding.key);
+    assert_eq!(
+        letter.chars().count(),
+        1,
+        "the key is named '{letter}', which is not one keystroke to send"
+    );
+    letter
+}
 /// What the confirmation says above the command line, and what it says after a
 /// person has declined one. Read out of the reader for the same reason.
 const ABOUT: &str = ank_tui::view::ABOUT;
@@ -47,37 +74,22 @@ const DISMISSED: &str = ank_tui::view::DISMISSED;
 /// command line is an assertion on a line and not on a reflow.
 const WINDOW: (u16, u16) = (110, 30);
 
-/// The six verbs that write, each with the tail a person types after the word,
-/// and what the reader must show before it may spawn one.
+/// The six verbs that write, and what the reader must show before it may spawn
+/// one.
 ///
 /// `{id}` is the identifier of the document the confirmation was composed on --
 /// the reader puts it in front, because `<id>` is the first positional of all
-/// six. The rest is the tail read the way its verb reads one, quoted the way a
-/// shell would have to quote it: a `log` message and a `release` reason are one
-/// argument with spaces in them, and a `--scope` glob is another.
-const SPELLED: [(&str, &str, &str); 6] = [
-    ("claim", "claim", "ank claim {id} --json"),
-    (
-        "log",
-        "log the probe counts the marker, not the question",
-        "ank log {id} 'the probe counts the marker, not the question' --json",
-    ),
-    (
-        "release",
-        "release the criterion measures the wrong thing",
-        "ank release {id} --reason 'the criterion measures the wrong thing' --json",
-    ),
-    (
-        "done",
-        "done commit:2d9c8477e1f0",
-        "ank done {id} --proof commit:2d9c8477e1f0 --json",
-    ),
-    (
-        "amend",
-        "amend --scope \"crates/ank tui/**\"",
-        "ank amend {id} --scope 'crates/ank tui/**' --json",
-    ),
-    ("accept", "accept", "ank accept {id} --json"),
+/// six -- and it is the whole of the argv now (TASK-1a415107fd56). A press
+/// composes the verb and the entity the focused panel names and not one byte
+/// more; the tails came off the line that no longer exists, and the form that
+/// gives them back is TASK-e8da6a00564a's.
+const SPELLED: [(&str, &str); 6] = [
+    ("claim", "ank claim {id} --json"),
+    ("log", "ank log {id} --json"),
+    ("release", "ank release {id} --json"),
+    ("done", "ank done {id} --json"),
+    ("amend", "ank amend {id} --json"),
+    ("accept", "ank accept {id} --json"),
 ];
 
 /// One entry of [`SPELLED`], with the identifier the reader would have put in
@@ -88,20 +100,38 @@ fn expected(argv: &str, id: &str) -> String {
 
 /// Opens one document into the body panel and waits until it is there.
 ///
-/// By identifier and through the prompt, because an identifier is a line by
-/// nature and the grammar reads one; and into the *body* panel deliberately,
-/// which is the only panel `accept` is a command in (TASK-d90e94afca08) and is
-/// therefore the one place all six can be reached from.
+/// By identifier and through the search, because an identifier is a line by
+/// nature and `/` is the one prompt left (TASK-1a415107fd56): the needle
+/// narrows the listing to the one row, and Enter opens the row under the
+/// cursor, which a search puts back at the top. Into the *body* panel
+/// deliberately, which is the only panel `accept` is a command in
+/// (TASK-d90e94afca08) and is therefore the one place all six can be reached
+/// from.
 fn open(live: &mut Live, id: &str) {
-    live.send(&format!("{ACT}{}\r", short_of(id)));
+    let short = short_of(id);
+    // The entities panel first, because Enter opens the row under the *focused*
+    // listing's cursor and the body panel has no rows: without this the second
+    // document of a session would never arrive.
+    live.send("2");
+    live.until("the entities panel to take the focus", |t| {
+        t.contains("> 2 ENTITIES")
+    });
+    live.send(&format!("{FIND}{short}\r"));
+    // On the count the panel's own title carries and not on the identifier: an
+    // unnarrowed listing carries the identifier too, so waiting for that would
+    // be waiting for a frame that was already there.
+    live.until("the listing to narrow to one row", |t| {
+        t.contains("ENTITIES all 1")
+    });
+    live.send("\r");
     live.until("the document to open in the body panel", |t| {
-        t.contains("> 3 BODY") && t.contains(&short_of(id))
+        t.contains("> 3 BODY") && t.contains(&short)
     });
 }
 
-/// Spells one verb into the prompt and waits for the command line it composed.
-fn spell(live: &mut Live, tail: &str) {
-    live.send(&format!("{ACT}{tail}\r"));
+/// Presses the letter one verb is bound to, which is the whole of reaching it.
+fn spell(live: &mut Live, verb: &str) {
+    live.send(&key_of(verb));
 }
 
 /// The screen, flattened to one line, so an assertion about a command line
@@ -140,15 +170,15 @@ fn every_verb_that_writes_is_shown_first_and_dismissing_it_writes_nothing() {
     let mut live = Live::open(&repo, WINDOW.0, WINDOW.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
 
-    for (verb, tail, argv) in SPELLED {
+    for (verb, argv) in SPELLED {
         // `accept` is a command on a proposed document and a refusal anywhere
-        // else, so the document under it is the one the word belongs on. The
-        // other five are typed on the task, which is what they are about.
+        // else, so the document under it is the one the letter belongs on. The
+        // other five are pressed on the task, which is what they are about.
         let id = if verb == "accept" { &proposal } else { &task };
         let wanted = expected(argv, id);
         open(&mut live, id);
 
-        spell(&mut live, tail);
+        spell(&mut live, verb);
         live.until(&format!("the confirmation for '{verb}'"), |t| {
             flat(t).contains(&wanted)
         });

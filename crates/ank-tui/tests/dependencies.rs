@@ -348,6 +348,46 @@ fn one_arm_answers_an_act_and_what_it_does_is_show_it() {
     );
 }
 
+/// **The grammar of the prompt composes no act at all**
+/// (TASK-1a415107fd56, ADR-c07e2694f0e1).
+///
+/// The tests in `input.rs` say that no word §4 declares reaches a verb, over
+/// every one of them. This says the same thing from the side a test cannot be
+/// forgotten on: the file that reads a typed line does not name the variant an
+/// act arrives as, so there is no line of it that could construct one and no
+/// word anybody might add later that could reach one.
+///
+/// Stated over the code above the tests, because a test naming the variant is a
+/// test measuring its absence -- which is the file's own suite doing exactly
+/// what this asks of it.
+#[test]
+fn the_grammar_of_the_prompt_names_no_act() {
+    let (_, source) = sources()
+        .into_iter()
+        .find(|(file, _)| file == "input.rs")
+        .expect("the grammar is a source of this crate");
+    let code = code_of(&source);
+    let above = match code.find("#[cfg(test)]") {
+        Some(at) => &code[..at],
+        None => &code[..],
+    };
+    let named: Vec<&str> = above
+        .lines()
+        .filter(|line| line.contains("Command::Act("))
+        .collect();
+    assert!(
+        named.is_empty(),
+        "input.rs composes an act, and no typed word may reach one:\n{}",
+        named.join("\n")
+    );
+    // Not vacuous: the variant is declared in this very file, so a scan that
+    // found nothing because it was looking at the wrong source would say so.
+    assert!(
+        above.contains("Act(Act)"),
+        "input.rs is not where Command::Act is declared any more"
+    );
+}
+
 /// A source with its comments removed.
 ///
 /// The prose is allowed to name `.ank/` and `refs/ank/*` -- it has to, since
