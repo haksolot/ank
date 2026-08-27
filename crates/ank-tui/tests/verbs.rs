@@ -241,7 +241,7 @@ fn the_four_letters_the_verbs_cost_move_nothing_on_the_screen() {
         "the listing draws two rows:\n{standing}"
     );
 
-    for c in ['h', 'n', 'p'] {
+    for c in ['h', 'p'] {
         live.send(&c.to_string());
         let after = live.frame();
         assert_eq!(
@@ -249,6 +249,20 @@ fn the_four_letters_the_verbs_cost_move_nothing_on_the_screen() {
             "'{c}' moved something, and it is one of the letters the verbs cost"
         );
     }
+
+    // `n` is `new` (TASK-d832452630d2): it opens a form over the panels and
+    // moves nothing under it. Closing it gives back the frame that was there,
+    // character for character, which is what an overlay is and what a band of
+    // rows the layout had to find room for would not have been.
+    live.send("n");
+    live.until("the form to open", |t| t.contains("NEW TASK"));
+    live.send("\u{1b}");
+    live.until("the form to close", |t| !t.contains("NEW TASK"));
+    assert_eq!(
+        live.frame(),
+        standing,
+        "'n' moved the frame under the form it opened"
+    );
 
     // `l` is `log`: it composes, and the listing under it is where it was.
     live.send("l");

@@ -229,7 +229,8 @@
 
 use crate::ank::{Ank, Failed, Ran};
 use crate::bindings::{self, Binding, Holding};
-use crate::input::{Act, Command};
+use crate::form::{self, Filled, Form};
+use crate::input::{Act, Command, Subject};
 use crate::keys::{self, Editing, Press};
 use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
 use crate::paint::{self, role_of_id, Composed, Ink};
@@ -490,6 +491,19 @@ pub struct App {
     /// to scrolling it is cutting it, and a key list that stops at the bottom of
     /// the screen is the omission that decision was written against.
     overlay: Option<usize>,
+    /// The form `ank new` is filled in on, open (TASK-d832452630d2).
+    ///
+    /// `None` is the ordinary state and it costs nothing at rest, for the key
+    /// list's reason: it is drawn *over* the panels rather than into a band the
+    /// layout gave rows up for, so [`App::arrange`] does not know it exists and
+    /// closing it gives back exactly the frame that was there. The five-row
+    /// budget TASK-9a402a54886f spent is untouched by it.
+    ///
+    /// Modal while it is open. A form is where words are typed, so no letter is
+    /// a command over one -- [`crate::form::Form::press`] is the whole of the
+    /// grammar, and what it composes reaches the confirmation like every other
+    /// act.
+    form: Option<Form>,
 }
 
 impl App {
@@ -522,6 +536,7 @@ impl App {
             ink: Ink::detect(),
             glyphs: Glyphs::detect(),
             overlay: None,
+            form: None,
         }
     }
 
@@ -761,6 +776,12 @@ impl App {
                 }
             };
         }
+        // After the two states that are asking a question and before the key
+        // list, which is not modal: a form is where words are typed, so a `?`
+        // over one is a question mark in a title.
+        if self.form.is_some() {
+            return self.filling(key, ank);
+        }
         if self.overlay.is_some() {
             match self.over_list(key) {
                 Listed::Answered => return false,
@@ -819,6 +840,19 @@ impl App {
                 // The list is over the panels and over the bands, so it is what
                 // a press lands on while it is open: one row, one binding, and
                 // no second road to whatever is drawn underneath it.
+                // The form is over the panels and over the bands, exactly as
+                // the key list is, and it is modal besides: while one is open
+                // the only touch that does anything is a touch on one of its
+                // rows, which selects that field. A thumb reaches the same
+                // fields the arrows reach and nothing underneath.
+                if self.form.is_some() {
+                    if let Some(field) = self.field_at(at) {
+                        if let Some(form) = &mut self.form {
+                            form.select(field);
+                        }
+                    }
+                    return false;
+                }
                 if self.overlay.is_some() {
                     return match self.list_at(at) {
                         Some(binding) => self.ran(binding, ank),
@@ -863,6 +897,16 @@ impl App {
     /// confirmation nothing moves, which is the modal rule again.
     fn moved(&mut self, by: isize, ank: &Ank) -> bool {
         if self.pending.is_some() || self.prompt.is_some() {
+            return false;
+        }
+        // A swipe over the form walks its fields, which is what the arrows do:
+        // what a scroll moves is what the finger is on.
+        if let Some(form) = &mut self.form {
+            let key = match by < 0 {
+                true => KeyCode::Up,
+                false => KeyCode::Down,
+            };
+            form.press(KeyEvent::new(key, KeyModifiers::NONE));
             return false;
         }
         // A swipe over the key list scrolls the key list, which is the same
@@ -1112,6 +1156,22 @@ impl App {
             // so drawing them there would be the one thing that list must never
             // carry.
             Command::Further => self.note = Some(bindings::further().join("\n")),
+            // The form, opened. Nothing is composed here and nothing is
+            // spawned: what a person fills in reaches `propose` through
+            // `App::filling`, and the confirmation is on that road like every
+            // other (TASK-d832452630d2).
+            Command::Form => match Form::open() {
+                Some(form) => self.form = Some(form),
+                // A build whose contract declares no `new` at all. Said rather
+                // than drawn as an empty form: a form with no fields is a
+                // screen that reads as a defect of the reader.
+                None => {
+                    self.note = Some(format!(
+                        "this build of ank declares no '{}' to make one with",
+                        form::VERB
+                    ))
+                }
+            },
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
@@ -1167,14 +1227,24 @@ impl App {
     /// `ank claim  --json` to say no to would be offering a command that could
     /// never run.
     fn propose(&mut self, act: Act, ank: &Ank) {
-        let Some(id) = self.target() else {
-            self.note = Some(
-                "no entity is named here: move onto a row, or open one into the body".to_string(),
-            );
-            return;
-        };
+        let mut args = Vec::new();
+        // **Only where the act says its first positional is a row's**
+        // (TASK-d832452630d2). `ank new <kind>` carries its own, and a reader
+        // that put an identifier in front of it would compose
+        // `ank new TASK-... task`, which is a command line nobody could have
+        // typed. The question is asked of the act rather than of its verb's
+        // name, so a second verb of that shape declares itself.
+        if act.subject == Subject::Selected {
+            let Some(id) = self.target() else {
+                self.note = Some(
+                    "no entity is named here: move onto a row, or open one into the body"
+                        .to_string(),
+                );
+                return;
+            };
+            args.push(id);
+        }
         let verb = act.verb;
-        let mut args = vec![id];
         args.extend(act.args);
         let shown = ank.spelling(verb, &args);
         self.pending = Some(Pending { verb, args, shown });
@@ -1195,6 +1265,38 @@ impl App {
                 // reassuring to somebody who can see what did not.
                 let dropped = self.pending.take();
                 self.note = dropped.map(|p| format!("{DISMISSED}\n{}", p.shown));
+            }
+        }
+        false
+    }
+
+    /// One key, answered against the form that is open (TASK-d832452630d2).
+    ///
+    /// Three outcomes and no fourth, and the one that matters is the middle
+    /// one: a form that composed goes to [`App::propose`], which puts the argv
+    /// on the screen and spawns nothing. There is no road from here to
+    /// [`Ank::act`] that does not pass the confirmation, which is the same
+    /// sentence every other act in this reader is answerable to.
+    ///
+    /// A form that could not compose stays open with the cursor on the field it
+    /// refused about and the reason drawn on itself -- not in the note band,
+    /// which the form is covering. The session never ends here: `q` is a
+    /// letter in a title.
+    fn filling(&mut self, key: KeyEvent, ank: &Ank) -> bool {
+        let Some(form) = &mut self.form else {
+            return false;
+        };
+        match form.press(key) {
+            Filled::Filling => {}
+            Filled::Close => {
+                self.form = None;
+                self.note = None;
+            }
+            Filled::Compose => {
+                if let Some(act) = form.submit() {
+                    self.form = None;
+                    self.propose(act, ank);
+                }
             }
         }
         false
@@ -1545,7 +1647,11 @@ impl App {
         // Last, and over everything the header does not carry: the key list is
         // an overlay (TASK-8a6578851244), so it is painted after the frame it
         // covers rather than into a band the frame had to give up rows for.
+        // The form is the second of that shape and takes the same rectangle
+        // (TASK-d832452630d2); the two are never both open, because `n` is a
+        // key the list passes through and opening the form closes it.
         self.list(area, buf);
+        self.form(area, buf);
     }
 
     /// One panel: its border, its title, and the lines it holds.
@@ -2523,6 +2629,103 @@ impl App {
         let rows: Vec<String> = lines
             .iter()
             .skip(top)
+            .take(room)
+            .map(|(line, _)| fit(line, inside.width as usize))
+            .collect();
+        paragraph(&rows).render(inside, buf);
+    }
+
+    // -----------------------------------------------------------------------
+    // The form, and where a finger lands on it (TASK-d832452630d2)
+    // -----------------------------------------------------------------------
+
+    /// The rows of the form, wrapped to the width the overlay draws them at,
+    /// each with the field a press on it selects.
+    ///
+    /// [`crate::form::Form::rows`] and never a second rendering of the same
+    /// fields: a row a person can see and a row a press resolves to are the
+    /// same row, or they are two and the screen answers somewhere other than
+    /// where it was touched.
+    fn form_lines(&self) -> Vec<(String, Option<usize>)> {
+        let Some(form) = &self.form else {
+            return Vec::new();
+        };
+        form.rows(inside(self.list_rect(self.area())).width as usize)
+    }
+
+    /// The first row of the form on the screen.
+    ///
+    /// Zero while the whole form fits, which is every window this reader is
+    /// measured on and nearly every window there is. Where it does not, the
+    /// window follows the cursor: a field being typed into that had scrolled
+    /// off the bottom would be a text field that has stopped saying what it
+    /// holds. The heading and the sentence over the rows go first, which is why
+    /// they are over them -- what that sentence says on a refusal is which
+    /// field the form would not compose without, and it is drawn beside the
+    /// row the cursor has just been sent to.
+    fn form_top(&self, room: usize) -> usize {
+        let Some(form) = &self.form else {
+            return 0;
+        };
+        let lines = self.form_lines();
+        if lines.len() <= room || room == 0 {
+            return 0;
+        }
+        let at = form.row_of_cursor(inside(self.list_rect(self.area())).width as usize);
+        at.saturating_sub(room - 1).min(lines.len() - room)
+    }
+
+    /// The field a press on the form reached.
+    ///
+    /// `None` on the heading, on the sentence under the rows, on the border,
+    /// and on a row past the end of a form shorter than its window. A press
+    /// that named no field does nothing at all: a finger that missed is a
+    /// finger that missed, and a reader that closed the form for it would throw
+    /// away everything typed into it.
+    fn field_at(&self, at: Position) -> Option<usize> {
+        self.form.as_ref()?;
+        let inside = inside(self.list_rect(self.area()));
+        if !inside.contains(at) {
+            return None;
+        }
+        let row = self.form_top(inside.height as usize) + (at.y - inside.y) as usize;
+        self.form_lines().get(row).and_then(|(_, field)| *field)
+    }
+
+    /// The form, drawn over the frame it was asked for from.
+    ///
+    /// Cleared first for the key list's reason: a `Block` paints a border and a
+    /// `Paragraph` paints the rows it was given, so the cells between the last
+    /// row and the bottom border would otherwise still carry whatever panel is
+    /// underneath.
+    fn form(&self, area: Rect, buf: &mut Buffer) {
+        let Some(form) = &self.form else {
+            return;
+        };
+        let rect = self.list_rect(area);
+        if rect.width < 2 || rect.height < 2 {
+            return;
+        }
+        let inside = inside(rect);
+        let heading = format!(
+            "NEW {}   {} closes",
+            form.kind().to_ascii_uppercase(),
+            named(KeyCode::Esc)
+        );
+        let title = Composed::new()
+            .plain(text::CURSOR)
+            .plain(&heading)
+            .fitted(rect.width as usize - 2);
+        Clear.render(rect, buf);
+        Block::bordered()
+            .border_set(self.glyphs.border(true))
+            .title(title.line(self.ink))
+            .render(rect, buf);
+        let room = inside.height as usize;
+        let rows: Vec<String> = self
+            .form_lines()
+            .iter()
+            .skip(self.form_top(room))
             .take(room)
             .map(|(line, _)| fit(line, inside.width as usize))
             .collect();
@@ -4339,6 +4542,7 @@ mod tests {
             Command::Act(Act {
                 verb: "claim",
                 args: Vec::new(),
+                subject: Subject::Selected,
             }),
             &ank,
         );
@@ -4368,6 +4572,7 @@ mod tests {
             Command::Act(Act {
                 verb: "log",
                 args: vec!["something".to_string()],
+                subject: Subject::Selected,
             }),
             &ank,
         );
@@ -4386,6 +4591,7 @@ mod tests {
             Command::Act(Act {
                 verb: "claim",
                 args: Vec::new(),
+                subject: Subject::Selected,
             }),
             &nowhere(),
         );
@@ -4557,6 +4763,7 @@ mod tests {
             Command::Act(Act {
                 verb: "accept",
                 args: Vec::new(),
+                subject: Subject::Selected,
             }),
             &ank,
         );
@@ -4628,9 +4835,13 @@ mod tests {
                 a.note = None;
                 tap(&mut a, &ank, KeyCode::Char(c));
                 // Whatever the key left waiting or open is dropped rather than
-                // answered: what is being measured is the keystroke alone.
+                // answered: what is being measured is the keystroke alone. The
+                // form is one of those states now (TASK-d832452630d2), and
+                // leaving it open would send the rest of the alphabet into a
+                // title instead of into the reader.
                 a.prompt = None;
                 a.pending = None;
+                a.form = None;
                 let said = a.note.clone().unwrap_or_default();
                 for verb in WRITES {
                     assert!(
@@ -5505,6 +5716,87 @@ mod tests {
                 "{window:?}: the key list did not give the frame back"
             );
         }
+    }
+
+    /// **The form is drawn over the panels, and closing it gives the frame back
+    /// character for character** (TASK-d832452630d2).
+    ///
+    /// The key list's own claim, applied to the second overlay: nothing moved
+    /// to make room for it, so nothing has to move back, and the five rows of
+    /// chrome TASK-9a402a54886f left the reader are untouched by a form being
+    /// open. Measured at the windows ADR-c07e2694f0e1 measures this reader on
+    /// and at one too short for the form, which is where an overlay the layout
+    /// had been asked for would have shown.
+    #[test]
+    fn the_form_covers_the_panels_and_gives_the_frame_back_when_it_closes() {
+        for window in [(80, 24), (40, 30), (120, 40), (40, 12)] {
+            let ank = nowhere();
+            let mut a = windowed(window);
+            let before = a.frame();
+
+            tap(&mut a, &ank, form_key());
+            assert!(a.form.is_some(), "{window:?}: the key opened no form");
+            let frame = a.frame();
+            assert_eq!(
+                frame.lines().count(),
+                window.1,
+                "{window:?}: the form changed how many rows the frame is:\n{frame}"
+            );
+            for line in frame.lines() {
+                assert!(
+                    line.chars().count() <= window.0,
+                    "{window:?}: a row is past the right edge: {line}\n{frame}"
+                );
+            }
+
+            tap(&mut a, &ank, KeyCode::Esc);
+            assert!(a.form.is_none(), "{window:?}: Esc left the form open");
+            assert_eq!(
+                a.frame(),
+                before,
+                "{window:?}: the form did not give the frame back"
+            );
+        }
+    }
+
+    /// **The field being typed into is on the screen at every window**
+    /// (TASK-d832452630d2).
+    ///
+    /// The form is thirteen rows and a window can be shorter than that. A
+    /// reader that drew the first thirteen and stopped would put a person
+    /// typing into `--body` in front of a screen where nothing moves, which is
+    /// a text field that has stopped saying what it holds. So the window
+    /// follows the cursor, and the sentence that says which field the form
+    /// refused on is drawn over the rows rather than under them so it cannot
+    /// scroll off the end.
+    #[test]
+    fn the_field_being_typed_into_is_on_the_screen_however_short_the_window_is() {
+        for window in [(80, 24), (40, 12), (60, 9)] {
+            let ank = nowhere();
+            let mut a = windowed(window);
+            tap(&mut a, &ank, form_key());
+            let count = a.form.as_ref().expect("a form").fields().len();
+            for _ in 0..count {
+                let at = a.form.as_ref().expect("a form").at();
+                let flag = a.form.as_ref().expect("a form").fields()[at].flag;
+                let frame = a.frame();
+                assert!(
+                    frame
+                        .lines()
+                        .any(|line| line.contains("> ") && line.contains(flag)),
+                    "{window:?}: the cursor is on {flag} and it is not on the \
+                     screen:\n{frame}"
+                );
+                tap(&mut a, &ank, KeyCode::Tab);
+            }
+        }
+    }
+
+    /// The key the form is opened with, out of the table.
+    fn form_key() -> KeyCode {
+        bindings::of_verb(crate::form::VERB)
+            .expect("a key opens the form")
+            .key
     }
 
     /// **Every row of the list that names a binding is reached by a press on

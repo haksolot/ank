@@ -223,19 +223,33 @@ impl Repo {
     }
 
     pub fn ank(&self, args: &[&str]) -> Output {
-        let out = Command::new(ank())
-            .args(args)
-            .current_dir(&self.0)
-            .env("ANK_AGENT", AGENT)
-            .env("NO_COLOR", "1")
-            .output()
-            .expect("the binary must have been built");
+        let out = self.tried(args, &[]);
         assert!(
             out.status.success(),
             "ank {args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
         out
+    }
+
+    /// One call, with whatever else the caller wants in the environment, and no
+    /// assertion about how it went.
+    ///
+    /// Separate from [`Repo::ank`] because the suites that need it are asking
+    /// about a refusal: `ank new adr --title x --scope y` is *supposed* to exit
+    /// non-zero, and that is the fact being measured rather than a failure to
+    /// report (TASK-d832452630d2).
+    pub fn tried(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+        let mut command = Command::new(ank());
+        command
+            .args(args)
+            .current_dir(&self.0)
+            .env("ANK_AGENT", AGENT)
+            .env("NO_COLOR", "1");
+        for (name, value) in env {
+            command.env(name, value);
+        }
+        command.output().expect("the binary must have been built")
     }
 }
 
@@ -590,7 +604,7 @@ impl Live {
     /// about painting wants: `NO_COLOR` makes the frames the characters they
     /// are and nothing else.
     pub fn open(repo: &Repo, columns: u16, rows: u16) -> Live {
-        Live::opened(repo, columns, rows, false, TERM)
+        Live::opened(repo, columns, rows, false, TERM, &[])
     }
 
     /// A session that may paint (TASK-6cd41d23b7d1).
@@ -600,7 +614,7 @@ impl Live {
     /// developer running it has exported, and a test whose subject is colour
     /// must not be a test that reports the machine.
     pub fn painting(repo: &Repo, columns: u16, rows: u16) -> Live {
-        Live::opened(repo, columns, rows, true, TERM)
+        Live::opened(repo, columns, rows, true, TERM, &[])
     }
 
     /// A session on a terminal that has declared it can render nothing rich
@@ -612,10 +626,26 @@ impl Live {
     /// because it is beside the point here: a terminal this poor was getting
     /// the plain palette either way.
     pub fn dumb(repo: &Repo, columns: u16, rows: u16) -> Live {
-        Live::opened(repo, columns, rows, false, "dumb")
+        Live::opened(repo, columns, rows, false, "dumb", &[])
     }
 
-    fn opened(repo: &Repo, columns: u16, rows: u16, colour: bool, term: &str) -> Live {
+    /// A session with something else in its environment (TASK-d832452630d2).
+    ///
+    /// `$EDITOR` above all: the criterion for the form is measured by pointing
+    /// it at a script that writes a sentinel and finding the sentinel absent,
+    /// and a variable the harness could not set would leave that unmeasurable.
+    pub fn with(repo: &Repo, columns: u16, rows: u16, env: &[(&str, &str)]) -> Live {
+        Live::opened(repo, columns, rows, false, TERM, env)
+    }
+
+    fn opened(
+        repo: &Repo,
+        columns: u16,
+        rows: u16,
+        colour: bool,
+        term: &str,
+        env: &[(&str, &str)],
+    ) -> Live {
         use std::io::Read;
 
         let (master, slave_path) = pty::open();
@@ -638,6 +668,9 @@ impl Live {
             true => command.env_remove("NO_COLOR"),
             false => command.env("NO_COLOR", "1"),
         };
+        for (name, value) in env {
+            command.env(name, value);
+        }
         let child = command
             .stdin(pty::stdio(stdin))
             .stdout(pty::stdio(stdout))
