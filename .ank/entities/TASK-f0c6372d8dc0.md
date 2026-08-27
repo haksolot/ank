@@ -8,10 +8,12 @@ author: haksolot@vmi3223161
 status: open
 scope:
   - crates/ank-tui/src/ank.rs
+  - crates/ank-tui/Cargo.toml
+  - crates/ank-tui/tests/dependencies.rs
 blocked_by: []
 done_criteria: |
   serde_yaml appears nowhere in the dependency tree of ank-tui, and crates/ank-tui/tests/dependencies.rs asserts its absence the way that suite already asserts ank-core's. Every existing test of the crate stays green.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
