@@ -160,17 +160,24 @@ fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable(
     live.quit();
 }
 
-/// **A row is selected by a mouse press, and the actions on the focused panel
-/// are targets that carry the key that also triggers them**
-/// (TASK-dd9747e5e305), through the binary at a phone-sized window.
+/// **A press on a row selects it, and a press on the row already selected
+/// opens it** (TASK-dd9747e5e305, TASK-9a402a54886f, ADR-c07e2694f0e1),
+/// through the binary at a phone-sized window.
 ///
 /// The criterion's own sentence, driven: a tap lands on a row of the listing
-/// and the frame afterwards shows the mark on *that* row and on no other; a tap
-/// lands on the target reading `[Enter open]` and the frame afterwards shows
-/// that entity open in the body panel. Both halves are read off the grid, so
-/// what is asserted is what a person would have been looking at.
+/// and the frame afterwards shows the mark on *that* row and on no other; a
+/// second tap on that same row and the frame afterwards shows that entity open
+/// in the body panel. Both halves are read off the grid, so what is asserted is
+/// what a person would have been looking at.
+///
+/// **The second half used to be a tap on the target reading `[Enter open]`**,
+/// and that band is gone (TASK-9a402a54886f): ADR-c07e2694f0e1 priced four rows
+/// of standing targets on the twenty-four-row screen the clause was written to
+/// protect, and what it asks for instead is exactly this -- the commonest act
+/// on a phone, read this document, reached with no button to press. So the
+/// suite asks for it the way the decision states it.
 #[test]
-fn a_tap_selects_a_row_and_a_tap_on_a_target_reaches_the_action_it_names() {
+fn a_tap_selects_a_row_and_a_second_tap_on_it_opens_it() {
     let repo = Repo::seeded();
     let mut live = Live::open(&repo, PHONE.0, PHONE.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
@@ -215,10 +222,13 @@ fn a_tap_selects_a_row_and_a_tap_on_a_target_reaches_the_action_it_names() {
         "the press selected a row other than the one under it:\n{selected}"
     );
 
-    // The action: the target that says what Enter does, touched rather than
-    // typed.
-    let (column, row) = drawn_at(&selected, "[Enter open]");
-    live.tap(column + 1, row);
+    // The second press, on the very row the first one marked: the row already
+    // selected opens, and no target was touched to do it.
+    let (again, _) = listed(&selected)
+        .into_iter()
+        .find(|(_, l)| l.contains(&short))
+        .expect("the marked row is still on the frame");
+    live.tap(2, again as u16);
     live.until(
         "the entity the tap selected to open in the body panel",
         |t| t.contains("> 3 BODY") && t.contains(&short),
