@@ -73,6 +73,14 @@ pub const AGENT: &str = "claude-code/opus-5+panel-suite";
 /// on one machine and another on the next.
 pub const TERM: &str = "xterm-256color";
 
+/// What the listing says while it has nothing, which is what a screen drawn
+/// before the corpus was read says (TASK-fff0a98511b2).
+///
+/// One constant because it is the barrier every suite here rests on: the
+/// reader draws first and reads after, so "a panel is on the screen" stopped
+/// meaning "the corpus was read" and this is what took its place.
+pub const UNREAD: &str = "the corpus has not been read";
+
 /// Deliberately wider than the entities panel at either window, so that a
 /// frame which overflowed rather than fitted would be visible as a row past
 /// the right edge.
@@ -122,6 +130,62 @@ impl Repo {
             "The frame names this entity and the body arrives whole.",
         ]);
         repo
+    }
+
+    /// The seeded corpus, plus `extra` tasks, for the suites that are about
+    /// what a corpus costs rather than what it says (TASK-fff0a98511b2).
+    ///
+    /// **Stamped rather than asked for, and the reason is arithmetic.** Every
+    /// other fixture here is built by running `ank new`, which is the honest
+    /// way and is what keeps the two entities of [`Repo::seeded`] provably
+    /// well-formed. A thousand of them is a thousand process spawns against a
+    /// corpus that grows under each one, which is minutes -- so this takes the
+    /// one entity `new` wrote and copies it, changing the three fields that
+    /// have to differ. What is being fixed is the *size* of a corpus, and a
+    /// size is the one property a copy preserves exactly.
+    ///
+    /// Writing under `.ank/` directly is a liberty this module already takes
+    /// ([`Repo::corpus`] reads every file there) and one no source of the crate
+    /// has: the reader reaches the corpus by running the CLI, and a test may
+    /// name what the crate may not.
+    pub fn crowded(extra: usize) -> Repo {
+        let repo = Repo::seeded();
+        let entities = repo.0.join(".ank").join("entities");
+        let seed = std::fs::read_dir(&entities)
+            .expect("the corpus has an entities directory")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("TASK-"))
+            })
+            .expect("the seeded corpus carries a task");
+        let template = std::fs::read_to_string(&seed).expect("the task file is readable");
+        let was = template
+            .split_once("id: ")
+            .and_then(|(_, rest)| rest.split_once('\n'))
+            .map(|(id, _)| id.to_string())
+            .expect("an entity file names its own id");
+        for i in 0..extra {
+            // A twelve-hex identifier in a range `new` does not draw from, so a
+            // stamped entity can never collide with a seeded one.
+            let id = format!("TASK-{:012x}", 0x7000_0000_0000u64 + i as u64);
+            let body = template
+                .replace(&was, &id)
+                .replace("slug: ", &format!("slug: crowd-{i}-"))
+                .replace("title: ", &format!("title: {i} "));
+            std::fs::write(entities.join(format!("{id}.md")), body)
+                .expect("a stamped entity is writable");
+        }
+        repo
+    }
+
+    /// The one read this reader makes on opening, made once beforehand.
+    ///
+    /// [`Repo::warm`] cannot be used on a crowded corpus: it asks `show` once
+    /// per entity, which is the thing this fixture has a thousand of. What has
+    /// to be warm is `.ank/index.db`, and one `find` writes it.
+    pub fn warm_find(&self) {
+        let _ = self.stdout(&["find", "--json"]);
     }
 
     pub fn git(&self, args: &[&str]) -> Output {
@@ -783,18 +847,42 @@ impl Live {
     /// Settled first, because a screen read the instant a needle appeared is
     /// half a screen: the reader writes a frame in one call but a terminal
     /// hands it over in whatever pieces it likes.
+    ///
+    /// **And a screen that has not read the corpus has not settled**
+    /// (TASK-fff0a98511b2). The reader draws its opening frame before it spawns
+    /// anything, so on a small corpus the frame that follows it can arrive
+    /// inside one of the polls below -- and two equal samples of the opening
+    /// frame would hand a suite an empty listing that is about to be filled.
+    /// It is not a state anybody wants to assert on: every caller of this asks
+    /// what a drawn screen says about a corpus, and there is exactly one
+    /// suite that is about the opening itself, which reads [`Live::now`]
+    /// instead.
+    ///
+    /// Stated here rather than at each barrier, because that is where it holds
+    /// for every suite at once: there are twenty `until("the session to open")`
+    /// calls in this crate and one of them going unfixed is a flake nobody
+    /// reproduces.
     pub fn frame(&self) -> String {
         let mut last = String::new();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
             let now = self.screen.lock().unwrap().text();
-            if !now.trim().is_empty() && now == last {
+            if !now.trim().is_empty() && now == last && !now.contains(UNREAD) {
                 return now;
             }
             last = now;
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
         panic!("the screen never stopped moving:\n{last}");
+    }
+
+    /// The screen as it is at this instant, settled or not.
+    ///
+    /// The one thing [`Live::frame`] cannot give, and the suite about what a
+    /// session costs to open is the one that needs it: the frame it measures is
+    /// by construction the one drawn before the corpus was read.
+    pub fn now(&self) -> String {
+        self.screen.lock().unwrap().text()
     }
 
     pub fn send(&mut self, bytes: &str) {

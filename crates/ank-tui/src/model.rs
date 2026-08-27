@@ -81,24 +81,59 @@ pub struct Claim {
     pub mine: bool,
 }
 
-/// The corpus as one screen sees it.
-#[derive(Debug, Clone)]
+/// The corpus as one screen sees it, out of `find` and out of nothing else
+/// (TASK-fff0a98511b2).
+///
+/// **One answer, and the reason is measured rather than argued.** This used to
+/// be `ank status --json` and `ank find --json` put side by side, and the pair
+/// was the whole of what a session had to wait for before it could draw. On
+/// this project's own corpus -- 1506 entities -- `find` costs about three
+/// seconds and `status` about twenty, because `status` counts what it reports
+/// by reading the corpus to do it (TASK-be17972988d9 is where that is fixed,
+/// and this task does not wait for it). A reader that opened on both spent
+/// seven eighths of its opening on the panel a person is not looking at.
+///
+/// So the two answers are two loads. What `find` gives is what the screen opens
+/// on; what `status` gives is [`Held`], asked when the claims panel is focused
+/// and not before, on the road [`crate::view::App::requeue`] already takes for
+/// the ratification queue. A panel drawn is not a panel focused.
+///
+/// `corpus` is here and comes from `find`, which carries it. That is what lets
+/// the event stream be followed at all without a `status`: a follower has to
+/// know which lines are its own, and the identity now arrives with the rows.
+#[derive(Debug, Clone, Default)]
 pub struct Snapshot {
-    pub branch: String,
-    pub default_branch: String,
-    pub identity: String,
     pub corpus: String,
-    pub claims: Vec<Claim>,
     pub entities: Vec<Row>,
     /// What `find` said it withheld, so a screen never implies it saw
     /// everything when it did not (ADR-3e6ce108edcd).
     pub total: u64,
 }
 
-impl Snapshot {
-    pub fn load(ank: &Ank) -> Result<Snapshot, Failed> {
+/// Who holds what, as `status` answers it (TASK-fff0a98511b2).
+///
+/// The half of the old snapshot that costs, split off so that the price is
+/// charged where a person asks for it. Four values and they arrive together
+/// because one verb answers all four: a branch, the branch it is measured
+/// against, the identity this reader runs as, and the claims that identity can
+/// see.
+///
+/// **`branch`, `default_branch` and `identity` are chrome and are still here.**
+/// They are not free -- they are `status`'s answer like the claims are -- so the
+/// header says it has not asked rather than drawing a blank where a branch goes.
+/// `ank tui --json` asks for them outright, which is a different road and keeps
+/// its price.
+#[derive(Debug, Clone, Default)]
+pub struct Held {
+    pub branch: String,
+    pub default_branch: String,
+    pub identity: String,
+    pub claims: Vec<Claim>,
+}
+
+impl Held {
+    pub fn load(ank: &Ank) -> Result<Held, Failed> {
         let status = ank.json("status", &[])?;
-        let found = ank.json("find", &[])?;
 
         let identity = status
             .get("identity")
@@ -134,12 +169,25 @@ impl Snapshot {
             });
         }
 
-        Ok(Snapshot {
+        Ok(Held {
             branch: ank::text(&status, "branch"),
             default_branch: ank::text(&status, "default_branch"),
             identity,
-            corpus: ank::text(&status, "corpus"),
             claims,
+        })
+    }
+
+    /// The claim held on an entity, if one is.
+    pub fn claim_on(&self, id: &str) -> Option<&Claim> {
+        self.claims.iter().find(|c| c.id == id)
+    }
+}
+
+impl Snapshot {
+    pub fn load(ank: &Ank) -> Result<Snapshot, Failed> {
+        let found = ank.json("find", &[])?;
+        Ok(Snapshot {
+            corpus: ank::text(&found, "corpus"),
             entities: ank::rows(&found, "results").iter().map(Row::read).collect(),
             total: ank::count(&found, "total"),
         })
@@ -157,27 +205,31 @@ impl Snapshot {
         self.entities.iter().find(|r| r.id == id)
     }
 
-    /// The claim held on an entity, if one is.
-    pub fn claim_on(&self, id: &str) -> Option<&Claim> {
-        self.claims.iter().find(|c| c.id == id)
-    }
-
     /// The opening frame as data, for `ank tui --json` (§4).
     ///
     /// The reader's own answer and not a passthrough: it is what the screen
     /// holds, in the one writer and the one escaper every other document in
     /// this tool goes through (ADR-6fd69efb629c).
-    pub fn document(&self) -> String {
+    ///
+    /// **It takes the [`Held`] rather than reading it** (TASK-fff0a98511b2).
+    /// The screen no longer asks `status` to open, and this document still
+    /// answers with `branch`, `default_branch`, `identity` and the claims --
+    /// so the caller of this road pays for them explicitly, which is what
+    /// "a different road and keeps its price" means. A field a document
+    /// declares is a field a consumer may rely on (ADR-6fd69efb629c), and
+    /// dropping four of them to make an interactive session cheaper would be
+    /// charging the machine reader for the person's convenience.
+    pub fn document(&self, held: &Held) -> String {
         Obj::document()
             .str("corpus", &self.corpus)
-            .str("branch", &self.branch)
-            .str("default_branch", &self.default_branch)
-            .str("identity", &self.identity)
+            .str("branch", &held.branch)
+            .str("default_branch", &held.default_branch)
+            .str("identity", &held.identity)
             .num("total", self.total)
             .num("shown", self.entities.len())
             .array(
                 "claims",
-                self.claims.iter().map(|c| {
+                held.claims.iter().map(|c| {
                     Obj::new()
                         .str("id", &c.id)
                         .str("short", &short_of(&c.id))

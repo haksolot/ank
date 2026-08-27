@@ -120,10 +120,22 @@ fn the_chrome_at_the_desk_is_a_header_and_a_row() {
         furniture.len(),
         furniture
     );
-    // And the corpus is the one the criterion describes: nothing is held, and
-    // nothing has asked the CLI for the ratification queue.
-    assert!(frame.contains("nothing is held"), "{frame}");
-    assert!(frame.contains("(not asked)"), "{frame}");
+    // And the corpus is the one the criterion describes: two of the four
+    // panels have not been asked for, so neither is spending a row on content
+    // that would flatter the count above.
+    //
+    // **Two and not one** (TASK-fff0a98511b2). The claims panel used to be
+    // read on opening and said "nothing is held" here; it is asked for when it
+    // takes focus now, on the road the queue already took, so what it says at
+    // rest is the queue's own word. That is the honest sentence: this session
+    // never focused it, and a panel that has not been asked has no claim to
+    // report either way.
+    for unasked in ["1 CLAIMS   (not asked)", "4 QUEUE   (not asked)"] {
+        assert!(
+            frame.contains(unasked),
+            "'{unasked}' is not on this screen:\n{frame}"
+        );
+    }
     live.quit();
 }
 
