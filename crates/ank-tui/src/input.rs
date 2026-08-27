@@ -114,13 +114,19 @@ pub enum Command {
     /// what it opens is a list of what this reader does not run, so there is
     /// nothing for a person to have typed.
     Further,
-    /// The form `ank new` is filled in on (TASK-d832452630d2).
+    /// The form one verb is filled in on, named
+    /// (TASK-d832452630d2, TASK-e8da6a00564a).
     ///
     /// A key and no word, like [`Command::Further`]: what it opens is a form
     /// whose fields are read out of the contract, and a line that spelled the
-    /// verb would be the second road to a write ADR-c07e2694f0e1 closed. It
-    /// carries nothing, because what the form holds is the form's.
-    Form,
+    /// verb would be the second road to a write ADR-c07e2694f0e1 closed.
+    ///
+    /// It carries the verb and nothing else. There are four forms now -- `new`,
+    /// `edit`, `close` and `attest` -- and what differs between them is entirely
+    /// read out of the contract against this one string, so a fifth is a row of
+    /// [`crate::form::NEEDS`] and never an arm here. What the form *holds* is
+    /// still the form's.
+    Form(&'static str),
     /// A line that asked for nothing: an empty prompt, or one carrying only
     /// whitespace.
     Nothing,

@@ -229,7 +229,7 @@
 
 use crate::ank::{Ank, Failed, Ran};
 use crate::bindings::{self, Binding, Holding};
-use crate::form::{self, Filled, Form};
+use crate::form::{Filled, Form};
 use crate::input::{Act, Command, Subject};
 use crate::keys::{self, Editing, Press};
 use crate::model::{self, short_of, Detail, Queue, Row, Snapshot};
@@ -422,6 +422,23 @@ enum Listed {
     Through,
 }
 
+/// What the list `x` opens did with a key pressed over it (TASK-e8da6a00564a).
+///
+/// [`Listed`] with a third answer, and the third is the whole difference between
+/// the two lists: a row of the key list is a key, so pressing it is
+/// [`App::press`] again and there is nothing to hand back; a row of this one is
+/// a verb with no key, so what a press on it produces is the verb itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Opened {
+    /// The list answered it: the cursor moved, or the list closed.
+    Answered,
+    /// The row under the cursor was opened, and this is the verb it names.
+    Ran(&'static str),
+    /// The list has no answer for it. It closes, and the key goes on to the
+    /// reader as if the list had not been there.
+    Through,
+}
+
 pub struct App {
     size: (usize, usize),
     focus: Focus,
@@ -504,6 +521,23 @@ pub struct App {
     /// grammar, and what it composes reaches the confirmation like every other
     /// act.
     form: Option<Form>,
+    /// The list `x` opens, with the row of it the cursor is on
+    /// (TASK-e8da6a00564a).
+    ///
+    /// `None` is the ordinary state and it costs nothing at rest, for the key
+    /// list's reason and the form's: it is drawn *over* the panels rather than
+    /// into a band the layout gave rows up for, so [`App::arrange`] does not
+    /// know it exists and closing it gives back exactly the frame that was
+    /// there. It is cheaper at rest than what it replaced -- `x` used to fill
+    /// the note band with two lines, and the note band is measured by
+    /// `arrange`.
+    ///
+    /// A cursor and not a flag, because this list is not a list of keys. Every
+    /// row of the key list *is* the key it names and a press on it presses that
+    /// key; these three verbs have no key, so the row is opened the way a row
+    /// of any listing is opened -- the cursor walks, and Enter opens what it is
+    /// on. One vocabulary, applied to an overlay.
+    beyond: Option<usize>,
 }
 
 impl App {
@@ -537,6 +571,7 @@ impl App {
             glyphs: Glyphs::detect(),
             overlay: None,
             form: None,
+            beyond: None,
         }
     }
 
@@ -782,6 +817,22 @@ impl App {
         if self.form.is_some() {
             return self.filling(key, ank);
         }
+        // After the form, which is where words are typed, and before the key
+        // list, which is a different list with a different grammar: this one has
+        // a cursor, because its rows are verbs with no keys.
+        if self.beyond.is_some() {
+            match self.over_beyond(key) {
+                Opened::Answered => return false,
+                Opened::Ran(verb) => {
+                    self.beyond = None;
+                    return self.act(bindings::beyond(verb), ank);
+                }
+                // The list closes on a key it has no answer for, and that key
+                // goes on to do what it does -- the key list's rule, for the
+                // key list's reason.
+                Opened::Through => self.beyond = None,
+            }
+        }
         if self.overlay.is_some() {
             match self.over_list(key) {
                 Listed::Answered => return false,
@@ -853,6 +904,17 @@ impl App {
                     }
                     return false;
                 }
+                // The list `x` opened is over the panels and over the bands
+                // like the other two, and a touch on a row of it opens that row
+                // -- which is what Enter does on it, and the whole of what
+                // ADR-c07e2694f0e1 asks of an offer: a thumb reaches it.
+                if self.beyond.is_some() {
+                    let Some(verb) = self.beyond_at(at) else {
+                        return false;
+                    };
+                    self.beyond = None;
+                    return self.act(bindings::beyond(verb), ank);
+                }
                 if self.overlay.is_some() {
                     return match self.list_at(at) {
                         Some(binding) => self.ran(binding, ank),
@@ -909,6 +971,12 @@ impl App {
             form.press(KeyEvent::new(key, KeyModifiers::NONE));
             return false;
         }
+        // A swipe over the list `x` opened walks its cursor, which is what the
+        // arrows do on it: what a scroll moves is what the finger is on.
+        if self.beyond.is_some() {
+            self.walk_beyond(by);
+            return false;
+        }
         // A swipe over the key list scrolls the key list, which is the same
         // rule: what a scroll moves is what the finger is on.
         if self.overlay.is_some() {
@@ -947,6 +1015,55 @@ impl App {
             _ => return Listed::Through,
         }
         Listed::Answered
+    }
+
+    /// What one key does to the list `x` opened under it (TASK-e8da6a00564a).
+    ///
+    /// **Read as commands and never as letters**, which is [`App::over_list`]'s
+    /// rule and keeps this from being a sixth key table. What differs is what
+    /// the commands mean here, and it is what the two lists *are*: every row of
+    /// the key list is a key, so movement scrolls it and a row is reached by
+    /// pressing the key it names; no row of this one is a key, so movement walks
+    /// a cursor and `open` -- Enter, which is the same command that opens a row
+    /// of any panel -- opens the row it is on.
+    ///
+    /// Not modal, and for the key list's reason: what a person must not have
+    /// move under them is a command they are saying yes to, and this list has
+    /// nothing to say yes to yet. The confirmation is where that starts.
+    fn over_beyond(&mut self, key: KeyEvent) -> Opened {
+        let Press::Run(command) = keys::typed(key, self.focus) else {
+            return Opened::Through;
+        };
+        match command {
+            Command::Move(by) => self.walk_beyond(by),
+            Command::Top => self.beyond = Some(0),
+            Command::Open => {
+                if let Some(verb) = self.beyond_verb() {
+                    return Opened::Ran(verb);
+                }
+            }
+            // The key the list is named after, and `back`, which is where Esc
+            // lands.
+            Command::Further | Command::Back => self.beyond = None,
+            _ => return Opened::Through,
+        }
+        Opened::Answered
+    }
+
+    /// The cursor of that list, moved, and never off either end.
+    ///
+    /// Clamped against the rows that name a verb rather than against the rows
+    /// drawn: the note under them is prose, and a cursor that could stand on it
+    /// would be a cursor Enter has no answer for.
+    fn walk_beyond(&mut self, by: isize) {
+        let last = bindings::FURTHER.len().saturating_sub(1);
+        let at = self.beyond.unwrap_or(0) as isize + by;
+        self.beyond = Some(at.clamp(0, last as isize) as usize);
+    }
+
+    /// The verb the cursor of that list is on, where it is on one.
+    fn beyond_verb(&self) -> Option<&'static str> {
+        bindings::FURTHER.get(self.beyond?).copied()
     }
 
     /// The key list, moved by this many rows, and never past either end.
@@ -1149,35 +1266,61 @@ impl App {
             // read by `press` before the dispatch is reached, so this arm only
             // ever runs on a screen that has none.
             Command::Help => self.overlay = Some(0),
-            // The three §4 verbs this reader has no road to, named in the note
-            // band and not over the panels (TASK-1a415107fd56). It is two rows
-            // and it is not a list a finger acts on: every row of the overlay
-            // *is* the key it names, and none of these three is a key at all,
-            // so drawing them there would be the one thing that list must never
-            // carry.
-            Command::Further => self.note = Some(bindings::further().join("\n")),
+            // The three §4 verbs with no letter of their own, opened as a list
+            // over the panels (TASK-1a415107fd56, TASK-e8da6a00564a). It was
+            // two lines in the note band while it was only a list; it is an
+            // overlay now, because a row a person opens has to be a rectangle a
+            // finger fits in, and because the note band is a row `arrange`
+            // measures and this costs none.
+            //
+            // Not the key list, and never a row of it: every row of *that*
+            // overlay is the key it names, and none of these three is a key at
+            // all.
+            Command::Further => self.beyond = Some(0),
             // The form, opened. Nothing is composed here and nothing is
             // spawned: what a person fills in reaches `propose` through
             // `App::filling`, and the confirmation is on that road like every
             // other (TASK-d832452630d2).
-            Command::Form => match Form::open() {
-                Some(form) => self.form = Some(form),
-                // A build whose contract declares no `new` at all. Said rather
-                // than drawn as an empty form: a form with no fields is a
-                // screen that reads as a defect of the reader.
-                None => {
-                    self.note = Some(format!(
-                        "this build of ank declares no '{}' to make one with",
-                        form::VERB
-                    ))
-                }
-            },
+            Command::Form(verb) => self.open_form(verb),
             Command::Nothing => {}
             Command::Unknown(word) => {
                 self.note = Some(format!("no command '{word}'; ? for the list"))
             }
         }
         false
+    }
+
+    /// The form for one verb, opened over the panels (TASK-e8da6a00564a).
+    ///
+    /// **The entity is looked for before the form opens and not after it is
+    /// filled in.** Three of the four verbs a form serves take `<id>` first, so
+    /// a form composed with no row under the cursor would be refused by
+    /// [`App::propose`] -- after a person had typed a title into it, and with
+    /// everything they typed gone. The refusal is `propose`'s own sentence,
+    /// said here where it costs nothing.
+    ///
+    /// `ank new` is the one that asks for no entity, and the question is asked
+    /// of the verb's own subcommands rather than of its name: a verb that
+    /// supplies its own first positional needs no row, exactly as
+    /// `crate::form::Form::composed` decides the same thing the same way.
+    fn open_form(&mut self, verb: &'static str) {
+        let Some(form) = Form::open(verb) else {
+            // A build whose contract does not declare the verb, or declares it
+            // with nothing this reader will compose without. Said rather than
+            // drawn as an empty form: a form with no fields is a screen that
+            // reads as a defect of the reader, and one with nothing mandatory
+            // is a form whose empty submission opens an editor.
+            self.note = Some(format!(
+                "this build of ank has no form for '{verb}': it declares no such verb, or nothing \
+                 the verb cannot do without"
+            ));
+            return;
+        };
+        if form.kinds().is_empty() && self.target().is_none() {
+            self.note = Some(NOTHING_NAMED.to_string());
+            return;
+        }
+        self.form = Some(form);
     }
 
     /// Move focus, and pay whatever the panel arriving costs.
@@ -1236,10 +1379,7 @@ impl App {
         // name, so a second verb of that shape declares itself.
         if act.subject == Subject::Selected {
             let Some(id) = self.target() else {
-                self.note = Some(
-                    "no entity is named here: move onto a row, or open one into the body"
-                        .to_string(),
-                );
+                self.note = Some(NOTHING_NAMED.to_string());
                 return;
             };
             args.push(id);
@@ -1652,6 +1792,7 @@ impl App {
         // key the list passes through and opening the form closes it.
         self.list(area, buf);
         self.form(area, buf);
+        self.beyond(area, buf);
     }
 
     /// One panel: its border, its title, and the lines it holds.
@@ -2636,6 +2777,94 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
+    // The list `x` opens, and where a finger lands on it (TASK-e8da6a00564a)
+    // -----------------------------------------------------------------------
+
+    /// The rows of that list, wrapped to the width the overlay draws them at,
+    /// each with the verb opening it reaches.
+    ///
+    /// [`bindings::further`] and never a second rendering of the same three
+    /// verbs: a row a person can see and a row a press resolves to are the same
+    /// row, or they are two and the screen answers somewhere other than where
+    /// it was touched. Wrapped rather than cut, because the note under them is
+    /// a sentence; every row of a wrapped entry carries the same verb, so a
+    /// press anywhere on it opens what it names.
+    fn beyond_lines(&self) -> Vec<(String, Option<&'static str>)> {
+        let width = inside(self.list_rect(self.area())).width as usize;
+        bindings::further()
+            .into_iter()
+            .flat_map(|row| {
+                let verb = row.verb;
+                let marker = match verb == self.beyond_verb() {
+                    true => text::CURSOR,
+                    false => text::PLAIN,
+                };
+                wrap(&format!("{marker}{}", row.text), width.max(1))
+                    .into_iter()
+                    .map(move |line| (line, verb))
+            })
+            .collect()
+    }
+
+    /// The verb a press on that list reached.
+    ///
+    /// `None` on the note, on the border, and on a row past the end of a list
+    /// shorter than its window. A press that named no verb does nothing at all
+    /// rather than closing the list -- a finger that missed is a finger that
+    /// missed, which is [`App::list_at`]'s rule and the same one.
+    fn beyond_at(&self, at: Position) -> Option<&'static str> {
+        self.beyond?;
+        let inside = inside(self.list_rect(self.area()));
+        if !inside.contains(at) {
+            return None;
+        }
+        let row = (at.y - inside.y) as usize;
+        self.beyond_lines().get(row).and_then(|(_, verb)| *verb)
+    }
+
+    /// That list, drawn over the frame it was asked for from.
+    ///
+    /// Cleared first for the key list's reason: a `Block` paints a border and a
+    /// `Paragraph` paints the rows it was given, so the cells between the last
+    /// row and the bottom border would otherwise still carry whatever panel is
+    /// underneath.
+    ///
+    /// Not scrolled, and it is the one overlay that is not: the key list is
+    /// thirty-seven rows and the form is nine, and this is three and a
+    /// sentence. What a window too short for it loses is the sentence, which is
+    /// why the rows come first.
+    fn beyond(&self, area: Rect, buf: &mut Buffer) {
+        if self.beyond.is_none() {
+            return;
+        }
+        let rect = self.list_rect(area);
+        if rect.width < 2 || rect.height < 2 {
+            return;
+        }
+        let inside = inside(rect);
+        let heading = format!(
+            "MORE VERBS   {} closes",
+            named(bindings::of_command(&Command::Further).map_or(KeyCode::Esc, |b| b.key))
+        );
+        let title = Composed::new()
+            .plain(text::CURSOR)
+            .plain(&heading)
+            .fitted(rect.width as usize - 2);
+        Clear.render(rect, buf);
+        Block::bordered()
+            .border_set(self.glyphs.border(true))
+            .title(title.line(self.ink))
+            .render(rect, buf);
+        let rows: Vec<String> = self
+            .beyond_lines()
+            .iter()
+            .take(inside.height as usize)
+            .map(|(line, _)| fit(line, inside.width as usize))
+            .collect();
+        paragraph(&rows).render(inside, buf);
+    }
+
+    // -----------------------------------------------------------------------
     // The form, and where a finger lands on it (TASK-d832452630d2)
     // -----------------------------------------------------------------------
 
@@ -2707,11 +2936,7 @@ impl App {
             return;
         }
         let inside = inside(rect);
-        let heading = format!(
-            "NEW {}   {} closes",
-            form.kind().to_ascii_uppercase(),
-            named(KeyCode::Esc)
-        );
+        let heading = format!("{}   {} closes", form.banner(), named(KeyCode::Esc));
         let title = Composed::new()
             .plain(text::CURSOR)
             .plain(&heading)
@@ -3302,6 +3527,15 @@ pub const CONFIRM_KEY: &str = "y runs it -- every other key dismisses it, and no
 /// The command and not only the verdict: "nothing ran" is reassuring only to
 /// somebody who can see what did not.
 pub const DISMISSED: &str = "dismissed, and nothing was run:";
+/// What a verb that acts on an entity says where the screen names none.
+///
+/// One sentence and one constant (TASK-e8da6a00564a). It is said in two places
+/// -- before a form opens, so nothing typed into one is thrown away, and in
+/// front of the confirmation, where a composed act still has to find its
+/// subject -- and two spellings of one refusal would be two things for a person
+/// to work out are the same.
+pub const NOTHING_NAMED: &str =
+    "no entity is named here: move onto a row, or open one into the body";
 
 #[cfg(test)]
 mod tests {
@@ -5794,7 +6028,7 @@ mod tests {
 
     /// The key the form is opened with, out of the table.
     fn form_key() -> KeyCode {
-        bindings::of_verb(crate::form::VERB)
+        bindings::of_verb(crate::form::MAKE)
             .expect("a key opens the form")
             .key
     }

@@ -11,13 +11,13 @@
 //!
 //! **Every command is a key, and the verbs are keys too**
 //! (TASK-1a415107fd56). `c` claims, `l` logs, `d` finishes, `r` releases, `m`
-//! amends and `a` ratifies -- the initial the CLI already spells, which is
-//! ADR-c07e2694f0e1's rule and the whole of why these letters. What only moves
+//! amends, `a` ratifies, `n` makes and `e` edits -- the initial the CLI already
+//! spells, which is ADR-c07e2694f0e1's rule and the whole of why these letters. What only moves
 //! the screen takes what is left: `j` and `k` move, Space pages, `g` goes to
 //! the top, Enter opens, `b` goes back, `s` shows the constraints, `v` opens
 //! the queue, `u` reads the corpus again, `f` narrows to the next kind, `x`
-//! names the verbs this reader does not run, `?` says what all of them are,
-//! `q` quits. Each has an arrow or a named key beside it -- Down for `j`,
+//! opens the three verbs with no letter of their own, `?` says what all of them
+//! are, `q` quits. Each has an arrow or a named key beside it -- Down for `j`,
 //! PageDown for Space, Home for `g`, Escape for `b` -- because a person who has
 //! never read the key line still has hands.
 //!
@@ -56,13 +56,14 @@
 //! one-line prompt seeded with a slash and what is typed there goes through
 //! [`crate::input::parse`]; no word that grammar reads writes anything, and the
 //! prompt a verb used to be spelled into is gone with the key that opened it.
-//! What the six carried in a tail -- a message, a reason, a proof, a flag --
-//! comes back as a form, and TASK-e8da6a00564a is where. The form itself
-//! arrived with TASK-d832452630d2, on the seventh verb: `n` opens
-//! [`crate::form`], whose fields are the flags the contract declares for `ank
-//! new` and which is modal, so no letter typed into it is a command and no
-//! word typed into it reaches a verb -- what reaches one is Enter, and what
-//! Enter reaches is the confirmation.
+//! What a verb carries in a tail -- a message, a reason, a proof, a field --
+//! comes back as a form. It arrived with TASK-d832452630d2, on `ank new`, and
+//! TASK-e8da6a00564a puts `edit`, `close` and `attest` on the same one: `n` and
+//! `e` open [`crate::form`], and so does a row of the list `x` opens. Its
+//! fields are the flags the contract declares for the verb, and it is modal, so
+//! no letter typed into it is a command and no word typed into it reaches a
+//! verb -- what reaches one is Enter, and what Enter reaches is the
+//! confirmation.
 //!
 //! # The guarantee, now that the letter is one keystroke
 //!
@@ -366,12 +367,15 @@ mod tests {
                 panic!("'l' in {view:?} is {reached:?}");
             };
             assert_eq!(act.verb, "log");
-            // `n` is `new`, which opens a form and moves no cursor either.
-            assert_eq!(
-                press('n', view),
-                Press::Run(Command::Form),
-                "'n' in {view:?}"
-            );
+            // `n` is `new` and `e` is `edit`: each opens a form, and neither
+            // moves a cursor either.
+            for (c, verb) in [('n', "new"), ('e', "edit")] {
+                assert_eq!(
+                    press(c, view),
+                    Press::Run(Command::Form(verb)),
+                    "'{c}' in {view:?}"
+                );
+            }
         }
     }
 

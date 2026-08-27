@@ -132,14 +132,20 @@ pub enum Runs {
     /// (TASK-d832452630d2) -- but these six still compose the identifier and
     /// nothing else, and TASK-e8da6a00564a is where their tails come back.
     Compose,
-    /// The form `ank new` is filled in on, opened (TASK-d832452630d2).
+    /// The form this binding's verb is filled in on
+    /// (TASK-d832452630d2, TASK-e8da6a00564a).
     ///
-    /// Not [`Runs::Compose`], and the difference is the verb's first
-    /// positional: the six compose against the entity the focused panel names,
-    /// and `ank new <kind>` names a kind no panel holds. So this opens a form
-    /// and composes nothing, and what the form composes goes through the same
-    /// confirmation the other seven rows do -- `crate::form::Form::composed` is
-    /// the one road out of it, and `App::propose` is where it lands.
+    /// Not [`Runs::Compose`], and the difference is where the tail comes from:
+    /// a composing row spells the verb and the identifier and nothing else, and
+    /// a row of this kind opens the flags the contract declares. So this opens
+    /// a form and composes nothing, and what the form composes goes through the
+    /// same confirmation every other row does -- `crate::form::Form::composed`
+    /// is the one road out of it, and `App::propose` is where it lands.
+    ///
+    /// Two rows carry it. `ank new <kind>` names a kind no panel holds and
+    /// supplies its own first positional; `ank edit <id>` names the entity the
+    /// focused panel does, exactly as the six do. The form answers which of the
+    /// two it is, off the verb's own subcommands, so this row does not have to.
     Form,
     /// The command on the screen, run.
     Run,
@@ -174,6 +180,15 @@ pub enum Group {
     /// six rows and false of the seventh would be prose the table cannot be
     /// held to.
     Create,
+    /// Changes what an entity says, on a form (TASK-e8da6a00564a).
+    ///
+    /// Its own group for [`Group::Create`]'s reason, from the other side. It
+    /// lands on the marked panel's entity, which the writing half's note says
+    /// and `ank new`'s cannot; and what it opens is a form, which the create
+    /// line's note says and the writing half's cannot -- those six compose an
+    /// argv on the keystroke, and this one asks for a field first. Two notes
+    /// each true of every row under them, rather than one true of most.
+    Change,
     /// Answers what the reader is asking: a command waiting, or a line open.
     Answer,
 }
@@ -426,12 +441,14 @@ pub static BINDINGS: &[Binding] = &[
         offered: Offered::Never,
         verb: None,
     },
-    // The verbs past the six, named and not bound (TASK-1a415107fd56). `close`,
-    // `attest` and `read` are §4 verbs this reader does not run: they are
-    // absent from [`crate::ank::ACTS`] and the gate refuses them, so a letter
-    // apiece would be six offers and three pretences. `x` says what they are
-    // and where they are spelled instead, out of the contract's own table, and
-    // TASK-e8da6a00564a is where the list stops being only a list.
+    // The verbs past the six, reached and not bound
+    // (TASK-1a415107fd56, TASK-e8da6a00564a). `close`, `attest` and `read` are
+    // §4 verbs this reader runs and gives no letter to: `x` opens the list they
+    // are on and a row of it is opened like a row of any listing, with Enter or
+    // a touch. A letter apiece would be three more keys on a keyboard whose
+    // free ones are nearly spent, for three verbs a person reaches once a
+    // fortnight; the list is where the offer belongs and the note under it says
+    // what running one costs.
     Binding {
         key: KeyCode::Char('x'),
         aliases: &[],
@@ -637,6 +654,33 @@ pub static BINDINGS: &[Binding] = &[
         }),
     },
     // -----------------------------------------------------------------------
+    // What changes what an entity says (TASK-e8da6a00564a)
+    //
+    // `e` is `edit`'s own initial, which is ADR-c07e2694f0e1's rule and the
+    // same reason the six above have theirs; the letter was free.
+    //
+    // It is `Runs::Form` and not `Runs::Compose`, and that is the whole of the
+    // criterion. `ank edit <id>` with no field named opens `$EDITOR` on the
+    // whole entity -- and an editor spawned by a child with no stdin, out of a
+    // process holding the terminal in raw mode on the alternate screen, is a
+    // hang and not an error on the screen. A composing row would spell exactly
+    // that call. A form cannot: `crate::form::Form::composed` refuses until one
+    // of `--title`, `--body` and `--constraint` is filled in, so a named field
+    // stands ahead of the search for an editor by construction.
+    // -----------------------------------------------------------------------
+    Binding {
+        key: KeyCode::Char('e'),
+        aliases: &[],
+        runs: Runs::Form,
+        word: "edit",
+        group: Group::Change,
+        offered: Offered::Anywhere,
+        verb: Some(Verb {
+            name: "edit",
+            tail: Tail::Form,
+        }),
+    },
+    // -----------------------------------------------------------------------
     // What makes an entity (TASK-d832452630d2)
     //
     // `n` is `new`'s own initial, which is ADR-c07e2694f0e1's rule and the same
@@ -657,7 +701,7 @@ pub static BINDINGS: &[Binding] = &[
         group: Group::Create,
         offered: Offered::Anywhere,
         verb: Some(Verb {
-            name: crate::form::VERB,
+            name: crate::form::MAKE,
             tail: Tail::Form,
         }),
     },
@@ -721,7 +765,13 @@ impl Binding {
             Runs::Press(press) => press.clone(),
             Runs::Stepped(by) => Press::Run(Command::Panel(focus.stepped(*by))),
             Runs::Sideways(to) if focus != *to => Press::Run(Command::Panel(*to)),
-            Runs::Form => Press::Run(Command::Form),
+            Runs::Form => match self.verb {
+                Some(verb) => Press::Run(Command::Form(verb.name)),
+                // Unreachable from this table -- a form row spells a verb, and
+                // the test below holds that -- and `Ignored` rather than a
+                // panic all the same: a reader must not die on a keystroke.
+                None => Press::Ignored,
+            },
             Runs::Compose => match self.verb {
                 Some(verb) => composed(verb, focus),
                 // Unreachable from this table -- a composing row spells a verb,
@@ -823,7 +873,7 @@ pub fn of_key(code: KeyCode) -> Option<&'static Binding> {
         .filter(|b| {
             matches!(
                 b.group,
-                Group::Screen | Group::Panel | Group::Write | Group::Create
+                Group::Screen | Group::Panel | Group::Write | Group::Create | Group::Change
             )
         })
         .find(|b| b.answers(code))
@@ -889,20 +939,34 @@ pub fn named(key: KeyCode) -> String {
 const PANEL_NOTE: &str = "   (the marked panel is the one keys reach)";
 /// What it says after the five, about where they land and what runs them.
 const WRITE_NOTE: &str = "   (the marked panel's entity, then";
-/// The verbs `x` names, in §4's order, and the whole of them.
+/// The verbs `x` reaches, in §4's order, and the whole of them.
 ///
-/// Not rows of [`BINDINGS`]: a row is a key this reader answers, and these
-/// three are absent from [`crate::ank::ACTS`], so the gate refuses them and a
-/// binding would be an offer nothing keeps. What is drawn is read out of
-/// [`ank_contract::verbs`] -- the name, the positional and the flags the verb
-/// itself declares -- so the list cannot teach a form the CLI does not take.
-const FURTHER: &[&str] = &["close", "attest", "read"];
-/// What `x` says under them, which is the fact that makes the list honest.
-const FURTHER_NOTE: &str = "   (a shell runs these: this reader does not, yet)";
+/// **Not rows of [`BINDINGS`], and still reachable** (TASK-e8da6a00564a). A row
+/// of that table is a key this reader answers to, and these three have no key:
+/// what they have is a row of the list `x` opens, opened the way every other
+/// listing's row is opened. So the offer is complete and the keyboard is not
+/// three letters poorer.
+///
+/// It is measured against [`crate::ank::ACTS`] in both directions by the suite
+/// at the foot of this file, exactly as the bound verbs are: a name here that
+/// the gate refuses would be a row that reads as an offer and answers with a
+/// refusal of the reader's own.
+///
+/// What is drawn is read out of [`ank_contract::verbs`] -- the name, the
+/// positional and the flags the verb itself declares -- so the list cannot
+/// teach a form the CLI does not take.
+pub const FURTHER: &[&str] = &["close", "attest", "read"];
+/// What `x` says under them, which is what makes the list honest about itself.
+const FURTHER_NOTE: &str =
+    "(Enter opens the row under the cursor: what it composes is shown first)";
 /// What it says after the verb that makes one: the fields are the flags the CLI
 /// declares, and nothing on that form is typed at a corpus until it has been
-/// through the confirmation the other seven rows go through.
+/// through the confirmation every other row goes through.
 const CREATE_NOTE: &str = "   (a form of the flags ank new takes, then";
+/// What it says after the verb that changes one, which is both facts at once:
+/// the entity is the marked panel's, and the fields are a form.
+const CHANGE_NOTE: &str = "   (a form of the fields ank edit takes, on the marked panel's entity, \
+                           then";
 /// What it says after `accept`, which is a different kind of offer: the other
 /// five move a corpus, and this one asks a person for a signature ank has no
 /// way to produce.
@@ -1042,6 +1106,22 @@ fn create() -> Line {
     }
 }
 
+/// The verb that changes what an entity says, on a line of its own
+/// (TASK-e8da6a00564a).
+///
+/// Separate from both lines above for the reason [`Group::Change`] gives: the
+/// writing half's note does not mention a form and the create line's note does
+/// not mention the marked panel's entity, and this row is both.
+fn change() -> Line {
+    Line {
+        title: "content",
+        bindings: of_group(Group::Change),
+        lead: String::new(),
+        between: "  ",
+        note: format!("{CHANGE_NOTE} {})", named(KeyCode::Char(CONFIRM))),
+    }
+}
+
 /// The sixth act, on a line of its own, and only where the verb would take it.
 fn ratify() -> Line {
     Line {
@@ -1079,15 +1159,16 @@ fn typing() -> Line {
 ///
 /// **Every binding of the table is on exactly one of these, and nothing else
 /// is** -- which is the property `?` is answerable for and the test below
-/// measures. Six lines because there are six kinds of offer, and the two modal
-/// ones are named rather than left to be discovered: a person who has a command
-/// waiting on the screen cannot press `?` to find out what answers it.
+/// measures. One line per kind of offer, and the two modal ones are named
+/// rather than left to be discovered: a person who has a command waiting on the
+/// screen cannot press `?` to find out what answers it.
 fn lines() -> Vec<Line> {
     vec![
         screen(),
         panel(),
         write(),
         create(),
+        change(),
         ratify(),
         waiting(),
         typing(),
@@ -1150,21 +1231,41 @@ pub fn listing() -> Vec<Item> {
     out
 }
 
-/// What `x` answers with: the verbs past the six, named and placed
-/// (TASK-1a415107fd56).
+/// One row of the list `x` opens, and the verb opening it reaches
+/// (TASK-e8da6a00564a).
 ///
-/// **A list and not an offer.** `close`, `attest` and `read` are §4 verbs this
-/// reader has no road to -- [`crate::ank::ACTS`] does not carry them and
-/// [`crate::ank::Ank::act`] refuses anything it does not -- so what this says
-/// is what they are and where they are spelled, and the note says which of the
-/// two it is. TASK-e8da6a00564a is where they stop being only a list, and it
-/// widens the gate to do it.
+/// **The row and its verb are one value**, for the reason [`Item`] gives about
+/// the key list: a screen that drew the rows from one function and resolved a
+/// press with another would be two orderings agreeing by luck.
+///
+/// `verb` is `None` on the note, which is prose about the rows above it and the
+/// one row of this list that opens nothing.
+#[derive(Debug, Clone)]
+pub struct Beyond {
+    /// What the row reads: the verb, its positional and its flags, spelled as
+    /// the contract declares them.
+    pub text: String,
+    /// What opening it reaches, where the row names one.
+    pub verb: Option<&'static str>,
+}
+
+/// What `x` answers with: the verbs past the six, named, placed and reachable
+/// (TASK-1a415107fd56, TASK-e8da6a00564a).
+///
+/// **A list that is now an offer.** It was a list and nothing else for as long
+/// as [`crate::ank::ACTS`] refused these three; the gate carries them now, so
+/// every row of this list opens the verb it names -- `close` and `attest` onto
+/// the form their mandatory flag is filled in on, `read` straight onto the
+/// confirmation, since §4 gives it no flag at all.
 ///
 /// Read out of the contract's own table, name, positional and flags alike, so
 /// a form drawn here is a form `ank` takes (ADR-c07e2694f0e1: what the reader
 /// offers is read out of the verb table rather than transcribed beside it).
-pub fn further() -> Vec<String> {
-    let named: Vec<String> = FURTHER
+/// One row per verb and not one line carrying all three: a row is a rectangle a
+/// finger fits in, which is what the key list's overlay bought and what makes
+/// these three reachable by a thumb as well as by Enter.
+pub fn further() -> Vec<Beyond> {
+    let mut out: Vec<Beyond> = FURTHER
         .iter()
         .map(|verb| {
             let spec = ank_contract::verbs::spec_of(verb);
@@ -1178,10 +1279,43 @@ pub fn further() -> Vec<String> {
                 said.push(' ');
                 said.push_str(flag.name);
             }
-            said
+            Beyond {
+                text: said,
+                verb: Some(*verb),
+            }
         })
         .collect();
-    vec![named.join("   "), FURTHER_NOTE.to_string()]
+    out.push(Beyond {
+        text: FURTHER_NOTE.to_string(),
+        verb: None,
+    });
+    out
+}
+
+/// What opening one row of that list asks for.
+///
+/// **Two answers, and the verb's own declaration is what picks between them.**
+/// A verb the form serves opens a form -- `close` will not run without
+/// `--reason` and `attest` will not run without `--proof`, and a line is not
+/// where either of those is typed. A verb it does not serve declares no flag at
+/// all, which is `ank read <id>`: there is nothing to fill in, so what it
+/// composes is the identifier and the confirmation is the next thing on the
+/// screen.
+///
+/// Either way the road is the one every other act takes. This composes and
+/// hands back; `App::propose` shows; `App::confirmed` is the only caller of
+/// [`crate::ank::Ank::act`] in this crate.
+pub fn beyond(verb: &'static str) -> Command {
+    if crate::form::serves(verb) {
+        return Command::Form(verb);
+    }
+    Command::Act(Act {
+        verb,
+        args: Vec::new(),
+        // All three take `<id>` first, and the view is what knows which entity
+        // the person meant.
+        subject: Subject::Selected,
+    })
 }
 
 /// Every binding of a group, in the table's order.
@@ -1235,10 +1369,27 @@ mod tests {
             }
         }
         assert_eq!(
-            named, 7,
-            "the verbs this reader spells are the six that move an entity and \
-             the one that makes one (TASK-d832452630d2)"
+            named, 8,
+            "the verbs this reader spells are the six that move an entity, the \
+             one that makes one (TASK-d832452630d2) and the one that changes \
+             what one says (TASK-e8da6a00564a)"
         );
+        // And the three the list `x` opens are verbs of the contract too, with
+        // the flags this reader will draw for them: a row naming `close`
+        // without `--reason` would be teaching a command line the CLI refuses.
+        for verb in FURTHER {
+            let spec = verbs::spec_of(verb)
+                .unwrap_or_else(|| panic!("'{verb}' is no verb of the contract"));
+            for flag in crate::form::need(verb, "")
+                .map(|n| n.flags())
+                .unwrap_or(&[])
+            {
+                assert!(
+                    spec.flags.iter().any(|f| f.name == *flag && f.listed),
+                    "'{flag}' is no flag of 'ank {verb}'"
+                );
+            }
+        }
     }
 
     /// **The gate is measured against the table and never generated from it**
@@ -1264,10 +1415,26 @@ mod tests {
                 "'{verb}' is offered and the gate would refuse it"
             );
         }
+        for verb in FURTHER {
+            assert!(
+                crate::ank::ACTS.contains(verb),
+                "'{verb}' is a row of the list `x` opens and the gate would \
+                 refuse it"
+            );
+            assert!(
+                of_verb(verb).is_none(),
+                "'{verb}' has a key of its own, and the list `x` opens is for \
+                 the verbs that have none"
+            );
+        }
+        // Both directions, so a verb added to the gate alone fails here. A verb
+        // this reader may spawn is a verb somebody can reach: a key of the
+        // table, or a row of the list `x` opens.
         for verb in crate::ank::ACTS {
             assert!(
-                of_verb(verb).is_some(),
-                "'{verb}' may be spawned and no binding spells it"
+                of_verb(verb).is_some() || FURTHER.contains(verb),
+                "'{verb}' may be spawned and nothing reaches it: no binding \
+                 spells it and no row of the list `x` opens names it"
             );
         }
         let gate = include_str!("ank.rs");
@@ -1470,7 +1637,7 @@ mod tests {
         for binding in BINDINGS.iter().filter(|b| {
             matches!(
                 b.group,
-                Group::Screen | Group::Panel | Group::Write | Group::Create
+                Group::Screen | Group::Panel | Group::Write | Group::Create | Group::Change
             )
         }) {
             for key in std::iter::once(binding.key).chain(binding.aliases.iter().copied()) {
