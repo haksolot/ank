@@ -737,6 +737,12 @@ const TYPING_NOTE: &str = "   (over a line being typed)";
 /// one line, and a line names nothing that is not a binding -- which is the
 /// claim ADR-c07e2694f0e1 found the old trailer failing.
 struct Line {
+    /// What the key list calls the rows under it, on the heading over them.
+    ///
+    /// Two words at most, because it stands over the rows rather than
+    /// explaining them: the sentence that does the explaining is `note`, and it
+    /// is the same sentence the trailer ends its own line with.
+    title: &'static str,
     /// The rows it names, in the table's order.
     bindings: Vec<&'static Binding>,
     /// What is drawn in front of them.
@@ -753,11 +759,48 @@ impl Line {
         let entries: Vec<String> = self.bindings.iter().map(|b| b.entry()).collect();
         format!("{}{}{}", self.lead, entries.join(self.between), self.note)
     }
+
+    /// What stands over this line's rows on the key list
+    /// (TASK-8a6578851244).
+    ///
+    /// **Prose, and never an entry.** The title, the lead the trailer draws in
+    /// front of its entries, and the sentence it ends with are all three about
+    /// the rows beneath rather than one of them -- which is what keeps "every
+    /// line of the list is the key it names" a claim about rows a person can
+    /// press, and leaves a heading as the one line on the overlay that runs
+    /// nothing.
+    fn heading(&self) -> String {
+        let lead = self.lead.trim_end();
+        match lead.is_empty() {
+            true => format!("{}{}", self.title, self.note),
+            false => format!("{}   {lead}{}", self.title, self.note),
+        }
+    }
+}
+
+/// One row of the key list, and the binding a press on it runs
+/// (TASK-8a6578851244).
+///
+/// **The row and its binding are one value**, which is the whole of why the
+/// list is generated as this rather than as strings: a screen that drew the
+/// rows from one function and resolved a press with another would be two
+/// orderings agreeing by luck, and the ADR asks for a list every line of which
+/// *is* the key it names.
+///
+/// `binding` is `None` on a heading, which is prose about the rows under it --
+/// see [`Line::heading`].
+#[derive(Debug, Clone)]
+pub struct Item {
+    /// What the row reads.
+    pub text: String,
+    /// What pressing it runs, where it names one.
+    pub binding: Option<&'static Binding>,
 }
 
 /// The keys that move what is inside a panel.
 fn screen() -> Line {
     Line {
+        title: "screen",
         bindings: of_group(Group::Screen),
         lead: String::new(),
         between: "  ",
@@ -772,6 +815,7 @@ fn screen() -> Line {
 /// has lost track of where they are needs the second line and not the first.
 fn panel() -> Line {
     Line {
+        title: "panels",
         bindings: of_group(Group::Panel),
         lead: String::new(),
         between: "  ",
@@ -787,6 +831,7 @@ fn panel() -> Line {
 /// and one line mixing them would make that a matter of remembering.
 fn write() -> Line {
     Line {
+        title: "corpus",
         bindings: writing(|offered| offered != Offered::Ratifiable),
         lead: format!("{} then  ", named(KeyCode::Char(ACT))),
         between: " | ",
@@ -797,6 +842,7 @@ fn write() -> Line {
 /// The sixth act, on a line of its own, and only where the verb would take it.
 fn ratify() -> Line {
     Line {
+        title: "signature",
         bindings: writing(|offered| offered == Offered::Ratifiable),
         lead: format!("{} then  ", named(KeyCode::Char(ACT))),
         between: " | ",
@@ -807,6 +853,7 @@ fn ratify() -> Line {
 /// What a command waiting to be answered offers.
 fn waiting() -> Line {
     Line {
+        title: "waiting",
         bindings: answering(Offered::Waiting),
         lead: String::new(),
         between: "  ",
@@ -817,6 +864,7 @@ fn waiting() -> Line {
 /// What an open prompt offers.
 fn typing() -> Line {
     Line {
+        title: "typing",
         bindings: answering(Offered::Typing),
         lead: String::new(),
         between: "  ",
@@ -852,12 +900,37 @@ pub fn ratify_line() -> String {
 
 /// The key list: every binding this table declares, and nothing it does not.
 ///
-/// What `?` answers with, and what TASK-8a6578851244 turns into an overlay
-/// whose every line is a target. Generated from the rows above, so the list
-/// cannot go on naming a key that moved or leave out one that arrived -- which
-/// is the whole of what this table is for.
-pub fn listing() -> Vec<String> {
-    lines().iter().map(Line::drawn).collect()
+/// What `?` answers with, drawn as an overlay over the panels every row of
+/// which is the key it names (TASK-8a6578851244). Generated from the rows
+/// above, so the list cannot go on naming a key that moved or leave out one
+/// that arrived -- which is the whole of what this table is for.
+///
+/// **One row per binding, and that is what the overlay bought.** Under the
+/// trailer a line was six entries joined by two spaces, because a band with
+/// three rows to spend had no other way to carry thirty-three of them; a person
+/// with a thumb could read `claim <flags>` there and had nowhere to put it. A
+/// row of its own is a rectangle a finger fits in, and [`Item`] carries the
+/// binding beside the text so the rectangle and the verb are one fact.
+///
+/// The headings are what the trailer's leads and notes become: prose over the
+/// rows rather than beside them, and the one kind of row that runs nothing.
+pub fn listing() -> Vec<Item> {
+    let mut out = Vec::new();
+    for line in lines() {
+        out.push(Item {
+            text: line.heading(),
+            binding: None,
+        });
+        for binding in line.bindings {
+            out.push(Item {
+                // Indented under the heading it belongs to, which is the whole
+                // of what says a row is an entry and not a sentence about them.
+                text: format!("  {}", binding.entry()),
+                binding: Some(binding),
+            });
+        }
+    }
+    out
 }
 
 /// Every binding of a group, in the table's order.
@@ -1036,6 +1109,41 @@ mod tests {
                 );
             }
         }
+        // And the list a person presses is that same list, row for row
+        // (TASK-8a6578851244). Every binding on exactly one row that draws it,
+        // every other row a heading, and no third kind -- which is what turns
+        // "every line of the list is the key it names" into something a screen
+        // can be held to rather than something to remember.
+        let listed = listing();
+        for binding in BINDINGS {
+            let on: Vec<&Item> = listed
+                .iter()
+                .filter(|item| item.binding.is_some_and(|b| std::ptr::eq(b, binding)))
+                .collect();
+            assert_eq!(
+                on.len(),
+                1,
+                "'{}' is on {} rows of the key list",
+                binding.entry(),
+                on.len()
+            );
+            assert!(
+                on[0].text.contains(&binding.entry()),
+                "a row of the key list names '{}' and does not draw it: {}",
+                binding.entry(),
+                on[0].text
+            );
+        }
+        assert_eq!(
+            listed.iter().filter(|item| item.binding.is_none()).count(),
+            lines().len(),
+            "the key list draws one heading per line of the table"
+        );
+        assert_eq!(
+            listed.len(),
+            BINDINGS.len() + lines().len(),
+            "the key list carries a row that is neither a binding nor a heading"
+        );
     }
 
     /// **The two modal grammars answer the keys the table offers**
