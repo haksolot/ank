@@ -60,6 +60,56 @@ agent, or a human, that grades its own work can simply be wrong.
 `ank context` binds. This constrains agents, not people: a human with an editor
 keeps every power they had, and `ank check` remains what notices.
 
+## Ratifying a decision
+
+`ank accept` is the one act ank commits for, and it runs on the default branch
+only, with no flag around it (ADR-6d8736c04cfa). A constraint ratified on a
+feature branch would bind on that branch alone, which is a constraint of variable
+geometry and a ratification hash that depends on where it is read.
+
+That rule is about where you stand when you sign. It is not a licence to push to
+`main`. `accept` writes a commit and stops; it never pushes. So the ratification
+commit reaches `main` through a pull request like every other change, and CI sees
+it before it lands:
+
+```
+git switch main && git pull
+ank accept <id>                  # the gate is satisfied here
+git branch ratify/<id>           # branch first, at the ratification commit
+git reset --hard origin/main     # local main back where it was
+git push -u origin ratify/<id>
+gh pr create --fill
+gh pr merge --merge              # a merge commit, and nothing else
+git switch main && git pull
+```
+
+Branch before resetting. The commit is then held by a ref, and a botched ordering
+is a reflog recovery rather than a lost signature.
+
+**Merge with a merge commit, never a squash and never a rebase.** This is
+load-bearing and not a matter of taste. A ratification is located by the *subject*
+of its commit, `ratify <id>`, walked with `rev-list --full-history` and no path
+restriction, so any strategy that preserves the commit preserves the anchor:
+
+- a **merge commit** keeps the subject, the SHA and the signature, and `ank check`
+  verifies the ratification exactly as if it had been committed in place;
+- a **squash** rewrites the subject to the pull request title, so the anchor is
+  never found again. `check` reports the entity as unverifiable, which is a
+  signal and exit 0: the corpus quietly stops being verifiable while CI stays
+  green;
+- a **rebase** keeps the subject, so the anchor is still found, but it replays the
+  commit without its signature. In a corpus that signs, and this one does, `check`
+  reports that as a fault (ADR-964be4d940b2 makes signing a regime the corpus is
+  in, so an unsigned corpus survives a rebase and this one would not).
+
+If the repository ever requires branches to be up to date before merging, set the
+update method to merge for the same reason.
+
+`accept` refuses a supersession while any tracked file outside `.ank/` still cites
+the document it retires (ADR-3b6ba766a42e). Re-point those citations first, in
+their own change: the refusal names every site with its line, and there is no
+bypass.
+
 ## Working from a fork
 
 Claims are git refs under `refs/ank/claims/*`. Pushing them to a shared remote
