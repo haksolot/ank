@@ -16,7 +16,7 @@ done_criteria: |
   After a green cargo test --workspace into an empty temporary directory, the only entries left are the roots of the run itself: no ank-edit-*, ank-signers-*, ank-daemon-stream-* or ank-tui-stream-* directory or file remains. The scheme is the one TASK-553740e7af11 established and not a second one -- a root named for the process, holding a lock the kernel frees when the process dies, swept by the next run.
 criteria_by: creator
 schema: 4
-version: 1
+version: 3
 ---
 
 TASK-553740e7af11 fixed the integration suites and measured what it did not
