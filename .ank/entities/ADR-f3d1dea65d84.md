@@ -5,7 +5,7 @@ slug: a-verb-pays-for-the-answer-it-gives-and-status-d
 title: A verb pays for the answer it gives, and status does not read the corpus to count what it reports
 created: 2026-08-27T16:31:52Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
@@ -16,8 +16,12 @@ constraint: |
   What the verb answers does not move to buy this. status --json keeps every field it has, under the same key and with the same type: the machine contract lets a document gain a field within a version and never lose, rename or retype one, so no counter becomes absent, optional or null in exchange for speed. Speed is bought from where an answer is computed and never from what the answer says.
   
   A cache whose key is wrong makes the verb lie, and a lying status is worse than a slow one. So the key is stated here rather than left to the implementation, and a verb that cannot establish its key pays the full cost rather than guessing.
+ratified: 8ea02acf7f91
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-28T16:39:54Z
 schema: 4
-version: 1
+version: 2
 ---
 
 `ank status --json` costs 2750 to 2850 milliseconds on this corpus of 1471
