@@ -370,24 +370,71 @@ fn one_arm_answers_an_act_and_what_it_does_is_show_it() {
     );
 }
 
-/// **The grammar of the prompt composes no act at all**
-/// (TASK-1a415107fd56, ADR-c07e2694f0e1).
+/// **The module that declares the vocabulary declares no grammar**
+/// (TASK-c94d086682f3, ADR-559eebf5c6f5: *input is a keystroke and no longer a
+/// line*).
 ///
-/// The tests in `input.rs` say that no word §4 declares reaches a verb, over
-/// every one of them. This says the same thing from the side a test cannot be
-/// forgotten on: the file that reads a typed line does not name the variant an
-/// act arrives as, so there is no line of it that could construct one and no
-/// word anybody might add later that could reach one.
+/// `input.rs` used to carry `parse`, and around it a table of words, a table of
+/// the letters allowed to stand for one, a row number and an identifier. What
+/// is left is the enumeration and the two types an act is made of -- a
+/// declaration, and nothing that reads.
 ///
-/// Stated over the code above the tests, because a test naming the variant is a
-/// test measuring its absence -- which is the file's own suite doing exactly
-/// what this asks of it.
+/// Stated as "no function above the tests" because that is what a grammar *is*:
+/// something that turns bytes nobody pressed into a command. A reader that
+/// grew one again would grow it as a function here, and it would fail here
+/// rather than arrive as a second vocabulary nobody learned from the key list.
+/// Where a keystroke is read is `keys.rs`, against the table `bindings.rs`
+/// declares, and `crates/ank-tui/tests/commands.rs` holds every command of this
+/// enumeration to that table.
 #[test]
-fn the_grammar_of_the_prompt_names_no_act() {
+fn the_module_that_declares_the_vocabulary_declares_no_grammar() {
     let (_, source) = sources()
         .into_iter()
         .find(|(file, _)| file == "input.rs")
-        .expect("the grammar is a source of this crate");
+        .expect("the command type is a source of this crate");
+    let code = code_of(&source);
+    let above = match code.find("#[cfg(test)]") {
+        Some(at) => &code[..at],
+        None => &code[..],
+    };
+    let functions: Vec<&str> = above
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("fn ") || line.starts_with("pub fn "))
+        .collect();
+    assert!(
+        functions.is_empty(),
+        "input.rs reads something, and what reads a keystroke is keys.rs:\n{}",
+        functions.join("\n")
+    );
+    // Not vacuous: the file is where the vocabulary is declared, so a scan that
+    // found nothing because it was looking at an empty source would say so.
+    assert!(
+        above.contains("pub enum Command"),
+        "input.rs is not where the vocabulary is declared any more"
+    );
+}
+
+/// **The file that declares an act composes none**
+/// (TASK-1a415107fd56, TASK-c94d086682f3, ADR-559eebf5c6f5).
+///
+/// It said "the grammar of the prompt composes no act at all" while there was a
+/// grammar, and it was worth saying: `input.rs` read a typed line, so a word
+/// added to its table could have reached a verb. There is no line and no table
+/// -- TASK-c94d086682f3 took both -- and what survives is the narrower claim
+/// underneath, which is the one that keeps the confirmation whole: the module
+/// where `Command::Act` is *declared* constructs none, so the only place an act
+/// can come from is the key table, and `one_arm_answers_an_act_and_what_it_
+/// does_is_show_it` says what happens to it there.
+///
+/// Stated over the code above the tests, because a test naming the variant is a
+/// test measuring its absence.
+#[test]
+fn the_file_that_declares_an_act_composes_none() {
+    let (_, source) = sources()
+        .into_iter()
+        .find(|(file, _)| file == "input.rs")
+        .expect("the command type is a source of this crate");
     let code = code_of(&source);
     let above = match code.find("#[cfg(test)]") {
         Some(at) => &code[..at],
@@ -399,7 +446,7 @@ fn the_grammar_of_the_prompt_names_no_act() {
         .collect();
     assert!(
         named.is_empty(),
-        "input.rs composes an act, and no typed word may reach one:\n{}",
+        "input.rs composes an act, and only the key table may:\n{}",
         named.join("\n")
     );
     // Not vacuous: the variant is declared in this very file, so a scan that

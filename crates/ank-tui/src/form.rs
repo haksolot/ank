@@ -592,16 +592,16 @@ impl Form {
     /// words, so no printable character is a command here: the movement is on
     /// the named keys a terminal sends for arrows and tabs, the kind is on the
     /// two arrows that cross, Enter composes and Escape closes. That is the
-    /// same shape the confirmation and the prompt have -- a state where the
+    /// same shape the confirmation and the search have -- a state where the
     /// keyboard means something else -- and the reason is the one
-    /// [`crate::keys::edit`] gives: a line being typed into cannot also be a
-    /// key table.
+    /// [`crate::keys::narrowing`] gives: a field being typed into cannot also
+    /// be a key table.
     ///
     /// **No command here is a chord** (ADR-c07e2694f0e1). Control-C is the way
     /// out of a program that took the terminal and it closes the form, and
-    /// Control-U clears the field, which is what the prompt does with it.
+    /// Control-U clears the field, which is what the search does with it.
     ///
-    /// **And the modifiers are read the way [`crate::keys::edit`] reads them
+    /// **And the modifiers are read the way [`crate::keys::narrowing`] reads them
     /// and not the way [`crate::keys::typed`] does**, which is the one place
     /// this grammar had to part company with the key table. The table refuses a
     /// modifier held, because six letters write and a Shift still down from the
@@ -610,8 +610,8 @@ impl Form {
     /// that turned a held modifier down would be a form nobody can put a
     /// capital letter in -- which is every title in this corpus. It cost a
     /// title its first letter before the pseudo-terminal caught it. Control is
-    /// the only modifier that means anything else here, exactly as at the
-    /// prompt, and nothing under it types.
+    /// the only modifier that means anything else here, exactly as in the
+    /// search, and nothing under it types.
     pub fn press(&mut self, key: KeyEvent) -> Filled {
         if key.modifiers.contains(KeyModifiers::CONTROL) {
             return match key.code {
@@ -674,7 +674,7 @@ impl Form {
 
     fn backspace(&mut self) {
         // Backspacing an empty field does not close the form, which is where
-        // this and the prompt part company: a prompt is one line and emptying
+        // this and the search part company: a search is one needle and emptying
         // it is a person saying they did not mean to be there, and a form is
         // nine fields somebody has been typing into.
         if let Some(field) = self.fields.get_mut(self.at) {
@@ -1517,7 +1517,7 @@ mod tests {
     ///
     /// A form is where words are typed, so a letter that closed it or composed
     /// it would be a letter nobody could put in a title. The whole of the
-    /// grammar is on the named keys, and the two chords are the ones the prompt
+    /// grammar is on the named keys, and the two chords are the ones the search
     /// already answers.
     #[test]
     fn no_printable_key_is_a_command_of_the_form() {
@@ -1537,7 +1537,7 @@ mod tests {
         assert_eq!(form.fields()[0].entry, Entry::Typed("a title".to_string()));
         assert_eq!(form.press(bare(KeyCode::Enter)), Filled::Compose);
         assert_eq!(form.press(bare(KeyCode::Esc)), Filled::Close);
-        // Backspacing an empty field is not a way out: a form is not a prompt.
+        // Backspacing an empty field is not a way out: a form is not a search.
         let mut empty = Form::open(MAKE).expect("a form");
         assert_eq!(empty.press(bare(KeyCode::Backspace)), Filled::Filling);
         assert!(empty.fields()[0].entry.blank());
@@ -1573,8 +1573,8 @@ mod tests {
     }
 
     /// Control is the one modifier that means something else, and it is the way
-    /// out and the clear -- the two the prompt already answers
-    /// ([`crate::keys::edit`]).
+    /// out and the clear -- the two the search already answers
+    /// ([`crate::keys::narrowing`]).
     #[test]
     fn control_is_the_way_out_and_the_clear_and_nothing_under_it_types() {
         let held = KeyEvent::new;
