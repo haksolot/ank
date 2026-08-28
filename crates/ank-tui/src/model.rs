@@ -26,6 +26,14 @@
 //! alternative was to ask a fifth verb for it, and there is none that answers
 //! "what does this entity declare".
 //!
+//! **What is ordered here is ordered here and nowhere else.** [`alive_first`]
+//! is the whole of the decision about what a person sees first
+//! (ADR-559eebf5c6f5): the rows arrive from `find` in the CLI's own order and
+//! leave this file in the reader's, so no renderer downstream has an opinion
+//! about it to keep in step. That is a presentation and not a derived fact --
+//! nothing is invented, dropped or rewritten, and every field is still the
+//! CLI's.
+//!
 //! [`frontmatter`] is that walk and there is one of it. [`declared_scopes`] is
 //! it asked for the `scope` field, and the reader's field block is it asked for
 //! all of them: `content` stays the bytes `show` printed either way, because
@@ -33,6 +41,7 @@
 
 use crate::ank::{self, Ank, Failed};
 use ank_contract::json::Obj;
+use ank_contract::meaning::{role_of_status, Role};
 
 /// One entity row, as `find` renders one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -188,7 +197,7 @@ impl Snapshot {
         let found = ank.json("find", &[])?;
         Ok(Snapshot {
             corpus: ank::text(&found, "corpus"),
-            entities: ank::rows(&found, "results").iter().map(Row::read).collect(),
+            entities: alive_first(ank::rows(&found, "results")),
             total: ank::count(&found, "total"),
         })
     }
@@ -253,6 +262,99 @@ impl Snapshot {
             )
             .finish()
     }
+}
+
+/// Where a row stands in the order the reader opens on
+/// (ADR-559eebf5c6f5, TASK-b5185df7aa44).
+///
+/// Three bands and they are the decision itself: the work that is alive, then
+/// what waits for a ratification, then everything else. Declared in that order
+/// because the derived `Ord` is what sorts them, so the order of these variants
+/// is the order of the screen and there is no table repeating it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Band {
+    /// Open, or held by a live claim: what somebody could pick up or is
+    /// already carrying.
+    Alive,
+    /// Proposed, and so waiting for a signature nobody else can give.
+    Waiting,
+    /// Finished, superseded, closed -- and the log entries, which is most of a
+    /// corpus. What is here is here because it is over, and recency is the only
+    /// thing left to say about it.
+    Rest,
+}
+
+impl Band {
+    /// **The words are the contract's and the reader holds no copy of them**
+    /// (ADR-1f70ce2c3eac). `meaning::role_of_status` is the one table that says
+    /// what a status word means -- `open` is there to be taken, `in_progress`
+    /// and `claimed:<who>` are somebody being on it, `proposed` is waiting on a
+    /// human -- so a status added to the model is a band of this screen with no
+    /// edit here, and a reader that spelled the four words itself would be the
+    /// second table that decision forbids.
+    ///
+    /// **Both fields, because a claim is one fact seen twice.** `find` gives a
+    /// row the stored `status` and the coordination plane's `state`, and which
+    /// one carries the claim depends on where the claim was taken: a task held
+    /// from another branch reads `open` in the file and `claimed:<who>` in the
+    /// plane, and one held from this one reads `in_progress` in both. Either
+    /// answer being alive is enough, so neither has to be the right one to ask.
+    ///
+    /// **A lapsed claim is alive.** `state` is then `open expired:<who>`, whose
+    /// role is [`Role::Attention`] rather than a state -- the marker says the
+    /// lease ran out and not what it ran out of -- and the stored status
+    /// underneath it still says `open`. It is the most available work in a
+    /// corpus, and a band read off the marker alone would bury it with the
+    /// finished entities.
+    fn of(status: &str, state: &str) -> Band {
+        let roles = [role_of_status(status), role_of_status(state)];
+        let any = |wanted: &[Role]| roles.iter().flatten().any(|r| wanted.contains(r));
+        match () {
+            _ if any(&[Role::Available, Role::Underway]) => Band::Alive,
+            _ if any(&[Role::Awaiting]) => Band::Waiting,
+            _ => Band::Rest,
+        }
+    }
+}
+
+/// The rows of `find`, in the order the reader shows them
+/// (ADR-559eebf5c6f5, TASK-b5185df7aa44).
+///
+/// **What is shown first is chosen here and inherited nowhere.** `find` orders
+/// by identifier -- `ank-cli/src/index.rs`, `ORDER BY id` -- and an identifier
+/// is `KIND-<hex>`, so the row a person reads as the most important one is
+/// whichever hash sorted first. That is not creation order, not recency and not
+/// relevance. The band decides, and within a band the most recently created
+/// comes first.
+///
+/// **No identifier takes part in it.** Neither key mentions one, and the sort
+/// is stable rather than total: rows the two keys cannot separate -- the same
+/// band, the same `created`, which a second's resolution makes ordinary -- stay
+/// in the order `find` handed them over in. That is what makes two runs over an
+/// unchanged corpus draw the same screen without this comparing hashes to get
+/// it: determinism is the arrival order's, and the ordering is these two keys'.
+///
+/// **`created` is compared as text, and it is an instant.** The corpus writes
+/// RFC 3339 in Zulu, which is fixed width and zero padded, so lexical order is
+/// chronological order and no clock is parsed to find that out. A row without
+/// the field sorts to the end of its band and keeps its arrival order there:
+/// `created` reached `find --json` after the reader existed, and an older `ank`
+/// on the PATH should cost the order its recency, never its bands.
+fn alive_first(results: &[ank::Value]) -> Vec<Row> {
+    let mut rows: Vec<(Band, String, Row)> = results
+        .iter()
+        .map(|value| {
+            (
+                Band::of(&ank::text(value, "status"), &ank::text(value, "state")),
+                ank::text(value, "created"),
+                Row::read(value),
+            )
+        })
+        .collect();
+    rows.sort_by(|(band, created, _), (other, theirs, _)| {
+        band.cmp(other).then_with(|| theirs.cmp(created))
+    });
+    rows.into_iter().map(|(_, _, row)| row).collect()
 }
 
 /// The ratification queue, as `review` answers it.
@@ -720,6 +822,208 @@ mod tests {
     fn the_flow_form_is_read_too_and_deduplicated() {
         let content = "---\nid: ADR-0001\nscope: [\"src/**\", 'src/**', docs/**]\n---\n\nbody\n";
         assert_eq!(declared_scopes(content), ["src/**", "docs/**"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // The order the reader opens on (TASK-b5185df7aa44, ADR-559eebf5c6f5)
+    // -----------------------------------------------------------------------
+
+    /// One row of `find --json`, with the four fields the order is read from.
+    fn found(id: &str, status: &str, state: &str, created: &str) -> ank::Value {
+        serde_json::json!({
+            "id": id,
+            "kind": id.split('-').next().unwrap().to_ascii_lowercase(),
+            "status": status,
+            "state": state,
+            "title": format!("the entity {id}"),
+            "created": created,
+        })
+    }
+
+    /// A corpus carrying what the criterion names, handed over the way `find`
+    /// hands one over: `ORDER BY id`.
+    ///
+    /// **The identifiers ascend and the instants ascend with them**, which is
+    /// what makes the fixture sharp: the order this corpus is handed over in
+    /// and the order it must be shown in are reverses of each other inside
+    /// every band. A listing that kept the CLI's order, or that sorted on the
+    /// hashes itself, answers the sequence backwards rather than passing by
+    /// accident.
+    fn corpus() -> Vec<ank::Value> {
+        let mut rows = vec![
+            found(
+                "ADR-0000000000a1",
+                "proposed",
+                "proposed",
+                "2026-08-02T00:00:00Z",
+            ),
+            found("TASK-0000000000a2", "open", "open", "2026-08-01T00:00:00Z"),
+            found(
+                "TASK-0000000000a3",
+                "open",
+                "claimed:claude-code/opus-5+somebody",
+                "2026-08-03T00:00:00Z",
+            ),
+        ];
+        // Ten finished entities, the oldest first: by identifier they ascend,
+        // by instant they ascend too, so recency is their reverse.
+        for i in 0..10u32 {
+            rows.push(found(
+                &format!("TASK-0000000000b{i}"),
+                "done",
+                "done",
+                &format!("2026-07-{:02}T00:00:00Z", 10 + i),
+            ));
+        }
+        rows
+    }
+
+    /// The same thing said about the identifiers the corpus actually carries,
+    /// which is where an ordering by hash would show.
+    #[test]
+    fn the_order_is_the_bands_and_then_the_instant() {
+        let shown: Vec<String> = alive_first(&corpus())
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        let expected: Vec<String> = ["TASK-0000000000a3", "TASK-0000000000a2", "ADR-0000000000a1"]
+            .iter()
+            .map(|s| s.to_string())
+            // The ten finished ones, newest first, which is the reverse of the
+            // order `find` handed them over in.
+            .chain((0..10u32).rev().map(|i| format!("TASK-0000000000b{i}")))
+            .collect();
+        assert_eq!(shown, expected);
+        // And the sequence is not the one that arrived, which is what says the
+        // assertion above measured a choice rather than an inheritance.
+        let arrived: Vec<String> = corpus().iter().map(|v| ank::text(v, "id")).collect();
+        assert_ne!(shown, arrived, "the CLI's own order came through unchanged");
+    }
+
+    /// **No identifier takes part in the ordering**, and this is that sentence
+    /// made mechanical rather than asserted.
+    ///
+    /// One corpus is sorted twice with the identifiers permuted between the two
+    /// runs -- reversed, so every row's hash sorts where another's did -- and
+    /// the sequence of titles must not move. Two rows of each band share an
+    /// instant, which is what makes the test sharp: an implementation that
+    /// compared identifiers anywhere, including as the tie-break those two
+    /// invite, would answer a different sequence the second time.
+    #[test]
+    fn no_identifier_takes_part_in_the_ordering() {
+        let rows = vec![
+            found("TASK-0000000000e1", "done", "done", "2026-08-01T00:00:00Z"),
+            found("TASK-0000000000e2", "done", "done", "2026-08-01T00:00:00Z"),
+            found("TASK-0000000000e3", "open", "open", "2026-08-05T00:00:00Z"),
+            found("TASK-0000000000e4", "open", "open", "2026-08-05T00:00:00Z"),
+        ];
+        let titles =
+            |rows: &[Row]| -> Vec<String> { rows.iter().map(|r| r.title.clone()).collect() };
+        let before = titles(&alive_first(&rows));
+        assert_eq!(
+            before,
+            [
+                "the entity TASK-0000000000e3",
+                "the entity TASK-0000000000e4",
+                "the entity TASK-0000000000e1",
+                "the entity TASK-0000000000e2",
+            ],
+            "the bands, and the arrival order inside a tie"
+        );
+
+        // The same rows, the same instants, every identifier somebody else's.
+        let mut permuted = rows.clone();
+        let backwards: Vec<String> = rows.iter().rev().map(|v| ank::text(v, "id")).collect();
+        for (value, id) in permuted.iter_mut().zip(backwards) {
+            value["id"] = serde_json::Value::String(id);
+        }
+        assert_eq!(
+            before,
+            titles(&alive_first(&permuted)),
+            "the identifiers moved and the order followed them"
+        );
+    }
+
+    /// Every word the model can store, put in the band it belongs to -- the
+    /// four roles the contract's table gives them, read rather than spelled.
+    ///
+    /// A held task is alive whichever half of the corpus carries the claim: the
+    /// file says `in_progress` where it was taken and still says `open`
+    /// elsewhere, and the plane says `claimed:<who>` either way. A lapsed claim
+    /// is alive too, and it is the case a band read off the marker alone gets
+    /// wrong.
+    #[test]
+    fn a_band_is_the_role_the_contract_gives_the_status() {
+        assert_eq!(Band::of("open", "open"), Band::Alive);
+        assert_eq!(Band::of("in_progress", "in_progress"), Band::Alive);
+        assert_eq!(
+            Band::of("open", "claimed:claude-code/opus-5+somebody"),
+            Band::Alive
+        );
+        assert_eq!(
+            Band::of("in_progress", "claimed:claude-code/opus-5+somebody"),
+            Band::Alive
+        );
+        assert_eq!(
+            Band::of("open", "open expired:somebody@somewhere"),
+            Band::Alive,
+            "a lapsed claim is the most available work there is"
+        );
+        assert_eq!(Band::of("proposed", "proposed"), Band::Waiting);
+        for over in ["done", "closed", "accepted", "superseded"] {
+            assert_eq!(Band::of(over, over), Band::Rest, "{over} is not alive");
+        }
+        // A log entry carries no status at all, and a word this reader has
+        // never heard of is not invented into a band either.
+        assert_eq!(Band::of("", ""), Band::Rest);
+        assert_eq!(Band::of("nonsense", "nonsense"), Band::Rest);
+    }
+
+    /// Two runs over an unchanged corpus put the rows in the same order, and
+    /// rows the two keys cannot separate keep the order `find` gave them: a
+    /// second's resolution makes a shared instant ordinary, and a sort that
+    /// broke those ties on anything of its own would be breaking them on a
+    /// hash.
+    #[test]
+    fn what_the_keys_cannot_separate_stays_as_it_arrived() {
+        let same = vec![
+            found("TASK-0000000000c1", "done", "done", "2026-08-01T00:00:00Z"),
+            found("TASK-0000000000c2", "done", "done", "2026-08-01T00:00:00Z"),
+            found("TASK-0000000000c3", "done", "done", "2026-08-01T00:00:00Z"),
+        ];
+        let once: Vec<String> = alive_first(&same).iter().map(|r| r.id.clone()).collect();
+        let twice: Vec<String> = alive_first(&same).iter().map(|r| r.id.clone()).collect();
+        assert_eq!(once, twice, "two runs over one corpus disagreed");
+        assert_eq!(
+            once,
+            [
+                "TASK-0000000000c1",
+                "TASK-0000000000c2",
+                "TASK-0000000000c3"
+            ],
+            "an unseparable tie was reordered"
+        );
+    }
+
+    /// An `ank` too old to say when an entity was created costs the order its
+    /// recency and never its bands: the rows with nothing to compare go to the
+    /// end of the band they belong to, in the order they arrived.
+    #[test]
+    fn a_row_without_an_instant_keeps_its_band() {
+        let rows = vec![
+            found("TASK-0000000000d1", "done", "done", ""),
+            found("TASK-0000000000d2", "done", "done", "2026-08-01T00:00:00Z"),
+            found("TASK-0000000000d3", "open", "open", ""),
+        ];
+        let shown: Vec<String> = alive_first(&rows).iter().map(|r| r.id.clone()).collect();
+        assert_eq!(
+            shown,
+            [
+                "TASK-0000000000d3",
+                "TASK-0000000000d2",
+                "TASK-0000000000d1"
+            ]
+        );
     }
 
     #[test]
