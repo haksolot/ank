@@ -216,17 +216,85 @@ mod tests {
     use super::*;
     use ank_contract::events::{Change, Event};
 
-    fn scratch(what: &str) -> PathBuf {
-        use std::sync::atomic::AtomicU64;
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let dir = std::env::temp_dir().join(format!(
-            "ank-tui-stream-{what}-{}-{}",
-            std::process::id(),
-            SEQ.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(events::STREAM_FILE)
+    /// One root per test process, swept by the next run (TASK-553740e7af11).
+    ///
+    /// **A copy of what `crates/ank-cli/tests/scratch/mod.rs` does**, for the
+    /// reason `crates/ank-tui/tests/terminal/mod.rs` gives for the copy it
+    /// carries: two crates share a test helper only through a dependency
+    /// between them, and none of these three is worth adding for thirty lines.
+    /// Nothing under `src/` can name a module of an integration binary in any
+    /// case, so the copy lands here rather than there (TASK-ac2ff41162c6).
+    ///
+    /// The reasoning is written out once, where the original lives, and the
+    /// property is tested there. In short: a `Drop` cannot run on `SIGKILL`, so
+    /// the run that cleans up is the next one, and a root's `.owner` lock is
+    /// free exactly when its owner is gone. `PREFIX` is deliberately the one
+    /// every other suite in this workspace already uses: one name, so any run
+    /// collects what any other left, and "what does the workspace leave in the
+    /// temporary directory" keeps one answer.
+    mod scratch {
+        use std::fs::{self, File};
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU64, Ordering};
+        use std::sync::OnceLock;
+
+        const PREFIX: &str = "ank-it-";
+        const OWNER: &str = ".owner";
+        static HELD: OnceLock<File> = OnceLock::new();
+
+        pub fn dir(what: &str) -> PathBuf {
+            static SEQ: AtomicU64 = AtomicU64::new(0);
+            let p = root().join(format!("{what}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).expect("the root must be writable");
+            p
+        }
+
+        fn root() -> &'static Path {
+            static ROOT: OnceLock<PathBuf> = OnceLock::new();
+            ROOT.get_or_init(|| {
+                let base = std::env::temp_dir();
+                let mine = base.join(format!("{PREFIX}{}", std::process::id()));
+                let _ = fs::remove_dir_all(&mine);
+                fs::create_dir_all(&mine).expect("the temporary directory must be writable");
+                let lock = File::create(mine.join(OWNER)).expect("the root takes its own lock");
+                lock.try_lock()
+                    .expect("a fresh root cannot already be held");
+                let _ = HELD.set(lock);
+                sweep(&base, &mine);
+                mine
+            })
+            .as_path()
+        }
+
+        fn sweep(base: &Path, mine: &Path) {
+            let Ok(entries) = fs::read_dir(base) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                let named = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.starts_with(PREFIX));
+                if p == mine || !named || !p.is_dir() {
+                    continue;
+                }
+                let Ok(file) = File::options().read(true).write(true).open(p.join(OWNER)) else {
+                    continue;
+                };
+                if file.try_lock().is_ok() {
+                    let _ = file.unlock();
+                    drop(file);
+                    let _ = fs::remove_dir_all(&p);
+                }
+            }
+        }
+    }
+
+    /// The stream file inside a fresh directory of this process's root.
+    fn stream_at(what: &str) -> PathBuf {
+        scratch::dir(&format!("tui-stream-{what}")).join(events::STREAM_FILE)
     }
 
     fn follower(path: PathBuf, corpus: &str) -> Follower {
@@ -250,7 +318,7 @@ mod tests {
 
     #[test]
     fn a_line_about_another_corpus_is_not_this_readers_news() {
-        let path = scratch("other");
+        let path = stream_at("other");
         append(&path, &Event::new("a".repeat(40), Change::Entities).line());
         let mut f = follower(path.clone(), &"z".repeat(40));
         assert_eq!(f.look(), (true, false), "the backlog is skipped anyway");
@@ -265,7 +333,7 @@ mod tests {
     /// ten times.
     #[test]
     fn many_lines_in_one_look_are_one_wake() {
-        let path = scratch("coalesce");
+        let path = stream_at("coalesce");
         let mut f = follower(path.clone(), &"c".repeat(40));
         for _ in 0..10 {
             append(&path, &Event::new("c".repeat(40), Change::Entities).line());
@@ -276,7 +344,7 @@ mod tests {
 
     #[test]
     fn a_half_written_line_waits_for_its_end() {
-        let path = scratch("partial");
+        let path = stream_at("partial");
         let mut f = follower(path.clone(), &"d".repeat(40));
         let whole = Event::new("d".repeat(40), Change::Entities).line();
         let (head, tail) = whole.split_at(whole.len() / 2);
@@ -288,7 +356,7 @@ mod tests {
 
     #[test]
     fn a_stream_started_over_is_read_from_the_beginning_again() {
-        let path = scratch("rotate");
+        let path = stream_at("rotate");
         let mut f = follower(path.clone(), &"e".repeat(40));
         append(&path, &Event::new("e".repeat(40), Change::Entities).line());
         assert_eq!(f.look(), (true, true));
@@ -300,7 +368,7 @@ mod tests {
 
     #[test]
     fn a_stream_that_is_not_there_is_an_absence_and_never_an_error() {
-        let mut f = follower(scratch("absent"), &"f".repeat(40));
+        let mut f = follower(stream_at("absent"), &"f".repeat(40));
         assert_eq!(f.look(), (false, false));
         append(
             &f.path.clone(),
@@ -317,7 +385,7 @@ mod tests {
     /// guessed at, and a line that is not a document at all is skipped too.
     #[test]
     fn an_unreadable_line_is_skipped_and_stops_nothing() {
-        let path = scratch("junk");
+        let path = stream_at("junk");
         let mut f = follower(path.clone(), &"g".repeat(40));
         append(&path, "not a document at all\n");
         append(

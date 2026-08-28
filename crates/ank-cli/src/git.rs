@@ -1881,10 +1881,91 @@ pub fn resolve_default_branch(
     ))
 }
 
+/// One root per test process, swept by the next run (TASK-553740e7af11).
+///
+/// At module level and `pub(crate)` rather than inside `mod tests`, because
+/// this crate is a binary with a dozen modules that each build a fixture on
+/// disk: one of them has to hold the copy, and holding it where the others
+/// can name it is the difference between one copy and a dozen.
+///
+/// **A copy of what `crates/ank-cli/tests/scratch/mod.rs` does**, for the
+/// reason `crates/ank-tui/tests/terminal/mod.rs` gives for the copy it
+/// carries: two crates share a test helper only through a dependency
+/// between them, and none of these three is worth adding for thirty lines.
+/// Nothing under `src/` can name a module of an integration binary in any
+/// case, so the copy lands here rather than there (TASK-ac2ff41162c6).
+///
+/// The reasoning is written out once, where the original lives, and the
+/// property is tested there. In short: a `Drop` cannot run on `SIGKILL`, so
+/// the run that cleans up is the next one, and a root's `.owner` lock is
+/// free exactly when its owner is gone. `PREFIX` is deliberately the one
+/// every other suite in this workspace already uses: one name, so any run
+/// collects what any other left, and "what does the workspace leave in the
+/// temporary directory" keeps one answer.
+#[cfg(test)]
+pub(crate) mod scratch {
+    use std::fs::{self, File};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::OnceLock;
+
+    const PREFIX: &str = "ank-it-";
+    const OWNER: &str = ".owner";
+    static HELD: OnceLock<File> = OnceLock::new();
+
+    pub fn dir(what: &str) -> PathBuf {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let p = root().join(format!("{what}-{}", SEQ.fetch_add(1, Ordering::Relaxed)));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("the root must be writable");
+        p
+    }
+
+    fn root() -> &'static Path {
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.get_or_init(|| {
+            let base = std::env::temp_dir();
+            let mine = base.join(format!("{PREFIX}{}", std::process::id()));
+            let _ = fs::remove_dir_all(&mine);
+            fs::create_dir_all(&mine).expect("the temporary directory must be writable");
+            let lock = File::create(mine.join(OWNER)).expect("the root takes its own lock");
+            lock.try_lock()
+                .expect("a fresh root cannot already be held");
+            let _ = HELD.set(lock);
+            sweep(&base, &mine);
+            mine
+        })
+        .as_path()
+    }
+
+    fn sweep(base: &Path, mine: &Path) {
+        let Ok(entries) = fs::read_dir(base) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let named = p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with(PREFIX));
+            if p == mine || !named || !p.is_dir() {
+                continue;
+            }
+            let Ok(file) = File::options().read(true).write(true).open(p.join(OWNER)) else {
+                continue;
+            };
+            if file.try_lock().is_ok() {
+                let _ = file.unlock();
+                drop(file);
+                let _ = fs::remove_dir_all(&p);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     // `no_remote_verb_is_allowed_while_the_spec_says_level_1_is_unimplemented`
     // stood here and did its job: it failed the day level 1 landed, naming what
@@ -1901,14 +1982,7 @@ mod tests {
         /// relies on it passes or fails depending on who runs it; `-b` has
         /// existed since 2.28, well below our floor.
         fn new_repo() -> Temp {
-            static SEQ: AtomicU64 = AtomicU64::new(0);
-            let p = std::env::temp_dir().join(format!(
-                "ank-git-{}-{}",
-                std::process::id(),
-                SEQ.fetch_add(1, Ordering::Relaxed)
-            ));
-            std::fs::create_dir_all(&p).unwrap();
-            let t = Temp(p);
+            let t = Temp(scratch::dir("git-repo"));
             t.porcelain(&["init", "-q", "-b", "main"]);
             // The CI runners carry no identity, and commit refuses without
             // one. autocrlf is pinned so that the content read back on Windows
@@ -2140,8 +2214,7 @@ mod tests {
 
     #[test]
     fn outside_a_git_repository_exits_with_code_9_and_git_init() {
-        let dir = std::env::temp_dir().join(format!("ank-nogit-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch::dir("git-nogit");
         // A temporary directory may itself sit under a git repository; we only
         // assert when it does not, otherwise the assertion would be wrong.
         if toplevel(&dir).is_err() {
@@ -2193,9 +2266,7 @@ mod tests {
     /// the day something is.
     #[test]
     fn a_linked_worktree_shares_its_common_dir_with_the_checkout_that_made_it() {
-        let dir = std::env::temp_dir().join(format!("ank-common-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch::dir("git-common");
         let main = dir.join("main");
         std::fs::create_dir_all(&main).unwrap();
 
