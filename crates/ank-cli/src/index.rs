@@ -35,9 +35,10 @@ use std::path::{Path, PathBuf};
 /// Bumped whenever the schema changes. An index carrying anything else is
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
-/// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, and to 5 by
-/// `signatures`: nothing migrated any of those times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 5;
+/// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
+/// `signatures` and to 6 by `verdict`: nothing migrated any of those times, and
+/// nothing had to.
+pub const SCHEMA_VERSION: u32 = 6;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -127,6 +128,14 @@ CREATE TABLE signatures (
     fingerprint TEXT NOT NULL,
     PRIMARY KEY (commit_sha, signers)
 );
+CREATE TABLE verdict (
+    key            TEXT PRIMARY KEY,
+    faults         INTEGER NOT NULL,
+    signals        INTEGER NOT NULL,
+    unmerged       INTEGER NOT NULL,
+    drift_branch   TEXT,
+    drift_entities INTEGER NOT NULL
+);
 ";
 
 /// The searchable columns, in the order the FTS table declares them, because
@@ -174,11 +183,11 @@ fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
 fn tables_present_in(conn: &Connection) -> rusqlite::Result<bool> {
     let found: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master \
-         WHERE type = 'table' AND name IN ('meta', 'files', 'entities', 'signatures')",
+         WHERE type = 'table' AND name IN ('meta', 'files', 'entities', 'signatures', 'verdict')",
         [],
         |r| r.get(0),
     )?;
-    Ok(found == 4)
+    Ok(found == 5)
 }
 
 fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
@@ -214,8 +223,21 @@ fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
 /// nothing, and the rebuild answered correctly. So the omission cost only a
 /// wasted rebuild until two processes did it at once — at which point the
 /// deletion was the other one's database (TASK-e9dfaf187a1b).
+///
+/// `signatures` was the same omission one table later, and `verdict` would have
+/// been the third: both are named by [`tables_present_in`], so a wipe that left
+/// either standing made the reinstall below fail with `table already exists` —
+/// the exact shape the paragraph above describes. The rule is one list and not
+/// two: every table [`SCHEMA`] creates is dropped here.
 fn wipe_in(conn: &Connection) -> rusqlite::Result<()> {
-    for table in ["entities_fts", "entities", "files", "meta"] {
+    for table in [
+        "entities_fts",
+        "entities",
+        "files",
+        "meta",
+        "signatures",
+        "verdict",
+    ] {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
     }
     Ok(())
@@ -457,8 +479,13 @@ impl Index {
     /// large enough to feel it; today no verb narrows anything, and a
     /// perimeter parameter nobody passes is a code path nobody tests.
     pub fn refresh(&mut self) -> Result<Refreshed> {
-        let on_disk = self.scan()?;
+        // The hashes first, so the scan below knows which files it is about to
+        // have something to say about. Every verb opens the index and therefore
+        // pays for this walk; on the steady state of a corpus being read, every
+        // file matches and not one of them is parsed, decoded or kept
+        // (ADR-f3d1dea65d84 — a verb pays for the answer it gives).
         let known = self.known_hashes()?;
+        let on_disk = self.scan(&known)?;
         let mut done = Refreshed::default();
 
         // **Decided, and parsed, before the lock is asked for**
@@ -474,7 +501,15 @@ impl Index {
                 done.unchanged += 1;
                 continue;
             }
-            match parse_entity(&file.text) {
+            // The same predicate the scan applied, so the text is here by
+            // construction. Read as a question rather than unwrapped: an index
+            // that panicked on its own bookkeeping would be a cache that can
+            // refuse to work, which is the one thing this module never is.
+            let Some(text) = &file.text else {
+                done.unchanged += 1;
+                continue;
+            };
+            match parse_entity(text) {
                 Ok(entity) if entity.id() == &file.id => {
                     writes.push(Write::Index(
                         rel.clone(),
@@ -573,7 +608,16 @@ impl Index {
     ///
     /// Nothing here migrates. The index carries the path already, so it rebuilds
     /// from whichever layout it finds and deleting it stays safe.
-    fn scan(&self) -> Result<BTreeMap<String, ScannedFile>> {
+    ///
+    /// **The bytes are read, hashed and dropped; only a file whose hash diverged
+    /// from `known` keeps its text.** The hash is what decides freshness, and it
+    /// is the whole of what an unchanged file contributes — decoding it to a
+    /// `String` and holding it until the caller had finished deciding meant
+    /// every verb in the tool paid a UTF-8 pass and a copy of the entire corpus
+    /// in order to conclude that nothing had moved. On this repository's own
+    /// corpus that is eleven megabytes allocated per invocation of `show`
+    /// (ADR-f3d1dea65d84).
+    fn scan(&self, known: &BTreeMap<String, String>) -> Result<BTreeMap<String, ScannedFile>> {
         let mut found = BTreeMap::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         // Canonical first, so that `seen` makes the legacy pass skip what the
@@ -624,14 +668,11 @@ impl Index {
                 let bytes = std::fs::read(&path).map_err(|e| {
                     CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
                 })?;
-                found.insert(
-                    format!("{dir}/{stem}.md"),
-                    ScannedFile {
-                        hash: hash_bytes(&bytes),
-                        text: String::from_utf8_lossy(&bytes).into_owned(),
-                        id,
-                    },
-                );
+                let rel = format!("{dir}/{stem}.md");
+                let hash = hash_bytes(&bytes);
+                let text = (known.get(&rel) != Some(&hash))
+                    .then(|| String::from_utf8_lossy(&bytes).into_owned());
+                found.insert(rel, ScannedFile { hash, text, id });
             }
         }
         Ok(found)
@@ -702,6 +743,91 @@ impl Index {
         let _ = self.conn.execute(
             "INSERT OR REPLACE INTO signatures (commit_sha, signers, status, fingerprint)              VALUES (?1, ?2, ?3, ?4)",
             params![commit, signers, status.to_string(), fp],
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // The mechanical verdict (ADR-f3d1dea65d84)
+    // -----------------------------------------------------------------------
+
+    /// A digest of the file state this index tracks: every path it holds, with
+    /// the content hash it holds for it.
+    ///
+    /// **Half of the key a memoised verdict hangs on**, and the half the index
+    /// is already the authority on. It is taken after a refresh, so it names the
+    /// corpus as the index has just finished agreeing with it: a file written,
+    /// edited or removed moves a row here and therefore moves the digest. The
+    /// paths are in it and not only the hashes, because two files swapping
+    /// content is a corpus that changed and a multiset of hashes that did not.
+    pub fn files_digest(&self) -> Result<String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, hash FROM files ORDER BY path")
+            .map_err(|e| self.err(e))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| self.err(e))?;
+        let mut h = Sha256::new();
+        for row in rows {
+            let (path, hash) = row.map_err(|e| self.err(e))?;
+            // A separator that cannot occur in either field, so no pair of rows
+            // can be concatenated into the same bytes as another pair.
+            h.update(path.as_bytes());
+            h.update([0u8]);
+            h.update(hash.as_bytes());
+            h.update([0u8]);
+        }
+        Ok(hex::encode(h.finalize()))
+    }
+
+    /// The memoised verdict for `key`, or `None` — which always means *ask*.
+    ///
+    /// **Every failure here is a miss**, on the rule [`Index::signature`]
+    /// already states: an unreadable row, an absent table and a database that
+    /// will not answer all mean recompute, and none of them means assume the
+    /// last answer.
+    pub fn verdict(&self, key: &str) -> Option<Verdict> {
+        self.conn
+            .query_row(
+                "SELECT faults, signals, unmerged, drift_branch, drift_entities \
+                 FROM verdict WHERE key = ?1",
+                params![key],
+                |r| {
+                    Ok(Verdict {
+                        faults: r.get::<_, i64>(0)?.max(0) as usize,
+                        signals: r.get::<_, i64>(1)?.max(0) as usize,
+                        unmerged: r.get::<_, i64>(2)?.max(0) as usize,
+                        drift_branch: r.get::<_, Option<String>>(3)?,
+                        drift_entities: r.get::<_, i64>(4)?.max(0) as usize,
+                    })
+                },
+            )
+            .optional()
+            .ok()?
+    }
+
+    /// Records what the check found, under the key it was found on.
+    ///
+    /// **One row, and the previous one goes.** A verdict under a key that no
+    /// longer describes the corpus will never be asked for again, so keeping it
+    /// would grow the file by one row per edit for the benefit of nobody.
+    ///
+    /// A write that fails is not an error, exactly as it is not one for a
+    /// signature: the cache is an accelerator, and the next run recomputes.
+    pub fn remember_verdict(&self, key: &str, v: &Verdict) {
+        let _ = self.conn.execute("DELETE FROM verdict", params![]);
+        let _ = self.conn.execute(
+            "INSERT OR REPLACE INTO verdict \
+             (key, faults, signals, unmerged, drift_branch, drift_entities) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                key,
+                v.faults as i64,
+                v.signals as i64,
+                v.unmerged as i64,
+                v.drift_branch,
+                v.drift_entities as i64,
+            ],
         );
     }
 
@@ -811,9 +937,32 @@ fn fts_query(raw: &str) -> Option<String> {
     Some(terms.join(" AND "))
 }
 
+/// What the mechanical check concluded about the corpus, in the four numbers
+/// `status` reports out of it (ADR-f3d1dea65d84).
+///
+/// **Not a smaller `Report`, and never a substitute for one.** `check` reads the
+/// corpus because reading the corpus is its answer, and it goes on doing so.
+/// This is the summary a reader asks for first, held where the parse already
+/// lives so that asking for it does not re-derive it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Verdict {
+    pub faults: usize,
+    pub signals: usize,
+    /// Tasks finished on a branch the default has not caught up with.
+    pub unmerged: usize,
+    /// The default branch this corpus was compared against, `None` where the
+    /// comparison could not be made at all. It is the distinction between a
+    /// line and silence, and it is never a zero: zero entities is *level*, an
+    /// answer no verb may give without having compared.
+    pub drift_branch: Option<String>,
+    pub drift_entities: usize,
+}
+
 struct ScannedFile {
     hash: String,
-    text: String,
+    /// `None` where the hash already matches the one the index holds: nothing
+    /// is going to be parsed out of it, so nothing is decoded or kept.
+    text: Option<String>,
     id: EntityId,
 }
 
