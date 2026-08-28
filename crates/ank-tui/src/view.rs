@@ -989,7 +989,7 @@ impl App {
         match keys::typed(key, self.focus) {
             Press::Run(command) => self.act(command, ank),
             Press::Cycle => {
-                let next = keys::next_kind(self.kind.as_deref());
+                let next = next_row_kind(self.kind.as_deref());
                 self.act(Command::Kind(next), ank)
             }
             // The search, started on an empty needle: there is no seed, because
@@ -1358,8 +1358,8 @@ impl App {
             // row number only ever had a refusal to offer.
             Command::Kind(kind) => {
                 if let Some(k) = &kind {
-                    if !keys::KINDS.contains(&k.as_str()) {
-                        self.note = Some(format!("no kind '{k}': {}", keys::KINDS.join(", ")));
+                    if !row_kinds().contains(&k.as_str()) {
+                        self.note = Some(format!("no kind '{k}': {}", row_kinds().join(", ")));
                         return false;
                     }
                 }
@@ -2375,6 +2375,7 @@ impl App {
             _ => {
                 let mut out = self.block(width);
                 out.extend(self.prose_rows(width).into_iter().map(|line| (line, None)));
+                out.extend(self.log_rows(width).into_iter().map(|line| (line, None)));
                 out
             }
         }
@@ -2449,6 +2450,60 @@ impl App {
             .flat_map(|l| wrap(l, width.max(1)))
             .map(|l| Composed::of(&l))
             .collect()
+    }
+
+    /// What has been logged about the open entity, under it
+    /// (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+    ///
+    /// **This is where a log entry is read, and it is the only place.** They are
+    /// no longer rows of any list -- seventy per cent of this corpus is log
+    /// entries and a list that opened on them answered a question nobody asked
+    /// -- so the entity they annotate is the one screen that has to carry them,
+    /// and it carries them whole: the entries `show` gave, in the order `show`
+    /// gave them, which is the order they were written in.
+    ///
+    /// **Nothing is drawn where there is nothing to draw.** Not a heading, not a
+    /// count and not the blank that separates a section from the prose above it:
+    /// an entity nobody has logged against draws no empty rule where the
+    /// entries would be, which is the other half of the criterion and the
+    /// reason this returns rows rather than a section that can be empty. The
+    /// field block above draws its `CONSTRAINTS` heading either way, and the
+    /// difference is not an inconsistency: a scope that nothing binds is a fact
+    /// a person came to find out, and a task nobody has written about is an
+    /// absence with nothing to say.
+    ///
+    /// **The machinery is its own section for the reason `show` makes it one.**
+    /// What somebody said about an entity and what was done to its fields are
+    /// two questions, and both are log entities -- so both are read here, and
+    /// neither of them is anywhere else any more.
+    ///
+    /// **`n of m` and never a bare count.** `show` answers within the same
+    /// attention budget every other verb does (ADR-3e6ce108edcd), so a section
+    /// that printed what it held without saying what it withheld would leave a
+    /// person to conclude from a short list that there was nothing more.
+    fn log_rows(&self, width: usize) -> Vec<Composed> {
+        let Some(detail) = &self.detail else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if !detail.log.is_empty() {
+            out.push(Composed::new());
+            out.push(
+                Composed::of(&format!(
+                    "  LOG ({} of {})",
+                    detail.log.len(),
+                    detail.log_total
+                ))
+                .fitted(width),
+            );
+            out.extend(detail.log.iter().flat_map(|e| entry_rows(e, width)));
+        }
+        if !detail.machinery.is_empty() {
+            out.push(Composed::new());
+            out.push(Composed::of(&format!("  EDITS ({})", detail.machinery.len())).fitted(width));
+            out.extend(detail.machinery.iter().flat_map(|e| entry_rows(e, width)));
+        }
+        out
     }
 
     /// The field block: the entity's frontmatter as labelled rows, who holds
@@ -3989,6 +4044,46 @@ fn valued(label: &str, value: &str, role: Option<Role>, width: usize) -> Vec<Com
         .collect()
 }
 
+/// How far a log entry's message is indented under the line that heads it.
+///
+/// Two columns further in than everything else the document draws, which is the
+/// whole of what says the message belongs to the entry above it rather than to
+/// the section.
+const SAID: usize = 4;
+
+/// One log entry, as rows of the document it is read under
+/// (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+///
+/// A line naming the entry, then what it says. The identifier is on it because
+/// an entry is an entity -- `ank show LOG-049c` prints it whole -- and a person
+/// who wants to quote one needs the handle the CLI answers to; the instant and
+/// the agent are beside it because "who said this, and when" is the question a
+/// log is read with.
+///
+/// **The message is wrapped and never cut**, which is the promise the prose
+/// above it carries and it is worth more here: a log entry is where a previous
+/// holder wrote down why they stopped, and one losing its last clause to the
+/// right edge is the sentence nobody read.
+///
+/// **Not a row of a listing and so not [`compose`]'s.** There are no columns
+/// here to line up -- an entry is a heading and a paragraph, the shape
+/// [`field_rows`] and [`App::prose_rows`] already draw the document in -- and
+/// composing it as a row would be claiming a grid that the wrapped lines under
+/// it do not belong to.
+fn entry_rows(entry: &model::Entry, width: usize) -> Vec<Composed> {
+    let mut out = vec![Composed::new()
+        .plain("  ")
+        .named(&short_of(&entry.id), role_of_id(&entry.id))
+        .plain(&format!("  {}  {}", entry.timestamp, entry.who))
+        .fitted(width)];
+    out.extend(
+        wrap(&entry.message, width.saturating_sub(SAID).max(1))
+            .iter()
+            .map(|line| Composed::of(&format!("{}{line}", " ".repeat(SAID)))),
+    );
+    out
+}
+
 /// What the shared table says about a field's value.
 ///
 /// Three questions and no fourth, because there are three the table answers: a
@@ -4025,6 +4120,43 @@ fn step(at: usize, by: isize, total: usize) -> usize {
     let last = total - 1;
     let moved = at as isize + by;
     moved.clamp(0, last as isize) as usize
+}
+
+/// The kinds a row of the list may have, in the registry's own order
+/// (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+///
+/// **The registry, less the kinds no row can carry, and there is no third
+/// list.** `keys::KINDS` stays what it says it is -- the registry of
+/// ADR-c9f9d1a05b23 in the order `find --type` takes it -- and
+/// [`model::annotates`] stays the one rule about what a log entry is. This is
+/// the two of them put together, so a kind added to the registry is a kind this
+/// filter offers with no edit here, and a kind that stops being a row stops
+/// being offered the same way.
+///
+/// A filter that offered a kind the list cannot hold would be a key whose only
+/// possible answer is "no entity matches this filter", which is what
+/// ADR-559eebf5c6f5 calls a list answering a question nobody asked.
+fn row_kinds() -> Vec<&'static str> {
+    keys::KINDS
+        .iter()
+        .copied()
+        .filter(|kind| !model::annotates(kind))
+        .collect()
+}
+
+/// The kind after this one, among the kinds a row may have.
+///
+/// [`keys::next_kind`]'s cycle, walked past whatever is not a row: the step and
+/// the wrap back to every kind are the key table's and are not restated here,
+/// and what this adds is the one clause about annotations. It terminates
+/// because that cycle strictly advances and ends at `None`, which is the state
+/// a person can always get back to.
+fn next_row_kind(kind: Option<&str>) -> Option<String> {
+    let mut next = keys::next_kind(kind);
+    while next.as_deref().is_some_and(model::annotates) {
+        next = keys::next_kind(next.as_deref());
+    }
+    next
 }
 
 /// The marker the open search is drawn behind (TASK-c94d086682f3).
@@ -4208,6 +4340,30 @@ mod tests {
             blocked_by: Vec::new(),
             unblocks: Vec::new(),
             unresolved: Vec::new(),
+            // Nothing logged, which is the shape most of this suite is about:
+            // every assertion below that counts the rows of a document counts
+            // them on an entity that draws no log section at all.
+            log: Vec::new(),
+            machinery: Vec::new(),
+            log_total: 0,
+        }
+    }
+
+    /// The same entity, with entries logged against it (TASK-3fa4892f17c0).
+    fn annotated(id: &str, content: &str, said: &[&str]) -> Detail {
+        Detail {
+            log: said
+                .iter()
+                .enumerate()
+                .map(|(n, message)| model::Entry {
+                    id: format!("LOG-00a{n}00000000"),
+                    timestamp: format!("2026-08-2{}T09:00:00Z", n + 1),
+                    who: "claude-code/opus-5+log-under-its-entity".to_string(),
+                    message: (*message).to_string(),
+                })
+                .collect(),
+            log_total: said.len() as u64,
+            ..detail(id, content)
         }
     }
 
@@ -5602,6 +5758,244 @@ mod tests {
         a.act(Command::Kind(Some("epic".to_string())), &nowhere());
         assert_eq!(a.kind, None);
         assert!(a.note.unwrap().contains("no kind 'epic'"));
+    }
+
+    // -----------------------------------------------------------------------
+    // A log entry is read under its entity (TASK-3fa4892f17c0, ADR-559eebf5c6f5)
+    // -----------------------------------------------------------------------
+
+    /// **The kinds the filter cycles through are the kinds a row may have.**
+    ///
+    /// Pressed once per kind and once more, the cycle walks the registry with
+    /// the annotations left out and comes back to every kind -- so there is no
+    /// press that leaves a person looking at a filter the list can only answer
+    /// "no entity matches" to.
+    ///
+    /// The registry still declares the kind that is skipped, which is what says
+    /// this measures a filter rather than an empty room: if `log` ever stops
+    /// being in `keys::KINDS` the assertion below fails and this test has to be
+    /// re-read rather than quietly passing on nothing.
+    #[test]
+    fn the_filter_cycles_through_the_kinds_a_row_may_have_and_no_other() {
+        assert!(
+            keys::KINDS.contains(&model::ANNOTATION),
+            "the registry no longer declares the kind this skips"
+        );
+        let mut kind: Option<String> = None;
+        let mut walked = Vec::new();
+        for _ in 0..row_kinds().len() {
+            kind = next_row_kind(kind.as_deref());
+            walked.push(kind.clone().expect("a kind"));
+        }
+        assert_eq!(walked, row_kinds());
+        assert_eq!(
+            next_row_kind(kind.as_deref()),
+            None,
+            "and back to every kind"
+        );
+        assert!(
+            !walked.iter().any(|k| model::annotates(k)),
+            "the filter offered a kind no row can have: {walked:?}"
+        );
+        // The same rule from the other end: the command refuses the word, and
+        // says which kinds there are rather than which one it will not take.
+        let mut a = app();
+        a.act(
+            Command::Kind(Some(model::ANNOTATION.to_string())),
+            &nowhere(),
+        );
+        assert_eq!(a.kind, None, "the filter moved onto an annotation");
+        let said = a.note.expect("a refusal says so");
+        assert!(said.contains("no kind 'log'"), "{said}");
+        assert!(said.contains("adr, spec, task"), "{said}");
+    }
+
+    /// **The document of an entity carrying entries shows them beneath it, in
+    /// the order they were written.**
+    ///
+    /// Beneath: after the field block and after the prose, which is what "under
+    /// the entity" means on a screen that is one column. In the order `show`
+    /// gave them, which is the order they were written -- asserted as a sequence
+    /// and not as a set, because a section that held all three in the wrong
+    /// order would read as a history that did not happen.
+    #[test]
+    fn the_entries_about_an_entity_are_read_under_it_in_the_order_they_were_written() {
+        let mut a = app();
+        a.detail = Some(annotated(
+            "TASK-49746735127f",
+            "---\nid: TASK-49746735127f\n---\n\nThe body of the task.\n",
+            &[
+                "First: the perimeter is read.",
+                "Second: the thing is built.",
+                "Third: done, proof commit:abc1234.",
+            ],
+        ));
+        a.focus = Focus::Body;
+        let rows = texts(&a.pane_rows(a.body_width()));
+        let at = |needle: &str| {
+            rows.iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{needle} is not on the document:\n{}", rows.join("\n")))
+        };
+        assert!(
+            at("LOG (3 of 3)") > at("The body of the task."),
+            "the entries are under the document, not over it:\n{}",
+            rows.join("\n")
+        );
+        assert!(
+            at("First:") < at("Second:") && at("Second:") < at("Third:"),
+            "the entries are out of the order they were written:\n{}",
+            rows.join("\n")
+        );
+        // The agent and the instant are on the line that heads an entry, and
+        // the entry's own identifier is with them: an entry is an entity, and
+        // `ank show LOG-00a0` is the road to the whole of it.
+        assert!(rows[at("First:") - 1].contains("LOG-00a0"), "{rows:?}");
+        assert!(
+            rows[at("First:") - 1].contains("2026-08-21T09:00:00Z"),
+            "{rows:?}"
+        );
+        assert!(
+            rows[at("First:") - 1].contains("claude-code/opus-5+log-under-its-entity"),
+            "{rows:?}"
+        );
+    }
+
+    /// **The document of an entity carrying none draws no empty rule where they
+    /// would be.**
+    ///
+    /// Not a heading, not a count, and not the blank line that would separate a
+    /// section from the prose above it: the rows of a document nobody has
+    /// logged against are the rows it had before any of this, exactly.
+    #[test]
+    fn an_entity_nobody_has_logged_against_draws_no_section_at_all() {
+        let content = "---\nid: TASK-49746735127f\n---\n\nThe body of the task.\n";
+        let mut bare = app();
+        bare.detail = Some(detail("TASK-49746735127f", content));
+        bare.focus = Focus::Body;
+        let rows = texts(&bare.pane_rows(bare.body_width()));
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.contains("LOG (") || r.contains("EDITS (")),
+            "a heading was drawn over nothing:\n{}",
+            rows.join("\n")
+        );
+        assert_eq!(
+            rows.last().map(|r| r.trim().to_string()),
+            Some("The body of the task.".to_string()),
+            "the document ends where its prose ends:\n{}",
+            rows.join("\n")
+        );
+
+        // And the same entity with one entry is the same rows plus the section,
+        // which is what says the rows above were not merely counted right.
+        let mut annotated_app = app();
+        annotated_app.detail = Some(annotated("TASK-49746735127f", content, &["Something."]));
+        annotated_app.focus = Focus::Body;
+        let with = texts(&annotated_app.pane_rows(annotated_app.body_width()));
+        assert_eq!(with[..rows.len()], rows[..], "the document above it moved");
+        assert_eq!(
+            with.len(),
+            rows.len() + 4,
+            "a blank, a heading, a head and a said line:\n{with:?}"
+        );
+    }
+
+    /// The machinery is a section of its own and is drawn on the same rule.
+    ///
+    /// An edit record is a log entity too, so it is read under the entity it
+    /// annotates and is nowhere else -- and an entity with entries but no edits
+    /// draws one section and not two.
+    #[test]
+    fn the_machinery_is_its_own_section_and_neither_is_drawn_empty() {
+        let content = "---\nid: TASK-49746735127f\n---\n\nbody\n";
+        let mut a = app();
+        a.detail = Some(Detail {
+            machinery: vec![model::Entry {
+                id: "LOG-0000000000b1".to_string(),
+                timestamp: "2026-08-22T10:00:00Z".to_string(),
+                who: "claude-code/opus-5+log-under-its-entity".to_string(),
+                message: "+scope crates/ank-tui/src/view.rs (version 1 to 2)".to_string(),
+            }],
+            ..annotated("TASK-49746735127f", content, &["Said."])
+        });
+        a.focus = Focus::Body;
+        let rows = texts(&a.pane_rows(a.body_width()));
+        let joined = rows.join("\n");
+        assert!(joined.contains("LOG (1 of 1)"), "{joined}");
+        assert!(joined.contains("EDITS (1)"), "{joined}");
+        assert!(
+            joined.contains("+scope crates/ank-tui/src/view.rs"),
+            "{joined}"
+        );
+
+        // With no edits, one section: the other heading is not drawn over an
+        // empty list.
+        let mut only = app();
+        only.detail = Some(annotated("TASK-49746735127f", content, &["Said."]));
+        only.focus = Focus::Body;
+        let alone = texts(&only.pane_rows(only.body_width())).join("\n");
+        assert!(alone.contains("LOG (1 of 1)"), "{alone}");
+        assert!(!alone.contains("EDITS"), "{alone}");
+    }
+
+    /// What the section says it is holding is what it holds, and what it
+    /// withheld is on the same line (ADR-3e6ce108edcd).
+    #[test]
+    fn a_section_short_of_the_whole_log_says_how_short_it_is() {
+        let mut a = app();
+        a.detail = Some(Detail {
+            log_total: 40,
+            ..annotated(
+                "TASK-49746735127f",
+                "---\nid: TASK-49746735127f\n---\n\nbody\n",
+                &["One.", "Two."],
+            )
+        });
+        a.focus = Focus::Body;
+        let joined = texts(&a.pane_rows(a.body_width())).join("\n");
+        assert!(
+            joined.contains("LOG (2 of 40)"),
+            "a budgeted section read as the whole of one:\n{joined}"
+        );
+    }
+
+    /// A message is wrapped and never cut, at the narrowest window the reader
+    /// draws -- which is the promise the prose above it carries, and it is worth
+    /// more here: an entry is where a previous holder wrote down why they
+    /// stopped.
+    #[test]
+    fn an_entry_is_wrapped_and_never_cut_at_forty_columns() {
+        let said = "A message long enough that no window this reader opens can \
+                    afford it on one row, ending in a clause that a cut would take.";
+        let mut a = App::new((40, 24), None);
+        a.snapshot = Some(snapshot());
+        a.detail = Some(annotated(
+            "TASK-49746735127f",
+            "---\nid: TASK-49746735127f\n---\n\nbody\n",
+            &[said],
+        ));
+        a.focus = Focus::Body;
+        let rows = texts(&a.pane_rows(a.body_width()));
+        let joined: String = rows
+            .iter()
+            .filter(|r| r.starts_with(&" ".repeat(SAID)))
+            .map(|r| r.trim().to_string())
+            .collect::<Vec<String>>()
+            .join(" ");
+        assert_eq!(
+            joined,
+            said.split_whitespace().collect::<Vec<&str>>().join(" "),
+            "the message was cut rather than wrapped:\n{rows:?}"
+        );
+        assert!(
+            !rows
+                .iter()
+                .filter(|r| r.starts_with(&" ".repeat(SAID)))
+                .any(|r| r.contains('~')),
+            "a row of the message was elided rather than wrapped:\n{rows:?}"
+        );
     }
 
     #[test]
