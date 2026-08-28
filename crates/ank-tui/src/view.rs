@@ -32,7 +32,9 @@
 //! anything else on it, so the arrangement bought nothing and was paid for in
 //! rows, in borders, and in four separate answers to "how is a row drawn". The
 //! decision's own measurement of that is on ADR-559eebf5c6f5 and is not
-//! repeated here.
+//! repeated here. The last of the three is gone with the panels:
+//! [`compose`] is the one answer, and the suite refuses a second
+//! (TASK-d58efe37eb7b).
 //!
 //! * **1 CLAIMS** -- who holds what, the caller's own marked. Asked for rather
 //!   than kept current: `ank status` counts what it reports by reading the
@@ -90,7 +92,29 @@
 //! how the width was divided, and there is nothing left to divide it between.
 //!
 //! What a narrow window costs is what a row can afford to say, which is a
-//! question about composing a row and not about arranging a screen.
+//! question about composing a row and not about arranging a screen -- and
+//! [`compose`] is where it is answered, once, for every listing on the frame.
+//!
+//! # One function composes a row
+//!
+//! **Every row of every listing here is [`compose`], handed a marker and a list
+//! of [`Field`]s** (TASK-d58efe37eb7b, ADR-559eebf5c6f5). There were five
+//! composers -- the claims, the entities, the queue, the constraints of the
+//! body pane and the keys of the config pane -- each spelling out its own chain
+//! of `Composed::new().plain(..).column(..)`, and the cost of that was not
+//! duplication but *disagreement*: two of them drew the same fact two ways, one
+//! had no status column at all, and each was free to decide for itself how wide
+//! an identifier is and what a window too narrow for one costs. The
+//! identifier's column, the gap between two fields and the field a row gives up
+//! first are decided in that one function now, so the answer is the same
+//! wherever a row is drawn -- which is what the decision asked for and what
+//! `one_function_in_this_crate_assembles_a_row_of_the_list` refuses to let go.
+//!
+//! What is deliberately *not* a row: the frontmatter block of an open document
+//! ([`valued`]), which is a label and a value wrapped across as many rows as it
+//! needs, with no marker, no identifier and no columns; and the three overlays
+//! -- the key list, the further verbs, the form -- which draw sentences a finger
+//! can land on rather than fields of a corpus.
 //!
 //! **And a tap is [`App::arrange`] run backwards**, which is now one rectangle
 //! rather than four. A mouse event carries a column and a row; the row it
@@ -2137,15 +2161,22 @@ impl App {
                     .row(&claim.id)
                     .map(|r| r.title.clone())
                     .unwrap_or_default();
-                Composed::new()
-                    .plain(here)
-                    .plain(whose)
-                    .column(&short_of(&claim.id), 10, role_of_id(&claim.id))
-                    .plain(&format!(
-                        "  {}  until {}  {title}",
-                        claim.holder, claim.expires
-                    ))
-                    .fitted(width)
+                // Four columns of marker and not two: the cursor, then whose
+                // claim the row is. Holder, expiry and title are one field
+                // because none of the three has an honest width -- a handle is
+                // as long as somebody's hostname -- and a row that padded them
+                // would spend the title's window on air.
+                compose(
+                    &format!("{here}{whose}"),
+                    vec![
+                        Field::id(&claim.id),
+                        Field::rest(&format!(
+                            "{}  until {}  {title}",
+                            claim.holder, claim.expires
+                        )),
+                    ],
+                    width,
+                )
             })
             .collect()
     }
@@ -2172,16 +2203,20 @@ impl App {
                 } else {
                     text::PLAIN
                 };
-                Composed::new()
-                    .plain(here)
-                    .plain(&format!("{:>5}  ", at + 1))
-                    .column(&row.short(), 10, role_of_id(&row.id))
-                    .plain("  ")
-                    .column(&row.status, 12, role_of_status(&row.status))
-                    .plain("  ")
-                    .plain(&row.title)
-                    .plain(if held(&row.id) { "  [held]" } else { "" })
-                    .fitted(width)
+                compose(
+                    here,
+                    vec![
+                        Field::plain(&format!("{:>5}", at + 1), NUMBER),
+                        Field::id(&row.id),
+                        Field::word(&row.status, STATUS, role_of_status(&row.status)),
+                        Field::rest(&format!(
+                            "{}{}",
+                            row.title,
+                            if held(&row.id) { "  [held]" } else { "" }
+                        )),
+                    ],
+                    width,
+                )
             })
             .collect()
     }
@@ -2238,11 +2273,15 @@ impl App {
                     // proposed, and a word repeated on every row is a column
                     // spent saying nothing. The kind is not -- an ADR and a
                     // specification are signed for different reasons.
-                    Composed::new()
-                        .plain(here)
-                        .column(&row.short(), 10, role_of_id(&row.id))
-                        .plain(&format!("  {}  {}", pad(&row.kind, 5), row.title))
-                        .fitted(width)
+                    compose(
+                        here,
+                        vec![
+                            Field::id(&row.id),
+                            Field::plain(&row.kind, KIND),
+                            Field::rest(&row.title),
+                        ],
+                        width,
+                    )
                 })
                 .collect()
         };
@@ -2325,7 +2364,7 @@ impl App {
                     .enumerate()
                     .map(|(n, c)| {
                         (
-                            constraint_row(c, self.marker(n == at)).fitted(width),
+                            constraint_row(c, self.marker(n == at), width),
                             Some(c.id.clone()),
                         )
                     })
@@ -2471,7 +2510,7 @@ impl App {
         let at = self.cursors[Focus::Body.number() - 1].at;
         for c in &detail.constraints {
             let here = self.marker(out.len() == at);
-            out.push((constraint_row(c, here).fitted(width), Some(c.id.clone())));
+            out.push((constraint_row(c, here, width), Some(c.id.clone())));
         }
         // The blank that says the block has ended and the document has begun.
         out.push((Composed::new(), None));
@@ -3536,6 +3575,240 @@ fn flat(value: &crate::ank::Value) -> String {
     }
 }
 
+// -----------------------------------------------------------------------
+// One function composes a row (TASK-d58efe37eb7b, ADR-559eebf5c6f5)
+// -----------------------------------------------------------------------
+
+/// One field of a row of the list: what it says, the column it is drawn in,
+/// what the shared table calls it, and whether the row may drop it.
+///
+/// Owned rather than borrowed, and the reason is the call sites: half the
+/// fields on this screen are a `format!` of two things the model keeps apart --
+/// a holder and an expiry, a title and a `[held]` marker -- and a borrowing
+/// field would have made every one of those a `let` above the row it belongs
+/// to. A `String` per field, five fields per row and a page of rows is nothing
+/// beside the render that follows it.
+struct Field {
+    said: String,
+    /// The column it is padded out to, or `None` for the last field, which
+    /// takes whatever the row has left.
+    column: Option<usize>,
+    /// What [`ank_contract::meaning`] answered about it, where it answered.
+    /// Never decided here: this file composes rows and the table names them.
+    role: Option<Role>,
+    /// Whether [`compose`] may drop it where the window cannot afford it.
+    kept: bool,
+}
+
+impl Field {
+    /// The identifier a row is addressed by, short, and never dropped.
+    ///
+    /// The column, the shortening and the role are all decided here rather
+    /// than at the five call sites: an identifier is the one field a row is
+    /// useless without -- it is what `show`, `claim` and `scope` are typed
+    /// against afterwards -- so which of those a caller could get wrong is a
+    /// question with the answer *none*.
+    fn id(id: &str) -> Field {
+        Field {
+            said: short_of(id),
+            column: Some(ID),
+            role: role_of_id(id),
+            kept: true,
+        }
+    }
+
+    /// The same, for a field that is not an identifier and is still the one
+    /// thing its row cannot be read without.
+    ///
+    /// One caller: the config pane's key. `ank config` is a pane a person reads
+    /// in order to type a key back at a shell, so a key drawn as `verifiers.<n~`
+    /// is a row that has spent twenty-five columns on nothing -- the same
+    /// argument the identifier's makes, about a column that is not an
+    /// identifier.
+    fn never_dropped(mut self) -> Field {
+        self.kept = true;
+        self
+    }
+
+    /// A column the shared table has something to say about.
+    fn word(said: &str, column: usize, role: Option<Role>) -> Field {
+        Field {
+            said: said.to_string(),
+            column: Some(column),
+            role,
+            kept: false,
+        }
+    }
+
+    /// A column it has nothing to say about: a row number, a config key.
+    fn plain(said: &str, column: usize) -> Field {
+        Field::word(said, column, None)
+    }
+
+    /// The last field, which takes whatever is left of the window.
+    ///
+    /// A title, a holder and an expiry, a source: the fields with no honest
+    /// width, because the corpus decides how long they are. There is at most
+    /// one of these on a row and it is at the end, which is what makes the
+    /// arithmetic above it exact.
+    fn rest(said: &str) -> Field {
+        Field {
+            said: said.to_string(),
+            column: None,
+            role: None,
+            kept: false,
+        }
+    }
+}
+
+/// The column an identifier is drawn in.
+///
+/// Nine is the widest short form [`short_of`] can produce out of the four kinds
+/// `ank_contract::meaning` declares -- `TASK-` and four characters, `SPEC-` and
+/// four -- so no identifier this reader draws is ever cut. Ten is what every
+/// listing on this screen already spent, and it is kept: this task changes
+/// where a row is composed and not what one looks like. A fifth kind with a
+/// longer name would want a wider column, and widening it is now one line.
+const ID: usize = 10;
+
+/// The column a status is drawn in.
+///
+/// `in_progress` is eleven and `superseded` is ten. What a ref says instead of
+/// a file -- `claimed:who@host` -- is longer than any window would give it and
+/// is cut here as it is cut in `find`.
+const STATUS: usize = 12;
+
+/// The column the entities' row number is drawn in, right-aligned by the caller
+/// because a number read down a column is read by its last digit.
+const NUMBER: usize = 5;
+
+/// The column a kind is drawn in: four characters is the longest name the
+/// registry declares, and the fifth is the one the queue already spent.
+const KIND: usize = 5;
+
+/// The column a config key is drawn in.
+///
+/// Wide enough for the longest key §4 declares -- `verifiers.<name>.timeout` is
+/// twenty-four -- so no key is cut. A key that was cut would be a key nobody
+/// could type back at the shell, which is the whole of what this pane is for,
+/// and it is why [`setting_row`] is the one row outside a listing that marks a
+/// field [`Field::never_dropped`] without that field being an identifier.
+const CONFIG_KEY: usize = 25;
+
+/// The column a config value is drawn in.
+///
+/// A duration, a branch name, a number of tokens: values here are short, and
+/// the room left over goes to the source beside them.
+const SET_TO: usize = 18;
+
+/// What stands between two fields of a row.
+///
+/// Two columns, which is the gap every listing this tool draws already spends,
+/// and it is a property of the row rather than of a field: a field that
+/// carried its own trailing gap would put the gap inside the column, and the
+/// next person to paint a background would find out that it did.
+const GAP: usize = 2;
+
+/// **One row of the list, and the only place in this crate where a row is
+/// assembled** (TASK-d58efe37eb7b, ADR-559eebf5c6f5).
+///
+/// There were five: the claims, the entities, the queue, the constraints of
+/// the body pane and the keys of the config pane, each spelling out its own
+/// `Composed::new().plain(..).column(..).plain("  ")` and each free to disagree
+/// with the other four about how wide an identifier is, whether a status has a
+/// column at all and what a narrow window costs. ADR-559eebf5c6f5 measured that
+/// disagreement before it proposed anything -- three schemas, two of them
+/// drawing the same fact two ways -- and the fix it asked for is this function.
+/// The suite below refuses a sixth.
+///
+/// **A row is a marker and its fields.** The marker is the two columns every
+/// listing in this tool spends on its left margin ([`text::CURSOR`],
+/// [`text::PLAIN`]), and the claims spend two more on whose claim a row is. It
+/// is never dropped and nothing is ever composed in front of it, because where
+/// a person is standing is the one thing a row cannot fail to say.
+///
+/// **Where the window cannot afford the fields, they are dropped from the
+/// right** (ADR-559eebf5c6f5). Dropped and not cut: a row narrowed to
+/// `> ADR-8bd~` has spent ten columns saying something no verb can be typed
+/// against, where a row narrowed to `> ADR-8bd7` has spent them on the one
+/// field the rest of this tool is addressed by. It is the *rightmost droppable*
+/// field that goes and not simply the last, so the entities' row number -- which
+/// stands to the left of the identifier and is the least of what a row has to
+/// say -- is given up after the title and the status rather than protected by
+/// the kept field beyond it. What the loop cannot reach is what `kept` marks,
+/// and the identifier is the only field that carries it: "the identifier and
+/// the marker are the two it never drops" is the shape of the loop rather than
+/// a rule written beside it.
+///
+/// **The last field is elastic and every field in front of it is a column**
+/// ([`cost`]). A row is a grid because the rows under it line up with it, and
+/// the field on the end has nothing to line up with -- a title, a holder and an
+/// expiry, the source a setting came from -- so it takes the room that is left
+/// and is clamped rather than dropped. The exception is a *kept* field that
+/// happens to be last, which is charged its whole column: it may not be cut
+/// either, so the window pays for it by giving up whatever stands in front of
+/// it.
+///
+/// The final [`Composed::fitted`] is the clamp and not the policy. Every listed
+/// row on this screen affords its columns at every width the harness opens, so
+/// what the drop and the clamp answer is the window past the edge of it -- and
+/// they answer it with the identifier still whole, which is the property the
+/// arithmetic above exists to buy.
+fn compose(here: &str, mut fields: Vec<Field>, width: usize) -> Composed {
+    while cost(here, &fields) > width {
+        let Some(at) = fields.iter().rposition(|f| !f.kept) else {
+            break;
+        };
+        fields.remove(at);
+    }
+    let last = fields.len().saturating_sub(1);
+    let mut row = Composed::of(here);
+    for (n, field) in fields.iter().enumerate() {
+        if n > 0 {
+            row = row.plain(&" ".repeat(GAP));
+        }
+        // The last field is given the room that is left rather than its own
+        // column, where the room is the smaller. Padding a column the clamp is
+        // about to cut would put a `~` on the end of a run of spaces -- a row
+        // announcing that something was lost, where what was lost was the
+        // padding. [`cost`] has already guaranteed the room for a *kept* last
+        // field, so the `min` is only ever the elastic case.
+        row = match field.column {
+            Some(column) if n == last => {
+                let room = width.saturating_sub(row.text().chars().count());
+                row.column(&field.said, column.min(room), field.role)
+            }
+            Some(column) => row.column(&field.said, column, field.role),
+            None => row.named(&field.said, field.role),
+        };
+    }
+    row.fitted(width)
+}
+
+/// What a row of these fields spends before its last field says anything.
+///
+/// **The last field is measured at nothing, unless it is one the row may not
+/// drop.** A field at the end of a row has nothing to line up with, so what it
+/// costs is whatever is left and the clamp is free to cut it: that is how a
+/// title reaches a narrow window with its beginning on the screen, and how the
+/// config pane still shows the head of a value at forty columns instead of the
+/// key alone. A *kept* field at the end is the opposite case and is charged its
+/// whole column -- it may not be cut either, so a window that cannot pay for it
+/// has to give up the field in front of it instead.
+fn cost(here: &str, fields: &[Field]) -> usize {
+    let last = fields.len().saturating_sub(1);
+    here.chars().count()
+        + fields
+            .iter()
+            .enumerate()
+            .map(|(n, f)| match n == last && !f.kept {
+                true => 0,
+                false => f.column.unwrap_or_default(),
+            })
+            .sum::<usize>()
+        + GAP * last
+}
+
 /// One constraint, with the status that says whether it binds.
 ///
 /// The status is not decoration: `ank scope` answers with every ADR whose glob
@@ -3544,14 +3817,16 @@ fn flat(value: &crate::ank::Value) -> String {
 /// filtered out either -- a superseded decision is where the reasoning of the
 /// live one came from, and hiding it would be answering a different question
 /// than the CLI was asked.
-fn constraint_row(c: &Row, here: &str) -> Composed {
-    Composed::new()
-        .plain(here)
-        .column(&c.short(), 10, role_of_id(&c.id))
-        .plain("  ")
-        .column(&c.status, 12, role_of_status(&c.status))
-        .plain("  ")
-        .plain(&c.title)
+fn constraint_row(c: &Row, here: &str, width: usize) -> Composed {
+    compose(
+        here,
+        vec![
+            Field::id(&c.id),
+            Field::word(&c.status, STATUS, role_of_status(&c.status)),
+            Field::rest(&c.title),
+        ],
+        width,
+    )
 }
 
 /// One key of the configuration, with what it is set to and where that came
@@ -3568,29 +3843,22 @@ fn constraint_row(c: &Row, here: &str) -> Composed {
 /// is not a status, and colouring one here would be this reader inventing a
 /// second opinion about what a colour says.
 fn setting_row(setting: &Setting, here: &str, width: usize) -> Composed {
-    let said = match &setting.refused {
-        Some(refusal) => refusal.lines().next().unwrap_or_default().to_string(),
-        None => format!(
-            "{}  {}",
-            pad(setting.value.as_deref().unwrap_or_default(), SET_TO),
-            setting.source
-        ),
-    };
-    Composed::of(&format!("{here}{}  {said}", pad(setting.key, CONFIG_KEY))).fitted(width)
+    let mut fields = vec![Field::plain(setting.key, CONFIG_KEY).never_dropped()];
+    match &setting.refused {
+        // What it said in place of both, which is still an answer to where a
+        // value would have come from -- so it is the last field and takes the
+        // room the value and the source would have spent.
+        Some(refusal) => fields.push(Field::rest(refusal.lines().next().unwrap_or_default())),
+        None => {
+            fields.push(Field::plain(
+                setting.value.as_deref().unwrap_or_default(),
+                SET_TO,
+            ));
+            fields.push(Field::rest(&setting.source));
+        }
+    }
+    compose(here, fields, width)
 }
-
-/// The column a config key is drawn in.
-///
-/// Wide enough for the longest key §4 declares -- `verifiers.<name>.timeout` is
-/// twenty-four -- so no key is cut. A key that was cut would be a key nobody
-/// could type back at the shell, which is the whole of what this pane is for.
-const CONFIG_KEY: usize = 25;
-
-/// The column a config value is drawn in.
-///
-/// A duration, a branch name, a number of tokens: values here are short, and
-/// the room left over goes to the source beside them.
-const SET_TO: usize = 18;
 
 /// What the config pane says it is, over its rows.
 ///
@@ -3812,6 +4080,7 @@ mod tests {
     use ank_contract::meaning::{Role, MEANINGS};
     use ratatui::crossterm::event::MouseButton;
     use ratatui::style::Style;
+    use std::path::{Path, PathBuf};
 
     fn snapshot() -> Snapshot {
         Snapshot {
@@ -4201,6 +4470,344 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // One function composes a row (TASK-d58efe37eb7b, ADR-559eebf5c6f5)
+    // -----------------------------------------------------------------------
+
+    /// This file, which is the one the walk below is about.
+    fn here() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("src")
+            .join("view.rs")
+    }
+
+    /// A source with its prose and its own suite removed.
+    ///
+    /// Comments are allowed to name what the code may not -- the doc comment on
+    /// [`compose`] spells out the very call chain this forbids, because
+    /// explaining a rule means writing down the thing it rules out -- and a
+    /// trailing comment is cut only where no string opened before it. Same
+    /// reader `paint.rs` and `tests/dependencies.rs` use, with one repair: the
+    /// suite is cut at a `#[cfg(test)]` in the first column, so a `#[cfg(test)]`
+    /// on a field halfway down a struct (`stream.rs` has one) no longer
+    /// truncates the source and hides everything under it.
+    fn code_of(source: &str) -> String {
+        source
+            .lines()
+            .take_while(|line| *line != "#[cfg(test)]")
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .map(|line| match line.find("//") {
+                Some(at) if !line[..at].contains('"') => &line[..at],
+                _ => line,
+            })
+            .collect::<Vec<&str>>()
+            .join("\n")
+    }
+
+    /// Every source of this crate, by file name.
+    fn sources() -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        walk(
+            &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut out,
+        );
+        out.sort();
+        out
+    }
+
+    fn walk(dir: &Path, out: &mut Vec<(String, String)>) {
+        for entry in std::fs::read_dir(dir).expect("the source directory must be readable") {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push((
+                    path.file_name().unwrap().to_string_lossy().to_string(),
+                    std::fs::read_to_string(&path).unwrap(),
+                ));
+            }
+        }
+    }
+
+    /// One top-level function of a source, from its signature to the brace that
+    /// closes it in the first column.
+    fn body_of(code: &str, signature: &str) -> String {
+        let rest: Vec<&str> = code
+            .lines()
+            .skip_while(|line| !line.starts_with(signature))
+            .collect();
+        assert!(!rest.is_empty(), "no top-level {signature} in this source");
+        let to = rest
+            .iter()
+            .position(|line| *line == "}")
+            .unwrap_or_else(|| panic!("{signature} is never closed in the first column"));
+        rest[..=to].join("\n")
+    }
+
+    /// The one composer, as the source ships it.
+    fn composer() -> String {
+        body_of(
+            &code_of(&std::fs::read_to_string(here()).expect("this file is readable")),
+            "fn compose(",
+        )
+    }
+
+    /// **The criterion of TASK-d58efe37eb7b, made mechanical**, on `paint.rs`'s
+    /// own pattern.
+    ///
+    /// A row of the list is columns: a marker, an identifier padded to its own
+    /// width, a status or a kind beside it, and one field at the end taking
+    /// what is left. [`Composed::column`] is what draws one, and after this task
+    /// there is exactly one function in the crate that calls it. Everything else
+    /// a screen says -- a title, a sentence, a line of a document's own prose --
+    /// is `Composed::of`, which has no columns and is not a row.
+    ///
+    /// It walks the whole of `src/` rather than the file somebody remembers
+    /// drawing rows in, for `paint.rs`'s reason: the failure this exists for is
+    /// a sixth listing added next year in a file nobody would think to look at,
+    /// and ADR-559eebf5c6f5 measured what the fifth one cost before it asked for
+    /// any of this.
+    ///
+    /// **What it does not catch, said rather than implied.** A row assembled out
+    /// of `format!` and `Composed::of` would slip past this, exactly as a
+    /// hand-written escape sequence slips past `paint.rs`'s walk. Both buy the
+    /// same thing: the road a person would actually take is closed, and what is
+    /// left open is long enough to be seen in review.
+    #[test]
+    fn one_function_in_this_crate_assembles_a_row_of_the_list() {
+        let sources = sources();
+        assert!(
+            sources.len() >= 10,
+            "the walk read {} sources and gave up early",
+            sources.len()
+        );
+        assert!(
+            sources.iter().any(|(name, _)| name == "view.rs"),
+            "the walk never reached this file, so it asserted nothing"
+        );
+        let composer = composer();
+        assert!(
+            composer.contains(".column("),
+            "the composer draws no column, so this test guards an empty room"
+        );
+        let mut elsewhere: Vec<String> = Vec::new();
+        for (name, source) in &sources {
+            let code = code_of(source);
+            let outside = match name.as_str() {
+                "view.rs" => code.replace(&composer, ""),
+                _ => code,
+            };
+            elsewhere.extend(
+                outside
+                    .lines()
+                    .filter(|line| line.contains(".column("))
+                    .map(|line| format!("{name}  {}", line.trim())),
+            );
+        }
+        assert!(
+            elsewhere.is_empty(),
+            "a row of the list is assembled in {} place(s) besides compose():\n{}\n\
+             one function composes a row, and a row is drawn the same way \
+             wherever it is drawn (ADR-559eebf5c6f5)",
+            elsewhere.len(),
+            elsewhere.join("\n")
+        );
+    }
+
+    /// And that one function cannot tell which screen it is drawing for.
+    ///
+    /// The other half, and neither is worth much alone: a single composer that
+    /// took a [`Focus`] and branched on it would satisfy the count above and be
+    /// the five schemas again, in one body. So it is handed a marker, a list of
+    /// fields and a width, and there is no name of a screen anywhere in it for a
+    /// branch to be written against.
+    #[test]
+    fn the_composer_cannot_name_the_screen_it_is_drawing() {
+        let composer = composer();
+        for named in [
+            "Focus", "Pane", "self", "Claims", "Entities", "Queue", "Config",
+        ] {
+            assert!(
+                !composer.contains(named),
+                "compose() names {named}: a row is drawn the same way wherever it \
+                 is drawn, so the composer is told its fields and never its \
+                 screen (ADR-559eebf5c6f5)\n{composer}"
+            );
+        }
+    }
+
+    /// The fields of a row, and the row they compose at a width that affords
+    /// all four.
+    fn four_fields() -> Vec<Field> {
+        vec![
+            Field::plain("    7", NUMBER),
+            Field::id("TASK-6cd41d23b7d1"),
+            Field::word("in_progress", STATUS, role_of_status("in_progress")),
+            Field::rest("A title long enough to want the whole of a window"),
+        ]
+    }
+
+    /// A window that cannot afford the fields drops them from the right, and
+    /// the identifier and the marker are the two it never drops
+    /// (ADR-559eebf5c6f5).
+    ///
+    /// Dropped and not cut, which is the whole of why this function exists:
+    /// `TASK-6cd~` is ten columns spent on a name no verb can be typed against,
+    /// and the row that gave those columns to `TASK-6cd4` instead has said the
+    /// one thing a listing owes the person reading it.
+    #[test]
+    fn a_row_drops_its_fields_from_the_right_and_never_its_identifier() {
+        assert_eq!(
+            compose(text::CURSOR, four_fields(), 80).text(),
+            ">     7  TASK-6cd4   in_progress   A title long enough to want the whole of a w~",
+            "the columns moved"
+        );
+        // Down the range, and nothing on the way overruns its window.
+        for width in 12..=80 {
+            let row = compose(text::CURSOR, four_fields(), width);
+            assert!(
+                row.text().chars().count() <= width,
+                "{:?} overran {width}",
+                row.text()
+            );
+            // The identifier is whole or it is gone. It is never a stump.
+            assert!(
+                row.text().contains("TASK-6cd4") || !row.text().contains("TASK"),
+                "an identifier was cut rather than kept or dropped at {width}: {:?}",
+                row.text()
+            );
+        }
+        // The order they go in: the title first, then the status, then the row
+        // number, and what is left is the marker and the identifier.
+        // Each column is padded out to its own width, so a field that survives
+        // leaves its trailing spaces behind: the row is a grid whatever is on
+        // it, and the next row down lines up with this one.
+        assert_eq!(
+            compose(text::CURSOR, four_fields(), 34).text(),
+            ">     7  TASK-6cd4   in_progress ",
+            "the title was cut where the row could have dropped it"
+        );
+        assert_eq!(
+            compose(text::CURSOR, four_fields(), 20).text(),
+            ">     7  TASK-6cd4 "
+        );
+        assert_eq!(
+            compose(text::CURSOR, four_fields(), 12).text(),
+            "> TASK-6cd4 "
+        );
+        // Narrower than the two it never drops is the clamp's, and the clamp
+        // announces its cut the way every other cut on this screen does.
+        assert_eq!(compose(text::CURSOR, four_fields(), 6).text(), "> TAS~");
+    }
+
+    /// The last field of a row is elastic, and a kept one at the end is not
+    /// (TASK-d58efe37eb7b).
+    ///
+    /// The config pane is where the two halves of that meet, and it is the row
+    /// with no identifier on it: the key is what a person is here to read back
+    /// at a shell, so it is the field this row may not drop, and the value
+    /// beside it is a string with no honest width. A window that cannot pay for
+    /// the value's column keeps the head of it rather than dropping the whole
+    /// field -- which is the opposite of what an identifier gets, because a
+    /// value cut in half is still an answer and an identifier cut in half is
+    /// not.
+    #[test]
+    fn the_field_at_the_end_of_a_row_shrinks_and_a_kept_one_never_does() {
+        let fields = || {
+            vec![
+                Field::plain("verifiers.<name>.timeout", CONFIG_KEY).never_dropped(),
+                Field::plain("30s", SET_TO),
+                Field::rest("file"),
+            ]
+        };
+        // Wide enough for all three, in their columns.
+        assert_eq!(
+            compose(text::PLAIN, fields(), 60).text(),
+            "  verifiers.<name>.timeout   30s                 file"
+        );
+        // The width the region has inside a forty-column window: the source
+        // goes, and the value stays as much of itself as there is room for.
+        let narrow = compose(text::PLAIN, fields(), 38);
+        assert_eq!(narrow.text(), "  verifiers.<name>.timeout   30s      ");
+        assert_eq!(narrow.text().chars().count(), 38);
+        assert!(
+            !narrow.text().contains('~'),
+            "the row announced a cut where what it dropped was padding: {:?}",
+            narrow.text()
+        );
+        // Narrower still, and the value goes rather than the key.
+        assert_eq!(
+            compose(text::PLAIN, fields(), 28).text(),
+            "  verifiers.<name>.timeout "
+        );
+        // The key is whole at every width that can hold it, because a key
+        // nobody can type back at a shell is what this pane exists to avoid.
+        for width in 26..=60 {
+            let row = compose(text::PLAIN, fields(), width);
+            assert!(
+                row.text().contains("verifiers.<name>.timeout"),
+                "the key was cut at {width}: {:?}",
+                row.text()
+            );
+        }
+    }
+
+    /// Every listing on this screen is that one function, and the proof is that
+    /// they agree about a column none of them declares any more.
+    ///
+    /// Five schemas used to write `10` and `12` out for themselves and the queue
+    /// wrote neither, which is how ADR-559eebf5c6f5 found them disagreeing. The
+    /// identifier now begins where the marker ends and ends [`ID`] columns
+    /// later, on the claims, the entities, the queue and the constraints alike.
+    /// The two margins are the two markers: two columns everywhere, four on the
+    /// claims where the row also says whose claim it is, and the entities' row
+    /// number in front of it.
+    #[test]
+    fn every_listing_draws_its_identifier_in_the_column_the_composer_gives_it() {
+        let mut a = coloured(paint::PLAIN);
+        let w = 100;
+        a.focus = Focus::Claims;
+        let claims = texts(&a.claim_lines(w));
+        a.focus = Focus::Entities;
+        let entities = texts(&a.entity_lines(w, 20));
+        a.focus = Focus::Queue;
+        let queue = texts(&a.queue_lines(w));
+        a.focus = Focus::Body;
+        a.pane = Pane::Constraints;
+        let constraints = texts(&a.pane_rows(w));
+        let margins = [2, 4, 2 + NUMBER + GAP];
+        for (name, rows) in [
+            ("claims", claims),
+            ("entities", entities),
+            ("queue", queue),
+            ("constraints", constraints),
+        ] {
+            let mut seen = 0;
+            for row in &rows {
+                let Some(at) = ["TASK-", "ADR-", "SPEC-"]
+                    .iter()
+                    .filter_map(|kind| row.find(kind))
+                    .min()
+                else {
+                    continue;
+                };
+                seen += 1;
+                let margin = row[..at].chars().count();
+                assert!(
+                    margins.contains(&margin),
+                    "{name} draws its identifier {margin} columns in, and the \
+                     composer gives it {margins:?}: {row:?}"
+                );
+                let short: String = row[at..].chars().take(ID).collect();
+                assert!(
+                    !short.contains('~'),
+                    "{name} cut an identifier the composer keeps whole: {row:?}"
+                );
+            }
+            assert!(seen > 0, "{name} drew no row carrying an identifier");
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // The painting (TASK-6cd41d23b7d1, ADR-1f70ce2c3eac)
     // -----------------------------------------------------------------------
 
@@ -4297,27 +4904,47 @@ mod tests {
         );
     }
 
-    /// And every distinction it makes is still carried by text.
+    /// And every distinction it makes is still carried by text, at every width
+    /// the harness opens (TASK-d58efe37eb7b).
     ///
     /// The whole of the claim, stated the strongest way there is: the frame a
     /// painting reader draws and the frame a monochrome one draws are the same
-    /// characters, at every focus and in both panes. Anything a colour said
-    /// that a character did not would show up here as a difference.
+    /// characters, at every focus, in every pane, and at every width from forty
+    /// columns to a hundred and fifty. Anything a colour said that a character
+    /// did not would show up here as a difference.
+    ///
+    /// **The width is in the sweep because a row is composed against it.** The
+    /// old form asserted this at one window, and one window is where a mark that
+    /// slid off its value would be least likely to show: the interesting widths
+    /// are the ones where [`compose`] drops a field or [`Composed::fitted`] cuts
+    /// through a painted column, and both of those are a function of how narrow
+    /// the window is. Forty to a hundred and fifty is the range `tests/region.rs`
+    /// opens the pseudo-terminal at, so every width the harness reaches is a
+    /// width this has already drawn twice.
+    ///
+    /// Both halves are built once per screen and resized, rather than rebuilt
+    /// per width: a second `coloured()` is a second corpus only in the sense
+    /// that it costs the same rows again, and the sweep is a hundred and eleven
+    /// widths wide.
     #[test]
     fn a_painted_frame_and_a_plain_one_are_the_same_characters() {
         for focus in Focus::ALL {
-            for pane in [Pane::Body, Pane::Constraints] {
+            for pane in [Pane::Body, Pane::Constraints, Pane::Config] {
                 let (mut painted, mut plain) = (coloured(paint::COLOUR), coloured(paint::PLAIN));
-                painted.focus = focus;
-                plain.focus = focus;
-                painted.pane = pane;
-                plain.pane = pane;
-                assert_eq!(
-                    painted.frame(),
-                    plain.frame(),
-                    "the painted frame says something the plain one does not, \
-                     at {focus:?} in {pane:?}"
-                );
+                for a in [&mut painted, &mut plain] {
+                    a.focus = focus;
+                    a.pane = pane;
+                }
+                for width in 40..=150u16 {
+                    painted.resize(width, 24);
+                    plain.resize(width, 24);
+                    assert_eq!(
+                        painted.frame(),
+                        plain.frame(),
+                        "the painted frame says something the plain one does not, \
+                         at {focus:?} in {pane:?} at {width} columns"
+                    );
+                }
             }
         }
     }
