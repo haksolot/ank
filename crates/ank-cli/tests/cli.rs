@@ -68,11 +68,36 @@ fn isolated_git_config() -> &'static Path {
 /// twenty-four: the isolation is load-bearing rather than doubled by a habit,
 /// and every test in this file exercises it.
 /// `nothing_spawns_a_process_outside_the_one_door` keeps this the only door.
+///
+/// It is also where the child is told what "temporary" means, and for the same
+/// reason: a child that inherits the suite's own `TMPDIR` writes beside every
+/// other run on the machine, and nothing collects what it leaves
+/// (TASK-02350943e2b1). Measured on 2026-08-29, `cargo test --workspace` into
+/// an empty temporary directory: sixteen `ank-edit-*` and twenty
+/// `ank-signers-*` files, every one of the integration ones written by a
+/// process spawned here. Pointing the child at this run's root puts them
+/// inside the directory the next run already sweeps, and it covers the
+/// families the tool has not grown yet as well as these two.
+///
+/// **What is not being fixed is where those files are written.** The editor's
+/// scratch file is kept on purpose: `editor::kept` answers a typo without
+/// discarding the twenty minutes around it, and a file swept between the
+/// caller reading the refusal and opening the path it names would be that
+/// promise broken. It is still written, still kept, still named. Only the
+/// directory the child calls temporary moves, and this run's root outlives
+/// this run.
+///
+/// All three names, because `std::env::temp_dir` reads `TMP` and `TEMP` on
+/// Windows and `TMPDIR` everywhere else: setting one of the three would leave
+/// the child on the runner's own temporary directory on the platform where
+/// this suite runs last.
 fn spawn(program: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(program);
     let config = isolated_git_config();
     c.env("GIT_CONFIG_GLOBAL", config)
         .env("GIT_CONFIG_SYSTEM", config);
+    let root = scratch::root();
+    c.env("TMPDIR", root).env("TMP", root).env("TEMP", root);
     c
 }
 
@@ -1054,6 +1079,53 @@ fn nothing_spawns_a_process_outside_the_one_door() {
         "a process is spawned outside `spawn`, so it inherits the git \
          configuration of the machine running the suite: route it through \
          `git_command`, `ank_command` or `spawn`"
+    );
+}
+
+/// The other half of the one door: what a child of this suite calls temporary
+/// is this run's own root, and the file the editor keeps proves it.
+///
+/// Through the binary, and through the family that must *not* be swept where
+/// it is written. `an_invalid_result_leaves_the_entity_untouched_and_says_why`
+/// asserts the promise — the refusal names the file and the file holds what
+/// was typed — and this asserts where the promise is kept, which is the only
+/// thing TASK-02350943e2b1 changed. Both have to hold at once: a run that
+/// leaves nothing behind by discarding a caller's text has traded a full
+/// temporary directory for a worse defect.
+///
+/// The kept file is deliberately not removed here. It is inside the root, the
+/// next run collects the root, and a test that swept it would be asserting
+/// nothing about where it landed.
+#[test]
+fn what_a_spawned_child_calls_temporary_is_this_runs_own_root() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let broken = "---\nid: TASK-000000000001\ntype: task\ntitle: Half a file\n";
+    let editor = r.editor_saving(broken);
+
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(code(&out), 1, "{}", stderr(&out));
+    let err = stderr(&out);
+    let kept = err
+        .split("kept at ")
+        .nth(1)
+        .and_then(|s| s.split(')').next())
+        .expect("the refusal names where the text was kept")
+        .trim()
+        .to_string();
+    let kept = Path::new(&kept);
+
+    assert!(
+        kept.starts_with(scratch::root()),
+        "the child wrote outside this run's root, where nothing collects it: \
+         {} is not under {}",
+        kept.display(),
+        scratch::root().display()
+    );
+    assert_eq!(
+        std::fs::read_to_string(kept).expect("the kept file exists"),
+        broken,
+        "moved, not swept: the text the editor saved is still there"
     );
 }
 
