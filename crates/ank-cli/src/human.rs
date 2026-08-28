@@ -47,6 +47,7 @@ use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 // ---------------------------------------------------------------------------
 // Findings
@@ -923,28 +924,96 @@ pub fn git_readable_signers(text: &str) -> String {
     out
 }
 
-/// The path to hand git, which is the file itself whenever git can read all of
-/// it and a filtered copy otherwise.
+/// The file to hand git, and how long it needs to exist.
 ///
-/// Returning the source unchanged in the ordinary case matters: a corpus that
-/// declares only SSH keys writes nothing anywhere, and the file git verifies
-/// against is the file under review. The copy is named after a hash of its own
-/// content, so repeated calls over one corpus write it once and two corpora
-/// never collide.
-fn signers_for_git(source: &Path) -> Option<PathBuf> {
+/// Where git can read the declared file whole this **is** that file and nothing
+/// is written anywhere: a corpus declaring only SSH keys verifies against the
+/// file under review rather than against a copy of it. Where it cannot, this is
+/// the filtered copy, and the copy is scratch — it exists for the one git call
+/// the caller is about to make, and the last holder to drop removes it.
+///
+/// **Removing it is the change TASK-02350943e2b1 made**, and it is a change to
+/// the lifetime and not to the content. The copy used to be left where it was
+/// written, one per distinct allowlist, for as long as the machine kept its
+/// temporary directory: twenty of them stood there after a single green
+/// `cargo test --workspace`, written by the tool itself and by no leaking test.
+/// Nothing reads the file after the call it was written for — the caller hands
+/// the path straight to git and keeps none of it — so what the old lifetime
+/// bought was one skipped write of a file smaller than the signature it helps
+/// check.
+///
+/// **The name stays content-addressed, and it has to.** `git::batched`
+/// memoises every ratification's verdict under the allowed-signers path it was
+/// asked with, so a name that changed per call would turn one `rev-list` over
+/// the whole corpus into one per ratification, which is the cost
+/// TASK-1b3d7b61dc8f removed. The process id joins it because a name two
+/// processes share is a name one can pull out from under the other, and
+/// `HELD` is that same rule inside one process: `check` verifies on one
+/// thread, this crate's own tests do not, and two of them read this very
+/// repository at once.
+struct SignersForGit {
+    path: PathBuf,
+    /// Whether the path is a copy this value owns, rather than the source.
+    scratch: bool,
+}
+
+impl SignersForGit {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for SignersForGit {
+    fn drop(&mut self) {
+        if !self.scratch {
+            return;
+        }
+        let Ok(mut held) = held().lock() else {
+            return;
+        };
+        let Some(count) = held.get_mut(&self.path) else {
+            return;
+        };
+        *count -= 1;
+        if *count == 0 {
+            held.remove(&self.path);
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// How many live `SignersForGit` values each scratch copy is answering for.
+fn held() -> &'static Mutex<HashMap<PathBuf, usize>> {
+    static HELD: OnceLock<Mutex<HashMap<PathBuf, usize>>> = OnceLock::new();
+    HELD.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn signers_for_git(source: &Path) -> Option<SignersForGit> {
     let text = std::fs::read_to_string(source).ok()?;
     let readable = git_readable_signers(&text);
     if readable == text {
-        return Some(source.to_path_buf());
+        return Some(SignersForGit {
+            path: source.to_path_buf(),
+            scratch: false,
+        });
     }
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     std::hash::Hash::hash(&readable, &mut hasher);
     let digest = std::hash::Hasher::finish(&hasher);
-    let path = std::env::temp_dir().join(format!("ank-signers-{digest:016x}"));
-    if std::fs::read_to_string(&path).ok().as_deref() != Some(readable.as_str()) {
-        std::fs::write(&path, &readable).ok()?;
+    let path =
+        std::env::temp_dir().join(format!("ank-signers-{}-{digest:016x}", std::process::id()));
+    // Counted before the write and released only by `Drop`, so a second caller
+    // arriving between the first one's git call and its removal keeps the file
+    // alive instead of finding it gone.
+    *held().lock().ok()?.entry(path.clone()).or_insert(0) += 1;
+    let guard = SignersForGit {
+        path,
+        scratch: true,
+    };
+    if std::fs::read_to_string(&guard.path).ok().as_deref() != Some(readable.as_str()) {
+        std::fs::write(&guard.path, &readable).ok()?;
     }
-    Some(path)
+    Some(guard)
 }
 
 /// What a ratification commit's signature is worth.
@@ -5062,14 +5131,6 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
     }
 
     let sha = ratification_of(repo, &view)?.sha;
-    // `.ok()?` here used to fold every git failure into `None`, the one verdict
-    // `check_adr` says nothing about — so a machine where the signature could
-    // not be read looked exactly like a corpus that declared no key at all
-    // (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
-    // The file git is pointed at, which is the reviewed one unless it carries
-    // entries only ank reads. Falling back to the source on a failure to write
-    // keeps the behaviour this had before the filter existed.
-    let for_git = signers_for_git(&signers).unwrap_or_else(|| signers.clone());
 
     // **The verdict already reached for this commit, under this allowlist**
     // (TASK-dbef284a166c). gpg is 4.0 of the 7.1 seconds `check` costs on this
@@ -5092,7 +5153,21 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
         return Some(classify_signature(&facts, &declared, carries));
     }
 
-    match git::signature_of(&repo.corpus, &sha, Some(&for_git)) {
+    // The file git is pointed at, which is the reviewed one unless it carries
+    // entries only ank reads. Asked for here and not above the cache, because
+    // it is this call that needs it and a verdict already held needs no file at
+    // all. Falling back to the source on a failure to write keeps the behaviour
+    // this had before the filter existed.
+    //
+    // `.ok()?` below used to fold every git failure into `None`, the one
+    // verdict `check_adr` says nothing about — so a machine where the signature
+    // could not be read looked exactly like a corpus that declared no key at
+    // all (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
+    let for_git = signers_for_git(&signers);
+    let handed = for_git
+        .as_ref()
+        .map_or(signers.as_path(), SignersForGit::path);
+    match git::signature_of(&repo.corpus, &sha, Some(handed)) {
         Ok(facts) => {
             signature_cache(repo, |index, key| {
                 index.remember_signature(&sha, key, facts.status, &facts.fingerprint);
@@ -8515,18 +8590,32 @@ mod tests {
         let file = dir.join("allowed_signers");
         std::fs::write(&file, source).unwrap();
         assert_eq!(
-            signers_for_git(&file).as_deref(),
-            Some(file.as_path()),
+            signers_for_git(&file).unwrap().path(),
+            file.as_path(),
             "no copy is written when none is needed"
         );
 
         std::fs::write(&file, format!("sean@example.com gpg 739A60\n{source}")).unwrap();
         let handed = signers_for_git(&file).unwrap();
         assert_ne!(
-            handed, file,
+            handed.path(),
+            file,
             "a file carrying an ank-only entry needs a copy"
         );
-        assert_eq!(std::fs::read_to_string(&handed).unwrap(), source);
+        assert_eq!(std::fs::read_to_string(handed.path()).unwrap(), source);
+
+        // And the copy is scratch: it lives for the git call it was written
+        // for and no longer (TASK-02350943e2b1). It is not inside `dir` — it
+        // is named after its own content, in the temporary directory — so
+        // removing the directory this test made would never have reached it,
+        // which is how twenty of them came to stand beside the suite's root.
+        let copy = handed.path().to_path_buf();
+        drop(handed);
+        assert!(
+            !copy.exists(),
+            "the copy outlived the value that owned it: {}",
+            copy.display()
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
