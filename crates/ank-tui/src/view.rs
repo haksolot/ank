@@ -227,7 +227,7 @@ use crate::ank::{Ank, Failed, Ran};
 use crate::bindings::{self, Binding, Holding};
 use crate::form::{Filled, Form, SET as SETTING};
 use crate::input::{Act, Command, Subject};
-use crate::keys::{self, Editing, Press};
+use crate::keys::{self, Narrowing, Press};
 use crate::model::{self, short_of, Detail, Held, Queue, Row, Setting, Settings, Snapshot};
 use crate::paint::{self, role_of_id, Composed, Ink};
 use crate::stream::Stream;
@@ -497,14 +497,21 @@ pub struct App {
     /// `reload`, and a pane refreshed from there would be a stream of `ank
     /// config` calls nobody asked for.
     config: Option<Settings>,
-    /// The one-line prompt, open, with what has been typed into it so far.
+    /// The open search, with the needle typed into it so far
+    /// (TASK-c94d086682f3, ADR-559eebf5c6f5).
     ///
-    /// `None` is the ordinary state and it is where every key is a command. The
-    /// prompt is what a verb carrying a message, a reason, a proof or a flag is
-    /// spelled into, and what a search is typed into; it is opened by a key,
-    /// dismissed by a key, and runs nothing until Enter -- at which point what
-    /// it produced is a [`Pending`] and still not a spawned verb.
-    prompt: Option<String>,
+    /// `None` is the ordinary state and it is where every key is a command;
+    /// `Some` is where every character is a needle. It is not a line waiting to
+    /// be read: [`App::search`] is set from it on every keystroke, so what this
+    /// holds and what the list is narrowed by are the same string for as long
+    /// as the search is open. What it carries that `search` does not is that
+    /// the search is *open*, which is what makes the state modal and what
+    /// [`App::holding`] reads.
+    ///
+    /// The two outlive each other in one direction only: Enter closes this and
+    /// leaves `search` where it is, which is how a narrowing survives the
+    /// keyboard coming back.
+    needle: Option<String>,
     /// The verb that has been composed and shown and not yet run
     /// (TASK-d4a882345837).
     ///
@@ -609,7 +616,7 @@ impl App {
             stream,
             queue: None,
             config: None,
-            prompt: None,
+            needle: None,
             pending: None,
             // The two reads of the environment this crate makes, and they
             // ask it one thing between them. A session is at a terminal by
@@ -891,17 +898,35 @@ impl App {
         if self.pending.is_some() {
             return self.answer(key, ank);
         }
-        if let Some(line) = &mut self.prompt {
-            return match keys::edit(line, key) {
-                Editing::Typing => false,
-                Editing::Cancel => {
-                    self.prompt = None;
+        // The search, which narrows on the keystroke and has nothing to submit
+        // (TASK-c94d086682f3, ADR-559eebf5c6f5). What stood here read a line
+        // into a buffer, ran nothing until Enter, and then handed the whole
+        // string to a grammar; the grammar is gone and so is the wait.
+        //
+        // The needle is applied through `act` like any other command, which is
+        // what keeps one road to `self.search`: a keystroke is a
+        // `Command::Search`, and `Command::Search` is the only thing that
+        // narrows the list.
+        if let Some(needle) = &mut self.needle {
+            return match keys::narrowing(needle, key) {
+                Narrowing::Narrowed => {
+                    let text = needle.clone();
+                    let narrowed = (!text.is_empty()).then_some(text);
+                    self.act(Command::Search(narrowed), ank)
+                }
+                // The search ends and the narrowing stays. Nothing is run:
+                // the list has been narrowed on every keystroke that came
+                // before this one, and what this gives back is the keyboard.
+                Narrowing::Kept => {
+                    self.needle = None;
                     false
                 }
-                Editing::Submit => {
-                    let line = self.prompt.take().unwrap_or_default();
-                    let command = crate::input::parse(&line);
-                    self.act(command, ank)
+                // And the list comes back whole, which is the half of the
+                // criterion a close alone would not have met: a search
+                // dismissed used to leave the narrowing it had made.
+                Narrowing::Undone => {
+                    self.needle = None;
+                    self.act(Command::Search(None), ank)
                 }
             };
         }
@@ -943,8 +968,11 @@ impl App {
                 let next = keys::next_kind(self.kind.as_deref());
                 self.act(Command::Kind(next), ank)
             }
-            Press::Prompt(seed) => {
-                self.prompt = Some(seed.to_string());
+            // The search, started on an empty needle: there is no seed, because
+            // there is no grammar left to tell a search from a command by one
+            // (TASK-c94d086682f3).
+            Press::Find => {
+                self.needle = Some(String::new());
                 false
             }
             // A key this screen does not answer to leaves everything where it
@@ -1023,7 +1051,7 @@ impl App {
                     // keystroke that is not the one key that runs.
                     return self.answer(KeyEvent::new(KeyCode::Null, KeyModifiers::NONE), ank);
                 }
-                if self.prompt.is_some() {
+                if self.needle.is_some() {
                     return false;
                 }
                 // The one target the frame always carries, and it is resolved
@@ -1049,10 +1077,10 @@ impl App {
         }
     }
 
-    /// A scroll, where a scroll means anything: under a prompt or a
+    /// A scroll, where a scroll means anything: under an open search or a
     /// confirmation nothing moves, which is the modal rule again.
     fn moved(&mut self, by: isize, ank: &Ank) -> bool {
-        if self.pending.is_some() || self.prompt.is_some() {
+        if self.pending.is_some() || self.needle.is_some() {
             return false;
         }
         // A swipe over the form walks its fields, which is what the arrows do:
@@ -1294,39 +1322,16 @@ impl App {
                 };
                 self.focus_on(to, ank);
             }
-            Command::Select(needle) => {
-                match self.entity_rows().iter().position(|r| {
-                    r.id.to_ascii_uppercase()
-                        .starts_with(&needle.to_ascii_uppercase())
-                }) {
-                    Some(at) => {
-                        self.focus = Focus::Entities;
-                        self.cursors[Focus::Entities.number() - 1].at = at;
-                        self.clamp(Focus::Entities);
-                        self.open_selected(ank);
-                    }
-                    None => {
-                        self.note = Some(format!(
-                            "no entity here matches '{needle}' (a filter is on: f, /)"
-                        ))
-                    }
-                }
-            }
-            Command::Row(n) => {
-                if !self.focus.holds_rows() {
-                    self.note = Some(format!(
-                        "a document has no row {n}: it is paged, not selected"
-                    ));
-                    return false;
-                }
-                let total = self.count(self.focus);
-                if n == 0 || n > total {
-                    self.note = Some(format!("there is no row {n}: this screen holds {total}"));
-                } else {
-                    self.cursors[self.focus.number() - 1].at = n - 1;
-                    self.clamp(self.focus);
-                }
-            }
+            // `Command::Select` and `Command::Row` stood here
+            // (TASK-c94d086682f3). They were the two commands no key reached:
+            // an identifier typed whole jumped to the entity and opened it, and
+            // a row number landed on the row the list printed it beside. Both
+            // needed a line and there is none, so both are gone from
+            // `crate::input` -- and what replaces them is one clause of
+            // ADR-559eebf5c6f5 rather than two arms: `/4974` narrows the list
+            // to the rows carrying it as it is typed, which reaches the same
+            // entity in fewer keys and reaches it from a document too, where a
+            // row number only ever had a refusal to offer.
             Command::Kind(kind) => {
                 if let Some(k) = &kind {
                     if !keys::KINDS.contains(&k.as_str()) {
@@ -1382,10 +1387,6 @@ impl App {
             // `App::filling`, and the confirmation is on that road like every
             // other (TASK-d832452630d2).
             Command::Form(verb) => self.open_form(verb),
-            Command::Nothing => {}
-            Command::Unknown(word) => {
-                self.note = Some(format!("no command '{word}'; ? for the list"))
-            }
         }
         false
     }
@@ -1857,7 +1858,7 @@ impl App {
 
     /// One frame, onto a ratatui `Frame` (TASK-4fa385c1772d).
     ///
-    /// The caret is set only where a prompt is open, which is what makes
+    /// The caret is set only where a search is open, which is what makes
     /// ratatui show a cursor at all: on every other screen this reader has
     /// nothing to point at, and a block sitting on an arbitrary row would be a
     /// promise that something there can be typed into.
@@ -2617,11 +2618,11 @@ impl App {
         self.size.0
     }
 
-    /// Where the caret goes, which is the end of the prompt or nowhere.
+    /// Where the caret goes, which is the end of the needle or nowhere.
     fn caret(&self, area: Rect) -> Option<Position> {
-        let line = self.prompt.as_ref()?;
+        let line = self.needle.as_ref()?;
         let note = self.arrange(area).note;
-        let at = PROMPT.chars().count() + line.chars().count();
+        let at = SEARCH.chars().count() + line.chars().count();
         Some(Position::new(
             note.x + (at as u16).min(note.width.saturating_sub(1)),
             note.y,
@@ -2635,15 +2636,15 @@ impl App {
     /// measured rather than assumed, and the layout pays for what it actually
     /// is.
     ///
-    /// **An open prompt is drawn here and hides whatever the note was saying.**
+    /// **An open search is drawn here and hides whatever the note was saying.**
     /// One band of the screen belongs to whatever the reader is being told or
-    /// asked, and a person typing `done commit:<sha>` needs to see the line
-    /// they are typing far more than the answer to the command before it. What
-    /// was there comes back when the prompt is dismissed, because cancelling
-    /// runs nothing and nothing clears it.
+    /// asked, and a person narrowing a list needs to see the needle it is
+    /// narrowed by far more than the answer to the command before it. What was
+    /// there comes back when the search ends, because neither way out of it
+    /// runs anything and nothing clears it.
     ///
     /// **And a confirmation is drawn here too, above both of them**
-    /// (TASK-d4a882345837). It belongs in this band for the reason the prompt
+    /// (TASK-d4a882345837). It belongs in this band for the reason the needle
     /// does -- it is what the reader is asking -- and it belongs in the *chrome*
     /// rather than in a panel or a box of its own for two reasons that outlive
     /// this task. The chrome is full width and unbordered, so the command line
@@ -2673,8 +2674,8 @@ impl App {
             .map(|l| fit(&l, width))
             .collect();
         }
-        if let Some(line) = &self.prompt {
-            return vec![fit(&format!("{PROMPT}{line}"), width)];
+        if let Some(line) = &self.needle {
+            return vec![fit(&format!("{SEARCH}{line}"), width)];
         }
         match &self.note {
             None => match self
@@ -2754,14 +2755,15 @@ impl App {
     /// the same direction: a command waiting to be answered offers the key that
     /// runs it and the key that drops it and nothing else, because nothing else
     /// is what the rest of the keyboard does (TASK-d4a882345837); and an open
-    /// prompt offers the two ways out of a line. Anything else drawn under
-    /// either would be an offer the reader would refuse.
+    /// search offers the two ways out of it, since every letter is a needle
+    /// while one is open (TASK-c94d086682f3). Anything else drawn under either
+    /// would be an offer the reader would refuse.
     fn holding(&self) -> Holding {
         if self.pending.is_some() {
             return Holding::Waiting;
         }
-        if self.prompt.is_some() {
-            return Holding::Typing;
+        if self.needle.is_some() {
+            return Holding::Narrowing;
         }
         Holding::Panel(self.focus)
     }
@@ -2975,9 +2977,9 @@ impl App {
     /// **The writing half has its letters now** (TASK-1a415107fd56), so this is
     /// one line and no longer two roads. It was written with a second arm --
     /// a row of the writing half had no key to press, so it reached the verb
-    /// through the typed grammar, and a verb wanting a message opened the
-    /// prompt with its word in it. There is no keyless row left and no typed
-    /// grammar that reads a verb, so what remains is the rule the doc above
+    /// through the typed grammar, and a verb wanting a message opened a line
+    /// with its word in it. There is no keyless row left and no typed grammar
+    /// at all, so what remains is the rule the doc above
     /// states, applied to every row: a row is the key it names, and pressing it
     /// presses that key.
     ///
@@ -3757,12 +3759,14 @@ fn step(at: usize, by: isize, total: usize) -> usize {
     moved.clamp(0, last as isize) as usize
 }
 
-/// The marker the prompt is drawn behind.
+/// The marker the open search is drawn behind (TASK-c94d086682f3).
 ///
-/// What follows it is the line the grammar will be given, byte for byte,
-/// leading slash included: a person about to press Enter is looking at exactly
-/// what will be read.
-pub const PROMPT: &str = ": ";
+/// It was `": "` and it stood in front of a line the grammar was about to be
+/// given. There is no grammar and nothing is about to happen: what follows this
+/// is the needle the list is *already* narrowed to, so the marker is the search
+/// key itself, which is what a person pressed to get here and what every other
+/// incremental search on a terminal draws.
+pub const SEARCH: &str = "/";
 // `KEYS`, `PANEL_KEYS`, `ACT_KEYS` and `RATIFY_KEY` stood here
 // (TASK-4d2eb2b4e193). Four sentences about a key table, written beside two
 // other renderings of the same table, and ADR-c07e2694f0e1 records what they
@@ -5620,20 +5624,87 @@ mod tests {
         assert!(said.contains("ADR-8bd76e8d7c4e"), "{said}");
     }
 
+    /// **The list narrows on every keystroke, and Escape gives it back**
+    /// (TASK-c94d086682f3, ADR-559eebf5c6f5).
+    ///
+    /// This stands where `a_row_number_out_of_range_is_named_rather_than_
+    /// clamped_silently` stood, which is not a coincidence: the row number was
+    /// the affordance the search replaces, and it went with the line it was
+    /// typed on.
+    ///
+    /// The narrowing is read after each character rather than at the end. A
+    /// test that typed the whole needle and then looked would pass on the
+    /// reader this replaces -- one that composes a line and narrows once, on
+    /// Enter -- which is exactly the grammar the decision ends.
     #[test]
-    fn a_row_number_out_of_range_is_named_rather_than_clamped_silently() {
+    fn the_list_narrows_on_every_keystroke_and_escape_gives_it_back() {
         let mut a = app();
         let ank = nowhere();
-        a.act(Command::Row(99), &ank);
-        assert!(a.note.clone().unwrap().contains("there is no row 99"));
-        a.act(Command::Row(2), &ank);
-        assert_eq!(a.cursors[Focus::Entities.number() - 1].at, 1);
-        a.focus = Focus::Body;
-        a.act(Command::Row(1), &ank);
-        assert!(
-            a.note.unwrap().contains("a document has no row 1"),
-            "a document is paged, not selected"
+        let whole = rendered_rows(&a);
+        assert_eq!(whole.len(), 3, "the fixture is not three rows");
+
+        tap(&mut a, &ank, KeyCode::Char(keys::FIND));
+        assert_eq!(a.needle.as_deref(), Some(""), "the search opened on a seed");
+        assert_eq!(rendered_rows(&a), whole, "`/` narrowed before a needle");
+
+        // `spec` reaches one row, and it reaches it by the letter: after `s`
+        // the list is already shorter, which is the clause.
+        let mut narrowed = Vec::new();
+        for c in "spec".chars() {
+            tap(&mut a, &ank, KeyCode::Char(c));
+            narrowed.push(rendered_rows(&a).len());
+        }
+        assert_eq!(
+            narrowed,
+            [2, 1, 1, 1],
+            "the list did not follow the needle keystroke by keystroke"
         );
+        assert_eq!(rendered_rows(&a), ["SPEC-fe8bdb84faca"]);
+        assert_eq!(a.note, None, "narrowing said something");
+
+        // A Backspace widens it again, on the keystroke, for the same reason.
+        tap(&mut a, &ank, KeyCode::Backspace);
+        assert_eq!(rendered_rows(&a).len(), 1);
+        tap(&mut a, &ank, KeyCode::Backspace);
+        tap(&mut a, &ank, KeyCode::Backspace);
+        assert_eq!(rendered_rows(&a).len(), 2, "'s' matches two rows");
+
+        // And Escape gives the list back unnarrowed, which a search that only
+        // closed would not have done.
+        tap(&mut a, &ank, KeyCode::Esc);
+        assert_eq!(a.needle, None, "Escape left the search open");
+        assert_eq!(a.search, None);
+        assert_eq!(rendered_rows(&a), whole);
+    }
+
+    /// Enter ends the search with the narrowing in force, and runs nothing
+    /// (TASK-c94d086682f3).
+    ///
+    /// The other way out, and the one that gives the keyboard back: every
+    /// letter is a needle while the search is open, so a person who has found
+    /// their row needs to leave without losing it. It is not a submit -- there
+    /// is nothing composed for it to run -- and the assertion that nothing was
+    /// said is what holds that.
+    #[test]
+    fn enter_leaves_the_search_with_the_list_still_narrowed() {
+        let mut a = app();
+        let ank = nowhere();
+        tap(&mut a, &ank, KeyCode::Char(keys::FIND));
+        for c in "task".chars() {
+            tap(&mut a, &ank, KeyCode::Char(c));
+        }
+        assert_eq!(rendered_rows(&a), ["TASK-49746735127f"]);
+
+        tap(&mut a, &ank, KeyCode::Enter);
+        assert_eq!(a.needle, None, "the search is still open");
+        assert_eq!(a.search.as_deref(), Some("task"), "the narrowing was lost");
+        assert_eq!(rendered_rows(&a), ["TASK-49746735127f"]);
+        assert_eq!(a.note, None, "Enter ran something");
+
+        // And the keys are back: `j` moves a cursor rather than lengthening a
+        // needle.
+        tap(&mut a, &ank, KeyCode::Char('j'));
+        assert_eq!(a.search.as_deref(), Some("task"), "'j' reached the needle");
     }
 
     #[test]
@@ -5679,7 +5750,7 @@ mod tests {
                 // form is one of those states now (TASK-d832452630d2), and
                 // leaving it open would send the rest of the alphabet into a
                 // title instead of into the reader.
-                a.prompt = None;
+                a.needle = None;
                 a.pending = None;
                 a.form = None;
                 let said = a.note.clone().unwrap_or_default();
@@ -5861,7 +5932,7 @@ mod tests {
             // The key did the one thing a key does here, and none of the
             // things it does everywhere else.
             assert_eq!(a.pending, None, "{code:?} left the command waiting");
-            assert_eq!(a.prompt, None, "{code:?} opened the prompt");
+            assert_eq!(a.needle, None, "{code:?} opened the needle");
             assert_eq!(a.focus, focus, "{code:?} moved the focus");
             assert_eq!(a.cursors, cursors, "{code:?} moved a cursor");
             assert_eq!(a.kind, kind, "{code:?} moved the filter");
@@ -5894,30 +5965,31 @@ mod tests {
         );
     }
 
+    /// The needle is on the screen behind the key that opened it, and the list
+    /// under it is already narrowed (TASK-c94d086682f3).
+    ///
+    /// `a_prompt_dismissed_runs_nothing` stood beside this and is folded into
+    /// `the_list_narrows_on_every_keystroke_and_escape_gives_it_back`, which
+    /// makes the stronger claim: Escape does not merely run nothing, it gives
+    /// the whole list back.
     #[test]
-    fn a_prompt_dismissed_runs_nothing() {
+    fn the_open_search_draws_its_needle_behind_the_key_that_opened_it() {
         let mut a = app();
         let ank = nowhere();
         tap(&mut a, &ank, KeyCode::Char(keys::FIND));
-        for c in "needle".chars() {
-            tap(&mut a, &ank, KeyCode::Char(c));
-        }
-        tap(&mut a, &ank, KeyCode::Esc);
-        assert_eq!(a.prompt, None);
-        assert_eq!(a.note, None, "a dismissed prompt ran something");
-    }
-
-    #[test]
-    fn the_find_key_opens_the_prompt_on_a_search() {
-        let mut a = app();
-        let ank = nowhere();
-        tap(&mut a, &ank, KeyCode::Char(keys::FIND));
-        assert_eq!(a.prompt.as_deref(), Some("/"));
+        assert_eq!(a.needle.as_deref(), Some(""));
         for c in "terminal".chars() {
             tap(&mut a, &ank, KeyCode::Char(c));
         }
-        assert!(a.frame().contains(": /terminal"), "{}", a.frame());
-        tap(&mut a, &ank, KeyCode::Enter);
+        // The marker is the search key itself, read out of the reader rather
+        // than spelled here: `/` is what a person pressed to get here.
+        assert!(
+            a.frame().contains(&format!("{SEARCH}terminal")),
+            "{}",
+            a.frame()
+        );
+        // And the list is narrowed while the needle is still being typed into,
+        // which is what makes the marker a report and not a prompt.
         assert_eq!(rendered_rows(&a), ["ADR-8bd76e8d7c4e"]);
     }
 
@@ -6156,7 +6228,7 @@ mod tests {
                 a.focus = Focus::Body;
                 a.detail = Some(detail("TASK-49746735127f", "a body\n"));
             },
-            |a| a.prompt = Some("done".to_string()),
+            |a| a.needle = Some("a needle".to_string()),
             |a| {
                 a.pending = Some(Pending {
                     verb: "log",
@@ -6281,7 +6353,7 @@ mod tests {
                     "{label} is not on the header at {window:?}:\n{}",
                     start.frame()
                 );
-                let modal = start.pending.is_some() || start.prompt.is_some();
+                let modal = start.pending.is_some() || start.needle.is_some();
                 let mut touched = made(state);
                 touch(&mut touched, &ank, at(&start));
                 assert_eq!(

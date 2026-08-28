@@ -343,16 +343,21 @@ fn the_key_past_the_six_names_the_verbs_with_no_letter_of_their_own() {
     assert_eq!(refs, repo.refs(), "the list moved a ref under refs/ank/");
 }
 
-/// **The prompt a verb was spelled into is gone, and no word typed anywhere
-/// reaches a verb** (TASK-1a415107fd56, ADR-c07e2694f0e1).
+/// **No word typed anywhere reaches a verb, and there is no line to type one
+/// on** (TASK-1a415107fd56, TASK-c94d086682f3, ADR-559eebf5c6f5).
 ///
-/// Two halves, and neither is the other. The first is that the key which used
-/// to open a line on nothing opens no line: `a` is `accept` now, and on a row
-/// it says so. The second is about the line that is still there -- `/` opens a
-/// search, and a person who takes the seed off and spells a verb whole gets
-/// what any other unknown word gets, a sentence saying the reader does not know
-/// it. A grammar that had kept the six as a second road would answer that line
-/// with a confirmation, which is exactly what is asserted absent.
+/// Two halves, and neither is the other. The first is about the search, which
+/// is the only thing a character reaches now: each of the six spelled into it
+/// whole is a needle and never a verb, so what a person sees is a list narrowed
+/// to nothing rather than a command waiting for an answer.
+///
+/// The second is that no key opens a line at all. It used to be measured by
+/// looking for the prompt's marker at the head of a band; the marker is the
+/// search key itself now and a listing is full of paths, so a stronger instrument
+/// takes its place -- the keystroke *after* `a`. If `a` had opened a line, `q`
+/// would be a character of it and the session would still be up; `Live::quit`
+/// requires the process to have left with 0, so a reader that swallowed it
+/// fails here rather than passing quietly.
 #[test]
 fn no_word_typed_anywhere_reaches_a_verb() {
     let _one = ONE_AT_A_TIME
@@ -365,31 +370,12 @@ fn no_word_typed_anywhere_reaches_a_verb() {
     let mut live = Live::open(&repo, WINDOW.0, WINDOW.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
 
-    // `a` on a row opens no line. It is `accept`, and off the document it names
-    // the way in rather than a prompt to type into.
-    live.send("2");
-    live.until("the listing", |t| t.contains("2 ENTITIES"));
-    live.send("a");
-    live.until("the reader to answer", |t| {
-        t.contains("open it into the body")
-    });
-    let answered = live.frame();
-    // On a line that *starts* with the prompt's marker and not on the marker
-    // anywhere: the prompt is drawn at the head of the band it owns, and a
-    // colon inside a sentence is a sentence.
-    assert!(
-        !answered
-            .lines()
-            .any(|line| line.starts_with(ank_tui::view::PROMPT)),
-        "'a' opened a line to type a verb into:\n{answered}"
-    );
-
-    // And the line that is left is a search. Cleared back to empty, every one
-    // of the six is a word this reader does not know.
+    // Every one of the six, spelled whole into the search: a needle no entity
+    // carries, and never a command.
     for verb in SIX {
-        live.send(&format!("{}\u{15}{verb}\r", ank_tui::keys::FIND));
-        live.until(&format!("the reader to answer '{verb}'"), |t| {
-            t.contains(&format!("no command '{verb}'")) || t.contains("no entity here matches")
+        live.send(&format!("{}{verb}", ank_tui::keys::FIND));
+        live.until(&format!("the needle to reach '{verb}'"), |t| {
+            t.contains(&format!("{}{verb}", ank_tui::view::SEARCH))
         });
         let said = live.frame();
         assert!(
@@ -400,8 +386,22 @@ fn no_word_typed_anywhere_reaches_a_verb() {
             !said.contains(&format!("ank {verb}")),
             "'{verb}' typed whole reached the verb:\n{said}"
         );
+        // And back to the whole list, so the next needle starts where this one
+        // did.
+        live.send("\u{1b}");
+        live.until("the list to come back", |t| t.contains("ENTITIES all 2"));
     }
 
+    // `a` on a row opens no line. It is `accept`, and off the document it names
+    // the way in rather than a prompt to type into.
+    live.send("2");
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
+    live.send("a");
+    live.until("the reader to answer", |t| {
+        t.contains("open it into the body")
+    });
+
+    // The instrument for "no line was opened": `q` is still the way out.
     live.quit();
     assert_eq!(
         before,

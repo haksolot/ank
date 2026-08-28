@@ -100,10 +100,11 @@ fn expected(argv: &str, id: &str) -> String {
 
 /// Opens one document into the body panel and waits until it is there.
 ///
-/// By identifier and through the search, because an identifier is a line by
-/// nature and `/` is the one prompt left (TASK-1a415107fd56): the needle
-/// narrows the listing to the one row, and Enter opens the row under the
-/// cursor, which a search puts back at the top. Into the *body* panel
+/// By identifier and through the search, which is the one thing a character
+/// reaches (TASK-1a415107fd56, TASK-c94d086682f3): the needle narrows the
+/// listing to the one row as it is typed, the first Enter leaves the search
+/// with that narrowing in force, and the second opens the row under the cursor,
+/// which a search puts back at the top. Into the *body* panel
 /// deliberately, which is the only panel `accept` is a command in
 /// (TASK-d90e94afca08) and is therefore the one place all six can be reached
 /// from.

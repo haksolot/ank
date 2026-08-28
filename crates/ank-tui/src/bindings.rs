@@ -151,10 +151,16 @@ pub enum Runs {
     Run,
     /// The command on the screen, dropped.
     Dismiss,
-    /// The open line, read as a command.
-    Submit,
-    /// The open line, dropped.
-    Cancel,
+    /// The open search, left with the narrowing it made
+    /// (TASK-c94d086682f3).
+    ///
+    /// It was `Submit` -- the open line, read as a command -- and there is no
+    /// line and no command to read it as. What this row names is the way out
+    /// that keeps the list narrowed; the narrowing itself happened on every
+    /// keystroke before it.
+    Keep,
+    /// The open search, ended, and the list given back unnarrowed.
+    Undo,
 }
 
 /// Which half of the reader a binding belongs to.
@@ -222,8 +228,10 @@ pub enum Offered {
     /// Only over a command waiting to be answered, which is modal: nothing else
     /// is what the rest of the keyboard does (TASK-d4a882345837).
     Waiting,
-    /// Only over an open prompt, which is modal for the same reason.
-    Typing,
+    /// Only over an open search, which is modal for the same reason: while one
+    /// is open every letter is a needle, so the two rows this offers are the
+    /// two ways out of it (TASK-c94d086682f3).
+    Narrowing,
     /// Only on a document `accept` would take: a proposal, open in the body
     /// panel. A trailer that carried the word over every open entity would be
     /// offering what the verb turns down.
@@ -306,8 +314,8 @@ pub enum Tail {
 pub enum Holding {
     /// A composed command, waiting to be answered.
     Waiting,
-    /// An open prompt.
-    Typing,
+    /// An open search.
+    Narrowing,
     /// Neither, with this panel focused.
     Panel(Focus),
 }
@@ -424,7 +432,7 @@ pub static BINDINGS: &[Binding] = &[
     Binding {
         key: KeyCode::Char(FIND),
         aliases: &[],
-        runs: Runs::Press(Press::Prompt("/")),
+        runs: Runs::Press(Press::Find),
         word: "find",
         group: Group::Screen,
         offered: Offered::Panels(&[Focus::Entities]),
@@ -781,19 +789,19 @@ pub static BINDINGS: &[Binding] = &[
     Binding {
         key: KeyCode::Enter,
         aliases: &[],
-        runs: Runs::Submit,
-        word: "run",
+        runs: Runs::Keep,
+        word: "keep",
         group: Group::Answer,
-        offered: Offered::Typing,
+        offered: Offered::Narrowing,
         verb: None,
     },
     Binding {
         key: KeyCode::Esc,
         aliases: &[],
-        runs: Runs::Cancel,
-        word: "cancel",
+        runs: Runs::Undo,
+        word: "clear",
         group: Group::Answer,
-        offered: Offered::Typing,
+        offered: Offered::Narrowing,
         verb: None,
     },
 ];
@@ -843,7 +851,7 @@ impl Binding {
     pub fn is_offered(&self, holding: Holding) -> bool {
         match (self.offered, holding) {
             (Offered::Waiting, Holding::Waiting) => true,
-            (Offered::Typing, Holding::Typing) => true,
+            (Offered::Narrowing, Holding::Narrowing) => true,
             (Offered::Anywhere, Holding::Panel(_)) => true,
             (Offered::Panels(panels), Holding::Panel(focus)) => panels.contains(&focus),
             // The ratification offer is the line the trailer draws over a
@@ -914,7 +922,7 @@ pub const OFF_THE_DOCUMENT: &str =
 ///
 /// The three groups a key press answers, the writing half included since
 /// TASK-1a415107fd56 gave it letters. What stays out is [`Group::Answer`],
-/// whose two grammars are the confirmation's and the prompt's and are modal --
+/// whose two grammars are the confirmation's and the search's and are modal --
 /// so an `Esc` here is the one that goes back, and never the one that dismisses
 /// a command that is not on the screen.
 pub fn of_key(code: KeyCode) -> Option<&'static Binding> {
@@ -1038,8 +1046,12 @@ const RATIFY_NOTE: &str =
 /// runs and the whole of the rest of the keyboard declines. The pair is what
 /// the screen *offers*; the sentence is what it does.
 const WAITING_NOTE: &str = "   (over a command waiting -- every other key dismisses it too)";
-/// What it says after the prompt's two.
-const TYPING_NOTE: &str = "   (over a line being typed)";
+/// What it says after the search's two.
+///
+/// "as it is typed" and not "then Enter", because that is the grammar
+/// (ADR-559eebf5c6f5): the list is already narrowed by the time either of these
+/// two keys is pressed, and what they choose is whether it stays that way.
+const NARROWING_NOTE: &str = "   (the list narrows as it is typed -- there is nothing to submit)";
 
 /// One line of the key list: the bindings it names, and how they are drawn.
 ///
@@ -1221,14 +1233,14 @@ fn waiting() -> Line {
     }
 }
 
-/// What an open prompt offers.
-fn typing() -> Line {
+/// What an open search offers.
+fn narrowed() -> Line {
     Line {
-        title: "typing",
-        bindings: answering(Offered::Typing),
+        title: "narrowing",
+        bindings: answering(Offered::Narrowing),
         lead: String::new(),
         between: "  ",
-        note: TYPING_NOTE.to_string(),
+        note: NARROWING_NOTE.to_string(),
     }
 }
 
@@ -1249,7 +1261,7 @@ fn lines() -> Vec<Line> {
         settings(),
         ratify(),
         waiting(),
-        typing(),
+        narrowed(),
     ]
 }
 
@@ -1545,9 +1557,9 @@ mod tests {
                     fields.push(flag);
                 }
             }
-            if let Runs::Press(Press::Prompt(seed)) = &binding.runs {
-                fields.push(seed);
-            }
+            // The seed a prompt opened on stood here (TASK-c94d086682f3). It
+            // was the last `&'static str` a row carried into a composed line,
+            // and there is no line: `Press::Find` carries nothing.
             for field in fields {
                 assert_ne!(
                     field, "-",
@@ -1650,7 +1662,7 @@ mod tests {
     /// **The two modal grammars answer the keys the table offers**
     /// (TASK-4d2eb2b4e193).
     ///
-    /// [`crate::keys::confirming`] and [`crate::keys::edit`] are stated over
+    /// [`crate::keys::confirming`] and [`crate::keys::narrowing`] are stated over
     /// the whole keyboard rather than over a list -- one key runs and every
     /// other one declines, which is a claim about every keystroke there is --
     /// so they are not generated from rows and must not be. What *can* be held
@@ -1659,7 +1671,7 @@ mod tests {
     /// answer would be a target that reads as an offer and behaves as nothing.
     #[test]
     fn the_modal_grammars_answer_the_keys_the_table_offers() {
-        use crate::keys::{confirming, edit, Answer, Editing};
+        use crate::keys::{confirming, narrowing, Answer, Narrowing};
         use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
         let bare = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
@@ -1670,13 +1682,17 @@ mod tests {
             match binding.runs {
                 Runs::Run => assert_eq!(confirming(key), Answer::Run, "{binding:?}"),
                 Runs::Dismiss => assert_eq!(confirming(key), Answer::Dismiss, "{binding:?}"),
-                Runs::Submit => {
-                    let mut line = String::from("done commit:2d9c847");
-                    assert_eq!(edit(&mut line, key), Editing::Submit, "{binding:?}");
+                Runs::Keep => {
+                    let mut needle = String::from("a needle");
+                    assert_eq!(narrowing(&mut needle, key), Narrowing::Kept, "{binding:?}");
                 }
-                Runs::Cancel => {
-                    let mut line = String::from("done commit:2d9c847");
-                    assert_eq!(edit(&mut line, key), Editing::Cancel, "{binding:?}");
+                Runs::Undo => {
+                    let mut needle = String::from("a needle");
+                    assert_eq!(
+                        narrowing(&mut needle, key),
+                        Narrowing::Undone,
+                        "{binding:?}"
+                    );
                 }
                 ref other => panic!("{other:?} is not something a modal state answers with"),
             }

@@ -1,9 +1,14 @@
-//! One key per command, and the one place a line is still typed
-//! (ADR-c07e2694f0e1).
+//! One key per command, and the three regimes a keystroke is read in
+//! (ADR-c07e2694f0e1, ADR-559eebf5c6f5).
+//!
+//! The table is one of them and the other two are modal: [`confirming`], which
+//! is what stands in front of every spawned write, and [`narrowing`], which is
+//! the search. None of the three reads a line, and the last of the three
+//! stopped reading one with TASK-c94d086682f3.
 //!
 //! **The keys themselves are declared in [`crate::bindings`] and not here**
 //! (TASK-4d2eb2b4e193). What this module is now is the two grammars a table
-//! cannot state -- the modifiers, and what a line editor does with a keystroke
+//! cannot state -- the modifiers, and what the search does with a keystroke
 //! -- and the whole-domain suite at the foot of the file that measures the
 //! table over every key a terminal can report. The prose below says what the
 //! table says and is answerable to it, not the other way round: a key named
@@ -50,20 +55,37 @@
 //! keystroke this table answers. Nothing is lost, because nothing was ever
 //! *only* a chord.
 //!
-//! # Why there is still a line, and where
+//! # There is no line left, and the search is why
 //!
-//! For the search, and for nothing else (TASK-1a415107fd56). `/` opens a
-//! one-line prompt seeded with a slash and what is typed there goes through
-//! [`crate::input::parse`]; no word that grammar reads writes anything, and the
-//! prompt a verb used to be spelled into is gone with the key that opened it.
+//! **`/` narrows the list as it is typed** (TASK-c94d086682f3,
+//! ADR-559eebf5c6f5: *a search narrows the list as it is typed and is not a
+//! line to compose and submit*). What `/` opened before was a one-line prompt
+//! seeded with a slash, read by a grammar in `crate::input`, and it ran nothing
+//! until Enter. There is no grammar there now and nothing to submit here: every
+//! character is a needle one character longer and a list narrowed to it, every
+//! Backspace is the list widening again, and Escape gives it back whole.
+//!
+//! So the third regime this module carries is [`narrowing`] and no longer a
+//! line editor. It keeps the shape of one -- a buffer, a keystroke, an outcome
+//! -- because that is what typing *is*; what it no longer keeps is a state
+//! where something has been composed and not yet run.
+//!
+//! **Enter is not a submit and there is nothing for it to be one of.** The
+//! list is already narrowed by the time it is pressed, on every keystroke that
+//! came before it, so what Enter does is leave the search with the narrowing in
+//! force -- which is what gives the alphabet back to the key table, since every
+//! letter is a needle while the search is open. Escape is the other way out and
+//! it takes the narrowing with it. Two ways out, both named on the key list,
+//! neither of them a command waiting to be run.
+//!
 //! What a verb carries in a tail -- a message, a reason, a proof, a field --
-//! comes back as a form. It arrived with TASK-d832452630d2, on `ank new`, and
-//! TASK-e8da6a00564a puts `edit`, `close` and `attest` on the same one: `n` and
-//! `e` open [`crate::form`], and so does a row of the list `x` opens. Its
-//! fields are the flags the contract declares for the verb, and it is modal, so
-//! no letter typed into it is a command and no word typed into it reaches a
-//! verb -- what reaches one is Enter, and what Enter reaches is the
-//! confirmation.
+//! comes back as a form and never as a line. It arrived with TASK-d832452630d2,
+//! on `ank new`, and TASK-e8da6a00564a puts `edit`, `close` and `attest` on the
+//! same one: `n` and `e` open [`crate::form`], and so does a row of the list
+//! `x` opens. Its fields are the flags the contract declares for the verb, and
+//! it is modal, so no letter typed into it is a command and no word typed into
+//! it reaches a verb -- what reaches one is Enter, and what Enter reaches is
+//! the confirmation.
 //!
 //! # The guarantee, now that the letter is one keystroke
 //!
@@ -96,24 +118,33 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// What a key press asks for, once the focused panel is known.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Press {
-    /// A command of the grammar, ready to run.
+    /// A command of the table, ready to run.
     Run(Command),
     /// `f`: narrow to the next kind, which needs the one in force and is
     /// therefore the screen's to compute rather than this module's.
     Cycle,
-    /// Open the one-line prompt, seeded with this much of a line.
-    Prompt(&'static str),
+    /// `/`: start a search, which narrows the list on every keystroke after it
+    /// (TASK-c94d086682f3).
+    ///
+    /// It carries nothing. It was `Prompt(&'static str)` and the string was the
+    /// seed a line opened on -- a slash, because the grammar that read the line
+    /// told a search from a command by it. There is no grammar and so no seed:
+    /// what `/` opens is the search itself, and the needle starts empty because
+    /// an empty needle is a list narrowed by nothing, which is where a person
+    /// pressing it is standing.
+    Find,
     /// A key this screen has nothing to do with. Named as a variant rather than
-    /// answered with [`Command::Unknown`]: an unmapped key is not a person
-    /// getting a command wrong, and a note saying so on every stray arrow would
-    /// be noise where the line reader had a typo.
+    /// answered with a refusal: an unmapped key is not a person getting a
+    /// command wrong, and a note saying so on every stray arrow would be noise.
     Ignored,
 }
 
-/// The key that opens the prompt, seeded with the grammar's search.
+/// The key that starts the search.
 ///
-/// The one key that still opens a line. What it opens is a search and not a
-/// verb: `crate::input::parse` reads no verb at all (TASK-1a415107fd56).
+/// It opened a line until TASK-c94d086682f3 and opens none now: what follows it
+/// is a needle, and the list is narrowed to it on the keystroke rather than on
+/// an Enter. What Enter does here is end the search keeping that narrowing,
+/// which [`Narrowing::Kept`] says and is not a submit.
 pub const FIND: char = '/';
 /// The one key that runs a command a person has been shown
 /// (TASK-d4a882345837).
@@ -204,48 +235,73 @@ pub fn next_kind(kind: Option<&str>) -> Option<String> {
     }
 }
 
-/// What one key did to an open prompt.
+/// What one key did to an open search (TASK-c94d086682f3, ADR-559eebf5c6f5).
+///
+/// **Three outcomes and none of them is a submit.** The list is narrowed to
+/// whatever the needle says on every keystroke, so there is no state where
+/// something has been composed and is waiting to be run -- which is the whole
+/// of what this replaces. `Editing` had `Typing`, `Submit` and `Cancel`, and
+/// the middle one was the prompt's reason to exist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Editing {
-    /// The line changed, or the key meant nothing here. Either way the prompt
-    /// stays open and nothing runs.
-    Typing,
-    /// Enter: the line is a command now.
-    Submit,
-    /// Escape, or a backspace that emptied it. The prompt closes and nothing
-    /// runs -- which is what a person who opened it by accident needs, and the
-    /// only road back out.
-    Cancel,
+pub enum Narrowing {
+    /// The needle is what it is now, and the list narrows to it. Every
+    /// character, every Backspace, and every key this regime has no other
+    /// answer for: the search stays open and the list follows the needle.
+    Narrowed,
+    /// Enter: the search ends and the list stays narrowed.
+    ///
+    /// **Not a submit**, and the difference is not a word: nothing is run here
+    /// and nothing is composed, because the narrowing this leaves in force
+    /// happened on the keystrokes before it. What it buys is the alphabet --
+    /// every letter is a needle while the search is open, so a person who has
+    /// found what they were looking for needs a way to have the keys back
+    /// without losing the list they narrowed to.
+    Kept,
+    /// Escape, Control-C, or a Backspace off the end of an empty needle: the
+    /// search ends and the list comes back unnarrowed.
+    ///
+    /// The road out for a person who opened it by accident, and the one that
+    /// undoes what the typing did. A needle deleted to nothing has already
+    /// widened the list back, so the one extra Backspace only closes what is
+    /// left.
+    Undone,
 }
 
-pub fn edit(line: &mut String, key: KeyEvent) -> Editing {
+/// One keystroke against the open search.
+///
+/// The two chords are the ones the line editor answered and they are kept for
+/// the reason they were there: neither is the only road to what it does.
+/// Control-C leaves, and so does Escape; Control-U empties the needle, and so
+/// does holding Backspace. `no_way_through_the_search_requires_a_modifier`
+/// states that over the whole table.
+pub fn narrowing(needle: &mut String, key: KeyEvent) -> Narrowing {
     if key.modifiers.contains(KeyModifiers::CONTROL) {
         return match key.code {
-            KeyCode::Char('c') => Editing::Cancel,
-            // The line, cleared: a long `log` message typed wrongly is not a
-            // reason to hold Backspace.
+            KeyCode::Char('c') => Narrowing::Undone,
+            // The needle, cleared. The list widens back on this keystroke like
+            // it does on any other: what is being typed is the narrowing.
             KeyCode::Char('u') => {
-                line.clear();
-                Editing::Typing
+                needle.clear();
+                Narrowing::Narrowed
             }
-            _ => Editing::Typing,
+            _ => Narrowing::Narrowed,
         };
     }
     match key.code {
-        KeyCode::Enter => Editing::Submit,
-        KeyCode::Esc => Editing::Cancel,
-        KeyCode::Backspace => match line.pop() {
-            // Backspacing off the end of an empty line closes the prompt. A
+        KeyCode::Enter => Narrowing::Kept,
+        KeyCode::Esc => Narrowing::Undone,
+        KeyCode::Backspace => match needle.pop() {
+            // Backspacing off the end of an empty needle ends the search. A
             // person deleting what they typed and then one more has said they
             // did not mean to be here.
-            None => Editing::Cancel,
-            Some(_) => Editing::Typing,
+            None => Narrowing::Undone,
+            Some(_) => Narrowing::Narrowed,
         },
         KeyCode::Char(c) => {
-            line.push(c);
-            Editing::Typing
+            needle.push(c);
+            Narrowing::Narrowed
         }
-        _ => Editing::Typing,
+        _ => Narrowing::Narrowed,
     }
 }
 
@@ -450,23 +506,33 @@ mod tests {
         );
     }
 
-    /// The one key that still opens a line opens it on a search, and what it
-    /// seeds is what the grammar reads (TASK-1a415107fd56).
+    /// **`/` starts the search and no key opens a line at all**
+    /// (TASK-c94d086682f3, ADR-559eebf5c6f5).
+    ///
+    /// Stated over the whole table and not over `/` alone. The claim the wave
+    /// leaves this module answerable for is that the compose-and-submit grammar
+    /// is not reachable from anywhere, and a test that only checked what `/`
+    /// does would pass on a table that had quietly kept a second key opening a
+    /// line on something else.
     #[test]
-    fn the_one_prompt_key_seeds_the_search_it_opens() {
-        assert_eq!(press(FIND, Focus::Entities), Press::Prompt("/"));
+    fn the_find_key_starts_a_search_and_no_key_opens_a_line() {
+        assert_eq!(press(FIND, Focus::Entities), Press::Find);
+        // The needle starts empty, so the first character typed is the first
+        // character of the needle: there is no seed to clear.
+        let mut needle = String::new();
         assert_eq!(
-            crate::input::parse("/a needle"),
-            Command::Search(Some("a needle".to_string()))
+            narrowing(&mut needle, key(KeyCode::Char('a'))),
+            Narrowing::Narrowed
         );
-        // And no key opens a line on nothing: the prompt a verb was spelled
-        // into is gone, so no binding of the table seeds an empty one.
+        assert_eq!(needle, "a");
+        // And `/` is the only key that starts one, from every screen.
         for code in table::every_key() {
             for view in Focus::ALL {
-                assert_ne!(
-                    typed(key(code), view),
-                    Press::Prompt(""),
-                    "{code:?} opens the prompt a verb was spelled into"
+                let starts = typed(key(code), view) == Press::Find;
+                assert_eq!(
+                    starts,
+                    code == KeyCode::Char(FIND),
+                    "{code:?} in {view:?} starts a search"
                 );
             }
         }
@@ -551,17 +617,34 @@ mod tests {
         assert_eq!(next_kind(Some("epic")), None);
     }
 
+    /// **The needle grows on the keystroke and there is nothing to submit**
+    /// (TASK-c94d086682f3).
+    ///
+    /// Every character is a needle one longer and the list narrowed to it, and
+    /// what the two ways out do is end the search: Enter with the narrowing in
+    /// force, Escape with it undone. Neither of them is the keystroke on which
+    /// the narrowing happens, which is the whole difference from the line this
+    /// replaces.
     #[test]
-    fn the_prompt_takes_a_line_and_gives_two_ways_out() {
-        let mut line = String::new();
-        for c in "claim".chars() {
-            assert_eq!(edit(&mut line, key(KeyCode::Char(c))), Editing::Typing);
+    fn the_needle_grows_on_the_keystroke_and_the_two_ways_out_end_the_search() {
+        let mut needle = String::new();
+        for (typed_so_far, c) in "task".chars().enumerate().map(|(i, c)| (i + 1, c)) {
+            assert_eq!(
+                narrowing(&mut needle, key(KeyCode::Char(c))),
+                Narrowing::Narrowed,
+                "'{c}' did not narrow"
+            );
+            assert_eq!(needle.chars().count(), typed_so_far);
         }
-        assert_eq!(line, "claim");
-        assert_eq!(edit(&mut line, key(KeyCode::Backspace)), Editing::Typing);
-        assert_eq!(line, "clai");
-        assert_eq!(edit(&mut line, key(KeyCode::Enter)), Editing::Submit);
-        assert_eq!(edit(&mut line, key(KeyCode::Esc)), Editing::Cancel);
+        assert_eq!(needle, "task");
+        assert_eq!(
+            narrowing(&mut needle, key(KeyCode::Backspace)),
+            Narrowing::Narrowed
+        );
+        assert_eq!(needle, "tas", "a Backspace widens the list back");
+        assert_eq!(narrowing(&mut needle, key(KeyCode::Enter)), Narrowing::Kept);
+        assert_eq!(needle, "tas", "Enter changed the needle");
+        assert_eq!(narrowing(&mut needle, key(KeyCode::Esc)), Narrowing::Undone);
     }
 
     /// One key runs a confirmed command, and the whole of the rest of the
@@ -633,18 +716,24 @@ mod tests {
         assert_eq!(confirming(key(KeyCode::Char('Y'))), Answer::Dismiss);
     }
 
-    /// Backspacing off the end of an empty line closes the prompt, and clearing
+    /// Backspacing off the end of an empty needle ends the search, and clearing
     /// it does not.
     #[test]
-    fn an_emptied_prompt_closes_and_a_cleared_one_stays_open() {
-        let mut line = String::from("x");
-        assert_eq!(edit(&mut line, key(KeyCode::Backspace)), Editing::Typing);
-        assert_eq!(edit(&mut line, key(KeyCode::Backspace)), Editing::Cancel);
+    fn an_emptied_needle_ends_the_search_and_a_cleared_one_stays_open() {
+        let mut needle = String::from("x");
+        assert_eq!(
+            narrowing(&mut needle, key(KeyCode::Backspace)),
+            Narrowing::Narrowed
+        );
+        assert_eq!(
+            narrowing(&mut needle, key(KeyCode::Backspace)),
+            Narrowing::Undone
+        );
 
-        let mut line = String::from("done commit:2d9c847");
+        let mut needle = String::from("a long needle");
         let cleared = KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL);
-        assert_eq!(edit(&mut line, cleared), Editing::Typing);
-        assert!(line.is_empty());
+        assert_eq!(narrowing(&mut needle, cleared), Narrowing::Narrowed);
+        assert!(needle.is_empty(), "the list is not back to every row");
     }
 }
 
@@ -973,50 +1062,50 @@ mod table {
         assert_eq!(ran, 1, "exactly one keystroke in the whole table runs it");
     }
 
-    /// The prompt's table, over the same domain.
+    /// The search's table, over the same domain.
     ///
-    /// Two chords are answered there -- Control-C leaves and Control-U clears
-    /// the line -- and neither is the only road to what it does: Escape leaves,
-    /// and Backspace held down empties. So the state a chord reaches in the
-    /// prompt is a state a bare key reaches too, which is the same rule as
-    /// above wearing the prompt's clothes.
+    /// Two chords are answered there -- Control-C ends it and Control-U clears
+    /// the needle -- and neither is the only road to what it does: Escape ends
+    /// it, and Backspace held down empties the needle. So the state a chord
+    /// reaches in the search is a state a bare key reaches too, which is the
+    /// same rule as above wearing the search's clothes.
     #[test]
-    fn no_way_through_the_prompt_requires_a_modifier() {
+    fn no_way_through_the_search_requires_a_modifier() {
         for code in every_key() {
             for held in every_modifier() {
                 if held.is_empty() {
                     continue;
                 }
-                let mut line = String::from("done commit:2d9c847");
-                let outcome = edit(&mut line, KeyEvent::new(code, held));
-                // Whatever it did, a bare key does it too: Escape cancels,
-                // Enter submits, and any character is typing.
+                let mut needle = String::from("a needle");
+                let outcome = narrowing(&mut needle, KeyEvent::new(code, held));
+                // Whatever it did, a bare key does it too: Escape ends the
+                // search, Enter keeps the narrowing, and any character narrows.
                 let bare = match outcome {
-                    Editing::Cancel => KeyCode::Esc,
-                    Editing::Submit => KeyCode::Enter,
-                    Editing::Typing => KeyCode::Char('x'),
+                    Narrowing::Undone => KeyCode::Esc,
+                    Narrowing::Kept => KeyCode::Enter,
+                    Narrowing::Narrowed => KeyCode::Char('x'),
                 };
-                let mut same = String::from("done commit:2d9c847");
+                let mut same = String::from("a needle");
                 assert_eq!(
-                    edit(&mut same, KeyEvent::new(bare, KeyModifiers::NONE)),
+                    narrowing(&mut same, KeyEvent::new(bare, KeyModifiers::NONE)),
                     outcome,
                     "{code:?} with {held:?} does something no bare key does"
                 );
             }
         }
-        // And the one state a chord is a shortcut to -- an emptied line with
-        // the prompt still open -- is reached by holding Backspace, which is
+        // And the one state a chord is a shortcut to -- an emptied needle with
+        // the search still open -- is reached by holding Backspace, which is
         // what makes Control-U a convenience rather than a requirement.
-        let mut line = String::from("done");
+        let mut needle = String::from("task");
         for _ in 0..4 {
             assert_eq!(
-                edit(
-                    &mut line,
+                narrowing(
+                    &mut needle,
                     KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
                 ),
-                Editing::Typing
+                Narrowing::Narrowed
             );
         }
-        assert!(line.is_empty(), "the prompt empties without a chord");
+        assert!(needle.is_empty(), "the needle empties without a chord");
     }
 }

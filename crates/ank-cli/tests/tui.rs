@@ -256,14 +256,43 @@ fn ids_of(doc: &str) -> Vec<String> {
     out
 }
 
-/// One entry of a key list that opens an entity by its identifier.
+/// Goes to the listing and opens one entity, by narrowing the listing to it.
 ///
-/// An identifier is a line by nature -- it is fourteen characters and no key
-/// spells it -- so it goes through the prompt, which is where the grammar reads
-/// one and jumps to it.
+/// **The road is the search now** (TASK-c94d086682f3, ADR-559eebf5c6f5). It was
+/// the identifier typed whole into the prompt -- `Command::Select`, which
+/// forced the listing, put the cursor on the row and opened it in one command
+/// -- and that command is gone with the line it needed. What replaces it is
+/// what a person does: the digit that reaches the listing, `/` and the short
+/// form, which narrows to the one row as it is typed; Enter, which leaves the
+/// search with that narrowing in force; and Enter again, which opens the row
+/// under the cursor. The cursor is on it because a search puts it back at the
+/// top and there is one row left.
+///
+/// `2` first for the reason the old command forced the listing: an identifier
+/// names an entity wherever the reader is standing, and a document has no rows
+/// to narrow.
+///
+/// **And the narrowing is given back once the document is open**, which is the
+/// one thing the search does that `Command::Select` did not. A needle left in
+/// force is a listing this helper's callers never asked for -- the suite that
+/// found it was the one watching a task *arrive* in the list, which a filter
+/// nobody could see had quietly excluded. So the last two keystrokes are the
+/// search opened and undone, and the reader is left on the document with the
+/// listing behind it whole again.
+///
+/// **Undone with Backspace and not with Escape, and that is about this terminal
+/// rather than about this reader.** An escape byte with another key straight
+/// behind it is an *Alt chord* to any terminal decoder, and this helper's
+/// output is followed immediately by the next entry of a drive -- so an
+/// `Escape` here would arrive as `Alt` and whatever came next, which is not a
+/// keystroke the reader answers. Backspace is `0x7F`, one byte, no prefix, and
+/// it reaches the same place: a Backspace off the end of an empty needle ends
+/// the search, which `keys::narrowing` answers with `Narrowing::Undone` exactly
+/// as it answers Escape. `accept_is_refused_off_the_document_and_carries_
+/// nothing_but_it` states the same fact for the same reason, one wave earlier.
 #[cfg(unix)]
 fn open(id: &str) -> String {
-    format!(":{}", short_of(id))
+    format!("2{FIND}{}\r\r{FIND}{BACKSPACE}", short_of(id))
 }
 
 /// The short form every listing prints: the kind, then four characters.
@@ -807,17 +836,20 @@ fn drive(repo: &Repo, agent: &str, keys: &[&str]) -> Seen {
 
 /// The same, for a call that takes flags and ends on its own.
 ///
-/// **What an entry of `keys` is.** Anything beginning with `:` is a line typed
-/// into the prompt: the key that opens it, Control-U to take the search seed
-/// off, the rest of the entry, and Enter. Anything else is the keys themselves,
-/// byte for byte -- `"q"`, `"j"`, `"\r"` for Enter.
+/// **An entry of `keys` is the keys themselves, byte for byte** -- `"q"`,
+/// `"j"`, `"\r"` for Enter (TASK-c94d086682f3).
 ///
-/// **No `:` entry names a verb any more** (TASK-1a415107fd56). Every command is
-/// one key, the six that write included, so a verb is reached by [`verb`] and
-/// what a line is still the shape for is a row number and an identifier. The
-/// letter composes the command and shows it rather than running it, so an entry
-/// that presses one is followed by [`confirm`] wherever the verb is meant to
-/// land (TASK-d4a882345837).
+/// There is no second form. An entry opening with `:` used to mean "open the
+/// line, clear the search seed, type this and submit it", which is how this
+/// suite reached the two commands no key had: `filter <kind>` and an identifier
+/// typed whole. ADR-559eebf5c6f5 ends the line, so both roads are keys now --
+/// [`kinds`] walks the filter and [`open`] narrows with the search -- and every
+/// entry here is something a person presses.
+///
+/// A verb is reached by [`verb`], one letter. The letter composes the command
+/// and shows it rather than running it, so an entry that presses one is
+/// followed by [`confirm`] wherever the verb is meant to land
+/// (TASK-d4a882345837).
 #[cfg(unix)]
 fn on_a_terminal(repo: &Repo, agent: &str, args: &[&str], keys: &[&str]) -> Seen {
     let mut live = Live::open_with(repo, agent, args, &[]);
@@ -1041,18 +1073,17 @@ impl Live {
         panic!("the screen never stopped moving:\n{last}");
     }
 
-    /// One entry of a key list: a line typed into the prompt, or the keys
-    /// themselves.
+    /// One entry of a drive: the keys themselves.
+    ///
+    /// **There is no second form any more** (TASK-c94d086682f3). An entry that
+    /// opened with `:` used to mean "open the line, clear the seed, type this
+    /// and submit it" -- which is how this suite reached `filter <kind>`, a
+    /// word of a grammar that no key spelled. ADR-559eebf5c6f5 ends the line
+    /// and the grammar with it, so every entry here is now what a person
+    /// actually presses, and [`kinds`] computes the presses for the one road
+    /// that was reached by a word.
     fn press(&mut self, entry: &str) {
-        match entry.strip_prefix(':') {
-            Some(line) => {
-                self.send(&FIND.to_string());
-                self.send(CLEAR);
-                self.send(line);
-                self.send("\r");
-            }
-            None => self.send(entry),
-        }
+        self.send(entry);
     }
 
     fn send(&mut self, bytes: &str) {
@@ -1076,25 +1107,59 @@ impl Live {
     }
 }
 
-/// The key that opens the one line this reader still takes, read out of the
-/// reader rather than typed as a letter here: a suite carrying its own copy of
-/// it would agree with a mapping that moved.
+/// Backspace, as a terminal sends it: `0x7F`, which crossterm reads as a bare
+/// `KeyCode::Backspace`.
 ///
-/// It opens a *search*, seeded with a slash (TASK-1a415107fd56). The prompt a
-/// verb used to be spelled into is gone, and the six verbs are letters now, so
-/// what a `:` entry of a key list means is "clear the seed and type the line",
-/// which is what [`Live::press`] does.
+/// The way out of an open search that gives the list back unnarrowed
+/// (TASK-c94d086682f3), and the one a suite may send in the middle of a key
+/// sequence: see [`open`] for why Escape is not.
+#[cfg(unix)]
+const BACKSPACE: &str = "\u{7f}";
+
+/// The key that starts the search, read out of the reader rather than typed as
+/// a letter here: a suite carrying its own copy of it would agree with a
+/// mapping that moved.
+///
+/// What follows it is a needle and not a line (TASK-c94d086682f3): the list
+/// narrows on every character, so a drive that sends this and then some text is
+/// looking at a shorter list before it sends anything else. `CLEAR` -- the
+/// Control-U that took the old prompt's slash seed off -- stood beside this and
+/// went with the seed.
 #[cfg(unix)]
 const FIND: char = ank_tui::keys::FIND;
 
-/// The byte a terminal sends for Control-U, which clears the open line and
-/// leaves the prompt open (`ank_tui::keys::edit`).
+/// The keystrokes that walk the kind filter from one kind to another.
 ///
-/// How a line that is not a search is reached: the seed is a slash, and this
-/// takes it off. Not Backspace, which closes the prompt on the keystroke after
-/// the line empties -- one key with one meaning is what a suite should send.
+/// Read out of the reader's own registry and its own table rather than counted
+/// here (`ank_tui::keys::next_kind`, `ank_tui::bindings::BINDINGS`): the key is
+/// a *cycle*, so how many presses reach a kind is the order the registry
+/// declares, and a suite that wrote `fff` would go on passing against a
+/// registry that gained a kind.
+///
+/// This is what replaces the `:filter <kind>` entries (TASK-c94d086682f3). The
+/// word was a road no key spelled, and the reader has one road now.
 #[cfg(unix)]
-const CLEAR: &str = "\u{15}";
+fn kinds(from: Option<&str>, to: Option<&str>) -> String {
+    use ank_tui::bindings::{Runs, BINDINGS};
+    use ank_tui::keys::{next_kind, Press, KINDS};
+
+    let binding = BINDINGS
+        .iter()
+        .find(|b| b.runs == Runs::Press(Press::Cycle))
+        .expect("a key walks the kinds");
+    let key = ank_tui::bindings::named(binding.key);
+    let mut at = from.map(str::to_string);
+    let mut out = String::new();
+    while at.as_deref() != to {
+        at = next_kind(at.as_deref());
+        out.push_str(&key);
+        assert!(
+            out.chars().count() <= KINDS.len() + 1,
+            "the cycle never reaches {to:?} from {from:?}"
+        );
+    }
+    out
+}
 
 /// The letter one verb of the writing half is bound to, out of the reader's own
 /// table (TASK-1a415107fd56).
@@ -1150,7 +1215,14 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
     let seen = drive(
         &repo,
         HOLDER,
-        &[":filter task", "\r", "b", ":filter", "1", "q"],
+        &[
+            &kinds(None, Some("task")),
+            "\r",
+            "b",
+            &kinds(Some("task"), None),
+            "1",
+            "q",
+        ],
     );
 
     // The one assertion here that is genuinely about the bytes rather than
@@ -1425,14 +1497,14 @@ fn quitting_leaves_no_file_and_no_ref_changed() {
         &[
             // Space pages and `s` opens the constraints: `n` and `c` went to
             // the verbs' side of the ledger (TASK-1a415107fd56).
-            ":filter adr",
+            &kinds(None, Some("adr")),
             "\r",
             " ",
             "s",
             "g",
             "b",
-            ":filter",
-            "/task\r",
+            &kinds(Some("adr"), None),
+            &format!("{FIND}task\r"),
             "j",
             "k",
             "q",
@@ -1471,7 +1543,7 @@ fn opening_the_task_you_hold_takes_nothing_and_creates_nothing() {
 
     let files = corpus_files(&repo);
     let names = ref_names(&repo);
-    let seen = drive(&repo, HOLDER, &[":filter task", "\r", "q"]);
+    let seen = drive(&repo, HOLDER, &[&kinds(None, Some("task")), "\r", "q"]);
     assert!(seen.contains(TAIL), "the held task was opened:\n{seen}");
 
     assert_eq!(
@@ -1780,7 +1852,13 @@ fn a_done_refused_for_a_missing_proof_leaves_the_task_untouched() {
     let seen = drive(
         &repo,
         HOLDER,
-        &[":filter task", "\r", &verb("done"), &confirm(), "q"],
+        &[
+            &kinds(None, Some("task")),
+            "\r",
+            &verb("done"),
+            &confirm(),
+            "q",
+        ],
     );
 
     let code = declared("done", "no proof");
@@ -2465,7 +2543,7 @@ fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
     let seen = drive(
         &repo,
         READER,
-        &[&format!(":{by_screen}"), &verb("accept"), &confirm(), "q"],
+        &[&open(&by_screen), &verb("accept"), &confirm(), "q"],
     );
     assert!(
         seen.contains(&format!("ank accept {by_screen}")),

@@ -89,9 +89,11 @@
 //! but one positional, so a repaint can reach the reading half and nothing that
 //! writes.
 //!
-//! What is left of the typed word is two places, and neither of them reaches a
-//! verb by being read. `/` opens the one-line prompt on a search, and
-//! [`input`]'s grammar carries no verb at all. `n` opens the form
+//! What is left of typing is two places, and neither of them reaches a verb by
+//! being read. `/` starts a search that narrows the list on every keystroke
+//! and has nothing to submit (TASK-c94d086682f3, ADR-559eebf5c6f5): there is no
+//! line there and no grammar behind it, so there is no word for a verb to be.
+//! `n` opens the form
 //! (TASK-d832452630d2), whose fields are the flags `ank help --json` declares
 //! for `ank new` and which is modal: a letter typed into it is a letter, and
 //! what reaches the verb is Enter, and what Enter reaches is the confirmation.

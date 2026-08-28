@@ -97,7 +97,7 @@ const WIDTHS: [u16; 5] = [40, 46, 48, 80, 150];
 /// that are about a window rather than about a width.
 const WINDOWS: [(u16, u16); 2] = [(80, 24), (40, 24)];
 
-/// The key that opens the prompt, read out of the reader rather than typed as a
+/// The key that starts the search, read out of the reader rather than typed as a
 /// letter here: it is the one key this suite has to know, and a suite carrying
 /// its own copy of it would agree with a mapping that moved.
 ///
