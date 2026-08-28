@@ -399,14 +399,19 @@ pub fn identity(root: &Path) -> Option<String> {
     // walk below fails in its turn, which is the same answer arrived at the
     // same way.
     let kept = crate::git::git_dir(root).map(|d| d.join(KEPT_IDENTITY));
-    let found = kept
-        .as_deref()
-        .and_then(remembered_identity)
-        .or_else(|| walk_to_root(root));
-    if let (Some(path), Some(id)) = (kept, found.as_ref()) {
-        let _ = std::fs::create_dir_all(path.parent().expect("the file has a directory"));
-        let _ = std::fs::write(&path, format!("{id}\n"));
-    }
+    let found = match kept.as_deref().and_then(remembered_identity) {
+        Some(id) => Some(id),
+        // Walked, and then written down — here and not above, so that a run
+        // reading the file back does not rewrite it for nothing.
+        None => {
+            let walked = walk_to_root(root);
+            if let (Some(path), Some(id)) = (kept.as_deref(), walked.as_ref()) {
+                let _ = std::fs::create_dir_all(path.parent().expect("the file has a directory"));
+                let _ = std::fs::write(path, format!("{id}\n"));
+            }
+            walked
+        }
+    };
     if let Ok(mut seen) = memo.lock() {
         seen.insert(root.to_path_buf(), found.clone());
     }
@@ -429,14 +434,16 @@ static IDENTITIES: Identities = OnceLock::new();
 /// The identity a previous invocation left in the git directory, or `None` when
 /// there is none to read.
 ///
-/// **Read as an object name or not at all.** A file holding anything but forty
-/// hex characters is a file somebody or something else wrote, and taking it
-/// would key a corpus on a string that names no commit — the failure that would
-/// be hardest to see, because everything downstream would agree with it.
+/// **Read as an object name or not at all.** A file holding anything but an
+/// object name is a file somebody or something else wrote, and taking it would
+/// key a corpus on a string that names no commit — the failure that would be
+/// hardest to see, because everything downstream would agree with it. Forty hex
+/// characters, or sixty-four where the repository hashes with SHA-256.
 fn remembered_identity(path: &Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
     let id = text.trim().to_string();
-    (id.len() == 40 && id.chars().all(|c| c.is_ascii_hexdigit())).then_some(id)
+    let named = matches!(id.len(), 40 | 64) && id.chars().all(|c| c.is_ascii_hexdigit());
+    named.then_some(id)
 }
 
 /// The oldest root of `HEAD`, read from the history itself.
