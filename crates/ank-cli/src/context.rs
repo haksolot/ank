@@ -170,12 +170,12 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
     if !git::usable_here(cwd) {
         return Ok(plane);
     }
-    let refs = git::ank_refs(cwd)?;
-    // Every record in one process rather than one each (TASK-5f05e0c22f7b).
-    // `for-each-ref` already named the objects, so the second half of the
-    // question was the only one still being asked ref by ref.
-    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
-    let records = git::cat_file_batch(cwd, &objects).unwrap_or_default();
+    // Every record in one process rather than one each (TASK-5f05e0c22f7b),
+    // and now one enumeration and one batch for every reader of the plane
+    // rather than one pair each (TASK-5690eae1e008): `claim::on_task` and
+    // `claim::live_claims_where` ask the same two questions of the same
+    // namespace inside the same invocation.
+    let (refs, records) = git::ank_records(cwd)?;
     for r in refs {
         // The address decides which question the record answers, and a record
         // whose state contradicts its namespace is reported rather than

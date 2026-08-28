@@ -405,7 +405,12 @@ fn live_claims_where(
     keep: &dyn Fn(&str) -> bool,
 ) -> Result<Vec<(EntityId, ClaimRecord)>> {
     let mut held = Vec::new();
-    for r in git::ank_refs(cwd)? {
+    // The enumeration and the records in one reading (TASK-5690eae1e008): this
+    // walk asked `cat-file` once per claim ref, and a corpus carrying five
+    // hundred of them paid five hundred processes to answer a question about
+    // one identity.
+    let (refs, records) = git::ank_records(cwd)?;
+    for r in refs {
         let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
             continue;
         };
@@ -415,12 +420,10 @@ fn live_claims_where(
         if except == Some(&id) {
             continue;
         }
-        let out = git::output(cwd, &["cat-file", "-p", r.object.as_str()])?;
-        if !out.status.success() {
+        let Some(text) = records.get(&r.object) else {
             continue;
-        }
-        let text = String::from_utf8_lossy(&out.stdout);
-        let Ok(Record::Claim(c)) = parse_record(&text, &r.name) else {
+        };
+        let Ok(Record::Claim(c)) = parse_record(text, &r.name) else {
             continue;
         };
         if !keep(&c.holder) || is_expired(&c, now, &id).unwrap_or(true) {
@@ -917,17 +920,26 @@ pub struct Standing {
 /// nothing enforces, so the tie is broken rather than left to ref order.
 pub fn on_task(cwd: &Path, identity: &str) -> Result<Option<Standing>> {
     let mut lapsed_one: Option<Standing> = None;
-    for r in git::ank_refs(cwd)? {
+    // One reading of the plane rather than a `rev-parse` and a `cat-file` per
+    // ref (TASK-5690eae1e008). The record is the one the enumeration named, so
+    // this asks the same question it always asked -- in two processes for the
+    // whole namespace instead of two per claim in it.
+    let (refs, records) = git::ank_records(cwd)?;
+    for r in refs {
         let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
             continue;
         };
         let Ok(id) = EntityId::parse(rest) else {
             continue;
         };
-        let Some(held) = read(cwd, &id)? else {
+        // A ref the batch has nothing for is skipped, which is what the pair of
+        // processes this replaces did: `rev-parse` answered `None` for a ref
+        // released between the enumeration and the read, and that race is real
+        // -- another agent handing back a task must not fail this one's `done`.
+        let Some(text) = records.get(&r.object) else {
             continue;
         };
-        let Record::Claim(c) = held.record else {
+        let Record::Claim(c) = parse_record(text, &r.name)? else {
             continue;
         };
         if c.holder != identity {
@@ -936,7 +948,7 @@ pub fn on_task(cwd: &Path, identity: &str) -> Result<Option<Standing>> {
         let lapsed = is_expired(&c, now_secs(), &id)?;
         let standing = Standing {
             id,
-            object: held.object,
+            object: r.object,
             record: c,
             lapsed,
         };

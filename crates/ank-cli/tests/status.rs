@@ -53,6 +53,16 @@ const SPARE: usize = 90_000;
 /// builds, taking the floor of nine runs.
 const WALL: u128 = 250;
 
+/// The plane the criterion is measured over: five hundred coordination refs.
+const REFS: usize = 500;
+
+/// An expiry no run of this suite reaches, so every seeded claim is a live one.
+const LIVE: &str = "2099-01-01T00:00:00Z";
+
+/// What git prefixes the argument list of every process it starts with, under
+/// `GIT_TRACE`.
+const MARK: &str = "trace: built-in: git ";
+
 /// git's global and system configuration, for every process this suite spawns.
 ///
 /// The same isolation `tests/cli.rs` explains at length: a machine that signs
@@ -221,6 +231,119 @@ impl Corpus {
         self.git(&["update-ref", &format!("refs/ank/claims/{id}"), &blob]);
     }
 
+    /// `count` claim refs, written in two processes rather than two each.
+    ///
+    /// The plane the criterion names carries five hundred of them, and a
+    /// fixture that spawned a thousand processes to build one would spend more
+    /// on the forging than on the measurement. `hash-object --stdin-paths`
+    /// writes every blob in one process and answers one name per line in order;
+    /// `update-ref --stdin` creates every ref in one transaction. Neither is a
+    /// shortcut around the state: what lands is exactly what [`seed_claim`]
+    /// lands, ref for ref.
+    ///
+    /// [`seed_claim`]: Corpus::seed_claim
+    fn seed_claims(&self, count: usize) {
+        let dir = self.0.join("records");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut paths = String::new();
+        let mut ids = Vec::new();
+        for n in 0..count {
+            let id = id(n);
+            let path = dir.join(&id);
+            std::fs::write(
+                &path,
+                format!(
+                    "state: claim\nholder: someone@elsewhere\ntask: {id}\n\
+                     claimed: 2026-07-28T00:00:00Z\nexpires: {LIVE}\ncriteria: abcdefabcdefabcd\n\
+                     constraints: abcdefabcdefabcd\n"
+                ),
+            )
+            .unwrap();
+            paths.push_str(&path.display().to_string());
+            paths.push('\n');
+            ids.push(id);
+        }
+        let blobs = self.stdin_git(&["hash-object", "-w", "--stdin-paths"], &paths);
+        let mut plan = String::new();
+        for (id, blob) in ids.iter().zip(blobs.lines()) {
+            plan.push_str(&format!("create refs/ank/claims/{id} {}\n", blob.trim()));
+        }
+        self.stdin_git(&["update-ref", "--stdin"], &plan);
+        // The records are a fixture input, not corpus content: left in the tree
+        // they would be untracked files under a corpus every drift comparison
+        // reads.
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A git command fed on standard input, with its standard output returned.
+    fn stdin_git(&self, args: &[&str], input: &str) -> String {
+        let mut child = spawn("git")
+            .current_dir(&self.0)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    /// Every git process one invocation of the binary starts, in order, as the
+    /// argument list git itself reports.
+    ///
+    /// **`GIT_TRACE` and not a shim on the `PATH`**, which is how the thirteen
+    /// were first counted. A shim is a script, and a script is not what
+    /// `Command::new("git")` finds on Windows — where this measurement matters
+    /// most, process creation costing about 25ms there against 2-3ms on Linux.
+    /// git's own trace writes one `trace: built-in:` line per process it starts,
+    /// to a file, on all three platforms, and it is git saying it rather than us
+    /// inferring it.
+    fn git_processes(&self, args: &[&str]) -> (Vec<String>, String) {
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let log = scratch::root().join(format!(
+            "ank-status-trace-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        ));
+        let out = spawn(ANK)
+            .args(args)
+            .current_dir(&self.0)
+            .env("ANK_AGENT", "reader@fixture")
+            .env("GIT_TRACE", &log)
+            .output()
+            .expect("the binary under test must run");
+        let code = out.status.code().expect("the process exits, not signals");
+        assert!(
+            code == 0 || code == 8,
+            "ank {args:?} exited {code}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        let _ = std::fs::remove_file(&log);
+        let started: Vec<String> = text
+            .lines()
+            .filter_map(|l| l.split_once(MARK))
+            .map(|(_, argv)| argv.trim().to_string())
+            .collect();
+        assert!(
+            !started.is_empty(),
+            "git wrote no trace to {}: the measurement did not happen",
+            log.display()
+        );
+        (started, String::from_utf8_lossy(&out.stdout).to_string())
+    }
+
     fn delete_claim(&self, id: &str) {
         self.git(&["update-ref", "-d", &format!("refs/ank/claims/{id}")]);
     }
@@ -301,18 +424,15 @@ fn status_answers_a_thousand_entities_in_under_a_quarter_second() {
 
     // **The criterion's number, where that number measures the verb rather than
     // the runner.** It is not asserted on Windows, and the reason is measured
-    // rather than assumed. `ank status --json` spawns thirteen git processes —
-    // two `git --version`, two `rev-parse --git-common-dir`, two `rev-parse
-    // --show-toplevel`, three `for-each-ref refs/ank/` (`claim::on_task`,
-    // `context::plane`, and the enumeration the memoised verdict needs for its
-    // key), and one each of `symbolic-ref HEAD`, `symbolic-ref
+    // rather than assumed. `ank status --json` spawned thirteen git processes
+    // when this test was written — two `git --version`, two `rev-parse
+    // --git-common-dir`, two `rev-parse --show-toplevel`, three `for-each-ref
+    // refs/ank/`, and one each of `symbolic-ref HEAD`, `symbolic-ref
     // refs/remotes/origin/HEAD`, `rev-parse <branch>^{commit}` and `rev-list
-    // --max-parents=0` — counted with a shim on the PATH. Process creation
-    // costs roughly 25ms on a Windows runner against 2-3ms on Linux, so those
-    // thirteen are about 325ms before the verb reads anything: remove the
-    // corpus read entirely, as this change does, and Windows is still at the
-    // wall. Eleven of the thirteen live in `git.rs`, `repo.rs`, `claim.rs` and
-    // `context.rs`, and TASK-5690eae1e008 carries them.
+    // --max-parents=0` — and process creation costs roughly 25ms on a Windows
+    // runner against 2-3ms on Linux, which put about 325ms in front of the verb
+    // before it read anything. TASK-5690eae1e008 took eleven of those thirteen
+    // out; what is left is asserted below, by counting rather than by timing.
     //
     // And the floor is not only high there, it moves: the same commit measured
     // 376ms and then 612ms on two runs of the same runner image. A wall set
@@ -325,6 +445,132 @@ fn status_answers_a_thousand_entities_in_under_a_quarter_second() {
             "status --json over {ENTITIES} entities took {status}ms, wall is {WALL}ms"
         );
     }
+}
+
+/// `cat-file -p <object name>`, which is a record read one process at a time.
+///
+/// Told apart from `cat-file -p <rev>:<path>`, which is how the index reads the
+/// default branch and is a different question about a different thing.
+fn reads_one_object(argv: &str) -> bool {
+    argv.strip_prefix("cat-file -p ")
+        .is_some_and(|name| name.len() == 40 && name.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The plane is read once, and reading it costs what it costs for one ref
+/// (TASK-5690eae1e008).
+///
+/// **Counted, not timed, and that is the point.** The claim is about processes:
+/// three readers of `refs/ank/*` inside one invocation, each enumerating the
+/// namespace and then asking `cat-file` per ref, and two questions — the
+/// version, the repository — asked once per caller instead of once. A count is
+/// the same number on Linux, macOS and Windows, where the floor of the same
+/// commit on the same runner image measured 376ms and then 612ms; a wall there
+/// reports the scheduler, and nobody can act on the scheduler.
+#[test]
+fn status_asks_git_no_question_twice_and_reads_the_plane_in_one_batch() {
+    let many = Corpus::new();
+    many.seed_claims(REFS);
+    // Warm, which is the state this measures: the index exists, the verdict is
+    // memoised against a plane that has stopped moving, and the root commit has
+    // been read. A cold run pays for all three, once, and that cost belongs to
+    // whatever verb ran first.
+    many.json(&["status", "--json"]);
+    many.json(&["status", "--json"]);
+    let (started, _) = many.git_processes(&["status", "--json"]);
+    let count = |p: &dyn Fn(&str) -> bool| started.iter().filter(|a| p(a)).count();
+
+    assert_eq!(
+        count(&|a| a == "version"),
+        1,
+        "the version is asked once: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a.starts_with("rev-parse --path-format=absolute")),
+        1,
+        "where the repository is, is asked once: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a.starts_with("for-each-ref") && a.contains("refs/ank/")),
+        1,
+        "the namespace is enumerated once: {started:#?}"
+    );
+    // One batch for the records, never one process per ref: `cat-file -p <sha>`
+    // is the shape of the read this replaces, and `rev-parse --verify` of a
+    // claim ref is the lookup that preceded it.
+    assert_eq!(
+        count(&reads_one_object),
+        0,
+        "no record is read object by object: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a.starts_with("rev-parse --verify --quiet refs/ank/")),
+        0,
+        "no claim ref is resolved one at a time: {started:#?}"
+    );
+    assert_eq!(
+        count(&|a| a.starts_with("rev-list --max-parents=0")),
+        0,
+        "the root commit is not walked for a second time: {started:#?}"
+    );
+
+    // **Five hundred refs cost exactly what one costs.** The two invocations
+    // are the same invocation over a plane three orders of magnitude apart, so
+    // the sequences are compared whole rather than counted: a process that
+    // appeared once per ref would show up as a longer list, and one that moved
+    // would show up as a different list.
+    let one = Corpus::new();
+    one.seed_claims(1);
+    one.json(&["status", "--json"]);
+    one.json(&["status", "--json"]);
+    let (single, _) = one.git_processes(&["status", "--json"]);
+    assert_eq!(
+        started, single,
+        "{REFS} coordination refs cost more git than one does"
+    );
+}
+
+/// The corpus is keyed on its root commit, and the history is walked to find it
+/// once per clone rather than once per invocation (TASK-5690eae1e008).
+///
+/// `rev-list --max-parents=0` has to traverse everything to know it has found
+/// every root, so it is the one question here whose cost grows with the
+/// repository. What removes it is not a smaller walk but no walk: the answer is
+/// kept in the worktree's git directory, where the history that produced it
+/// lives.
+#[test]
+fn the_root_commit_is_walked_once_and_then_read_from_where_it_was_kept() {
+    let c = Corpus::new();
+    // A history rather than a commit, so that a walk is something the answer
+    // could have come from.
+    for n in 0..20 {
+        c.git(&[
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            &format!("commit {n}"),
+        ]);
+    }
+    let root = c.git(&["rev-list", "--max-parents=0", "HEAD"]);
+
+    let walk = |a: &str| a.starts_with("rev-list --max-parents=0");
+    let (cold, first) = c.git_processes(&["status", "--json"]);
+    assert_eq!(
+        cold.iter().filter(|a| walk(a)).count(),
+        1,
+        "the history is read once: {cold:#?}"
+    );
+    let (warm, again) = c.git_processes(&["status", "--json"]);
+    assert_eq!(
+        warm.iter().filter(|a| walk(a)).count(),
+        0,
+        "and never again: {warm:#?}"
+    );
+
+    // The same answer both times, and the one git gives.
+    let keyed = format!("\"corpus\":\"{root}\"");
+    assert!(first.contains(&keyed), "{keyed} is in {first}");
+    assert!(again.contains(&keyed), "{keyed} is in {again}");
 }
 
 // ---------------------------------------------------------------------------

@@ -15,8 +15,10 @@ use crate::config::Config;
 use crate::store::Store;
 use ank_contract::ExitCode;
 use ank_core::SCHEMA_VERSION;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 
 pub const ANK_DIR: &str = ".ank";
 
@@ -226,9 +228,12 @@ fn declared(cwd: &Path, notes: &mut Vec<String>) -> Result<Option<Repo>> {
 /// the agent happened to run, so resolving it to `cwd` would make `src/**` mean
 /// something different in every subdirectory.
 fn worktree_of(cwd: &Path) -> PathBuf {
-    crate::git::run(cwd, &["rev-parse", "--show-toplevel"])
+    // Through `git::toplevel` and not a `rev-parse` of its own, so that the
+    // question is asked once however many callers want it
+    // (TASK-5690eae1e008): the verb that resolved a corpus here is the same one
+    // that will pass `ensure_usable` a moment later.
+    crate::git::toplevel(cwd)
         .ok()
-        .map(PathBuf::from)
         .filter(|p| p.is_dir())
         .unwrap_or_else(|| cwd.to_path_buf())
 }
@@ -362,7 +367,87 @@ pub fn same_corpus(a: &Path, b: &Path) -> bool {
 /// be a value that changes when the directory moves, which is the defect this
 /// exists to remove, reintroduced for the one case that cannot be answered. A
 /// reader that needs to key such a corpus keys it on nothing and knows it.
+///
+/// **The walk is paid once per clone, never once per invocation**
+/// (TASK-5690eae1e008). `rev-list --max-parents=0` has to traverse the entire
+/// history to know it has found every root: measured on this repository at 1211
+/// commits, 43ms warm against 5ms for a git process that reads nothing, and it
+/// grows with the history where every other question a reader asks does not. So
+/// the answer is remembered — for the process in [`IDENTITIES`], and for the
+/// clone in the git directory, which is where per-worktree state belongs
+/// ([`crate::git::git_dir`]) and where a caller can delete it.
+///
+/// **What is remembered is the root of `HEAD` in this worktree**, which is why
+/// the file is the worktree's and not the repository's: a linked worktree
+/// checked out on an orphan branch has a root of its own, and a cache shared
+/// through `refs/` would let it answer for its neighbour.
+///
+/// A history rewritten down to its root is the one event that moves this, and
+/// it moves the identity itself: the corpus is keyed on a commit that no longer
+/// exists either way, and `rm <git-dir>/ank/identity` is what re-reads it. The
+/// cache is written best effort — a read-only git directory costs the walk
+/// again and nothing else.
 pub fn identity(root: &Path) -> Option<String> {
+    let memo = IDENTITIES.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(root) {
+            return hit.clone();
+        }
+    }
+    // The git directory before the walk, because where it answers the walk may
+    // not have to happen at all. Outside a repository it answers `None` and the
+    // walk below fails in its turn, which is the same answer arrived at the
+    // same way.
+    let kept = crate::git::git_dir(root).map(|d| d.join(KEPT_IDENTITY));
+    let found = match kept.as_deref().and_then(remembered_identity) {
+        Some(id) => Some(id),
+        // Walked, and then written down — here and not above, so that a run
+        // reading the file back does not rewrite it for nothing.
+        None => {
+            let walked = walk_to_root(root);
+            if let (Some(path), Some(id)) = (kept.as_deref(), walked.as_ref()) {
+                let _ = std::fs::create_dir_all(path.parent().expect("the file has a directory"));
+                let _ = std::fs::write(path, format!("{id}\n"));
+            }
+            walked
+        }
+    };
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(root.to_path_buf(), found.clone());
+    }
+    found
+}
+
+/// Where the walk's answer is kept, under the worktree's git directory.
+///
+/// Undotted, like every directory git keeps its own state in: `.git/.ank` would
+/// read as a corpus, and this is a cache — deleting it costs one walk.
+const KEPT_IDENTITY: &str = "ank/identity";
+
+/// Memo for [`identity`], keyed on the directory asked about. The answer is
+/// remembered whether or not there was one: a tree with no history has no
+/// identity, and asking again cannot produce one inside a process that has not
+/// committed.
+type Identities = OnceLock<Mutex<HashMap<PathBuf, Option<String>>>>;
+static IDENTITIES: Identities = OnceLock::new();
+
+/// The identity a previous invocation left in the git directory, or `None` when
+/// there is none to read.
+///
+/// **Read as an object name or not at all.** A file holding anything but an
+/// object name is a file somebody or something else wrote, and taking it would
+/// key a corpus on a string that names no commit — the failure that would be
+/// hardest to see, because everything downstream would agree with it. Forty hex
+/// characters, or sixty-four where the repository hashes with SHA-256.
+fn remembered_identity(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let id = text.trim().to_string();
+    let named = matches!(id.len(), 40 | 64) && id.chars().all(|c| c.is_ascii_hexdigit());
+    named.then_some(id)
+}
+
+/// The oldest root of `HEAD`, read from the history itself.
+fn walk_to_root(root: &Path) -> Option<String> {
     let out = crate::git::run(root, &["rev-list", "--max-parents=0", "--reverse", "HEAD"]).ok()?;
     out.lines()
         .next()
