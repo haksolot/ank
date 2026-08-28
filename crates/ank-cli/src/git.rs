@@ -100,6 +100,9 @@ pub fn output(cwd: &Path, args: &[&str]) -> Result<Output> {
             .unwrap_or(false),
         "porcelain forbidden (ADR-9307e5d214a7): {args:?}"
     );
+    if verb_of(args).is_some_and(moves_refs) {
+        forget();
+    }
     Command::new("git")
         .current_dir(cwd)
         .args(args)
@@ -300,8 +303,30 @@ pub fn fetch_ref(cwd: &Path, refname: &str) -> Result<bool> {
     Ok(out.status.success())
 }
 
+/// Memo for [`version`], keyed on nothing: the installed git is one binary for
+/// the life of the process, and its version is the one question here that is
+/// not about a directory.
+///
+/// **The answer is remembered, the refusal is not.** A version that parsed is a
+/// fact; a git that could not be run is a state the caller is about to report
+/// with the command that fixes it, and caching it would only spare a process
+/// nobody reaches twice.
+static VERSION: OnceLock<Mutex<Option<(u32, u32)>>> = OnceLock::new();
+
 /// The installed version, as `(major, minor)`.
+///
+/// Asked once per process (TASK-5690eae1e008). [`ensure_usable`] is the gate
+/// every coordinating verb passes, and [`usable_here`] is the probe every
+/// reader makes — `status` alone reached it three times, each spawning a
+/// process to be told the same number, which costs about 25ms apiece on a
+/// Windows runner against 2-3ms on Linux.
 pub fn version() -> Result<(u32, u32)> {
+    let memo = VERSION.get_or_init(|| Mutex::new(None));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = *seen {
+            return Ok(hit);
+        }
+    }
     let out = Command::new("git").arg("--version").output().map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             env_missing()
@@ -310,13 +335,17 @@ pub fn version() -> Result<(u32, u32)> {
         }
     })?;
     let text = String::from_utf8_lossy(&out.stdout);
-    parse_version(&text).ok_or_else(|| {
+    let found = parse_version(&text).ok_or_else(|| {
         CliError::new(
             ExitCode::Environment,
             format!("unreadable git version: {}", text.trim()),
         )
         .with_hint(INSTALL_URL)
-    })
+    })?;
+    if let Ok(mut seen) = memo.lock() {
+        *seen = Some(found);
+    }
+    Ok(found)
 }
 
 /// `git version 2.43.0.windows.1` -> `(2, 43)`. Tolerates distribution
@@ -349,28 +378,24 @@ pub fn check_version(found: (u32, u32)) -> Result<()> {
     Ok(())
 }
 
-/// Root of the git repository containing `cwd`.
+/// Root of the work tree containing `cwd`.
+///
+/// One of the three answers [`dirs`] reads in a single process
+/// (TASK-5690eae1e008), and therefore asked once per directory however many
+/// callers want it: this is the second half of [`ensure_usable`], and every
+/// reader with half an answer to choose runs the [`usable_here`] probe.
+///
+/// A repository with no work tree — a bare one — is *not inside a repository*
+/// as far as this is concerned, which is what it always answered: `rev-parse
+/// --show-toplevel` refuses there, and the message and the hint are unchanged.
 pub fn toplevel(cwd: &Path) -> Result<PathBuf> {
-    let out = Command::new("git")
-        .current_dir(cwd)
-        .args(["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                env_missing()
-            } else {
-                CliError::new(ExitCode::Environment, format!("git rev-parse: {e}"))
-            }
-        })?;
-    if !out.status.success() {
-        return Err(CliError::new(
+    dirs(cwd)?.and_then(|d| d.top).ok_or_else(|| {
+        CliError::new(
             ExitCode::Environment,
             format!("{} is not inside a git repository", cwd.display()),
         )
-        .with_hint("git init"));
-    }
-    let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    Ok(PathBuf::from(path))
+        .with_hint("git init")
+    })
 }
 
 /// Checks the whole git environment: presence, version, and repository.
@@ -445,16 +470,96 @@ pub fn usable_here(cwd: &Path) -> bool {
 /// too — this is used to decide whether to say something extra, never to
 /// refuse.
 pub fn common_dir(cwd: &Path) -> Option<PathBuf> {
+    dirs(cwd).ok().flatten().map(|d| d.common)
+}
+
+/// The git directory of the **worktree** `cwd` sits in — `.git` for a nominal
+/// checkout, `.git/worktrees/<name>` for a linked one — absolute, or `None`
+/// outside a repository.
+///
+/// The counterpart of [`common_dir`] and asked in the same process: it is where
+/// per-worktree state belongs, and the per-worktree distinction is the whole
+/// point. `HEAD` is per-worktree, so anything derived from `HEAD` — the root
+/// commit [`crate::repo::identity`] keys a corpus on, for one — is per-worktree
+/// too, and remembering it beside `refs/` would let a worktree checked out on an
+/// unrelated root answer for its neighbour.
+pub fn git_dir(cwd: &Path) -> Option<PathBuf> {
+    dirs(cwd).ok().flatten().map(|d| d.git)
+}
+
+/// Everything a reader asks about *where* the repository around a directory is.
+#[derive(Debug, Clone)]
+struct Dirs {
+    /// The git directory of this **worktree** — `.git` for a nominal checkout,
+    /// `.git/worktrees/<name>` for a linked one.
+    git: PathBuf,
+    /// The git directory shared by every worktree, which is where `refs/` is.
+    common: PathBuf,
+    /// The root of the work tree, and `None` for a bare repository, which has
+    /// none.
+    top: Option<PathBuf>,
+}
+
+/// Memo for [`dirs`], keyed on the directory asked about. Successes only, for
+/// the reason [`VERSION`] gives — and here with a second one: "no repository"
+/// is an answer a caller may be about to change, `init` being the whole point
+/// of asking.
+type DirsMemo = OnceLock<Mutex<HashMap<PathBuf, Dirs>>>;
+static DIRS: DirsMemo = OnceLock::new();
+
+/// The three paths, in **one process for all of them** (TASK-5690eae1e008).
+///
+/// `status --json` used to ask two of these three questions twice each, one
+/// process apiece, which is about 25ms each on a Windows runner against 2-3ms
+/// on Linux. They are one question — where is this repository — and they are
+/// asked here as one.
+///
+/// **Read line by line and not on the exit code**, because a bare repository
+/// answers both of the first two and then refuses the third: `rev-parse`
+/// processes its options left to right and prints each answer as it reaches it,
+/// so the two directories are on standard output *and* the status is 128. Lines
+/// present is therefore the reading, and their order is the contract — the same
+/// one every other use of `rev-parse` here rests on.
+///
+/// `--path-format=absolute` rather than canonicalising afterwards, for the
+/// reason [`common_dir`] gives: a relative answer compared against an absolute
+/// one is two strings that differ for no reason.
+///
+/// `Ok(None)` is "no repository here", which is a legitimate answer for every
+/// caller. The error is reserved for a git that could not be run at all, so that
+/// [`toplevel`] goes on distinguishing a missing binary from a missing
+/// repository.
+fn dirs(cwd: &Path) -> Result<Option<Dirs>> {
+    let memo = DIRS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(cwd) {
+            return Ok(Some(hit.clone()));
+        }
+    }
     let out = output(
         cwd,
-        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
-    )
-    .ok()?;
-    if !out.status.success() {
-        return None;
+        &[
+            "rev-parse",
+            "--path-format=absolute",
+            "--git-dir",
+            "--git-common-dir",
+            "--show-toplevel",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines().map(str::trim).filter(|l| !l.is_empty());
+    let (Some(git), Some(common)) = (lines.next(), lines.next()) else {
+        return Ok(None);
+    };
+    let answer = Dirs {
+        git: PathBuf::from(git),
+        common: PathBuf::from(common),
+        top: lines.next().map(PathBuf::from),
+    };
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(cwd.to_path_buf(), answer.clone());
     }
-    let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!text.is_empty()).then(|| PathBuf::from(text))
+    Ok(Some(answer))
 }
 
 /// Whether the resolved corpus and the working directory sit in two different
@@ -524,6 +629,12 @@ pub struct AnkRef {
 /// that is the nominal state of a fresh repository, and maintenance has to be
 /// able to run there.
 pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
+    let memo = REFS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(cwd) {
+            return Ok(hit.clone());
+        }
+    }
     // A tab separates the two fields: it cannot appear in a ref name, where a
     // space can be ambiguous to read back.
     let out = run(
@@ -551,7 +662,81 @@ pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
             object: object.to_string(),
         });
     }
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(cwd.to_path_buf(), refs.clone());
+    }
     Ok(refs)
+}
+
+/// Memo for [`ank_refs`] and [`ank_records`], keyed on the directory git was
+/// run in and **dropped whole the moment this process writes a ref**.
+///
+/// The coordination plane is the one thing here that does move under a running
+/// verb: `claim` writes the ref it just read, `release` and `close` delete one.
+/// So this is not the "cannot change" memo the others are, and the key would be
+/// wrong if it were left to say otherwise — ADR-f3d1dea65d84 puts it plainly, a
+/// cache whose key is wrong makes the verb lie. What guards it is [`forget`],
+/// called from [`output`] for every command that can move a ref, and it drops
+/// every directory rather than the one named: a path spelled two ways is two
+/// keys, and a stale claim record is not a thing to be clever about.
+type Refs = OnceLock<Mutex<HashMap<PathBuf, Vec<AnkRef>>>>;
+static REFS: Refs = OnceLock::new();
+type Records = OnceLock<Mutex<HashMap<PathBuf, HashMap<String, String>>>>;
+static RECORDS: Records = OnceLock::new();
+
+/// The commands after which the plane read above is no longer what the
+/// repository holds.
+///
+/// `update-ref` is the write, in both directions — `claim` swaps, `release` and
+/// `close` delete. `fetch` is the other one: level 1 brings a remote's claim
+/// into this clone before deciding on it (§7), and the ref it lands on is one
+/// this process may have already enumerated.
+fn moves_refs(verb: &str) -> bool {
+    matches!(verb, "update-ref" | "fetch")
+}
+
+/// Drops the remembered plane, for every directory at once.
+fn forget() {
+    if let Some(memo) = REFS.get() {
+        if let Ok(mut seen) = memo.lock() {
+            seen.clear();
+        }
+    }
+    if let Some(memo) = RECORDS.get() {
+        if let Ok(mut seen) = memo.lock() {
+            seen.clear();
+        }
+    }
+}
+
+/// The refs of `refs/ank/*` and the record each one points at: **one
+/// enumeration and one batch, however many callers want it**
+/// (TASK-5690eae1e008).
+///
+/// Three readers ask this per invocation — `context::plane` for the whole
+/// plane, `claim::on_task` for the task this identity is on, and
+/// `claim::live_claims_where` for what everybody else holds — and each of them
+/// walked the namespace itself and then asked `cat-file` per ref. That is one
+/// process per ref per reader for a state that cannot differ between them
+/// inside one process, and two walks are free to disagree about a ref they both
+/// read, which is the defect the pairing removes rather than merely the cost.
+///
+/// A ref whose object git will not hand back is **absent from the map**, which
+/// is what every caller already means by a record it could not read.
+pub fn ank_records(cwd: &Path) -> Result<(Vec<AnkRef>, HashMap<String, String>)> {
+    let refs = ank_refs(cwd)?;
+    let memo = RECORDS.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(seen) = memo.lock() {
+        if let Some(hit) = seen.get(cwd) {
+            return Ok((refs, hit.clone()));
+        }
+    }
+    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
+    let records = cat_file_batch(cwd, &objects).unwrap_or_default();
+    if let Ok(mut seen) = memo.lock() {
+        seen.insert(cwd.to_path_buf(), records.clone());
+    }
+    Ok((refs, records))
 }
 
 /// Reads a symbolic ref in full form. `symbolic-ref --short` is avoided on
@@ -658,6 +843,9 @@ pub fn output_with_stdin(cwd: &Path, args: &[&str], input: &[u8]) -> Result<Outp
             .unwrap_or(false),
         "porcelain forbidden (ADR-9307e5d214a7): {args:?}"
     );
+    if verb_of(args).is_some_and(moves_refs) {
+        forget();
+    }
     let fail = |e: std::io::Error| {
         if e.kind() == std::io::ErrorKind::NotFound {
             env_missing()
