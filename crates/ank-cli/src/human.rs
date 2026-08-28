@@ -4548,13 +4548,22 @@ pub fn accept(
 /// somebody remembered. That is the shape of a rule that belongs in the tool.
 ///
 /// **`accept` is the one verb that writes into history**, authoritative the
-/// instant it exists, on the branch where it exists — no pull request between it
-/// and the default branch, and no CI in front of it. That is why the branch
+/// instant it exists, on the branch where it exists. That is why the branch
 /// precondition is a refusal and not advice, and this condition has the same
-/// shape: it must be true *before* the commit, because after it there is
-/// nothing to review and no gate left to fail. A warning also arrives silenced
-/// by a flag somebody running in a script has every reason to pass, which is
-/// exactly how `ank accept -q` broke the default branch without saying a word.
+/// shape: it must be true *before* the commit.
+///
+/// This paragraph used to end "no pull request between it and the default
+/// branch, and no CI in front of it", and that stopped being true on
+/// 2026-08-28: the default branch takes no direct push, and a ratification
+/// reaches it through a pull request like every other change. The conclusion
+/// survives the premise, which is worth saying rather than leaving to be
+/// rediscovered. A gate in front of the merge catches a stale citation *after*
+/// the signature: the commit exists, it carries the anchor, and [`accept`]
+/// refuses a second one on the same entity, so the repair is a supersession and
+/// not another attempt. A pull request can reject a branch; it cannot un-sign
+/// what is on it. A warning also arrives silenced by a flag somebody running in
+/// a script has every reason to pass, which is exactly how `ank accept -q` broke
+/// the default branch without saying a word.
 ///
 /// **The order this makes mandatory**: re-point the citations, then sign. A
 /// citation naming a proposed successor is provisional and honest — `ank show`

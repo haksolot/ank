@@ -20,7 +20,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-08-26T00:07:29Z
 schema: 4
-version: 2
+version: 3
 ---
 
 `accept` already computes this. It walks the tracked files, skips every `.ank/`
@@ -44,10 +44,20 @@ tool.
 
 `accept` is the one verb that writes into history rather than into the working
 tree, and it is authoritative the instant it exists, on the branch where it
-exists. There is no pull request between it and the default branch and no CI in
-front of it -- which is exactly why the branch precondition is a refusal and not
+exists -- which is exactly why the branch precondition is a refusal and not
 advice. The condition here has the same shape: something must be true *before*
-the commit, because after it there is nothing to review and no gate left to fail.
+the commit.
+
+This paragraph used to add "there is no pull request between it and the default
+branch and no CI in front of it", and that has stopped being true: since
+2026-08-28 the default branch takes no direct push, and a ratification reaches it
+through a pull request like every other change. The conclusion is unchanged, and
+the reason it survives is worth stating rather than assuming. A gate in front of
+the merge would catch a stale citation, but it would catch it *after* the
+signature: the ratification commit already exists, already carries the anchor,
+and `accept` refuses a second one on the same entity, so the repair is not a
+second attempt but a supersession. A pull request can reject a branch. It cannot
+un-sign what is on it.
 
 A warning cannot be the answer for the same reason. It arrives after the fact,
 and it is silenced by a flag somebody running in a script has every reason to
