@@ -108,18 +108,16 @@ fn needed(verb: &str) -> &'static [&'static str] {
         .flags()
 }
 
-/// Focuses the entities panel and puts the cursor on one entity, by narrowing
+/// Goes to the listing and puts the cursor on one entity, by narrowing
 /// the listing to it.
 ///
 /// By identifier and through the search, which is the one line this reader
 /// still takes: the needle leaves one row and a search puts the cursor back at
-/// the top, so the panel names the entity meant rather than whichever one
+/// the top, so the region names the entity meant rather than whichever one
 /// `find` happened to put first.
 fn select(live: &mut Live, id: &str) {
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
-    });
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
     live.send(&format!("{}{}\r", ank_tui::keys::FIND, short_of(id)));
     live.until("the listing to narrow to one row", |t| {
         t.contains("ENTITIES all 1")
@@ -621,11 +619,10 @@ fn a_form_that_names_an_entity_refuses_in_front_of_itself_and_new_still_opens() 
     let mut live = Live::with(&repo, WINDOW.0, WINDOW.1, &editor.env());
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
 
-    // The body panel, which names nothing until something is opened into it.
+    // The document's own screen, which names nothing until something is opened
+    // into it.
     live.send("3");
-    live.until("the body panel to take the focus", |t| {
-        t.contains("> 3 BODY")
-    });
+    live.until("the document's screen", |t| t.contains("3 BODY"));
 
     live.send(&letter("edit"));
     live.until("the reader to refuse an edit of nothing", |t| {

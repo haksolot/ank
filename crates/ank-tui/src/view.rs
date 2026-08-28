@@ -1,99 +1,121 @@
-//! Four panels, one of them focused, and the state between them
-//! (TASK-bb43cfe2192b).
+//! One region, four screens reached in their turn, and the state between them
+//! (TASK-252bf02de218, ADR-559eebf5c6f5).
 //!
 //! [`App`] holds what was read, where each cursor is, what is filtered and
-//! which panel has focus. It reads by calling [`Ank`] and by nothing else, and
-//! it renders by returning a `String` rather than writing: a frame that is a
-//! value is a frame a test can read, which is what lets the suite assert that
-//! the screen names entities the corpus actually carries without also owning a
-//! terminal.
+//! which screen the region is showing. It reads by calling [`Ank`] and by
+//! nothing else, and it renders by returning a `String` rather than writing: a
+//! frame that is a value is a frame a test can read, which is what lets the
+//! suite assert that the screen names entities the corpus actually carries
+//! without also owning a terminal.
 //!
-//! # The panel set, and why they are arranged this way
+//! # One region, and what happened to the panels
 //!
-//! Four panels, one focused, in the shape lazygit gave the idea. Two of them
-//! sit side by side and two run the width of the screen, and which is which is
-//! decided by one question: whether a row of the panel is a *line* or a *list*.
+//! One bordered region, and whatever has been asked for is drawn in it. Above
+//! it the header, under it the note; nothing else on the frame has a rule
+//! around it at any width.
 //!
 //! ```text
 //! ank tui   corpus ...   branch main (default main)  [?]  <- chrome
 //! identity ...   0 claim(s) live   stream none            <- chrome
 //! ------------------------------------------------------  <- chrome
-//! +-  1 CLAIMS (2) ------------------------------------+
-//! |  * TASK-4974  claude-code/opus-5+wave14  until ... |
-//! +----------------------------------------------------+
-//! +=> 2 ENTITIES 1-9 of 41 ==========++-  3 BODY ------+
-//! |>     1  ADR-8bd7  accepted~      ||  nothing open  |
-//! +==================================++----------------+
-//! +-  4 QUEUE all 2 -----------------------------------+
-//! |   ADR-2b7c  adr  A decision waiting for a person   |
-//! +----------------------------------------------------+
+//! +- 2 ENTITIES 1-17 of 41   (41 in the corpus) ------+
+//! |>     1  ADR-8bd7  accepted~   The reader reaches  |
+//! |      2  ADR-c072  superseded  The reader spends   |
+//! |                                                   |
+//! +---------------------------------------------------+
 //! whatever the reader is being told, or the search line   <- chrome
 //! ```
 //!
-//! **Four rows go on chrome, and that is what the binary paints**
-//! (TASK-a836fdb2fca2, LOG-1afc1b09f95b). Two of the header's rows carry
-//! sentences, the third is the rule under them, and the note band is one row
-//! that is blank when the reader has nothing to say. What this sketch drew
-//! until TASK-9a402a54886f landed was a band of touch targets and two rows of
-//! trailer under the panels -- the frame ADR-c07e2694f0e1 measured at roughly
-//! thirteen of twenty-four rows spent on furniture. `tests/chrome.rs` takes
-//! the count off the built binary at five windows rather than off this
-//! drawing, and finds four non-panel rows against a budget of five. What those
-//! bands offered is the `[?]` on the header's right edge and the overlay
-//! behind it, which costs no row at all until somebody asks for it.
+//! **What was four panels is four screens** (ADR-559eebf5c6f5). lazygit shows
+//! four planes of one repository that a person compares by eye, and comparison
+//! is what an arrangement buys; nothing on this screen is compared with
+//! anything else on it, so the arrangement bought nothing and was paid for in
+//! rows, in borders, and in four separate answers to "how is a row drawn". The
+//! decision's own measurement of that is on ADR-559eebf5c6f5 and is not
+//! repeated here.
 //!
-//! It is drawn here in the ASCII border set, which is what a terminal that has
-//! declared itself dumb gets; an ordinary terminal draws the same frame with
-//! box-drawing glyphs in the same places ([`Glyphs`]).
-//!
-//! * **1 CLAIMS** -- who holds what, the caller's own marked. Full width,
-//!   because a row of it is one line: an identifier, an identity, an instant
-//!   and a title, and an identity alone is thirty characters. A column would
-//!   cut the one field that answers "held by whom".
+//! * **1 CLAIMS** -- who holds what, the caller's own marked. Asked for rather
+//!   than kept current: `ank status` counts what it reports by reading the
+//!   corpus to do it, so it is run when somebody arrives at this screen and
+//!   never on a repaint nobody asked for.
 //! * **2 ENTITIES** -- every entity of every kind with its status, filtered by
 //!   `f` and `/`, windowed. Where a session opens, because it is the question a
 //!   reader arrives with.
-//! * **3 BODY** -- the entity somebody opened, whole: its frontmatter as a
-//!   block of labelled fields, who holds it, the constraints binding its
-//!   declared scope, and its prose under them, paged rather than cut
-//!   (TASK-082301b40a27). `s` swaps it for the constraints alone, and `o` for
-//!   what `ank config` declares (TASK-b08d090f699c) -- a pane and not a fifth
-//!   panel, because a panel costs two rows at every window whether or not
-//!   anybody is looking at it (LOG-1afc1b09f95b), and a screen a person opens,
-//!   reads and leaves is what a pane is for. It is the one pane that names no
-//!   entity: what a corpus is configured to do is a fact about the repository,
-//!   so it draws with nothing open, and it is read when a person arrives at it
-//!   and on no repaint -- the queue's rule, over one `ank config <key>` per key
-//!   the contract declares.
+//! * **3 BODY** -- one entity, whole: its frontmatter as a block of labelled
+//!   fields, who holds it, the constraints binding its declared scope, and its
+//!   prose under them, paged rather than cut (TASK-082301b40a27). `s` swaps it
+//!   for the constraints alone, and `o` for what `ank config` declares
+//!   (TASK-b08d090f699c) -- the one screen here that names no entity at all.
 //! * **4 QUEUE** -- what is proposed and waiting for a signature, and which
-//!   regime the corpus is in. Full width for the same reason the claims are:
-//!   the sentence saying a corpus has declared no ratification key is
-//!   seventy-odd characters and means nothing cut in half. Asked for rather
-//!   than kept current: `ank review` inspects the whole corpus and costs what a
-//!   `check` costs, so it is run when somebody focuses this panel and never on
-//!   a repaint nobody asked for.
+//!   regime the corpus is in. Asked for rather than kept current, for the
+//!   claims' reason with `ank review`'s price behind it.
 //!
-//! **The two in the middle are the pair that is genuinely read against each
-//! other**, and that is why they are the pair that shares a row: a person moves
-//! down a list *in order to* open something, and wants the list still there
-//! when they have.
+//! **A digit is how a person reaches one, and it is the digit each already
+//! had.** `Tab` walks the ring, `1` to `4` name one, and the number is written
+//! on the region's title beside its name, which is the whole of what the change
+//! costs a reader who knew the old frame.
 //!
-//! **The chrome is not a panel and cannot be focused.** The two bands that
+//! **Opening a row replaces the list with the document it names.** Enter on a
+//! row of any of the three listings shows that entity in the region;
+//! [`App::from`] remembers which listing it was reached from, and `Back` gives
+//! that listing back with the row still under the cursor. No cursor is ever
+//! moved by leaving a screen, which is what makes a screen a place rather than
+//! a mode.
+//!
+//! **The chrome is not a screen and cannot be reached.** The two bands that
 //! stay full width and unbordered -- the header, and whatever the reader is
-//! being told -- hold sentences rather than rows. A refusal the CLI gave is
-//! the clearest case: it carries a code and the command that resolves it, and
-//! a border would cost it two columns for nothing.
+//! being told -- hold sentences rather than rows. A refusal the CLI gave is the
+//! clearest case: it carries a code and the command that resolves it, and a
+//! border would cost it two columns for nothing.
 //!
-//! # Focus is where the width goes
+//! # Nothing is drawn around nothing
 //!
-//! One panel has focus at a time, `Tab` and `1`..`4` move it, and the focused
-//! panel is drawn with a heavier border and the `> ` marker every listing in
-//! this tool already spends on the row a cursor is on ([`text::CURSOR`]). Both
-//! signals are characters: the screen answers "which panel am I in" with no
-//! colour at all. Colour arrived on top of that frame rather than into it
-//! (TASK-6cd41d23b7d1): what it paints is what a row *is* -- an identifier, a
-//! status -- and never where the reader is standing, so `NO_COLOR` takes away
-//! a repetition and no signal at all.
+//! **The region is paid its two borders and a row of content before either band
+//! under it is paid at all** ([`REGION`], [`App::arrange`]). That is the
+//! criterion this shape was built to meet: nothing on the frame may collapse to
+//! a rule with nothing inside it, at any width. It is also why every screen
+//! here has something to say when it holds nothing -- the claims say they have
+//! not been asked, the queue says what asking costs, an empty filter says so,
+//! and a region with no document open spends its rows explaining why nothing is
+//! previewed into it.
+//!
+//! # The width, which no longer changes the shape
+//!
+//! **One screen is what every width gets** (ADR-559eebf5c6f5). There used to be
+//! two arrangements -- panels side by side above a stated width, stacked below
+//! it -- and the second existed because the first could not honestly be drawn
+//! on a phone. One region is drawable at forty columns and at a hundred and
+//! fifty, so there is no width at which the reader becomes a different reader,
+//! and [`App::arrange`] no longer reads the focus at all: focus used to decide
+//! how the width was divided, and there is nothing left to divide it between.
+//!
+//! What a narrow window costs is what a row can afford to say, which is a
+//! question about composing a row and not about arranging a screen.
+//!
+//! **And a tap is [`App::arrange`] run backwards**, which is now one rectangle
+//! rather than four. A mouse event carries a column and a row; the row it
+//! landed on is the region's own window arithmetic read the other way. There is
+//! no second layout for a finger to disagree with, and no crossing tap to
+//! resolve before the cursor moves, because there is nowhere to cross to.
+//!
+//! **And what a screen offers is reachable by a finger without being drawn at
+//! rest** (TASK-9a402a54886f, ADR-c07e2694f0e1). What stands there is one cell
+//! of the header ([`App::help_line`]), and behind it the key list, every row of
+//! which is the key it names. The vocabulary is unchanged and that is the
+//! point: a target hands [`App::press`] the very key a keyboard would have
+//! sent, so a person with a keyboard reads the letter, a person with a thumb
+//! touches the word, and the offer is checkable against the mapping instead of
+//! against somebody's memory of it. A thumb reaches the commonest act of all
+//! with no target whatever -- touching the row already selected opens it
+//! ([`App::tapped`]).
+//!
+//! # Where a person is standing is a character, and never a colour
+//!
+//! The cursor is `> ` on the row it is on ([`text::CURSOR`]), a claim of the
+//! caller's own is `*`, and what state an entity is in is the word spelled in
+//! its own column. The border weight that used to say which panel had focus is
+//! gone with the panels: one region has nothing to be told apart from, so its
+//! rule is one weight at every window and the title carries no marker.
 //!
 //! **The borders are box-drawing glyphs, and drop to `-`, `|`, `+` and `=` on
 //! the terminal that declares it can render neither those nor colour**
@@ -106,57 +128,6 @@
 //! phone that could not draw the glyphs -- and the phones people read from
 //! have overtaken it; ADR-1f70ce2c3eac's scope is the CLI's renderer and not
 //! this one.
-//!
-//! **And focus is not decoration: the focused one of the two middle panels
-//! takes four fifths of the width.** A corpus reader has exactly two things
-//! worth being wide -- a list whose titles are sentences, and a body that is
-//! prose -- and they cannot both be wide at once in eighty columns. So the
-//! answer is the one lazygit gives: the panel being worked in is the one that
-//! gets the room, and the other stays as a reminder of what is there. Pressing
-//! Enter on a row therefore opens the document *and* hands it the screen, which
-//! is what opening something means.
-//!
-//! # The phone, which is the same rule in the other axis
-//!
-//! **Below [`ONE_COLUMN`] the four panels stop sharing rows, stack, and the
-//! focused one is the only one open** (TASK-dd9747e5e305). The width is not
-//! chosen: it is where the focused one of the pair can no longer carry
-//! [`ADDRESSED`] -- a row's cursor, number, identifier and status, which is
-//! everything a listing spends before it starts saying what a row is *about*.
-//! Under it the pair is two panels neither of which answers anything, and one
-//! column is the honest arrangement.
-//!
-//! And it is bb43's own rule read in the other axis. Focus is where the width
-//! goes on a screen that has width to give; on one that has not, focus is where
-//! the *screen* goes. The three panels without it keep their top border, which
-//! carries their number and their name, so every one of them is still on the
-//! frame, still one digit away, and now one touch away as well -- "every panel
-//! remains reachable" is something the frame shows rather than something a key
-//! table promises.
-//!
-//! Both arrangements are decided in [`App::arrange`], from the window and the
-//! focus and nothing else, which is what lets [`App::pointed`] resolve a tap by
-//! running that same function backwards. A mouse event carries a column and a
-//! row; the panel it landed in is the one whose rectangle holds them, and the
-//! row it landed on is that panel's own window arithmetic read the other way.
-//! There is no second layout for a finger to disagree with.
-//!
-//! **And what a panel offers is reachable by a finger without being drawn at
-//! rest** (TASK-9a402a54886f, ADR-c07e2694f0e1). It was a band of targets under
-//! the panels, on every frame and at every window, and the window it cost the
-//! most on was the phone the clause exists to protect: four rows of twenty-four
-//! spent teaching keys, plus two more of trailer under them. What stands there
-//! now is one cell of the header ([`App::help_line`]), and behind it the key
-//! list, every row of which is the key it names. The chrome is a header and the
-//! panels; the two bands under them are the note, which is a row, and the
-//! offer, which is zero rows until a command is waiting to be answered.
-//!
-//! The vocabulary is unchanged and that is the point: a target hands
-//! [`App::press`] the very key a keyboard would have sent, so a person with a
-//! keyboard reads the letter, a person with a thumb touches the word, and the
-//! offer is checkable against the mapping instead of against somebody's memory
-//! of it. A thumb reaches the commonest act of all with no target whatever --
-//! touching the row already selected opens it ([`App::tapped`]).
 //!
 //! # A failure is a line on the screen and never the end of the session
 //!
@@ -264,19 +235,22 @@ use crate::text::{self, fit, pad, window, wrap};
 use ank_contract::meaning::{role_of_kind, role_of_status, Role};
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
-use ratatui::layout::{Constraint, Layout, Position, Rect};
+use ratatui::layout::{Position, Rect};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Text};
 use ratatui::widgets::{Block, Clear, Paragraph, Widget};
 
-/// Which panel has focus.
+/// Which screen the one region is showing (TASK-252bf02de218).
 ///
-/// The order is the order `Tab` walks, the order the digits name, and the order
-/// the screen reads: claims across the top, then the two that share a row, then
-/// the queue across the bottom. A number on a panel is not decoration either --
-/// it is the whole of what "focus moves by key" costs a person to learn, since
-/// a reader who can see `4` on the queue never has to remember which key opens
-/// it.
+/// It was which of four panels had the focus, and the four are the same four:
+/// what changed is that they are reached in their turn rather than drawn at
+/// once (ADR-559eebf5c6f5). The order is the order `Tab` walks and the order
+/// the digits name, and it is the order they were drawn in when they were
+/// drawn together -- kept deliberately, because the digit that reaches a screen
+/// is the digit that reached its panel and a reader who knew the old frame owes
+/// nothing new. The number is written on the region's title beside the name,
+/// which is the whole of what "reachable by the key it already had" costs a
+/// person to learn.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
     Claims,
@@ -286,10 +260,10 @@ pub enum Focus {
 }
 
 impl Focus {
-    /// Every panel, in the order `Tab` walks them.
+    /// Every screen, in the order `Tab` walks them.
     pub const ALL: [Focus; 4] = [Focus::Claims, Focus::Entities, Focus::Body, Focus::Queue];
 
-    /// The digit that names this panel, which is the key that focuses it.
+    /// The digit that names this screen, which is the key that reaches it.
     pub fn number(self) -> usize {
         match self {
             Focus::Claims => 1,
@@ -299,24 +273,24 @@ impl Focus {
         }
     }
 
-    /// The panel a digit names, or `None` where the digit names none.
+    /// The screen a digit names, or `None` where the digit names none.
     pub fn of_digit(c: char) -> Option<Focus> {
         let n = c.to_digit(10)? as usize;
         Focus::ALL.into_iter().find(|f| f.number() == n)
     }
 
-    /// The panel `by` steps along, wrapping.
+    /// The screen `by` steps along, wrapping.
     ///
-    /// Wrapping and not clamping, unlike a cursor: four panels are a ring a
-    /// person walks with one key, and a `Tab` that stopped on the last of them
-    /// would be a key that does nothing every fourth press.
+    /// Wrapping and not clamping, unlike a cursor: the four are a ring a person
+    /// walks with one key, and a `Tab` that stopped on the last of them would
+    /// be a key that does nothing every fourth press.
     pub fn stepped(self, by: isize) -> Focus {
         let len = Focus::ALL.len() as isize;
         let at = (self.number() as isize - 1 + by).rem_euclid(len);
         Focus::ALL[at as usize]
     }
 
-    /// Whether this panel holds the rows of a *listing*.
+    /// Whether this screen holds the rows of a *listing*.
     ///
     /// Three of the four do. The body is the one that does not, and what
     /// answers for it is everything written for a listing: the digit that names
@@ -332,7 +306,7 @@ impl Focus {
         self != Focus::Body
     }
 
-    /// The name in the panel's own title.
+    /// The name on the region's title when this screen is the one in it.
     fn name(self) -> &'static str {
         match self {
             Focus::Claims => "CLAIMS",
@@ -343,7 +317,7 @@ impl Focus {
     }
 }
 
-/// One action the panel with the focus offers, drawn where a finger can reach
+/// One action the screen in the region offers, drawn where a finger can reach
 /// it (TASK-dd9747e5e305).
 ///
 /// **The target carries the key, and pressing the key is what the target
@@ -401,10 +375,10 @@ struct Target {
 /// Three things now, and the third is the one that is not about an entity at
 /// all (TASK-b08d090f699c): what the corpus is configured to do is a fact about
 /// the repository, so the config pane draws with nothing open and says so on
-/// its own title. It is a pane and not a fifth panel for the reason
-/// LOG-1afc1b09f95b spends the whole of: rows are a budget, a panel costs two
-/// of them at every window whether or not anybody is looking at it, and this is
-/// a screen a person opens, reads and leaves.
+/// its own title. It is a pane of the document's own screen and not a fifth
+/// screen of its own, because it is reached and left the way `s` is: `o` shows
+/// it, `o` again gives the document back, and nothing on the ring of four
+/// moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Pane {
     Body,
@@ -437,9 +411,12 @@ struct Pending {
 
 /// Where one listing is, and what of it is on the screen.
 ///
-/// One per listing rather than one shared, which is what makes a panel a place
-/// rather than a mode: leaving the entities to look at the queue and coming
-/// back finds the row that was under the cursor, because it was never moved.
+/// One per listing rather than one shared, and it is the whole of what makes a
+/// screen a place rather than a mode (TASK-252bf02de218): leaving the entities
+/// to look at the queue and coming back finds the row that was under the
+/// cursor, because it was never moved. It matters more now than it did when all
+/// four were on the frame at once -- a row a person cannot see is a row they
+/// have to be given back.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct Cursor {
     at: usize,
@@ -554,11 +531,11 @@ pub struct App {
     /// (TASK-8a6578851244).
     ///
     /// `None` is the ordinary state, and it is the whole of what the list costs
-    /// at rest: nothing. Open, it is drawn *over* the panels rather than into
+    /// at rest: nothing. Open, it is drawn *over* the region rather than into
     /// the band under them, so the arrangement beneath it does not move and
     /// closing it gives back the frame that was there -- which is what a note
     /// carrying thirty-three entries could not do at eighty by twenty-four,
-    /// where the panels were squeezed to make room for it.
+    /// where the region was squeezed to make room for it.
     ///
     /// A row and not a flag, because the list is longer than the window at both
     /// of the windows ADR-c07e2694f0e1 measures this reader on. The alternative
@@ -568,7 +545,7 @@ pub struct App {
     /// The form `ank new` is filled in on, open (TASK-d832452630d2).
     ///
     /// `None` is the ordinary state and it costs nothing at rest, for the key
-    /// list's reason: it is drawn *over* the panels rather than into a band the
+    /// list's reason: it is drawn *over* the region rather than into a band the
     /// layout gave rows up for, so [`App::arrange`] does not know it exists and
     /// closing it gives back exactly the frame that was there. The five-row
     /// budget TASK-9a402a54886f spent is untouched by it.
@@ -578,11 +555,25 @@ pub struct App {
     /// grammar, and what it composes reaches the confirmation like every other
     /// act.
     form: Option<Form>,
+    /// The listing the open document was reached from (TASK-252bf02de218).
+    ///
+    /// **What "leaving the document gives the list back" means when there are
+    /// three lists.** Opening a row replaces the list with the document it
+    /// names, so `Back` has to know which list was replaced: a person who
+    /// opened a proposal out of the ratification queue and was handed the
+    /// entities on the way out would have been given somebody else's screen
+    /// with their own row nowhere on it. The cursors were never moved, so the
+    /// row is still where they left it -- this is the one fact the frame used
+    /// to carry by drawing all four at once.
+    ///
+    /// [`Focus::Entities`] until something has been opened, which is the
+    /// listing a session opens on.
+    from: Focus,
     /// The list `x` opens, with the row of it the cursor is on
     /// (TASK-e8da6a00564a).
     ///
     /// `None` is the ordinary state and it costs nothing at rest, for the key
-    /// list's reason and the form's: it is drawn *over* the panels rather than
+    /// list's reason and the form's: it is drawn *over* the region rather than
     /// into a band the layout gave rows up for, so [`App::arrange`] does not
     /// know it exists and closing it gives back exactly the frame that was
     /// there. It is cheaper at rest than what it replaced -- `x` used to fill
@@ -602,10 +593,10 @@ impl App {
         App {
             size,
             // Where a session opens, and it is the question a reader arrives
-            // with: what is in this corpus. The claims panel above it answers a
-            // narrower one and the body beside it is empty until something is
-            // opened.
+            // with: what is in this corpus. The claims answer a narrower one
+            // and the document screen names nothing until something is opened.
             focus: Focus::Entities,
+            from: Focus::Entities,
             pane: Pane::Body,
             snapshot: None,
             held: None,
@@ -738,10 +729,10 @@ impl App {
     /// document somebody else ratified a minute ago is the one row a person
     /// would act on wrongly.
     ///
-    /// A panel drawn is not a panel focused, and that distinction is what lets
-    /// the queue be on the screen at all times without being paid for at all
-    /// times: unfocused and never asked, it says so in the words that name the
-    /// price.
+    /// A screen nobody has gone to is a screen nobody has paid for, and one
+    /// region makes that plainer than four panels did (TASK-252bf02de218): the
+    /// queue is not drawn saying it has not been asked, it is simply not drawn,
+    /// and the digit that reaches it is what charges it.
     fn requeue(&mut self, ank: &Ank) {
         if self.focus != Focus::Queue {
             return;
@@ -968,18 +959,18 @@ impl App {
     ///
     /// **A tap is resolved against [`App::arrange`] run backwards**, which is
     /// the whole of why that function decides every rectangle from the window
-    /// and the focus and nothing else: the panel a finger landed in is the
-    /// panel whose rectangle holds the point, the row it landed on is that
-    /// panel's own window arithmetic read in the other direction, and there is
-    /// no second layout for a tap to disagree with.
+    /// and nothing else: the row a finger landed on is the region's own window
+    /// arithmetic read in the other direction, and there is no second layout
+    /// for a tap to disagree with. It is one rectangle now rather than four
+    /// (TASK-252bf02de218), so there is no crossing tap to resolve before the
+    /// cursor moves.
     ///
-    /// Three regions and no fourth. A target under the panels is the key it
+    /// Two places and no third. A target under the region is the key it
     /// carries, pressed -- so a tap goes through [`App::press`] and reaches
-    /// exactly what a keyboard reaches. A panel is that panel focused, and its
-    /// row selected where the tap was on one. Anything else -- the header, a
-    /// border, the band the reader is being told things in -- is not a control,
-    /// and a screen that acted on a touch nobody aimed at anything would be a
-    /// screen a pocket can drive.
+    /// exactly what a keyboard reaches. The region is the row under the finger,
+    /// selected. Anything else -- the header, a border, the band the reader is
+    /// being told things in -- is not a control, and a screen that acted on a
+    /// touch nobody aimed at anything would be a screen a pocket can drive.
     ///
     /// **The confirmation is modal for a finger exactly as it is for a key**
     /// (TASK-d4a882345837). While a command is waiting, the only tap that does
@@ -991,10 +982,10 @@ impl App {
         let at = Position::new(event.column, event.row);
         match event.kind {
             MouseEventKind::Down(_) => {
-                // The list is over the panels and over the bands, so it is what
+                // The list is over the region and over the bands, so it is what
                 // a press lands on while it is open: one row, one binding, and
                 // no second road to whatever is drawn underneath it.
-                // The form is over the panels and over the bands, exactly as
+                // The form is over the region and over the bands, exactly as
                 // the key list is, and it is modal besides: while one is open
                 // the only touch that does anything is a touch on one of its
                 // rows, which selects that field. A thumb reaches the same
@@ -1007,7 +998,7 @@ impl App {
                     }
                     return false;
                 }
-                // The list `x` opened is over the panels and over the bands
+                // The list `x` opened is over the region and over the bands
                 // like the other two, and a touch on a row of it opens that row
                 // -- which is what Enter does on it, and the whole of what
                 // ADR-c07e2694f0e1 asks of an offer: a thumb reaches it.
@@ -1181,16 +1172,17 @@ impl App {
         self.overlay = Some(top.clamp(0, last as isize) as usize);
     }
 
-    /// A tap that landed on a panel: that panel focused, and the row under the
-    /// finger selected -- or opened, where it was already the selected one.
+    /// A tap that landed in the region: the row under the finger selected, or
+    /// opened where it was the selected one already.
     ///
-    /// **The row is resolved before the focus moves and applied after**, and
-    /// that ordering is the whole of the correctness. Focus decides the
-    /// arrangement -- the width of the pair on a wide screen, which panel is
-    /// open on a narrow one -- so the rectangle a person touched is the one the
-    /// old focus drew. Resolving after moving would select the row that has
-    /// since slid under the finger, which is the same defect the confirmation
-    /// avoids by freezing its argv.
+    /// **There is no panel to move to any more** (TASK-252bf02de218). This used
+    /// to resolve which of four rectangles a finger was in, focus that one, and
+    /// then select a row in it -- carefully in that order, because focus
+    /// decided the arrangement and resolving afterwards would have picked the
+    /// row that had since slid under the finger. One region has one rectangle
+    /// and one arrangement, so the ordering has nothing left to protect and the
+    /// crossing tap has nowhere to cross to: the digits are how a person
+    /// changes screens now.
     ///
     /// **Touching the row already selected opens it** (ADR-c07e2694f0e1,
     /// TASK-9a402a54886f), and that is the commonest act on a phone reaching
@@ -1198,43 +1190,33 @@ impl App {
     /// second touch and never the first, because the first is what *makes* a
     /// row the selected one -- a tap that both moved the cursor and opened
     /// whatever it landed on would be a screen where a person cannot look
-    /// before they choose. And it is the panel already focused: a touch that
-    /// crosses from one panel into another is a person changing where they
-    /// are, and the row it lands on is where they arrive rather than what they
-    /// asked for.
+    /// before they choose.
     fn tapped(&mut self, at: Position, ank: &Ank) -> bool {
-        let area = self.area();
-        let Some(focus) = Focus::ALL
-            .into_iter()
-            .find(|f| self.rect_of(*f, area).contains(at))
-        else {
+        let focus = self.focus;
+        let Some(row) = self.row_at(focus, at) else {
             return false;
         };
-        let landed = self.row_at(focus, at);
-        let again = self.focus == focus
-            && landed.is_some_and(|row| {
-                row < self.count(focus) && row == self.cursors[focus.number() - 1].at
-            });
-        self.focus_on(focus, ank);
-        if let Some(row) = landed {
-            if row < self.count(focus) {
-                self.cursors[focus.number() - 1].at = row;
-                self.clamp(focus);
-            }
+        // Past the last row a short listing drew: empty cells, and a finger
+        // that missed is a finger that missed.
+        if row >= self.count(focus) {
+            return false;
         }
+        let again = row == self.cursors[focus.number() - 1].at;
+        self.cursors[focus.number() - 1].at = row;
+        self.clamp(focus);
         again && self.act(Command::Open, ank)
     }
 
-    /// Which row of a listing a point is on, in the panel as it is drawn now.
+    /// Which row of a listing a point is on, in the region as it is drawn now.
     ///
-    /// `None` on the body panel, which has no rows to select -- what moves
-    /// there is an offset into lines -- and on a point that landed on a border
-    /// or below the last row a panel has room for.
+    /// `None` on the document, which has no rows to select -- what moves there
+    /// is an offset into lines -- and on a point that landed on a border or
+    /// below the last row the region has room for.
     fn row_at(&self, focus: Focus, at: Position) -> Option<usize> {
         if !focus.holds_rows() {
             return None;
         }
-        let inside = inside(self.rect_of(focus, self.area()));
+        let inside = inside(self.region(self.area()));
         if !inside.contains(at) {
             return None;
         }
@@ -1299,11 +1281,19 @@ impl App {
             },
             Command::Open => self.open_selected(ank),
             Command::Queue => self.focus_on(Focus::Queue, ank),
-            // Out of wherever a person went, back to the listing a session
-            // opens on. The body panel keeps the document it was given: a panel
-            // that emptied itself when focus left it would be a panel nobody
-            // could look away from.
-            Command::Back => self.focus_on(Focus::Entities, ank),
+            // Out of the document, back to the listing it was opened from,
+            // with the row that opened it still under the cursor
+            // (TASK-252bf02de218). Out of anything else, back to the listing a
+            // session opens on. The document is kept either way: a screen that
+            // emptied itself on the way out would be one nobody could look away
+            // from and then look back at.
+            Command::Back => {
+                let to = match self.focus {
+                    Focus::Body => self.from,
+                    _ => Focus::Entities,
+                };
+                self.focus_on(to, ank);
+            }
             Command::Select(needle) => {
                 match self.entity_rows().iter().position(|r| {
                     r.id.to_ascii_uppercase()
@@ -1325,13 +1315,13 @@ impl App {
             Command::Row(n) => {
                 if !self.focus.holds_rows() {
                     self.note = Some(format!(
-                        "the body panel has no row {n}: a document is paged, not selected"
+                        "a document has no row {n}: it is paged, not selected"
                     ));
                     return false;
                 }
                 let total = self.count(self.focus);
                 if n == 0 || n > total {
-                    self.note = Some(format!("there is no row {n}: the panel holds {total}"));
+                    self.note = Some(format!("there is no row {n}: this screen holds {total}"));
                 } else {
                     self.cursors[self.focus.number() - 1].at = n - 1;
                     self.clamp(self.focus);
@@ -1377,7 +1367,7 @@ impl App {
             // ever runs on a screen that has none.
             Command::Help => self.overlay = Some(0),
             // The three §4 verbs with no letter of their own, opened as a list
-            // over the panels (TASK-1a415107fd56, TASK-e8da6a00564a). It was
+            // over the region (TASK-1a415107fd56, TASK-e8da6a00564a). It was
             // two lines in the note band while it was only a list; it is an
             // overlay now, because a row a person opens has to be a rectangle a
             // finger fits in, and because the note band is a row `arrange`
@@ -1400,7 +1390,7 @@ impl App {
         false
     }
 
-    /// The form for one verb, opened over the panels (TASK-e8da6a00564a).
+    /// The form for one verb, opened over the region (TASK-e8da6a00564a).
     ///
     /// **The entity is looked for before the form opens and not after it is
     /// filled in.** Three of the four verbs a form serves take `<id>` first, so
@@ -1476,16 +1466,17 @@ impl App {
         self.clamp_body();
     }
 
-    /// Move focus, and pay whatever the panel arriving costs.
+    /// Go to a screen, and pay whatever arriving there costs.
     ///
-    /// Three panels cost something now and all three are charged here rather
-    /// than at every repaint: focusing the claims is a person asking for
+    /// Three of the four cost something and all three are charged here rather
+    /// than at every repaint: arriving at the claims is a person asking for
     /// `ank status`, which counts what it reports by reading the corpus to do
-    /// it (TASK-fff0a98511b2); focusing the queue is a person asking for
+    /// it (TASK-fff0a98511b2); arriving at the queue is a person asking for
     /// `ank review`, which is a whole inspection of the corpus; and arriving at
-    /// the body panel with the config pane open is a person asking for one
+    /// the document with the config pane open is a person asking for one
     /// `ank config <key>` per key the contract declares. No price here is paid
-    /// by a screen nobody is at.
+    /// by a screen nobody is at -- which is sharper than it was, since a screen
+    /// nobody is at is now a screen nobody can see.
     fn focus_on(&mut self, focus: Focus, ank: &Ank) {
         self.focus = focus;
         if focus == Focus::Claims {
@@ -1503,10 +1494,10 @@ impl App {
 
     /// The entity a typed act is about.
     ///
-    /// The body panel's document when that panel has focus, and the row under
-    /// the focused listing's cursor otherwise. Never both, and never a mixture:
-    /// an act is about the panel the person is in, which is the panel the
-    /// screen has already marked.
+    /// The open document where that is the screen in the region, and the row
+    /// under the listing's cursor otherwise. Never both, and never a mixture:
+    /// an act is about the screen the person is on, which is the screen the
+    /// region is drawing and the only one they can see.
     fn target(&self) -> Option<String> {
         match self.focus {
             Focus::Body => self.detail.as_ref().map(|d| d.id.clone()),
@@ -1635,7 +1626,7 @@ impl App {
         // A ratification leaves the queue, so a queue somebody loaded before
         // typing the word is wrong the moment it lands. Asked again here and
         // nowhere else: `reload` refreshes it only where it is focused, and
-        // after an `accept` the focus is the body panel.
+        // after an `accept` the screen is the document's.
         if verb == "accept" && self.queue.is_some() {
             if let Ok(queue) = Queue::load(ank) {
                 self.queue = Some(queue);
@@ -1658,8 +1649,8 @@ impl App {
         });
     }
 
-    /// Opens the row the focused listing names into the body panel, and hands
-    /// the panel the focus and the width with it.
+    /// Opens the row the listing names, which replaces the listing with that
+    /// entity's document (TASK-252bf02de218).
     ///
     /// **The body panel opens too, and what it opens is a constraint**
     /// (TASK-082301b40a27): a row of the field block that names one is a way
@@ -1696,7 +1687,7 @@ impl App {
         self.show(ank, &id);
     }
 
-    /// The form for the config key under the cursor, opened over the panels
+    /// The form for the config key under the cursor, opened over the region
     /// (TASK-b08d090f699c).
     ///
     /// **The key is frozen into the form and never looked up again.** It is the
@@ -1754,6 +1745,14 @@ impl App {
                     self.offset = 0;
                     self.cursors[Focus::Body.number() - 1] = Cursor::default();
                 }
+                // The listing this was reached from, so that leaving it gives
+                // that listing back (TASK-252bf02de218). Never the document
+                // itself: `Enter` on a constraint of the field block opens a
+                // second document from inside the first, and the way out of
+                // both is the list the first was opened from.
+                if self.focus.holds_rows() {
+                    self.from = self.focus;
+                }
                 self.focus = Focus::Body;
             }
             Err(failed) => self.fail(failed),
@@ -1764,7 +1763,18 @@ impl App {
     // The arrangement
     // -----------------------------------------------------------------------
 
-    /// Every rectangle on the screen, from the window and the focus.
+    /// Every rectangle on the screen, from the window and nothing else.
+    ///
+    /// **One arrangement, at every width** (TASK-252bf02de218,
+    /// ADR-559eebf5c6f5). There used to be two -- panels side by side above a
+    /// stated width and stacked below it -- and the second existed because the
+    /// first could not honestly be drawn on a phone. One region is drawable at
+    /// every width there is, so the reflow has nothing left to do and the
+    /// window a person is at has stopped changing what the screen *is*.
+    ///
+    /// It no longer reads the focus either, and that is the same change seen
+    /// from the other side: focus used to decide how the width was divided, and
+    /// there is nothing to divide it between.
     ///
     /// **The arithmetic is the layout's and the layout is asked twice.** It is
     /// asked at paint time for where to put each widget, and it is asked by
@@ -1773,141 +1783,49 @@ impl App {
     /// agreeing with the rows underneath it, which two independent counts would
     /// not.
     ///
-    /// **Below [`ONE_COLUMN`] it answers a second arrangement, and that is the
-    /// whole of the phone** (TASK-dd9747e5e305). One column, four panels
-    /// stacked, and the focused one open while the other three are their titles
-    /// -- which is bb43's rule read in the other axis: focus is where the width
-    /// goes on a screen that has width to give, and where the *screen* goes on
-    /// one that has not. A phone in portrait cannot hold a listing and a body at
-    /// once any more than eighty columns can hold two of them side by side, and
-    /// the arrangement that pretends otherwise gives a person four panels none
-    /// of which answers anything.
-    ///
-    /// Every panel is still drawn, still numbered, still focusable by its digit
-    /// and now tappable by its title bar, so "every panel remains reachable" is
-    /// a property of the frame and not a promise about a key.
+    /// **It is subtraction rather than a set of constraints handed to the
+    /// solver**, and deliberately: [`REGION`] is paid first, the bands take
+    /// what is left, and a subtraction says what it means at every window
+    /// including the ones too short to honour it. A solver asked the same
+    /// question answers it by whichever constraint it ranks higher, which is a
+    /// rule written somewhere other than where the criterion is.
     ///
     /// It is also what a tap is resolved against, which is this function run
     /// backwards ([`App::pointed`]).
     fn arrange(&self, area: Rect) -> Panels {
-        // **The two full-width panels are sized from counts and never from the
-        // lines they will draw.** What a panel draws is windowed to the room it
-        // has, so asking for the lines here would be asking the layout for the
-        // answer the layout is being computed to give.
-        let holding = self.count(Focus::Claims).max(1);
-        let waiting = match &self.queue {
-            // Not asked for: the sentence naming the price, and one line above
-            // it saying so.
-            None => 2,
-            // The proposals, over the one row the regime is always on.
-            Some(_) => self.count(Focus::Queue).max(1) + 1,
+        // Both bands are measured rather than assumed, and both from the width
+        // alone: `note_lines` wraps what the reader is being told and `targets`
+        // wraps the offer under it, and neither reaches `page` -- which is what
+        // keeps this function out of a recursion.
+        let wanted_note = self.note_lines().len() as u16;
+        let wanted_offer = self.target_rows() as u16;
+        let header = HEADER.min(area.height);
+        let under = area.height - header;
+        // The region first, the note second, the offer last. The note is ahead
+        // of the offer because a refusal the CLI gave is the one thing on this
+        // screen a person cannot ask for again.
+        let bands = under.saturating_sub(REGION).min(wanted_note + wanted_offer);
+        let note = bands.min(wanted_note);
+        let offered = bands - note;
+        let region = under - bands;
+        let mut y = area.y;
+        let mut band = |rows: u16| {
+            let rect = Rect::new(area.x, y, area.width, rows);
+            y += rows;
+            rect
         };
-        // The two bands under the panels, measured rather than assumed, and
-        // both of them from the width alone: `note_lines` wraps what the reader
-        // is being told and `targets` wraps the offer under it, and neither
-        // reaches `page` -- which is what keeps this function out of the
-        // recursion the counts above are avoiding.
-        //
-        // The third band that stood here is gone (TASK-9a402a54886f): the
-        // trailer taught the keys on every frame, and ADR-c07e2694f0e1 priced
-        // what that cost the reader it was meant to serve. `?` teaches them
-        // now, over the frame rather than out of it, and `offered` is zero on
-        // every screen but the confirmation.
-        let note = self.note_lines().len() as u16;
-        let offered = self.target_rows() as u16;
-        if area.width < ONE_COLUMN {
-            return self.stacked(area, HEADER + note + offered, note, offered);
-        }
-        // `Max` on the two full-width panels and `Min` on the row between them:
-        // where the window is too short for all three, what gives way is a
-        // listing that is glanced at rather than the pair somebody is working
-        // in, and the two bands under them keep their rows either way because a
-        // `Length` outranks both.
-        let [header, claims, band, queue, note, actions] = Layout::vertical([
-            // Two lines and the rule under them.
-            Constraint::Length(HEADER),
-            Constraint::Max(bordered(holding)),
-            Constraint::Min(5),
-            Constraint::Max(bordered(waiting)),
-            Constraint::Length(note),
-            Constraint::Length(offered),
-        ])
-        .areas(area);
-        let (left_width, right_width) = share(band.width, self.focus != Focus::Body);
-        let [entities, body] = Layout::horizontal([
-            Constraint::Length(left_width),
-            Constraint::Length(right_width),
-        ])
-        .areas(band);
         Panels {
-            header,
-            claims,
-            entities,
-            queue,
-            body,
-            note,
-            actions,
+            header: band(header),
+            region: band(region),
+            note: band(note),
+            actions: band(offered),
         }
     }
 
-    /// The same screen in one column: the focused panel open, the other three
-    /// closed to their titles (TASK-dd9747e5e305).
-    ///
-    /// **The heights are arithmetic here rather than constraints handed to the
-    /// solver**, and deliberately: three closed panels and one open one is a
-    /// subtraction, and a subtraction says what it means at every window
-    /// including the ones too short to honour it. The open panel takes what the
-    /// chrome and the three closed ones leave, and never less than a closed one
-    /// -- so a window with no room at all degrades to four title bars instead of
-    /// to one panel and three slivers.
-    ///
-    /// Sized from counts like the arrangement above it, for the same reason:
-    /// the lines a panel draws are windowed to the room it has, so asking for
-    /// them here would be asking the layout for the answer it is being computed
-    /// to give.
-    fn stacked(&self, area: Rect, chrome: u16, note: u16, offered: u16) -> Panels {
-        let room = area.height.saturating_sub(chrome);
-        let open = room.saturating_sub(SHUT * 3).max(SHUT);
-        // `Max` and never `Length`, for the reason the wide arrangement gives:
-        // a panel gives way to the band that is telling somebody something,
-        // and an argv shown three quarters of the way through is worse than a
-        // panel drawn as its title alone. The four of them add up to exactly
-        // what is left, so on every window that has the room this is the
-        // subtraction above and not the solver's opinion of it.
-        let height = |focus: Focus| match focus == self.focus {
-            true => Constraint::Max(open),
-            false => Constraint::Max(SHUT),
-        };
-        let [header, claims, entities, body, queue, note, actions] = Layout::vertical([
-            Constraint::Length(HEADER),
-            height(Focus::Claims),
-            height(Focus::Entities),
-            height(Focus::Body),
-            height(Focus::Queue),
-            Constraint::Length(note),
-            Constraint::Length(offered),
-        ])
-        .areas(area);
-        Panels {
-            header,
-            claims,
-            entities,
-            queue,
-            body,
-            note,
-            actions,
-        }
-    }
-
-    /// The rectangle one panel was given.
-    fn rect_of(&self, focus: Focus, area: Rect) -> Rect {
-        let panels = self.arrange(area);
-        match focus {
-            Focus::Claims => panels.claims,
-            Focus::Entities => panels.entities,
-            Focus::Body => panels.body,
-            Focus::Queue => panels.queue,
-        }
+    /// The one bordered region, which is where whichever screen has been asked
+    /// for is drawn (TASK-252bf02de218).
+    fn region(&self, area: Rect) -> Rect {
+        self.arrange(area).region
     }
 
     /// The rows a panel has room for, which is what a page is worth.
@@ -1917,7 +1835,7 @@ impl App {
     /// its heading was covering, and the rows nobody saw would be the ones
     /// between two presses of `n`.
     fn page(&self, focus: Focus) -> usize {
-        let inside = inside(self.rect_of(focus, self.area()));
+        let inside = inside(self.region(self.area()));
         let taken = match focus {
             // The regime line sits on the panel's last row: which regime a
             // corpus is in is a fact about every proposal above it.
@@ -2017,9 +1935,11 @@ impl App {
         ])
         .render(panels.header, buf);
 
-        for focus in Focus::ALL {
-            self.panel(focus, self.rect_of(focus, area), buf);
-        }
+        // One region, and what is drawn in it is whichever screen has been
+        // asked for (TASK-252bf02de218). The other three are not drawn closed,
+        // squeezed or greyed: they are not on this frame at all, and the digit
+        // that names one is how a person gets to it.
+        self.panel(self.focus, panels.region, buf);
 
         paragraph(&self.note_lines()).render(panels.note, buf);
         paragraph(&self.action_lines()).render(panels.actions, buf);
@@ -2035,31 +1955,33 @@ impl App {
         self.beyond(area, buf);
     }
 
-    /// One panel: its border, its title, and the lines it holds.
+    /// The one region: its border, its title, and the lines the screen in it
+    /// holds.
     ///
-    /// **The focused one is told apart by two things and no colour.** Its
-    /// border is heavier -- the thick rule where the others are rounded, or `=`
-    /// against `-` where the terminal has said it draws no glyphs -- and its
-    /// title carries the same `> ` this tool puts on the row a cursor is on. Two
-    /// independent signals, because a reader looking at the middle of a panel
-    /// still sees the rule under it. Colour arrived after both
-    /// (TASK-6cd41d23b7d1) and took neither away: what it paints is what a row
-    /// *is* -- an identifier, a status -- and never where the reader is.
+    /// **There is no weight and no marker on it any more, because there is
+    /// nothing to tell it apart from** (TASK-252bf02de218, ADR-559eebf5c6f5).
+    /// The heavy rule and the `> ` on the title said "this is the panel you are
+    /// in" to a frame that carried three others; on a frame that carries one
+    /// they say it to nobody. What is left is what a person actually needs from
+    /// a title -- the digit that reaches this screen and the name of it -- and
+    /// the digit is the whole of what "reachable by the key it already had"
+    /// costs a reader to learn.
+    ///
+    /// The cursor keeps its `> `, on the row of the listing where it always
+    /// was. That is the marker the criterion is about: where a person is
+    /// standing is a row, and it never was a border.
     fn panel(&self, focus: Focus, area: Rect, buf: &mut Buffer) {
         if area.width < 2 || area.height < 2 {
             return;
         }
-        let focused = self.focus == focus;
         let inside = inside(area);
         let width = inside.width as usize;
-        let marker = if focused { text::CURSOR } else { text::PLAIN };
         let title = Composed::new()
-            .plain(marker)
             .plain(&format!("{} ", focus.number()))
             .then(self.title_of(focus, width))
             .fitted(area.width as usize - 2);
         let block = Block::bordered()
-            .border_set(self.glyphs.border(focused))
+            .border_set(self.glyphs.border(true))
             .title(title.line(self.ink));
         block.render(area, buf);
         if inside.is_empty() {
@@ -2600,7 +2522,7 @@ impl App {
 
     /// The width the body panel's rows are composed at.
     fn body_width(&self) -> usize {
-        inside(self.rect_of(Focus::Body, self.area())).width as usize
+        inside(self.region(self.area())).width as usize
     }
 
     /// The cursor inside the rows the body panel holds, and the window
@@ -3431,12 +3353,19 @@ const ASCII_FOCUSED: border::Set = border::Set {
 };
 
 /// The rectangles one frame is divided into.
+///
+/// **One bordered region, and the two unbordered bands under it**
+/// (TASK-252bf02de218, ADR-559eebf5c6f5). There is no second rectangle for a
+/// panel to be drawn in because there is no second panel: what was four panels
+/// is four screens, and the region is where whichever one has been asked for is
+/// drawn. So a tap resolves against one rectangle rather than against a set of
+/// them, a row is composed at one width rather than at two, and the question
+/// "which of these am I in" has stopped being a question the frame has to
+/// answer.
 struct Panels {
     header: Rect,
-    claims: Rect,
-    entities: Rect,
-    queue: Rect,
-    body: Rect,
+    /// The one bordered region on the frame, whatever is being shown in it.
+    region: Rect,
     note: Rect,
     /// The band the offer is drawn in, and the one band on this screen a finger
     /// is aimed at rather than an eye (TASK-dd9747e5e305).
@@ -3453,91 +3382,17 @@ struct Panels {
 /// The corpus line, the identity line, and the rule under them.
 const HEADER: u16 = 3;
 
-/// The narrowest a panel of the pair may be squeezed to.
+/// The fewest rows the one region is ever drawn in: its two borders, and a row
+/// of content between them.
 ///
-/// Twelve, because a column of four characters is a border and nothing else,
-/// and the panel that does not have the focus is still there to say what is in
-/// it.
-const FLOOR: u16 = 12;
-
-/// What a listing spends on a row to say *which* row it is: two columns for
-/// the cursor, seven for the row number, ten for a short identifier and twelve
-/// for a status, with the gutters between them.
-///
-/// It is not an arbitrary sum. The identifier and the status are the two fields
-/// the shared table paints (ADR-1f70ce2c3eac, TASK-6cd41d23b7d1) -- what a row
-/// *is* and what state it is in -- and a listing with room for neither has
-/// stopped being a listing and become a column of cut words. The title begins
-/// two columns after it, and a title is what a wide panel is *for*; this is
-/// what a panel needs before it can be worth anything at all.
-const ADDRESSED: u16 = 33;
-
-/// The window below which the panels stop sharing rows and become one column
-/// (TASK-dd9747e5e305).
-///
-/// **The number is not chosen, it is what [`share`] and a row make between
-/// them.** The focused one of the pair takes everything the floor beside it
-/// does not, so it is `width - FLOOR`; its own two borders come off that; and
-/// what has to fit in what is left is [`ADDRESSED`]. Thirty-three and two and
-/// twelve is forty-seven, and at forty-six a row's status is already being cut
-/// -- at which point the pair is two panels neither of which can say which row
-/// is which, and one column is the honest answer.
-///
-/// A phone in portrait is the reader this serves and it lands well under it.
-pub const ONE_COLUMN: u16 = ADDRESSED + 2 + FLOOR;
-
-/// A panel that is closed: its top border with its title, and its bottom
-/// border.
-///
-/// Two rows and no fewer, because a `Block` with one row has nowhere to draw
-/// the rule the title sits on -- and the title is the whole of what a closed
-/// panel is for. Two rows and no more, because three panels are closed at once
-/// and every row they keep is a row the open one does not have.
-const SHUT: u16 = 2;
-
-/// How the two panels that share a row divide it, and which of them the focus
-/// is in.
-///
-/// **Four fifths to the one being worked in.** A corpus reader has two things
-/// worth being wide -- a listing whose titles are sentences, and a body that is
-/// prose -- and eighty columns will not hold both. Splitting the difference
-/// gives two panels that are each slightly too narrow, which is the arrangement
-/// that serves neither question; giving the room to the panel somebody is in
-/// serves whichever one they are asking, and the other stays as a reminder of
-/// what is there.
-///
-/// The share the other one keeps has a floor, because a column of four
-/// characters is a border and nothing else. The halving below twice that floor
-/// is unreachable from [`App::arrange`] now that TASK-dd9747e5e305 has taken
-/// every window narrower than [`ONE_COLUMN`], and it stays because the clamp
-/// under it panics rather than answering when its floor passes its ceiling: a
-/// guard that is dead is cheaper than a guard that was removed.
-fn share(width: u16, left: bool) -> (u16, u16) {
-    if width < FLOOR * 2 {
-        let half = width / 2;
-        return if left {
-            (width - half, half)
-        } else {
-            (half, width - half)
-        };
-    }
-    let wide = (width * 4 / 5).clamp(FLOOR, width - FLOOR);
-    if left {
-        (wide, width - wide)
-    } else {
-        (width - wide, wide)
-    }
-}
-
-/// How many rows a full-width panel asks for: what it holds, plus its two
-/// borders, and never more than six rows of content.
-///
-/// Capped because both of them are listings a reader glances at: a corpus with
-/// forty live claims would otherwise push the pair in the middle off the
-/// screen, and forty claims is a scroll rather than a screen.
-fn bordered(rows: usize) -> u16 {
-    (rows as u16).clamp(1, 6) + 2
-}
+/// **It is paid before the bands under it, and that ordering is the criterion**
+/// (TASK-252bf02de218). Nothing on this frame may collapse to a rule drawn
+/// around nothing, and the region is the only thing on the frame that has a
+/// rule to collapse to -- so where a window cannot hold everything, what gives
+/// way is the band saying something and never the region saying it with no room
+/// to. A note truncated is a sentence a person can still ask for again; a
+/// bordered box with nothing in it is a reader that has stopped answering.
+const REGION: u16 = 3;
 
 /// The label of the one target drawn on every frame: the key that opens the
 /// key list, in the brackets every target on this screen wears
@@ -4137,59 +3992,102 @@ mod tests {
     // The panels, and the focus (TASK-bb43cfe2192b)
     // -----------------------------------------------------------------------
 
-    /// Four panels, two of them drawn side by side, on one frame.
+    /// One bordered region on the frame, at every width from forty to a
+    /// hundred and fifty (TASK-252bf02de218).
+    ///
+    /// Counted off the corners rather than described: a top-left corner is a
+    /// character only a border draws, so one of them is one region and two of
+    /// them is the frame this task exists to take away. `src/view.rs` asserts
+    /// it of the layout at every width in the range; `tests/region.rs` asserts
+    /// it of `ank tui` on a pseudo-terminal, which is where the criterion says
+    /// it is measured.
     #[test]
-    fn the_frame_draws_four_panels_and_two_of_them_share_a_row() {
-        let f = app().frame();
-        for panel in ["1 CLAIMS", "2 ENTITIES", "3 BODY", "4 QUEUE"] {
-            assert!(f.contains(panel), "{panel} is not on the frame:\n{f}");
+    fn the_frame_carries_exactly_one_bordered_region_at_every_width() {
+        let mut a = app();
+        for width in 40..=150u16 {
+            a.resize(width, 24);
+            let f = a.frame();
+            let corners = f.matches(SCREEN.border(true).top_left).count();
+            assert_eq!(corners, 1, "{corners} bordered regions at {width}:\n{f}");
+            // And no row carries two verticals belonging to two regions, which
+            // is the same fact read along the other axis.
+            let shared = f.lines().filter(|l| verticals(l) >= 4).count();
+            assert_eq!(shared, 0, "a row carries two regions at {width}:\n{f}");
         }
-        // A row carrying four verticals is a row two bordered panels share,
-        // which is what "side by side" is when it is measured rather than
-        // described.
-        let shared = f.lines().filter(|l| verticals(l) >= 4).count();
-        assert!(shared >= 4, "no row of the frame carries two panels:\n{f}");
     }
 
-    /// The focused panel is told apart with no colour at all.
+    /// Nothing on the frame is a rule drawn around nothing, at any width
+    /// (TASK-252bf02de218).
+    ///
+    /// The region is bordered and everything else on the frame is a band, so
+    /// this is one question asked of one rectangle: does it have a row inside
+    /// its borders, and is there anything on that row.
+    #[test]
+    fn nothing_on_the_frame_collapses_to_a_border_with_nothing_inside_it() {
+        let mut a = app();
+        for width in 40..=150u16 {
+            a.resize(width, 24);
+            let region = a.region(a.area());
+            let inside = inside(region);
+            assert!(
+                inside.height >= 1 && inside.width >= 1,
+                "the region has no room inside it at {width}: {inside:?}"
+            );
+            let f = a.frame();
+            let rows: Vec<&str> = f.split('\n').collect();
+            let first = rows
+                .get(inside.y as usize)
+                .expect("a frame as tall as the window");
+            assert!(
+                !first.trim().is_empty(),
+                "the region's first row is blank at {width}:\n{f}"
+            );
+        }
+    }
+
+    /// The screen in force is the one in the region, and the other three are
+    /// not on the frame at all (TASK-252bf02de218).
     ///
     /// The frame under test is [`rows_of`], which takes the symbol out of every
     /// cell and no style, so anything this test can see is a character a
-    /// monochrome terminal draws. Two signals are asserted, because a marker in
-    /// a title and a rule under a panel fail differently.
+    /// monochrome terminal draws. There is no marker to look for any more:
+    /// where three panels used to be drawn unmarked beside the focused one, the
+    /// three are simply not there, which is a stronger statement of the same
+    /// thing and one a title cannot get wrong.
     #[test]
-    fn the_focused_panel_is_marked_in_characters_and_never_in_colour() {
+    fn the_region_draws_the_screen_in_force_and_no_other() {
         let mut a = app();
         for focus in Focus::ALL {
             a.focus = focus;
             let f = a.frame();
-            let marked = format!("> {} {}", focus.number(), focus.name());
-            assert!(
-                f.contains(&marked),
-                "the focused panel carries no marker:\n{f}"
-            );
+            let named = format!("{} {}", focus.number(), focus.name());
+            assert!(f.contains(&named), "the region does not name itself:\n{f}");
             for other in Focus::ALL.into_iter().filter(|o| *o != focus) {
                 assert!(
-                    !f.contains(&format!("> {} {}", other.number(), other.name())),
-                    "{other:?} is marked as well as {focus:?}:\n{f}"
+                    !f.contains(&format!("{} {}", other.number(), other.name())),
+                    "{other:?} is on the frame as well as {focus:?}:\n{f}"
                 );
             }
-            // And the heavier rule, which no unfocused panel is drawn with.
+            // One weight of border and no second: there is nothing left for a
+            // heavy rule to tell this region apart from. Asked of the corners
+            // rather than of the rule, because the horizontal the lighter set
+            // draws is the same character the header's own rule is made of --
+            // and a corner is a character only a border draws.
             assert!(
                 f.contains(&rule_of(true)),
-                "no panel is drawn with the focused border:\n{f}"
+                "the region is not drawn with a rule at all:\n{f}"
             );
             assert!(
-                f.contains(&rule_of(false)),
-                "every panel is drawn as the focused one:\n{f}"
+                !f.contains(SCREEN.border(false).top_left),
+                "a second border weight is on a frame with one region:\n{f}"
             );
         }
     }
 
-    /// Every cell of every panel's outline, less the top rule.
+    /// Every cell of the region's outline, less the top rule.
     ///
     /// The top rule is left out because a title is drawn into it, and a title
-    /// carries the identifier of the document a panel is showing -- so a
+    /// carries the identifier of the document the region is showing -- so a
     /// hyphen there is `TASK-4974`'s and not a border's. What is left is the
     /// four corners, both verticals and the bottom rule, which is where a
     /// character this reader chose is the only thing that can be.
@@ -4203,11 +4101,8 @@ mod tests {
                 out.push(cell.symbol().to_string());
             }
         };
-        for focus in Focus::ALL {
-            let r = a.rect_of(focus, area);
-            if r.width < 2 || r.height < 2 {
-                continue;
-            }
+        let r = a.region(area);
+        if r.width >= 2 && r.height >= 2 {
             for x in r.x..r.right() {
                 at(x, r.bottom() - 1, &buf);
             }
@@ -4248,10 +4143,7 @@ mod tests {
 
         let boxed = screen(BOXES);
         let outline = outlines(&boxed);
-        assert!(
-            outline.len() > 200,
-            "the outlines were not read: {outline:?}"
-        );
+        assert!(outline.len() > 100, "the outline was not read: {outline:?}");
         for ascii in ["+", "-", "|", "="] {
             assert!(
                 !outline.iter().any(|cell| cell == ascii),
@@ -4259,26 +4151,28 @@ mod tests {
                 boxed.frame()
             );
         }
-        // The corners say which weight a panel is drawn at, and both weights
-        // are on this frame -- which is what makes the focus a character.
+        // The four corners of the one region, which is where a character this
+        // reader chose is the only thing that can be. One weight and no
+        // second: the rounded set said "this panel is not the focused one",
+        // and there is no such panel any more (TASK-252bf02de218).
         let frame = boxed.frame();
-        for corner in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
-            assert!(
-                frame.contains(corner),
-                "no unfocused panel carries the rounded corner {corner}:\n{frame}"
-            );
-        }
         for corner in ["\u{250f}", "\u{2513}", "\u{2517}", "\u{251b}"] {
             assert!(
                 frame.contains(corner),
-                "the focused panel carries no heavy corner {corner}:\n{frame}"
+                "the region carries no corner {corner}:\n{frame}"
+            );
+        }
+        for corner in ["\u{256d}", "\u{256e}", "\u{2570}", "\u{256f}"] {
+            assert!(
+                !frame.contains(corner),
+                "a second border weight is on the frame: {corner}\n{frame}"
             );
         }
 
         // And the terminal that has said it can render nothing rich gets back
         // exactly what this reader drew everywhere before.
         let plain = screen(ASCII);
-        for run in ["+---", "+===", "----------", "=========="] {
+        for run in ["+===", "=========="] {
             assert!(
                 plain.frame().contains(run),
                 "the ASCII fallback is missing {run}:\n{}",
@@ -4295,17 +4189,13 @@ mod tests {
             );
         }
 
-        // The focus is told apart by characters at both, which is the half of
-        // the criterion the fallback could quietly lose.
+        // And the region is bordered at both, which is the half of the
+        // criterion the fallback could quietly lose.
         for glyphs in [BOXES, ASCII] {
             let f = screen(glyphs).frame();
             assert!(
                 f.contains(&glyphs.border(true).horizontal_top.repeat(10)),
-                "no panel carries the focused rule:\n{f}"
-            );
-            assert!(
-                f.contains(&glyphs.border(false).horizontal_top.repeat(10)),
-                "every panel is drawn as the focused one:\n{f}"
+                "the region carries no rule:\n{f}"
             );
         }
     }
@@ -4436,31 +4326,41 @@ mod tests {
     ///
     /// The frame above says the two agree; this says what they agree *on*, so
     /// that two equally blank screens could not pass. Four signals, each of a
-    /// different kind: where the focus is, where the cursor is, whose claim a
-    /// row is, and what state an entity is in.
+    /// different kind: which screen a person is on, where the cursor is, whose
+    /// claim a row is, and what state an entity is in.
+    ///
+    /// The first of those used to be the focus, drawn as a marker and a heavier
+    /// rule against three panels that carried neither. There is one region now
+    /// (TASK-252bf02de218) and nothing for a weight to distinguish it from, so
+    /// what says where a person is, is the region's own title: the digit and
+    /// the name of the screen in it, which is a character exactly as the marker
+    /// was and is on the frame at every window.
     #[test]
     fn every_distinction_the_plain_frame_makes_is_a_character_on_it() {
         let mut a = coloured(paint::PLAIN);
         a.focus = Focus::Entities;
         let f = a.frame();
-        // The focus: the doubled rule and the marker in the title.
-        assert!(f.contains("> 2 ENTITIES"), "the focus is unmarked:\n{f}");
-        assert!(f.contains(&rule_of(true)), "no heavier rule:\n{f}");
+        // Which screen this is, named on the region's title.
+        assert!(f.contains("2 ENTITIES"), "the screen is unnamed:\n{f}");
+        assert!(f.contains(&rule_of(true)), "the region has no rule:\n{f}");
         // The cursor, in the two columns every listing spends on its margin.
         assert!(
             f.lines()
                 .any(|l| l.contains(&format!("{}>     1  ", SCREEN.border(true).vertical_left))),
             "the row the cursor is on is unmarked:\n{f}"
         );
-        // Whose claim it is, which is what `*` means in `find`.
-        assert!(
-            f.contains("* TASK-4974"),
-            "the caller's own claim is unmarked:\n{f}"
-        );
         // And the status, spelled as the word it is rather than shown as a hue.
         for state in ["in_progress", "accepted", "done", "open", "superseded"] {
             assert!(f.contains(state), "{state} is on no row of:\n{f}");
         }
+        // Whose claim it is, which is what `*` means in `find`, on the screen
+        // that draws the claims.
+        a.focus = Focus::Claims;
+        let claims = a.frame();
+        assert!(
+            claims.contains("* TASK-4974"),
+            "the caller's own claim is unmarked:\n{claims}"
+        );
     }
 
     /// Every colour the reader draws comes from the one table.
@@ -4541,13 +4441,13 @@ mod tests {
         );
     }
 
-    /// The focus is drawn in characters, and colour did not quietly take that
-    /// over (TASK-bb43cfe2192b).
+    /// Where a person is standing is drawn in characters, and colour did not
+    /// quietly take that over (TASK-bb43cfe2192b).
     ///
-    /// The panel with the focus and a panel without it are asked for their
-    /// styles separately: if focus had become a colour, moving it would change
-    /// which cells are painted. It does not, because what the table names is
-    /// what a row *is* and never where a reader is standing.
+    /// Two screens are asked for their palettes separately: if being on one had
+    /// become a colour, going to the other would change which cells are
+    /// painted. It does not, because what the table names is what a row *is*
+    /// and never where a reader is standing.
     #[test]
     fn moving_the_focus_paints_nothing_differently() {
         let mut here = coloured(paint::COLOUR);
@@ -4580,8 +4480,9 @@ mod tests {
             tap(&mut a, &ank, KeyCode::Tab);
             assert_eq!(a.focus(), expected);
         }
-        // And a digit reaches one directly, which is what a number on a panel
-        // is for.
+        // And a digit reaches one directly, which is what the number on the
+        // region's title is for -- the key each screen already had
+        // (TASK-252bf02de218).
         for focus in Focus::ALL {
             let digit = char::from_digit(focus.number() as u32, 10).expect("a digit");
             tap(&mut a, &ank, KeyCode::Char(digit));
@@ -4593,28 +4494,33 @@ mod tests {
         assert_eq!(a.focus(), Focus::Queue, "the ring turns both ways");
     }
 
-    /// Focus is where the width goes, and that is the whole of the accordion.
+    /// Every screen gets the whole window, and which one is in the region
+    /// changes no rectangle (TASK-252bf02de218).
+    ///
+    /// This is what replaced the accordion. The width used to be divided
+    /// between a listing and a document by which of them had the focus, so a
+    /// row was composed at one width in one panel and at another in the other;
+    /// there is one width now, and [`App::arrange`] does not read the focus to
+    /// find it.
     #[test]
-    fn the_focused_panel_of_the_pair_takes_the_width() {
+    fn the_region_takes_the_window_whatever_screen_is_in_it() {
         let mut a = app();
-        a.focus = Focus::Entities;
-        let listing = inside(a.rect_of(Focus::Entities, a.area())).width;
-        a.focus = Focus::Body;
-        let document = inside(a.rect_of(Focus::Body, a.area())).width;
-        let squeezed = inside(a.rect_of(Focus::Entities, a.area())).width;
+        let mut seen = Vec::new();
+        for focus in Focus::ALL {
+            a.focus = focus;
+            seen.push(a.region(a.area()));
+        }
         assert!(
-            listing > squeezed * 2,
-            "the listing kept its width while the body was focused: {listing} then {squeezed}"
+            seen.windows(2).all(|pair| pair[0] == pair[1]),
+            "the screen in the region moved the rectangle: {seen:?}"
         );
-        assert_eq!(
-            listing, document,
-            "the two are not the same size when each is the focused one"
-        );
-        // And the two of them still add up to the window, borders included.
-        assert_eq!(document + squeezed + 4, a.area().width);
+        let region = seen[0];
+        assert_eq!(region.width, a.area().width, "the region is not full width");
+        assert_eq!(region.x, 0, "the region does not open at column zero");
     }
 
-    /// Each listing keeps its own place, which is what makes a panel a place.
+    /// Each listing keeps its own place, which is what makes a screen a place
+    /// (TASK-252bf02de218).
     #[test]
     fn every_listing_remembers_where_its_cursor_was() {
         let mut a = app();
@@ -4989,26 +4895,36 @@ mod tests {
         }
     }
 
+    /// The listing names every kind with its status, and the claims screen
+    /// names who holds what.
+    ///
+    /// Two frames and not one, because the two are two screens now
+    /// (TASK-252bf02de218): what a person sees is what they asked for, and a
+    /// test that read both off one frame would be asserting the arrangement
+    /// this task took away.
     #[test]
     fn the_list_names_every_kind_with_its_status_and_who_holds_what() {
-        let f = app().frame();
+        let mut a = app();
+        let f = a.frame();
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
             "SPEC-fe8b",
             "accepted",
             "in_progress",
-            "claude-code/opus-5+tui-verb",
-            "CLAIMS (1)",
             "wave4/tui-verb",
         ] {
             assert!(f.contains(expected), "{expected} missing from:\n{f}");
         }
-        assert!(
-            f.contains("* TASK-4974"),
-            "the caller's own claim is marked:\n{f}"
-        );
         assert!(f.contains("> "), "the cursor is drawn:\n{f}");
+        a.focus = Focus::Claims;
+        let claims = a.frame();
+        for expected in ["CLAIMS (1)", "claude-code/opus-5+tui-verb", "* TASK-4974"] {
+            assert!(
+                claims.contains(expected),
+                "{expected} missing from:\n{claims}"
+            );
+        }
     }
 
     /// The list says how the screen is being kept current, and it says the
@@ -5715,7 +5631,7 @@ mod tests {
         a.focus = Focus::Body;
         a.act(Command::Row(1), &ank);
         assert!(
-            a.note.unwrap().contains("the body panel has no row 1"),
+            a.note.unwrap().contains("a document has no row 1"),
             "a document is paged, not selected"
         );
     }
@@ -6067,12 +5983,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The phone: one column, a tap, and an offer to touch
-    // (TASK-dd9747e5e305)
+    // The phone: one region, a tap, and an offer to touch
+    // (TASK-dd9747e5e305, TASK-252bf02de218)
     // -----------------------------------------------------------------------
 
     /// A phone in portrait, as the suite states one.
-    const PHONE: (usize, usize) = ((ONE_COLUMN - 7) as usize, 30);
+    ///
+    /// Forty columns, and it is no longer read out of a threshold constant
+    /// because there is no threshold (TASK-252bf02de218): one region is
+    /// drawable at every width, so this is simply the narrowest window the
+    /// criterion names rather than a number on one side of a reflow.
+    const PHONE: (usize, usize) = (40, 30);
 
     fn phone() -> App {
         let mut a = App::new(PHONE, None).inked(paint::PLAIN).drawn_with(SCREEN);
@@ -6093,9 +6014,10 @@ mod tests {
         )
     }
 
-    /// Where the nth row of a listing is drawn, which is what a finger aims at.
-    fn row_of(a: &App, focus: Focus, nth: u16) -> Position {
-        let inside = inside(a.rect_of(focus, a.area()));
+    /// Where the nth row of the listing in the region is drawn, which is what
+    /// a finger aims at.
+    fn row_of(a: &App, nth: u16) -> Position {
+        let inside = inside(a.region(a.area()));
         Position::new(inside.x + 1, inside.y + nth)
     }
 
@@ -6110,129 +6032,45 @@ mod tests {
         Position::new(band.x + target.at as u16, band.y + target.row as u16)
     }
 
-    /// How many rows of a frame carry two panels, which is what a column is.
-    fn shared(frame: &str) -> usize {
-        frame.lines().filter(|l| verticals(l) >= 4).count()
-    }
-
-    /// **Below the width the code states, the panels reflow to one column and
-    /// every panel remains reachable** (TASK-dd9747e5e305).
+    /// **A phone gets the same one region every other window gets, and every
+    /// screen stays one digit away** (TASK-252bf02de218, ADR-559eebf5c6f5).
     ///
-    /// Both halves on one frame, because either alone is half the criterion: a
-    /// screen with no shared row that had dropped two of its panels would pass
-    /// the first, and a screen still drawing four panels side by side would pass
-    /// the second.
+    /// This is what the reflow became. There used to be two arrangements and a
+    /// width between them, and the narrow one drew four stacked panels of which
+    /// three were closed to their titles -- three rules around nothing, which
+    /// is the shape the criterion refuses in as many words. What is asserted
+    /// now is that the frame is the same frame at both windows, and that the
+    /// key which reached a panel reaches its screen.
     #[test]
-    fn below_the_stated_width_the_panels_are_one_column_and_all_four_remain() {
-        let mut a = phone();
-        for width in [ONE_COLUMN - 1, ONE_COLUMN] {
-            a.resize(width, 30);
-            let frame = a.frame();
-            let one_column = width < ONE_COLUMN;
-            assert_eq!(
-                shared(&frame) == 0,
-                one_column,
-                "at {width} columns the pair is arranged wrongly:\n{frame}"
-            );
-            for panel in Focus::ALL {
-                assert!(
-                    frame.contains(&format!("{} {}", panel.number(), panel.name())),
-                    "{panel:?} is not on a {width} column frame:\n{frame}"
-                );
-                let rect = a.rect_of(panel, a.area());
-                assert!(
-                    rect.height >= SHUT,
-                    "{panel:?} is drawn as nothing at {width} columns:\n{frame}"
-                );
-                if one_column {
-                    assert_eq!(
-                        rect.width, width,
-                        "{panel:?} is not the width of a one-column window:\n{frame}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The stated width is not a number somebody liked: it is where a row stops
-    /// being addressable (TASK-dd9747e5e305).
-    ///
-    /// At [`ONE_COLUMN`] the focused one of the pair has exactly
-    /// [`ADDRESSED`] columns inside it, which is what a listing spends before a
-    /// title -- the cursor, the row number, the identifier and the status. One
-    /// column narrower and the status is being cut, at which point the pair is
-    /// two panels neither of which says which row is which.
-    #[test]
-    fn the_stated_width_is_where_a_row_stops_being_addressable() {
-        let mut a = phone();
-        a.resize(ONE_COLUMN, 30);
-        a.focus = Focus::Entities;
-        assert_eq!(
-            inside(a.rect_of(Focus::Entities, a.area())).width,
-            ADDRESSED,
-            "the pair is not divided where the constant says it is"
-        );
-        // And `ADDRESSED` is what a row actually spends: the status column ends
-        // there, and the title begins two columns later.
-        let row = &a.entity_lines(200, 10)[0];
-        assert_eq!(
-            row.text().find("A terminal reader"),
-            Some(ADDRESSED as usize + 2),
-            "a row does not spend ADDRESSED columns saying which row it is: {}",
-            row.text()
-        );
-        // One narrower and the pair cannot honour it, which is the whole of the
-        // argument for stacking instead.
-        a.resize(ONE_COLUMN - 1, 30);
-        a.focus = Focus::Body;
-        assert!(
-            share(ONE_COLUMN - 1 - 2, true).0 - 2 < ADDRESSED,
-            "the pair could still address a row one column narrower"
-        );
-    }
-
-    /// Every panel is reachable in one column, by its digit and by touching it
-    /// (TASK-dd9747e5e305).
-    ///
-    /// Reachable and not merely present: the focused panel is the open one and
-    /// the other three are their titles, so "reachable" has to mean that a
-    /// person can make any of the four the open one -- twice over, since a
-    /// phone has both a keyboard somewhere and a finger.
-    #[test]
-    fn every_panel_in_one_column_is_reached_by_its_digit_and_by_a_touch() {
+    fn a_phone_gets_one_region_and_every_screen_stays_one_digit_away() {
         let ank = nowhere();
-        for arrived in Focus::ALL {
-            let mut a = phone();
-            let digit = char::from_digit(arrived.number() as u32, 10).expect("a digit");
-            tap(&mut a, &ank, KeyCode::Char(digit));
-            assert_eq!(a.focus(), arrived, "'{digit}' did not reach {arrived:?}");
-            assert!(
-                a.frame()
-                    .contains(&format!("> {} {}", arrived.number(), arrived.name())),
-                "the mark is not on the panel the digit reached:\n{}",
-                a.frame()
-            );
-            // And the open one is the one with the focus: on a phone that is
-            // what focus *is*, the way four fifths of the width is what it is
-            // on a screen wide enough to have two of them.
-            for other in Focus::ALL.into_iter().filter(|f| *f != arrived) {
+        for width in [PHONE.0 as u16, 150] {
+            for arrived in Focus::ALL {
+                let mut a = phone();
+                a.resize(width, 30);
+                let digit = char::from_digit(arrived.number() as u32, 10).expect("a digit");
+                tap(&mut a, &ank, KeyCode::Char(digit));
+                assert_eq!(a.focus(), arrived, "'{digit}' did not reach {arrived:?}");
+                let frame = a.frame();
+                assert_eq!(
+                    frame.matches(SCREEN.border(true).top_left).count(),
+                    1,
+                    "the frame at {width} columns is not one region:\n{frame}"
+                );
                 assert!(
-                    a.rect_of(arrived, a.area()).height >= a.rect_of(other, a.area()).height,
-                    "{other:?} is drawn no smaller than the focused {arrived:?}"
+                    frame.contains(&format!("{} {}", arrived.number(), arrived.name())),
+                    "the region does not name the screen the digit reached:\n{frame}"
+                );
+                let region = a.region(a.area());
+                assert_eq!(
+                    region.width, width,
+                    "the region is not the width of the window:\n{frame}"
+                );
+                assert!(
+                    inside(region).height >= 1,
+                    "the region is a border with nothing inside it:\n{frame}"
                 );
             }
-        }
-        // The same four, reached by touching their title bars.
-        let mut a = phone();
-        for arrived in [Focus::Queue, Focus::Claims, Focus::Body, Focus::Entities] {
-            let title = a.rect_of(arrived, a.area());
-            touch(&mut a, &ank, Position::new(title.x + 4, title.y));
-            assert_eq!(
-                a.focus(),
-                arrived,
-                "touching {arrived:?} did not reach it:\n{}",
-                a.frame()
-            );
         }
     }
 
@@ -6240,7 +6078,8 @@ mod tests {
     /// on a tap (TASK-dd9747e5e305).
     ///
     /// At the phone's window and at a wide one, because the arithmetic is
-    /// [`App::arrange`] read backwards and there are two arrangements to read.
+    /// [`App::arrange`] read backwards and a criterion about every width is
+    /// worth asking at more than one.
     #[test]
     fn a_mouse_press_selects_the_row_it_landed_on() {
         let ank = nowhere();
@@ -6248,7 +6087,7 @@ mod tests {
             let mut a = App::new(size, None).inked(paint::PLAIN);
             has_read(&mut a);
             assert_eq!(a.cursors[Focus::Entities.number() - 1].at, 0);
-            let at = row_of(&a, Focus::Entities, 2);
+            let at = row_of(&a, 2);
             touch(&mut a, &ank, at);
             assert_eq!(
                 a.cursors[Focus::Entities.number() - 1].at,
@@ -6272,32 +6111,8 @@ mod tests {
         }
     }
 
-    /// A press on a row of a panel that is not the focused one takes the focus
-    /// *and* the row, and takes them in that order.
-    ///
-    /// The order is the whole of it. Focus decides the arrangement, so the
-    /// rectangle a person touched is the one the *old* focus drew -- and on a
-    /// phone, where focus decides which panel is open at all, resolving the row
-    /// after moving would select whatever had slid under the finger.
-    #[test]
-    fn a_press_on_an_unfocused_listing_takes_the_focus_and_the_row_it_landed_on() {
-        let ank = nowhere();
-        let mut a = App::new((120, 40), None).inked(paint::PLAIN);
-        has_read(&mut a);
-        a.queue = Some(queued());
-        a.focus = Focus::Entities;
-        let at = row_of(&a, Focus::Queue, 1);
-        touch(&mut a, &ank, at);
-        assert_eq!(a.focus(), Focus::Queue);
-        assert_eq!(a.cursors[Focus::Queue.number() - 1].at, 1);
-        assert_eq!(
-            a.selected_id(Focus::Queue).as_deref(),
-            Some("SPEC-0000ffff0003")
-        );
-    }
-
-    /// A press that landed on no row of a listing moves the focus and leaves
-    /// the cursor where it was.
+    /// A press that landed on no row of a listing leaves the cursor where it
+    /// was.
     ///
     /// A border, the blank rows under a short listing, the sentence naming the
     /// ratification regime: none of them is a row, and a reader that clamped a
@@ -6309,11 +6124,11 @@ mod tests {
         let mut a = phone();
         a.focus = Focus::Entities;
         a.cursors[Focus::Entities.number() - 1].at = 1;
-        let panel = a.rect_of(Focus::Entities, a.area());
+        let region = a.region(a.area());
         for at in [
-            Position::new(panel.x, panel.y),
-            Position::new(panel.x + 1, panel.y + panel.height - 1),
-            Position::new(panel.x + panel.width - 1, panel.y + 1),
+            Position::new(region.x, region.y),
+            Position::new(region.x + 1, region.y + region.height - 1),
+            Position::new(region.x + region.width - 1, region.y + 1),
         ] {
             touch(&mut a, &ank, at);
             assert_eq!(
@@ -6323,14 +6138,14 @@ mod tests {
             );
         }
         // And the chrome is not a control at all: nothing moves, nothing is
-        // focused, nothing runs.
+        // reached, nothing runs.
         let header = a.arrange(a.area()).header;
         touch(&mut a, &ank, Position::new(header.x + 2, header.y));
         assert_eq!(a.focus(), Focus::Entities);
         assert_eq!(a.note, None);
     }
 
-    /// The states the offer is asked about at, which is every panel, both
+    /// The states the offer is asked about at, which is every screen, both
     /// modal grammars, and nothing else.
     fn offering() -> [fn(&mut App); 6] {
         [
@@ -6493,8 +6308,8 @@ mod tests {
     ///
     /// This is the property a second road to a command is most likely to take
     /// away, and it is why the tap goes through [`keys::confirming`] rather than
-    /// around it: a touch that resolved to a panel would move the cursor the
-    /// argv on the screen was composed against.
+    /// around it: a touch that resolved to a row would move the cursor the argv
+    /// on the screen was composed against.
     #[test]
     fn nothing_moves_under_a_waiting_command_when_the_screen_is_touched() {
         let ank = nowhere();
@@ -6504,7 +6319,7 @@ mod tests {
         let waiting = a.pending.clone().expect("a command is waiting");
         // A touch on a row underneath it: the command is dropped, and nothing
         // moved.
-        let at = row_of(&a, Focus::Entities, 2);
+        let at = row_of(&a, 2);
         touch(&mut a, &ank, at);
         assert_eq!(a.pending, None, "the command survived a touch");
         assert_eq!(

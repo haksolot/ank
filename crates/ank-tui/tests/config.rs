@@ -437,6 +437,14 @@ fn confirming_writes_the_key_and_unsetting_returns_it_to_the_source_it_had() {
 /// value not moving beside it is the claim: a watcher's news does not put one
 /// `ank config <key>` per declared key on the wire.
 ///
+/// **The listing and the pane are two screens now** (TASK-252bf02de218), so the
+/// entity arriving cannot be read at the same instant as the pane not moving,
+/// and going to the listing to look would charge the pane on the way back. The
+/// barrier is a key pressed *after* the reload: keys are answered in the order
+/// they arrive, so a cursor that has moved is a reload that has been handled.
+/// The entity is then confirmed on the listing, which is where this used to
+/// read it from -- the same fact, in the order one region allows.
+///
 /// Then the focus leaves the panel and comes back, which is a person arriving
 /// at the pane, and the new value is there. A pane that could only be made
 /// current by reopening the session would be a pane showing values as old as
@@ -476,12 +484,16 @@ fn the_pane_is_read_when_it_is_focused_and_a_reload_does_not_charge_it() {
         .find(|id| !before.contains(id))
         .expect("a task was made while the reader was open");
 
-    // The entity arriving is what says the reload ran, and it is what makes the
-    // two assertions under it worth anything: a reload that did nothing at all
-    // would leave the config row alone too.
+    // The reload, and a key after it whose effect is visible on the pane: the
+    // cursor moving off the first key is what says the reload has been
+    // answered, because a reader answers keys in the order it is sent them.
     live.send(&key_of_reload());
-    live.until("the reload to reach the listing", |t| {
-        t.contains(&short_of(&made))
+    live.send("j");
+    let second = keys
+        .get(1)
+        .expect("the contract declares more than one key");
+    live.until("the reload to have been answered", |t| {
+        row_of(t, second).is_some_and(|row| row.contains("> ") && row.contains(second.as_str()))
     });
     let after = live.frame();
     let row = row_of(&after, key).expect("the pane still draws the key");
@@ -494,10 +506,12 @@ fn the_pane_is_read_when_it_is_focused_and_a_reload_does_not_charge_it() {
         "a reload charged the config pane:\n{after}"
     );
 
-    // And arriving at the panel again is where the price is paid.
+    // And the entity is on the listing, which is what says the reload did
+    // something at all: a reload that ran nothing would have left the row above
+    // alone too.
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
+    live.until("the reload to have reached the listing", |t| {
+        t.contains("2 ENTITIES") && t.contains(&short_of(&made))
     });
     live.send(&digit_of_body());
     live.until("the pane to be read again", |t| {

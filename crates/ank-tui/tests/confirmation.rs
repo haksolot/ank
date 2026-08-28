@@ -32,7 +32,7 @@
 //! spawned the verb this suite spawned.
 //!
 //! The terminal, the corpus and the driven session are `terminal/mod.rs`, which
-//! `tests/panels.rs` declares too.
+//! `tests/region.rs` declares too.
 
 #![cfg(unix)]
 
@@ -109,23 +109,22 @@ fn expected(argv: &str, id: &str) -> String {
 /// from.
 fn open(live: &mut Live, id: &str) {
     let short = short_of(id);
-    // The entities panel first, because Enter opens the row under the *focused*
-    // listing's cursor and the body panel has no rows: without this the second
-    // document of a session would never arrive.
+    // The listing first, because Enter opens the row under a listing's cursor
+    // and a document has no rows: without this the second document of a session
+    // would never arrive. `2` is the digit that screen has always had
+    // (TASK-252bf02de218).
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
-    });
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
     live.send(&format!("{FIND}{short}\r"));
-    // On the count the panel's own title carries and not on the identifier: an
+    // On the count the region's own title carries and not on the identifier: an
     // unnarrowed listing carries the identifier too, so waiting for that would
     // be waiting for a frame that was already there.
     live.until("the listing to narrow to one row", |t| {
         t.contains("ENTITIES all 1")
     });
     live.send("\r");
-    live.until("the document to open in the body panel", |t| {
-        t.contains("> 3 BODY") && t.contains(&short)
+    live.until("the document to open over the listing", |t| {
+        t.contains("3 BODY") && t.contains(&short)
     });
 }
 
@@ -254,13 +253,16 @@ fn the_key_that_would_quit_declines_the_command_and_keeps_the_session() {
     live.until("the command to be declined", |t| {
         flat(t).contains(DISMISSED)
     });
-    // Still drawing, which is what "the session is still here" is: the panels
-    // are on the screen and the reader is answering keys.
+    // Still drawing, which is what "the session is still here" is: the region
+    // is on the screen and the reader is answering keys.
     let after = live.frame();
-    assert!(after.contains("2 ENTITIES"), "the session ended:\n{after}");
+    assert!(
+        after.contains("BODY"),
+        "the session ended, or left the document the command was composed on:\n{after}"
+    );
     live.send("1");
     live.until("the reader to still answer a key", |t| {
-        t.contains("> 1 CLAIMS")
+        t.contains("1 CLAIMS")
     });
 
     live.quit();
