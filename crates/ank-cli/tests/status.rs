@@ -292,9 +292,11 @@ fn status_answers_a_thousand_entities_in_under_a_quarter_second() {
     c.json(&["status", "--json"]);
 
     let status = fastest(&c, &["status", "--json"], 9);
+    let startup = fastest(&c, &["--version"], 5);
+    let indexed = fastest(&c, &["find", "zzzznotfound", "--json"], 5);
     assert!(
-        status < WALL,
-        "status --json over {ENTITIES} entities took {status}ms, wall is {WALL}ms"
+        status < 0,
+        "PROBE status={status}ms startup={startup}ms indexed={indexed}ms wall={WALL}ms"
     );
 
     let check = fastest(&c, &["check", "--json"], 2);
