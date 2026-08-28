@@ -19,7 +19,7 @@ use crate::config::Config;
 use crate::context;
 use crate::git;
 use crate::human;
-use crate::index::{Index, Row};
+use crate::index::{Index, Row, Verdict};
 use crate::json::Obj;
 use crate::repo::Repo;
 use ank_contract::ExitCode;
@@ -122,6 +122,23 @@ pub fn run(
     // enumeration of the refs: one plane, one reading, and a second one would
     // be free to disagree with the first.
     let plane = context::plane(&repo.corpus, &mut Vec::new())?;
+
+    // **The namespace enumerated once in this module**, for the two questions
+    // that need the objects rather than the records: the drift against origin
+    // below, and the key the corpus verdict hangs on (ADR-f3d1dea65d84). It used
+    // to be asked inside the `--remote` arm alone, which is why it moves rather
+    // than multiplies.
+    //
+    // `None` is the failure and not the empty namespace: a repository with no
+    // `refs/ank/*` answers with an empty list, and a `for-each-ref` that would
+    // not run answers with nothing at all. The verdict below reads that
+    // difference — a key it cannot establish is a full price it pays.
+    let here_refs = if coordinated {
+        git::ank_refs(&repo.corpus).ok()
+    } else {
+        Some(Vec::new())
+    };
+
     let mut elsewhere: Vec<Held> = plane
         .claims
         .iter()
@@ -204,9 +221,9 @@ pub fn run(
     // The local half is `for-each-ref`, which is local, and which `plane` and
     // `inspect` already run: nothing here reaches past the repository.
     let refs_drift = match &remote {
-        Remote::Read(there) => git::ank_refs(&repo.corpus)
-            .ok()
-            .map(|here| RefDrift::measure(&here, there)),
+        Remote::Read(there) => here_refs
+            .as_ref()
+            .map(|here| RefDrift::measure(here, there)),
         _ => None,
     };
 
@@ -251,9 +268,35 @@ pub fn run(
         .filter(|h| h.seen == Some(Seen::Origin))
         .count();
 
-    // `prune: false`. A reader does not sanitise the coordination plane
-    // underneath everyone else, which is the rule `context` already follows.
-    let report = human::inspect(repo, cfg, None, false)?;
+    // The default branch, once, for the key below and for the fields further
+    // down. `Some(Err(_))` is a branch that could not be resolved, which is a
+    // state and not an absence — the two collapse here because neither names a
+    // commit to compare a corpus against.
+    let default_branch = default.as_ref().and_then(|d| d.as_ref().ok()).cloned();
+
+    // **The corpus verdict, and where it comes from is the whole of what
+    // changed here** (ADR-f3d1dea65d84). It used to be `human::inspect`
+    // unconditionally: a walk of both storage layouts and a parse of every
+    // entity file, run so that two integers could be printed. `check` pays that
+    // because reading the corpus is its answer; `status` gives a summary, and a
+    // summary is not a re-derivation.
+    //
+    // Nothing the verb *says* moved to buy it. The numbers are the same numbers
+    // under the same keys with the same types, and on a key that does not match
+    // they are computed by the same single pass they always were.
+    let verdict = corpus_verdict(
+        repo,
+        cfg,
+        &index,
+        &rows,
+        &plane,
+        default_branch.as_deref(),
+        here_refs.as_deref(),
+    )?;
+    let drift = verdict.drift_branch.as_ref().map(|branch| human::Drift {
+        branch: branch.clone(),
+        entities: verdict.drift_entities,
+    });
 
     let constraints = rows
         .iter()
@@ -286,11 +329,7 @@ pub fn run(
     // already decided this; reading its findings keeps one answer rather than
     // two, and it is silent by construction when the default branch is
     // unknown — which is what the warning below exists to say out loud.
-    let unmerged = report
-        .findings
-        .iter()
-        .filter(|f| f.message.contains("has not caught up"))
-        .count();
+    let unmerged = verdict.unmerged;
 
     if inv.json() {
         // `lapsed` rather than a date the caller has to compare against its own
@@ -351,7 +390,7 @@ pub fn run(
         // Null is the question never answered, and it is not zero: a caller
         // that reads zero has been told the corpus is level, which is exactly
         // the answer no verb may give without having compared (§4).
-        let drift_json = match &report.drift {
+        let drift_json = match &drift {
             Some(d) => Obj::new()
                 .str("branch", &d.branch)
                 .num("entities", d.entities)
@@ -404,8 +443,8 @@ pub fn run(
             .num("constraints", constraints)
             .num("queue", queue)
             .num("unmerged", unmerged)
-            .num("faults", report.faults())
-            .num("signals", report.signals())
+            .num("faults", verdict.faults)
+            .num("signals", verdict.signals)
             .finish();
         let _ = writeln!(out, "{doc}");
         return Ok(ExitCode::Ok);
@@ -464,7 +503,7 @@ pub fn run(
     // **Printed when there is no drift as well.** A reader who has to tell
     // "level" from "never asked" by the absence of a line is reading silence,
     // and the absence is what the unaskable cases already mean here.
-    if let Some(drift) = &report.drift {
+    if let Some(drift) = &drift {
         let line = match drift.entities {
             0 => format!("none, level with {}", drift.branch),
             n => format!(
@@ -609,17 +648,17 @@ pub fn run(
         out,
         "{} {} fault(s), {} signal(s)",
         style.key("corpus"),
-        if report.faults() == 0 {
-            report.faults().to_string()
+        if verdict.faults == 0 {
+            verdict.faults.to_string()
         } else {
-            style.red(&report.faults().to_string())
+            style.red(&verdict.faults.to_string())
         },
-        report.signals()
+        verdict.signals
     );
 
     // Ends with the command to run next (§4), chosen by the state just printed
     // rather than fixed: a last line that never changes is one nobody reads.
-    let next = if report.faults() > 0 {
+    let next = if verdict.faults > 0 {
         "ank check"
     } else if claimed.is_some() || held.is_some() {
         "ank done"
@@ -628,6 +667,158 @@ pub fn run(
     };
     let _ = writeln!(out, "\n{}", style.next(&format!("> {next}")));
     Ok(ExitCode::Ok)
+}
+
+/// The mechanical verdict, from the index if the index can prove it still holds,
+/// and from the one `inspect` pass otherwise (ADR-f3d1dea65d84).
+///
+/// **A cache whose key is wrong makes the verb lie, and a lying `status` is
+/// worse than a slow one.** So the key is every input the verdict is a function
+/// of, and a key that cannot be established is not a key: the verb pays the full
+/// price rather than guessing, which is the one behaviour that is never wrong.
+fn corpus_verdict(
+    repo: &Repo,
+    cfg: &Config,
+    index: &Index,
+    rows: &[Row],
+    plane: &context::Plane,
+    default_branch: Option<&str>,
+    refs: Option<&[git::AnkRef]>,
+) -> Result<Verdict> {
+    let key = verdict_key(repo, index, rows, plane, default_branch, refs)?;
+    if let Some(key) = &key {
+        if let Some(hit) = index.verdict(key) {
+            return Ok(hit);
+        }
+    }
+    // `prune: false`. A reader does not sanitise the coordination plane
+    // underneath everyone else, which is the rule `context` already follows.
+    let report = human::inspect(repo, cfg, None, false)?;
+    let verdict = Verdict {
+        faults: report.faults(),
+        signals: report.signals(),
+        unmerged: report
+            .findings
+            .iter()
+            .filter(|f| f.message.contains("has not caught up"))
+            .count(),
+        drift_branch: report.drift.as_ref().map(|d| d.branch.clone()),
+        drift_entities: report.drift.as_ref().map_or(0, |d| d.entities),
+    };
+    if let Some(key) = &key {
+        index.remember_verdict(key, &verdict);
+    }
+    Ok(verdict)
+}
+
+/// Everything the verdict is a function of, in one hash — or `None`, meaning
+/// there is no key and the answer has to be computed.
+///
+/// Both halves ADR-f3d1dea65d84 names are here and neither is sufficient: the
+/// file state, because the check reads the corpus, and `refs/ank/*`, because it
+/// reads orphaned claims that live in the refs and in no file at all.
+///
+/// **The refs are in it twice, as objects and as what the clock makes of
+/// them.** A claim lapses with nothing on disk moving: the ref is the same ref,
+/// the record is the same record, and the check reports a signal it did not
+/// report a minute earlier. The plane has already read that — with
+/// `claim::is_expired`, the same predicate the check itself uses — so the
+/// reading is taken from there rather than dated a second time here, where a
+/// tolerance restated could drift from the one that owns it.
+///
+/// The rest are the inputs that would otherwise be silent: the default branch,
+/// which the drift and the completion refs are judged against; `config.yml`,
+/// which declares the verifiers and the budget the findings are measured with;
+/// `allowed_signers`, which decides whether a ratification is checkable; and the
+/// build, because the checks are its and an upgrade asks a different question
+/// rather than reusing the old answer.
+fn verdict_key(
+    repo: &Repo,
+    index: &Index,
+    rows: &[Row],
+    plane: &context::Plane,
+    default_branch: Option<&str>,
+    refs: Option<&[git::AnkRef]>,
+) -> Result<Option<String>> {
+    // `for-each-ref` would not run, so half the key is unknown. Nothing is read
+    // from the cache and nothing is written to it.
+    let Some(refs) = refs else {
+        return Ok(None);
+    };
+    // **The one finding the key cannot express**, and the corpus that carries it
+    // is therefore never memoised. An entity dated in the future is reported as
+    // such until a day before its own timestamp, so the verdict turns over on
+    // the clock with no state behind it to hash — and a threshold restated here
+    // would be a second copy of a rule that lives in the check. A corpus in this
+    // condition is already anomalous and `check` says so; what it costs is the
+    // full price, which is exactly what a verb with no key owes.
+    let now = crate::claim::now_secs();
+    if rows
+        .iter()
+        .any(|r| crate::claim::parse_utc(&r.created).is_some_and(|at| at > now))
+    {
+        return Ok(None);
+    }
+    let mut material = format!("ank {}\n", env!("CARGO_PKG_VERSION"));
+    material.push_str(&format!("files {}\n", index.files_digest()?));
+    // Sorted, because `for-each-ref` orders its own answer and a key that
+    // depended on that would be a key nobody could reason about.
+    let mut named: Vec<(&str, &str)> = refs
+        .iter()
+        .map(|r| (r.name.as_str(), r.object.as_str()))
+        .collect();
+    named.sort_unstable();
+    for (name, object) in named {
+        material.push_str(&format!("ref {name} {object}\n"));
+    }
+    let mut read: Vec<(String, &'static str)> = plane
+        .claims
+        .iter()
+        .map(|(id, state)| {
+            let word = match state {
+                context::Coordination::Free => "free",
+                context::Coordination::Claimed { .. } => "claimed",
+                context::Coordination::Lapsed { .. } => "lapsed",
+                context::Coordination::Finished { .. } => "finished",
+            };
+            (id.to_string(), word)
+        })
+        .collect();
+    read.sort_unstable();
+    for (id, word) in read {
+        material.push_str(&format!("claim {id} {word}\n"));
+    }
+    match default_branch {
+        Some(branch) => {
+            let tip = match git::output(
+                &repo.corpus,
+                &[
+                    "rev-parse",
+                    "--verify",
+                    "--quiet",
+                    &format!("{branch}^{{commit}}"),
+                ],
+            ) {
+                // A branch that names no commit is a state and not a failure —
+                // the nominal shape of a freshly initialised repository — and it
+                // becomes a different key the moment a commit arrives.
+                Ok(out) if !out.status.success() => String::new(),
+                Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
+                // git would not run at all: no key.
+                Err(_) => return Ok(None),
+            };
+            material.push_str(&format!("default {branch} {tip}\n"));
+        }
+        None => material.push_str("default none\n"),
+    }
+    // Absent and empty are the same key on purpose: both are a corpus that
+    // declares nothing, which is what the readers of these two files already
+    // make of them.
+    for name in ["config.yml", "allowed_signers"] {
+        let bytes = std::fs::read(repo.ank.join(name)).unwrap_or_default();
+        material.push_str(&format!("{name} {}\n", crate::index::hash_bytes(&bytes)));
+    }
+    Ok(Some(crate::index::hash_bytes(material.as_bytes())))
 }
 
 /// The other live claims this identity holds, under the one binding the
