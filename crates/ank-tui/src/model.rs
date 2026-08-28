@@ -34,6 +34,18 @@
 //! nothing is invented, dropped or rewritten, and every field is still the
 //! CLI's.
 //!
+//! **What is a row at all is decided here too, and it is a different question**
+//! (ADR-559eebf5c6f5, TASK-3fa4892f17c0). [`listed`] drops the annotations
+//! before [`alive_first`] is asked to order anything: a log entry is read under
+//! the entity it annotates, so it is never a row of the list under any filter,
+//! and [`annotates`] is the one rule the filter reads to know which kinds it
+//! may offer. `find` hands this project's own corpus 1550 rows and 1096 of them
+//! are log entries, which is the measurement the decision was taken on.
+//!
+//! [`Detail`] is the other half of the same clause: `show --json` already
+//! carries the entries about an entity, so folding them under it is a field
+//! this reader reads rather than a query it composes.
+//!
 //! [`frontmatter`] is that walk and there is one of it. [`declared_scopes`] is
 //! it asked for the `scope` field, and the reader's field block is it asked for
 //! all of them: `content` stays the bytes `show` printed either way, because
@@ -197,7 +209,7 @@ impl Snapshot {
         let found = ank.json("find", &[])?;
         Ok(Snapshot {
             corpus: ank::text(&found, "corpus"),
-            entities: alive_first(ank::rows(&found, "results")),
+            entities: alive_first(listed(ank::rows(&found, "results"))),
             total: ank::count(&found, "total"),
         })
     }
@@ -262,6 +274,43 @@ impl Snapshot {
             )
             .finish()
     }
+}
+
+/// The kind an entity carries when it annotates another one, in the registry's
+/// own word (ADR-c9f9d1a05b23).
+pub const ANNOTATION: &str = "log";
+
+/// Whether a kind annotates an entity rather than being one a list shows
+/// (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+///
+/// **One predicate and every surface asks it.** A log entry is read under the
+/// entity it annotates, which makes "is this a row" a question with one answer
+/// -- so [`listed`] drops these before the order is decided, and the filter is
+/// offered the kinds that are left rather than the registry. Two places
+/// deciding it separately would be a filter offering a kind the list cannot
+/// hold, which is the state this replaces.
+pub fn annotates(kind: &str) -> bool {
+    kind == ANNOTATION
+}
+
+/// The rows of `find` that a list may show: everything that is not an
+/// annotation (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+///
+/// **Dropped here rather than filtered downstream**, which is the difference
+/// between a row that is hidden and a row that does not exist. Every listing
+/// this reader draws, every filter it offers and every count it prints reads
+/// [`Snapshot::entities`], so a log entry that never enters it cannot come back
+/// out of one of them -- where a renderer that skipped them would leave the
+/// next listing to remember to skip them too.
+///
+/// **It is not a narrowing of the corpus and does not pretend to be.**
+/// [`Snapshot::total`] stays what `find` said, and the entities title reads it
+/// as "in the corpus": the corpus does hold them, and the reader shows each of
+/// them under the entity it is about.
+fn listed(results: &[ank::Value]) -> impl Iterator<Item = &ank::Value> {
+    results
+        .iter()
+        .filter(|value| !annotates(&ank::text(value, "kind")))
 }
 
 /// Where a row stands in the order the reader opens on
@@ -340,9 +389,13 @@ impl Band {
 /// the field sorts to the end of its band and keeps its arrival order there:
 /// `created` reached `find --json` after the reader existed, and an older `ank`
 /// on the PATH should cost the order its recency, never its bands.
-fn alive_first(results: &[ank::Value]) -> Vec<Row> {
+///
+/// **It orders what [`listed`] handed it and decides no membership.** Which
+/// rows exist is the other clause of the same decision and is answered one
+/// function up, so this one cannot quietly drop a row while claiming to sort.
+fn alive_first<'a>(results: impl IntoIterator<Item = &'a ank::Value>) -> Vec<Row> {
     let mut rows: Vec<(Band, String, Row)> = results
-        .iter()
+        .into_iter()
         .map(|value| {
             (
                 Band::of(&ank::text(value, "status"), &ank::text(value, "state")),
@@ -488,6 +541,34 @@ impl Settings {
     }
 }
 
+/// One log entry, under the entity it annotates (ADR-559eebf5c6f5,
+/// TASK-3fa4892f17c0).
+///
+/// The four fields `show --json` gives one, and nothing derived from them. It
+/// is a `LOG-` entity like any other -- `ank show LOG-049cde` prints it whole --
+/// and this is the form in which it reaches the person who is reading the thing
+/// it is about, which is the only place the decision puts it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub id: String,
+    /// When it was written, in the corpus's own RFC 3339.
+    pub timestamp: String,
+    /// The agent that wrote it.
+    pub who: String,
+    pub message: String,
+}
+
+impl Entry {
+    fn read(value: &ank::Value) -> Entry {
+        Entry {
+            id: ank::text(value, "id"),
+            timestamp: ank::text(value, "timestamp"),
+            who: ank::text(value, "who"),
+            message: ank::text(value, "message"),
+        }
+    }
+}
+
 /// One entity, opened.
 #[derive(Debug, Clone)]
 pub struct Detail {
@@ -506,6 +587,29 @@ pub struct Detail {
     /// Shown rather than swallowed: a constraint list silently short by one is
     /// the one wrong answer a reader would act on.
     pub unresolved: Vec<String>,
+    /// What has been logged about this entity, in the order it was written
+    /// (ADR-559eebf5c6f5, TASK-3fa4892f17c0).
+    ///
+    /// **The order is `show`'s and is not re-derived here.** The verb hands the
+    /// entries oldest first, which is the order they were written in, and a
+    /// reader that sorted them again would be a second opinion about what
+    /// "written" means -- there is no `seq` on this document to sort by, and
+    /// re-reading the timestamps would answer differently the first time two
+    /// entries shared a second.
+    pub log: Vec<Entry>,
+    /// The machinery: the entries that record an edit rather than a message,
+    /// oldest first, exactly as [`Detail::log`] is.
+    ///
+    /// A list of its own because `show` gives it as one and the two are asked
+    /// different questions -- what somebody said about this, and what was done
+    /// to it. Both are log entities, and both are read here because neither is
+    /// a row of any list any more.
+    pub machinery: Vec<Entry>,
+    /// How many entries there are, where the budget showed fewer
+    /// (ADR-3e6ce108edcd). `show` says both, and a section that printed what it
+    /// held without saying what it withheld would be the one wrong answer a
+    /// person acts on by not looking further.
+    pub log_total: u64,
 }
 
 impl Detail {
@@ -546,6 +650,12 @@ impl Detail {
                 .map(Row::read)
                 .collect(),
             unresolved,
+            log: ank::rows(&shown, "log").iter().map(Entry::read).collect(),
+            machinery: ank::rows(&shown, "machinery")
+                .iter()
+                .map(Entry::read)
+                .collect(),
+            log_total: ank::count(&shown, "log_total"),
         })
     }
 }
@@ -1024,6 +1134,93 @@ mod tests {
                 "TASK-0000000000d1"
             ]
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // What is a row at all (TASK-3fa4892f17c0, ADR-559eebf5c6f5)
+    // -----------------------------------------------------------------------
+
+    /// **No entity of kind log is a row**, whatever band its status would have
+    /// put it in and wherever `find` handed it over.
+    ///
+    /// The corpus below is the shape of the real one: most of it is annotations,
+    /// they arrive interleaved with the entities, and one of them carries a
+    /// status word that would otherwise have put it in the first band. What
+    /// comes back is the entities, in the order the band and the instant give
+    /// them, and nothing else at all.
+    #[test]
+    fn no_entity_of_kind_log_is_a_row_of_the_list() {
+        let mut rows = vec![
+            found("TASK-0000000000f1", "open", "open", "2026-08-04T00:00:00Z"),
+            found(
+                "ADR-0000000000f2",
+                "proposed",
+                "proposed",
+                "2026-08-03T00:00:00Z",
+            ),
+        ];
+        for i in 0..8u32 {
+            // A log entry carries no status, which is the ordinary case, except
+            // the last -- which carries the most alive word there is, so a
+            // filter that read the band instead of the kind would put it first.
+            let (status, state) = match i {
+                7 => ("open", "claimed:claude-code/opus-5+somebody"),
+                _ => ("", ""),
+            };
+            rows.push(found(
+                &format!("LOG-0000000000e{i}"),
+                status,
+                state,
+                &format!("2026-08-0{}T00:00:00Z", i + 1),
+            ));
+        }
+        let shown: Vec<String> = alive_first(listed(&rows))
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(shown, ["TASK-0000000000f1", "ADR-0000000000f2"]);
+        // And the eight are in the fixture, so the assertion above measured a
+        // filter rather than an empty room.
+        assert_eq!(rows.len(), 10);
+    }
+
+    /// The rule the filter reads, said of every kind the registry has.
+    ///
+    /// One kind annotates and the other three are entities somebody works on,
+    /// which is the whole of the distinction: a word this reader has never
+    /// heard of is not an annotation either, so a kind added to the corpus is a
+    /// row until somebody decides otherwise here.
+    #[test]
+    fn the_kind_that_annotates_is_the_log_and_it_is_the_only_one() {
+        assert!(annotates(ANNOTATION));
+        assert!(annotates("log"));
+        for kind in ["task", "adr", "spec", "", "epic"] {
+            assert!(!annotates(kind), "{kind} is not an annotation");
+        }
+    }
+
+    /// The entries `show` gives, in the order it gives them, with nothing
+    /// derived (TASK-3fa4892f17c0).
+    #[test]
+    fn a_log_entry_is_the_four_fields_show_states_and_no_fifth() {
+        let value = serde_json::json!({
+            "id": "LOG-049cde9e5724",
+            "timestamp": "2026-08-28T20:26:31Z",
+            "who": "claude-code/opus-5+one-row-composer",
+            "message": "Built. compose(here, fields, width) is the one assembler.",
+        });
+        assert_eq!(
+            Entry::read(&value),
+            Entry {
+                id: "LOG-049cde9e5724".to_string(),
+                timestamp: "2026-08-28T20:26:31Z".to_string(),
+                who: "claude-code/opus-5+one-row-composer".to_string(),
+                message: "Built. compose(here, fields, width) is the one assembler.".to_string(),
+            }
+        );
+        // A document missing a field is read rather than refused: the reader
+        // draws what the CLI said and never less of the rest for it.
+        assert_eq!(Entry::read(&serde_json::json!({})).message, "");
     }
 
     #[test]
