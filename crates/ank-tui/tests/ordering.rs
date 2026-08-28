@@ -26,6 +26,13 @@
 //! already takes and one no source of the crate has: the reader reaches the
 //! corpus by running the CLI, and a test may name what the crate may not.
 //!
+//! **A green run here is evidence only after a workspace build**
+//! (ADR-93d8fc25e94e). `CARGO_BIN_EXE_ank` is defined for `ank-cli` alone, so
+//! `cargo test -p ank-tui` drives whichever `ank` is already on disk: this
+//! suite was written against one built before the ordering existed and reported
+//! the identifier order back, which is the failure the decision describes and
+//! is also how the assertions below were shown to measure anything at all.
+//!
 //! **Nothing here asserts a wall-clock bound.** Not one instant in the fixture
 //! comes from a clock, so the sequence this measures is the same on a machine
 //! whose date is wrong as on one whose date is right.
