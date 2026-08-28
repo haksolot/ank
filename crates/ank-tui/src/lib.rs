@@ -68,9 +68,10 @@
 //!
 //! # Input is a key, and the two places a word is still typed
 //!
-//! Every command that only moves the screen is one key ([`keys`]), focus
-//! included: `Tab` walks the panels, `1` to `4` name one, and Left and Right
-//! cross the columns. **And so is every verb that writes**
+//! Every command that only moves the screen is one key ([`keys`]), the screen
+//! a person is on included: `Tab` walks the ring, `1` to `4` name one, and Left
+//! and Right cross between the listing and the document it opens.
+//! **And so is every verb that writes**
 //! (TASK-1a415107fd56, ADR-c07e2694f0e1: a key *is* the verb it runs): `c`
 //! claims, `l` logs, `d` finishes, `r` releases, `m` amends, `a` ratifies, and
 //! `n` makes one. What each of them is bound to is [`bindings`], declared once,
@@ -109,58 +110,68 @@
 //! guarantee is stated over the verbs that write rather than over the road
 //! they were reached by.
 //!
-//! # The layout
+//! # One region, and four screens reached in their turn
 //!
-//! Four panels on one screen, two columns of two, one of them focused
-//! (TASK-bb43cfe2192b). What used to be three views one at a time is now four
-//! places at once, and the reason is that a corpus reader is read across rather
-//! than down: what binds this, who holds it, what is waiting, and what does it
-//! say are four questions a person carries together.
+//! **One bordered region on the frame, at every width** (TASK-252bf02de218,
+//! ADR-559eebf5c6f5). What used to be four panels on one screen -- and, below a
+//! stated width, four stacked panels of which three were closed to their titles
+//! -- is four screens reached in their turn, drawn one at a time in the region
+//! the header sits above. Nothing else on the frame carries a border, and
+//! nothing on it collapses to a rule with nothing inside it.
 //!
 //! * [`view::Focus::Claims`] -- who holds what, the caller's own marked.
 //! * [`view::Focus::Entities`] -- every entity of every kind with its status,
 //!   windowed and filterable. Where a session opens.
-//! * [`view::Focus::Queue`] -- what is proposed and waiting for a signature,
-//!   and which regime the corpus is in: `ank review`, run when its person
-//!   focuses the panel and never on the reader's own initiative.
 //! * [`view::Focus::Body`] -- one entity: what holds it, the constraints
 //!   binding its declared scope, and its body, paged rather than cut. This is
-//!   the only panel `accept` can be typed in. It is also where the config pane
-//!   is drawn (TASK-b08d090f699c): the one thing this panel shows that is not
+//!   the only screen `accept` can be reached from. It is also where the config
+//!   pane is drawn (TASK-b08d090f699c): the one thing it shows that is not
 //!   about an entity at all, opened with `o`, read when a person arrives at it
 //!   and on no repaint.
+//! * [`view::Focus::Queue`] -- what is proposed and waiting for a signature,
+//!   and which regime the corpus is in: `ank review`, run when its person
+//!   arrives at the screen and never on the reader's own initiative.
 //!
-//! Focus moves by key and is drawn in characters -- a heavy border and the
-//! `> ` marker -- so the screen says where a reader is with no colour at all.
-//! It also decides the width: the focused column takes four fifths of it, which
-//! is what lets a list of sentences and a body of prose share eighty columns
-//! without both being too narrow. [`view::App::arrange`] is where all of that
-//! is decided.
+//! **Each is reached by the key it already had.** `Tab` walks the ring, `1` to
+//! `4` name one, and the number is on the region's title beside the name. What
+//! the change costs a reader who knew the old frame is nothing: the digit that
+//! reached a panel reaches its screen.
+//!
+//! **Opening a row replaces the list with the document it names, and leaving
+//! the document gives that list back.** Enter on a row of any of the three
+//! listings shows the entity in the region; the reader remembers which listing
+//! it was reached from, and `Back` returns there with the same row still under
+//! the cursor. Every listing keeps its own cursor and nothing moves one by
+//! being left, which is what makes a screen a place rather than a mode.
+//!
+//! There is no focus to arbitrate and so no focused border: one region has
+//! nothing to be told apart from, and its rule is one weight at every window.
+//! [`view::App::arrange`] decides the whole frame from the window alone.
 //!
 //! # A person holding a phone
 //!
-//! **Below [`view::ONE_COLUMN`] the panels stack and the focused one is the
-//! only one open** (TASK-dd9747e5e305). That width is where the focused one of
-//! the pair can no longer carry a row's identifier and its status, so it is the
-//! width at which two columns have stopped being two answers, and it is well
-//! above anything a phone in portrait reports. The three panels without the
-//! focus keep their top border and the number on it, so all four stay on the
-//! frame and all four stay one digit -- or one touch -- away.
+//! **There is no second arrangement any more, and that is the point**
+//! (ADR-559eebf5c6f5). The reflow below `ONE_COLUMN` existed because four
+//! panels side by side could not honestly be drawn on a phone; one region is
+//! drawable at forty columns and at a hundred and fifty, so no width turns this
+//! reader into a different reader and there is no threshold to be on the wrong
+//! side of. What a narrow window costs is what a row can afford to say, which
+//! is a question about composing a row rather than about arranging a screen.
 //!
 //! **A tap is a mouse press, and this reader asked the terminal for them.**
 //! [`term`] turns capture on with raw mode and gives it back with it; a press
 //! resolves against [`view::App::arrange`] run backwards, which is why that
-//! function decides every rectangle from the window and the focus and nothing
-//! else. A press on a row selects it, a press on a panel focuses it, a swipe
-//! moves the cursor the way `j` and `k` do, and a press on one of the targets
-//! under the panels is that target's key, pressed. Nothing here reaches a place
-//! a keyboard cannot: [`view::App::actions`] draws what the focused panel
+//! function decides every rectangle from the window and nothing else. A press
+//! on a row selects it, a second press on the row already selected opens it, a
+//! swipe moves the cursor the way `j` and `k` do, and a press on one of the
+//! targets under the region is that target's key, pressed. Nothing here reaches
+//! a place a keyboard cannot: [`view::App::actions`] draws what the screen
 //! offers with the key beside the word, so the two roads carry one vocabulary.
 //!
 //! **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1), and
 //! that is now measured rather than reviewed: `keys`'s own table walks every
 //! key a terminal can report against every way a modifier can be held and holds
-//! this reader to it. It is what turned `Tab` and Shift-`Tab` into the panel
+//! this reader to it. It is what turned `Tab` and Shift-`Tab` into the screen
 //! they land on rather than a step, since the backward step was the one value
 //! in the table no bare key produced -- while the place it reached had been one
 //! digit away from the beginning.
@@ -198,7 +209,7 @@
 //! is reachable from here. No key is `accept` and no key is any of the six, so
 //! a held key repeats a movement and nothing else; the queue is never accepted
 //! in bulk because the grammar has no shape for it and because the word is
-//! refused anywhere but the body panel; no secret can reach git
+//! refused anywhere but the screen the document is on; no secret can reach git
 //! through this process because the child is given no stdin; and a screen left
 //! open all night still runs nothing at all, because `accept` is on the acting
 //! list and a repaint only ever reads.
@@ -428,7 +439,7 @@ fn refused_by_the_cli(failed: ank::Failed) -> Refused {
 /// of the same task. The loop draws, and only then reads; the opening pass
 /// takes the `continue` so that the frame a person sees first costs no child at
 /// all, and the rows land on the second paint a few hundred milliseconds later.
-/// What that removes is not a slow read but a *blocking* one -- an empty panel
+/// What that removes is not a slow read but a *blocking* one -- an empty region
 /// saying it has not read yet is a screen, and twenty seconds of nothing is not.
 ///
 /// **The window is read from the terminal before every frame**, and the resize
@@ -491,9 +502,10 @@ pub fn session(
                 }
             }
             // The other road in, and it arrives at the same places: a tap on a
-            // target is the key that target names, pressed, and a tap on a
-            // panel is that panel focused with the row under the finger
-            // selected. There is no command here a keyboard cannot reach.
+            // target is the key that target names, pressed, and a tap in the
+            // region selects the row under the finger -- or opens it, where it
+            // was the selected one already. There is no command here a keyboard
+            // cannot reach.
             Wake::Mouse(mouse) => {
                 if app.pointed(mouse, ank) {
                     break ExitCode::Ok;

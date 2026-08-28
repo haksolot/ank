@@ -92,30 +92,28 @@ fn rows(frame: &str) -> Vec<String> {
         .collect()
 }
 
-/// Focuses the entities panel and puts the cursor on one entity, by narrowing
+/// Goes to the listing and puts the cursor on one entity, by narrowing
 /// the listing to it.
 ///
 /// By identifier and through the search, which is the one line this reader
 /// still takes: the needle leaves one row and a search puts the cursor back at
-/// the top, so the panel names the entity meant rather than whichever one
+/// the top, so the region names the entity meant rather than whichever one
 /// `find` happened to put first.
 fn select(live: &mut Live, id: &str) {
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
-    });
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
     live.send(&format!("{}{}\r", ank_tui::keys::FIND, short_of(id)));
     live.until("the listing to narrow to one row", |t| {
         t.contains("ENTITIES all 1")
     });
 }
 
-/// Opens the selected entity into the body panel.
+/// Opens the selected entity, which replaces the listing with its document.
 fn open(live: &mut Live, id: &str) {
     select(live, id);
     live.send("\r");
-    live.until("the document to open in the body panel", |t| {
-        t.contains("> 3 BODY") && t.contains(&short_of(id))
+    live.until("the document to open over the listing", |t| {
+        t.contains("3 BODY") && t.contains(&short_of(id))
     });
 }
 
@@ -229,9 +227,7 @@ fn the_four_letters_the_verbs_cost_move_nothing_on_the_screen() {
     // Onto the second row, so a key that paged or moved would have somewhere
     // visible to go in either direction.
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
-    });
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
     live.send("j");
     let standing = live.frame();
     let where_it_stands = rows(&standing);
@@ -372,9 +368,7 @@ fn no_word_typed_anywhere_reaches_a_verb() {
     // `a` on a row opens no line. It is `accept`, and off the document it names
     // the way in rather than a prompt to type into.
     live.send("2");
-    live.until("the entities panel to take the focus", |t| {
-        t.contains("> 2 ENTITIES")
-    });
+    live.until("the listing", |t| t.contains("2 ENTITIES"));
     live.send("a");
     live.until("the reader to answer", |t| {
         t.contains("open it into the body")

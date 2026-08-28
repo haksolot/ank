@@ -52,14 +52,19 @@ fn claim() -> String {
 
 /// A phone in portrait, as this suite states one.
 ///
-/// Well under [`ank_tui::view::ONE_COLUMN`] and read out of it rather than
-/// written here, so a window that stopped being narrow enough would fail as a
-/// changed constant rather than as a test that quietly stopped testing
-/// anything. Thirty rows, because a phone is tall.
-const PHONE: (u16, u16) = (ank_tui::view::ONE_COLUMN - 7, 30);
+/// Forty columns, and it is no longer read out of a threshold constant because
+/// there is no threshold (TASK-252bf02de218, ADR-559eebf5c6f5): one region is
+/// drawable at every width, so there is no arrangement to be on the narrow side
+/// of and this is simply the narrowest window the criterion names. Thirty rows,
+/// because a phone is tall.
+const PHONE: (u16, u16) = (40, 30);
 
-/// A panel's vertical border, at either weight, as characters
+/// The region's vertical border, at either weight, as characters
 /// (ADR-c07e2694f0e1).
+///
+/// Both weights, though the reader draws one: a second bordered region arriving
+/// in the lighter set is exactly what [`shared`] counts, and a suite that only
+/// knew the heavy one would not see it.
 ///
 /// Read out of the reader rather than written as `|` here: the border set
 /// moved once already, and a suite carrying its own copy of the character
@@ -77,13 +82,14 @@ fn verticals() -> [char; 2] {
     [of(false), of(true)]
 }
 
-/// A line with the panel border it opens with taken off, so what is left
-/// starts where the panel's own content does.
+/// A line with the border it opens with taken off, so what is left starts
+/// where the region's own content does.
 fn inside(line: &str) -> &str {
     line.trim_start_matches(verticals())
 }
 
-/// How many rows of a frame carry two panels side by side.
+/// How many rows of a frame belong to two bordered regions, which is zero at
+/// every width (TASK-252bf02de218).
 fn shared(frame: &str) -> usize {
     let verticals = verticals();
     frame
@@ -114,15 +120,17 @@ fn drawn_at(frame: &str, needle: &str) -> (u16, u16) {
     (column as u16, row as u16)
 }
 
-/// **Below the width the code states the panels reflow to one column, and every
-/// panel remains reachable** (TASK-dd9747e5e305), through the binary.
+/// **A phone gets one bordered region and every screen stays one key away**
+/// (TASK-dd9747e5e305, TASK-252bf02de218), through the binary.
 ///
-/// Reachable is asserted the way a person would find out: every panel's title
-/// is on the frame, and touching one makes it the panel the mark is on. A
-/// screen that had dropped two panels to fit would pass "no two panels share a
-/// row" and fail a person entirely.
+/// This is what the reflow became. There used to be a width at which four
+/// panels stopped sharing rows and stacked, three of them closed to their
+/// titles -- three rules around nothing, which is the shape the criterion
+/// refuses in as many words. One region is drawable at forty columns, so what
+/// is asserted now is that the phone gets the same frame every other window
+/// gets, and that each screen is still reached by the digit its panel had.
 #[test]
-fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable() {
+fn at_a_phone_sized_window_the_frame_is_one_region_and_every_screen_is_reachable() {
     let repo = Repo::seeded();
     let mut live = Live::open(&repo, PHONE.0, PHONE.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
@@ -130,7 +138,7 @@ fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable(
     assert_eq!(
         shared(&frame),
         0,
-        "two panels share a row at {PHONE:?}:\n{frame}"
+        "a row belongs to two regions at {PHONE:?}:\n{frame}"
     );
     for line in frame.lines() {
         assert!(
@@ -140,21 +148,25 @@ fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable(
             PHONE.0
         );
     }
-    for panel in ["1 CLAIMS", "2 ENTITIES", "3 BODY", "4 QUEUE"] {
+    // One screen on the frame, and it is the one a session opens on.
+    for elsewhere in ["1 CLAIMS", "3 BODY", "4 QUEUE"] {
         assert!(
-            frame.contains(panel),
-            "{panel} is not on a {PHONE:?} frame:\n{frame}"
+            !frame.contains(elsewhere),
+            "{elsewhere} is drawn beside the listing at {PHONE:?}:\n{frame}"
         );
     }
-    // Touched in turn, and each one becomes the panel the mark is on. The
-    // queue last, because focusing it is a person asking for `ank review` and
-    // that is a read of the whole corpus.
-    for panel in ["3 BODY", "1 CLAIMS", "4 QUEUE", "2 ENTITIES"] {
-        let frame = live.frame();
-        let (column, row) = drawn_at(&frame, panel);
-        live.tap(column, row);
-        live.until(&format!("the focus to reach {panel}"), |t| {
-            t.contains(&format!("> {panel}"))
+    // Reached in turn by the digit each already had. The queue last, because
+    // arriving at it is a person asking for `ank review` and that is a read of
+    // the whole corpus.
+    for (digit, screen) in [
+        ("3", "3 BODY"),
+        ("1", "1 CLAIMS"),
+        ("4", "4 QUEUE"),
+        ("2", "2 ENTITIES"),
+    ] {
+        live.send(digit);
+        live.until(&format!("'{digit}' to reach {screen}"), |t| {
+            t.contains(screen)
         });
     }
     live.quit();
@@ -166,9 +178,9 @@ fn at_a_phone_sized_window_the_panels_are_one_column_and_all_four_are_reachable(
 ///
 /// The criterion's own sentence, driven: a tap lands on a row of the listing
 /// and the frame afterwards shows the mark on *that* row and on no other; a
-/// second tap on that same row and the frame afterwards shows that entity open
-/// in the body panel. Both halves are read off the grid, so what is asserted is
-/// what a person would have been looking at.
+/// second tap on that same row and the frame afterwards shows that entity's
+/// document in the region the listing was in. Both halves are read off the
+/// grid, so what is asserted is what a person would have been looking at.
 ///
 /// **The second half used to be a tap on the target reading `[Enter open]`**,
 /// and that band is gone (TASK-9a402a54886f): ADR-c07e2694f0e1 priced four rows
@@ -229,18 +241,23 @@ fn a_tap_selects_a_row_and_a_second_tap_on_it_opens_it() {
         .find(|(_, l)| l.contains(&short))
         .expect("the marked row is still on the frame");
     live.tap(2, again as u16);
-    live.until(
-        "the entity the tap selected to open in the body panel",
-        |t| t.contains("> 3 BODY") && t.contains(&short),
-    );
+    live.until("the entity the tap selected to open", |t| {
+        t.contains("3 BODY") && t.contains(&short)
+    });
     let opened = live.frame();
     assert!(
         opened
             .lines()
-            .any(|l| l.contains("> 3 BODY") && l.contains(&short)),
-        "the body panel is not holding the row the tap selected:\n{opened}"
+            .any(|l| l.contains("3 BODY") && l.contains(&short)),
+        "the region is not holding the row the tap selected:\n{opened}"
     );
-    // And the reader is still the reader it was: one column, inside its window.
+    // And opening it replaced the listing rather than sharing the frame with
+    // it (TASK-252bf02de218).
+    assert!(
+        !opened.contains("2 ENTITIES"),
+        "the listing survived the document opening over it:\n{opened}"
+    );
+    // And the reader is still the reader it was: one region, inside its window.
     assert_eq!(shared(&opened), 0, "{opened}");
     for line in opened.lines() {
         assert!(
@@ -276,7 +293,7 @@ fn a_touch_answers_a_waiting_command_only_where_the_target_says_it_does() {
         t.contains("ENTITIES all 1")
     });
     live.send("\r");
-    live.until("the document to open", |t| t.contains("> 3 BODY"));
+    live.until("the document to open", |t| t.contains("3 BODY"));
     live.send(&claim());
     live.until("the command to be shown", |t| t.contains("ank claim"));
     let waiting = live.frame();
@@ -286,8 +303,10 @@ fn a_touch_answers_a_waiting_command_only_where_the_target_says_it_does() {
     );
 
     // A touch somewhere that is not a target: the command is dropped, and the
-    // corpus did not move.
-    let (column, row) = drawn_at(&waiting, "1 CLAIMS");
+    // corpus did not move. On the header, which is the one band of the frame
+    // that is never a control (TASK-252bf02de218: there is no second panel left
+    // to touch).
+    let (column, row) = drawn_at(&waiting, "identity");
     live.tap(column, row);
     live.until("the command to be dismissed", |t| t.contains("dismissed"));
     assert_eq!(

@@ -186,24 +186,43 @@ fn sets(params: &[usize]) -> Vec<Vec<usize>> {
 
 /// A session driven across the screens that carry painted fields.
 ///
-/// The listing a session opens on, a document opened and given the width, the
-/// constraints beside it, and the ratification queue: the four panels, and
-/// every place this reader puts an identifier or a status.
+/// The listing a session opens on, a document opened over it, the constraints
+/// in its place, the listing again and the ratification queue: every screen,
+/// and every place this reader puts an identifier or a status.
+///
+/// **Every frame it drew and not the last one** (TASK-252bf02de218). The
+/// screens are reached in their turn now, so the frame a session ends on
+/// carries one of them; a comparison made on that frame alone would be a
+/// comparison of the queue with the queue, and the three screens before it
+/// would go unasserted. What comes back is the frames joined in the order they
+/// were drawn, which is what the four panels used to give in one rectangle.
 fn driven(mut live: Live) -> (String, Vec<u8>) {
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    let mut seen = vec![live.frame()];
     // `s` and no longer `c`: the constraints pane moved when `claim` took the
     // letter (TASK-1a415107fd56).
-    for key in ["\r", "s", "b", "4"] {
+    //
+    // **Each key carries the screen it reaches**, and the drive waits for that
+    // screen before it reads a frame (TASK-252bf02de218). A settled screen is
+    // not the same thing as the screen a key asked for: pressing Enter spawns
+    // `ank show`, and a frame read in the moment before the answer arrives is
+    // the *previous* screen, settled. That was invisible while four panels were
+    // drawn at once and the comparison was made on the last frame; with one
+    // region it is the difference between comparing a document with a document
+    // and comparing a document with the listing it replaced.
+    for (key, reached) in [
+        ("\r", "3 BODY"),
+        ("s", "3 CONSTRAINTS"),
+        ("b", "2 ENTITIES"),
+        ("4", "4 QUEUE"),
+    ] {
         live.send(key);
-        // Settled between keys and not only at the end: what is asserted is
-        // every frame the session drew, and a screen read while one was still
-        // arriving would be half of it.
-        let _ = live.frame();
+        live.until(reached, |t| t.contains(reached));
+        seen.push(live.frame());
     }
-    let frame = live.frame();
     let raw = live.raw();
     live.quit();
-    (frame, raw)
+    (seen.join("\n"), raw)
 }
 
 /// The parameters a session set, over every sequence it sent.
@@ -246,10 +265,12 @@ fn with_no_color_set_no_sequence_the_reader_sends_paints_anything() {
 
 /// And the screen is still readable, because every distinction is a character.
 ///
-/// Four signals, each of a different kind and each of them on the monochrome
-/// frame: the panel names and their numbers, the heavier rule and the `> `
-/// marker that say where the focus is, the `> ` on the row a cursor is on, and
-/// the status of a row spelled as the word it is.
+/// Three signals, each of a different kind and each of them on the monochrome
+/// frame: the region's own title, which names the screen in it and the digit
+/// that reaches it; the `> ` on the row a cursor is on; and the status of a row
+/// spelled as the word it is. The fourth used to be the marker and the heavier
+/// rule that said which of four panels had the focus, and there is one region
+/// now (TASK-252bf02de218) -- so where a person is, is the name on its title.
 #[test]
 fn with_no_color_set_the_screen_still_says_everything_it_has_to_say() {
     let _one = ONE_AT_A_TIME
@@ -260,16 +281,13 @@ fn with_no_color_set_the_screen_still_says_everything_it_has_to_say() {
     let live = Live::open(&repo, WINDOW.0, WINDOW.1);
     live.until("the session to open", |t| t.contains("2 ENTITIES"));
     let frame = live.frame();
-    for panel in ["1 CLAIMS", "2 ENTITIES", "3 BODY", "4 QUEUE"] {
-        assert!(frame.contains(panel), "{panel} is not named:\n{frame}");
-    }
     assert!(
-        frame.contains("> 2 ENTITIES"),
-        "the focused panel is unmarked:\n{frame}"
+        frame.contains("2 ENTITIES"),
+        "the region does not name the screen in it:\n{frame}"
     );
     assert!(
         frame.contains(&FOCUSED_RULE.repeat(10)),
-        "the focused panel has no heavier rule:\n{frame}"
+        "the region has no rule at all:\n{frame}"
     );
     assert!(
         frame.lines().any(|l| l.contains(">     1  ")),

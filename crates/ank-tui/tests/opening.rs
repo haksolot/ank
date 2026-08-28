@@ -70,14 +70,20 @@ fn the_first_frame_is_drawn_in_under_a_second_on_a_crowded_corpus() {
 /// **And what it drew first is a screen, not a blank** (TASK-fff0a98511b2).
 ///
 /// Drawing early is worth nothing if what goes up is empty chrome. The frame
-/// that beats the read carries the four panels, each named, and says of the
-/// listing that it has not read yet -- which is the honest thing for it to say
-/// and the sentence the suites now wait on to know the read landed.
+/// that beats the read carries the one bordered region, named -- and says of
+/// the listing in it that it has not read yet, which is the honest thing for it
+/// to say and the sentence the suites now wait on to know the read landed.
+///
+/// **One region and not four panels** (TASK-252bf02de218). What is asserted is
+/// unchanged in kind: the frame that goes up first is a screen a person can
+/// read, with the name of what they are looking at on it. There is one name on
+/// it now, and the three screens that are not drawn are not blanks either --
+/// they are a digit away, which `tests/region.rs` measures.
 ///
 /// Asserted on the same frame the timing test measures, in a separate session
 /// so that neither is reading the other's screen.
 #[test]
-fn the_frame_that_arrives_first_names_its_panels_and_says_it_has_not_read() {
+fn the_frame_that_arrives_first_names_its_screen_and_says_it_has_not_read() {
     let repo = Repo::crowded(CROWD);
     repo.warm_find();
 
@@ -86,10 +92,15 @@ fn the_frame_that_arrives_first_names_its_panels_and_says_it_has_not_read() {
     // [`Live::now`] and not [`Live::frame`]: the frame being asked about is the
     // one drawn before the read, and `frame` will not settle on it.
     let first = live.now();
-    for panel in ["1 CLAIMS", "2 ENTITIES", "3 BODY", "4 QUEUE"] {
+    assert!(
+        first.contains("2 ENTITIES"),
+        "the opening frame does not name the screen it is drawing:\n{first}"
+    );
+    for elsewhere in ["1 CLAIMS", "3 BODY", "4 QUEUE"] {
         assert!(
-            first.contains(panel),
-            "{panel} is not on the opening frame:\n{first}"
+            !first.contains(elsewhere),
+            "{elsewhere} is drawn beside the listing on the opening \
+             frame:\n{first}"
         );
     }
     assert!(

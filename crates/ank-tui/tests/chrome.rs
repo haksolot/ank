@@ -17,7 +17,7 @@
 //! what the layout function answers; this asserts what a person sees.
 //!
 //! **The terminal, the corpus and the driven session are `terminal/mod.rs`**,
-//! which `tests/panels.rs` explains and three other suites here declare.
+//! which `tests/region.rs` explains and three other suites here declare.
 
 #![cfg(unix)]
 
@@ -29,15 +29,15 @@ use terminal::{Live, Repo};
 /// with almost nothing left, and a wide one.
 ///
 /// The short one is the one worth having. At forty by twelve there are eight
-/// rows for four panels once the chrome is paid for, which is two apiece and no
-/// more -- a window where an arrangement that had not been asked to give way
-/// would be drawing rows the terminal does not have.
+/// rows for the region once the chrome is paid for -- a window where a layout
+/// that had not been asked to give way would be drawing rows the terminal does
+/// not have.
 const WINDOWS: [(u16, u16); 5] = [(80, 24), (40, 24), (80, 40), (40, 12), (120, 40)];
 
 /// The desk the criterion counts rows on.
 const DESK: (u16, u16) = WINDOWS[0];
 
-/// What the frame may spend on anything that is not a panel's own content.
+/// What the frame may spend on anything that is not the region's own content.
 ///
 /// Four is what it actually spends -- the header's two lines and the rule under
 /// them, and the note band's single row -- and the criterion allows five, which
@@ -115,25 +115,23 @@ fn the_chrome_at_the_desk_is_a_header_and_a_row() {
         .collect();
     assert!(
         furniture.len() <= CHROME,
-        "{} rows of {DESK:?} are not a panel's own content, and {CHROME} is the \
-         budget:\n{:#?}\n{frame}",
+        "{} rows of {DESK:?} are not the region's own content, and {CHROME} is \
+         the budget:\n{:#?}\n{frame}",
         furniture.len(),
         furniture
     );
-    // And the corpus is the one the criterion describes: two of the four
-    // panels have not been asked for, so neither is spending a row on content
-    // that would flatter the count above.
-    //
-    // **Two and not one** (TASK-fff0a98511b2). The claims panel used to be
-    // read on opening and said "nothing is held" here; it is asked for when it
-    // takes focus now, on the road the queue already took, so what it says at
-    // rest is the queue's own word. That is the honest sentence: this session
-    // never focused it, and a panel that has not been asked has no claim to
-    // report either way.
-    for unasked in ["1 CLAIMS   (not asked)", "4 QUEUE   (not asked)"] {
+    // And the corpus is the one the criterion describes: the two costly
+    // screens have not been asked for, which is now visible as their not being
+    // on the frame at all (TASK-252bf02de218). They used to be two unasked
+    // panels saying so in their titles; they are two screens reached in their
+    // turn, and a screen nobody went to is a screen nobody paid for
+    // (TASK-fff0a98511b2). `tests/region.rs` is where each is reached by the
+    // key it kept.
+    for elsewhere in ["CLAIMS", "QUEUE", "BODY"] {
         assert!(
-            frame.contains(unasked),
-            "'{unasked}' is not on this screen:\n{frame}"
+            !frame.contains(elsewhere),
+            "{elsewhere} is drawn beside the listing, so the budget above is \
+             counting a frame the reader does not draw:\n{frame}"
         );
     }
     live.quit();
@@ -143,9 +141,9 @@ fn the_chrome_at_the_desk_is_a_header_and_a_row() {
 /// five windows** (TASK-9a402a54886f).
 ///
 /// Two things are asserted and they are different failures. The trailer was
-/// rows of key entries under the panels, so it is caught by the row budget
-/// above and by the shape of what is left here: everything below the last panel
-/// is one row. The band of targets was bracketed labels, and it is caught by
+/// rows of key entries under the region, so it is caught by the row budget
+/// above and by the shape of what is left here: everything below the region is
+/// one row. The band of targets was bracketed labels, and it is caught by
 /// the brackets -- the one bracketed thing on a frame at rest is the header's
 /// own target, which is what the band was traded for.
 ///
@@ -172,24 +170,24 @@ fn no_frame_carries_the_trailer_or_the_band_at_any_window() {
                 window.0
             );
         }
-        // Under the last panel there is one row and it is the note band, blank
+        // Under the region there is one row and it is the note band, blank
         // because nothing has been said. Two rows of key lines would be here.
         let edges = edges();
         let last = rows
             .iter()
             .rposition(|line| panelled(line, &edges))
-            .unwrap_or_else(|| panic!("no panel is drawn at {window:?}:\n{frame}"));
+            .unwrap_or_else(|| panic!("no region is drawn at {window:?}:\n{frame}"));
         assert_eq!(
             last,
             rows.len() - 2,
-            "the chrome under the panels is not one row at {window:?}:\n{frame}"
+            "the chrome under the region is not one row at {window:?}:\n{frame}"
         );
         assert!(
             rows[rows.len() - 1].trim().is_empty(),
             "the last row of {window:?} is not the blank note band:\n{frame}"
         );
         // And the only target drawn at rest is the one that opens the key list.
-        // Asked of the chrome and not of the panels: a listing marks a claim
+        // Asked of the chrome and not of the region: a listing marks a claim
         // the reader holds with `[held]`, which is a field of a row rather than
         // anything a finger is aimed at.
         let target = help_target();
