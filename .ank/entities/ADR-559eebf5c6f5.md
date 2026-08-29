@@ -5,7 +5,7 @@ slug: the-reader-is-one-list-and-one-document-and-what
 title: The reader is one list and one document, and what it shows first is what moved last
 created: 2026-08-27T16:32:47Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-tui/**
 constraint: |
@@ -25,8 +25,12 @@ constraint: |
   
   What ADR-8bd76e8d7c4e fixed is untouched and this restates none of it: the reader reaches the corpus only by running the CLI with --json, it writes nothing the person at the keyboard did not ask for, it renews no claim on its own, and accept stays a signed human act it may drive and never perform. No browser reader, nothing under a viewer/ directory, no HTML page.
 supersedes: ADR-c07e2694f0e1
+ratified: 46d23695e444
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-08-29T20:31:10Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ADR-c07e2694f0e1 is one day old and this supersedes it, which needs saying
