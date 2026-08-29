@@ -168,6 +168,33 @@
 //! what is added is that a finger may press it. Information made touchable,
 //! which is the opposite of an offer drawn at rest.
 //!
+//! # What one frame costs the corpus
+//!
+//! **The filter is computed once for a frame, and not once for every question
+//! the frame asks about it** (TASK-def2cadf48b1). A frame asks its listing at
+//! least three things -- how many rows survived the filter, which of them the
+//! region has room for, and whether there are more of them than it can hold --
+//! and each of those began by calling [`App::entity_rows`] for itself, so a
+//! screen drawing twenty-two rows out of twelve hundred walked thirty-six
+//! hundred. It was charged on every repaint, which on this reader is every
+//! keystroke, every notch of the wheel and every event a watcher pushed.
+//! [`App::render`] now walks the corpus once into a [`Listing`] and hands that
+//! value down; nothing under it filters at all.
+//!
+//! **Frame-scoped rather than remembered**, which is why it is a parameter and
+//! not a field. An answer kept on [`App`] would have to be invalidated
+//! everywhere the kind, the needle, the snapshot or the queue moves, and the
+//! one place somebody forgot would be a screen drawing rows the corpus no
+//! longer has. A value that does not outlive the frame it was taken for cannot
+//! go stale.
+//!
+//! **Counted and never timed.**
+//! `one_frame_walks_the_entity_rows_once_however_many_questions_it_asks` names
+//! the number, and it names it by counting passes: a wall-clock bound would
+//! report the runner rather than this code, since a Windows agent spends
+//! around a third of a second creating the process before a verb reads a byte
+//! and that swings by half as much again between two runs.
+//!
 //! # Where a person is standing is a character, and never a colour
 //!
 //! The cursor is `> ` on the row it is on ([`text::CURSOR`]), a claim of the
@@ -917,7 +944,50 @@ impl App {
     // What each listing holds
     // -----------------------------------------------------------------------
 
+    /// What the screen in the region is a window onto, walked out of the
+    /// corpus once for the frame that is asking (TASK-def2cadf48b1).
+    ///
+    /// **One filter, then every question.** A frame asks its listing at least
+    /// three things -- how many rows survived, which of them the region has
+    /// room for, and whether there are more than it can hold -- and each of
+    /// those used to walk the whole corpus for itself, because each began by
+    /// calling [`App::entity_rows`] again. Three passes over twelve hundred
+    /// rows to draw twenty-two of them, paid on every repaint: every
+    /// keystroke, every notch of the wheel, every event a watcher pushed. The
+    /// filter is not what made that expensive; asking it once per question
+    /// was.
+    ///
+    /// **Frame-scoped and never cached**, which is the shape the alternative
+    /// would have had. A field on [`App`] holding the last answer would need
+    /// invalidating everywhere the kind, the needle, the snapshot or the queue
+    /// moves, and the one place somebody forgot would be a screen showing rows
+    /// the corpus no longer has. This value cannot go stale because it does
+    /// not outlive the frame it was taken for: [`App::render`] takes it, hands
+    /// it down, and drops it.
+    ///
+    /// The two screens drawn out of the corpus carry rows; the claims and the
+    /// document do not, and what they carry is the count their own paging is
+    /// measured against.
+    fn listing(&self, focus: Focus) -> Listing<'_> {
+        let rows = match focus {
+            Focus::Entities => self.entity_rows(),
+            Focus::Queue => self.queue_rows(),
+            Focus::Claims | Focus::Body => Vec::new(),
+        };
+        let total = match focus {
+            Focus::Claims => self.held.as_ref().map_or(0, |h| h.claims.len()),
+            Focus::Body => self.pane_lines().len(),
+            Focus::Entities | Focus::Queue => rows.len(),
+        };
+        Listing { rows, total }
+    }
+
     /// The entity rows, filtered by the kind and the search in force.
+    ///
+    /// **Called once per frame, by [`App::listing`]**, and otherwise only
+    /// where an event has to ask the corpus something outside a frame. It is
+    /// the walk this file is careful about: a caller that wants the rows the
+    /// screen is drawing takes them from the [`Listing`] it was handed.
     fn entity_rows(&self) -> Vec<&Row> {
         match &self.snapshot {
             Some(snapshot) => self.filtered(&snapshot.entities),
@@ -938,6 +1008,8 @@ impl App {
     }
 
     fn filtered<'a>(&self, all: &'a [Row]) -> Vec<&'a Row> {
+        #[cfg(test)]
+        walked(all.len());
         let needle = self.search.as_ref().map(|s| s.to_ascii_lowercase());
         all.iter()
             .filter(|r| self.kind.as_ref().is_none_or(|k| &r.kind == k))
@@ -1293,7 +1365,7 @@ impl App {
     /// wheel with a screen that showed nothing, which reads as a reader that
     /// has stopped listening.
     fn scrolled(&mut self, by: isize) -> bool {
-        let (total, _) = self.paging(self.focus);
+        let (total, _) = self.paging(self.focus, &self.listing(self.focus));
         let last = total.saturating_sub(self.page(self.focus)) as isize;
         let moved = |from: usize| (from as isize + by).clamp(0, last.max(0)) as usize;
         match self.focus {
@@ -1314,11 +1386,12 @@ impl App {
     /// wheel and by the bar that says where the wheel has got to. Two
     /// arithmetics for that would be two things that can disagree about
     /// whether a bar is drawn at all.
-    fn paging(&self, focus: Focus) -> (usize, usize) {
-        match focus {
-            Focus::Body => (self.pane_lines().len(), self.offset),
-            listing => (self.count(listing), self.cursors[listing.number() - 1].top),
-        }
+    fn paging(&self, focus: Focus, onto: &Listing) -> (usize, usize) {
+        let first = match focus {
+            Focus::Body => self.offset,
+            listing => self.cursors[listing.number() - 1].top,
+        };
+        (onto.total, first)
     }
 
     /// What one key does to the key list that is open under it
@@ -2183,7 +2256,7 @@ impl App {
         // asked for (TASK-252bf02de218). The other three are not drawn closed,
         // squeezed or greyed: they are not on this frame at all, and the digit
         // that names one is how a person gets to it.
-        self.panel(self.focus, panels.region, buf);
+        self.panel(self.focus, &self.listing(self.focus), panels.region, buf);
 
         paragraph(&self.note_lines()).render(panels.note, buf);
         paragraph(&self.action_lines()).render(panels.actions, buf);
@@ -2214,7 +2287,7 @@ impl App {
     /// The cursor keeps its `> `, on the row of the listing where it always
     /// was. That is the marker the criterion is about: where a person is
     /// standing is a row, and it never was a border.
-    fn panel(&self, focus: Focus, area: Rect, buf: &mut Buffer) {
+    fn panel(&self, focus: Focus, onto: &Listing, area: Rect, buf: &mut Buffer) {
         if area.width < 2 || area.height < 2 {
             return;
         }
@@ -2222,7 +2295,7 @@ impl App {
         let width = inside.width as usize;
         let title = Composed::new()
             .plain(&format!("{} ", focus.number()))
-            .then(self.title_of(focus, width))
+            .then(self.title_of(focus, onto, width))
             .fitted(area.width as usize - 2);
         let block = Block::bordered()
             .border_set(self.glyphs.border(true))
@@ -2233,12 +2306,12 @@ impl App {
         }
         let lines = match focus {
             Focus::Claims => self.claim_lines(width),
-            Focus::Entities => self.entity_lines(width, inside.height as usize),
-            Focus::Queue => self.queue_lines(width),
+            Focus::Entities => self.entity_lines(onto, width, inside.height as usize),
+            Focus::Queue => self.queue_lines(onto, width),
             Focus::Body => self.body_lines(width, inside.height as usize),
         };
         painted(&lines, self.ink).render(inside, buf);
-        self.bar(focus, area, buf);
+        self.bar(focus, onto, area, buf);
     }
 
     /// Where the view sits in the screen the region is showing, drawn on the
@@ -2266,8 +2339,8 @@ impl App {
     /// thumb short of the bottom on a view that has nothing more to show, and
     /// a bar that says "there is more" at the end of a list is a bar that
     /// lies.
-    fn bar(&self, focus: Focus, area: Rect, buf: &mut Buffer) {
-        let (total, first) = self.paging(focus);
+    fn bar(&self, focus: Focus, onto: &Listing, area: Rect, buf: &mut Buffer) {
+        let (total, first) = self.paging(focus, onto);
         let page = self.page(focus);
         if total <= page {
             return;
@@ -2301,7 +2374,7 @@ impl App {
     /// count -- the identifier of the document and the status it is in -- so it
     /// is the one composed piece by piece; the other three are sentences about
     /// a window and there is nothing in them for the table to say.
-    fn title_of(&self, focus: Focus, width: usize) -> Composed {
+    fn title_of(&self, focus: Focus, onto: &Listing, width: usize) -> Composed {
         let name = focus.name();
         match focus {
             // The queue's own shape, for the queue's own reason
@@ -2310,11 +2383,11 @@ impl App {
             // held" -- which is an answer, and the wrong one.
             Focus::Claims => match &self.held {
                 None => Composed::of(&format!("{name}   (not asked)")),
-                Some(_) => Composed::of(&format!("{name} ({})", self.count(Focus::Claims))),
+                Some(_) => Composed::of(&format!("{name} ({})", onto.total)),
             },
             Focus::Entities => {
                 let total = self.snapshot.as_ref().map_or(0, |s| s.total);
-                let rows = self.count(Focus::Entities);
+                let rows = onto.total;
                 let c = self.cursors[Focus::Entities.number() - 1];
                 let shown = self.page(Focus::Entities).min(rows.saturating_sub(c.top));
                 Composed::of(&format!(
@@ -2326,7 +2399,7 @@ impl App {
             Focus::Queue => match &self.queue {
                 None => Composed::of(&format!("{name}   (not asked)")),
                 Some(_) => {
-                    let rows = self.count(Focus::Queue);
+                    let rows = onto.total;
                     let c = self.cursors[Focus::Queue.number() - 1];
                     let shown = self.page(Focus::Queue).min(rows.saturating_sub(c.top));
                     Composed::of(&format!(
@@ -2453,8 +2526,8 @@ impl App {
     }
 
     /// The entity rows the panel has room for.
-    fn entity_lines(&self, width: usize, height: usize) -> Vec<Composed> {
-        let rows = self.entity_rows();
+    fn entity_lines(&self, onto: &Listing, width: usize, height: usize) -> Vec<Composed> {
+        let rows = &onto.rows;
         if rows.is_empty() {
             return vec![Composed::of("  no entity matches this filter").fitted(width)];
         }
@@ -2501,7 +2574,7 @@ impl App {
     /// which is a different fact from "nobody may sign", and a panel that drew
     /// nothing where the signers go would let a person mistake one for the
     /// other.
-    fn queue_lines(&self, width: usize) -> Vec<Composed> {
+    fn queue_lines(&self, onto: &Listing, width: usize) -> Vec<Composed> {
         let regime = Composed::of(&match &self.queue {
             None => "  4 or v runs 'ank review', which inspects the whole corpus".to_string(),
             Some(queue) if queue.signers.is_empty() => {
@@ -2517,7 +2590,7 @@ impl App {
                 regime,
             ];
         }
-        let rows = self.queue_rows();
+        let rows = &onto.rows;
         let mut out: Vec<Composed> = if rows.is_empty() {
             // Said even where there is nothing to say, on `review`'s own
             // reasoning: an empty queue and an unprinted queue read
@@ -3789,6 +3862,35 @@ const ASCII_FOCUSED: border::Set = border::Set {
     horizontal_bottom: "=",
 };
 
+/// What the screen in the region holds, taken once for the frame that draws it
+/// (TASK-def2cadf48b1).
+///
+/// **The rectangles are one half of what a frame has to work out and this is
+/// the other**: [`Panels`] says where the region is, and this says what is in
+/// it. Both are computed once in [`App::render`] and handed down, for the same
+/// reason -- a frame that asked twice could be answered twice, and two answers
+/// to "how many rows are there" is a title that disagrees with the bar beside
+/// it.
+///
+/// [`App::listing`] is where it comes from and what the walk costs is argued
+/// there.
+struct Listing<'a> {
+    /// The rows the filter left, for the two screens drawn out of the corpus.
+    ///
+    /// Empty on the claims and on the document, and neither is handed it:
+    /// `claim_lines` and `body_lines` compose from what those screens hold, so
+    /// there is no listing here for either of them to read by mistake.
+    rows: Vec<&'a Row>,
+    /// How many rows the screen holds, whatever it holds them out of.
+    ///
+    /// The same number as `rows.len()` on the two screens that carry rows, and
+    /// the claims' own count or the document's line count on the two that do
+    /// not. It is what the title says and what the bar decides on, so those
+    /// two are reading one number rather than two arithmetics that can drift
+    /// apart.
+    total: usize,
+}
+
 /// The rectangles one frame is divided into.
 ///
 /// **One bordered region, and the two unbordered bands under it**
@@ -4635,6 +4737,35 @@ pub const NOTHING_NAMED: &str =
     "no entity is named here: move onto a row, or open one into the body";
 
 #[cfg(test)]
+thread_local! {
+    /// How many passes [`App::filtered`] has made over a corpus, and how many
+    /// rows those passes touched (TASK-def2cadf48b1).
+    static WALKED: std::cell::Cell<(usize, usize)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// One pass of the filter over `rows` of a corpus, recorded
+/// (TASK-def2cadf48b1).
+///
+/// **The frame is measured and not described.** "The filter is computed once
+/// for a frame" is a claim about work done, and a claim about work done is
+/// either counted or it is somebody's opinion. What is counted is passes and
+/// not milliseconds: a wall-clock bound would report the scheduler rather than
+/// this code -- a Windows runner spends around a third of a second creating
+/// the process before a verb reads a byte, and that swings by more between two
+/// runs than the whole of this change is worth -- so the number is a number of
+/// walks, and it is the same number on every machine.
+///
+/// `cfg(test)` on both sides of the wire: the reader a person runs carries
+/// neither the cell nor the call into it.
+#[cfg(test)]
+fn walked(rows: usize) {
+    WALKED.with(|w| {
+        let (passes, seen) = w.get();
+        w.set((passes + 1, seen + rows));
+    });
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Claim;
@@ -5355,9 +5486,9 @@ mod tests {
         a.focus = Focus::Claims;
         let claims = texts(&a.claim_lines(w));
         a.focus = Focus::Entities;
-        let entities = texts(&a.entity_lines(w, 20));
+        let entities = texts(&a.entity_lines(&a.listing(Focus::Entities), w, 20));
         a.focus = Focus::Queue;
-        let queue = texts(&a.queue_lines(w));
+        let queue = texts(&a.queue_lines(&a.listing(Focus::Queue), w));
         a.focus = Focus::Body;
         a.pane = Pane::Constraints;
         let constraints = texts(&a.pane_rows(w));
@@ -8892,5 +9023,113 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // What one frame costs the corpus (TASK-def2cadf48b1)
+    // -----------------------------------------------------------------------
+
+    /// The passes the filter made while `f` drew, and the rows they touched.
+    ///
+    /// Read off [`WALKED`], which is reset here rather than at the counter, so
+    /// that what a measurement reports is what happened inside it and never
+    /// what the fixture cost to build.
+    fn walks<T>(f: impl FnOnce() -> T) -> (usize, usize, T) {
+        WALKED.with(|w| w.set((0, 0)));
+        let out = f();
+        let (passes, seen) = WALKED.with(|w| w.get());
+        (passes, seen, out)
+    }
+
+    /// **One frame over a corpus of twelve hundred walks its rows once,
+    /// however many questions that frame asks about them**
+    /// (TASK-def2cadf48b1).
+    ///
+    /// The frame asks at least three: the title wants how many rows survived
+    /// the filter, the region wants the rows themselves, and the bar wants the
+    /// total again to decide whether there is anything to draw at all. Those
+    /// were three walks of the whole corpus, thirty-six hundred rows for a
+    /// screen showing twenty-two of them, and the third was paid on every
+    /// repaint -- every keystroke, every notch of the wheel, every event a
+    /// watcher pushed.
+    ///
+    /// **Two frames, and the second asks strictly fewer questions than the
+    /// first**, which is what turns "one walk" into "one walk regardless".
+    /// The crowded frame overflows the region, so the bar is drawn and its
+    /// question is asked; the narrowed one fits in the window, so the bar is
+    /// not drawn and that question is not asked. The filter walks the same
+    /// twelve hundred rows either way, because it is the corpus it walks and
+    /// not the answer. A frame whose cost tracked its questions would report
+    /// two different numbers here.
+    ///
+    /// **Counted and never timed.** A wall-clock bound on this would report
+    /// the runner: process creation alone costs a Windows agent around a third
+    /// of a second and swings half as much again between two runs, which is
+    /// larger than everything this test is about. Passes are the same number
+    /// on every machine, and the baseline the second frame is compared against
+    /// is taken in this same process a few microseconds away.
+    #[test]
+    fn one_frame_walks_the_entity_rows_once_however_many_questions_it_asks() {
+        const ENTITIES: usize = 1_200;
+        const WALKS: usize = 1;
+        let mut a = App::new((80, 24), None)
+            .inked(paint::PLAIN)
+            .drawn_with(SCREEN);
+        a.snapshot = Some(crowd(ENTITIES));
+
+        // More rows than the region can hold, so every question is asked.
+        let (passes, seen, frame) = walks(|| a.frame());
+        assert!(
+            bar_column(&a).iter().any(|c| c == SCREEN.thumb()),
+            "the crowded frame drew no bar, so it never asked the bar's \
+             question:\n{frame}"
+        );
+        assert!(
+            frame.contains(&format!("({ENTITIES} in the corpus)")),
+            "the crowded frame never asked how many rows there are:\n{frame}"
+        );
+        let drawn = region_rows(&a)
+            .iter()
+            .filter(|r| r.contains("TASK-"))
+            .count();
+        assert!(
+            drawn > 1 && drawn < ENTITIES,
+            "the crowded frame drew {drawn} rows of {ENTITIES}, so it is not a \
+             window over a corpus it cannot hold:\n{frame}"
+        );
+        assert_eq!(
+            passes, WALKS,
+            "one frame walked the entity rows {passes} times and the filter is \
+             computed once for a frame, so it walks them {WALKS}"
+        );
+        assert_eq!(
+            seen,
+            ENTITIES * WALKS,
+            "{WALKS} walk of a corpus of {ENTITIES} touches {} rows, and this \
+             frame touched {seen}",
+            ENTITIES * WALKS
+        );
+
+        // The same corpus, narrowed until the region holds all of it: no bar
+        // is drawn, so the frame asks one question fewer. The baseline is the
+        // measurement above, taken in this process.
+        a.search = Some("the 7th task".to_string());
+        let (fewer, touched, narrow) = walks(|| a.frame());
+        assert!(
+            bar_column(&a).iter().all(|c| c != SCREEN.thumb()),
+            "the narrowed frame still drew a bar, so it asks no fewer \
+             questions than the crowded one:\n{narrow}"
+        );
+        assert_eq!(
+            fewer, passes,
+            "a frame asking one question fewer walked the rows {fewer} times \
+             where the frame asking one more walked them {passes}: the cost of \
+             a frame is following its questions"
+        );
+        assert_eq!(
+            touched, seen,
+            "the narrowed frame touched {touched} rows where the crowded one \
+             touched {seen}, and both filter the same corpus"
+        );
     }
 }
