@@ -222,8 +222,9 @@ fn the_header_names_the_kind_in_force_through_the_whole_cycle_at_every_width() {
 /// Three, which is what it was: the corpus line, the identity line, and the
 /// rule under them. The cell is carved out of a row the reader was already
 /// drawing, which is the whole of ADR-559eebf5c6f5's argument for it -- it is
-/// information made touchable, not an offer drawn at rest, and ADR-c07e2694f0e1
-/// removed a band of offers precisely because it cost four rows of twenty-four.
+/// information made touchable, not an offer drawn at rest, and the band of
+/// offers it replaced was removed precisely because it cost four rows of
+/// twenty-four.
 ///
 /// Asserted at every stop of the cycle and at every window, because the failure
 /// this guards against is not a header that starts too tall: it is one that
@@ -326,10 +327,12 @@ fn a_finger_on_the_cell_walks_the_same_cycle_as_the_key() {
 /// A press beside the cell reaches nothing.
 ///
 /// The other half of "the cell is a target", and the one a reader gets wrong by
-/// being generous: a header that answered a press anywhere on its first row
-/// would be a screen a pocket can drive, which is what ADR-c07e2694f0e1's rule
-/// about chrome is for. The column tested is the left end of the corpus line,
-/// which is as far from the cell as that row goes.
+/// being generous while reaching for a screen a pocket can drive: a header that
+/// answered a press anywhere on its first row would hand a person a press they
+/// aimed at nothing. ADR-559eebf5c6f5 carves the target out of the header the
+/// reader draws anyway, and a cell carved out of a row is a cell and not the
+/// row. The column tested is the left end of the corpus line, which is as far
+/// from the cell as that row goes.
 #[test]
 fn a_press_on_the_rest_of_the_header_advances_nothing() {
     let repo = corpus();

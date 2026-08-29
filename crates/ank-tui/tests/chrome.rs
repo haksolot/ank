@@ -1,14 +1,14 @@
 //! What the frame spends on furniture, through the binary, at the five windows
 //! the criterion names (TASK-9a402a54886f).
 //!
-//! ADR-c07e2694f0e1 was written against a measurement and this suite is that
+//! The frame was redrawn against a measurement and this suite is that
 //! measurement, kept: at eighty columns and twenty-four rows the reader spent
 //! three rows on a header, one on a note band, one on a band of touch targets
 //! and two on key lines cut with `~` before they finished -- and the two lines
 //! teaching the keys did not fit on the screen they were taught from. The
-//! decision's answer was to take the offer out of the frame and put it behind
-//! one permanently visible target, and the number it has to hold to afterwards
-//! is [`CHROME`].
+//! answer was to take the offer out of the frame and put it behind a
+//! permanently visible target carved out of the header (ADR-559eebf5c6f5), and
+//! the number it has to hold to afterwards is [`CHROME`].
 //!
 //! **Counted through the binary, on a pseudo-terminal, at every window the
 //! criterion states.** CLAUDE.md leaves no choice about that: a criterion that
@@ -95,7 +95,7 @@ fn grid(frame: &str) -> Vec<&str> {
 
 /// **At eighty by twenty-four, with no claim held and the queue never asked
 /// for, at most five rows are not a panel's own content**
-/// (TASK-9a402a54886f, ADR-c07e2694f0e1).
+/// (TASK-9a402a54886f, ADR-559eebf5c6f5).
 ///
 /// The corpus is the seeded one, which holds no claim and is opened on a
 /// session that never presses the key that asks for the queue -- so what is

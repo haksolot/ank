@@ -1,4 +1,4 @@
-//! Every binding of the reader, declared once (ADR-c07e2694f0e1).
+//! Every binding of the reader, declared once (ADR-559eebf5c6f5).
 //!
 //! **One table, and the surfaces are computed from it.** [`keys::typed`] reads
 //! a keystroke out of it, [`crate::view::App::actions`] draws the offer out of
@@ -22,7 +22,7 @@
 //!
 //! # Every binding has a key, and the writing half has one too
 //!
-//! TASK-1a415107fd56 is where that became true (ADR-c07e2694f0e1: *a key is the
+//! TASK-1a415107fd56 is where that became true (ADR-559eebf5c6f5: *a key is the
 //! verb it runs*). The six verbs used to be rows with no key, reached by
 //! spelling the word into a prompt, and the table said so in an `Option`. There
 //! is no prompt for a verb any more and no row without a key, so [`Binding::key`]
@@ -55,7 +55,7 @@
 //! command: raw mode has taken the line discipline's interrupt, and this is the
 //! way out of a program that took the terminal. `q` is the binding, and it
 //! reaches the same place with no modifier -- which is what
-//! ADR-c07e2694f0e1's "no command anywhere requires a modifier chord" asks for
+//! ADR-559eebf5c6f5's "no command anywhere requires a modifier chord" asks for
 //! and what the table in `keys.rs` measures over every key there is. Every
 //! other row is reached bare and only bare: a letter that writes must not also
 //! be a letter something was holding a modifier over.
@@ -79,7 +79,7 @@ pub struct Binding {
     /// The key that runs it.
     ///
     /// Not an `Option` any more (TASK-1a415107fd56). It was one for exactly as
-    /// long as the writing half had no letters, and ADR-c07e2694f0e1 ends that:
+    /// long as the writing half had no letters, and ADR-559eebf5c6f5 ends that:
     /// a key is the verb it runs, and every row of this table now carries one.
     ///
     /// What the type buys is that no surface has to ask. A target is drawn for
@@ -334,7 +334,7 @@ pub enum Holding {
 /// same order is not a coincidence to be maintained -- it is one list.
 pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
-    // What moves the screen (ADR-c07e2694f0e1: every one of them is one key)
+    // What moves the screen (ADR-559eebf5c6f5: every one of them is one key)
     // -----------------------------------------------------------------------
     Binding {
         key: KeyCode::Char('j'),
@@ -355,8 +355,8 @@ pub static BINDINGS: &[Binding] = &[
         verb: None,
     },
     // Space and the two named keys, and no letter: `n` and `p` went to the
-    // verbs' side of the ledger (ADR-c07e2694f0e1 prices that loss and takes
-    // it). Space is what a reader who has used `less` presses first and the
+    // verbs' side of the ledger (ADR-559eebf5c6f5: navigation takes what is
+    // left). Space is what a reader who has used `less` presses first and the
     // one paging key a phone keyboard shows without a second layer, so it is
     // the key rather than the third alias it used to be.
     Binding {
@@ -400,7 +400,7 @@ pub static BINDINGS: &[Binding] = &[
     // `s` and no longer `c`, which is `claim`'s now. The letter is not a
     // leftover: what this draws is `ank scope`'s answer over the open
     // document's globs, so the reader binds the initial of the verb whose
-    // answer it is showing -- ADR-c07e2694f0e1's rule about the letters, on a
+    // answer it is showing -- ADR-559eebf5c6f5's rule about the letters, on a
     // command that reads rather than writes.
     Binding {
         key: KeyCode::Char('s'),
@@ -592,7 +592,7 @@ pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
     // What moves the corpus, one letter each (TASK-1a415107fd56).
     //
-    // The verb's own initial, which is ADR-c07e2694f0e1's rule and the whole of
+    // The verb's own initial, which is ADR-559eebf5c6f5's rule and the whole of
     // why these letters and not others: a person who knows `ank claim` knows
     // `c` here, and a person who learns `c` here has learned something the
     // shell takes. `m` for `amend` is the one that is not an initial, because
@@ -683,7 +683,7 @@ pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
     // What changes what an entity says (TASK-e8da6a00564a)
     //
-    // `e` is `edit`'s own initial, which is ADR-c07e2694f0e1's rule and the
+    // `e` is `edit`'s own initial, which is ADR-559eebf5c6f5's rule and the
     // same reason the six above have theirs; the letter was free.
     //
     // It is `Runs::Form` and not `Runs::Compose`, and that is the whole of the
@@ -710,7 +710,7 @@ pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
     // What makes an entity (TASK-d832452630d2)
     //
-    // `n` is `new`'s own initial, which is ADR-c07e2694f0e1's rule and the same
+    // `n` is `new`'s own initial, which is ADR-559eebf5c6f5's rule and the same
     // reason the six above have theirs -- and the letter was free: paging went
     // to Space and the two named keys when TASK-1a415107fd56 priced `n` and `p`
     // out of movement, so the verb takes a key nothing else wanted.
@@ -735,7 +735,7 @@ pub static BINDINGS: &[Binding] = &[
     // -----------------------------------------------------------------------
     // What the corpus is configured to do (TASK-b08d090f699c)
     //
-    // `o` and not `c`, which is `claim`'s. ADR-c07e2694f0e1 binds a verb's own
+    // `o` and not `c`, which is `claim`'s. ADR-559eebf5c6f5 binds a verb's own
     // initial where the initial is free, and `m` for `amend` is already the row
     // that shows what happens when it is not: the letter goes to the verb whose
     // hand a person's should go to, and the other takes what is left of its own
@@ -959,7 +959,7 @@ pub fn offered(holding: Holding) -> impl Iterator<Item = &'static Binding> {
 /// The reverse of [`Binding::press`], and it exists for the two callers that
 /// have a command and need the key: a sentence that names a letter, and a
 /// drawn target that has to hand [`crate::view::App::press`] the very key a
-/// keyboard would have sent (ADR-c07e2694f0e1).
+/// keyboard would have sent (ADR-559eebf5c6f5).
 pub fn of_command(command: &Command) -> Option<&'static Binding> {
     BINDINGS
         .iter()
@@ -972,7 +972,8 @@ pub fn of_command(command: &Command) -> Option<&'static Binding> {
 /// says how the screen is being kept current and names the key that reads the
 /// corpus again, and it said `r` -- which TASK-1a415107fd56 gave to `release`.
 /// A sentence carrying its own copy of a letter is one of the five parallel
-/// tables ADR-c07e2694f0e1 was written against, in prose.
+/// tables this one replaced, in prose -- the drift ADR-559eebf5c6f5 forbids by
+/// reading what the reader offers out of the contract's own verb table.
 ///
 /// The empty string where no binding runs it, which no caller has: a sentence
 /// naming a key that does not exist would be worse than one naming none.
@@ -1058,7 +1059,7 @@ const NARROWING_NOTE: &str = "   (the list narrows as it is typed -- there is no
 /// **A line is a list of rows and never a sentence with keys in it.** That is
 /// what lets the whole list be held to the table -- every binding is on exactly
 /// one line, and a line names nothing that is not a binding -- which is the
-/// claim ADR-c07e2694f0e1 found the old trailer failing.
+/// claim the old trailer was found failing.
 struct Line {
     /// What the key list calls the rows under it, on the heading over them.
     ///
@@ -1266,8 +1267,9 @@ fn lines() -> Vec<Line> {
 }
 
 // `screen_line` and `write_line` stood here (TASK-9a402a54886f). They were the
-// two lines of the trailer, drawn under every frame at every window, and
-// ADR-c07e2694f0e1 records what they cost the reader they were meant to serve.
+// two lines of the trailer, drawn under every frame at every window, and what
+// they cost the reader they were meant to serve is why no offer is drawn at
+// rest now (ADR-559eebf5c6f5).
 // The rows they named are on the key list, whole, one to a row, and nothing
 // else renders them now.
 
@@ -1349,7 +1351,7 @@ pub struct Beyond {
 /// confirmation, since §4 gives it no flag at all.
 ///
 /// Read out of the contract's own table, name, positional and flags alike, so
-/// a form drawn here is a form `ank` takes (ADR-c07e2694f0e1: what the reader
+/// a form drawn here is a form `ank` takes (ADR-559eebf5c6f5: what the reader
 /// offers is read out of the verb table rather than transcribed beside it).
 /// One row per verb and not one line carrying all three: a row is a rectangle a
 /// finger fits in, which is what the key list's overlay bought and what makes
@@ -1484,7 +1486,7 @@ mod tests {
     }
 
     /// **The gate is measured against the table and never generated from it**
-    /// (TASK-4d2eb2b4e193, ADR-c07e2694f0e1).
+    /// (TASK-4d2eb2b4e193, ADR-559eebf5c6f5).
     ///
     /// The dependency runs this way round on purpose. If `ank.rs` built its
     /// list from the rows above, a row added here would widen what this reader
@@ -1574,8 +1576,8 @@ mod tests {
     /// does not** (TASK-4d2eb2b4e193).
     ///
     /// Both halves, because either alone is half a claim. A list that omitted
-    /// `v` is what ADR-c07e2694f0e1 was written against -- the reader's own
-    /// trailer taught a vocabulary the reader did not have -- and a list
+    /// `v` is what this table was declared against -- the reader's own trailer
+    /// taught a vocabulary the reader did not have -- and a list
     /// carrying a key nobody bound would be worse: it reads as an offer and
     /// behaves as nothing.
     ///

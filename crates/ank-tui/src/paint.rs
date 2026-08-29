@@ -33,10 +33,9 @@
 //! for its rendering under [`PLAIN`] comes back as one unstyled span, so there
 //! is no path by which half a style reaches a cell -- and every distinction the
 //! screen makes is still on it, because the distinctions are characters:
-//! the `> ` on the row a cursor is on, the `*` on a claim its reader holds, the
-//! heavier rule and the `> ` in the title of the panel with the focus, and the
-//! status spelled as a word in its own column. Colour repeats those; it carries
-//! none of them alone.
+//! the `> ` on the row a cursor is on, the `*` on a claim its reader holds, and
+//! the status spelled as a word in its own column. Colour repeats those; it
+//! carries none of them alone.
 //!
 //! **And the characters do not move when the paint is taken away.** That is
 //! what [`declared_dumb`] is for: the glyph set `view` draws its structure with
@@ -44,7 +43,7 @@
 //! probe. `NO_COLOR` reaches the ink alone, so the frame drawn with the paint
 //! and the frame drawn without it are the same characters -- which is the only
 //! way "nothing is carried by colour alone" can be measured at all
-//! (ADR-c07e2694f0e1).
+//! (ADR-559eebf5c6f5).
 //!
 //! # Composing a row, and what is deliberately left alone
 //!
@@ -168,7 +167,7 @@ impl Ink {
 /// The terminal's own declaration that it can render nothing rich.
 ///
 /// **One probe, read by two fields, which is the whole of what makes the
-/// degradation honest** (ADR-c07e2694f0e1). A terminal that says `dumb` is
+/// degradation honest** (ADR-559eebf5c6f5). A terminal that says `dumb` is
 /// saying it can draw neither the colours [`Ink`] would paint nor the
 /// box-drawing glyphs `view`'s borders are made of, and it gets one answer to
 /// that rather than two: the plain palette *and* the ASCII rules, from this

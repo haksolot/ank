@@ -1,5 +1,5 @@
 //! `ank tui` through the binary (TASK-49746735127f, ADR-8bd76e8d7c4e,
-//! ADR-c07e2694f0e1).
+//! ADR-559eebf5c6f5).
 //!
 //! CLAUDE.md leaves no choice about where this suite lives: a criterion that
 //! talks about the binary is tested through the binary, and twice in this
@@ -24,7 +24,7 @@
 //! the engine whole.
 //!
 //! **How the session is driven did move, twice.** A command is a key now
-//! (ADR-c07e2694f0e1), so a list of lines became a list of keystrokes, with the
+//! (ADR-559eebf5c6f5), so a list of lines became a list of keystrokes, with the
 //! four verbs that carry a message, a reason, a proof or a flag spelled into
 //! the one line `/` opens -- see [`on_a_terminal`] for what an entry of one
 //! of those lists is.
@@ -377,7 +377,7 @@ fn json_does_not_exempt_a_caller_from_the_terminal() {
 /// nothing is added to the link line either.
 ///
 /// **The window is set here and it has to be.** The reader asks the terminal
-/// how big it is (ADR-c07e2694f0e1), and a pseudo-terminal nobody sized is nought
+/// how big it is (ADR-559eebf5c6f5), and a pseudo-terminal nobody sized is nought
 /// by nought -- so a suite that skipped this would be asserting what a reader
 /// draws into no window at all. It is also what makes the resize measurable:
 /// setting it again while a session is running is exactly what a person
@@ -1278,7 +1278,7 @@ fn a_driven_session_names_the_entities_the_corpus_carries() {
 /// has (ADR-c9f9d1a05b23).
 ///
 /// **Both ends of the window are taken in characters and never in bytes**
-/// (ADR-c07e2694f0e1). The frames carry box-drawing glyphs now and a glyph is
+/// (ADR-559eebf5c6f5). The frames carry box-drawing glyphs now and a glyph is
 /// three bytes, so the two byte offsets this used to take are both a slice
 /// through a code point -- which is a panic and not a failure. `rfind`
 /// answers the byte index a character *starts* at, so the old `i + 1` landed
@@ -1372,7 +1372,7 @@ fn the_frames_carry_no_identifier_the_corpus_does_not() {
 }
 
 /// A terminal made narrower, then wider, redraws to its new size with nobody
-/// typing (TASK-4fa385c1772d, ADR-c07e2694f0e1).
+/// typing (TASK-4fa385c1772d, ADR-559eebf5c6f5).
 ///
 /// **The whole of the assertion is that no key was pressed.** The window is
 /// changed on the master side, exactly as a terminal emulator changes it, and
@@ -1949,7 +1949,7 @@ fn a_session_left_idle_renews_no_claim() {
 /// firmer ground.** It used to carry one task around the loop by spelling a
 /// tail after each word -- a message, a glob, a reason, a proof -- and to
 /// assert the corpus afterwards. There is no line to spell a tail on now
-/// (ADR-c07e2694f0e1: input is a keystroke), so a press composes the verb and
+/// (ADR-559eebf5c6f5: input is a keystroke), so a press composes the verb and
 /// the identifier and nothing else, and three of the five reach a verb that
 /// wants something the reader cannot yet give it.
 ///

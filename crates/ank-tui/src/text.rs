@@ -106,10 +106,10 @@ pub fn wrap(line: &str, width: usize) -> Vec<String> {
 /// A run of one character, the width of the window.
 ///
 /// The character is the caller's, because which one it is is a decision about
-/// the terminal rather than about the arithmetic: a screen ruling its panels
+/// the terminal rather than about the arithmetic: a screen ruling its region
 /// with box-drawing glyphs rules its chrome with the same horizontal, and one
 /// that has been told the terminal is dumb rules both with `-`
-/// (ADR-c07e2694f0e1). [`crate::view::Glyphs`] is what answers it,
+/// (ADR-559eebf5c6f5). [`crate::view::Glyphs`] is what answers it,
 /// once, when the screen opens.
 pub fn rule(width: usize, of: &str) -> String {
     of.repeat(width)

@@ -11,20 +11,47 @@
 //! # One region, and what happened to the panels
 //!
 //! One bordered region, and whatever has been asked for is drawn in it. Above
-//! it the header, under it the note; nothing else on the frame has a rule
-//! around it at any width.
+//! it the header -- the corpus line, the identity line and the rule under them
+//! -- and under it the note band; nothing else on the frame has a rule around
+//! it at any width.
+//!
+//! **What follows is a transcription and not a drawing.** It is `ank tui`
+//! driven through `crates/ank-tui/tests/terminal`'s pseudo-terminal at
+//! seventy-two columns by ten rows, on this repository's own corpus, read back
+//! off the master side. The corpus hash, the branch, the identity and the
+//! counts are that session's; every other character is what the reader put on
+//! the screen. Take it again the same way rather than editing it by eye -- a
+//! diagram nobody has run against a terminal is exactly the drift this file
+//! spends its length arguing against.
 //!
 //! ```text
-//! ank tui   corpus ...   branch main (default main)  [?]  <- chrome
-//! identity ...   0 claim(s) live   stream none            <- chrome
-//! ------------------------------------------------------  <- chrome
-//! +- 2 ENTITIES 1-17 of 41   (41 in the corpus) ------+
-//! |>     1  ADR-8bd7  accepted~   The reader reaches  |
-//! |      2  ADR-c072  superseded  The reader spends   |
-//! |                                                   |
-//! +---------------------------------------------------+
-//! whatever the reader is being told, or the search line   <- chrome
+//! ank tui   corpus 5a02985accab   branch wave33/cite-what-bind~[f all ][?]
+//! identity claude-code/opus-5+panel-suite   1 claim(s) live   stream none~
+//! ────────────────────────────────────────────────────────────────────────
+//! ┏2 ENTITIES 1-4 of 455   (1584 in the corpus)━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+//! ┃>     1  TASK-73b1   in_progress   The workspace cites the decision t~█
+//! ┃      2  TASK-def2   open          The filter is computed once for a ~┃
+//! ┃      3  ADR-559e    proposed      The reader is one list and one doc~┃
+//! ┃      4  TASK-ec85   done          The TUI suite's spawn helper lets ~┃
+//! ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+//!
 //! ```
+//!
+//! Six things on it are each a clause somewhere below. The header's right edge
+//! carries both targets and no band carries any ([`kind_target`],
+//! [`help_target`]). The structure is box-drawing, and the chrome's own rule
+//! is the lighter horizontal of that same set ([`Glyphs`]); the terminal that
+//! declares it can render neither glyphs nor colour gets `+`, `-`, `|` and `=`
+//! here instead, and nothing else on the frame moves. The bar is a thumb drawn
+//! *into* the region's own right border -- no track, no arrow heads
+//! ([`App::bar`]). A row that cannot afford its title drops it from the right
+//! and says so with `~`, and the identifier and the marker are what it never
+//! drops. The order is the work that is alive, then what waits for a
+//! signature, then what moved last, which is why an `in_progress` task is
+//! first and no identifier sorted anything (TASK-b5185df7aa44). And the last
+//! row is the note band, blank at rest: a refusal, a confirmation or the
+//! search line goes there, and it costs nothing until there is something to
+//! say.
 //!
 //! **What was four panels is four screens** (ADR-559eebf5c6f5). lazygit shows
 //! four planes of one repository that a person compares by eye, and comparison
@@ -123,7 +150,7 @@
 //! resolve before the cursor moves, because there is nowhere to cross to.
 //!
 //! **And what a screen offers is reachable by a finger without being drawn at
-//! rest** (TASK-9a402a54886f, ADR-c07e2694f0e1). What stands there is two cells
+//! rest** (TASK-9a402a54886f, ADR-559eebf5c6f5). What stands there is two cells
 //! of the header ([`App::help_line`]), and behind one of them the key list,
 //! every row of which is the key it names. The vocabulary is unchanged and that
 //! is the point: a target hands [`App::press`] the very key a keyboard would
@@ -151,7 +178,7 @@
 //!
 //! **The borders are box-drawing glyphs, and drop to `-`, `|`, `+` and `=` on
 //! the terminal that declares it can render neither those nor colour**
-//! (ADR-c07e2694f0e1). [`Glyphs`] is that choice, and it is a field of its own
+//! (ADR-559eebf5c6f5). [`Glyphs`] is that choice, and it is a field of its own
 //! beside the ink rather than a part of it: the probe is the terminal's own
 //! word and never `NO_COLOR`, because refusing colour is not refusing glyphs
 //! and a frame whose characters moved when the paint went would leave "nothing
@@ -185,9 +212,9 @@
 //! # The confirmation, which is the fourth act
 //!
 //! **No verb that writes is spawned without the exact command line having been
-//! on the screen first** (TASK-d4a882345837, ADR-c07e2694f0e1). What
+//! on the screen first** (TASK-d4a882345837, ADR-559eebf5c6f5). What
 //! [`App::propose`] leaves behind is a `Pending`: the verb, the argv, and the
-//! line spelled as a shell would have to spell it. The band under the panels
+//! line spelled as a shell would have to spell it. The band under the region
 //! shows that line, `y` runs it and every other key on the keyboard drops it
 //! ([`keys::confirming`]). So the road from a key to a moved corpus is two
 //! deliberate acts -- press the verb's own letter, and say yes to what it
@@ -369,7 +396,7 @@ impl Focus {
 /// person with a keyboard reads the letter, a person with a thumb touches the
 /// word, and neither is using a feature the other has not got.
 ///
-/// None of the keys named here is a chord, which is ADR-c07e2694f0e1's rule
+/// None of the keys named here is a chord, which is ADR-559eebf5c6f5's rule
 /// showing on the screen rather than only in `keys`: a target offering
 /// Control-something would be an offer a phone cannot take.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -614,7 +641,7 @@ pub struct App {
     /// screen whose answer could differ between two rows of one frame.
     ink: Ink,
     /// Which characters this screen draws its structure with, decided once
-    /// when it opens (ADR-c07e2694f0e1).
+    /// when it opens (ADR-559eebf5c6f5).
     ///
     /// **Beside the ink and never inside it.** The two are decided from one
     /// probe and they are two fields, so taking the paint away moves no
@@ -631,7 +658,8 @@ pub struct App {
     /// where the region was squeezed to make room for it.
     ///
     /// A row and not a flag, because the list is longer than the window at both
-    /// of the windows ADR-c07e2694f0e1 measures this reader on. The alternative
+    /// of the windows this reader is measured on, eighty by twenty-four and
+    /// forty by thirty. The alternative
     /// to scrolling it is cutting it, and a key list that stops at the bottom of
     /// the screen is the omission that decision was written against.
     overlay: Option<usize>,
@@ -1143,7 +1171,7 @@ impl App {
                 // The list `x` opened is over the region and over the bands
                 // like the other two, and a touch on a row of it opens that row
                 // -- which is what Enter does on it, and the whole of what
-                // ADR-c07e2694f0e1 asks of an offer: a thumb reaches it.
+                // ADR-559eebf5c6f5 asks of an offer: a thumb reaches it.
                 if self.beyond.is_some() {
                     let Some(verb) = self.beyond_at(at) else {
                         return false;
@@ -1172,7 +1200,7 @@ impl App {
                 // resolved here rather than above the two modal states on
                 // purpose: what a touch does while a command is waiting is
                 // dismiss it, and a target that opened a list from under a
-                // confirmation would be the second road ADR-c07e2694f0e1
+                // confirmation would be the second road ADR-559eebf5c6f5
                 // forbids.
                 if self.help_rect(self.area()).contains(at) {
                     if let Some(binding) = bindings::of_command(&Command::Help) {
@@ -2256,7 +2284,7 @@ impl App {
             .thumb_symbol(self.glyphs.thumb())
             // The track is the border the block has already drawn, and the
             // ends are nothing: an arrow head is an offer, and this reader
-            // draws no offer at rest (ADR-c07e2694f0e1).
+            // draws no offer at rest (ADR-559eebf5c6f5).
             .track_symbol(None)
             .begin_symbol(None)
             .end_symbol(None)
@@ -2764,11 +2792,12 @@ impl App {
     /// row of the same block because a person asking "what is this" is asking
     /// both halves at once.
     ///
-    /// **What the block buys is the screen this panel was spending on text a
-    /// person had to read as YAML.** That is the ground ADR-c07e2694f0e1 stands
-    /// on -- the reader spends its screen on the corpus -- and it is ratified,
-    /// so the argument this block was built on and the decision that binds it
-    /// are one document rather than two that happened to agree.
+    /// **What the block buys is the rows this screen was spending on text a
+    /// person had to read as YAML.** That is the ground ADR-559eebf5c6f5 stands
+    /// on -- a frame's rows go to the corpus, and text nobody has parsed is not
+    /// yet the corpus -- so the argument this block was built on and the
+    /// decision binding it are one document rather than two that happened to
+    /// agree.
     fn block(&self, width: usize) -> Vec<(Composed, Option<String>)> {
         let Some(detail) = &self.detail else {
             return Vec::new();
@@ -3116,11 +3145,11 @@ impl App {
     /// rectangle -- so [`App::arrange`] may ask it for its height.
     ///
     /// **And it is empty unless a command is waiting** (TASK-9a402a54886f).
-    /// The band was drawn at rest on every frame and at every window, and
-    /// ADR-c07e2694f0e1 priced it: four rows of the twenty-four the reader it
-    /// was written for has. What replaced it is the key list behind one
-    /// permanently visible target ([`App::help_line`]), which costs a cell
-    /// rather than a band. The confirmation keeps its two, and that is the one
+    /// The band was drawn at rest on every frame and at every window, and it
+    /// was priced at four rows of the twenty-four the reader it was written for
+    /// has -- the measurement behind ADR-559eebf5c6f5's "no offer is drawn at
+    /// rest". What replaced it is the key list behind a permanently visible
+    /// target ([`App::help_line`]), which costs a cell rather than a band. The confirmation keeps its two, and that is the one
     /// screen where knowing the key is not optional: a person being asked
     /// whether to run something must be able to say no without having learnt a
     /// letter first.
@@ -3196,7 +3225,7 @@ impl App {
 
     // -----------------------------------------------------------------------
     // The targets that are always there
-    // (ADR-c07e2694f0e1, ADR-559eebf5c6f5)
+    // (ADR-559eebf5c6f5)
     // -----------------------------------------------------------------------
 
     /// What the header's first row carries on its right edge, and the whole of
@@ -3228,12 +3257,14 @@ impl App {
     /// The header's first row, with those targets on the end of it.
     ///
     /// **This is what the band of targets was traded for** (TASK-9a402a54886f).
-    /// ADR-c07e2694f0e1 asks for one permanently visible target that opens the
-    /// key list, and it costs a cell of a row the header was drawing anyway --
-    /// against four rows of twenty-four, on the window the clause was written
-    /// to protect. ADR-559eebf5c6f5 puts the kind in force beside it on the
-    /// same terms and the same row (TASK-12bd5acbf706): the header is three
-    /// rows before this and three rows after it.
+    /// ADR-559eebf5c6f5 asks that every action a screen offers be reachable by
+    /// touch through permanently visible targets carved out of the header the
+    /// reader draws anyway, so that they cost no row: the key list's own target
+    /// is one of them, and the kind in force is the other, on the same terms
+    /// and the same row (TASK-12bd5acbf706). A cell of a row already being
+    /// drawn, against the four rows of twenty-four the band cost on the window
+    /// the clause was written to protect -- and the header is three rows before
+    /// this and three rows after it.
     ///
     /// The corpus line is padded rather than fitted so the targets land on the
     /// right edge at every width, and the corpus line is what gives way where
@@ -3352,7 +3383,7 @@ impl App {
     /// One row of the key list, pressed. `true` means the session is over.
     ///
     /// **A row is the key it names, and it reaches it by pressing it**
-    /// (ADR-c07e2694f0e1). The same reasoning [`Action`] carries: a tap on a
+    /// (ADR-559eebf5c6f5). The same reasoning [`Action`] carries: a tap on a
     /// word hands [`App::press`] the very [`KeyEvent`] that word names, so
     /// there is one vocabulary on this screen rather than a second road that
     /// happens to agree.
@@ -3640,7 +3671,7 @@ impl App {
 /// Which characters this reader draws its structure with.
 ///
 /// **A second field beside [`paint::Ink`], and never the ink itself**
-/// (ADR-c07e2694f0e1). The two share one probe -- [`paint::declared_dumb`],
+/// (ADR-559eebf5c6f5). The two share one probe -- [`paint::declared_dumb`],
 /// the terminal's own word that it can render nothing rich -- and nothing
 /// else: `NO_COLOR` reaches the ink and reaches no glyph. That separation is
 /// not tidiness. "Nothing on this screen is carried by colour alone" is
@@ -3662,11 +3693,12 @@ pub struct Glyphs {
 /// Box-drawing. What an ordinary terminal gets.
 pub const BOXES: Glyphs = Glyphs { rich: true };
 /// `+`, `-`, `|` and `=`. What a terminal that has declared itself dumb gets,
-/// and what this reader drew everywhere before ADR-c07e2694f0e1.
+/// and what this reader drew everywhere before the glyphs arrived
+/// (LOG-ed57116ba141).
 pub const ASCII: Glyphs = Glyphs { rich: false };
 
 impl Glyphs {
-    /// The glyph half of ADR-c07e2694f0e1, evaluated once when the screen
+    /// The glyph half of ADR-559eebf5c6f5, evaluated once when the screen
     /// opens.
     ///
     /// The whole of it is [`paint::declared_dumb`]. There is deliberately no
@@ -3680,13 +3712,16 @@ impl Glyphs {
         }
     }
 
-    /// The border of a panel, focused or not.
+    /// The border, at either weight.
     ///
-    /// **The focus is carried by the weight of the rule**, which is a
-    /// character in both sets: heavy against rounded where the terminal draws
-    /// glyphs, `=` against `-` where it does not. Every set here is one column
-    /// wide on every side, so two panels sharing a row are the same one column
-    /// of characters apart whichever of them has the focus.
+    /// **The weight is a character in both sets**: heavy against rounded where
+    /// the terminal draws glyphs, `=` against `-` where it does not. Nothing
+    /// chooses between the two any more -- there is one region and nothing to
+    /// tell it apart from, so the frame is drawn at the heavier weight
+    /// everywhere and where a person is standing is the marker on the row
+    /// (ADR-559eebf5c6f5). The lighter set is what [`Glyphs::rule`] takes the
+    /// chrome's own horizontal from. Every set here is one column wide on every
+    /// side.
     pub const fn border(self, focused: bool) -> border::Set<'static> {
         match (self.rich, focused) {
             (true, false) => border::ROUNDED,
@@ -3723,11 +3758,10 @@ impl Glyphs {
     }
 }
 
-/// The border of a panel nobody is in, on a terminal that declared itself
-/// dumb.
+/// The lighter ASCII border, on a terminal that declared itself dumb.
 ///
 /// Kept to the character, and it is what this reader drew everywhere before
-/// ADR-c07e2694f0e1: LOG-ed57116ba141's reasoning was that structure is text
+/// the glyphs arrived: LOG-ed57116ba141's reasoning was that structure is text
 /// emitted identically to every reader on every platform, and for the terminal
 /// that has said it can render neither glyphs nor colour that reasoning still
 /// holds.
@@ -3775,7 +3809,7 @@ struct Panels {
     ///
     /// **Zero rows on every frame but one** (TASK-9a402a54886f). It is drawn
     /// while a command is waiting to be answered and never otherwise, because
-    /// that is the one screen ADR-c07e2694f0e1 still requires an offer on: a
+    /// that is the one screen ADR-559eebf5c6f5 still requires an offer on: a
     /// person deciding whether to run something must not have to know a letter
     /// to say no. Everywhere else the offer is the key list, which costs
     /// nothing until it is asked for.
@@ -3797,9 +3831,9 @@ const HEADER: u16 = 3;
 /// bordered box with nothing in it is a reader that has stopped answering.
 const REGION: u16 = 3;
 
-/// The label of the one target drawn on every frame: the key that opens the
-/// key list, in the brackets every target on this screen wears
-/// (ADR-c07e2694f0e1).
+/// The label of the target drawn on every frame: the key that opens the key
+/// list, in the brackets every target on this screen wears
+/// (ADR-559eebf5c6f5).
 ///
 /// **The letter is the table's and not this file's.** It is `?` today and the
 /// whole of what TASK-4d2eb2b4e193 bought is that a key which moved would move
@@ -3845,8 +3879,8 @@ fn cycle_binding() -> Option<&'static Binding> {
 /// this screen wears (ADR-559eebf5c6f5).
 ///
 /// **It is information first and a target second, and that ordering is the
-/// whole argument.** ADR-c07e2694f0e1 took away a band of offers because it
-/// cost four rows of twenty-four, and this does not buy any of it back: which
+/// whole argument.** A band of offers was taken away because it cost four rows
+/// of twenty-four, and this does not buy any of it back: which
 /// kind a person is looking at has to be written somewhere regardless -- a
 /// listing that has silently dropped three quarters of a corpus and says so
 /// nowhere is the reader answering a question nobody asked -- so writing it in
@@ -4314,11 +4348,11 @@ pub const CONFIG_ABOUT: &str =
 /// What the config pane says a row of it costs.
 ///
 /// **Both keys are read out of the table and the shape out of the contract**
-/// (ADR-c07e2694f0e1). The key that opens a row is whatever runs
+/// (ADR-559eebf5c6f5). The key that opens a row is whatever runs
 /// [`Command::Open`], the key that runs a composed command is [`keys::CONFIRM`],
 /// and the command line is the verb's own usage. A sentence carrying its own
-/// copy of any of the three would be one of the five parallel tables that
-/// decision was written against, in prose.
+/// copy of any of the three would be a key table transcribed beside the
+/// contract's own, in prose, which is the drift that clause forbids.
 fn config_offer() -> String {
     let shape = crate::form::spec_of(SETTING)
         .map(|spec| spec.positional_help)
@@ -4559,9 +4593,11 @@ fn next_row_kind(kind: Option<&str>) -> Option<String> {
 pub const SEARCH: &str = "/";
 // `KEYS`, `PANEL_KEYS`, `ACT_KEYS` and `RATIFY_KEY` stood here
 // (TASK-4d2eb2b4e193). Four sentences about a key table, written beside two
-// other renderings of the same table, and ADR-c07e2694f0e1 records what they
-// cost: the trailer taught a vocabulary the reader did not have, and left out
-// `v`, Space, every arrow and the whole of the ring. The trailer itself went
+// other renderings of the same table, and what they cost is on the record:
+// the trailer taught a vocabulary the reader did not have, and left out `v`,
+// Space, every arrow and the whole of the ring. What the reader offers is read
+// out of the contract's own verb table now (ADR-559eebf5c6f5). The trailer
+// itself went
 // with them (TASK-9a402a54886f): `?` answers with `bindings::listing`, and
 // `bindings::ratify_line` is the one sentence of it the note band kept -- both
 // generated from the rows they describe, so what the reader teaches is what the
@@ -4664,11 +4700,12 @@ mod tests {
     /// the reader is drawn for; the test that is about the fallback says so.
     const SCREEN: Glyphs = BOXES;
 
-    /// How many of a line's characters are a panel's vertical border, at
+    /// How many of a line's characters are the region's vertical border, at
     /// either weight.
     ///
     /// Read off [`SCREEN`] rather than written as a character here: the border
-    /// set moved once already (ADR-c07e2694f0e1), and a suite carrying its own
+    /// set is a probe's answer and never a constant (ADR-559eebf5c6f5), it has
+    /// moved once already, and a suite carrying its own
     /// copy of `|` would have gone on counting a glyph the reader no longer
     /// draws -- which is a test that quietly stops testing rather than one that
     /// fails.
@@ -4934,7 +4971,7 @@ mod tests {
     }
 
     /// Structure is box-drawing, and the ASCII rules are what a terminal that
-    /// declared itself dumb gets back (ADR-c07e2694f0e1).
+    /// declared itself dumb gets back (ADR-559eebf5c6f5).
     ///
     /// Both sets on one test, because either alone is half of it: a reader
     /// that had gone to glyphs and taken the fallback with it would pass the
@@ -4945,7 +4982,7 @@ mod tests {
     /// ordinary characters of an identity, an identifier and the line of act
     /// forms, and a test that banned them from the whole screen would be
     /// asserting something the reader was never supposed to do. What `ank tui`
-    /// puts on a real terminal at each of the two is `tests/panels.rs`, on the
+    /// puts on a real terminal at each of the two is `tests/region.rs`, on the
     /// rule CLAUDE.md states: a criterion about the binary is measured through
     /// the binary.
     #[test]
@@ -7851,12 +7888,14 @@ mod tests {
 
     /// **The band of targets is zero rows on every screen but the
     /// confirmation, and there it draws its own two**
-    /// (TASK-9a402a54886f, ADR-c07e2694f0e1).
+    /// (TASK-9a402a54886f, ADR-559eebf5c6f5).
     ///
     /// The clause it used to answer -- every action of the focused pane drawn
-    /// as a visible target at rest -- is the one ADR-c07e2694f0e1 replaced, and
-    /// it names what the band cost: four rows of the twenty-four the reader it
-    /// was written for has. The confirmation is what stayed, because a person
+    /// as a visible target at rest -- is gone, and two supersessions have been
+    /// over it since; `ank show ADR-559eebf5c6f5` walks back to it. What stands
+    /// in its place is "no offer is drawn at rest", and what the band cost is
+    /// four rows of the twenty-four the reader it was written for has. The
+    /// confirmation is what stayed, because a person
     /// being asked whether to run something must be able to say no without
     /// having learnt a letter first.
     ///
@@ -7924,7 +7963,7 @@ mod tests {
     }
 
     /// **The key list is one touch away on every frame**
-    /// (TASK-9a402a54886f, ADR-c07e2694f0e1).
+    /// (TASK-9a402a54886f, ADR-559eebf5c6f5).
     ///
     /// This is what the band of targets was traded for, and it is what makes
     /// the trade honest: the offer is complete and free at rest rather than
@@ -7935,7 +7974,7 @@ mod tests {
     /// The two modal states are the exception and they are asserted as one: a
     /// touch there answers the thing that is waiting, which is the modal rule
     /// this reader holds everywhere. A target that opened a list from under a
-    /// confirmation would be the second road ADR-c07e2694f0e1 forbids.
+    /// confirmation would be the second road ADR-559eebf5c6f5 forbids.
     #[test]
     fn the_key_list_is_one_touch_away_on_every_frame() {
         let ank = nowhere();
@@ -8513,7 +8552,7 @@ mod tests {
     }
 
     /// The terminal that declared itself dumb is told where the view sits in
-    /// the alphabet it has (ADR-c07e2694f0e1).
+    /// the alphabet it has (ADR-559eebf5c6f5).
     #[test]
     fn the_bar_drops_to_ascii_where_the_terminal_says_it_is_dumb() {
         let mut a = crowded();
@@ -8605,7 +8644,7 @@ mod tests {
     ///
     /// The second half is the one the overlay exists for. A list the layout had
     /// to find rows for cost the panels those rows -- thirteen of twenty-four
-    /// on furniture is what ADR-c07e2694f0e1 measured -- and giving them back
+    /// went on furniture on the frame that was measured -- and giving them back
     /// afterwards is a second arrangement that has to agree with the first.
     /// Nothing moved to make room, so nothing has to move back, and the
     /// cheapest way to say so is that the two frames are the same characters.
@@ -8655,8 +8694,9 @@ mod tests {
     /// The key list's own claim, applied to the second overlay: nothing moved
     /// to make room for it, so nothing has to move back, and the five rows of
     /// chrome TASK-9a402a54886f left the reader are untouched by a form being
-    /// open. Measured at the windows ADR-c07e2694f0e1 measures this reader on
-    /// and at one too short for the form, which is where an overlay the layout
+    /// open. Measured at eighty by twenty-four and at forty by thirty, the two
+    /// windows this reader is held to, and at one too short for the form, which
+    /// is where an overlay the layout
     /// had been asked for would have shown.
     #[test]
     fn the_form_covers_the_panels_and_gives_the_frame_back_when_it_closes() {
@@ -8732,10 +8772,11 @@ mod tests {
 
     /// **Every row of the list that names a binding is reached by a press on
     /// it, and every row that names none reaches nothing**
-    /// (TASK-8a6578851244, ADR-c07e2694f0e1).
+    /// (TASK-8a6578851244, ADR-559eebf5c6f5).
     ///
     /// Over every row rather than over the one the criterion names, because
-    /// "every line of that list is a target" is a claim about all of them: a
+    /// "every action a screen offers is reachable by touch" is a claim about
+    /// all of them: a
     /// hit test off by one would answer the row above for thirty-odd of these
     /// and still pass a test that only pressed `claim`. The headings are in
     /// here for the same reason from the other side -- a sentence about the

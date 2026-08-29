@@ -521,7 +521,7 @@ fn the_three_verbs_the_list_opens_reach_the_confirmation_and_dismissing_writes_n
 }
 
 /// **A row of that list is a target a thumb reaches, and confirming one runs
-/// the verb** (TASK-e8da6a00564a, ADR-c07e2694f0e1).
+/// the verb** (TASK-e8da6a00564a, ADR-559eebf5c6f5).
 ///
 /// Two halves that belong together. The touch, because the decision asks that
 /// every action the reader offers be reachable by a finger and this list is

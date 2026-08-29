@@ -1,5 +1,5 @@
 //! One key per command, and the three regimes a keystroke is read in
-//! (ADR-c07e2694f0e1, ADR-559eebf5c6f5).
+//! (ADR-559eebf5c6f5).
 //!
 //! The table is one of them and the other two are modal: [`confirming`], which
 //! is what stands in front of every spawned write, and [`narrowing`], which is
@@ -17,7 +17,7 @@
 //! **Every command is a key, and the verbs are keys too**
 //! (TASK-1a415107fd56). `c` claims, `l` logs, `d` finishes, `r` releases, `m`
 //! amends, `a` ratifies, `n` makes and `e` edits -- the initial the CLI already
-//! spells, which is ADR-c07e2694f0e1's rule and the whole of why these letters. What only moves
+//! spells, which is ADR-559eebf5c6f5's rule and the whole of why these letters. What only moves
 //! the screen takes what is left: `j` and `k` move, Space pages, `g` goes to
 //! the top, Enter opens, `b` goes back, `s` shows the constraints, `v` opens
 //! the queue, `o` shows what `ank config` declares, `u` reads the corpus again,
@@ -27,18 +27,20 @@
 //! never read the key line still has hands.
 //!
 //! **`h`, `l`, `n` and `p` move nothing**, which is what the letters cost.
-//! ADR-c07e2694f0e1 prices it outright and takes it: `j`, `k`, the arrows, Tab
-//! and the digits are what a reader reaches for first and none of them moved.
+//! ADR-559eebf5c6f5 takes that price outright -- navigation takes what is left
+//! -- and it is a small one: `j`, `k`, the arrows, Tab and the digits are what
+//! a reader reaches for first and none of them moved.
 //!
-//! **And focus is a key too** (TASK-bb43cfe2192b). `Tab` walks the four panels
-//! in a ring, `1` to `4` reach one directly, and Left and Right cross between
-//! the two columns. Three ways to the same place, deliberately: the digit is
-//! what the panel's own title carries, so a reader who can see `3` on the queue
-//! never has to remember which key opens it; the arrows are what a hand reaches
+//! **And the screen in the region is a key too** (TASK-bb43cfe2192b). `Tab`
+//! walks the four screens in a ring, `1` to `4` reach one directly, and Left
+//! and Right cross between a listing and the document it opens. Three ways to
+//! the same place, deliberately: the digit is what the screen's own title
+//! carries, so a reader who can see `3` on the queue never has to remember
+//! which key opens it; the arrows are what a hand reaches
 //! for with nothing read at all; and `Tab` is what a person who has used one of
 //! these before will press first.
 //!
-//! **No command requires a modifier chord**, which ADR-c07e2694f0e1 asks for and
+//! **No command requires a modifier chord**, which ADR-559eebf5c6f5 asks for and
 //! a phone makes literal: a terminal keyboard on a phone has no comfortable
 //! Control. Control-C is the one exception and it is not a command -- it is the
 //! way out of a program that has taken the terminal, which raw mode has stopped
@@ -91,7 +93,7 @@
 //!
 //! **It was never the length of the road** (TASK-d4a882345837). Under a line
 //! reader a slipped finger typed nothing, because a command was a word and
-//! Enter, and that asymmetry is what ADR-c07e2694f0e1 spends: `c` is one
+//! Enter, and that asymmetry is what ADR-559eebf5c6f5 spends: `c` is one
 //! keystroke and it composes a claim. What stands in front of the spawn is
 //! [`confirming`], which never depended on how the verb was reached: the
 //! composed argv is on the screen, [`CONFIRM`] runs it, and **every other key
@@ -104,7 +106,7 @@
 //! keystroke that dismisses the confirmation runs anything" is true of the
 //! whole keyboard rather than of a list somebody has to keep complete.
 //!
-//! `y` is a letter and not a chord, which ADR-c07e2694f0e1 requires and a
+//! `y` is a letter and not a chord, which ADR-559eebf5c6f5 requires and a
 //! phone makes literal, and it is not Enter: Enter opens the row under the
 //! cursor, and a confirmation answered by the key a person was already pressing
 //! is a confirmation a repeated keypress walks straight through. Nor is it any
@@ -166,7 +168,7 @@ pub enum Answer {
 ///
 /// The modifiers are read and not ignored, in the strict direction: a `y` with
 /// anything held is not the `y` this asks for. So no chord runs a verb, which
-/// is ADR-c07e2694f0e1's rule applied to the one keystroke in this reader that
+/// is ADR-559eebf5c6f5's rule applied to the one keystroke in this reader that
 /// can move a corpus, and Control-C over a confirmation dismisses it rather
 /// than doing the thing the person was interrupting.
 pub fn confirming(key: KeyEvent) -> Answer {
@@ -180,9 +182,10 @@ pub fn confirming(key: KeyEvent) -> Answer {
 ///
 /// **The mapping is a lookup and no longer a `match`** (TASK-4d2eb2b4e193).
 /// What was here was one arm per key, written beside three other renderings of
-/// the same list, and ADR-c07e2694f0e1 -- the decision this wave is built on --
-/// records what that cost: a key list that omitted `v`, Space, every arrow and
-/// the whole of the ring. The table is now
+/// the same list, and what that cost is on the record: a key list that omitted
+/// `v`, Space, every arrow and the whole of the ring. What the reader offers is
+/// read out of the contract's own verb table now (ADR-559eebf5c6f5). The table
+/// is
 /// the single declaration and this reads it, so a key that moves moves on every
 /// surface at once.
 ///
@@ -318,8 +321,8 @@ mod tests {
         typed(key(KeyCode::Char(c)), focus)
     }
 
-    /// Every command that only moves the screen is one key, in every panel
-    /// (ADR-c07e2694f0e1).
+    /// Every command that only moves the screen is one key, on every screen
+    /// (ADR-559eebf5c6f5).
     #[test]
     fn a_reading_command_is_one_key_and_the_named_keys_agree_with_the_letters() {
         for view in Focus::ALL {
@@ -352,12 +355,12 @@ mod tests {
         }
     }
 
-    /// **Each of the six verbs is its own letter, in every panel**
-    /// (TASK-1a415107fd56, ADR-c07e2694f0e1).
+    /// **Each of the six verbs is its own letter, on every screen**
+    /// (TASK-1a415107fd56, ADR-559eebf5c6f5).
     ///
     /// What the key composes is the verb and nothing else: the identifier is
-    /// the view's, because the panel a person is standing in is what says which
-    /// entity they mean, and there is no tail because there is no longer a line
+    /// the view's, because the screen a person is standing on is what says
+    /// which entity they mean, and there is no tail because there is no longer a line
     /// to type one on.
     #[test]
     fn each_verb_that_writes_is_its_own_letter_and_composes_that_verb() {
@@ -401,11 +404,12 @@ mod tests {
 
     /// **`h`, `l`, `n` and `p` move nothing** (TASK-1a415107fd56).
     ///
-    /// The price ADR-c07e2694f0e1 puts on the letters, stated as what it is: a
-    /// person pressing `l` for "right" or `n` for "next page" gets no movement,
-    /// and `l` gets the log confirmation instead. What the four do *instead* is
-    /// what the verbs made of them, and the claim this holds is about movement:
-    /// none of them steps a cursor, pages a body or crosses a panel.
+    /// The price ADR-559eebf5c6f5 takes on the letters -- navigation takes what
+    /// is left -- stated as what it is: a person pressing `l` for "right" or
+    /// `n` for "next page" gets no movement, and `l` gets the log confirmation
+    /// instead. What the four do *instead* is what the verbs made of them, and
+    /// the claim this holds is about movement: none of them steps a cursor,
+    /// pages a body or crosses to another screen.
     ///
     /// `n` stopped being one of the three that reach nothing at all
     /// (TASK-d832452630d2): it is `new`'s own initial, and what it opens is the
@@ -436,7 +440,7 @@ mod tests {
     }
 
     /// No command is a chord, and the one that is is the way out rather than a
-    /// command (ADR-c07e2694f0e1: no command anywhere requires a modifier).
+    /// command (ADR-559eebf5c6f5: no command anywhere requires a modifier).
     ///
     /// Over every modifier and not over Control alone (TASK-1a415107fd56): `c`
     /// composes a claim now, so "a letter with something held is not that
@@ -469,7 +473,7 @@ mod tests {
     /// produce a [`Command::Act`] at all. That was worth having because
     /// reaching a verb took a key *and* a word -- a slipped finger typed
     /// nothing, because there was no `d` -- and the asymmetry is what
-    /// ADR-c07e2694f0e1 spends: TASK-1a415107fd56 gives the six their letters,
+    /// ADR-559eebf5c6f5 spends: TASK-1a415107fd56 gives the six their letters,
     /// and the old assertion would then be a rule against the decision rather
     /// than a rule the decision keeps.
     ///
@@ -554,7 +558,7 @@ mod tests {
     }
 
     /// Focus moves by key, three ways, and none of the three is a chord
-    /// (TASK-bb43cfe2192b, ADR-c07e2694f0e1).
+    /// (TASK-bb43cfe2192b, ADR-559eebf5c6f5).
     #[test]
     fn focus_moves_by_key_in_a_ring_by_digit_and_across_the_columns() {
         // The ring, forward from every panel and back again.
@@ -694,7 +698,7 @@ mod tests {
     }
 
     /// And no chord runs one either: the key that writes is the bare letter
-    /// (ADR-c07e2694f0e1, which forbids a command requiring a modifier -- and
+    /// (ADR-559eebf5c6f5, which forbids a command requiring a modifier -- and
     /// this is the one command that moves a corpus).
     #[test]
     fn no_modifier_held_over_the_confirming_key_still_runs_it() {
@@ -740,7 +744,7 @@ mod tests {
 /// The whole key table, stated as a domain rather than as a list of the likely
 /// keys (TASK-dd9747e5e305).
 ///
-/// ADR-c07e2694f0e1's rule is that **no command anywhere requires a modifier
+/// ADR-559eebf5c6f5's rule is that **no command anywhere requires a modifier
 /// chord**, and a phone makes it literal: a terminal keyboard on a phone has no
 /// comfortable Control, and a command reachable only with one is a command that
 /// reader cannot run at all. What was here before was that rule checked by
@@ -933,7 +937,7 @@ mod table {
         assert!(every_modifier().contains(&KeyModifiers::NONE));
     }
 
-    /// **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1),
+    /// **No command anywhere requires a modifier chord** (ADR-559eebf5c6f5),
     /// over the whole table.
     ///
     /// Kept beside the rule under it, which is stronger, because they are not
@@ -986,7 +990,7 @@ mod table {
     }
 
     /// **No keystroke in the whole domain reaches a command with a modifier
-    /// held, except the way out** (TASK-1a415107fd56, ADR-c07e2694f0e1).
+    /// held, except the way out** (TASK-1a415107fd56, ADR-559eebf5c6f5).
     ///
     /// This is the rule above turned round, and the turn is what
     /// TASK-1a415107fd56 buys. "Nothing is *only* a chord" leaves a chord free

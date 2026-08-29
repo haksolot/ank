@@ -69,13 +69,13 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 /// the middle both draw rows, which is where the painted fields are.
 const WINDOW: (u16, u16) = (110, 30);
 
-/// The rule the focused panel is drawn with, read out of the reader rather
-/// than written here (ADR-c07e2694f0e1).
+/// The rule the region is drawn with, read out of the reader rather than
+/// written here (ADR-559eebf5c6f5).
 ///
 /// It is a *character* and that is the point of naming it in this file: the
 /// glyph set is a second field beside the ink and no `NO_COLOR` reaches it, so
 /// this rule is on the frame of every session below whether it painted or not.
-const FOCUSED_RULE: &str = ank_tui::view::BOXES.border(true).horizontal_top;
+const REGION_RULE: &str = ank_tui::view::BOXES.border(true).horizontal_top;
 
 /// A closed task, so that a role the table renders as an *attribute* rather
 /// than as a colour is on the screen.
@@ -286,7 +286,7 @@ fn with_no_color_set_the_screen_still_says_everything_it_has_to_say() {
         "the region does not name the screen in it:\n{frame}"
     );
     assert!(
-        frame.contains(&FOCUSED_RULE.repeat(10)),
+        frame.contains(&REGION_RULE.repeat(10)),
         "the region has no rule at all:\n{frame}"
     );
     assert!(

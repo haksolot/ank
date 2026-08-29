@@ -9,11 +9,12 @@
 //! that the thing a person presses `?` on shows it, and between those two
 //! there is a dispatch, a note band, a wrap, a `fit` and a terminal.
 //!
-//! **Twice, that being the whole of the point.** ADR-c07e2694f0e1, the
-//! decision this wave is built on, was written because the reader's own
-//! trailer taught a vocabulary the reader did not have
+//! **Twice, that being the whole of the point.** This table was declared
+//! because the reader's own trailer taught a vocabulary the reader did not have
 //! -- `?` omitted `v`, Space, every arrow, the way out and the whole of the
-//! ring -- and a suite that asserted the list contains `q quit` would have
+//! ring -- and what the reader offers is read out of the contract's own verb
+//! table now (ADR-559eebf5c6f5). A suite that asserted the list contains
+//! `q quit` would have
 //! passed on that screen. So this reads the drawn rows back and holds them to
 //! the table both ways: nothing the table declares is missing, and nothing that
 //! is drawn is absent from the table.
@@ -166,17 +167,17 @@ fn the_key_the_list_is_named_after_draws_every_binding_and_no_other() {
     live.quit();
 }
 
-/// The window ADR-c07e2694f0e1 measures this reader's frame on.
+/// The window this reader's frame is measured on.
 const EIGHTY: (u16, u16) = (80, 24);
 
 /// **The key list fits the window it is asked for on** (TASK-4d2eb2b4e193).
 ///
 /// The list is longer than the three sentences it replaces, and it has to be:
 /// naming every binding is the criterion, and the omissions of the old one are
-/// what ADR-c07e2694f0e1 was written against. What it must not do is break the
-/// screen it is drawn on. So the note band grows to hold what it is given, the
-/// panels give way to it, and the frame is still the window's own size, row for
-/// row and column for column.
+/// what this list was written against. What it must not do is break the screen
+/// it is drawn on. So the list is drawn over the frame, nothing under it moves,
+/// and the frame is still the window's own size, row for row and column for
+/// column.
 ///
 /// The rows it costs used to be real: the list was a note the layout had to
 /// find room for, and the panels were squeezed to give it. TASK-8a6578851244

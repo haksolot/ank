@@ -1,5 +1,5 @@
 //! The `tui` verb: a full-screen reader over one corpus (ADR-8bd76e8d7c4e, §4),
-//! drawn with ratatui over crossterm (ADR-c07e2694f0e1).
+//! drawn with ratatui over crossterm (ADR-559eebf5c6f5).
 //!
 //! **It reaches the corpus by running the CLI, and by nothing else.** Every row
 //! of corpus data on the screen arrives as a `--json` document written by
@@ -52,8 +52,9 @@
 //!
 //! # The engine
 //!
-//! Raw mode, on the alternate buffer, drawn by ratatui and woken by three
-//! things: a key, a resize, and the change stream. That is [`term`], and the
+//! Raw mode, on the alternate buffer, drawn by ratatui and woken by four
+//! things: a key, a tap, a resize, and the change stream. That is [`term`], and
+//! the
 //! reason it may exist is stated there -- raw mode and the window are two
 //! implementations of one behaviour on the platforms this project ships to,
 //! crossterm is that implementation, and taking it puts no `extern` block in
@@ -72,7 +73,7 @@
 //! a person is on included: `Tab` walks the ring, `1` to `4` name one, and Left
 //! and Right cross between the listing and the document it opens.
 //! **And so is every verb that writes**
-//! (TASK-1a415107fd56, ADR-c07e2694f0e1: a key *is* the verb it runs): `c`
+//! (TASK-1a415107fd56, ADR-559eebf5c6f5: a key *is* the verb it runs): `c`
 //! claims, `l` logs, `d` finishes, `r` releases, `m` amends, `a` ratifies, and
 //! `n` makes one. What each of them is bound to is [`bindings`], declared once,
 //! and every surface -- the mapping, the offer, the key list -- is computed
@@ -104,7 +105,7 @@
 //! replaced it.** Under a line reader a slipped finger typed nothing, because a
 //! command was a word and Enter and no word was one letter. Under a keystroke
 //! reader the guarantee is the confirmation that shows the argv before anything
-//! is spawned, which ADR-c07e2694f0e1 requires and TASK-d4a882345837 built: a
+//! is spawned, which ADR-559eebf5c6f5 requires and TASK-d4a882345837 built: a
 //! submitted line composes the command and shows it spelled as a shell would
 //! have to spell it, `y` runs that command, and every other key on the keyboard
 //! dismisses it. What writes is a person reading an argv and saying yes to it,
@@ -170,7 +171,7 @@
 //! a place a keyboard cannot: [`view::App::actions`] draws what the screen
 //! offers with the key beside the word, so the two roads carry one vocabulary.
 //!
-//! **No command anywhere requires a modifier chord** (ADR-c07e2694f0e1), and
+//! **No command anywhere requires a modifier chord** (ADR-559eebf5c6f5), and
 //! that is now measured rather than reviewed: `keys`'s own table walks every
 //! key a terminal can report against every way a modifier can be held and holds
 //! this reader to it. It is what turned `Tab` and Shift-`Tab` into the screen
@@ -627,7 +628,7 @@ mod tests {
     }
 
     /// A terminal made narrower redraws to its new size, with nobody typing
-    /// (TASK-4fa385c1772d, ADR-c07e2694f0e1).
+    /// (TASK-4fa385c1772d, ADR-559eebf5c6f5).
     ///
     /// The only wake in the session is the resize, so a second frame existing at
     /// all is the reader answering the window rather than a command. What is
