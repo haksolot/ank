@@ -123,15 +123,22 @@
 //! resolve before the cursor moves, because there is nowhere to cross to.
 //!
 //! **And what a screen offers is reachable by a finger without being drawn at
-//! rest** (TASK-9a402a54886f, ADR-c07e2694f0e1). What stands there is one cell
-//! of the header ([`App::help_line`]), and behind it the key list, every row of
-//! which is the key it names. The vocabulary is unchanged and that is the
-//! point: a target hands [`App::press`] the very key a keyboard would have
-//! sent, so a person with a keyboard reads the letter, a person with a thumb
-//! touches the word, and the offer is checkable against the mapping instead of
-//! against somebody's memory of it. A thumb reaches the commonest act of all
-//! with no target whatever -- touching the row already selected opens it
-//! ([`App::tapped`]).
+//! rest** (TASK-9a402a54886f, ADR-c07e2694f0e1). What stands there is two cells
+//! of the header ([`App::help_line`]), and behind one of them the key list,
+//! every row of which is the key it names. The vocabulary is unchanged and that
+//! is the point: a target hands [`App::press`] the very key a keyboard would
+//! have sent, so a person with a keyboard reads the letter, a person with a
+//! thumb touches the word, and the offer is checkable against the mapping
+//! instead of against somebody's memory of it. A thumb reaches the commonest
+//! act of all with no target whatever -- touching the row already selected
+//! opens it ([`App::tapped`]).
+//!
+//! The second cell is the kind in force ([`kind_target`], TASK-12bd5acbf706,
+//! ADR-559eebf5c6f5), and it is on the same row for the same price. It is not
+//! the band coming back: which kind a person is looking at has to be written
+//! somewhere regardless, so the cell that writes it costs the frame nothing and
+//! what is added is that a finger may press it. Information made touchable,
+//! which is the opposite of an offer drawn at rest.
 //!
 //! # Where a person is standing is a character, and never a colour
 //!
@@ -248,7 +255,7 @@
 //! it.
 
 use crate::ank::{Ank, Failed, Ran};
-use crate::bindings::{self, Binding, Holding};
+use crate::bindings::{self, Binding, Holding, Runs};
 use crate::form::{Filled, Form, SET as SETTING};
 use crate::input::{Act, Command, Subject};
 use crate::keys::{self, Narrowing, Press};
@@ -1081,13 +1088,25 @@ impl App {
                 if self.needle.is_some() {
                     return false;
                 }
-                // The one target the frame always carries, and it is resolved
-                // here rather than above the two modal states on purpose: what
-                // a touch does while a command is waiting is dismiss it, and a
-                // target that opened a list from under a confirmation would be
-                // the second road ADR-c07e2694f0e1 forbids.
+                // The two targets the frame always carries, and they are
+                // resolved here rather than above the two modal states on
+                // purpose: what a touch does while a command is waiting is
+                // dismiss it, and a target that opened a list from under a
+                // confirmation would be the second road ADR-c07e2694f0e1
+                // forbids.
                 if self.help_rect(self.area()).contains(at) {
                     if let Some(binding) = bindings::of_command(&Command::Help) {
+                        return self.press(KeyEvent::new(binding.key, KeyModifiers::NONE), ank);
+                    }
+                }
+                // The kind in force, pressed (TASK-12bd5acbf706,
+                // ADR-559eebf5c6f5). The very keystroke a keyboard sends and
+                // not a second call to the cycle: "the same cycle by the same
+                // step" is a property this hands to `App::press` rather than
+                // one it reimplements, so a filter whose step moved would move
+                // for the finger on the day it moved for the key.
+                if self.kind_rect(self.area()).contains(at) {
+                    if let Some(binding) = cycle_binding() {
                         return self.press(KeyEvent::new(binding.key, KeyModifiers::NONE), ank);
                     }
                 }
@@ -3066,39 +3085,86 @@ impl App {
     }
 
     // -----------------------------------------------------------------------
-    // The one target that is always there (ADR-c07e2694f0e1)
+    // The targets that are always there
+    // (ADR-c07e2694f0e1, ADR-559eebf5c6f5)
     // -----------------------------------------------------------------------
 
-    /// The header's first row, with the key list's own target on the end of it.
+    /// What the header's first row carries on its right edge, and the whole of
+    /// what fits there: the kind in force, then the key list's own target.
+    ///
+    /// **Both, or the key list's alone, or neither, and never half of one.**
+    /// A target cut through the middle is a target whose key nobody can read,
+    /// which is the rule this row has held since TASK-9a402a54886f; what is new
+    /// is that there are two of them, so the rule has a second step. The one
+    /// the reader has always carried is the last to go, because it is the only
+    /// road to every key on the screen and the other is one fact about a
+    /// filter.
+    ///
+    /// One function, so that [`App::help_line`] drawing them and
+    /// [`App::help_rect`] and [`App::kind_rect`] hitting them cannot disagree
+    /// about which of them is on the frame -- the reason [`App::targets`] gives
+    /// for itself, applied to the two targets that are not in that band.
+    fn header_tail(&self, width: usize) -> String {
+        let help = help_target();
+        let both = format!("{}{help}", kind_target(self.kind.as_deref()));
+        for tail in [both, help] {
+            if width > tail.chars().count() {
+                return tail;
+            }
+        }
+        String::new()
+    }
+
+    /// The header's first row, with those targets on the end of it.
     ///
     /// **This is what the band of targets was traded for** (TASK-9a402a54886f).
     /// ADR-c07e2694f0e1 asks for one permanently visible target that opens the
     /// key list, and it costs a cell of a row the header was drawing anyway --
     /// against four rows of twenty-four, on the window the clause was written
-    /// to protect. The corpus line is padded rather than fitted so the target
-    /// lands on the right edge at every width, and where the window is too
-    /// narrow to hold it at all the line is fitted as it always was: a target
-    /// half drawn would be a target whose key nobody can read.
+    /// to protect. ADR-559eebf5c6f5 puts the kind in force beside it on the
+    /// same terms and the same row (TASK-12bd5acbf706): the header is three
+    /// rows before this and three rows after it.
+    ///
+    /// The corpus line is padded rather than fitted so the targets land on the
+    /// right edge at every width, and the corpus line is what gives way where
+    /// the window is narrow -- it is a sentence a person can read the head of,
+    /// and a filter that has hidden most of a corpus is not.
     fn help_line(&self, said: &str, width: usize) -> String {
-        let label = help_target();
-        let wide = label.chars().count();
-        match width > wide {
-            true => format!("{}{label}", pad(said, width - wide)),
-            false => fit(said, width),
-        }
+        let tail = self.header_tail(width);
+        format!("{}{tail}", pad(said, width - tail.chars().count()))
     }
 
-    /// Where that target is, which is [`App::help_line`] read backwards.
+    /// Where the key list's target is, which is [`App::help_line`] read
+    /// backwards.
     ///
     /// Empty where the header has no room for it, so a press cannot resolve to
     /// a target the frame is not drawing.
     fn help_rect(&self, area: Rect) -> Rect {
         let header = self.arrange(area).header;
         let wide = help_target().chars().count() as u16;
-        if header.height == 0 || header.width <= wide {
+        let drawn = self.header_tail(header.width as usize).chars().count() as u16;
+        if header.height == 0 || wide == 0 || drawn < wide {
             return Rect::new(header.x, header.y, 0, 0);
         }
         Rect::new(header.x + header.width - wide, header.y, wide, 1)
+    }
+
+    /// Where the kind in force is written, which is the same row read backwards
+    /// one target further (TASK-12bd5acbf706, ADR-559eebf5c6f5).
+    ///
+    /// Empty on the same terms as [`App::help_rect`] and for the same reason:
+    /// where the row was too narrow to hold this cell it is not on the frame,
+    /// and a finger landing on the end of the corpus line must not advance a
+    /// filter nobody was shown.
+    fn kind_rect(&self, area: Rect) -> Rect {
+        let header = self.arrange(area).header;
+        let wide = kind_target(self.kind.as_deref()).chars().count() as u16;
+        let drawn = self.header_tail(header.width as usize).chars().count() as u16;
+        let help = help_target().chars().count() as u16;
+        if header.height == 0 || wide == 0 || drawn < wide + help {
+            return Rect::new(header.x, header.y, 0, 0);
+        }
+        Rect::new(header.x + header.width - drawn, header.y, wide, 1)
     }
 
     // -----------------------------------------------------------------------
@@ -3636,6 +3702,85 @@ fn help_target() -> String {
         Some(binding) => format!("[{}]", named(binding.key)),
         None => String::new(),
     }
+}
+
+/// What the header calls the state where the list is restricted to no kind at
+/// all.
+///
+/// The reader's own word for it: [`text::window`] says `all 40` over a listing
+/// that is showing everything it has, and a header that said `every` beside a
+/// title saying `all` would be two vocabularies for one fact. It is not a kind
+/// and no registry declares it, which is why it is written here and the kinds
+/// beside it never are.
+const EVERY_KIND: &str = "all";
+
+/// The binding the kind filter is cycled by, or `None` where no row runs it.
+///
+/// **The reverse of [`Binding::press`] for the one row that is not a
+/// [`Command`]**, which is why [`bindings::of_command`] cannot answer it:
+/// narrowing a list needs the kind in force and is therefore the screen's to
+/// compute, so the table spells it [`Press::Cycle`] and carries no command to
+/// look it up by. The lookup is the same shape all the same, and it exists for
+/// the same reason: the letter drawn on the header and the letter a keyboard
+/// sends have to be one letter, and `tests/log.rs` already reads the table this
+/// way rather than typing `f`.
+fn cycle_binding() -> Option<&'static Binding> {
+    bindings::BINDINGS
+        .iter()
+        .find(|b| b.runs == Runs::Press(Press::Cycle))
+}
+
+/// The label of the second target the header carries: the kind the list is
+/// restricted to, in the brackets and the `[key word]` shape every target on
+/// this screen wears (ADR-559eebf5c6f5).
+///
+/// **It is information first and a target second, and that ordering is the
+/// whole argument.** ADR-c07e2694f0e1 took away a band of offers because it
+/// cost four rows of twenty-four, and this does not buy any of it back: which
+/// kind a person is looking at has to be written somewhere regardless -- a
+/// listing that has silently dropped three quarters of a corpus and says so
+/// nowhere is the reader answering a question nobody asked -- so writing it in
+/// the cell that also answers a finger adds nothing to the frame. What the band
+/// cost was rows. This costs none.
+///
+/// **The word is padded to the widest thing that can stand in it, so the cell
+/// does not move.** A target that changes width when it is pressed is a target
+/// that has walked out from under the finger that pressed it: the tail is drawn
+/// on the right edge, so `[f all]` becoming `[f task]` would put the cell a
+/// column left of where somebody is still holding, and the second press of a
+/// cycle would land on the corpus line and do nothing. One space inside the
+/// brackets is what a still target costs, and the widest word is asked of
+/// [`row_kinds`] rather than counted here, so a fifth kind widens it with no
+/// edit.
+///
+/// The empty string where no row runs the cycle, on [`help_target`]'s reasoning
+/// and for a sharper reason: a cell saying which kind is in force with no key
+/// behind it would be a target that does nothing when it is pressed.
+///
+/// Public for the reason [`Glyphs::thumb`] is: the suite that drives the binary
+/// has to find this cell on a real terminal's grid, and a suite that spelled
+/// the label itself would go on asserting about a cell the reader had stopped
+/// drawing -- a test that quietly stops testing rather than one that fails.
+pub fn kind_target(kind: Option<&str>) -> String {
+    match cycle_binding() {
+        Some(binding) => format!(
+            "[{} {}]",
+            named(binding.key),
+            pad(kind.unwrap_or(EVERY_KIND), widest_kind())
+        ),
+        None => String::new(),
+    }
+}
+
+/// The columns the kind's word is drawn in: the longest of every word that can
+/// stand there, which is the kinds a row may have and [`EVERY_KIND`].
+fn widest_kind() -> usize {
+    row_kinds()
+        .into_iter()
+        .chain(std::iter::once(EVERY_KIND))
+        .map(|kind| kind.chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// The rectangle inside a panel's borders, which is what `Block` calls its
@@ -4267,7 +4412,11 @@ fn step(at: usize, by: isize, total: usize) -> usize {
 /// A filter that offered a kind the list cannot hold would be a key whose only
 /// possible answer is "no entity matches this filter", which is what
 /// ADR-559eebf5c6f5 calls a list answering a question nobody asked.
-fn row_kinds() -> Vec<&'static str> {
+///
+/// Public because the suites drive the binary and have to know what the cycle
+/// is a cycle of: a suite carrying its own copy of that list would agree with a
+/// registry that had moved.
+pub fn row_kinds() -> Vec<&'static str> {
     keys::KINDS
         .iter()
         .copied()
@@ -7522,6 +7671,149 @@ mod tests {
                     touched.frame(),
                     pressed.frame(),
                     "touching {label} is not pressing {key:?} at {window:?}"
+                );
+            }
+        }
+    }
+
+    /// **The kind in force is written on the header at every width and on
+    /// every screen, and the cell it is written in costs no row**
+    /// (TASK-12bd5acbf706, ADR-559eebf5c6f5).
+    ///
+    /// The header is walked through the whole cycle, at the phone's window and
+    /// at two desks, and three things are asserted at every stop: the kind is
+    /// on the header's first row in the reader's own spelling, the header is
+    /// still exactly the rows it was, and the cell has not moved. The last is
+    /// what makes the target usable twice: the tail is drawn on the right edge,
+    /// so a cell that changed width when it was pressed would walk out from
+    /// under the finger that was cycling with it.
+    ///
+    /// `all` is asserted as a stop of the cycle rather than skipped, because a
+    /// header that wrote a kind and went blank when there was none would be the
+    /// reader saying nothing exactly where a person cannot tell a filter from a
+    /// short corpus.
+    #[test]
+    fn the_kind_in_force_is_on_the_header_at_every_width_and_costs_no_row() {
+        for window in [PHONE, (80, 24), (120, 40)] {
+            let mut a = App::new(window, None)
+                .inked(paint::PLAIN)
+                .drawn_with(SCREEN);
+            has_read(&mut a);
+            let rows = a.arrange(a.area()).header.height;
+            assert_eq!(rows, HEADER, "the header is not the rows it was");
+            let cell = a.kind_rect(a.area());
+            let mut kind = None;
+            // One stop per kind and one more, which is back to every kind.
+            for _ in 0..=row_kinds().len() {
+                a.kind = kind.clone();
+                let label = kind_target(kind.as_deref());
+                let head = a.frame().lines().next().unwrap().to_string();
+                assert!(
+                    head.contains(&label),
+                    "the kind in force is not on the header at {window:?}:\n{head}"
+                );
+                assert_eq!(
+                    a.arrange(a.area()).header.height,
+                    rows,
+                    "the kind cost the header a row at {window:?}"
+                );
+                assert_eq!(
+                    a.kind_rect(a.area()),
+                    cell,
+                    "the cell moved between two presses at {window:?}:\n{head}"
+                );
+                kind = next_row_kind(kind.as_deref());
+            }
+            assert_eq!(kind, None, "the cycle did not come back to every kind");
+        }
+    }
+
+    /// **A press on that cell advances the same cycle by the same step**
+    /// (TASK-12bd5acbf706, ADR-559eebf5c6f5).
+    ///
+    /// The same shape `the_key_list_is_one_touch_away_on_every_frame` uses, for
+    /// the same reason: two screens driven from one start, one by a finger and
+    /// one by the key the cell names, compared as whole frames. A cell that
+    /// reached the next kind by its own call to the cycle would pass an
+    /// assertion about `a.kind` and fail this one on the day the step moved.
+    ///
+    /// Walked all the way round rather than pressed once, because the step this
+    /// is about is the wrap: a finger that advanced through the kinds and then
+    /// could not get back to every kind would have left a person on a listing
+    /// they cannot undo without a keyboard.
+    #[test]
+    fn touching_the_kind_is_pressing_the_key_that_cycles_it() {
+        let ank = nowhere();
+        let key = cycle_binding()
+            .expect("a row of the table cycles the kind filter")
+            .key;
+        for window in [PHONE, (80, 24), (120, 40)] {
+            let made = || {
+                let mut a = App::new(window, None)
+                    .inked(paint::PLAIN)
+                    .drawn_with(SCREEN);
+                has_read(&mut a);
+                a.focus = Focus::Entities;
+                a
+            };
+            let (mut touched, mut pressed) = (made(), made());
+            for step in 0..=row_kinds().len() {
+                let cell = touched.kind_rect(touched.area());
+                assert!(cell.width > 0, "no cell to press at {window:?}");
+                touch(&mut touched, &ank, Position::new(cell.x, cell.y));
+                pressed.press(KeyEvent::new(key, KeyModifiers::NONE), &ank);
+                assert_eq!(
+                    touched.kind, pressed.kind,
+                    "step {step} at {window:?}: the finger and the key are not \
+                     on the same kind"
+                );
+                assert_eq!(
+                    touched.frame(),
+                    pressed.frame(),
+                    "step {step} at {window:?}: touching the cell is not \
+                     pressing {key:?}"
+                );
+            }
+            assert_eq!(
+                touched.kind, None,
+                "the cycle did not come back to every kind under a finger"
+            );
+        }
+    }
+
+    /// The cell is not a target where it is not drawn.
+    ///
+    /// [`App::help_rect`]'s rule, and this row now has two things to fit rather
+    /// than one: a window too narrow for both draws the key list's target
+    /// alone, and a finger landing where the kind would have been must reach
+    /// nothing at all. The alternative is a header whose right edge runs a
+    /// command a person was never shown.
+    #[test]
+    fn a_window_too_narrow_for_the_cell_does_not_answer_a_press_on_it() {
+        let ank = nowhere();
+        let wide = kind_target(None).chars().count() + help_target().chars().count();
+        for columns in 1..=wide {
+            let mut a = App::new((columns, 24), None)
+                .inked(paint::PLAIN)
+                .drawn_with(SCREEN);
+            has_read(&mut a);
+            let head = a.frame().lines().next().unwrap().to_string();
+            assert!(
+                !head.contains(&kind_target(None)),
+                "the cell is drawn at {columns} columns, where it does not fit:\n{head}"
+            );
+            let cell = a.kind_rect(a.area());
+            assert_eq!(
+                cell.width, 0,
+                "a cell the frame is not drawing at {columns}"
+            );
+            // And every column of that row reaches no cycle.
+            for x in 0..columns as u16 {
+                touch(&mut a, &ank, Position::new(x, 0));
+                assert_eq!(
+                    a.kind, None,
+                    "a press at column {x} of {columns} advanced a filter \
+                     nobody was shown"
                 );
             }
         }
