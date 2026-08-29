@@ -5,7 +5,7 @@ slug: the-unit-tests-under-src-leave-their-scratch-dir
 title: The unit tests under src leave their scratch directories behind too
 created: 2026-08-27T18:20:40Z
 author: haksolot@vmi3223161
-status: open
+status: done
 scope:
   - crates/ank-cli/src/editor.rs
   - crates/ank-cli/src/git.rs
@@ -15,8 +15,13 @@ blocked_by: [TASK-553740e7af11]
 done_criteria: |
   After a green cargo test --workspace into an empty temporary directory, the only entries left are the roots of the run itself: no ank-edit-*, ank-signers-*, ank-daemon-stream-* or ank-tui-stream-* directory or file remains. The scheme is the one TASK-553740e7af11 established and not a second one -- a root named for the process, holding a lock the kernel frees when the process dies, swept by the next run.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 3c24874
+    criteria: df268be2bd49
+    via: submitted
 schema: 4
-version: 3
+version: 5
 ---
 
 TASK-553740e7af11 fixed the integration suites and measured what it did not
