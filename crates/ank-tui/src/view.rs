@@ -130,8 +130,9 @@
 //! have sent, so a person with a keyboard reads the letter, a person with a
 //! thumb touches the word, and the offer is checkable against the mapping
 //! instead of against somebody's memory of it. A thumb reaches the commonest
-//! act of all with no target whatever -- touching the row already selected
-//! opens it ([`App::tapped`]).
+//! act of all with no target whatever -- one press chooses a row, and two
+//! presses on that row inside [`SECOND_PRESS`] open it ([`App::tapped`],
+//! TASK-42de0df951a4).
 //!
 //! The second cell is the kind in force ([`kind_target`], TASK-12bd5acbf706,
 //! ADR-559eebf5c6f5), and it is on the same row for the same price. It is not
@@ -173,8 +174,13 @@
 //! puts the identifier the focused panel names in front of the verb the key
 //! composed, asks [`Ank::spelling`] for the command line that argv is, and
 //! **stops**. Nothing else here writes, and nothing runs that a person did not
-//! press twice -- there is no timer in this crate, and [`App::frame`] is a pure
-//! function of what the last command left behind.
+//! press twice -- nothing in this crate runs on a clock, and [`App::frame`] is
+//! a pure function of what the last command left behind. The one clock this
+//! file reads is [`App::tapped`]'s, and what it decides is whether a press is
+//! the second of a pair (TASK-42de0df951a4): it starts nothing, it wakes
+//! nothing, and no frame is drawn because time passed. `pressed` takes the
+//! instant rather than reading it, so the rule is stated to the suite instead
+//! of being waited out by it.
 //!
 //! # The confirmation, which is the fourth act
 //!
@@ -273,6 +279,7 @@ use ratatui::widgets::{
     Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
     Widget,
 };
+use std::time::{Duration, Instant};
 
 /// Which screen the one region is showing (TASK-252bf02de218).
 ///
@@ -457,6 +464,51 @@ struct Cursor {
     top: usize,
 }
 
+/// How long the row one press chose stays the row a second press opens
+/// (TASK-42de0df951a4, ADR-559eebf5c6f5).
+///
+/// **Not a double-click timeout, because a press is not a click.** What the
+/// decision asks for is the commonest act a thumb makes on a screen with no
+/// button on it -- choose a row, read it, touch it again -- and the reading is
+/// the part that takes the time. An interval measured in the fifths of a second
+/// a desktop gives a double-click would refuse the second touch a person
+/// actually makes, and refusing it means the document does not open: the cost
+/// of this number being too short is a reader that ignores people, where the
+/// cost of it being too long is a pairing that outlives its own row for a few
+/// seconds. So it is measured in what reading a row costs and not in what
+/// clicking twice costs.
+///
+/// **What it buys by expiring at all is that one press never opens anything.**
+/// A row is selected from the first frame a session draws, so without an
+/// interval the very first touch anybody makes on that row is a second touch:
+/// the reader opens a document nobody paired a press with, which is a screen a
+/// pocket can drive and the opposite of "the first is what *makes* a row the
+/// selected one". When the pairing goes stale the counting starts again, and
+/// that is the whole of what this is for.
+///
+/// Public because the suite measures against it rather than restating it: a
+/// test that slept a number of its own would be a second spelling of this one,
+/// and it would be the spelling that went out of date.
+pub const SECOND_PRESS: Duration = Duration::from_secs(5);
+
+/// The press a second press is measured against (TASK-42de0df951a4).
+///
+/// A row and a screen and not a point, because what a person presses twice is a
+/// row: a finger landing two columns further along the same row is the same
+/// act, and the arithmetic that turns a point into a row has already run by the
+/// time this is written down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Chosen {
+    /// The screen it landed on. A press on row three of the entities and a
+    /// press on row three of the queue are two acts on two lists, and the digit
+    /// between them is a keystroke that has already ended the pair.
+    focus: Focus,
+    /// The row it chose.
+    row: usize,
+    /// When it landed, which is the only instant this crate holds.
+    at: Instant,
+}
+
 /// What the key list did with a key pressed over it (TASK-8a6578851244).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Listed {
@@ -627,6 +679,20 @@ pub struct App {
     /// of any listing is opened -- the cursor walks, and Enter opens what it is
     /// on. One vocabulary, applied to an overlay.
     beyond: Option<usize>,
+    /// The press the next press in the region is measured against
+    /// (TASK-42de0df951a4, ADR-559eebf5c6f5).
+    ///
+    /// `None` is the ordinary state and it is where no press can open anything:
+    /// a press with nothing to pair with is the press that chooses. It is set
+    /// by a press that landed on a row and taken back by anything else a person
+    /// does -- a keystroke, a press on a target, a press on a border -- so
+    /// "two presses on the same row" means two presses and not two events with
+    /// a session's worth of screen in between.
+    ///
+    /// Held rather than derived, because it is the one fact the frame does not
+    /// carry: which row is selected is drawn on the screen, and how it came to
+    /// be selected is not.
+    chosen: Option<Chosen>,
 }
 
 impl App {
@@ -663,6 +729,7 @@ impl App {
             overlay: None,
             form: None,
             beyond: None,
+            chosen: None,
         }
     }
 
@@ -929,6 +996,12 @@ impl App {
     /// key runs the command that is being read or drops it, so what a person
     /// says yes to is what they were shown and nothing has moved underneath it.
     pub fn press(&mut self, key: KeyEvent, ank: &Ank) -> bool {
+        // A key ends the pair a second press would be measured against
+        // (TASK-42de0df951a4). Two presses on a row are two presses on it, and
+        // a person who reached for the keyboard in between has done something
+        // else with the screen -- including where the key moved no cursor,
+        // because what is being counted is the act and not its effect.
+        self.chosen = None;
         if self.pending.is_some() {
             return self.answer(key, ank);
         }
@@ -1044,6 +1117,13 @@ impl App {
         let at = Position::new(event.column, event.row);
         match event.kind {
             MouseEventKind::Down(_) => {
+                // The pairing belongs to the region and to nothing else on the
+                // frame (TASK-42de0df951a4): taken here, so every road out of
+                // this arm but the last leaves it ended. A press that reached
+                // an overlay, a target or a waiting command is a press
+                // somewhere else, and the row a person chose before it is not
+                // half of a gesture any more.
+                let first = self.chosen.take();
                 // The list is over the region and over the bands, so it is what
                 // a press lands on while it is open: one row, one binding, and
                 // no second road to whatever is drawn underneath it.
@@ -1110,7 +1190,7 @@ impl App {
                         return self.press(KeyEvent::new(binding.key, KeyModifiers::NONE), ank);
                     }
                 }
-                self.tapped(at, ank)
+                self.tapped(first, at, ank)
             }
             // The wheel, and the swipe a phone sends as one. It moves the
             // view and never the cursor (ADR-559eebf5c6f5,
@@ -1305,8 +1385,8 @@ impl App {
         self.overlay = Some(top.clamp(0, last as isize) as usize);
     }
 
-    /// A tap that landed in the region: the row under the finger selected, or
-    /// opened where it was the selected one already.
+    /// A tap that landed in the region: the row under the finger chosen, or
+    /// opened where the press before it chose that same row.
     ///
     /// **There is no panel to move to any more** (TASK-252bf02de218). This used
     /// to resolve which of four rectangles a finger was in, focus that one, and
@@ -1317,14 +1397,34 @@ impl App {
     /// crossing tap has nowhere to cross to: the digits are how a person
     /// changes screens now.
     ///
-    /// **Touching the row already selected opens it** (ADR-c07e2694f0e1,
-    /// TASK-9a402a54886f), and that is the commonest act on a phone reaching
-    /// the screen with no button at all: select, look, touch again. It is the
-    /// second touch and never the first, because the first is what *makes* a
-    /// row the selected one -- a tap that both moved the cursor and opened
-    /// whatever it landed on would be a screen where a person cannot look
-    /// before they choose.
-    fn tapped(&mut self, at: Position, ank: &Ank) -> bool {
+    /// **One press chooses a row, and two presses on that row open it**
+    /// (ADR-559eebf5c6f5, TASK-42de0df951a4, TASK-9a402a54886f), which is the
+    /// commonest act on a phone reaching the screen with no button at all:
+    /// choose, look, touch again. It is the second press and never the first,
+    /// because the first is what *makes* a row the chosen one -- a press that
+    /// both moved the cursor and opened whatever it landed on would be a screen
+    /// where a person cannot look before they choose.
+    ///
+    /// **Which is why the pair is counted and not inferred from the cursor.**
+    /// "The row already selected" was the whole of the rule until now, and on a
+    /// screen that selects its first row before anybody has touched it, the
+    /// first press a person makes on that row is already a press on the
+    /// selected one: it opened a document off one touch, which is the very
+    /// thing the paragraph above says it must not do. So what is asked is
+    /// whether *this* press pairs with the last one -- same screen, same row,
+    /// no further apart than [`SECOND_PRESS`] -- and the cursor is asked too,
+    /// because a pairing whose row has since been chosen by other means is a
+    /// pairing about a row nobody is standing on.
+    ///
+    /// The instant is taken rather than read, so the rule can be stated to a
+    /// test instead of waited out by one, and so this stays a function of what
+    /// it was given.
+    fn tapped(&mut self, first: Option<Chosen>, at: Position, ank: &Ank) -> bool {
+        self.pressed(first, at, ank, Instant::now())
+    }
+
+    /// [`App::tapped`] with the clock handed to it.
+    fn pressed(&mut self, first: Option<Chosen>, at: Position, ank: &Ank, now: Instant) -> bool {
         let focus = self.focus;
         let Some(row) = self.row_at(focus, at) else {
             return false;
@@ -1334,9 +1434,19 @@ impl App {
         if row >= self.count(focus) {
             return false;
         }
-        let again = row == self.cursors[focus.number() - 1].at;
+        let again = first.is_some_and(|first| {
+            first.focus == focus && first.row == row && now.duration_since(first.at) <= SECOND_PRESS
+        }) && row == self.cursors[focus.number() - 1].at;
         self.cursors[focus.number() - 1].at = row;
         self.clamp(focus);
+        // A pair that opened is spent: coming back out of the document to the
+        // row that is still selected finds a screen where one press chooses
+        // again, and not one where a single touch reopens what was just left.
+        self.chosen = (!again).then_some(Chosen {
+            focus,
+            row,
+            at: now,
+        });
         again && self.act(Command::Open, ank)
     }
 
@@ -7482,6 +7592,205 @@ mod tests {
                 .count();
             assert_eq!(marked, 1, "{frame}");
         }
+    }
+
+    /// One press of the left button at a point, at an instant the test names.
+    ///
+    /// [`App::pointed`]'s own arithmetic with the clock handed in: the pairing
+    /// is taken exactly where a mouse event takes it, so what these tests drive
+    /// is the road a terminal drives and not a shortcut past it. The instant is
+    /// stated rather than slept through -- a suite that waited out
+    /// [`SECOND_PRESS`] would be asserting on the machine it ran on.
+    fn press_at(a: &mut App, ank: &Ank, at: Position, now: Instant) -> bool {
+        let first = a.chosen.take();
+        a.pressed(first, at, ank, now)
+    }
+
+    /// What the reader reached for, read off the refusal.
+    ///
+    /// The CLI is addressed where there is none, so an open says which document
+    /// it would have shown -- which is the only thing about an open worth
+    /// asserting here, and it is unambiguous: a screen that opened nothing has
+    /// nothing to say.
+    fn reached_for(a: &App) -> String {
+        a.note.clone().unwrap_or_default()
+    }
+
+    /// **One press chooses a row, and two presses on that row open it**
+    /// (TASK-42de0df951a4, ADR-559eebf5c6f5).
+    ///
+    /// The second instant is [`SECOND_PRESS`] after the first exactly, which is
+    /// the boundary stated as the interval includes it: a pair that arrives on
+    /// the last instant of the interval is a pair.
+    #[test]
+    fn one_press_chooses_a_row_and_two_presses_on_it_open_it() {
+        let ank = nowhere();
+        for size in [PHONE, (120, 40)] {
+            let mut a = App::new(size, None).inked(paint::PLAIN).drawn_with(SCREEN);
+            has_read(&mut a);
+            let start = Instant::now();
+            let at = row_of(&a, 2);
+
+            press_at(&mut a, &ank, at, start);
+            assert_eq!(
+                a.cursors[Focus::Entities.number() - 1].at,
+                2,
+                "the press at {size:?} did not choose the row under it"
+            );
+            assert_eq!(
+                a.note,
+                None,
+                "one press at {size:?} opened a document: {}",
+                reached_for(&a)
+            );
+
+            press_at(&mut a, &ank, at, start + SECOND_PRESS);
+            assert!(
+                reached_for(&a).contains("SPEC-fe8bdb84faca"),
+                "two presses on the row at {size:?} opened nothing: {}",
+                reached_for(&a)
+            );
+        }
+    }
+
+    /// **Two presses on different rows open nothing**, and the second of them
+    /// is the press that chooses (TASK-42de0df951a4).
+    ///
+    /// The third press is what makes that a statement about the pairing rather
+    /// than about the interval: if the second press were not counted as a
+    /// first, nothing would open on the row it chose either.
+    #[test]
+    fn two_presses_on_different_rows_open_nothing() {
+        let ank = nowhere();
+        let mut a = phone();
+        let start = Instant::now();
+
+        let first = row_of(&a, 2);
+        let elsewhere = row_of(&a, 1);
+        press_at(&mut a, &ank, first, start);
+        press_at(&mut a, &ank, elsewhere, start);
+        assert_eq!(
+            a.cursors[Focus::Entities.number() - 1].at,
+            1,
+            "the second press did not choose the row under it"
+        );
+        assert_eq!(
+            a.note,
+            None,
+            "two presses on two rows opened a document: {}",
+            reached_for(&a)
+        );
+
+        press_at(&mut a, &ank, elsewhere, start);
+        assert!(
+            reached_for(&a).contains("TASK-49746735127f"),
+            "the row the second press chose does not open on the press after \
+             it: {}",
+            reached_for(&a)
+        );
+    }
+
+    /// **A second press further off than [`SECOND_PRESS`] opens nothing, and
+    /// the counting starts again from it** (TASK-42de0df951a4).
+    ///
+    /// The interval is what makes one press never enough, and this is where it
+    /// is measured: one instant past it, on the row that is selected, by the
+    /// road a finger takes.
+    #[test]
+    fn a_press_past_the_interval_opens_nothing_and_is_counted_as_a_first() {
+        let ank = nowhere();
+        let mut a = phone();
+        let start = Instant::now();
+        let at = row_of(&a, 2);
+        let past = start + SECOND_PRESS + Duration::from_millis(1);
+
+        press_at(&mut a, &ank, at, start);
+        press_at(&mut a, &ank, at, past);
+        assert_eq!(
+            a.note,
+            None,
+            "a press {SECOND_PRESS:?} and a millisecond after the one it was \
+             paired with opened a document: {}",
+            reached_for(&a)
+        );
+
+        press_at(&mut a, &ank, at, past + Duration::from_millis(1));
+        assert!(
+            reached_for(&a).contains("SPEC-fe8bdb84faca"),
+            "the press past the interval was not counted as the one that \
+             chooses: {}",
+            reached_for(&a)
+        );
+    }
+
+    /// **The first press on the row a session opens with opens nothing**
+    /// (TASK-42de0df951a4, ADR-559eebf5c6f5).
+    ///
+    /// The hole the interval closes, and the reason the pair is counted rather
+    /// than read off the cursor. A row is selected from the first frame a
+    /// session draws, so "the row already selected" made the very first touch
+    /// anybody made on it a second touch: a document opened off one press, on a
+    /// screen a pocket can drive.
+    #[test]
+    fn the_first_press_on_the_row_a_session_opens_with_opens_nothing() {
+        let ank = nowhere();
+        let mut a = phone();
+        assert_eq!(
+            a.cursors[Focus::Entities.number() - 1].at,
+            0,
+            "a session opens with no row selected, and this test is about the \
+             row it opens on"
+        );
+        let start = Instant::now();
+        let at = row_of(&a, 0);
+
+        press_at(&mut a, &ank, at, start);
+        assert_eq!(
+            a.note,
+            None,
+            "the first press on the selected row opened it: {}",
+            reached_for(&a)
+        );
+
+        press_at(&mut a, &ank, at, start);
+        assert!(
+            reached_for(&a).contains("ADR-8bd76e8d7c4e"),
+            "the second press did not open the row: {}",
+            reached_for(&a)
+        );
+    }
+
+    /// **A key between two presses ends the pair** (TASK-42de0df951a4).
+    ///
+    /// The cursor is walked away and walked back, so what is left on the screen
+    /// is the state the two presses would have found on their own: the same row
+    /// selected, inside the interval. What is different is that a person did
+    /// something else with the reader in between, and two presses with a
+    /// session's worth of keyboard between them are not two presses on a row.
+    #[test]
+    fn a_key_between_two_presses_ends_the_pair() {
+        let ank = nowhere();
+        let mut a = phone();
+        let start = Instant::now();
+        let at = row_of(&a, 1);
+
+        press_at(&mut a, &ank, at, start);
+        tap(&mut a, &ank, KeyCode::Char('j'));
+        tap(&mut a, &ank, KeyCode::Char('k'));
+        assert_eq!(
+            a.cursors[Focus::Entities.number() - 1].at,
+            1,
+            "the cursor is not back on the row the press chose"
+        );
+        a.note = None;
+
+        press_at(&mut a, &ank, at, start);
+        assert_eq!(
+            a.note,
+            None,
+            "a press paired with one a keystroke came after: {}",
+            reached_for(&a)
+        );
     }
 
     /// A press that landed on no row of a listing leaves the cursor where it
