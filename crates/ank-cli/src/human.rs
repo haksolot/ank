@@ -5309,8 +5309,14 @@ fn can_sign(cwd: &Path) -> bool {
 /// A failure to read is `false`: this only ever weakens `Unchecked` back to
 /// `Absent`, which is the verdict the caller would have reached anyway, and
 /// `Unreadable` already covers a git that cannot answer at all.
+///
+/// The object comes out of [`git::ratification_object`], which reads every
+/// ratification in the history in one batch rather than one process per commit
+/// (TASK-fc0334201ccf). Nothing about the answer moves: the bytes are the same
+/// bytes `cat-file commit` wrote, and a name git cannot resolve is absent from
+/// the batch, which lands on the same `false` a failed read always did.
 fn commit_carries_signature(root: &Path, sha: &str) -> bool {
-    let Ok(object) = git::run(root, &["cat-file", "commit", sha]) else {
+    let Some(object) = git::ratification_object(root, sha) else {
         return false;
     };
     // Headers stop at the first blank line. A message body quoting `gpgsig` is
