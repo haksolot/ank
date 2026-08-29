@@ -34,7 +34,7 @@ mod terminal;
 use terminal::{Live, Repo};
 
 /// The border set an ordinary terminal is drawn with, read out of the reader
-/// rather than written here (ADR-c07e2694f0e1).
+/// rather than written here (ADR-559eebf5c6f5).
 ///
 /// A suite carrying its own copy of a glyph would go on asserting about a
 /// character the reader had stopped drawing, which is a test that quietly
@@ -339,7 +339,7 @@ fn marked(frame: &str) -> String {
 }
 
 /// Structure is box-drawing, and ASCII where the terminal declares itself
-/// dumb (TASK-e900637aeac4, ADR-c07e2694f0e1).
+/// dumb (TASK-e900637aeac4, ADR-559eebf5c6f5).
 ///
 /// **Through the binary, because the probe is the environment of a process.**
 /// `src/view.rs` asserts the same property of the render function, which is

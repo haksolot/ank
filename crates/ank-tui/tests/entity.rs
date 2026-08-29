@@ -18,8 +18,9 @@
 //! list written here: `ank help new` says which flags are the verb's own and
 //! `ank help new --json` says the same thing as a document, and the rows the
 //! form draws are held to both. A suite carrying its own copy of the flag set
-//! would agree with a form that had drifted, which is the whole failure
-//! ADR-c07e2694f0e1 was written against.
+//! would agree with a form that had drifted, which is the drift
+//! ADR-559eebf5c6f5 forbids by reading what the reader offers out of the
+//! contract's own table.
 //!
 //! The terminal, the corpus and the driven session are `terminal/mod.rs`, which
 //! `tests/confirmation.rs` declares too.

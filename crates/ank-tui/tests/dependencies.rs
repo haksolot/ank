@@ -1,9 +1,9 @@
-//! The constraint made mechanical (ADR-8bd76e8d7c4e, ADR-c07e2694f0e1).
+//! The constraint made mechanical (ADR-8bd76e8d7c4e, ADR-559eebf5c6f5).
 //!
 //! ADR-8bd76e8d7c4e forbids the terminal reader from linking `ank-core`, from
 //! reading `.ank/` and from touching `refs/ank/*`, so that the refusals it shows
 //! are the refusals the CLI gave and there is no second dispatch path to keep in
-//! step. ADR-c07e2694f0e1 adds one of the same kind on the other side: the
+//! step. ADR-559eebf5c6f5 adds one of the same kind on the other side: the
 //! reader is drawn with ratatui over crossterm, and **no FFI enters this tree
 //! for any of it, on any platform**. A rule that lives only in prose is a rule
 //! the second contributor breaks for a good reason, on a Tuesday, in a commit
@@ -183,7 +183,7 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 /// `serde_json` is what reads the CLI's `--json`, and is the crate this list
 /// gained when `serde_yaml` left it (TASK-f0c6372d8dc0) -- the argument for
 /// spending it is in the manifest beside the declaration, where
-/// ADR-c07e2694f0e1's first clause puts it; `ratatui` and `crossterm` are what
+/// ADR-559eebf5c6f5's first clause puts it; `ratatui` and `crossterm` are what
 /// that decision spends and the whole of what it spends; the rest is what those
 /// four bring with them and nothing this crate chose.
 #[test]
@@ -208,7 +208,7 @@ fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     );
 }
 
-/// No `extern` block, on any platform (ADR-c07e2694f0e1).
+/// No `extern` block, on any platform (ADR-559eebf5c6f5).
 ///
 /// **This is the assertion the whole decision rests on.** What sent the reader
 /// to a line discipline in the first place was that raw mode is `tcsetattr` on
@@ -230,7 +230,7 @@ fn no_foreign_symbol_is_declared_in_this_tree() {
                 !text.contains(forbidden),
                 "{file} declares {forbidden}: the reader reaches raw mode, the \
                  window and a keystroke through crossterm, which is what \
-                 ADR-c07e2694f0e1 bought and the only reason it was worth \
+                 ADR-559eebf5c6f5 bought and the only reason it was worth \
                  buying"
             );
         }
@@ -325,7 +325,7 @@ fn one_function_in_this_crate_spawns_a_verb_that_writes() {
 /// This is the half of `keys::no_bare_key_can_write` that survives the wave.
 /// That test said no bare key could produce a [`ank_tui::input::Command::Act`]
 /// at all, and it was worth having because reaching a verb took a key *and* a
-/// word. ADR-c07e2694f0e1 spends that asymmetry: TASK-1a415107fd56 gives the
+/// word. ADR-559eebf5c6f5 spends that asymmetry: TASK-1a415107fd56 gives the
 /// six their own letters, and the rule that has to hold afterwards is not that
 /// an act is unreachable by a key -- it is that *however* an act is reached, it
 /// is composed and shown rather than run.

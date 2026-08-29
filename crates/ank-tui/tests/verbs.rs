@@ -208,8 +208,8 @@ fn each_of_the_six_verbs_is_a_letter_that_spells_the_panels_entity_and_waits() {
 
 /// **`h`, `l`, `n` and `p` move nothing** (TASK-1a415107fd56).
 ///
-/// The price ADR-c07e2694f0e1 puts on the letters, measured on the screen a
-/// person is looking at. Three of the four reach nothing at all and the frame
+/// The price ADR-559eebf5c6f5 takes on the letters -- navigation takes what is
+/// left -- measured on the screen a person is looking at. Three of the four reach nothing at all and the frame
 /// is identical character for character; `l` is `log`, so it raises a
 /// confirmation -- and the rows underneath it do not move, which is what the
 /// clause is about. A key that quietly moved a cursor while asking about a

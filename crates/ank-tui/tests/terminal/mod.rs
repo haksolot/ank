@@ -5,7 +5,7 @@
 //! crate, so two of them share nothing that is not in a library -- and a
 //! pseudo-terminal in `ank-tui`'s own `src/` is not an option:
 //! `tests/dependencies.rs` forbids this crate a foreign symbol and forbids it
-//! `unsafe`, which is the whole of what ADR-c07e2694f0e1 bought by taking
+//! `unsafe`, which is the whole of what ADR-559eebf5c6f5 bought by taking
 //! crossterm. A test may name what the crate may not, and that file's
 //! `sources()` reads only `src/`, which is exactly the exemption it is written
 //! to give. So the smallest terminal that can answer these questions lives in a
@@ -58,8 +58,16 @@ pub fn ank() -> PathBuf {
 pub struct Repo(pub PathBuf);
 
 impl Drop for Repo {
+    /// **Only ever under [`scratch::root`], and the check is not a formality.**
+    /// The field is public, so any path at all can be put in one -- and a
+    /// `Drop` that removed whatever it was handed took a working tree off this
+    /// machine while this suite was being read (LOG, TASK-73b1eea6cecb). What
+    /// this type is for is a corpus this suite made, so the removal is stated
+    /// over that and a path from anywhere else is left exactly where it is.
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if self.0.starts_with(scratch::root()) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 }
 
@@ -839,7 +847,7 @@ impl Live {
     }
 
     /// A session on a terminal that has declared it can render nothing rich
-    /// (ADR-c07e2694f0e1).
+    /// (ADR-559eebf5c6f5).
     ///
     /// `TERM=dumb` is the whole of the declaration, and it is what puts the
     /// reader on its ASCII border set and its plain palette at once -- one
