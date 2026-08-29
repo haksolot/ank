@@ -116,7 +116,9 @@ mod scratch {
         p
     }
 
-    fn root() -> &'static Path {
+    /// Public because the two places this suite spawns the binary hand it to
+    /// the child as what "temporary" means (TASK-ec85b1561855).
+    pub fn root() -> &'static Path {
         static ROOT: OnceLock<PathBuf> = OnceLock::new();
         ROOT.get_or_init(|| {
             let base = std::env::temp_dir();
@@ -156,6 +158,36 @@ mod scratch {
             }
         }
     }
+}
+
+/// Tell a child of this suite that "temporary" means this run's own root
+/// (TASK-ec85b1561855).
+///
+/// The same one line `crates/ank-cli/tests/cli.rs::spawn` grew for the same
+/// reason, on the same scheme (TASK-553740e7af11): a child that inherits the
+/// machine's temporary directory writes beside every other run on it, and
+/// nothing collects what it leaves. Measured on 2026-08-29, `cargo test
+/// --workspace` into an empty temporary directory left one file that no run
+/// sweeps -- the scratch file `ank new task` keeps when the fake `$EDITOR`
+/// this suite spawns hands back something invalid.
+///
+/// **What is not being fixed is that the file is written.** `editor::kept`
+/// answers a typo without discarding the twenty minutes around it, and the
+/// refusal names the path: a file swept between the caller reading that
+/// message and opening it would be the promise broken. It is still written,
+/// still kept, still named. Only the directory the child calls temporary
+/// moves, into the root the next run already collects.
+///
+/// All three names, because `std::env::temp_dir` reads `TMP` and `TEMP` on
+/// Windows and `TMPDIR` everywhere else: setting one of the three would leave
+/// the child on the runner's own temporary directory on the platform where
+/// this suite runs last.
+fn in_this_runs_root(command: &mut Command) {
+    let root = scratch::root();
+    command
+        .env("TMPDIR", root)
+        .env("TMP", root)
+        .env("TEMP", root);
 }
 
 impl Repo {
@@ -373,6 +405,7 @@ impl Repo {
             .current_dir(&self.0)
             .env("ANK_AGENT", AGENT)
             .env("NO_COLOR", "1");
+        in_this_runs_root(&mut command);
         for (name, value) in env {
             command.env(name, value);
         }
@@ -852,6 +885,7 @@ impl Live {
             .current_dir(&repo.0)
             .env("ANK_AGENT", AGENT)
             .env("TERM", term);
+        in_this_runs_root(&mut command);
         match colour {
             true => command.env_remove("NO_COLOR"),
             false => command.env("NO_COLOR", "1"),
