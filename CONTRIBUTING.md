@@ -78,13 +78,18 @@ ank accept <id>                  # the gate is satisfied here
 git branch ratify/<id>           # branch first, at the ratification commit
 git reset --hard origin/main     # local main back where it was
 git push -u origin ratify/<id>
-gh pr create --fill
+gh pr create --fill --base main --head ratify/<id>
 gh pr merge --merge              # a merge commit, and nothing else
 git switch main && git pull
 ```
 
 Branch before resetting. The commit is then held by a ref, and a botched ordering
 is a reflog recovery rather than a lost signature.
+
+`--head` is not decoration. After the reset the shell is still standing on `main`,
+so a bare `gh pr create --fill` reads the current branch as the head, finds it is
+also the base, and refuses with "head branch is the same as base branch". Naming
+the branch is what makes the sequence work from where it leaves you.
 
 **Merge with a merge commit, never a squash and never a rebase.** This is
 load-bearing and not a matter of taste. A ratification is located by the *subject*
