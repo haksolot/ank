@@ -262,7 +262,10 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, Mou
 use ratatui::layout::{Position, Rect};
 use ratatui::symbols::border;
 use ratatui::text::{Line, Text};
-use ratatui::widgets::{Block, Clear, Paragraph, Widget};
+use ratatui::widgets::{
+    Block, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, StatefulWidget,
+    Widget,
+};
 
 /// Which screen the one region is showing (TASK-252bf02de218).
 ///
@@ -1090,11 +1093,14 @@ impl App {
                 }
                 self.tapped(at, ank)
             }
-            // A swipe, which is what a phone sends for a scroll. It moves the
-            // cursor of whatever has the focus, which is what `j` and `k` do:
-            // one command, two ways of asking for it.
-            MouseEventKind::ScrollDown => self.moved(1, ank),
-            MouseEventKind::ScrollUp => self.moved(-1, ank),
+            // The wheel, and the swipe a phone sends as one. It moves the
+            // view and never the cursor (ADR-559eebf5c6f5,
+            // TASK-d712d7f9a326): `j` and `k` are how a person chooses a row,
+            // and a wheel that chose one would move the subject of every verb
+            // on the screen while somebody was only looking further down the
+            // list.
+            MouseEventKind::ScrollDown => self.wheeled(1),
+            MouseEventKind::ScrollUp => self.wheeled(-1),
             // A release, a drag, a mouse crossing the window: no command, and
             // nothing drawn differently either.
             _ => false,
@@ -1103,7 +1109,14 @@ impl App {
 
     /// A scroll, where a scroll means anything: under an open search or a
     /// confirmation nothing moves, which is the modal rule again.
-    fn moved(&mut self, by: isize, ank: &Ank) -> bool {
+    ///
+    /// **What it moves is the view** (ADR-559eebf5c6f5, TASK-d712d7f9a326).
+    /// The three overlays under it are the exception and they are not one:
+    /// none of them draws a window a cursor can leave -- the key list *is* a
+    /// window with no cursor at all, and the form and the list `x` opens are
+    /// as long as their rows, so what a finger over them can mean is the only
+    /// thing it ever meant there.
+    fn wheeled(&mut self, by: isize) -> bool {
         if self.pending.is_some() || self.needle.is_some() {
             return false;
         }
@@ -1129,7 +1142,56 @@ impl App {
             self.scroll_list(by);
             return false;
         }
-        self.act(Command::Move(by), ank)
+        self.scrolled(by)
+    }
+
+    /// The window over the screen in the region, moved by this many rows, with
+    /// the row that is selected left exactly where it was
+    /// (TASK-d712d7f9a326).
+    ///
+    /// **The cursor is not dragged along and not clamped back into view.**
+    /// That is the whole of the decision: a person scrolling is reading, and
+    /// what they come back to has to be the row they left -- the identifier
+    /// every verb on this screen is composed against. So the selected row may
+    /// be off the top or off the bottom of what is drawn, and it is the
+    /// listing's own marker that says where it is, which is exactly what the
+    /// marker is for: a row that is not on the screen has no marker on the
+    /// screen, and none of the four screens says where a person is standing in
+    /// any other alphabet.
+    ///
+    /// [`App::scroll_list`]'s arithmetic, on the region's own window: never
+    /// above the first row and never past the last screenful, so the last
+    /// press that does anything is the one that puts the end of the list on
+    /// the bottom row. A window that scrolled into blank rows would answer a
+    /// wheel with a screen that showed nothing, which reads as a reader that
+    /// has stopped listening.
+    fn scrolled(&mut self, by: isize) -> bool {
+        let (total, _) = self.paging(self.focus);
+        let last = total.saturating_sub(self.page(self.focus)) as isize;
+        let moved = |from: usize| (from as isize + by).clamp(0, last.max(0)) as usize;
+        match self.focus {
+            Focus::Body => self.offset = moved(self.offset),
+            listing => {
+                let c = &mut self.cursors[listing.number() - 1];
+                c.top = moved(c.top);
+            }
+        }
+        false
+    }
+
+    /// What the region is a window onto: how many rows the screen in it holds,
+    /// and which of them is drawn first.
+    ///
+    /// One answer for the four screens, because "is there more of this than
+    /// the region can show" is one question -- and it is asked twice, by the
+    /// wheel and by the bar that says where the wheel has got to. Two
+    /// arithmetics for that would be two things that can disagree about
+    /// whether a bar is drawn at all.
+    fn paging(&self, focus: Focus) -> (usize, usize) {
+        match focus {
+            Focus::Body => (self.pane_lines().len(), self.offset),
+            listing => (self.count(listing), self.cursors[listing.number() - 1].top),
+        }
     }
 
     /// What one key does to the key list that is open under it
@@ -2019,6 +2081,57 @@ impl App {
             Focus::Body => self.body_lines(width, inside.height as usize),
         };
         painted(&lines, self.ink).render(inside, buf);
+        self.bar(focus, area, buf);
+    }
+
+    /// Where the view sits in the screen the region is showing, drawn on the
+    /// region's right border -- and drawn only while there is more of that
+    /// screen than the region can hold (ADR-559eebf5c6f5, TASK-d712d7f9a326).
+    ///
+    /// **A rule around emptiness is what this must not be.** A track drawn
+    /// down a listing that fits would be a bar saying "there is more" over a
+    /// screen where there is not, which is the same defect as a border with
+    /// nothing inside it: furniture a person has to learn to disregard. So a
+    /// window holding everything it has gets the plain border it always had,
+    /// and the bar arrives exactly when a wheel has somewhere to go.
+    ///
+    /// **The thumb is the whole of it and the track is the border itself.**
+    /// The bar costs no column of content at any width -- which is what lets
+    /// it appear and vanish without a row underneath it being composed twice
+    /// -- and it is characters, so the frame drawn with the paint and the
+    /// frame drawn without it are the same characters here as everywhere else:
+    /// nothing below sets a style.
+    ///
+    /// **The state is spelled in scroll positions and not in rows**, which is
+    /// the one thing about the widget worth saying twice. `content_length` is
+    /// how many places the window can stand, `position` is which of them it is
+    /// standing in: passed the row count instead, the arithmetic leaves the
+    /// thumb short of the bottom on a view that has nothing more to show, and
+    /// a bar that says "there is more" at the end of a list is a bar that
+    /// lies.
+    fn bar(&self, focus: Focus, area: Rect, buf: &mut Buffer) {
+        let (total, first) = self.paging(focus);
+        let page = self.page(focus);
+        if total <= page {
+            return;
+        }
+        let inside = inside(area);
+        // The rows the screen in the region is paging, on the column the
+        // block's own right border is drawn in. `page` is measured off that
+        // same rectangle, so this is the border and never a row beyond it.
+        let track = Rect::new(area.right() - 1, inside.y, 1, page as u16);
+        let mut state = ScrollbarState::new(total - page + 1)
+            .position(first)
+            .viewport_content_length(page);
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .thumb_symbol(self.glyphs.thumb())
+            // The track is the border the block has already drawn, and the
+            // ends are nothing: an arrow head is an offer, and this reader
+            // draws no offer at rest (ADR-c07e2694f0e1).
+            .track_symbol(None)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .render(track, buf, &mut state);
     }
 
     /// What a panel's title says after its number: its name, and the state of
@@ -3413,6 +3526,24 @@ impl Glyphs {
     /// the header does not sit over a frame drawn in a different alphabet.
     pub fn rule(self) -> &'static str {
         self.border(false).horizontal_top
+    }
+
+    /// The character the scrollbar's thumb is drawn with
+    /// (ADR-559eebf5c6f5, TASK-d712d7f9a326).
+    ///
+    /// **A scrollbar is characters or it is not drawn**, so this is the whole
+    /// of the bar: the track is the region's own right border, already under
+    /// it, and what says where the view sits is these cells and not a colour
+    /// on them. It is read off the same probe the border set and the palette
+    /// are, so a terminal that has said it can render neither glyphs nor
+    /// colour is told where it is standing in ASCII rather than told nothing:
+    /// U+2588 FULL BLOCK where the reader draws glyphs, `#` where it does
+    /// not.
+    pub const fn thumb(self) -> &'static str {
+        match self.rich {
+            true => "\u{2588}",
+            false => "#",
+        }
     }
 }
 
@@ -7440,28 +7571,395 @@ mod tests {
         assert!(a.pending.is_some(), "a swipe answered a command");
     }
 
-    /// A swipe moves the cursor of whatever has the focus, which is what `j`
-    /// and `k` do.
-    #[test]
-    fn a_swipe_moves_the_cursor_the_way_the_keys_do() {
-        let ank = nowhere();
-        let mut a = phone();
-        for (kind, expected) in [
-            (MouseEventKind::ScrollDown, 1),
-            (MouseEventKind::ScrollDown, 2),
-            (MouseEventKind::ScrollUp, 1),
-        ] {
+    // -----------------------------------------------------------------------
+    // The wheel, and the bar that says where it has got to
+    // (TASK-d712d7f9a326, ADR-559eebf5c6f5)
+    // -----------------------------------------------------------------------
+
+    /// A corpus longer than any window this suite opens.
+    ///
+    /// Sixty rows against the twenty-four the narrowest of them holds, so
+    /// every window below overruns and there is no width at which "the
+    /// content is longer than the region" quietly stops being true.
+    fn crowd(rows: usize) -> Snapshot {
+        Snapshot {
+            corpus: "5a02985accabde1a7365a01db237a245097ab4ca".to_string(),
+            entities: (0..rows)
+                .map(|n| {
+                    row(
+                        &format!("TASK-{n:012x}"),
+                        "task",
+                        "open",
+                        &format!("the {n}th task of a list nothing can hold"),
+                    )
+                })
+                .collect(),
+            total: rows as u64,
+        }
+    }
+
+    /// A screen with that corpus on it.
+    fn crowded() -> App {
+        let mut a = App::new((80, 24), None)
+            .inked(paint::PLAIN)
+            .drawn_with(SCREEN);
+        a.snapshot = Some(crowd(60));
+        a
+    }
+
+    /// One notch of the wheel over the region.
+    fn wheel(a: &mut App, ank: &Ank, by: isize) {
+        let kind = match by < 0 {
+            true => MouseEventKind::ScrollUp,
+            false => MouseEventKind::ScrollDown,
+        };
+        for _ in 0..by.abs() {
             a.pointed(
                 MouseEvent {
                     kind,
                     column: 2,
-                    row: 8,
+                    row: inside(a.region(a.area())).y,
                     modifiers: KeyModifiers::NONE,
                 },
-                &ank,
+                ank,
             );
-            assert_eq!(a.cursors[Focus::Entities.number() - 1].at, expected);
         }
+    }
+
+    /// The rows the region is drawing, as characters, borders taken off.
+    fn region_rows(a: &App) -> Vec<String> {
+        let inside = inside(a.region(a.area()));
+        let frame = a.frame();
+        frame
+            .lines()
+            .skip(inside.y as usize)
+            .take(inside.height as usize)
+            .map(|l| {
+                l.chars()
+                    .skip(inside.x as usize)
+                    .take(inside.width as usize)
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The column the bar is drawn in, one character per row inside the
+    /// region.
+    ///
+    /// The region's right border and not a column of content: the bar costs
+    /// no width, so this is where the track already was.
+    fn bar_column(a: &App) -> Vec<String> {
+        let region = a.region(a.area());
+        let inside = inside(region);
+        let frame = a.frame();
+        frame
+            .lines()
+            .skip(inside.y as usize)
+            .take(inside.height as usize)
+            .map(|l| {
+                l.chars()
+                    .nth(region.right() as usize - 1)
+                    .map(String::from)
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    /// **The wheel moves the view and leaves the selected row where it was**
+    /// (TASK-d712d7f9a326, ADR-559eebf5c6f5).
+    ///
+    /// Both halves in one test because either alone is the wrong reader: one
+    /// that moved nothing would pass the second, and one that moved the cursor
+    /// with the view -- which is what a swipe did before this -- would pass
+    /// the first. What the criterion protects is the identifier every verb on
+    /// this screen is composed against: a person scrolling is reading, and a
+    /// wheel that chose a row would change the subject of `claim` while
+    /// somebody was only looking further down.
+    ///
+    /// And it comes back. The frame after a notch down and a notch up is the
+    /// frame before them, character for character, which says the view moved
+    /// and nothing else did.
+    #[test]
+    fn the_wheel_moves_the_view_and_not_the_cursor() {
+        let ank = nowhere();
+        for window in [(80, 24), (40, 30), (120, 40), (150, 24)] {
+            let mut a = crowded();
+            a.resize(window.0, window.1);
+            a.cursors[Focus::Entities.number() - 1].at = 2;
+            let before = a.frame();
+            let selected = a.selected_id(Focus::Entities);
+            let first = region_rows(&a)[0].clone();
+
+            wheel(&mut a, &ank, 3);
+            assert_eq!(
+                a.cursors[Focus::Entities.number() - 1].at,
+                2,
+                "the wheel moved the cursor at {window:?}"
+            );
+            assert_eq!(
+                a.selected_id(Focus::Entities),
+                selected,
+                "the wheel changed which entity the screen names at {window:?}"
+            );
+            assert_ne!(
+                region_rows(&a)[0],
+                first,
+                "the wheel drew the same row first at {window:?}:\n{}",
+                a.frame()
+            );
+            assert_eq!(
+                a.cursors[Focus::Entities.number() - 1].top,
+                3,
+                "three notches are not three rows at {window:?}"
+            );
+
+            wheel(&mut a, &ank, -3);
+            assert_eq!(
+                a.frame(),
+                before,
+                "the view did not come back at {window:?}"
+            );
+        }
+    }
+
+    /// The row the cursor is on may leave the screen, and the marker is the
+    /// only thing that ever said where it was (ADR-559eebf5c6f5).
+    ///
+    /// The consequence of the criterion rather than a second decision: a
+    /// cursor that is not dragged along is a cursor that can be scrolled past,
+    /// and the honest frame then carries no marker at all. Nothing else on it
+    /// says where a person is standing -- not a colour, and not a border --
+    /// so this asserts the marker goes and comes back with the row.
+    #[test]
+    fn a_row_scrolled_off_takes_its_marker_with_it_and_gets_it_back() {
+        let ank = nowhere();
+        let mut a = crowded();
+        a.focus = Focus::Entities;
+        assert!(
+            region_rows(&a).iter().any(|l| l.starts_with(text::CURSOR)),
+            "the first frame marks no row:\n{}",
+            a.frame()
+        );
+        wheel(&mut a, &ank, 5);
+        assert!(
+            !region_rows(&a).iter().any(|l| l.starts_with(text::CURSOR)),
+            "a row scrolled off the top is still marked:\n{}",
+            a.frame()
+        );
+        assert_eq!(a.cursors[Focus::Entities.number() - 1].at, 0);
+        wheel(&mut a, &ank, -5);
+        assert!(
+            region_rows(&a).iter().any(|l| l.starts_with(text::CURSOR)),
+            "the row came back unmarked:\n{}",
+            a.frame()
+        );
+    }
+
+    /// The view stops at both ends, and the last notch that does anything is
+    /// the one that puts the last row on the bottom.
+    ///
+    /// A window that scrolled into the blank past the end would answer a wheel
+    /// with a screen showing nothing, which reads as a reader that has stopped
+    /// listening.
+    #[test]
+    fn the_view_never_scrolls_above_the_first_row_or_past_the_last() {
+        let ank = nowhere();
+        let mut a = crowded();
+        wheel(&mut a, &ank, -4);
+        assert_eq!(
+            a.cursors[Focus::Entities.number() - 1].top,
+            0,
+            "the view scrolled above the first row"
+        );
+        let page = a.page(Focus::Entities);
+        let total = a.count(Focus::Entities);
+        wheel(&mut a, &ank, total as isize + 10);
+        assert_eq!(
+            a.cursors[Focus::Entities.number() - 1].top,
+            total - page,
+            "the view scrolled past the last screenful"
+        );
+        let rows = region_rows(&a);
+        assert!(
+            rows.iter().all(|l| !l.trim().is_empty()),
+            "the wheel reached blank rows:\n{}",
+            a.frame()
+        );
+        assert!(
+            rows.last()
+                .is_some_and(|l| l.contains(&short_of(&crowd(60).entities[total - 1].id))),
+            "the last row of the list is not on the bottom row:\n{}",
+            a.frame()
+        );
+    }
+
+    /// **A bar is drawn while the content is longer than the region and not
+    /// otherwise** (TASK-d712d7f9a326, ADR-559eebf5c6f5).
+    ///
+    /// The second half is the one that costs something to keep: a track drawn
+    /// down a listing that fits is a rule around emptiness, saying "there is
+    /// more" over a screen where there is not. So the listing of three is
+    /// asked about at every width, and so is the same listing narrowed by a
+    /// filter until it fits.
+    #[test]
+    fn the_bar_is_drawn_where_the_content_overruns_and_nowhere_else() {
+        let thumb = SCREEN.thumb();
+        for width in 40..=150u16 {
+            let mut short = app();
+            short.resize(width, 24);
+            assert!(
+                !short.frame().contains(thumb),
+                "a listing that fits its region carries a bar at {width}:\n{}",
+                short.frame()
+            );
+
+            let mut long = crowded();
+            long.resize(width, 24);
+            assert!(
+                bar_column(&long).iter().any(|c| c == thumb),
+                "a listing longer than its region carries no bar at {width}:\n{}",
+                long.frame()
+            );
+            // And it goes when the filter takes the overrun away.
+            long.search = Some("the 7th".to_string());
+            assert!(
+                !long.frame().contains(thumb),
+                "the bar survived the filter that made the list fit at \
+                 {width}:\n{}",
+                long.frame()
+            );
+        }
+    }
+
+    /// The bar says where the view sits: at the top when the first row is
+    /// drawn first, and at the bottom when the last row is on the screen.
+    ///
+    /// Both ends, because a bar that never reaches the bottom is a bar that
+    /// says "there is more" at the end of a list.
+    #[test]
+    fn the_bar_says_where_the_view_sits() {
+        let ank = nowhere();
+        let thumb = SCREEN.thumb();
+        let mut a = crowded();
+        let at_top = bar_column(&a);
+        assert_eq!(
+            at_top.first().map(String::as_str),
+            Some(thumb),
+            "the bar is not at the top of a view that is:\n{}",
+            a.frame()
+        );
+        assert_ne!(
+            at_top.last().map(String::as_str),
+            Some(thumb),
+            "the bar fills the track of a view showing part of the list:\n{}",
+            a.frame()
+        );
+
+        let rows = a.count(Focus::Entities) as isize;
+        wheel(&mut a, &ank, rows);
+        let at_end = bar_column(&a);
+        assert_eq!(
+            at_end.last().map(String::as_str),
+            Some(thumb),
+            "the bar is short of the bottom on a view with nothing more to \
+             show:\n{}",
+            a.frame()
+        );
+        assert_ne!(
+            at_end.first().map(String::as_str),
+            Some(thumb),
+            "the bar stayed at the top of a view that moved:\n{}",
+            a.frame()
+        );
+    }
+
+    /// **The bar is characters**, so the frame drawn with the paint and the
+    /// frame drawn without it are identical character for character
+    /// (ADR-559eebf5c6f5).
+    ///
+    /// The crate already asserts that of every frame it draws; what is added
+    /// here is the fixture that overruns, because the frames that test
+    /// compares all fit their region and a bar it never drew is a bar it never
+    /// measured.
+    #[test]
+    fn the_painted_bar_and_the_plain_one_are_the_same_characters() {
+        let ank = nowhere();
+        let ash = |ink| {
+            let mut a = App::new((80, 24), None).inked(ink).drawn_with(SCREEN);
+            a.snapshot = Some(crowd(60));
+            a
+        };
+        let (mut painted, mut plain) = (ash(paint::COLOUR), ash(paint::PLAIN));
+        for a in [&mut painted, &mut plain] {
+            wheel(a, &ank, 4);
+        }
+        for width in 40..=150u16 {
+            painted.resize(width, 24);
+            plain.resize(width, 24);
+            assert!(
+                plain.frame().contains(SCREEN.thumb()),
+                "the fixture draws no bar at {width}, so nothing is being \
+                 measured:\n{}",
+                plain.frame()
+            );
+            assert_eq!(
+                painted.frame(),
+                plain.frame(),
+                "the painted bar says something the plain one does not, at \
+                 {width} columns"
+            );
+        }
+    }
+
+    /// The terminal that declared itself dumb is told where the view sits in
+    /// the alphabet it has (ADR-c07e2694f0e1).
+    #[test]
+    fn the_bar_drops_to_ascii_where_the_terminal_says_it_is_dumb() {
+        let mut a = crowded();
+        a.glyphs = ASCII;
+        let column = bar_column(&a);
+        assert!(
+            column.iter().any(|c| c == ASCII.thumb()),
+            "the dumb terminal gets no bar:\n{}",
+            a.frame()
+        );
+        assert!(
+            !a.frame().contains(BOXES.thumb()),
+            "a box-drawing glyph reached a terminal that cannot render one:\n{}",
+            a.frame()
+        );
+    }
+
+    /// The document is a window like any other: the wheel moves it, and the
+    /// row Enter would open stays where it was.
+    #[test]
+    fn the_wheel_moves_the_document_and_not_its_cursor() {
+        let ank = nowhere();
+        let mut a = app();
+        let body: String = (0..80)
+            .map(|n| format!("line {n} of a document\n"))
+            .collect();
+        a.detail = Some(detail("TASK-49746735127f", &body));
+        a.focus = Focus::Body;
+        let at = a.cursors[Focus::Body.number() - 1].at;
+        let first = region_rows(&a)[0].clone();
+        assert!(
+            bar_column(&a).iter().any(|c| c == SCREEN.thumb()),
+            "a document longer than the region carries no bar:\n{}",
+            a.frame()
+        );
+        wheel(&mut a, &ank, 5);
+        assert_eq!(a.offset, 5, "the wheel did not move the document");
+        assert_eq!(
+            a.cursors[Focus::Body.number() - 1].at,
+            at,
+            "the wheel moved the document's cursor"
+        );
+        assert_ne!(
+            region_rows(&a)[0],
+            first,
+            "the document drew the same row first"
+        );
     }
 
     // -----------------------------------------------------------------------
