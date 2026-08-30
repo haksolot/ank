@@ -15,13 +15,24 @@ name: install
 # shell script, and a Windows row would share the row's name and none of its
 # steps. The two jobs assert the same properties in the two languages.
 
+# `push` on the default branch only, for the reason ci.yml gives at the same
+# place: main takes no direct push, so every other commit arrives through a pull
+# request and `pull_request` already tests it. Listening to both ran this
+# workflow twice per commit.
 on:
   push:
+    branches: [main]
   pull_request:
 
 # Read-only. This workflow publishes nothing; it reads the release page.
 permissions:
   contents: read
+
+# One run per ref. This workflow writes nothing, so unlike ci.yml there is no
+# race to protect the default branch from and a superseded run is simply waste.
+concurrency:
+  group: install-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   # The version the staged release below carries. Deliberately not a version
