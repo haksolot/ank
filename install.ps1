@@ -84,9 +84,55 @@ $RunningAsFile = -not [string]::IsNullOrEmpty($PSCommandPath)
 # Write-Host and not Write-Output, for the reason install.sh sends everything to
 # stderr: under `iex` this runs in the caller's own session, and a diagnosis
 # written to the pipeline would land in whatever they were assembling.
+# -Color is a console attribute set through the host and never an escape
+# sequence, which is the same reason Show-Logo moves the cursor through RawUI:
+# Windows PowerShell 5.1 in conhost prints an ESC[36m instead of obeying it. So
+# a transcript records the words and no sequence at all, on any run.
 function Say {
-    param([string]$Line = '', [switch]$NoNewline)
-    if ($NoNewline) { Write-Host -NoNewline $Line } else { Write-Host $Line }
+    param([string]$Line = '', [switch]$NoNewline, [string]$Color = '')
+    $paint = @{}
+    if ($Color) { $paint['ForegroundColor'] = $Color }
+    if ($NoNewline) { Write-Host -NoNewline $Line @paint } else { Write-Host $Line @paint }
+}
+
+# Colour and the marker, behind the gate the logo is drawn behind, exactly as
+# install.sh holds them: empty until Enable-Ui runs, so a console-less caller
+# reads the bytes it read before this file learned about either.
+#
+# DarkGray and not a lighter grey for the dim: it is the one shade that reads as
+# quieter against a black console and against a white one, which is the whole of
+# what "dim" has to survive here. There is no bold to be had -- a console host
+# has a foreground and no weight -- so what install.sh writes bold is written in
+# the console's own foreground, and the contrast comes from what is dimmed
+# around it.
+$UiDim = ''
+$UiCyan = ''
+$UiGreen = ''
+$UiPad = ''
+$UiTick = ''
+
+function Enable-Ui {
+    $script:UiPad = '  '
+    $script:UiTick = if (Test-GlyphSurvives 0x2713) { "$([char]0x2713) " } else { '- ' }
+    if ($env:NO_COLOR) { return }
+    $script:UiDim = 'DarkGray'
+    $script:UiCyan = 'Cyan'
+    $script:UiGreen = 'Green'
+}
+
+# `Ok <line>`: a step that finished. The marker and the indent are drawn for a
+# person and for nobody else -- what a transcript reads is the sentence alone,
+# written by the one call the line used to be, rather than by three that happen
+# to concatenate to it.
+function Ok {
+    param([string]$Line)
+    if (-not $UiTick) {
+        Say $Line
+        return
+    }
+    Say -NoNewline $UiPad
+    Say -NoNewline -Color $UiGreen $UiTick
+    Say $Line
 }
 
 # `Fail <code> <lines>`: the code carries the kind of failure, the lines carry
@@ -162,32 +208,149 @@ function Show-Usage {
 # Welcome
 # ---------------------------------------------------------------------------
 
-# The logo, at half the resolution of assets/ank.svg and drawn in ASCII: the
-# same twelve lines install.sh holds, because it is the same logo and two
-# spellings of it would drift. That file is the reference for the shape and
-# nothing here reads it -- an installer that fetches a logo before it fetches
-# the binary is an installer with a second way to fail before doing anything
-# useful, so the frames are bytes in this file.
+# The logo, from assets/ank.svg read as pixels: twenty-four columns by ten rows,
+# one cell per pixel column and one row per pair of pixel rows, which is the
+# ratio that makes a console cell square. The same shape install.sh holds and
+# the same twelve lines, because it is the same logo and two spellings of it
+# would drift. That file is the reference and nothing here reads it -- an
+# installer that fetches a logo before it fetches the binary is an installer
+# with a second way to fail before doing anything useful, so the shape is bytes
+# in this file.
 #
-# ASCII and not U+2588, because the console this lands in is not always UTF-8:
-# a Windows PowerShell 5.1 in conhost under codepage 437 renders a block
-# character as a question mark, and a logo that arrives as question marks is
-# worse than no logo at all.
-$LogoArt = @(
-    '          ####',
-    '        ##    ##',
-    '        ##    ##',
-    '          ####',
-    '          ####',
-    '  ######  ####  ######',
-    '  ####    ####    ####',
-    '  ####    ####    ####',
-    '  ####    ####    ####',
-    '    ################',
-    '',
-    '          ank'
-)
+# The block is not assumed, and it is not refused either. The old reading of
+# this was that a Windows PowerShell 5.1 in conhost cannot draw U+2588, and it
+# is wrong twice over: codepage 437 carries the full block at 0xDB, and a
+# console that is genuinely UTF-8 carries it too. What actually decides is
+# whether the encoder the console is using can carry the character at all, and
+# that is a question with an answer -- Test-GlyphSurvives asks it rather than
+# guessing from a codepage number. The tick is asked the same way and gets a
+# different answer on 437, which has no U+2713.
 $LogoWidth = 24
+
+# Eleven spaces: columns 0 to 10, what stands left of the stem on a row whose
+# leg has not grown yet. Every such row is the same width, so this is a constant
+# rather than something measured.
+$LogoPad11 = '           '
+
+# Whether a character reaches the console as itself: encoded through whatever
+# the console is using and decoded back, and equal to what went in.
+#
+# The round trip and not a search for a question mark, because measuring it
+# showed the question mark is the case that does not happen. .NET best-fits
+# instead, and it best-fits to something plausible and wrong: codepage 437 turns
+# U+2713 into 0xFB, which is a square root sign, and codepage 1252 turns U+2588
+# into 0xA6, which is a broken bar. A check for `?` passes both and ships a logo
+# made of broken bars and a tick that is a radical -- worse than the fence of
+# hashes this replaced. The round trip refuses both and accepts codepage 437's
+# block at 0xDB, which is genuinely the character asked for.
+#
+# Asked once per run, never inside a frame.
+function Test-GlyphSurvives {
+    param([int]$CodePoint)
+    try {
+        $want = [string][char]$CodePoint
+        $encoding = [Console]::OutputEncoding
+        return $encoding.GetString($encoding.GetBytes($want)) -eq $want
+    } catch {
+        return $false
+    }
+}
+
+# One of rows 6 to 9: <pad><leg><gap><stem><gap><leg>, where a part that has not
+# grown yet gives its columns up to the eleven-space pad, so the parts that have
+# stay where they are. A segment is its text and whether it is dimmed, because a
+# leg and the stem share these rows and can be in different states.
+function Get-LogoBand {
+    param(
+        [int]$Legs, [int]$LegsAt, [int]$Stem, [int]$StemAt,
+        [string]$Run, [string]$Gap, [string]$Pair,
+        [bool]$DimLegs, [bool]$DimStem
+    )
+
+    $hasLegs = $Legs -ge $LegsAt
+    $hasStem = $Stem -ge $StemAt
+    if (-not $hasLegs -and -not $hasStem) { return , @() }
+
+    $out = @()
+    if ($hasLegs) {
+        $out += @{ T = '   '; D = $false }
+        $out += @{ T = $Run; D = $DimLegs }
+        $out += @{ T = $Gap; D = $false }
+    } else {
+        $out += @{ T = $LogoPad11; D = $false }
+    }
+
+    if ($hasStem) {
+        $out += @{ T = $Pair; D = $DimStem }
+    } elseif ($hasLegs) {
+        $out += @{ T = '  '; D = $false }
+    }
+
+    if ($hasLegs) {
+        $out += @{ T = $Gap; D = $false }
+        $out += @{ T = $Run; D = $DimLegs }
+    }
+
+    return , $out
+}
+
+# One frame as twelve rows of segments. The arguments are the state of the build
+# and not a frame number: base is on or off, legs and stem are how many of their
+# rows have grown, loop is on or off, soft names the part still arriving, name is
+# the wordmark. A timeline written as states can be re-timed without recomputing
+# which row is which.
+function Get-LogoFrame {
+    param(
+        [int]$Base, [int]$Legs, [int]$Stem, [int]$Loop,
+        [string]$Soft, [bool]$Name,
+        [string]$B2, [string]$B4, [string]$B14
+    )
+
+    $dimAll = $Soft -eq 'all'
+    $dimLoop = $dimAll -or $Soft -eq 'loop'
+    $dimStem = $dimAll -or $Soft -eq 'stem'
+    $dimLegs = $dimAll -or $Soft -eq 'legs'
+    $dimBase = $dimAll -or $Soft -eq 'base'
+
+    # Rows 1 and 4, then 2 and 3: the loop is columns 10-13, then 8-9 with 14-15.
+    if ($Loop) {
+        $r1 = @(@{ T = '          '; D = $false }, @{ T = $B4; D = $dimLoop })
+        $r2 = @(
+            @{ T = '        '; D = $false }, @{ T = $B2; D = $dimLoop },
+            @{ T = '    '; D = $false }, @{ T = $B2; D = $dimLoop }
+        )
+    } else {
+        $r1 = @()
+        $r2 = @()
+    }
+
+    # Row 5, the stem alone, the last of its five rows to grow.
+    if ($Stem -ge 5) {
+        $r5 = @(@{ T = '           '; D = $false }, @{ T = $B2; D = $dimStem })
+    } else {
+        $r5 = @()
+    }
+
+    $r6 = Get-LogoBand $Legs 4 $Stem 4 $B4 '    ' $B2 $dimLegs $dimStem
+    $r7 = Get-LogoBand $Legs 3 $Stem 3 $B2 '      ' $B2 $dimLegs $dimStem
+    $r8 = Get-LogoBand $Legs 2 $Stem 2 $B2 '      ' $B2 $dimLegs $dimStem
+    $r9 = Get-LogoBand $Legs 1 $Stem 1 $B2 '      ' $B2 $dimLegs $dimStem
+
+    # Row 10, the base, columns 5-18.
+    if ($Base) {
+        $r10 = @(@{ T = '     '; D = $false }, @{ T = $B14; D = $dimBase })
+    } else {
+        $r10 = @()
+    }
+
+    if ($Name) {
+        $r12 = @(@{ T = '          ank'; D = $false })
+    } else {
+        $r12 = @()
+    }
+
+    return , @($r1, $r2, $r2, $r1, $r5, $r6, $r7, $r8, $r9, $r10, @(), $r12)
+}
 
 # The cursor is moved through $Host.UI.RawUI and not with an escape sequence,
 # and that is the Windows half of this decision rather than a preference.
@@ -205,13 +368,22 @@ function Show-Logo {
     # of. Nothing is written before this is known.
     if ($ui.WindowSize.Width -lt $LogoWidth) { return }
 
+    # The cell and the three runs the shape is made of, built once. Seventeen
+    # frames are drawn and none of them may repeat this.
+    $cell = if (Test-GlyphSurvives 0x2588) { [string][char]0x2588 } else { '#' }
+    $b2 = $cell * 2
+    $b4 = $cell * 4
+    $b14 = $cell * 14
+
+    $rows = 12
+
     # The blank lines are written before the position is read, so that a window
     # with the prompt at its bottom does its scrolling now: a coordinate saved
     # while the buffer is still moving points at the wrong row for every frame
     # after it.
-    for ($i = 0; $i -lt $LogoArt.Count; $i++) { Say '' }
+    for ($i = 0; $i -lt $rows; $i++) { Say '' }
 
-    $top = $ui.CursorPosition.Y - $LogoArt.Count
+    $top = $ui.CursorPosition.Y - $rows
     if ($top -lt 0) { return }
     $origin = New-Object System.Management.Automation.Host.Coordinates 0, $top
 
@@ -223,27 +395,44 @@ function Show-Logo {
         # A host that will not say whether its cursor is visible still draws.
     }
 
+    # Bottom up: the base arrives dim and settles, the legs and then the stem
+    # grow out of it a row at a time, the loop crowns them, and the whole shape
+    # blinks twice before the name appears. That last beat is what the animation
+    # exists for -- it costs the time it takes to read the name of the tool and
+    # not a second more.
+    #
+    # The two parts that appear whole come in dim; the two that grow do not,
+    # since growing a row at a time is already motion and dimming it as well
+    # would say the same thing twice.
+    #
+    #        base legs stem loop soft     name   ms
+    $script = @(
+        @(1, 0, 0, 0, 'base', $false, 100),
+        @(1, 0, 0, 0, 'none', $false, 100),
+        @(1, 1, 0, 0, 'none', $false, 45),
+        @(1, 2, 0, 0, 'none', $false, 45),
+        @(1, 3, 0, 0, 'none', $false, 45),
+        @(1, 4, 0, 0, 'none', $false, 45),
+        @(1, 4, 1, 0, 'none', $false, 45),
+        @(1, 4, 2, 0, 'none', $false, 45),
+        @(1, 4, 3, 0, 'none', $false, 45),
+        @(1, 4, 4, 0, 'none', $false, 45),
+        @(1, 4, 5, 0, 'none', $false, 45),
+        @(1, 4, 5, 1, 'loop', $false, 100),
+        @(1, 4, 5, 1, 'none', $false, 100),
+        @(1, 4, 5, 1, 'all', $false, 45),
+        @(1, 4, 5, 1, 'none', $false, 45),
+        @(1, 4, 5, 1, 'all', $false, 45),
+        @(1, 4, 5, 1, 'none', $true, 450)
+    )
+
     try {
-        # Bottom up: the base, then the stem, then the loop, which is the order
-        # the shape is built in and the order that leaves the whole of it
-        # standing at the end. Frame 11 adds the name, and that is the beat the
-        # animation exists for: it costs the time it takes to read the name of
-        # the tool and not a second more.
-        for ($frame = 1; $frame -le 11; $frame++) {
+        foreach ($step in $script) {
             $ui.CursorPosition = $origin
-            for ($line = 1; $line -le $LogoArt.Count; $line++) {
-                $text = ''
-                if ($line -le 10 -and $line -ge (11 - $frame)) {
-                    $text = $LogoArt[$line - 1]
-                } elseif ($line -eq 12 -and $frame -eq 11) {
-                    $text = $LogoArt[11]
-                }
-                # Padded rather than erased: there is no clear-to-end-of-line
-                # without an escape sequence, and writing the spaces says the
-                # same thing in the alphabet this function is restricted to.
-                Say $text.PadRight($LogoWidth)
-            }
-            if ($frame -lt 11) { Start-Sleep -Milliseconds 60 }
+            $frame = Get-LogoFrame $step[0] $step[1] $step[2] $step[3] `
+                $step[4] $step[5] $b2 $b4 $b14
+            foreach ($row in $frame) { Write-LogoRow $row }
+            Start-Sleep -Milliseconds $step[6]
         }
     } finally {
         try { [Console]::CursorVisible = $savedCursor } catch { }
@@ -252,6 +441,52 @@ function Show-Logo {
     # One blank line under the block, so what the install says next does not
     # start on the line the name ends on.
     Say ''
+}
+
+# One row of a frame. Padded to the full width rather than erased: there is no
+# clear-to-end-of-line without an escape sequence, and writing the spaces says
+# the same thing in the alphabet this function is restricted to.
+#
+# Adjacent segments in the same state are written as one, and that is not
+# tidiness. conhost turns every write that changes an attribute into a console
+# API call, and a row is almost always one state throughout: segment by segment
+# the seventeen frames cost 649 writes for 94 actual changes of attribute, so
+# 555 of them bought nothing. Coalesced, a row in one state is one write.
+function Write-LogoRow {
+    param($Segments)
+
+    $runs = @()
+    $width = 0
+    foreach ($seg in $Segments) {
+        $segDim = [bool]($seg.D -and $UiDim)
+        if ($runs.Count -gt 0 -and $runs[-1].D -eq $segDim) {
+            $runs[-1].T += $seg.T
+        } else {
+            $runs += @{ T = $seg.T; D = $segDim }
+        }
+        $width += $seg.T.Length
+    }
+
+    # The padding closes the line and carries no state of its own, so it joins
+    # the last run when that run is not dimmed and stands alone when it is.
+    $pad = ''
+    if ($width -lt $LogoWidth) { $pad = ' ' * ($LogoWidth - $width) }
+    if ($runs.Count -gt 0 -and -not $runs[-1].D) {
+        $runs[-1].T += $pad
+        $pad = $null
+    }
+
+    for ($i = 0; $i -lt $runs.Count; $i++) {
+        $last = ($i -eq $runs.Count - 1) -and ($null -eq $pad)
+        if ($runs[$i].D) {
+            if ($last) { Say -Color $UiDim $runs[$i].T }
+            else { Say -NoNewline -Color $UiDim $runs[$i].T }
+        } else {
+            if ($last) { Say $runs[$i].T }
+            else { Say -NoNewline $runs[$i].T }
+        }
+    }
+    if ($null -ne $pad) { Say $pad }
 }
 
 # ADR-5fbd99bf6fd5 read as an absence: where no human is looking, this script
@@ -308,11 +543,11 @@ function Invoke-SkillOffer {
     if (-not (Test-HumanAtTerminal)) { return }
 
     Say ''
-    Say 'The skills teach an agent how to use ank: the contract, and one policy'
-    Say 'per activity. They install through the skills CLI, which puts them where'
-    Say 'each agent looks.'
+    Say "${UiPad}The skills teach an agent how to use ank: the contract, and one policy"
+    Say "${UiPad}per activity. They install through the skills CLI, which puts them where"
+    Say "${UiPad}each agent looks."
     Say ''
-    Say "  npx skills add $Repo"
+    Say -Color $UiCyan "$UiPad  npx skills add $Repo"
     Say ''
 
     # [Console]::ReadLine and not Read-Host, which is where Windows differs
@@ -321,7 +556,7 @@ function Invoke-SkillOffer {
     # caller's own session: Console.In is the console and never that pipeline,
     # so a question asked here cannot consume what they piped. $null is end of
     # input -- nothing was typed, so nothing is assumed.
-    Say -NoNewline 'Install them now? [Y/n] '
+    Say -NoNewline "${UiPad}Install them now? [Y/n] "
     $answer = $null
     try { $answer = [Console]::ReadLine() } catch { $answer = $null }
     if ($null -eq $answer) {
@@ -337,7 +572,7 @@ function Invoke-SkillOffer {
 
     if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
         Say ''
-        Say "  npx skills add $Repo"
+        Say -Color $UiCyan "$UiPad  npx skills add $Repo"
         Say 'node is not on PATH, so that was not run.'
         return
     }
@@ -368,7 +603,7 @@ function Invoke-SkillOffer {
 
     if ($code -eq 0) {
         Say ''
-        Say 'the skills are installed'
+        Ok 'the skills are installed'
     } else {
         Say ''
         Say "npx skills add $Repo exited $code, so the skills are not installed."
@@ -376,7 +611,7 @@ function Invoke-SkillOffer {
         Say 'asked anything at all.'
         Say ''
         Say 'Run that line again when you want them:'
-        Say "  npx skills add $Repo"
+        Say -Color $UiCyan "$UiPad  npx skills add $Repo"
     }
 }
 
@@ -457,7 +692,7 @@ function Invoke-AdoptionOffer {
     if (-not (Test-HumanAtTerminal)) { return }
 
     Say ''
-    Say -NoNewline 'Print the three prompts that adopt ank in a repository you already have? [Y/n] '
+    Say -NoNewline "${UiPad}Print the three prompts that adopt ank in a repository you already have? [Y/n] "
     $answer = $null
     try { $answer = [Console]::ReadLine() } catch { $answer = $null }
     if ($null -eq $answer) {
@@ -731,6 +966,11 @@ if ($BaseUrl) {
 # install: nothing has been downloaded yet and nothing below depends on a frame
 # having been drawn.
 if (Test-HumanAtTerminal) {
+    # The colour is turned on by the presence of a human and not by the width of
+    # their window, which is why this is here and the width test is inside
+    # Show-Logo: a console too narrow for the logo is still a console with a
+    # person in front of it.
+    Enable-Ui
     try { Show-Logo } catch { }
 }
 
@@ -764,7 +1004,8 @@ try {
     $root = if ($BaseUrl) { $BaseUrl } else { $DefaultBaseUrl }
     $url = "$root/$tag/$archive"
 
-    Say "ank $tag  $target"
+    Say -NoNewline "$UiPad" ; Say -NoNewline "ank $tag  "
+    Say -Color $UiDim "$target"
     if ($resolved.Emulated) {
         Say 'no native arm64 build is published; Windows runs this one under emulation'
     }
@@ -871,7 +1112,7 @@ try {
         )
     }
 
-    Say "checksum ok  $actual"
+    Ok "checksum ok  $actual"
 
     try {
         Expand-Zip -Path $archivePath -Destination $tmp
@@ -955,8 +1196,8 @@ try {
     }
 
     Say ''
-    Say "installed  $destination"
-    if ($installedVersion) { Say "           $installedVersion" }
+    Ok "installed  $destination"
+    if ($installedVersion) { Say -Color $UiDim "$UiPad$UiPad           $installedVersion" }
 
     # The last way left to leave a caller without a working `ank`: a binary in a
     # directory nothing looks in. Naming the command to run is the difference
@@ -969,21 +1210,22 @@ try {
 
     if ($onPath) {
         Say ''
-        Say "$Dir is on your PATH. Run: ank help"
+        Say -NoNewline "$UiPad$Dir is on your PATH. Run: "
+        Say -Color $UiCyan 'ank help'
     } else {
         Say ''
-        Say "$Dir is not on your PATH, so ``ank`` is not a command yet."
-        Say 'Add it for your account by running this once:'
+        Say "$UiPad$Dir is not on your PATH, so ``ank`` is not a command yet."
+        Say "${UiPad}Add it for your account by running this once:"
         Say ''
-        Say "  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$Dir', 'User')"
+        Say -Color $UiCyan "$UiPad  [Environment]::SetEnvironmentVariable('Path', [Environment]::GetEnvironmentVariable('Path','User') + ';$Dir', 'User')"
         Say ''
-        Say 'then open a new terminal. In this one:'
+        Say "${UiPad}then open a new terminal. In this one:"
         Say ''
-        Say "  `$env:Path += ';$Dir'"
+        Say -Color $UiCyan "$UiPad  `$env:Path += ';$Dir'"
         if ($userPath -and $userPath.Length -gt 1800) {
             Say ''
-            Say 'Your user PATH is close to the length Windows truncates at, so check it'
-            Say 'after adding: a truncated PATH loses entries other tools put there.'
+            Say "${UiPad}Your user PATH is close to the length Windows truncates at, so check it"
+            Say "${UiPad}after adding: a truncated PATH loses entries other tools put there."
         }
     }
 
