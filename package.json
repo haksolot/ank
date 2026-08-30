@@ -3,6 +3,7 @@
   "private": true,
   "description": "Pi package manifest for the ank skill. Not published: the published package is @haksolot/ank, under npm/ank.",
   "license": "Apache-2.0",
+  "author": "Sean Lamet",
   "homepage": "https://github.com/haksolot/ank",
   "repository": {
     "type": "git",

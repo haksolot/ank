@@ -903,3 +903,114 @@ fn the_binary_names_the_skill_revision_it_was_built_alongside() {
          the comparison this exists for would mislead its reader"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The licence, discovered rather than listed (ADR-9f03438f5422)
+// ---------------------------------------------------------------------------
+
+/// Every manifest in the tree that declares a licence, found by walking rather
+/// than by a list somebody keeps.
+///
+/// **A list is what let this drift.** TASK-47beb64fd204 swept the tree when
+/// ADR-9f03438f5422 relicensed it, and its criterion was met: every one of the
+/// eleven files it enumerated said Apache-2.0. `.claude-plugin/plugin.json` was
+/// not among the eleven, so it went on declaring `GPL-3.0-only` for thirteen
+/// days, in the one place a person installing the plugin reads a licence.
+/// Nothing noticed, because nothing was looking at anything but the list.
+///
+/// So this walks. A manifest added tomorrow is held to the same answer without
+/// anyone remembering to enrol it, which is the property the list did not have.
+fn declared_licences() -> Vec<(String, String)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            // Not build output, not vendored code, and not the corpus: `.ank/`
+            // records what the licence *was*, and that history is the thing the
+            // relicensing is careful to keep (ADR-9f03438f5422).
+            if path.is_dir() {
+                if !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".ank") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            let text = match name.as_str() {
+                "Cargo.toml" | "package.json" | "plugin.json" => match fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+            for line in text.lines() {
+                let line = line.trim();
+                // A declaration, never a comment about one: the manifests carry
+                // prose explaining what the licence used to be, and that prose
+                // is correct and stays.
+                if line.starts_with("//") || line.starts_with('#') {
+                    continue;
+                }
+                let declared = line
+                    .strip_prefix("license = \"")
+                    .or_else(|| line.strip_prefix("\"license\": \""))
+                    .and_then(|rest| rest.split('"').next());
+                if let Some(value) = declared {
+                    let shown = path
+                        .strip_prefix(&root)
+                        .unwrap_or(&path)
+                        .to_string_lossy()
+                        .to_string();
+                    found.push((shown, value.to_string()));
+                }
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// **Every declaration in the tree says Apache-2.0** (ADR-9f03438f5422).
+#[test]
+fn every_manifest_declares_the_ratified_licence() {
+    let found = declared_licences();
+    assert!(
+        !found.is_empty(),
+        "no licence declaration was found at all, so this test is asserting nothing"
+    );
+    let wrong: Vec<_> = found.iter().filter(|(_, v)| v != "Apache-2.0").collect();
+    assert!(
+        wrong.is_empty(),
+        "ADR-9f03438f5422 relicensed this tree to Apache-2.0 whole, and these \
+         still say otherwise: {wrong:#?}"
+    );
+}
+
+/// **And the copyright is asserted somewhere a reader can find it.**
+///
+/// Apache-2.0 propagates attribution through notices, and the licence text at
+/// the root carries the unfilled `[name of copyright owner]` of the appendix,
+/// which is the verbatim text and not a notice. `NOTICE` is where the claim
+/// lives, and it is what a redistributor is asked to keep.
+#[test]
+fn the_copyright_is_asserted_in_a_notice() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let notice = fs::read_to_string(root.join("NOTICE"))
+        .expect("NOTICE must exist: it is where the copyright is asserted");
+    assert!(
+        notice.contains("Sean Lamet"),
+        "NOTICE names no copyright owner:\n{notice}"
+    );
+    assert!(
+        notice.contains("Apache License"),
+        "NOTICE does not name the licence it notices:\n{notice}"
+    );
+}

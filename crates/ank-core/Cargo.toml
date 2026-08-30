@@ -7,6 +7,7 @@ edition = "2021"
 # unit, so a floor that holds only here would not be a floor.
 rust-version = "1.95"
 license = "Apache-2.0"
+authors = ["Sean Lamet"]
 description = "Parser and data model for the Ank format. The format is the specification; this crate is its reference implementation."
 
 [dependencies]

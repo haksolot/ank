@@ -18,6 +18,7 @@ rust-version = "1.95"
 # release already made under GPL-3.0 stays available under GPL-3.0 to whoever
 # received it.
 license = "Apache-2.0"
+authors = ["Sean Lamet"]
 description = "The Ank CLI: one surface, refusing on state and never on identity."
 
 [[bin]]
