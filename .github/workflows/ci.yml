@@ -177,6 +177,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The proofs earlier runs already wrote. `actions/checkout` fetches
+      # history and not `refs/ank/*`, so without this the `check` below reads a
+      # corpus in which nothing is anchored and this job re-attests every
+      # finished task, on every push, forever. Measured on run 33285805350:
+      # 199 ids listed and 336 seconds spent pushing refs that were already
+      # there, against 16 genuinely unproved in a clone that carries them.
+      #
+      # One direction and read-only. Pushing this pattern back is what
+      # force-reverts the attestations (the loop below pushes one ref by name),
+      # and a refspec matching nothing is not an error, so a corpus with no
+      # proofs yet passes through here untouched.
+      - name: the proofs already recorded
+        run: git fetch origin '+refs/ank/proof/*:refs/ank/proof/*'
+
       # The binary the test job built, rather than one this job compiles. It
       # `needs` that job, so the artefact exists whenever this runs, and the two
       # cannot disagree about what they are attesting: it is the same file.
