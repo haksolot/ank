@@ -101,6 +101,26 @@ fn spawn(program: impl AsRef<OsStr>) -> Command {
     c
 }
 
+/// Maintenance off in the repository at `dir`.
+///
+/// The sites that call this run `git init` and nothing else -- no identity, no
+/// autocrlf -- because what they are about is a repository existing, so there
+/// is no configuration block to add two lines to. Git will maintain a
+/// repository it is not told not to, and a fixture repacked between two reads
+/// of it fails a test that was right (TASK-fc6bef21e268).
+fn unmaintain(dir: &Path) {
+    for args in [
+        ["config", "gc.auto", "0"],
+        ["config", "maintenance.auto", "false"],
+    ] {
+        let out = git_command(dir)
+            .args(args)
+            .output()
+            .expect("git must be installed: it is a hard dependency");
+        assert!(out.status.success(), "git {args:?}: {}", stderr(&out));
+    }
+}
+
 /// git, run in `dir`.
 fn git_command(dir: &Path) -> Command {
     let mut c = spawn("git");
@@ -141,6 +161,10 @@ impl Repo {
         // rediscover any of this.
         r.git(&["config", "commit.gpgsign", "false"]);
         r.git(&["config", "tag.gpgsign", "false"]);
+        // Maintenance off, because git is otherwise free to repack a fixture
+        // between two reads of it (TASK-fc6bef21e268).
+        r.git(&["config", "gc.auto", "0"]);
+        r.git(&["config", "maintenance.auto", "false"]);
         std::fs::write(
             r.0.join(".ank/config.yml"),
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
@@ -836,6 +860,15 @@ impl Repo {
             .output()
             .unwrap();
         assert!(out.status.success(), "init --bare: {}", stderr(&out));
+        // The bare remote is a repository this fixture builds, and git will
+        // maintain one it is not told not to (TASK-fc6bef21e268).
+        for args in [
+            ["config", "gc.auto", "0"],
+            ["config", "maintenance.auto", "false"],
+        ] {
+            let out = git_command(&origin).args(args).output().unwrap();
+            assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+        }
 
         self.git(&["add", "-A"]);
         self.git(&["commit", "-qm", "corpus"]);
@@ -845,6 +878,9 @@ impl Repo {
         let out = git_command(&self.0)
             .arg("clone")
             .arg("-q")
+            // Unmaintained from the moment the clone exists, rather than
+            // shortly after it (TASK-fc6bef21e268).
+            .args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
             .arg(&origin)
             .arg(&other)
             .output()
@@ -2216,6 +2252,8 @@ fn the_stamp_follows_a_commit_that_changes_no_file() {
     // (TASK-40a972e98a9a).
     git(&["config", "commit.gpgsign", "false"]);
     git(&["config", "tag.gpgsign", "false"]);
+    git(&["config", "gc.auto", "0"]);
+    git(&["config", "maintenance.auto", "false"]);
     git(&["add", "-A"]);
     git(&["commit", "-qm", "seed"]);
 
@@ -4017,6 +4055,8 @@ default_branch: main
         vec!["config", "user.email", "test@ank.local"],
         vec!["config", "user.name", "Test"],
         vec!["config", "commit.gpgsign", "false"],
+        vec!["config", "gc.auto", "0"],
+        vec!["config", "maintenance.auto", "false"],
         vec!["add", "-A"],
         vec!["commit", "-qm", "another root"],
     ] {
@@ -5257,6 +5297,7 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
         .status()
         .unwrap()
         .success());
+    unmaintain(&dir);
 
     let out = ank_command()
         .arg("init")
@@ -5289,6 +5330,7 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
         .status()
         .unwrap()
         .success());
+    unmaintain(&named);
 
     // A file worth losing: `init` places its pointer in AGENTS.md, and the
     // silent write landed in exactly this file.
@@ -7317,6 +7359,7 @@ fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
             .expect("git must be installed: it is a hard dependency")
     };
     assert!(git(&["init", "-q", "-b", "main"]).status.success());
+    unmaintain(&dir);
 
     // A `.gitignore` the user curated first: `init` has to append to it, not
     // replace it, and that is only observable when there is something to lose.
@@ -9547,6 +9590,8 @@ impl Declared {
         d.git(&["config", "user.email", "test@ank.local"]);
         d.git(&["config", "user.name", "Test"]);
         d.git(&["config", "commit.gpgsign", "false"]);
+        d.git(&["config", "gc.auto", "0"]);
+        d.git(&["config", "maintenance.auto", "false"]);
         std::fs::write(d.tree.join("a.txt"), "hi\n").unwrap();
         d.git(&["add", "-A"]);
         d.git(&["commit", "-qm", "seed"]);
@@ -9589,6 +9634,8 @@ impl Declared {
             &["config", "user.email", "test@ank.local"][..],
             &["config", "user.name", "Test"][..],
             &["config", "commit.gpgsign", "false"][..],
+            &["config", "gc.auto", "0"][..],
+            &["config", "maintenance.auto", "false"][..],
         ] {
             let out = git_command(&self.corpus)
                 .args(args)
@@ -13408,6 +13455,8 @@ fn nest_a_repository_in(outer: &Repo) -> PathBuf {
         &["init", "-q", "-b", "main"][..],
         &["config", "user.email", "t@ank.local"][..],
         &["config", "user.name", "T"][..],
+        &["config", "gc.auto", "0"][..],
+        &["config", "maintenance.auto", "false"][..],
     ] {
         let out = git_command(&inner)
             .args(args)
@@ -13954,6 +14003,7 @@ fn fresh_git_dir(what: &str) -> PathBuf {
         .output()
         .expect("git must be installed: it is a hard dependency");
     assert!(out.status.success(), "git init: {}", stderr(&out));
+    unmaintain(&p);
     p
 }
 
@@ -14503,7 +14553,15 @@ fn clone_of(r: &Repo, depth: Option<u32>) -> PathBuf {
     let url = file_url(&r.0);
     let dest_s = dest.to_string_lossy().to_string();
     let d = depth.map(|d| d.to_string());
-    let mut args = vec!["clone", "-q"];
+    // Unmaintained from the moment the clone exists (TASK-fc6bef21e268).
+    let mut args = vec![
+        "clone",
+        "-q",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+    ];
     if let Some(d) = d.as_deref() {
         args.extend_from_slice(&["--depth", d]);
     }
@@ -15613,6 +15671,7 @@ fn init_writes_the_same_refspec_this_suite_assumes() {
         .args(["init", "-q", "-b", "main"])
         .output();
     assert!(out.unwrap().status.success());
+    unmaintain(&dir);
     // A positional and not `--repo`, which `init` refuses by name: it is the
     // verb that makes a repository, so naming an existing one is a
     // contradiction (TASK-b8a1a3d0d47c).
@@ -18552,6 +18611,8 @@ fn code_tree(tag: &str) -> PathBuf {
         vec!["config", "user.email", "test@ank.local"],
         vec!["config", "user.name", "Test"],
         vec!["config", "commit.gpgsign", "false"],
+        vec!["config", "gc.auto", "0"],
+        vec!["config", "maintenance.auto", "false"],
         vec!["add", "-A"],
         vec!["commit", "-qm", "code"],
     ] {
@@ -21528,4 +21589,99 @@ fn main() {{}}
     assert_eq!(code(&out), 0, "{}", both_streams(&out));
     let out = r.ank("human:marie", &["check"]);
     assert_eq!(code(&out), 0, "{}", both_streams(&out));
+}
+
+/// Every git repository inside a fixture, found rather than listed.
+///
+/// A directory holding a `HEAD` file and an `objects` directory is one,
+/// whether it is the `.git` beside a working tree or a bare corpus. Found,
+/// because a list would have to be maintained, and what is being guarded
+/// against is exactly a repository nobody remembered to enrol.
+fn repositories_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+            found.push(dir);
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
+    found
+}
+
+/// What git answers for one key of one repository's own configuration, `None`
+/// when the key is unset -- which is the state this asserts against, since an
+/// unset `maintenance.auto` means maintenance is on.
+///
+/// `--local`, so what comes back is the fixture's answer and never the
+/// machine's: a contributor carrying `gc.auto` in a global configuration would
+/// otherwise read a pass out of a repository that sets nothing.
+fn config_of(git_dir: &std::path::Path, key: &str) -> Option<String> {
+    let out = spawn("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["config", "--local", "--get", key])
+        .output()
+        .expect("git must be installed: it is a hard dependency");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Asserts that every repository under `root` is one git will not maintain.
+///
+/// Read back out of a freshly built fixture rather than grepped out of this
+/// file: what is under test is the configuration `git init` was actually
+/// followed by, and a grep passes on a comment and fails on a refactor.
+fn assert_unmaintained(root: &std::path::Path) {
+    let repos = repositories_under(root);
+    assert!(
+        !repos.is_empty(),
+        "no repository found under {}: this asserts nothing",
+        root.display()
+    );
+    for git_dir in repos {
+        let at = git_dir.display();
+        assert_eq!(
+            config_of(&git_dir, "gc.auto").as_deref(),
+            Some("0"),
+            "gc.auto at {at}"
+        );
+        assert_eq!(
+            config_of(&git_dir, "maintenance.auto").as_deref(),
+            Some("false"),
+            "maintenance.auto at {at}"
+        );
+    }
+}
+
+/// A fixture repository is not maintained under the test.
+///
+/// Measured on 2026-08-30 in run 33284185681: git repacked a fixture between
+/// two fingerprints of it -- `objects/maintenance.lock`, a `tmp_pack` and six
+/// loose objects in the first, a multi-pack-index, two packs and `info/refs`
+/// in the second -- and a test asserting that a read writes nothing failed on
+/// one platform of three. Ank had written nothing (TASK-fc6bef21e268).
+///
+/// The repositories are found by walking the fixture and not named here, so a
+/// second one grown under it later is held to this without anyone remembering
+/// to enrol it.
+#[test]
+fn a_fixture_repository_is_not_maintained_under_the_test() {
+    let r = Repo::new();
+    // The two repositories `cloned` grows are siblings of the corpus and not
+    // children of it, so the walk is handed each root it was given rather than
+    // one that happens to hold them all.
+    let (origin, other) = r.cloned();
+    for root in [&r.0, &origin, &other] {
+        assert_unmaintained(root);
+    }
 }
