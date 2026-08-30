@@ -994,6 +994,61 @@ fn every_manifest_declares_the_ratified_licence() {
     );
 }
 
+/// **Every LICENSE in the tree names the owner rather than the placeholder.**
+///
+/// The Apache appendix ships as `Copyright [yyyy] [name of copyright owner]`,
+/// which is a template for the reader to fill and not a notice. Left as it
+/// came, the licence GitHub renders at the root of the repository asserts a
+/// copyright for nobody, in the one place most people ever look. There are four
+/// copies of the text in this tree, and they are found by walking rather than
+/// listed, for the reason ADR-9f03438f5422's own sweep gives.
+#[test]
+fn every_licence_text_names_its_copyright_owner() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            if path.is_dir() {
+                if !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".ank") {
+                    stack.push(path);
+                }
+            } else if name == "LICENSE" {
+                let text = fs::read_to_string(&path).unwrap_or_default();
+                found.push((
+                    path.strip_prefix(&root).unwrap_or(&path).to_path_buf(),
+                    text,
+                ));
+            }
+        }
+    }
+    assert!(
+        !found.is_empty(),
+        "no LICENSE was found at all, so this test is asserting nothing"
+    );
+    for (path, text) in &found {
+        assert!(
+            !text.contains("[name of copyright owner]"),
+            "{} still carries the unfilled Apache placeholder",
+            path.display()
+        );
+        assert!(
+            text.contains("Copyright 2026 Sean Lamet"),
+            "{} names no copyright owner",
+            path.display()
+        );
+    }
+}
+
 /// **And the copyright is asserted somewhere a reader can find it.**
 ///
 /// Apache-2.0 propagates attribution through notices, and the licence text at
