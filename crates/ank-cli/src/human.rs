@@ -8864,11 +8864,6 @@ mod tests {
         assert_eq!(r.faults(), 0, "{:?}", r.findings);
     }
 
-    /// The hole this task was filed for, end to end and through `check`. An
-    /// ordinary unsigned commit whose subject reads `ratify <id>` used to be
-    /// accepted as a ratification: `rev-list` found it, the subject matched,
-    /// the hashes agreed, and the freeze was reported intact.
-    #[test]
     /// **A verdict cached under one allowlist does not survive another**
     /// (TASK-dbef284a166c).
     ///
@@ -8923,6 +8918,10 @@ mod tests {
         );
     }
 
+    /// The hole this task was filed for, end to end and through `check`. An
+    /// ordinary unsigned commit whose subject reads `ratify <id>` used to be
+    /// accepted as a ratification: `rev-list` found it, the subject matched,
+    /// the hashes agreed, and the freeze was reported intact.
     #[test]
     fn an_unsigned_ratification_commit_is_refused_as_a_ratification() {
         let t = Temp::new();
