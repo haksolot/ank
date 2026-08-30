@@ -30,9 +30,30 @@ defect; it bites only a project dogfooding ank on itself.
 
 ## Proof
 
-No task in this corpus declares a `verify:` list, so `ank done` requires
-`--proof`. Give it one you already hold, `commit:<sha>`; never wait for a CI
-run id. Once the task lands on the default branch, the `attest` job records
+A task declares its verifiers when it is written. `ank new task --verify
+cargo-test --verify fmt-check` fills `verify:`, and `ank done` then runs every
+verifier in that list, records what ran, and refuses `--proof` outright: the
+close becomes Ank's statement about the tree instead of the agent's. `--verify`
+takes a name `.ank/config.yml` declares -- `cargo-test`, `fmt-check`,
+`check-repo` -- and refuses at exit 7 anything else, so a name you misremember
+fails when you write the task rather than at the close.
+
+Declare them. A task closing on a proof nothing ran is the failure this
+paragraph exists to stop: TASK-54c95c5f2d18 closed green while `cargo test
+--workspace` was failing on three platforms, and `cargo-test` was declared in
+`config.yml` the whole time -- the list was empty, so `ank done` had nothing to
+run and took a typed proof instead.
+
+`--proof` stays, for the criterion no declared verifier can settle -- the one
+only a published release answers, the one a human has to read -- and in that
+case you give a proof you already hold, `commit:<sha>`, never a CI run id you
+would have to wait for. An empty `verify:` is that judgement and nothing else,
+made when the task is written and visible in its diff; it is not the state a
+task arrives in by default. ADR-b6b69053a47b keeps the record honest either way:
+a proof somebody typed in good faith is worth having as what it is, and `check`
+goes on saying that nothing external anchors it.
+
+Once the task lands on the default branch, the `attest` job records
 `test:<run-id>` itself, on `refs/ank/proof/<id>`, and turns red rather than
 skipping when the proof does not reach the remote. The recipe and the contract
 it rests on are in `docs/getting-started.md`.
