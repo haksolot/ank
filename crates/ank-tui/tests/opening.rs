@@ -88,13 +88,17 @@ fn the_frame_that_arrives_first_names_its_screen_and_says_it_has_not_read() {
     repo.warm_find();
 
     let live = Live::open(&repo, WINDOW.0, WINDOW.1);
-    // The frame [`Live::until`] matched on, and not a second read of the
-    // terminal. What is asked about here is a state that passes: the reader
-    // finishes and repaints, so a `now()` after the wait returns the screen
-    // that came next and the assertions below fail on a frame that was correct
-    // when the predicate saw it. Measured twice on macos-latest before this
-    // returned what it matched.
-    let first = live.until("the first frame", |t| t.contains(terminal::UNREAD));
+    // [`Live::ever`] and not [`Live::until`], because this frame does not last.
+    // The reader draws it, finishes its read and repaints, and both halves of
+    // that were measured failing on macos-latest: first an assertion against a
+    // screen re-read after the wait, which by then carried the rows, and then a
+    // timeout against a session whose unread frame had come and gone inside the
+    // twenty-five millisecond sampling interval. The reader got faster this week
+    // and closed the window. `ever` reads the frames the drain recorded, so a
+    // frame that existed is answerable whether or not it is still up.
+    let first = live.ever("carried the unread notice", |t| {
+        t.contains(terminal::UNREAD)
+    });
     assert!(
         first.contains("2 ENTITIES"),
         "the opening frame does not name the screen it is drawing:\n{first}"

@@ -825,6 +825,16 @@ pub struct Live {
     child: std::process::Child,
     writer: std::fs::File,
     screen: std::sync::Arc<std::sync::Mutex<Screen>>,
+    /// Every distinct frame this session painted, in order.
+    ///
+    /// **Sampling misses a frame that does not last.** [`Live::until`] looks at
+    /// the screen every twenty-five milliseconds, so a state the reader passes
+    /// through faster than that is never seen: measured on macos-latest, a test
+    /// waiting for the pre-read notice timed out against a screen that already
+    /// carried all 1202 rows. The reader got faster this week and the window
+    /// closed. Recorded here instead, so a frame that existed is answerable
+    /// whether or not it is still up.
+    seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     drain: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -909,7 +919,10 @@ impl Live {
             .expect("the binary must have been built");
 
         let screen = std::sync::Arc::new(std::sync::Mutex::new(Screen::new(columns, rows)));
+        let seen: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let into = std::sync::Arc::clone(&screen);
+        let recorded = std::sync::Arc::clone(&seen);
         let mut reader = master.try_clone().expect("the master side clones");
         // Drained on a thread of its own: a session that painted more than the
         // pseudo-terminal's buffer holds while nobody was reading would
@@ -921,7 +934,20 @@ impl Live {
                     // Linux answers EIO once the last slave is closed; macOS
                     // answers zero. Both mean the session is over.
                     Ok(0) | Err(_) => return,
-                    Ok(n) => into.lock().unwrap().feed(&buf[..n]),
+                    Ok(n) => {
+                        let text = {
+                            let mut screen = into.lock().unwrap();
+                            screen.feed(&buf[..n]);
+                            screen.text()
+                        };
+                        // Distinct frames only: a chunk that repaints nothing
+                        // visible is not a frame, and the history is read by a
+                        // linear search.
+                        let mut history = recorded.lock().unwrap();
+                        if history.last().map(|last| last != &text).unwrap_or(true) {
+                            history.push(text);
+                        }
+                    }
                 }
             }
         });
@@ -929,6 +955,7 @@ impl Live {
             child,
             writer: master,
             screen,
+            seen,
             drain: Some(drain),
         }
     }
@@ -945,6 +972,41 @@ impl Live {
     ///
     /// Most of the hundred and seventy-odd callers wait for a state that stays,
     /// and drop this. It costs them nothing.
+    /// The first frame this session ever painted that satisfies `done`,
+    /// whether or not it is still on screen.
+    ///
+    /// **For a state that passes.** [`Live::until`] samples, so it answers
+    /// about states that last; this reads the recorded history, so it answers
+    /// about states that happened. Use it only when the thing asked about is
+    /// transient by nature, such as the frame drawn before a read lands: for
+    /// anything that stays, `until` is the honest question, and searching
+    /// history there would match a frame from before the keystroke under test.
+    pub fn ever(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            if let Some(hit) = self
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|frame| done(frame))
+                .cloned()
+            {
+                return hit;
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        panic!(
+            "no frame this session painted ever {what}; it painted {} distinct \
+             frames, the last being:\n{}",
+            self.seen.lock().unwrap().len(),
+            self.screen.lock().unwrap().text()
+        );
+    }
+
     pub fn until(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
