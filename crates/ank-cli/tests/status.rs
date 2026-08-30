@@ -140,6 +140,11 @@ impl Corpus {
         c.git(&["config", "user.name", "Test"]);
         c.git(&["config", "core.autocrlf", "false"]);
         c.git(&["config", "commit.gpgsign", "false"]);
+        // Maintenance off. This suite counts the processes a verb starts and
+        // fingerprints what it leaves behind, and git repacking a thousand-
+        // entity corpus behind the test moves both (TASK-fc6bef21e268).
+        c.git(&["config", "gc.auto", "0"]);
+        c.git(&["config", "maintenance.auto", "false"]);
         std::fs::write(
             c.0.join(".ank/config.yml"),
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
@@ -449,6 +454,86 @@ impl Corpus {
 impl Drop for Corpus {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Every git repository inside a fixture, found rather than listed.
+///
+/// A directory holding a `HEAD` file and an `objects` directory is one,
+/// whether it is the `.git` beside a working tree or a bare corpus. Found,
+/// because a list would have to be maintained, and what is being guarded
+/// against is exactly a repository nobody remembered to enrol.
+fn repositories_under(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+            found.push(dir);
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
+    found
+}
+
+/// What git itself answers for one key of one repository, `None` when the key
+/// is unset -- which is the state this asserts against, since an unset
+/// `maintenance.auto` means maintenance is on.
+fn config_of(git_dir: &Path, key: &str) -> Option<String> {
+    let out = spawn("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["config", "--get", key])
+        .output()
+        .expect("git must be installed: it is a hard dependency");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// A fixture repository is not maintained under the test.
+///
+/// Read back out of a freshly built fixture rather than grepped out of this
+/// file, and every repository under it is found rather than named: every
+/// fixture in this suite is built by `Corpus::of`, so a fifth one added below
+/// is held to this without anyone remembering to enrol it.
+///
+/// The smallest corpus, because what is under test is the configuration `git
+/// init` was followed by and not the size of what it holds.
+///
+/// Measured on 2026-08-30 in run 33284185681: git repacked a fixture between
+/// two fingerprints of it -- `objects/maintenance.lock`, a `tmp_pack` and six
+/// loose objects in the first, a multi-pack-index, two packs and `info/refs`
+/// in the second -- and a test asserting that a read writes nothing failed on
+/// one platform of three. Ank had written nothing (TASK-fc6bef21e268).
+#[test]
+fn a_fixture_repository_is_not_maintained_under_the_test() {
+    let c = Corpus::of(2);
+    let repos = repositories_under(&c.0);
+    assert!(
+        !repos.is_empty(),
+        "no repository found under {}: this asserts nothing",
+        c.0.display()
+    );
+    for git_dir in repos {
+        let at = git_dir.display();
+        assert_eq!(
+            config_of(&git_dir, "gc.auto").as_deref(),
+            Some("0"),
+            "gc.auto at {at}"
+        );
+        assert_eq!(
+            config_of(&git_dir, "maintenance.auto").as_deref(),
+            Some("false"),
+            "maintenance.auto at {at}"
+        );
     }
 }
 

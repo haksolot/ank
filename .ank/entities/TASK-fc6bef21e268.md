@@ -5,7 +5,7 @@ slug: a-test-fixture-repository-is-not-maintained-unde
 title: A test fixture repository is not maintained under the test
 created: 2026-08-30T01:01:30Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
@@ -20,5 +20,5 @@ done_criteria: |
   cargo test --workspace green, cargo fmt --check clean, ank check reports no new fault.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
