@@ -5,7 +5,7 @@ slug: the-nine-remaining-fixture-sites-still-leave-git
 title: The nine remaining fixture sites still leave git maintenance on
 created: 2026-08-30T04:03:19Z
 author: claude-code/opus-5+fixtures-not-maintained
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/context.rs
@@ -22,6 +22,11 @@ done_criteria: |
   
   TASK-fc6bef21e268 said four sites had a git init and fixed those four. Measured on 2026-08-30 while it was held: thirteen files in this workspace build a fixture repository, and the other nine were left maintained. The failure this guards against is recorded there: git repacked a fixture between two fingerprints of it in run 33284185681 and a test asserting that a read writes nothing failed on ubuntu-latest while passing on the other two platforms.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 72b5be60e51ed23946ca64fda673f8e55eb823f3
+    criteria: ffe51142f4d3
+    via: submitted
 schema: 4
-version: 2
+version: 3
 ---
