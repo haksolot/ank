@@ -1218,14 +1218,38 @@ jobs:
           # one an exiting child sets is the one the engine keeps: seeded and
           # read here they would be two variables wearing one name, and a
           # refusal from install.ps1 would read back as a success.
+          # A transcript, and not `*>&1 | Out-String`, and the difference is not
+          # cosmetic: capturing the streams into a variable diverts the output
+          # so the console never receives it. Its cursor then never advances,
+          # Show-Logo's `$top = CursorPosition.Y - 12` comes out negative, and
+          # it returns without drawing a frame. Under a capture this step was
+          # therefore measuring a run in which the animation never happened --
+          # which no assertion noticed, because every assertion about the logo
+          # asked only that it stay away.
+          #
+          # Measured, on one install, both ways: the capture finds the
+          # questions and the checksum and no cell of the mark; the transcript
+          # finds all four. A transcript lets the output reach the console and
+          # records it as well, which is the only way to watch a run that draws.
           $installer = Join-Path $PSScriptRoot 'install.ps1'
+          $transcript = "$OutFile.transcript"
+          Remove-Item -Force $transcript -ErrorAction SilentlyContinue
+
           $global:LASTEXITCODE = 0
-          if ($NoWelcome) {
-              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome *>&1 | Out-String)
-          } else {
-              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir *>&1 | Out-String)
+          Start-Transcript -Path $transcript -Force | Out-Null
+          try {
+              if ($NoWelcome) {
+                  & $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome
+              } else {
+                  & $installer -Version $env:STAGED_VERSION -Dir $Dir
+              }
+          } finally {
+              $code = $global:LASTEXITCODE
+              Stop-Transcript | Out-Null
           }
-          $code = $global:LASTEXITCODE
+
+          $out = ''
+          if (Test-Path $transcript) { $out = (Get-Content -Raw $transcript) }
 
           # What the probe was told, recorded beside what the installer said.
           # Without it, "-NoWelcome asked anyway" is the same message whether

@@ -959,7 +959,16 @@ offer_skills() {
   # would consume the rest of the file and execute none of it, and it would do
   # so only on the route people actually use, having worked in every local test
   # where the script was run from a file.
-  printf '%s%sInstall them now?%s [Y/n] ' "$ui_pad" "$ui_bold" "$ui_off" >&2
+  # Three calls, and the question is a literal in the middle one. Written as a
+  # single format string with the emphasis as placeholders, the sentence is
+  # split across them and stops being a sentence anyone can find: the tests
+  # count this string in this file to know it is asked exactly once, and a
+  # question that cannot be counted is a question that can quietly be asked
+  # twice. What a pipe reads is unchanged either way -- the first and last call
+  # write nothing at all until ui_enable has run.
+  printf '%s%s' "$ui_pad" "$ui_bold" >&2
+  printf 'Install them now? [Y/n] ' >&2
+  printf '%s' "$ui_off" >&2
   if ! IFS= read -r offer_answer < /dev/tty; then
     # End of input rather than an answer. Nothing was typed, so nothing is
     # assumed, and the newline is ours because no Enter was pressed to echo
@@ -1087,8 +1096,12 @@ offer_adoption() {
   human_at_terminal || return 0
 
   say ""
-  printf '%s%sPrint the three prompts that adopt ank in a repository you already have?%s [Y/n] ' \
-    "$ui_pad" "$ui_bold" "$ui_off" >&2
+  # One literal in one call, for the reason the skills question is: the tests
+  # count this sentence in this file, and emphasis written as placeholders cuts
+  # it in half.
+  printf '%s%s' "$ui_pad" "$ui_bold" >&2
+  printf 'Print the three prompts that adopt ank in a repository you already have? [Y/n] ' >&2
+  printf '%s' "$ui_off" >&2
   if ! IFS= read -r adopt_answer < /dev/tty; then
     # End of input rather than an answer. The newline is ours because no Enter
     # was pressed to echo one.
