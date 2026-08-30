@@ -145,6 +145,11 @@ impl Corpus {
         corpus.git(home, &["config", "user.email", "test@ank.local"]);
         corpus.git(home, &["config", "user.name", "Test"]);
         corpus.git(home, &["config", "commit.gpgsign", "false"]);
+        // Maintenance off, because git is otherwise free to repack a fixture
+        // between two reads of it -- and this suite reads one twice to assert
+        // that a watch touched nothing (TASK-fc6bef21e268).
+        corpus.git(home, &["config", "gc.auto", "0"]);
+        corpus.git(home, &["config", "maintenance.auto", "false"]);
         corpus.ank(home, &["init"]);
         corpus.ank(home, &["config", "default_branch", "main"]);
         corpus.ank(
@@ -279,6 +284,18 @@ fn bare(home: &Home, path: &Path) {
     home.apply(&mut c);
     let out = c.output().expect("git is a hard dependency");
     assert!(out.status.success(), "{out:?}");
+    // The bare remote is a repository this suite builds, and git maintains one
+    // it is not told not to (TASK-fc6bef21e268).
+    for args in [
+        ["config", "gc.auto", "0"],
+        ["config", "maintenance.auto", "false"],
+    ] {
+        let mut c = Command::new("git");
+        c.arg("--git-dir").arg(path).args(args);
+        home.apply(&mut c);
+        let out = c.output().expect("git is a hard dependency");
+        assert!(out.status.success(), "git {args:?}: {out:?}");
+    }
 }
 
 /// A clone of `origin`, wired the way `git clone` wires one and no further.
@@ -290,10 +307,19 @@ fn bare(home: &Home, path: &Path) {
 /// demonstrated in a clone that was already synchronising itself.
 fn clone(home: &Home, origin: &Path, into: &Path) -> Corpus {
     let mut c = Command::new("git");
-    c.args(["clone", "-q"])
-        .arg(origin)
-        .arg(into)
-        .current_dir(std::env::temp_dir());
+    // Unmaintained from the moment the clone exists, rather than shortly after
+    // it (TASK-fc6bef21e268).
+    c.args([
+        "clone",
+        "-q",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+    ])
+    .arg(origin)
+    .arg(into)
+    .current_dir(std::env::temp_dir());
     home.apply(&mut c);
     let out = c.output().expect("git is a hard dependency");
     assert!(
@@ -1563,4 +1589,101 @@ fn no_event_carries_entity_content_a_reader_would_get_from_the_cli() {
             "the stream carries '{leaked}', which is what ank show answers:\n{text}"
         );
     }
+}
+
+/// Every git repository inside a fixture, found rather than listed.
+///
+/// A directory holding a `HEAD` file and an `objects` directory is one,
+/// whether it is the `.git` beside a working tree or a bare corpus. Found,
+/// because a list would have to be maintained, and what is being guarded
+/// against is exactly a repository nobody remembered to enrol.
+fn repositories_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut found = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+            found.push(dir);
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
+    found
+}
+
+/// What git answers for one key of one repository's own configuration, `None`
+/// when the key is unset -- which is the state this asserts against, since an
+/// unset `maintenance.auto` means maintenance is on.
+///
+/// `--local`, so what comes back is the fixture's answer and never the
+/// machine's: a contributor carrying `gc.auto` in a global configuration would
+/// otherwise read a pass out of a repository that sets nothing.
+fn config_of(git_dir: &std::path::Path, key: &str) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("--git-dir")
+        .arg(git_dir)
+        .args(["config", "--local", "--get", key])
+        .output()
+        .expect("git must be installed: it is a hard dependency");
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Asserts that every repository under `root` is one git will not maintain.
+///
+/// Read back out of a freshly built fixture rather than grepped out of this
+/// file: what is under test is the configuration `git init` was actually
+/// followed by, and a grep passes on a comment and fails on a refactor.
+fn assert_unmaintained(root: &std::path::Path) {
+    let repos = repositories_under(root);
+    assert!(
+        !repos.is_empty(),
+        "no repository found under {}: this asserts nothing",
+        root.display()
+    );
+    for git_dir in repos {
+        let at = git_dir.display();
+        assert_eq!(
+            config_of(&git_dir, "gc.auto").as_deref(),
+            Some("0"),
+            "gc.auto at {at}"
+        );
+        assert_eq!(
+            config_of(&git_dir, "maintenance.auto").as_deref(),
+            Some("false"),
+            "maintenance.auto at {at}"
+        );
+    }
+}
+
+/// A fixture repository is not maintained under the test.
+///
+/// Measured on 2026-08-30 in run 33284185681: git repacked a fixture between
+/// two fingerprints of it -- `objects/maintenance.lock`, a `tmp_pack` and six
+/// loose objects in the first, a multi-pack-index, two packs and `info/refs`
+/// in the second -- and a test asserting that a read writes nothing failed on
+/// one platform of three. Ank had written nothing (TASK-fc6bef21e268).
+///
+/// The repositories are found by walking the fixture and not named here, so a
+/// second one grown under it later is held to this without anyone remembering
+/// to enrol it.
+#[test]
+fn a_fixture_repository_is_not_maintained_under_the_test() {
+    let home = Home::new();
+    let root = scratch("unmaintained");
+    // All three shapes this suite builds, under one root: a corpus with a
+    // working tree, the bare remote two clones arbitrate through, and a clone
+    // made by hand.
+    let _corpus = Corpus::new(root.join("tree"), &home);
+    let origin = root.join("origin.git");
+    bare(&home, &origin);
+    let _cloned = clone(&home, &origin, &root.join("clone"));
+    assert_unmaintained(&root);
 }
