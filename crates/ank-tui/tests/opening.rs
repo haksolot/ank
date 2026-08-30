@@ -88,10 +88,13 @@ fn the_frame_that_arrives_first_names_its_screen_and_says_it_has_not_read() {
     repo.warm_find();
 
     let live = Live::open(&repo, WINDOW.0, WINDOW.1);
-    live.until("the first frame", |t| t.contains(terminal::UNREAD));
-    // [`Live::now`] and not [`Live::frame`]: the frame being asked about is the
-    // one drawn before the read, and `frame` will not settle on it.
-    let first = live.now();
+    // The frame [`Live::until`] matched on, and not a second read of the
+    // terminal. What is asked about here is a state that passes: the reader
+    // finishes and repaints, so a `now()` after the wait returns the screen
+    // that came next and the assertions below fail on a frame that was correct
+    // when the predicate saw it. Measured twice on macos-latest before this
+    // returned what it matched.
+    let first = live.until("the first frame", |t| t.contains(terminal::UNREAD));
     assert!(
         first.contains("2 ENTITIES"),
         "the opening frame does not name the screen it is drawing:\n{first}"
