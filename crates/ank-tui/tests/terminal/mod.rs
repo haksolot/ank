@@ -933,11 +933,24 @@ impl Live {
         }
     }
 
-    pub fn until(&self, what: &str, done: impl Fn(&str) -> bool) {
+    /// **Returns the frame the predicate matched on**, which is the only frame
+    /// a caller waiting for a transient state can safely assert about. Reading
+    /// the terminal again afterwards asks a second question: the screen may
+    /// have moved on between the match and the read, and the assertion then
+    /// fails on a frame that was right when it was seen. Measured on
+    /// 2026-08-30, twice on one branch: the reader finished its read between
+    /// `until` and a following `now()`, so a test waiting for the unread notice
+    /// captured the populated list instead and reported that the first frame
+    /// had already read the corpus.
+    ///
+    /// Most of the hundred and seventy-odd callers wait for a state that stays,
+    /// and drop this. It costs them nothing.
+    pub fn until(&self, what: &str, done: impl Fn(&str) -> bool) -> String {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while std::time::Instant::now() < deadline {
-            if done(&self.screen.lock().unwrap().text()) {
-                return;
+            let seen = self.screen.lock().unwrap().text();
+            if done(&seen) {
+                return seen;
             }
             std::thread::sleep(std::time::Duration::from_millis(25));
         }
