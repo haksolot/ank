@@ -26,6 +26,22 @@ pub const DEFAULT_VERIFIER_TIMEOUT: &str = "10m";
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
+/// `schema:` alone, read before anything else in the file is looked at.
+///
+/// **The one shape in this module that tolerates an unknown key**, which is the
+/// whole reason it exists. `ConfigFile` denies them, so a file one version
+/// newer than this binary is reported as *unknown field `channels`* — the
+/// reader is told a key is wrong when the truth is that the tool is old, and
+/// goes hunting for a typo in a file that has none. `docs/format.md` already
+/// legislates this for entities: "Newer is refused, and refused **on the
+/// version rather than on the first field it does not recognise**." The
+/// version has to be readable without reading the rest, or the rest refuses
+/// first and the version never gets asked.
+#[derive(Debug, Deserialize)]
+struct SchemaProbe {
+    schema: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
@@ -184,9 +200,35 @@ pub fn parse_duration(text: &str) -> std::result::Result<Duration, String> {
 }
 
 pub fn parse(text: &str, path: &Path) -> Result<Config> {
+    // **The version first, and the fields afterwards.** A file newer than this
+    // binary is refused on its version, so the sentence a reader gets names
+    // the cause — this tool is old — instead of the first key that happens to
+    // be new. The probe is only ever allowed to *add* a refusal: where it
+    // cannot answer, it says nothing and the full parse below produces exactly
+    // the diagnosis it always produced, missing `schema` and a file that is
+    // not a mapping included.
+    if let Some(found) = serde_yaml::from_str::<SchemaProbe>(text)
+        .ok()
+        .map(|p| p.schema)
+    {
+        if found > SUPPORTED_SCHEMA {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!(
+                    "{}: schema {found}, this binary reads {SUPPORTED_SCHEMA}: \
+                     the file is newer than this ank",
+                    path.display()
+                ),
+            )
+            .with_hint("ank --version names the build, npm install -g @haksolot/ank replaces it"));
+        }
+    }
+
     let raw: ConfigFile = serde_yaml::from_str(text)
         .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
 
+    // Below the range rather than above it: no binary ever read schema 0, so
+    // there is no "older tool" to name and the file is simply wrong.
     if raw.schema != SUPPORTED_SCHEMA {
         return Err(CliError::new(
             ExitCode::Generic,
@@ -1862,12 +1904,52 @@ mod tests {
         assert!(parse_duration("").unwrap_err().contains("empty"));
     }
 
+    /// Above the range the diagnosis is the binary's age, not the file's
+    /// content (TASK-742cd978a806). This test used to assert *unknown schema
+    /// 2*, and the sentence moved on purpose: "unknown" describes the reader's
+    /// state and leaves the reader to guess whose fault it is, where "the file
+    /// is newer than this ank" says which of the two to change.
     #[test]
-    fn an_unknown_schema_is_refused_with_the_next_step() {
+    fn a_newer_schema_is_refused_as_newer_and_not_as_unknown() {
         let err = parse("schema: 2\n", p()).unwrap_err();
         assert_eq!(err.code, ExitCode::Generic);
-        assert!(err.message.contains("unknown schema 2"), "{}", err.message);
+        assert!(err.message.contains("schema 2"), "{}", err.message);
+        assert!(
+            err.message.contains("this binary reads 1"),
+            "{}",
+            err.message
+        );
+        assert!(
+            err.message.contains("newer than this ank"),
+            "{}",
+            err.message
+        );
         assert!(err.hint.is_some());
+    }
+
+    /// Below the range there is no older tool to name, so the older sentence is
+    /// still the true one and keeps its place.
+    #[test]
+    fn a_schema_below_the_range_is_refused_as_unknown() {
+        let err = parse("schema: 0\n", p()).unwrap_err();
+        assert_eq!(err.code, ExitCode::Generic);
+        assert!(err.message.contains("unknown schema 0"), "{}", err.message);
+        assert!(err.hint.is_some());
+    }
+
+    /// The probe reads the version and never becomes a second parser: a file
+    /// whose `schema` is in range is still handed to `ConfigFile` whole, so a
+    /// key nobody knows is refused by name exactly as before.
+    #[test]
+    fn the_version_probe_refuses_nothing_a_readable_file_declares() {
+        let err = parse("schema: 1\nchannels:\n  release: main\n", p()).unwrap_err();
+        assert!(err.message.contains("unknown field"), "{}", err.message);
+        assert!(err.message.contains("channels"), "{}", err.message);
+        assert!(
+            !err.message.contains("newer than this ank"),
+            "{}",
+            err.message
+        );
     }
 
     #[test]
