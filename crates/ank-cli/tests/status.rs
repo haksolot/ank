@@ -59,6 +59,31 @@ const REFS: usize = 500;
 /// An expiry no run of this suite reaches, so every seeded claim is a live one.
 const LIVE: &str = "2099-01-01T00:00:00Z";
 
+/// The plane the signature measurement is over: ratified decisions, on the
+/// corpus that carries many of them.
+const RATIFICATIONS: usize = 24;
+
+/// How much smaller the other corpus is. The criterion asks for a factor of at
+/// least three between the two, because two counts that are equal over a
+/// difference of one prove nothing about a count that grows.
+const FACTOR: usize = 6;
+
+/// A `gpgsig` header no keyring produced and none can check, ending its own
+/// line so that the blank line after it is the one that opens the message.
+///
+/// A signed commit carries this header whatever the format — `gpgsig-sha256` in
+/// a SHA-256 repository, and an SSH signature uses the same key — and it is the
+/// only thing that tells a commit nobody signed apart from one this machine
+/// cannot verify. What is inside it is deliberately not decodable: the fixture
+/// is about the header being *there*, and a runner with gpg and one without
+/// reach the same verdict over bytes gpg cannot make sense of.
+const FORGED_SIGNATURE: &str = concat!(
+    "gpgsig -----BEGIN PGP SIGNATURE-----\n",
+    " \n",
+    " bm90IGEgc2lnbmF0dXJl\n",
+    " -----END PGP SIGNATURE-----\n",
+);
+
 /// What git prefixes the argument list of every process it starts with, under
 /// `GIT_TRACE`.
 const MARK: &str = "trace: built-in: git ";
@@ -275,6 +300,78 @@ impl Corpus {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// `count` ratified decisions, half of them ratified by a commit carrying a
+    /// signature header and half by a commit carrying none.
+    ///
+    /// **The commits are written as objects rather than committed**, and that
+    /// is what makes the signed half possible at all: a header no keyring can
+    /// produce on demand is one `hash-object -t commit` writes verbatim. It is
+    /// the same act `git commit` performs — a tree, a parent, the message — and
+    /// the branch is moved onto the chain at the end, over the tree it already
+    /// had, so nothing in the worktree differs from what `main` carries.
+    ///
+    /// The two halves are the two answers `commit_carries_signature` exists to
+    /// tell apart: `%G?` says `N` for both a commit nobody signed and a
+    /// signature git could not attempt, and only the object says which. The
+    /// forged block is deliberately not decodable — whether gpg is installed on
+    /// the runner, and what it makes of the bytes, decides nothing here, because
+    /// the statuses it can reach for them (`N` with the header there, `E`) are
+    /// the same verdict.
+    fn seed_ratifications(&self, count: usize) {
+        // A file the decisions' scope matches, outside the one the seeded tasks
+        // carry: a scope matching nothing is a dead scope, and a scope shared
+        // with an open task charges its constraint to that task's budget. This
+        // fixture means neither.
+        std::fs::create_dir_all(self.0.join("doc")).unwrap();
+        std::fs::write(self.0.join("doc/note.md"), "// seed\n").unwrap();
+        // Declared, or every verdict is `None`: with no key in the file, §8's
+        // advisory mode is what `signature_state` answers, and it answers it
+        // before it ever asks about a commit.
+        std::fs::write(
+            self.0.join(".ank/allowed_signers"),
+            "marie@example.org gpg 0123456789ABCDEF0123456789ABCDEF01234567\n",
+        )
+        .unwrap();
+        for n in 0..count {
+            let id = adr_id(n);
+            std::fs::write(
+                self.entity(&id),
+                format!(
+                    "---\nid: {id}\ntype: adr\nslug: example\ntitle: A decision\n\
+                     created: 2026-07-20T00:00:00Z\nstatus: accepted\nratified: {anchor}\n\
+                     scope:\n  - doc/**\nconstraint: |\n  Decision {n} binds doc.\n\
+                     schema: 1\nversion: 1\n---\n\nWhy.\n",
+                    anchor = anchor(n)
+                ),
+            )
+            .unwrap();
+        }
+        self.git(&["add", "-A"]);
+        self.git(&["commit", "-qm", "decisions"]);
+
+        // One tree for the whole chain, which is HEAD's: a ratification records
+        // the anchor in its message, and these carry no write of their own.
+        let tree = self.git(&["rev-parse", "HEAD^{tree}"]);
+        let mut parent = self.git(&["rev-parse", "HEAD"]);
+        for n in 0..count {
+            let id = adr_id(n);
+            let signed = n % 2 == 0;
+            let header = if signed { FORGED_SIGNATURE } else { "" };
+            let object = format!(
+                "tree {tree}\nparent {parent}\n\
+                 author Test <test@ank.local> 1753660800 +0000\n\
+                 committer Test <test@ank.local> 1753660800 +0000\n{header}\n\
+                 ratify {id}\n\nconstraint+scope: {anchor}\nby: human:marie\n",
+                anchor = anchor(n)
+            );
+            parent = self
+                .stdin_git(&["hash-object", "-t", "commit", "-w", "--stdin"], &object)
+                .trim()
+                .to_string();
+        }
+        self.git(&["update-ref", "refs/heads/main", &parent]);
+    }
+
     /// A git command fed on standard input, with its standard output returned.
     fn stdin_git(&self, args: &[&str], input: &str) -> String {
         let mut child = spawn("git")
@@ -358,6 +455,24 @@ impl Drop for Corpus {
 /// A well-formed identifier for the nth seeded task.
 fn id(n: usize) -> String {
     format!("TASK-{:012x}", 0x1000_0000_0000u64 + n as u64)
+}
+
+/// A well-formed identifier for the nth seeded decision.
+fn adr_id(n: usize) -> String {
+    format!("ADR-{:012x}", 0x2000_0000_0000u64 + n as u64)
+}
+
+/// The anchor the nth seeded decision claims to have been ratified with.
+///
+/// **Not the hash of its constraint**, and it cannot be: the normalisation and
+/// the hash live in the binary, this suite declares no dependency on it, and
+/// re-deriving either here would be a second implementation to keep true. So
+/// every seeded decision reads as altered since ratification, which is a fault
+/// this fixture carries deliberately. It changes nothing the measurement below
+/// asks: the freeze and the signature are two independent readings of the same
+/// commit, and it is the second one that is being counted.
+fn anchor(n: usize) -> String {
+    format!("{:012x}", 0xabc0_0000_0000u64 + n as u64)
 }
 
 /// The number that follows `name` in a JSON document.
@@ -527,6 +642,104 @@ fn status_asks_git_no_question_twice_and_reads_the_plane_in_one_batch() {
         started, single,
         "{REFS} coordination refs cost more git than one does"
     );
+}
+
+/// A ratification costs no process of its own, and the verdict is the same
+/// verdict (TASK-fc0334201ccf).
+///
+/// **Counted over two corpora, and never timed.** `check` and `review` each
+/// asked git for one commit object per ratification — forty-seven of the
+/// sixty-four processes they started on this repository, one `cat-file commit`
+/// per decision that has been ratified, and forty-seven is not a constant. The
+/// question is one bit per commit and `cat-file --batch` answers all of them at
+/// once, which is what the coordination plane already does two call sites away.
+///
+/// The claim is invariance and not a ceiling: what is asserted is that the two
+/// counts are *equal* over corpora [`FACTOR`] apart, never that either is some
+/// particular number. A ceiling would be a number to revise at every change,
+/// and a duration would be a measurement of the runner — process creation costs
+/// about 25ms on a Windows runner against 2-3ms on Linux, and the floor of one
+/// commit on one runner image has measured 376ms and then 612ms.
+///
+/// And the verdicts are asserted beside the count, on both corpora, because a
+/// batch that read the wrong bytes would be perfectly invariant and perfectly
+/// wrong: a commit carrying a `gpgsig` header nobody can check is `Unchecked`
+/// and counted for the corpus, a commit carrying none is `Absent` and a fault
+/// per entity, and the batch is the only thing that now tells them apart.
+#[test]
+fn every_ratification_signature_is_read_in_one_batch() {
+    let many = Corpus::new();
+    many.seed_ratifications(RATIFICATIONS);
+    let few = Corpus::new();
+    few.seed_ratifications(RATIFICATIONS / FACTOR);
+
+    // Warm, and both the same way: a cold run builds the index and asks git for
+    // the signatures it has no verdict for yet, and a comparison between a cold
+    // corpus and a warm one would be a comparison of two different questions.
+    for c in [&many, &few] {
+        c.json(&["check", "--json"]);
+        c.json(&["check", "--json"]);
+        c.json(&["review", "--json"]);
+    }
+
+    for verb in ["check", "review"] {
+        let (over_many, _) = many.git_processes(&[verb, "--json"]);
+        let (over_few, _) = few.git_processes(&[verb, "--json"]);
+        assert_eq!(
+            over_many.len(),
+            over_few.len(),
+            "{RATIFICATIONS} ratifications cost {verb} more git than \
+             {} do:\nmany {over_many:#?}\nfew {over_few:#?}",
+            RATIFICATIONS / FACTOR
+        );
+        assert_eq!(
+            over_many.iter().filter(|a| reads_one_commit(a)).count(),
+            0,
+            "a commit is still read on its own: {over_many:#?}"
+        );
+    }
+
+    // The verdicts, through the binary and on both corpora, so that neither the
+    // batch nor the fallback beside it can be reading bytes that say something
+    // else.
+    for (c, count) in [(&many, RATIFICATIONS), (&few, RATIFICATIONS / FACTOR)] {
+        let doc = c.json(&["check", "--json"]);
+        let unsigned = count / 2;
+        assert_eq!(
+            doc.matches("its ratification commit is not signed").count(),
+            unsigned,
+            "{unsigned} ratifications carry no signature header: {doc}"
+        );
+        for n in 0..count {
+            let ratified_by_a_signature = n % 2 == 0;
+            let named = doc.contains(&format!(
+                "\"subject\":\"{}\",\"message\":\"its ratification commit is not signed",
+                adr_id(n)
+            ));
+            assert_eq!(
+                named,
+                !ratified_by_a_signature,
+                "{} is reported by the object its ratification is: {doc}",
+                adr_id(n)
+            );
+        }
+        // The other half, counted once for the corpus rather than once per
+        // entity, which is what `check` does with a signature it cannot check.
+        assert!(
+            doc.contains(&format!(
+                "{} ratification signature(s) could not be checked here",
+                count - unsigned
+            )),
+            "the signatures that are there are counted and not refused: {doc}"
+        );
+    }
+}
+
+/// `cat-file commit <object name>`, which is one ratification read one process
+/// at a time.
+fn reads_one_commit(argv: &str) -> bool {
+    argv.strip_prefix("cat-file commit ")
+        .is_some_and(|name| name.len() == 40 && name.chars().all(|c| c.is_ascii_hexdigit()))
 }
 
 /// The corpus is keyed on its root commit, and the history is walked to find it

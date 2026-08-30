@@ -1821,6 +1821,70 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
     Ok(found)
 }
 
+/// The commit object of a ratification, out of one batch read for the whole
+/// history and kept for the process.
+///
+/// **One `cat-file --batch` where there was one `cat-file commit` per
+/// ratification** (TASK-fc0334201ccf). The caller wants one bit per
+/// ratification — whether the commit carries a `gpgsig` header — and asked git
+/// for it a process at a time: forty-seven of the sixty-four processes `check`
+/// and `review` each started on this repository, forty-seven distinct object
+/// names, one per ratification. Forty-seven is not a constant, it is the number
+/// of decisions this corpus has ratified, and it goes up with every one.
+///
+/// The names come from [`all_ratifications`], which has already walked the
+/// history and holds every ratification commit there is; the batch is the same
+/// shape [`cat_file_batch`] already answers for the coordination plane.
+///
+/// **A sha the walk does not carry is read on its own, once, and kept.** The
+/// walk is read at the first question and is not re-read, so a ratification
+/// made after it — `accept` committing and then reading back — is not in it,
+/// exactly as [`ratification_at`] describes for the anchor. That fallback
+/// cannot go stale in the direction that matters: a commit object is immutable,
+/// so a sha that answered once answers the same for ever.
+pub fn ratification_object(cwd: &Path, sha: &str) -> Option<String> {
+    static READ: OnceLock<Mutex<HashMap<PathBuf, HashMap<String, String>>>> = OnceLock::new();
+    let memo = READ.get_or_init(|| Mutex::new(HashMap::new()));
+    let known = |seen: &HashMap<PathBuf, HashMap<String, String>>| {
+        seen.get(cwd).and_then(|m| m.get(sha)).cloned()
+    };
+    let warmed = match memo.lock() {
+        Ok(seen) => {
+            if let Some(hit) = known(&seen) {
+                return Some(hit);
+            }
+            seen.contains_key(cwd)
+        }
+        Err(_) => false,
+    };
+    if !warmed {
+        // One commit ratifies both halves of a succession, so two entities can
+        // name the same object: deduplicated, because a name repeated in the
+        // input is bytes git writes twice for an answer already held.
+        let mut names: Vec<String> = all_ratifications(cwd)
+            .unwrap_or_default()
+            .into_values()
+            .map(|r| r.sha)
+            .collect();
+        names.sort();
+        names.dedup();
+        let batch = cat_file_batch(cwd, &names).unwrap_or_default();
+        if let Ok(mut seen) = memo.lock() {
+            seen.entry(cwd.to_path_buf()).or_default().extend(batch);
+            if let Some(hit) = known(&seen) {
+                return Some(hit);
+            }
+        }
+    }
+    let object = run(cwd, &["cat-file", "commit", sha]).ok()?;
+    if let Ok(mut seen) = memo.lock() {
+        seen.entry(cwd.to_path_buf())
+            .or_default()
+            .insert(sha.to_string(), object.clone());
+    }
+    Some(object)
+}
+
 fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Ratification>> {
     let subject = format!("ratify {id}");
     let args = ["rev-list", "--full-history", "HEAD", "--", path];

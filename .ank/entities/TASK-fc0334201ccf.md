@@ -5,7 +5,7 @@ slug: the-signature-of-every-ratification-is-read-in-o
 title: The signature of every ratification is read in one batch
 created: 2026-08-29T22:33:39Z
 author: haksolot@vmi3223161
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -20,6 +20,11 @@ done_criteria: |
   
   cargo test --workspace green, cargo fmt --check clean, and ank check reports no new fault.
 criteria_by: creator
+proof:
+  - type: commit
+    ref: 9d2a1ea253e450d185066e5fc1f9e53f569715e3
+    criteria: b7f0366e860c
+    via: submitted
 schema: 4
-version: 1
+version: 3
 ---
