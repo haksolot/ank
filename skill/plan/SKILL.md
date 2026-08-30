@@ -2,7 +2,7 @@
 name: ank-plan
 description: Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
 metadata:
-  revision: "03d408e5e20f"
+  revision: "c006ab14a4df"
 ---
 
 # ank-plan
@@ -26,6 +26,12 @@ Never ask a question the repository answers. Before the first question:
 
 Then read the code the goal touches. A question answered by reading, asked
 anyway, teaches the human to stop answering.
+
+**Re-measure what you are about to plan around.** A number from an earlier
+session is a claim about a tree that has moved since, and a goal built on one is
+a goal aimed at the wrong place. Take the measurement again before the first
+question: the work may already be done, and where it is not, the shape of what
+remains is rarely the shape that was reported.
 
 ## The interview
 

@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "c5bae2a5f350"
+  revision: "d25cedf8fe35"
 ---
 
 # ank
@@ -69,7 +69,11 @@ Execute:
 Shape:
 
     ank new task          a scope is mandatory; a discovered subtask is a new task with
-                          blocked_by, never a softened criterion
+                          blocked_by, never a softened criterion. Point the edge the way
+                          the work runs: if the new task carries part of your criterion,
+                          yours waits on it and never the reverse. Backwards, neither
+                          moves, and `graph` reports no cycle because the dependency is
+                          in the criterion's prose and not in an edge
     ank new adr           a decision the corpus is held to afterwards, not a thing to do
                           now; lands proposed, binding nobody until ratified
     ank amend <id>        blocked_by, scope and criteria, added and removed explicitly;
