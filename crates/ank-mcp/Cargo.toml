@@ -22,6 +22,7 @@ edition = "2021"
 rust-version = "1.95"
 # Apache-2.0, like the whole tree (ADR-9f03438f5422).
 license = "Apache-2.0"
+authors = ["Sean Lamet"]
 description = "The Ank protocol surface: every verb the CLI dispatches, over MCP, generated from one table."
 
 # **A library, and no `[[bin]]`** (ADR-fd98f4bc6dea). The surface is the verb

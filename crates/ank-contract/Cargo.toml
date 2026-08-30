@@ -17,6 +17,7 @@ rust-version = "1.95"
 # the tool the day after, which is how a line redrawn twice in one direction
 # turned out to be a line in the wrong place.
 license = "Apache-2.0"
+authors = ["Sean Lamet"]
 description = "The Ank machine contract: the verb table, the refusals and the exit codes, consumed by every surface."
 
 # Deliberately none, and this is load-bearing rather than tidy. Every surface

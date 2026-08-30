@@ -10,6 +10,7 @@ edition = "2021"
 rust-version = "1.95"
 # Apache-2.0, like the whole tree (ADR-9f03438f5422).
 license = "Apache-2.0"
+authors = ["Sean Lamet"]
 description = "The Ank watcher: it keeps declared corpora warm, answers no verb, and nothing depends on it."
 
 # **A library, and no `[[bin]]`** (ADR-a22cd3196529, ADR-1ea31c2f3c5a). The

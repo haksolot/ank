@@ -3,6 +3,7 @@
   "version": "0.6.0",
   "description": "The ank binary for Linux x86_64, statically linked against musl.",
   "license": "Apache-2.0",
+  "author": "Sean Lamet",
   "homepage": "https://github.com/haksolot/ank",
   "repository": {
     "type": "git",

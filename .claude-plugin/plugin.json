@@ -8,7 +8,7 @@
   },
   "homepage": "https://github.com/haksolot/ank",
   "repository": "https://github.com/haksolot/ank",
-  "license": "GPL-3.0-only",
+  "license": "Apache-2.0",
   "keywords": [
     "adr",
     "architecture-decision-record",
