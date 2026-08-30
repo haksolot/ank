@@ -44,8 +44,15 @@ struct ConfigFile {
     /// instead of relaxing the `deny_unknown_fields` above.
     #[serde(default)]
     peers: BTreeMap<String, String>,
+    /// Read as a mapping and not as a `BTreeMap`, because the order the file
+    /// declares its verifiers in is part of what is read: `ank new task` seeds
+    /// a task's `verify:` list with the marked ones in that order
+    /// (ADR-443590981e41), and a sorted map has thrown it away before anyone
+    /// can look. `serde_yaml::Mapping` keeps insertion order, and it is the
+    /// only shape in this file that does -- everything else here is addressed
+    /// by name, where order means nothing.
     #[serde(default)]
-    verifiers: BTreeMap<String, VerifierFile>,
+    verifiers: serde_yaml::Mapping,
     #[serde(default)]
     roles: BTreeMap<String, Role>,
     #[serde(default)]
@@ -74,6 +81,17 @@ struct VerifierFile {
     run: String,
     #[serde(default = "default_timeout")]
     timeout: String,
+    /// Whether `ank new task` writes this verifier into the task it creates
+    /// (ADR-443590981e41). Absent means no, and absent is how the key stays
+    /// until somebody marks the verifier: a mark written out for every
+    /// verifier would turn "nobody chose" into "chosen against".
+    ///
+    /// Not carried onto [`Verifier`], and deliberately: the mark decides what
+    /// a task is born with, never what running one proves, and
+    /// `verify::definition_hash` anchors historical proofs over exactly the
+    /// fields that decide the second.
+    #[serde(default)]
+    default: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -113,6 +131,15 @@ pub struct Config {
     /// somebody checked something out.
     pub peers: BTreeMap<String, String>,
     pub verifiers: BTreeMap<String, Verifier>,
+    /// The verifiers marked `default: true`, in the order `config.yml`
+    /// declares them (ADR-443590981e41). This is what `ank new task` seeds a
+    /// task's `verify:` list with when the caller names none.
+    ///
+    /// A list beside the map rather than a flag inside it, because the answer
+    /// this field gives is ordered and the map is not: a reader assembling it
+    /// from `verifiers` would get the alphabet back, which is a different
+    /// sentence from the one the file wrote.
+    pub default_verifiers: Vec<String>,
     pub roles: BTreeMap<String, Role>,
     pub identities: BTreeMap<String, String>,
 }
@@ -184,8 +211,27 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
     let claim_ttl_max = dur(&raw.claim_ttl_max, "claim_ttl_max")?;
     let claim_ttl_default = dur(&raw.claim_ttl_default, "claim_ttl_default")?;
     let mut verifiers = BTreeMap::new();
-    for (name, v) in raw.verifiers {
+    let mut default_verifiers = Vec::new();
+    for (name, value) in raw.verifiers {
+        // A name is what `--verify` types and what a task's `verify:` list
+        // holds, so a key YAML resolved to something else -- `on:`, `1:` --
+        // names a verifier nothing can ask for.
+        let Some(name) = name.as_str().map(str::to_string) else {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!("{}: a verifier is named by a string", path.display()),
+            ));
+        };
+        let v: VerifierFile = serde_yaml::from_value(value).map_err(|e| {
+            CliError::new(
+                ExitCode::Generic,
+                format!("{}: verifiers.{name}: {e}", path.display()),
+            )
+        })?;
         let timeout = dur(&v.timeout, &format!("verifiers.{name}.timeout"))?;
+        if v.default {
+            default_verifiers.push(name.clone());
+        }
         verifiers.insert(
             name,
             Verifier {
@@ -217,6 +263,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
             .map(|(name, path)| (name, path.trim().to_string()))
             .collect(),
         verifiers,
+        default_verifiers,
         roles: raw.roles,
         identities: raw.identities,
     })
@@ -417,15 +464,19 @@ enum Key {
     /// A scalar at the root of the document.
     Top {
         name: &'static str,
-        /// Emitted verbatim: the field holds a number, and quoting one would
-        /// store a string the parser refuses.
-        numeric: bool,
+        /// Written without quotes: the field holds a number or a boolean, and
+        /// quoting one would store a string the parser refuses.
+        verbatim: bool,
         default: Option<String>,
     },
-    /// `verifiers.<name>.run` or `.timeout`.
+    /// `verifiers.<name>.run`, `.timeout` or `.default`.
     Field {
         verifier: String,
         field: &'static str,
+        /// The same rule as the one above, and `default` is why it reaches
+        /// here too: `default: "true"` is a string, and the parser wants the
+        /// boolean the caller typed.
+        verbatim: bool,
         default: Option<String>,
     },
     /// `verifiers.<name>`: legal for `--unset` alone, which is what makes
@@ -505,29 +556,29 @@ fn resolve_key(path: &str) -> Result<Key> {
     match segs.as_slice() {
         ["schema"] => Ok(Key::Top {
             name: "schema",
-            numeric: true,
+            verbatim: true,
             default: None,
         }),
         ["context_budget"] => Ok(Key::Top {
             name: "context_budget",
-            numeric: true,
+            verbatim: true,
             default: Some(DEFAULT_CONTEXT_BUDGET.to_string()),
         }),
         ["claim_ttl_max"] => Ok(Key::Top {
             name: "claim_ttl_max",
-            numeric: false,
+            verbatim: false,
             default: Some(DEFAULT_CLAIM_TTL_MAX.to_string()),
         }),
         ["claim_ttl_default"] => Ok(Key::Top {
             name: "claim_ttl_default",
-            numeric: false,
+            verbatim: false,
             default: Some(DEFAULT_CLAIM_TTL.to_string()),
         }),
         // No default: absent, the resolution falls back to
         // refs/remotes/origin/HEAD and fails rather than guessing (§7).
         ["default_branch"] => Ok(Key::Top {
             name: "default_branch",
-            numeric: false,
+            verbatim: false,
             default: None,
         }),
         ["peers"] => Err(CliError::new(
@@ -573,18 +624,31 @@ fn resolve_key(path: &str) -> Result<Key> {
         ["verifiers", name, "run"] => Ok(Key::Field {
             verifier: (*name).to_string(),
             field: "run",
+            verbatim: false,
             default: None,
         }),
         ["verifiers", name, "timeout"] => Ok(Key::Field {
             verifier: (*name).to_string(),
             field: "timeout",
+            verbatim: false,
             default: Some(DEFAULT_VERIFIER_TIMEOUT.to_string()),
+        }),
+        // The mark of ADR-443590981e41, whose resolved absence is `false`
+        // rather than nothing: a verifier nobody marked is one `ank new task`
+        // will not seed, which is a value in effect and not a hole. The
+        // verifier still has to be declared -- `write_field` refuses this on
+        // an undeclared one exactly as it refuses a timeout.
+        ["verifiers", name, "default"] => Ok(Key::Field {
+            verifier: (*name).to_string(),
+            field: "default",
+            verbatim: true,
+            default: Some("false".to_string()),
         }),
         ["verifiers", _, other] => Err(CliError::new(
             ExitCode::Generic,
             format!("unknown verifier field '{other}'"),
         )
-        .with_hint("ank config verifiers.<name>.run   or   ank config verifiers.<name>.timeout")),
+        .with_hint("ank config verifiers.<name>.run   or   .timeout   or   .default")),
         ["verifiers", _, _, _, ..] => Err(CliError::new(
             ExitCode::Generic,
             format!(
@@ -951,8 +1015,8 @@ fn double_quoted(s: &str) -> String {
 /// The value as it will be written. A string key keeps the quoting style it
 /// already had, which is what makes "quoting style survives a write" true of
 /// the edited key as well as of its neighbours.
-fn render_value(value: &str, numeric: bool, keep: Option<char>) -> String {
-    if numeric {
+fn render_value(value: &str, verbatim: bool, keep: Option<char>) -> String {
+    if verbatim {
         return value.to_string();
     }
     match keep {
@@ -1055,6 +1119,7 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
             verifier,
             field,
             default,
+            ..
         } => {
             // A timeout resolved for a verifier that is not declared would be a
             // value in effect for something that will never run.
@@ -1090,21 +1155,21 @@ fn observe(lines: &[Line], key: &Key) -> Result<Value> {
 fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
     match key {
         Key::Block { verifier } => Err(whole_block(verifier)),
-        Key::Top { name, numeric, .. } => match find_key(lines, 0..lines.len(), 0, name) {
+        Key::Top { name, verbatim, .. } => match find_key(lines, 0..lines.len(), 0, name) {
             Some(i) => {
                 let (_, after) = key_of(&lines[i].text).expect("found by its key");
                 let span = value_span(&lines[i].text, after);
                 if span.blocky {
                     return Err(blocky(name));
                 }
-                let rendered = render_value(value, *numeric, span.quote);
+                let rendered = render_value(value, *verbatim, span.quote);
                 splice(&mut lines[i], &span, &rendered);
                 Ok(())
             }
             None => {
                 let eol = dominant_eol(lines);
                 terminate_last(lines, &eol);
-                let rendered = render_value(value, *numeric, None);
+                let rendered = render_value(value, *verbatim, None);
                 lines.push(Line {
                     text: format!("{name}: {rendered}"),
                     eol,
@@ -1113,8 +1178,11 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
             }
         },
         Key::Field {
-            verifier, field, ..
-        } => write_field(lines, verifier, field, value),
+            verifier,
+            field,
+            verbatim,
+            ..
+        } => write_field(lines, verifier, field, *verbatim, value),
         Key::Under { map, name } => write_under(lines, map, name, value),
     }
 }
@@ -1195,9 +1263,15 @@ fn write_under(lines: &mut Vec<Line>, map: &'static str, name: &str, value: &str
     }
 }
 
-fn write_field(lines: &mut Vec<Line>, verifier: &str, field: &str, value: &str) -> Result<()> {
+fn write_field(
+    lines: &mut Vec<Line>,
+    verifier: &str,
+    field: &str,
+    verbatim: bool,
+    value: &str,
+) -> Result<()> {
     let eol = dominant_eol(lines);
-    let rendered = render_value(value, false, None);
+    let rendered = render_value(value, verbatim, None);
 
     let Some(vi) = find_key(lines, 0..lines.len(), 0, "verifiers") else {
         // Only `run` declares a verifier: a timeout with no command names one
@@ -1271,7 +1345,7 @@ fn write_field(lines: &mut Vec<Line>, verifier: &str, field: &str, value: &str) 
                     if span.blocky {
                         return Err(blocky(&format!("verifiers.{verifier}.{field}")));
                     }
-                    let rendered = render_value(value, false, span.quote);
+                    let rendered = render_value(value, verbatim, span.quote);
                     splice(&mut lines[j], &span, &rendered);
                     Ok(())
                 }
@@ -1438,7 +1512,7 @@ fn resolve_user_key(path: &str) -> Result<Key> {
     match segs.as_slice() {
         ["schema"] => Ok(Key::Top {
             name: "schema",
-            numeric: true,
+            verbatim: true,
             default: None,
         }),
         ["corpora", identity] => {

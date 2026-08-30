@@ -625,6 +625,7 @@ config_keys!(
     "peers.<name>",
     "verifiers.<name>.run",
     "verifiers.<name>.timeout",
+    "verifiers.<name>.default",
 );
 
 /// The twelve verbs of §4, plus `init` and `help` (§9).
@@ -781,6 +782,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--supersedes"),
             multi("--reference"),
             multi("--verify"),
+            switch("--no-verify"),
             flag("--body"),
         ],
         refuses: &[refuses(ExitCode::Environment, "no --title or --scope and $EDITOR is unset, so there is nothing to open")],
@@ -788,6 +790,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a scope is mandatory: an entity attached to nothing is invisible",
             "--body - reads the body from stdin, so a long one needs no shell quoting",
             "--reference declares what a spec rests on; it takes a spec or an adr, and check resolves it",
+            "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
         ],
         refuses_globals: &[],
         output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("created", Type::Str)])],
@@ -1358,12 +1361,13 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Generic,
                 "a key the parser does not know, or a value in a form the surgery cannot edit safely",
             ),
-            refuses(ExitCode::Prerequisite, "verifiers.<name>.timeout on a verifier that is not declared"),
+            refuses(ExitCode::Prerequisite, "verifiers.<name>.timeout or .default on a verifier that is not declared"),
         ],
         notes: &[
             CONFIG_KEYS_NOTE,
             "a resolved default prints marked as one; --json carries value and source as separate fields",
-            "--unset verifiers.<name> removes a whole verifier, which is what makes declaring one reversible",
+            "--unset verifiers.<name> removes a whole verifier, and the default mark with it, which is what makes declaring one reversible",
+            "verifiers.<name>.default true marks a verifier for ank new task to write into every task it creates",
             "--user reads and writes the reader's corpora.yml instead, whose only key is corpora.<identity>",
         ],
         refuses_globals: &[],
