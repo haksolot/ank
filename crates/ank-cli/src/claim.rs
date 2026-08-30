@@ -2341,7 +2341,7 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
 mod tests {
     use super::*;
     use ank_core::{serialize_entity, Adr};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::sync::Arc;
@@ -2373,6 +2373,11 @@ mod tests {
             // Signing off at creation, not at each commit (TASK-40a972e98a9a).
             t.porcelain(&["config", "commit.gpgsign", "false"]);
             t.porcelain(&["config", "tag.gpgsign", "false"]);
+            // Maintenance off, because a test here fingerprints the corpus and
+            // git is otherwise free to repack it between two snapshots
+            // (TASK-fc6bef21e268).
+            t.porcelain(&["config", "gc.auto", "0"]);
+            t.porcelain(&["config", "maintenance.auto", "false"]);
             t
         }
 
@@ -2423,6 +2428,92 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Every git repository inside a fixture, found rather than listed.
+    ///
+    /// A directory holding a `HEAD` file and an `objects` directory is one,
+    /// whether it is the `.git` beside a working tree or a bare corpus. Found,
+    /// because a list would have to be maintained, and the thing being guarded
+    /// against is exactly a repository nobody remembered to enrol.
+    fn repositories_under(root: &Path) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        let mut stack = vec![root.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            if dir.join("HEAD").is_file() && dir.join("objects").is_dir() {
+                found.push(dir);
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for e in entries.flatten() {
+                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                    stack.push(e.path());
+                }
+            }
+        }
+        found
+    }
+
+    /// What git itself answers for one key of one repository, `None` when the
+    /// key is unset -- which is the state this asserts against, since an unset
+    /// `maintenance.auto` means maintenance is on.
+    fn config_of(git_dir: &Path, key: &str) -> Option<String> {
+        let out = Command::new("git")
+            .arg("--git-dir")
+            .arg(git_dir)
+            .args(["config", "--get", key])
+            .output()
+            .expect("git must be installed: it is a hard dependency");
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Asserts every repository under `root` is one git will not maintain.
+    ///
+    /// Read back out of the fixture, never grepped out of this file: the
+    /// subject is what `git init` plus the configuration actually produced.
+    fn assert_unmaintained(root: &Path) {
+        let repos = repositories_under(root);
+        assert!(
+            !repos.is_empty(),
+            "no repository found under {}: this asserts nothing",
+            root.display()
+        );
+        for git_dir in repos {
+            let at = git_dir.display();
+            assert_eq!(
+                config_of(&git_dir, "gc.auto").as_deref(),
+                Some("0"),
+                "gc.auto at {at}"
+            );
+            assert_eq!(
+                config_of(&git_dir, "maintenance.auto").as_deref(),
+                Some("false"),
+                "maintenance.auto at {at}"
+            );
+        }
+    }
+
+    /// A fixture repository is not maintained under the test.
+    ///
+    /// `naming_a_claim_elsewhere_writes_nothing_in_the_corpus_it_names`
+    /// fingerprints a foreign corpus before and after a read and asserts the
+    /// bytes did not move. It failed on ubuntu-latest in run 33284185681 and
+    /// passed on the other two platforms: the first snapshot carried
+    /// `objects/maintenance.lock`, a `tmp_pack` and six loose objects, the
+    /// second a multi-pack-index, two packs and `info/refs`. Git had repacked
+    /// the repository between the two; ank had written nothing. The assertion
+    /// was right and its subject was moving.
+    ///
+    /// Every fixture in this module is built by `Temp::new_repo`, so a fifth
+    /// one added below is held to this without anyone remembering to enrol it.
+    #[test]
+    fn a_fixture_repository_is_not_maintained_under_the_test() {
+        let t = Temp::new_repo();
+        assert_unmaintained(&t.0);
     }
 
     fn open_task(hex: &str) -> Task {
