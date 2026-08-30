@@ -238,10 +238,17 @@ jobs:
             LC_ALL=C cat -v staged.log
             exit 1
           fi
-          # The art is ASCII, so the frame is asserted absent as well as the
-          # escapes that animate it: a logo drawn without moving a cursor would
-          # pass the test above and still be noise in the log.
-          if grep -q '####' staged.log; then
+          # The frame is asserted absent as well as the escapes that animate it:
+          # a logo drawn without moving a cursor would pass the test above and
+          # still be noise in the log.
+          #
+          # Both cells, because which one is drawn is decided by the locale and
+          # a runner's locale is not this repository's to fix: U+2588 where it
+          # announces UTF-8, `#` where it does not. A test that knew only one of
+          # them would go quiet on half the machines it runs on.
+          # The cells are written out, not escaped: \x is not a thing grep's
+          # own syntax knows outside -P, and the bytes are already in this file.
+          if LC_ALL=C grep -qF -e '####' -e '██' staged.log; then
             echo "the logo was drawn with no terminal attached"
             exit 1
           fi
@@ -365,7 +372,7 @@ jobs:
           test ! -e nonode/node || { echo "the node-free PATH has a node on it"; exit 1; }
 
           cat > offer.py <<'PY'
-          import fcntl, os, select, signal, struct, sys, termios
+          import fcntl, os, re, select, signal, struct, sys, termios
 
           INSTALL = os.path.join(os.getcwd(), "install.sh")
           VERSION = os.environ["STAGED_VERSION"]
@@ -382,6 +389,62 @@ jobs:
           # a console decided to fold.
           SKILLS_Q = "Install them now?"
           ADOPT_Q = "Print the three prompts"
+
+          # Which cell the logo is drawn in is decided by the locale, and a
+          # runner's locale is not this repository's to fix: U+2588 where it
+          # announces UTF-8, `#` where it does not. Asked as "either", so this
+          # keeps meaning the same thing on a runner image that changes its
+          # mind about LANG.
+          LOGO_CELLS = ("██", "####")
+
+          def drew_logo(out):
+              return any(cell in out for cell in LOGO_CELLS)
+
+          # The finished mark, as the ten rows it is drawn in: assets/ank.svg at
+          # one cell per pixel column and one row per pair of pixel rows.
+          # install.sh prints each row literally, so no terminal has to be
+          # emulated to find them.
+          #
+          # This is the sh half of a claim the Windows job makes for install.ps1
+          # against the same ten rows. The two files say they carry one shape
+          # between them; pinned in one place only, that stays true in one place
+          # only.
+          def logo_block(cell):
+              b2, b4, b14 = cell * 2, cell * 4, cell * 14
+              loop = "          " + b4
+              side = "        " + b2 + "    " + b2
+              leg = "   " + b2 + "      " + b2 + "      " + b2
+              return "\n".join([
+                  loop,
+                  side,
+                  side,
+                  loop,
+                  "           " + b2,
+                  "   " + b4 + "    " + b2 + "    " + b4,
+                  leg,
+                  leg,
+                  leg,
+                  "     " + b14,
+              ])
+
+          # The escapes come out first. A row is drawn as padding, then the
+          # sequence that colours it, then the cells -- so the row as a string
+          # is only in there once the sequences are not.
+          ESCAPES = re.compile("\x1b\\[[0-9;?]*[A-Za-z]")
+
+          # The ten rows together and consecutive, never row by row. Asked one
+          # row at a time this passes on a mark that is wrong: a frame drawn
+          # before the legs have grown pads their columns with the same eleven
+          # spaces the stem row begins with, so the stem row is found in the
+          # animation whatever the finished shape turns out to be. Measured --
+          # moving that row one column left leaves every row still findable on
+          # its own, and the block not findable at all.
+          def drew_the_mark(out):
+              # A pty turns each newline the installer writes into a carriage
+              # return and a newline, so the block is joined by one and looked
+              # for in the other.
+              bare = ESCAPES.sub("", out).replace("\r\n", "\n")
+              return any(logo_block(cell) in bare for cell in ("█", "#"))
 
           def drive(args, keys, env_extra, timeout=180):
               """Run args on a pty of its own and type keys at it."""
@@ -482,6 +545,13 @@ jobs:
           run = case("accept", b"y\ny\n")
           want(run, not run["timed_out"], "it never finished")
           want(run, run["code"] == 0, "a failing skill step changed the exit code to %d" % run["code"])
+          # The presence, and not only the absence below. Every other assertion
+          # about the logo asks that it stay away, so all of them would pass on
+          # an installer that had stopped drawing it entirely -- which is the
+          # regression a person would actually notice.
+          want(run, drew_logo(run["out"]), "no logo was drawn at a terminal")
+          want(run, drew_the_mark(run["out"]),
+               "what was drawn is not the shape of assets/ank.svg")
           asked_once(run)
           want(run, run["ran"], "it accepted and never ran npx")
           want(run, installed(run), "the binary is not in place after the offer failed")
@@ -520,7 +590,7 @@ jobs:
           want(run, run["skills_asked"] == 0, "--no-welcome asked the skills offer anyway")
           want(run, run["adopt_asked"] == 0, "--no-welcome asked the adoption offer anyway")
           want(run, not run["ran"], "--no-welcome ran npx anyway")
-          want(run, "####" not in run["out"], "--no-welcome drew the logo at a terminal")
+          want(run, not drew_logo(run["out"]), "--no-welcome drew the logo at a terminal")
           want(run, installed(run), "--no-welcome cost the install its binary")
 
           # node absent: the command, and one line saying why it was not run.
@@ -697,6 +767,115 @@ jobs:
           }
           "install.ps1 parses"
 
+      # The two files carry one shape between them, and each says so in a
+      # comment: "the same logo, because two spellings of it would drift". A
+      # comment does not stop it drifting. This reads the rows install.ps1 would
+      # draw and compares them to the rows install.sh holds, so the claim is
+      # measured on the machine it matters on.
+      #
+      # The functions are lifted out of the parsed tree rather than copied here:
+      # a copy is a third spelling, and a third spelling drifts from both.
+      - name: its frames are the frames install.sh draws
+        run: |
+          $tokens = $null
+          $errors = $null
+          $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path ./install.ps1), [ref]$tokens, [ref]$errors)
+
+          $wanted = 'Get-LogoBand', 'Get-LogoFrame', 'Test-GlyphSurvives'
+          $found = @{}
+          foreach ($fn in $ast.FindAll({ $args[0] -is
+              [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
+            if ($wanted -contains $fn.Name) { $found[$fn.Name] = $fn.Extent.Text }
+          }
+          foreach ($w in $wanted) {
+            if (-not $found.ContainsKey($w)) { "install.ps1 no longer defines $w"; exit 1 }
+          }
+
+          $LogoWidth = 24
+          $LogoPad11 = '           '
+          $UiDim = ''
+          foreach ($w in $wanted) { Invoke-Expression $found[$w] }
+
+          $cell = [string][char]0x2588
+          $frame = Get-LogoFrame 1 4 5 1 'none' $true ($cell * 2) ($cell * 4) ($cell * 14)
+          $rows = @()
+          foreach ($row in $frame) {
+            $line = ''
+            foreach ($seg in $row) { $line += $seg.T }
+            $rows += $line.TrimEnd()
+          }
+
+          # The finished mark, spelled once here and asserted of the frame. It
+          # is the geometry of assets/ank.svg at one cell per pixel column and
+          # one row per pair of pixel rows.
+          $want = @(
+            ('          ' + ($cell * 4)),
+            ('        ' + ($cell * 2) + '    ' + ($cell * 2)),
+            ('        ' + ($cell * 2) + '    ' + ($cell * 2)),
+            ('          ' + ($cell * 4)),
+            ('           ' + ($cell * 2)),
+            ('   ' + ($cell * 4) + '    ' + ($cell * 2) + '    ' + ($cell * 4)),
+            ('   ' + ($cell * 2) + '      ' + ($cell * 2) + '      ' + ($cell * 2)),
+            ('   ' + ($cell * 2) + '      ' + ($cell * 2) + '      ' + ($cell * 2)),
+            ('   ' + ($cell * 2) + '      ' + ($cell * 2) + '      ' + ($cell * 2)),
+            ('     ' + ($cell * 14)),
+            '',
+            '          ank'
+          )
+
+          $bad = 0
+          if ($rows.Count -ne 12) { "the frame is $($rows.Count) rows and twelve is the contract"; $bad = 1 }
+          for ($i = 0; $i -lt $want.Count; $i++) {
+            if ($rows[$i] -ne $want[$i]) {
+              "row $($i + 1): got '$($rows[$i])' wanted '$($want[$i])'"
+              $bad = 1
+            }
+          }
+
+          # No row of any state may run past the width the console is measured
+          # against, and an empty state has to draw nothing at all -- that is
+          # what lets the redraw shrink without a clear-to-end-of-line.
+          foreach ($s in @(@(1,0,0,0,'base'), @(1,1,0,0,'none'), @(1,4,0,0,'none'),
+                           @(1,4,1,0,'none'), @(1,4,5,0,'none'), @(1,4,5,1,'loop'),
+                           @(1,4,5,1,'all'), @(0,0,0,0,'none'))) {
+            $f = Get-LogoFrame $s[0] $s[1] $s[2] $s[3] $s[4] $false ($cell * 2) ($cell * 4) ($cell * 14)
+            foreach ($row in $f) {
+              $line = ''
+              foreach ($seg in $row) { $line += $seg.T }
+              if ($line.Length -gt $LogoWidth) {
+                "a row of state $($s[4]) is $($line.Length) wide, over $LogoWidth"
+                $bad = 1
+              }
+              if ($s[0] -eq 0 -and $line.TrimEnd() -ne '') {
+                "the empty state drew '$line'"
+                $bad = 1
+              }
+            }
+          }
+
+          # And the glyph test, asked of the encodings it exists to tell apart.
+          # 437 carries the block at 0xDB and best-fits the tick to a square
+          # root; 1252 best-fits the block to a broken bar. Neither produces a
+          # question mark, which is why the test round-trips.
+          $saved = [Console]::OutputEncoding
+          try {
+            [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+            if (-not (Test-GlyphSurvives 0x2588)) { 'UTF-8 was told it cannot carry the block'; $bad = 1 }
+            if (-not (Test-GlyphSurvives 0x2713)) { 'UTF-8 was told it cannot carry the tick'; $bad = 1 }
+            [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(437)
+            if (-not (Test-GlyphSurvives 0x2588)) { 'codepage 437 was told it cannot carry the block'; $bad = 1 }
+            if (Test-GlyphSurvives 0x2713) { 'codepage 437 was told it carries the tick'; $bad = 1 }
+            [Console]::OutputEncoding = [System.Text.Encoding]::GetEncoding(1252)
+            if (Test-GlyphSurvives 0x2588) { 'codepage 1252 was told it carries the block'; $bad = 1 }
+          } finally {
+            [Console]::OutputEncoding = $saved
+          }
+
+          if ($bad) { exit 1 }
+          "the frame is twelve rows, is the shape install.sh draws, never exceeds $LogoWidth columns,"
+          "draws nothing when empty, and the glyph test tells UTF-8, 437 and 1252 apart"
+
       - name: it explains itself
         run: |
           & ./install.ps1 -Help
@@ -856,7 +1035,11 @@ jobs:
             "an escape sequence reached the transcript with no console attached"
             exit 1
           }
-          if ($out -match '####') {
+          # Both cells, because which one is drawn is decided by what the
+          # console's encoding can carry and not by this file: U+2588 where it
+          # survives the round trip, `#` where it does not. -match takes a
+          # regular expression, so the alternation is spelled as one.
+          if ($out -match ('####|' + ([string][char]0x2588 * 2))) {
             "the logo was drawn with no console attached"
             exit 1
           }
@@ -1035,14 +1218,38 @@ jobs:
           # one an exiting child sets is the one the engine keeps: seeded and
           # read here they would be two variables wearing one name, and a
           # refusal from install.ps1 would read back as a success.
+          # A transcript, and not `*>&1 | Out-String`, and the difference is not
+          # cosmetic: capturing the streams into a variable diverts the output
+          # so the console never receives it. Its cursor then never advances,
+          # Show-Logo's `$top = CursorPosition.Y - 12` comes out negative, and
+          # it returns without drawing a frame. Under a capture this step was
+          # therefore measuring a run in which the animation never happened --
+          # which no assertion noticed, because every assertion about the logo
+          # asked only that it stay away.
+          #
+          # Measured, on one install, both ways: the capture finds the
+          # questions and the checksum and no cell of the mark; the transcript
+          # finds all four. A transcript lets the output reach the console and
+          # records it as well, which is the only way to watch a run that draws.
           $installer = Join-Path $PSScriptRoot 'install.ps1'
+          $transcript = "$OutFile.transcript"
+          Remove-Item -Force $transcript -ErrorAction SilentlyContinue
+
           $global:LASTEXITCODE = 0
-          if ($NoWelcome) {
-              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome *>&1 | Out-String)
-          } else {
-              $out = (& $installer -Version $env:STAGED_VERSION -Dir $Dir *>&1 | Out-String)
+          Start-Transcript -Path $transcript -Force | Out-Null
+          try {
+              if ($NoWelcome) {
+                  & $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome
+              } else {
+                  & $installer -Version $env:STAGED_VERSION -Dir $Dir
+              }
+          } finally {
+              $code = $global:LASTEXITCODE
+              Stop-Transcript | Out-Null
           }
-          $code = $global:LASTEXITCODE
+
+          $out = ''
+          if (Test-Path $transcript) { $out = (Get-Content -Raw $transcript) }
 
           # What the probe was told, recorded beside what the installer said.
           # Without it, "-NoWelcome asked anyway" is the same message whether
@@ -1131,6 +1338,12 @@ jobs:
               return (Test-Path (Join-Path $Run.Dir 'ank.exe'))
           }
 
+          # Which cell the logo is drawn in is decided by what the console's
+          # encoding can carry and not by this file: U+2588 where it survives
+          # the round trip, `#` where it does not. Written as one regular
+          # expression so both -match and -notmatch read the same alternation.
+          $LogoCells = '####|' + ([string][char]0x2588 * 2)
+
           # Once each, asserted of each: this is the property the probe exists
           # for, and it is stricter than the total it replaces. Two questions
           # asked once and one question asked twice both come to two; only a
@@ -1145,6 +1358,11 @@ jobs:
           # the criterion names: the install is already done, so it stays done.
           $run = Invoke-Case -Label 'accept' -Answer 'y'
           Want $run ($run.Code -eq 0) "a failing skill step changed the exit code to $($run.Code)"
+          # The presence, and not only the absence below. Every other assertion
+          # about the logo asks that it stay away, so all of them would pass on
+          # an installer that had stopped drawing it entirely -- which is the
+          # regression a person would actually notice.
+          Want $run ($run.Out -match $LogoCells) 'no logo was drawn at a console'
           Want-AskedOnce $run
           Want $run ($run.Ran) 'it accepted and never ran npx'
           Want $run (Installed $run) 'the executables are not in place after the offer failed'
@@ -1184,7 +1402,7 @@ jobs:
           Want $run ($run.SkillsAsked -eq 0) '-NoWelcome asked the skills offer anyway'
           Want $run ($run.AdoptAsked -eq 0) '-NoWelcome asked the adoption offer anyway'
           Want $run (-not $run.Ran) '-NoWelcome ran npx anyway'
-          Want $run ($run.Out -notmatch '####') '-NoWelcome drew the logo at a console'
+          Want $run ($run.Out -notmatch $LogoCells) '-NoWelcome drew the logo at a console'
           Want $run (Installed $run) '-NoWelcome cost the install its executables'
 
           # node absent: the command, and one line saying why it was not run.

@@ -56,6 +56,25 @@ say() {
   printf '%s\n' "$*" >&2
 }
 
+# Colour and the marker, behind the gate the logo is drawn behind. Empty until
+# ui_enable runs, which is what keeps ADR-5fbd99bf6fd5's promise to a caller
+# with nobody at the end of it: a pipe reads the bytes it read before this file
+# learned about either.
+#
+# Every call site below spells the sequences out rather than asking a function
+# for them, so a line that is half plain and half painted is one string and not
+# a concatenation of three -- and the plain reading of it, with every variable
+# empty, is the line that used to be there.
+ui_off="" ui_bold="" ui_dim="" ui_cyan="" ui_green=""
+ui_pad="" ui_tick=""
+
+# `ok <line>`: a step that finished. The marker and the indent are drawn for a
+# person and for nobody else -- what a pipe reads is the sentence alone, which
+# is why the two live in variables rather than in the format string.
+ok() {
+  say "${ui_pad}${ui_green}${ui_tick}${ui_off}$*"
+}
+
 # `die <code> <line>...`: the code carries the kind of failure, the lines carry
 # what to do next. Nothing here ever ends in silence -- that is the one thing
 # an install script cannot do, since the caller is otherwise left with no
@@ -75,79 +94,269 @@ die() {
 # Welcome
 # --------------------------------------------------------------------------
 
-# The logo, at half the resolution of assets/ank.svg and drawn in ASCII. That
-# file is the reference for the shape and nothing here reads it: an installer
-# that fetches a logo before it fetches the binary is an installer with a
-# second way to fail before doing anything useful, so the frames are bytes in
-# this file. ASCII and not U+2588 for the reason the shebang is /bin/sh -- this
-# runs on busybox, under a locale nobody chose, and a logo that arrives as
-# question marks is worse than no logo at all.
+# The logo, from assets/ank.svg read as pixels: twenty-four columns by ten
+# rows, one cell per pixel column and one row per pair of pixel rows, which is
+# the ratio that makes a terminal cell square. That file is the reference for
+# the shape and nothing here reads it: an installer that fetches a logo before
+# it fetches the binary is an installer with a second way to fail before doing
+# anything useful, so the shape is bytes in this file.
 #
-# Twelve lines, always, including the empty ones. The animation redraws the
-# same block in place, so a frame that were shorter would leave the tail of the
-# one before it on the screen.
+# U+2588 where the locale says UTF-8, `#` where it does not, decided once in
+# logo_charset. The hedge is the one the shebang makes -- this runs on busybox
+# under a locale nobody chose, and a logo that arrives as question marks is
+# worse than no logo at all -- but a locale that announces UTF-8 is a locale
+# that can draw a block, and the block is the whole difference between a logo
+# and a fence of hashes.
 #
 # \033 and not \e: the octal escape is the one POSIX printf guarantees, and \e
-# is a bashism in a file that has none. \033[K clears what the previous frame
-# left to the right of this line.
-logo_line() {
-  case $1 in
-    1) logo_art='          ####' ;;
-    2) logo_art='        ##    ##' ;;
-    3) logo_art='        ##    ##' ;;
-    4) logo_art='          ####' ;;
-    5) logo_art='          ####' ;;
-    6) logo_art='  ######  ####  ######' ;;
-    7) logo_art='  ####    ####    ####' ;;
-    8) logo_art='  ####    ####    ####' ;;
-    9) logo_art='  ####    ####    ####' ;;
-    10) logo_art='    ################' ;;
-    12) logo_art='          ank' ;;
-    *) logo_art='' ;;
+# is a bashism in a file that has none.
+logo_esc=$(printf '\033')
+
+# Eleven spaces: columns 0 to 10, which is what stands to the left of the stem
+# on a row whose leg has not grown yet. Every such row is the same width, so
+# the padding is a constant rather than something measured -- ${#s} counts
+# bytes, and the moment the cell is U+2588 that is three times the answer.
+logo_pad11="           "
+
+# The cell, and the three runs the shape is made of, built once. A frame is
+# drawn seventeen times and must not repeat this work inside the loop.
+logo_charset() {
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8* | *utf-8* | *UTF8* | *utf8*) logo_cell='█' ;;
+    *) logo_cell='#' ;;
   esac
-  printf '%s\033[K\n' "$logo_art" >&2
+  logo_b2=$(logo_run 2)
+  logo_b4=$(logo_run 4)
+  logo_b14=$(logo_run 14)
 }
 
-# Bottom up: the base, then the stem, then the loop, which is the order the
-# shape is built in and the order that leaves the whole of it standing at the
-# end. Frame 11 adds the name, and that is the beat the animation exists for:
-# it costs the time it takes to read the name of the tool and not a second
+logo_run() {
+  logo_run_n=$1
+  logo_run_s=""
+  while [ "$logo_run_n" -gt 0 ]; do
+    logo_run_s="${logo_run_s}${logo_cell}"
+    logo_run_n=$((logo_run_n - 1))
+  done
+  printf '%s' "$logo_run_s"
+}
+
+# The mark carries no colour of its own. assets/ank.svg is #1f2328 and
+# assets/ank-dark.svg is #e6edf3 -- the same shape, black on a light ground and
+# white on a dark one -- and \033[39m is how a terminal spells that: the
+# foreground the reader already chose. A hue picked here would be a third logo
+# neither asset agrees with, and would be the one thing on the screen that does
+# not belong to the person running the installer.
+#
+# So the animation is built on the one axis that survives not knowing the
+# background: dim against normal. Brighter does not survive it -- bold on a
+# glyph that is already a solid block does nothing at all in a terminal that
+# does not render bold as bright, and white on a light ground is invisible. A
+# part therefore arrives dim and settles, and the shape blinks by going dim,
+# which reads the same on either ground.
+#
+# NO_COLOR empties all four rather than branching at each of the places they are
+# used, so a run without colour draws the same shape through the same code, on
+# the growth alone.
+logo_palette() {
+  if [ -n "${NO_COLOR:-}" ]; then
+    logo_lit="" logo_soft="" logo_name="" logo_off=""
+    return
+  fi
+  logo_lit="${logo_esc}[39m"
+  logo_soft="${logo_esc}[2;39m"
+  logo_name="${logo_esc}[1m"
+  logo_off="${logo_esc}[0m"
+}
+
+# The lines the install prints after the logo, which are not the mark and may
+# therefore carry a hue: bold for what landed, dim for what is incidental, cyan
+# for a command the reader is meant to run, green for a step that finished. Five
+# of the eight the binary allows itself, and the mark still uses none of them.
+#
+# The marker is U+2713 where the locale says
+# UTF-8 and `- ` where it does not, on the reasoning logo_charset is written
+# out for: a tick that arrives as a question mark is worse than no tick.
+#
+# The marker survives NO_COLOR, and that is the point of it being a character.
+# Nothing here is carried by colour alone -- take every sequence away and the
+# steps are still marked, and still say what they say.
+ui_enable() {
+  ui_pad="  "
+  ui_tick="- "
+  case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+    *UTF-8* | *utf-8* | *UTF8* | *utf8*) ui_tick="✓ " ;;
+  esac
+  [ -z "${NO_COLOR:-}" ] || return 0
+  ui_off="${logo_esc}[0m"
+  ui_bold="${logo_esc}[1m"
+  ui_dim="${logo_esc}[2m"
+  ui_cyan="${logo_esc}[36m"
+  ui_green="${logo_esc}[32m"
+}
+
+# One of rows 6 to 9: `<pad><leg><gap><stem><gap><leg>`, where a part that has
+# not grown yet gives up its columns to the eleven-space pad, so the parts that
+# have stay where they are. The trailing pad is never drawn -- \033[K ends the
+# line, and spaces that reach the right edge of a narrow window wrap it.
+logo_band() {
+  lb_legs=$1 lb_legs_at=$2 lb_stem=$3 lb_stem_at=$4
+  lb_run=$5 lb_gap=$6 lb_legs_c=$7 lb_stem_c=$8
+
+  if [ "$lb_legs" -ge "$lb_legs_at" ]; then
+    lb_left="   ${lb_legs_c}${lb_run}${logo_off}${lb_gap}"
+    lb_right="${lb_gap}${lb_legs_c}${lb_run}${logo_off}"
+  else
+    lb_left=$logo_pad11
+    lb_right=""
+  fi
+
+  if [ "$lb_stem" -ge "$lb_stem_at" ]; then
+    lb_mid="${lb_stem_c}${logo_b2}${logo_off}"
+  elif [ -n "$lb_right" ]; then
+    lb_mid="  "
+  else
+    lb_left="" lb_mid=""
+  fi
+
+  printf '%s%s%s' "$lb_left" "$lb_mid" "$lb_right"
+}
+
+# One frame, whole, in one write. Twelve separate writes to a terminal are
+# twelve chances for a person to catch the logo half-drawn, and that flicker is
+# what makes an animation look cheap.
+#
+# The arguments are the state of the build and not a frame number: base is on or
+# off, legs and stem are how many of their rows have grown, loop is on or off,
+# soft names the part still arriving this frame, name is the wordmark. A
+# timeline written as states can be re-timed without recomputing which row is
+# which.
+#
+# Every sequence is closed on the run that opened it. A frame that ends with one
+# still open is a terminal somebody has to repair with `reset`.
+logo_frame() {
+  lf_base=$1 lf_legs=$2 lf_stem=$3 lf_loop=$4 lf_soft=$5 lf_name=$6
+
+  lf_loop_c=$logo_lit lf_stem_c=$logo_lit lf_legs_c=$logo_lit lf_base_c=$logo_lit
+  case $lf_soft in
+    loop) lf_loop_c=$logo_soft ;;
+    stem) lf_stem_c=$logo_soft ;;
+    legs) lf_legs_c=$logo_soft ;;
+    base) lf_base_c=$logo_soft ;;
+    all)
+      lf_loop_c=$logo_soft lf_stem_c=$logo_soft
+      lf_legs_c=$logo_soft lf_base_c=$logo_soft
+      ;;
+  esac
+
+  # Rows 1 and 4, then 2 and 3: the loop is columns 10-13, then 8-9 with 14-15.
+  if [ "$lf_loop" = 1 ]; then
+    lf_r1="          ${lf_loop_c}${logo_b4}${logo_off}"
+    lf_r2="        ${lf_loop_c}${logo_b2}${logo_off}    ${lf_loop_c}${logo_b2}${logo_off}"
+  else
+    lf_r1="" lf_r2=""
+  fi
+
+  # Row 5, the stem alone, the last of its five rows to grow.
+  if [ "$lf_stem" -ge 5 ]; then
+    lf_r5="           ${lf_stem_c}${logo_b2}${logo_off}"
+  else
+    lf_r5=""
+  fi
+
+  # Rows 6-9 carry a leg on each side and the stem between them, and the three
+  # arrive at different moments.
+  lf_r6=$(logo_band "$lf_legs" 4 "$lf_stem" 4 "$logo_b4" "    " "$lf_legs_c" "$lf_stem_c")
+  lf_r7=$(logo_band "$lf_legs" 3 "$lf_stem" 3 "$logo_b2" "      " "$lf_legs_c" "$lf_stem_c")
+  lf_r8=$(logo_band "$lf_legs" 2 "$lf_stem" 2 "$logo_b2" "      " "$lf_legs_c" "$lf_stem_c")
+  lf_r9=$(logo_band "$lf_legs" 1 "$lf_stem" 1 "$logo_b2" "      " "$lf_legs_c" "$lf_stem_c")
+
+  # Row 10, the base, columns 5-18.
+  if [ "$lf_base" = 1 ]; then
+    lf_r10="     ${lf_base_c}${logo_b14}${logo_off}"
+  else
+    lf_r10=""
+  fi
+
+  if [ "$lf_name" = 1 ]; then
+    lf_r12="          ${logo_name}ank${logo_off}"
+  else
+    lf_r12=""
+  fi
+
+  # \033[K clears what the previous frame left to the right of each line, which
+  # is what lets a row shrink. Twelve lines every time, including the empty
+  # ones: the redraw moves back over a fixed block, and a frame that were
+  # shorter would leave the tail of the one before it on the screen.
+  printf '%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n%s\033[K\n\033[K\n%s\033[K\n' \
+    "$lf_r1" "$lf_r2" "$lf_r2" "$lf_r1" "$lf_r5" \
+    "$lf_r6" "$lf_r7" "$lf_r8" "$lf_r9" "$lf_r10" "$lf_r12" >&2
+}
+
+# A frame, its delay, and the move back over the block it drew, so the caller's
+# timeline reads as states and never as cursor arithmetic. The last frame is
+# drawn by the caller instead, because it is the one that has to stay.
+logo_step() {
+  logo_frame "$1" "$2" "$3" "$4" "$5" 0
+  [ -z "$logo_delay" ] || sleep "$logo_delay"
+  printf '\033[12A' >&2
+}
+
+# Bottom up: the base arrives dim and settles, the legs and then the stem grow
+# out of it a row at a time, the loop crowns them, and the whole shape blinks
+# twice before the name appears. That last beat is what the animation exists for
+# -- it costs the time it takes to read the name of the tool and not a second
 # more.
 draw_logo() {
+  logo_charset
+  logo_palette
+
   # POSIX sleep takes an integer, and every sleep this script is likely to meet
   # -- coreutils, BSD, busybox built with the fancy option -- takes a fraction.
   # The ones that do not are told apart by asking rather than by guessing:
   # without a delay the frames still draw, in the order they draw, as fast as
   # the terminal will take them.
-  frame_delay=0.06
-  sleep 0.01 2>/dev/null || frame_delay=""
+  logo_fast=0.045 logo_beat=0.10 logo_hold=0.45
+  sleep 0.01 2>/dev/null || { logo_fast="" logo_beat="" logo_hold=""; }
 
   # The cursor would otherwise blink in the middle of the drawing. Restored on
   # the way out and on the two signals a human sends, because a terminal left
   # with an invisible cursor is a terminal somebody has to repair with `reset`.
-  trap 'printf "\033[?25h" >&2; exit 130' INT
-  trap 'printf "\033[?25h" >&2; exit 143' TERM
+  # The reset travels with it: a ^C between the opening of a colour and its
+  # close would otherwise leave the shell prompt dim.
+  trap 'printf "%s[0m%s[?25h\n" "$logo_esc" "$logo_esc" >&2; exit 130' INT
+  trap 'printf "%s[0m%s[?25h\n" "$logo_esc" "$logo_esc" >&2; exit 143' TERM
   printf '\033[?25l' >&2
 
-  frame=1
-  while [ "$frame" -le 11 ]; do
-    line=1
-    while [ "$line" -le 12 ]; do
-      if [ "$line" -le 10 ] && [ "$line" -ge $((11 - frame)) ]; then
-        logo_line "$line"
-      elif [ "$line" -eq 12 ] && [ "$frame" -eq 11 ]; then
-        logo_line 12
-      else
-        logo_line 0
-      fi
-      line=$((line + 1))
-    done
-    if [ "$frame" -lt 11 ]; then
-      [ -z "$frame_delay" ] || sleep "$frame_delay"
-      printf '\033[12A' >&2
-    fi
-    frame=$((frame + 1))
-  done
+  # The two parts that appear whole -- the base and the loop -- come in dim and
+  # settle. The two that grow do not: growing a row at a time is already motion,
+  # and dimming it as well would say the same thing twice.
+  #
+  #                base legs stem loop soft
+  logo_delay=$logo_beat
+  logo_step         1    0    0    0   base
+  logo_step         1    0    0    0   none
+  logo_delay=$logo_fast
+  logo_step         1    1    0    0   none
+  logo_step         1    2    0    0   none
+  logo_step         1    3    0    0   none
+  logo_step         1    4    0    0   none
+  logo_step         1    4    1    0   none
+  logo_step         1    4    2    0   none
+  logo_step         1    4    3    0   none
+  logo_step         1    4    4    0   none
+  logo_step         1    4    5    0   none
+  logo_delay=$logo_beat
+  logo_step         1    4    5    1   loop
+  logo_step         1    4    5    1   none
+  logo_delay=$logo_fast
+  logo_step         1    4    5    1   all
+  logo_step         1    4    5    1   none
+  logo_step         1    4    5    1   all
+
+  # The name, on the frame that stays. No move back after it, so what the
+  # install says next begins under the logo rather than over it.
+  logo_frame 1 4 5 1 none 1
+  [ -z "$logo_hold" ] || sleep "$logo_hold"
 
   # The cursor comes back first and the blank line after it, so the last byte
   # this function writes is a newline: whatever the install says next starts on
@@ -504,6 +713,12 @@ fi
 # Before anything is asked of the network, which is what "before the download
 # starts" has to mean here: the first request this script makes is the redirect
 # that resolves the latest tag, and it is below.
+# The colour is turned on by the presence of a human and not by the width of
+# their window: a terminal too narrow for the logo is still a terminal, and the
+# sentence it is too narrow for is the one nobody wrote yet.
+if human_at_terminal; then
+  ui_enable
+fi
 if welcome_wanted; then
   draw_logo
 fi
@@ -535,7 +750,7 @@ bare=${tag#v}
 archive="ank-${bare}-${target}.tar.gz"
 url="${base_url:-$default_base_url}/${tag}/${archive}"
 
-say "ank ${tag}  ${target}"
+say "${ui_pad}${ui_bold}ank ${tag}${ui_off}  ${ui_dim}${target}${ui_off}"
 
 # The checksum first: it is the smaller of the two files, so a release that
 # does not carry this target says so before megabytes move. It is also the
@@ -617,7 +832,7 @@ if [ "$expected" != "$actual" ]; then
     "  https://github.com/${repo}/security"
 fi
 
-say "checksum ok  ${actual}"
+ok "checksum ok  ${ui_dim}${actual}${ui_off}"
 
 tar xzf "${tmp}/${archive}" -C "$tmp" ||
   die 3 "could not unpack ${archive}." "" "Nothing was installed."
@@ -671,9 +886,9 @@ installed_version=$("${install_dir}/ank" --version 2>/dev/null | head -1) ||
   installed_version=""
 
 say ""
-say "installed  ${install_dir}/ank"
+ok "installed  ${ui_bold}${install_dir}/ank${ui_off}"
 if [ -n "$installed_version" ]; then
-  say "           ${installed_version}"
+  say "${ui_pad}${ui_pad}           ${ui_dim}${installed_version}${ui_off}"
 fi
 
 # The last way left to leave a caller without a working `ank`: a binary in a
@@ -682,7 +897,7 @@ fi
 case ":${PATH}:" in
   *":${install_dir}:"*)
     say ""
-    say "${install_dir} is on your PATH. Run: ank help"
+    say "${ui_pad}${install_dir} is on your PATH. Run: ${ui_cyan}ank help${ui_off}"
     ;;
   *)
     case "${SHELL:-}" in
@@ -704,12 +919,12 @@ case ":${PATH}:" in
         ;;
     esac
     say ""
-    say "${install_dir} is not on your PATH, so \`ank\` is not a command yet."
-    say "Add this line to ${path_file}:"
+    say "${ui_pad}${install_dir} is not on your PATH, so \`ank\` is not a command yet."
+    say "${ui_pad}Add this line to ${ui_bold}${path_file}${ui_off}:"
     say ""
-    say "  ${path_line}"
+    say "${ui_pad}  ${ui_cyan}${path_line}${ui_off}"
     say ""
-    say "then open a new shell, or run that line now in this one."
+    say "${ui_pad}then open a new shell, or run that line now in this one."
     ;;
 esac
 
@@ -732,11 +947,11 @@ offer_skills() {
   human_at_terminal || return 0
 
   say ""
-  say "The skills teach an agent how to use ank: the contract, and one policy"
-  say "per activity. They install through the skills CLI, which puts them where"
-  say "each agent looks."
+  say "${ui_pad}The skills teach an agent how to use ank: the contract, and one policy"
+  say "${ui_pad}per activity. They install through the skills CLI, which puts them where"
+  say "${ui_pad}each agent looks."
   say ""
-  say "  npx skills add ${repo}"
+  say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
   say ""
 
   # /dev/tty and nowhere else, which is the trap ADR-5fbd99bf6fd5 exists to
@@ -744,7 +959,16 @@ offer_skills() {
   # would consume the rest of the file and execute none of it, and it would do
   # so only on the route people actually use, having worked in every local test
   # where the script was run from a file.
+  # Three calls, and the question is a literal in the middle one. Written as a
+  # single format string with the emphasis as placeholders, the sentence is
+  # split across them and stops being a sentence anyone can find: the tests
+  # count this string in this file to know it is asked exactly once, and a
+  # question that cannot be counted is a question that can quietly be asked
+  # twice. What a pipe reads is unchanged either way -- the first and last call
+  # write nothing at all until ui_enable has run.
+  printf '%s%s' "$ui_pad" "$ui_bold" >&2
   printf 'Install them now? [Y/n] ' >&2
+  printf '%s' "$ui_off" >&2
   if ! IFS= read -r offer_answer < /dev/tty; then
     # End of input rather than an answer. Nothing was typed, so nothing is
     # assumed, and the newline is ours because no Enter was pressed to echo
@@ -763,7 +987,7 @@ offer_skills() {
 
   if ! have node; then
     say ""
-    say "  npx skills add ${repo}"
+    say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
     say "node is not on PATH, so that was not run."
     return 0
   fi
@@ -789,7 +1013,7 @@ offer_skills() {
 
   if [ "$offer_code" -eq 0 ]; then
     say ""
-    say "the skills are installed"
+    ok "the skills are installed"
   else
     say ""
     say "npx skills add ${repo} exited ${offer_code}, so the skills are not"
@@ -797,7 +1021,7 @@ offer_skills() {
     say "nobody is asked anything at all."
     say ""
     say "Run that line again when you want them:"
-    say "  npx skills add ${repo}"
+    say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
   fi
 }
 
@@ -872,7 +1096,12 @@ offer_adoption() {
   human_at_terminal || return 0
 
   say ""
+  # One literal in one call, for the reason the skills question is: the tests
+  # count this sentence in this file, and emphasis written as placeholders cuts
+  # it in half.
+  printf '%s%s' "$ui_pad" "$ui_bold" >&2
   printf 'Print the three prompts that adopt ank in a repository you already have? [Y/n] ' >&2
+  printf '%s' "$ui_off" >&2
   if ! IFS= read -r adopt_answer < /dev/tty; then
     # End of input rather than an answer. The newline is ours because no Enter
     # was pressed to echo one.
