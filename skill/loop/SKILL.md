@@ -2,7 +2,7 @@
 name: ank-loop
 description: Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
 metadata:
-  revision: "735328589adf"
+  revision: "8ff677f38578"
 ---
 
 # ank-loop
@@ -42,6 +42,13 @@ Do not soften the criterion.
     one clause rests on a false premise    ank log "discrepancy: <assumed> vs <measured>", finish the rest
     the whole criterion is wrong           ank release --reason "<why>", move on
     a decision is missing                  ank release --reason "<which>", flag it for planning, move on
+    it names work your scope cannot reach  do the part you can, file the rest, then
+                                           ank release --reason "<what is left, and where>"
+
+That last row is not a failure and is the commonest of the four. A criterion
+that is right about the work and wrong about who can do it is answered by
+releasing it, not by widening a scope you were not given: say what you measured,
+what you finished, and which task carries the remainder.
 
 Work you discover is a new task with blocked_by, left for a later pass. Never
 a detour in this one.

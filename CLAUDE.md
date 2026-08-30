@@ -37,6 +37,23 @@ run id. Once the task lands on the default branch, the `attest` job records
 skipping when the proof does not reach the remote. The recipe and the contract
 it rests on are in `docs/getting-started.md`.
 
+## Landing
+
+`main` is protected and takes no direct push. Work reaches it through a pull
+request: commit on your branch, `gh pr create --fill --base main --head
+<branch>`, then `gh pr merge --merge`. Ratifying has its own recipe, in
+`CONTRIBUTING.md`, because `ank accept` runs on the default branch and its
+commit still has to arrive through a PR.
+
+**A merge commit is the only allowed method, and that is load-bearing.** A
+ratification is located by the subject of its commit, `ratify <id>`, walked with
+`rev-list --full-history` and no path restriction. A merge preserves that commit
+whole. A squash rewrites the subject to the pull request title and the anchor is
+never found again, which `check` reports as a signal at exit 0: the corpus
+quietly stops being verifiable while CI stays green. A rebase keeps the subject
+and drops the signature, which is a fault. Both are disabled on the repository
+and in its ruleset. Do not re-enable them.
+
 ## Testing
 
 A criterion that talks about the binary is tested through the binary. When a
@@ -45,3 +62,14 @@ only the function meant to produce X: twice, green unit tests covered code that
 was right on a path the binary never reached. The same rule applies to
 platforms: OS-dependent behaviour is not verified until it has run on all
 three.
+
+**A fact is measured, not read.** Establish what the code does by running it and
+counting what comes back, never by reading it and concluding: the suite into an
+empty `TMPDIR` and then list what it left behind, the binary through a
+pseudo-terminal and then compare the frames, `GIT_TRACE` at an absolute path and
+then count the processes. Prove a process cost by counting processes and never
+by timing: a wall in milliseconds measures the runner, where creating a process
+costs about 25ms on a Windows runner against 2-3ms on Linux and swings by half
+between two runs of one image. Record the numbers with `ank log` while you hold
+the claim. A task that closes with a proof and no measurement is green and
+leaves nothing behind for whoever asks later what was actually checked.
