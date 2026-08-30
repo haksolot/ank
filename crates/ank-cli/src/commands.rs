@@ -177,6 +177,18 @@ pub fn new(
                     "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
                 ));
             }
+            // And declining a field that does not exist is the same mistake
+            // spelled the other way round (ADR-443590981e41): nothing is seeded
+            // here, so there is nothing to decline.
+            if inv.has("--no-verify") {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "--no-verify applies to a task: an ADR declares no verifier",
+                )
+                .with_hint(
+                    "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
+                ));
+            }
             // A spec declares what it rests on; an ADR states a rule, and what
             // it points at is `see`. Refused rather than dropped, on the same
             // reasoning as the line above.
@@ -310,6 +322,15 @@ fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
             )
             .with_hint(hint));
         }
+    }
+    // Asked separately because it is a switch: `values` is empty for one that
+    // was typed and for one that was not, so the loop above cannot see it.
+    if inv.has("--no-verify") {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--no-verify applies to a task: a spec is a document, not work",
+        )
+        .with_hint(hint));
     }
     Ok(())
 }
@@ -889,12 +910,42 @@ pub(crate) fn ensure_newline(text: &str) -> String {
 /// nothing would otherwise surface at `done`, long after the task was written,
 /// as a failure nobody can attribute to the moment it was introduced.
 ///
-/// A task declaring none is not an error — `done` then takes the `--proof`
-/// path — but it is the shape that lets an agent submit its own proof, so a
-/// caller who meant to declare one had better find out now.
+/// **The empty result is now chosen and never merely arrived at**
+/// (ADR-443590981e41). A task with no `verify:` is the shape that lets an agent
+/// submit its own proof, and it used to be what a caller got for saying
+/// nothing: three verifiers were declared in this repository's `config.yml` and
+/// none had ever run under `ank done`, because running one needed a field no
+/// task filled in. Saying nothing now seeds what the file marks `default:
+/// true`, in the order the file declares them, and `--no-verify` is how a
+/// caller asks for the empty list out loud.
+///
+/// **`--verify` replaces the marks rather than adding to them.** A caller who
+/// named the verifiers this task runs has said which ones they are, and joining
+/// the defaults to that would be the tool overruling the sentence it was
+/// handed. The two are not the same outcome as `--no-verify` for any reason
+/// beyond this paragraph, which is why both are tested through the binary.
+///
+/// This is the whole of the change: `done` reads no default at close time, so a
+/// task whose file declares no verifier still requires `--proof` exactly as
+/// SPEC-88e1 says it does.
 fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
+    let named = inv.values("--verify");
+    if inv.has("--no-verify") {
+        // Refused rather than resolved in either direction: a caller who typed
+        // both said two things, and picking one of them is guessing which they
+        // meant.
+        if !named.is_empty() {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                "--no-verify and --verify contradict each other: \
+                 one declines every verifier, the other names some",
+            )
+            .with_hint("ank new task --title \"<t>\" --scope \"<glob>\" --no-verify"));
+        }
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
-    for raw in inv.values("--verify") {
+    for raw in named {
         let name = raw.trim();
         if cfg.verifier(name).is_none() {
             return Err(undeclared_verifier(name, cfg));
@@ -902,6 +953,11 @@ fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
         if !out.iter().any(|v| v == name) {
             out.push(name.to_string());
         }
+    }
+    if out.is_empty() {
+        // Already checked, and by construction: these names are the keys of the
+        // very map `cfg.verifier` looks in.
+        return Ok(cfg.default_verifiers.clone());
     }
     Ok(out)
 }

@@ -6,9 +6,11 @@ verifiers:
   cargo-test:
     run: cargo test --workspace -q
     timeout: 10m
+    default: true
   fmt-check:
     run: cargo fmt --check
     timeout: 2m
+    default: true
   check-repo:
     run: cargo run -q --bin ank -- check
     timeout: 5m

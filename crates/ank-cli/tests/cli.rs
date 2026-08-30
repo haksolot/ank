@@ -8578,6 +8578,407 @@ fn new_refuses_a_verifier_that_config_does_not_declare() {
     assert!(stderr(&out).contains("--verify"), "{}", stderr(&out));
 }
 
+// ---------------------------------------------------------------------------
+// The verifiers a task is born with (ADR-443590981e41, TASK-935f4fb886f3)
+// ---------------------------------------------------------------------------
+
+/// A corpus whose `config.yml` marks two verifiers and leaves a third unmarked.
+///
+/// **Declared out of alphabetical order, and that is the fixture's whole
+/// point.** The seed is the order the file wrote, so a corpus spelling its
+/// marks in the alphabet's order would pass over a reader that sorted them and
+/// never say so. `manual` is the third: a verifier a repository declares and
+/// does not seed is the ordinary case, and without one here "exactly the
+/// marked ones" would be indistinguishable from "all of them".
+fn marked_verifiers() -> Repo {
+    Repo::new().with_verifiers(
+        "verifiers:\n  \
+         zeta:\n    run: 'true'\n    default: true\n  \
+         alpha:\n    run: 'true'\n    default: true\n  \
+         manual:\n    run: 'true'\n",
+    )
+}
+
+/// The id `new --json` minted, read off the document it answered with.
+fn created_id(out: &Output) -> String {
+    let text = stdout(out);
+    let at = text
+        .find("\"id\":\"")
+        .unwrap_or_else(|| panic!("no id in {text}"))
+        + 6;
+    text[at..]
+        .split('"')
+        .next()
+        .unwrap_or_else(|| panic!("no id in {text}"))
+        .to_string()
+}
+
+fn new_task(r: &Repo, title: &str, extra: &[&str]) -> String {
+    let mut args = vec![
+        "new", "task", "--title", title, "--scope", "src/**", "--json",
+    ];
+    args.extend_from_slice(extra);
+    let out = r.ank("claude-code@ank", &args);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    r.task_text(&created_id(&out))
+}
+
+/// The three states of ADR-443590981e41, through the binary because the thing
+/// being read is the file `new` wrote.
+///
+/// The third is the one a reading would get wrong: `--verify` and `--no-verify`
+/// are not the same outcome as each other for any reason beyond what
+/// `verifiers_of` says, so both are measured rather than argued.
+#[test]
+fn a_new_task_is_born_with_the_verifiers_config_marks() {
+    let r = marked_verifiers();
+
+    // Neither flag: exactly the marked ones, in the order the file declares
+    // them and not the order the alphabet would.
+    let seeded = new_task(&r, "Seeded", &[]);
+    assert!(
+        seeded.contains("verify: [zeta, alpha]"),
+        "the marks, in declaration order: {seeded}"
+    );
+
+    // --verify: those names, and no default joins them.
+    let named = new_task(&r, "Named", &["--verify", "manual"]);
+    assert!(
+        named.contains("verify: [manual]"),
+        "what the caller named, and nothing else: {named}"
+    );
+
+    // --no-verify: no field at all, which is the shape `done` asks for a proof
+    // on. Not an empty list written out, and not the marks.
+    let declined = new_task(&r, "Declined", &["--no-verify"]);
+    assert!(
+        !declined.contains("verify:"),
+        "--no-verify writes no verify field: {declined}"
+    );
+
+    // And the two together are refused by name: a caller who typed both said
+    // two things, and picking one of them would be guessing which.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Both",
+            "--scope",
+            "src/**",
+            "--no-verify",
+            "--verify",
+            "manual",
+        ],
+    );
+    assert_ne!(code(&out), 0, "{}", stdout(&out));
+    let err = stderr(&out);
+    assert!(err.contains("--no-verify"), "{err}");
+    assert!(err.contains("--verify"), "{err}");
+
+    // The editor path resolves `--verify` through the same function, so it
+    // seeds through the same one.
+    let editor = editor_filling("From the template", "src/**", "The binary answers.");
+    let out = r.ank_edit("claude-code@ank", &["new", "task"], Some(&editor));
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let files = entity_files(&r, "tasks");
+    let template = std::fs::read_to_string(
+        r.0.join(".ank/entities")
+            .join(files.last().expect("a task was written")),
+    )
+    .unwrap();
+    assert!(
+        entity_files(&r, "tasks")
+            .iter()
+            .map(|f| std::fs::read_to_string(r.0.join(".ank/entities").join(f)).unwrap())
+            .any(|t| t.contains("From the template") && t.contains("verify: [zeta, alpha]")),
+        "the template carries the marks too: {template}"
+    );
+}
+
+/// **The mark is declined at creation and nowhere else** (ADR-443590981e41).
+/// `new adr` already refuses `--verify` because an ADR has no such field, and
+/// declining a field that does not exist is the same mistake spelled the other
+/// way round.
+#[test]
+fn no_verify_is_refused_on_an_adr_and_on_a_spec() {
+    let r = marked_verifiers();
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "adr",
+            "--title",
+            "T",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A binding rule.",
+            "--no-verify",
+        ],
+    );
+    assert_ne!(code(&out), 0, "a dropped flag teaches the caller it worked");
+    assert!(stderr(&out).contains("--no-verify"), "{}", stderr(&out));
+    assert!(entity_files(&r, "adr").is_empty());
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "spec",
+            "--title",
+            "T",
+            "--scope",
+            "src/**",
+            "--no-verify",
+        ],
+    );
+    assert_ne!(code(&out), 0, "a dropped flag teaches the caller it worked");
+    assert!(stderr(&out).contains("--no-verify"), "{}", stderr(&out));
+    assert!(entity_files(&r, "spec").is_empty());
+}
+
+/// The flag reaches both surfaces §9 promises, and the generated one is the
+/// contract (ADR-6fd69efb629c): a flag the parser takes and the table does not
+/// declare is a surface that disagrees with itself.
+#[test]
+fn no_verify_reaches_the_help_page_and_the_machine_surface() {
+    let r = marked_verifiers();
+
+    let out = r.ank("claude-code@ank", &["help", "new"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(stdout(&out).contains("--no-verify"), "{}", stdout(&out));
+
+    let out = r.ank("claude-code@ank", &["help", "new", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc = stdout(&out);
+    assert!(
+        doc.contains("{\"name\":\"--no-verify\",\"short\":null,\"takes_value\":false"),
+        "the table declares it, and as a switch: {doc}"
+    );
+}
+
+/// **The mark is a nested scalar, and `ank config` is how it is set**
+/// (ADR-443590981e41). `default` takes the refusal `timeout` takes and the
+/// surgery `timeout` gets, because it is the same shape in the same place.
+#[test]
+fn config_reads_and_writes_the_default_mark_and_unset_takes_it_with_the_verifier() {
+    let r = marked_verifiers();
+
+    // Read: what the file carries, and a resolved `false` for the verifier
+    // nobody marked. Absent is a value in effect, not a hole.
+    let out = r.ank("claude-code@ank", &["config", "verifiers.zeta.default"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "true");
+    let out = r.ank("claude-code@ank", &["config", "verifiers.manual.default"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(stdout(&out).trim(), "false (default)");
+
+    // Write: the boolean the caller typed, never a string spelling it. A
+    // quoted "true" would be a value `config.yml` refuses to parse.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.manual.default", "true"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.config_text().contains("    default: true\n"),
+        "{}",
+        r.config_text()
+    );
+    assert!(
+        !r.config_text().contains("default: \"true\""),
+        "a quoted boolean is a string: {}",
+        r.config_text()
+    );
+    let seeded = new_task(&r, "All three now", &[]);
+    assert!(
+        seeded.contains("verify: [zeta, alpha, manual]"),
+        "the mark reached `new`: {seeded}"
+    );
+
+    // And back: a mark written `false` and a mark removed outright are the same
+    // answer by two routes, and both have to be reachable -- a decision that can
+    // only be made once is not a decision.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.zeta.default", "false"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.config_text().contains("    default: false\n"),
+        "{}",
+        r.config_text()
+    );
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "--unset", "verifiers.manual.default"],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        r.config_text().matches("default: true").count(),
+        1,
+        "alpha alone is left marked: {}",
+        r.config_text()
+    );
+    let seeded = new_task(&r, "One left", &[]);
+    assert!(seeded.contains("verify: [alpha]"), "{seeded}");
+    // Restored, so that the removal below is the verifier going and not this.
+    assert_eq!(
+        code(&r.ank(
+            "claude-code@ank",
+            &["config", "verifiers.zeta.default", "true"]
+        )),
+        0
+    );
+
+    // Refused on a verifier that is not declared, exactly the way a timeout is:
+    // a mark on something that will never run is a value in effect for nothing.
+    let out = r.ank(
+        "claude-code@ank",
+        &["config", "verifiers.nope.default", "true"],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("ank config verifiers.nope.run"),
+        "the refusal names what declares one: {}",
+        stderr(&out)
+    );
+
+    // And `--unset` on the verifier removes the mark with the rest of it,
+    // which is what keeps declaring one reversible.
+    let out = r.ank("claude-code@ank", &["config", "--unset", "verifiers.alpha"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = r.config_text();
+    assert!(!text.contains("alpha"), "{text}");
+    assert_eq!(
+        text.matches("default: true").count(),
+        1,
+        "zeta is left, alpha's mark went with alpha: {text}"
+    );
+    let seeded = new_task(&r, "One again", &[]);
+    assert!(seeded.contains("verify: [zeta]"), "{seeded}");
+}
+
+/// **`done` reads no default at close time, and that is the half of
+/// ADR-443590981e41 a later change could lose in silence.**
+///
+/// SPEC-88e1 says a task without `verify` needs `--proof`; the seed is at
+/// creation precisely so that sentence keeps holding. If `done` ever learned to
+/// fall back on `config.yml`, the field would stop meaning what it says and the
+/// specification would be superseded by accident — with every test above still
+/// green, because they only ever look at what `new` wrote.
+#[test]
+fn done_never_falls_back_on_the_configured_default() {
+    let r = marked_verifiers();
+
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Only a human can settle this",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "A human reads the published page.",
+            "--no-verify",
+            "--json",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = created_id(&out);
+    assert!(
+        !r.task_text(&id).contains("verify:"),
+        "{}",
+        r.task_text(&id)
+    );
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &id])), 0);
+    let out = r.ank("claude-code@ank", &["done", &id]);
+    assert_eq!(
+        code(&out),
+        5,
+        "two verifiers are marked in this corpus and none of them may run here: {}",
+        stderr(&out)
+    );
+    assert!(stderr(&out).contains("--proof"), "{}", stderr(&out));
+    assert!(
+        !stderr(&out).contains("zeta") && !stderr(&out).contains("alpha"),
+        "done named a verifier the task does not declare: {}",
+        stderr(&out)
+    );
+
+    // The counterpart, so that the negative above is a decision and not a
+    // broken mechanism: a task that does declare them has them run, and its
+    // `--proof` is refused outright.
+    let seeded = r.ank(
+        "claude-code@ank",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Mechanised",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "The binary answers.",
+            "--json",
+        ],
+    );
+    let id2 = created_id(&seeded);
+    let released = r.ank(
+        "claude-code@ank",
+        &["release", "--reason", "the negative above is measured"],
+    );
+    assert_eq!(code(&released), 0, "{}", stderr(&released));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &id2])), 0);
+    let out = r.ank("claude-code@ank", &["done", &id2, "--proof", "commit:HEAD"]);
+    assert_eq!(code(&out), 5, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("--proof is refused"),
+        "{}",
+        stderr(&out)
+    );
+    let out = r.ank("claude-code@ank", &["done", &id2]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        r.task_text(&id2).contains("status: done"),
+        "{}",
+        r.task_text(&id2)
+    );
+}
+
+/// **This repository marks `cargo-test` and `fmt-check`, and nothing else.**
+///
+/// The dogfooding half of ADR-443590981e41: the mechanism above is reachable
+/// everywhere and in effect nowhere until a `config.yml` marks something. Read
+/// through the binary and off this repository's own file, because the claim is
+/// about the corpus and not about a fixture.
+#[test]
+fn this_repository_marks_the_two_verifiers_a_task_here_is_born_with() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |key: &str| {
+        let out = ank_command()
+            .args(["config", key, "--repo"])
+            .arg(&root)
+            .env("ANK_AGENT", "claude-code@ank")
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert_eq!(code(&out), 0, "{key}: {}", stderr(&out));
+        stdout(&out).trim().to_string()
+    };
+    assert_eq!(read("verifiers.cargo-test.default"), "true");
+    assert_eq!(read("verifiers.fmt-check.default"), "true");
+    // `check-repo` runs this binary against this corpus, so seeding it into
+    // every task would make each `done` here build ank to check ank.
+    assert_eq!(read("verifiers.check-repo.default"), "false (default)");
+}
+
 /// A claim that lapsed and left the file behind.
 ///
 /// Through the binary because the thing being read is the ref namespace, and a
@@ -11696,6 +12097,7 @@ fn config_refuses_an_unknown_key_by_name_and_writes_nothing() {
         "peers.<name>",
         "verifiers.<name>.run",
         "verifiers.<name>.timeout",
+        "verifiers.<name>.default",
     ] {
         assert!(err.contains(key), "{key} missing from the refusal: {err}");
     }
@@ -12211,7 +12613,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 27] = [
+const NOT_A_PATH: [&str; 28] = [
     // A scope and not a path: it says *which* file of declarations, and there
     // is one (ADR-96174f1ac2b7).
     "--user",
@@ -12256,6 +12658,9 @@ const NOT_A_PATH: [&str; 27] = [
     "--constraint",
     "--supersedes",
     "--verify",
+    // Carries no value at all: it declines the verifiers `config.yml` marks,
+    // and a verifier is named rather than located (ADR-443590981e41).
+    "--no-verify",
     "--body",
     "--type",
     "--status",
