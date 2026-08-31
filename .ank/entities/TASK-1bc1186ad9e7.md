@@ -5,18 +5,19 @@ slug: ank-mcp-refuses-valid-json-rpc-that-escapes-a-no
 title: ank mcp refuses valid JSON-RPC that escapes a non-BMP character
 created: 2026-08-31T07:52:05Z
 author: claude-code/opus-5+drift2
-status: open
+status: in_progress
 scope:
   - crates/ank-mcp/Cargo.toml
   - crates/ank-cli/tests/mcp.rs
   - crates/ank-mcp/src/**
+  - crates/ank-mcp/tests/**
 blocked_by: []
 done_criteria: |
   ank mcp answers {"jsonrpc":"2.0","id":"\ud83d\ude00-alpha","method":"ping"} with a result whose id is the same string the client sent, never with -32700, and answers a request that repeats a key rather than failing to parse it; a test in crates/ank-cli/tests/mcp.rs drives the binary with both lines and fails on any -32700.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 2
+version: 4
 ---
 
 Measured on 2026-08-31 by feeding lines to the binary and reading what came back.
