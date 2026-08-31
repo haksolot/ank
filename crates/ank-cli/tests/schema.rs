@@ -31,6 +31,7 @@
 //! inside `ConfigFile` and the outer deserialize fails before `schema` is ever
 //! compared. This stops the next occurrence, not that one.
 
+mod fixture;
 mod scratch;
 
 use std::fs;
@@ -265,4 +266,172 @@ fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
         "{} is the file that made this task necessary: it carries default:",
         path.display()
     );
+}
+
+// ---------------------------------------------------------------------------
+// The other schema: the shape a verb declares, and the fixture that pins it
+// ---------------------------------------------------------------------------
+//
+// `.ank/config.yml` is one declared schema this binary is held to. The document
+// a verb returns is the other (ADR-6fd69efb629c), and it is held to its
+// declaration by `tests/golden-json/`. Both live here for the same reason: a
+// declaration nothing is measured against is documentation.
+//
+// **What the conformance walk in `cli.rs` cannot ask.**
+// `every_golden_conforms_to_the_shape_its_verb_declares` starts at the fixture
+// directory and resolves each fixture to a verb, so it answers *does every
+// fixture match its declaration* and can never answer *does every declaration
+// have a fixture*: a test that iterates over what exists cannot report an
+// absence. That blind spot is what let `read` and `tui` publish a shape through
+// `ank help --json` that nothing the binary printed was ever compared against
+// (TASK-49b10f02d209). The walk below runs the other way, from the table to the
+// directory, and the two questions stay separable by staying in separate files.
+
+/// `read`, captured from the process.
+///
+/// It lives here rather than beside the other twenty-six in `cli.rs` because the
+/// corpus it needs is the one this file already builds: `read` coordinates
+/// nothing, so it answers on the files alone with no git anywhere near it
+/// (ADR-9307e5d214a7), and the ADR it reads is minted through the binary rather
+/// than seeded, so nothing here writes into `.ank/` by hand.
+#[test]
+fn read_pins_the_document_the_binary_prints() {
+    let dir = corpus("golden-read", &format!("schema: {SUPPORTED}\n"));
+    let id = an_adr(&dir);
+    let out = Command::new(ANK)
+        .args(["read", &id, "--json"])
+        .current_dir(&dir)
+        .env("ANK_AGENT", AGENT)
+        .output()
+        .expect("the binary under test must run");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "read: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    fixture::pin("read", &String::from_utf8_lossy(&out.stdout));
+}
+
+/// Every verb whose contract entry declares a document, against the fixture
+/// directory (ADR-6fd69efb629c, TASK-49b10f02d209).
+///
+/// **This is the direction nothing else runs in.** A verb added with a declared
+/// shape and no fixture is a promise `ank help --json` publishes and no test
+/// connects to anything the binary prints, and until this walk existed it landed
+/// in silence: the fixture-first walk in `cli.rs` had one fewer file to open and
+/// stayed green. Measured on 2026-08-31, before the fixtures this task added:
+/// twenty-six verbs, twenty-four declaring a document, twenty-two fixtures, and
+/// a green suite.
+///
+/// `mcp` and `watch` declare `output: &[]` and are not asked for one. That is a
+/// fact about those two verbs — neither returns a document, one serves a
+/// protocol and the other a stream — and it is read off the table rather than
+/// spelled as an exception here, so a verb that gains a shape gains an
+/// obligation with it.
+///
+/// The fixture name is the call and the verb is what precedes the dash, which is
+/// the convention `cli.rs` writes them under: `config-read` and `config-write`
+/// are two documents of one verb.
+#[test]
+fn every_verb_that_declares_a_document_has_a_golden_fixture() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden-json");
+    let mut covered: Vec<String> = Vec::new();
+    for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let path = entry.expect("the directory must be readable").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .expect("a fixture is named")
+            .to_string();
+        covered.push(
+            stem.split('-')
+                .next()
+                .expect("a split leaves at least one piece")
+                .to_string(),
+        );
+    }
+    // The instrument first: a `read_dir` that answered nothing would make every
+    // assertion below vacuous, and this walk exists precisely because a vacuous
+    // walk is what it is correcting.
+    assert!(
+        !covered.is_empty(),
+        "no fixture was read from {}",
+        dir.display()
+    );
+
+    let declared: Vec<&str> = ank_contract::COMMANDS
+        .iter()
+        .filter(|c| !c.output.is_empty())
+        .map(|c| c.name)
+        .collect();
+    assert!(
+        !declared.is_empty(),
+        "the verb table declares no document at all, which cannot be right"
+    );
+
+    let missing: Vec<&str> = declared
+        .iter()
+        .copied()
+        .filter(|name| !covered.iter().any(|c| c == name))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "these verbs declare a document and no fixture in {} pins it: {missing:?}\n\
+         Capture one from the process and write it there; `ank help --json` is \
+         already promising this shape to a client.",
+        dir.display()
+    );
+}
+
+/// The identity every fixture in `tests/golden-json/` is captured under, so that
+/// what survives redaction is the shape and not whoever ran the suite.
+const AGENT: &str = "claude-code/1.0.0";
+
+/// One ADR in `dir`, minted through the binary, answering its identifier.
+///
+/// **The zero prefix is why this is a loop.** A seeded identifier is
+/// deterministic and the redaction keeps it; only what a run minted is named
+/// away, and the rule that tells the two apart is the `0000` prefix a seeded
+/// corpus uses. A minted identifier that happened to start with those four
+/// characters would reach the fixture verbatim and redden this suite on the next
+/// run, once in sixty-five thousand. Minting another costs a process and settles
+/// it.
+fn an_adr(dir: &Path) -> String {
+    for _ in 0..8 {
+        let out = Command::new(ANK)
+            .args([
+                "new",
+                "adr",
+                "--title",
+                "An example",
+                "--scope",
+                "src/**",
+                "--constraint",
+                "Nothing under src/ reaches the network at import time.",
+                "--json",
+            ])
+            .current_dir(dir)
+            .env("ANK_AGENT", AGENT)
+            .output()
+            .expect("the binary under test must run");
+        let said = String::from_utf8_lossy(&out.stdout).into_owned();
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "new adr: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let at = said.find("\"id\":\"").expect("new answers an identifier") + 6;
+        let rest = &said[at..];
+        let id = rest[..rest.find('"').expect("an id is a closed string")].to_string();
+        let minted = id.split_once('-').expect("an identifier has a kind").1;
+        if !minted.starts_with("0000") {
+            return id;
+        }
+    }
+    panic!("eight identifiers in a row began with the seeded prefix, which is not chance");
 }
