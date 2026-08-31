@@ -5088,7 +5088,7 @@ fn log_refuses_a_message_carrying_a_control_character() {
 /// assertion on each and neither is covered by the other.
 ///
 /// **The task file is compared byte for byte**, not field by field. The
-/// guarantee is that an entry is a file of its own (ADR-ff294eff4d1a) and moves
+/// guarantee is that an entry is a file of its own (ADR-67a4ac10c534) and moves
 /// nothing on the entity it is about — no frontmatter, no `version`, no
 /// `status` — and a field-by-field assertion would pass over exactly the byte
 /// it forgot to name.
@@ -6118,7 +6118,7 @@ fn status_says_a_checkout_level_with_origin_in_one_line() {
 }
 
 /// What a watcher mirrors into `refs/ank/watch/*` reaches `status`, and reaches
-/// nothing else (ADR-a22cd3196529).
+/// nothing else (ADR-24e21cb83793).
 ///
 /// The reader's half of the watcher. `refs/ank/claims/*` in this clone is
 /// whatever somebody last fetched by hand, so on a parc of clones `status`
@@ -10548,7 +10548,7 @@ fn json_number(text: &str, name: &str) -> u64 {
 }
 
 /// The identifiers of every superseded document in a corpus, asked of the
-/// binary (ADR-01b6dd05f0db: `.ank/` is reached only through the CLI).
+/// binary (ADR-e45e1a29fe91: `.ank/` is reached only through the CLI).
 ///
 /// **Derived and never transcribed.** A list in this file protects the cases
 /// somebody remembered and no fourth: superseding an entity does not add to it,
@@ -12651,9 +12651,11 @@ fn config_is_the_one_verb_a_config_that_does_not_parse_does_not_stop() {
 
 #[test]
 fn the_errors_that_named_the_file_now_name_the_command() {
-    // ADR-01b6dd05f0db closed `.ank/` to agents and stopped at the
-    // configuration, which left these telling their caller to open a file the
-    // same tool forbids them to open (ADR-e64dfaafd578).
+    // Closing `.ank/` to agents stopped at the configuration, which left
+    // these telling their caller to open a file the same tool forbids them to
+    // open (ADR-e64dfaafd578). ADR-e45e1a29fe91 is where the gap closes in the
+    // rule as well: it lists `config` among the writing routes, on the reading
+    // that the sentence governs `.ank/` and not only the entities in it.
     let r = Repo::new();
 
     // `new`, on a --verify that matches nothing. The criterion calls the two
@@ -12818,7 +12820,7 @@ const NOT_A_PATH: [&str; 28] = [
     // is one (ADR-96174f1ac2b7).
     "--user",
     // `watch`'s four, and all four are here for one reason: not one of them
-    // names anything in a corpus (ADR-a22cd3196529). Three carry no value at
+    // names anything in a corpus (ADR-24e21cb83793). Three carry no value at
     // all, and `--interval` carries a number of milliseconds.
     //
     // `--where` is the one worth a sentence, because it is the one that looks
@@ -15501,7 +15503,7 @@ review:
 
 /// **`review` names who may ratify, and nothing else can** (TASK-8a80b590b356).
 ///
-/// ADR-01b6dd05f0db closes `.ank/` to a direct read by an agent, and
+/// ADR-e45e1a29fe91 closes `.ank/` to a direct read by an agent, and
 /// `allowed_signers` is not an entity, so `show`, `find` and `config` all pass
 /// over it: before this, the one file the format asks a human to edit by hand
 /// was the one file no command could show. `review` is where the answer belongs
@@ -16377,7 +16379,7 @@ fn the_help_of_attest_says_a_detached_proof_fails_on_an_unreachable_remote() {
 }
 
 // ---------------------------------------------------------------------------
-// The log is a file, and an append is not a transition (§3, ADR-ff294eff4d1a)
+// An entry is a file, and writing it is not a transition (§3, ADR-67a4ac10c534)
 // ---------------------------------------------------------------------------
 
 const LOGGED: &str = "TASK-00000000c10a";
@@ -16495,13 +16497,14 @@ fn repository_gitattributes() -> String {
 /// adjacent-change case (TASK-6c0463fb4319). An assertion about the contents of
 /// `.gitattributes` would have proved none of that, in either direction.
 ///
-/// That is the case ADR-ff294eff4d1a celebrated most and the one it did not
-/// cover: a second party writing to a task's log while the holder writes to it
-/// too. ADR-25f977377fa0 removes it rather than resolving it — an entry is an
-/// entity, so two concurrent entries are **two new files** and there is nothing
-/// for a three-way merge to be three-way about. The test is kept, and it is
-/// kept because the failure it caught was a text everybody believed: what makes
-/// it evidence is that git actually runs.
+/// That is the case the decision moving the log out of the task file
+/// celebrated most and the one it did not cover: a second party writing to a
+/// task's log while the holder writes to it too. ADR-25f977377fa0 removes it
+/// rather than resolving it — an entry is an entity, so two concurrent entries
+/// are **two new files** and there is nothing for a three-way merge to be
+/// three-way about. The test is kept, and it is kept because the failure it
+/// caught was a text everybody believed: what makes it evidence is that git
+/// actually runs.
 #[test]
 fn two_branches_recording_an_entry_merge_with_no_conflict() {
     let r = Repo::new();
@@ -19740,7 +19743,7 @@ fn an_entity_that_cannot_account_for_a_version_is_reported_with_both_counts() {
 
     let checked = r.ank("claude-code/1.0", &["check"]);
     // A signal and never a fault: an entity written outside the CLI is legal,
-    // and exiting 8 over it would redden a pipeline on an act ADR-01b6dd05f0db
+    // and exiting 8 over it would redden a pipeline on an act ADR-e45e1a29fe91
     // permits a human outright.
     assert_eq!(
         code(&checked),
@@ -19900,7 +19903,7 @@ fn without_edits(text: &str) -> String {
 /// code and no answer.
 ///
 /// **Asserted by deletion rather than by a comment**, which is what the
-/// criterion asks and what ADR-ff294eff4d1a requires of the log: nothing
+/// criterion asks and what ADR-67a4ac10c534 requires of the log: nothing
 /// authoritative is anchored in it. A verb that had quietly started consulting
 /// one of these entries would answer differently here, whatever its author
 /// believed.

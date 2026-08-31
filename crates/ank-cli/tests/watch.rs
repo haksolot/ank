@@ -3,7 +3,7 @@
 //! Driven rather than called, on the rule this repository learned twice: a
 //! criterion that talks about the binary is tested through the binary, because
 //! green unit tests have twice covered code that was right on a path the binary
-//! never reached. Every claim ADR-a22cd3196529 makes is a claim about a running
+//! never reached. Every claim ADR-24e21cb83793 makes is a claim about a running
 //! process -- what it reads, what it leaves untouched, and what stopping it
 //! changes -- and none of them can be asserted from inside a function.
 //!
@@ -516,7 +516,7 @@ fn the_watch_file_sits_beside_the_corpora_file() {
 /// one of these asks the watcher a question about a corpus: `--list` and
 /// `--where` report the declaration back and never a corpus's contents,
 /// `--once` and `--interval` say when to look. A flag that queried a running
-/// watcher is the shape ADR-a22cd3196529 refuses, and this is where its absence
+/// watcher is the shape ADR-24e21cb83793 refuses, and this is where its absence
 /// is read off the binary rather than off a promise.
 ///
 /// It is `ank help watch` and not a `--help` of the watcher's own, which is the
@@ -539,7 +539,7 @@ fn the_verb_offers_the_four_flags_of_section_4_and_no_query() {
 /// ignored.
 ///
 /// **This is the discovery ban reached from the caller's side.** Nothing walks a
-/// filesystem looking for a corpus (ADR-a22cd3196529), and the mirror image of
+/// filesystem looking for a corpus (ADR-24e21cb83793), and the mirror image of
 /// that is a caller who *names* one: `ank watch --repo <tree>` reads as "watch
 /// this", and a verb that took the flag and warmed something else would have
 /// answered a question nobody could tell it had gone unanswered. `ank help
