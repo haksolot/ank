@@ -5310,6 +5310,78 @@ fn init_runs_where_there_is_no_ank_directory_yet() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// `ank init` makes `.ank/entities` and no second directory, and says so.
+///
+/// ADR-25f977377fa0 made a log entry an entity, so entries went to
+/// `.ank/entities/LOG-<id>.md` and `.ank/log/` became the previous layout —
+/// which `docs/format.md` says a reader must accept and a writer must never
+/// produce. `init` is a writer, and it went on producing one for ten weeks.
+/// Measured on ddf11c9 before this test: `ank init` in a fresh repository
+/// printed `created .ank/entities .ank/log`, and after `new task`, `claim` and
+/// `log` the three entities were all in `.ank/entities/` while `.ank/log` held
+/// zero files (TASK-acaf2c3159dd). `check` never said so, because it counts the
+/// files in that directory and an empty one is nothing to count.
+///
+/// **Through the binary, and by walking `.ank` rather than by naming what to
+/// look for.** The criterion is about the directories a caller's corpus is born
+/// with, and a pair of `is_dir` assertions answers only about the paths whoever
+/// wrote them thought of: a third directory added later would pass. Walking
+/// makes the assertion the whole set.
+///
+/// Both surfaces, because they are two claims. A directory made and not
+/// reported is a caller who does not know what is in their first commit; a
+/// directory reported and not made is a line that names something absent.
+#[test]
+fn init_creates_one_directory_and_reports_exactly_the_one_it_creates() {
+    let dir = fresh_git_dir("init-directories");
+
+    let out = ank_command()
+        .args(["init"])
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(&dir)
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+
+    // Every directory under `.ank`, found and not listed, as paths relative to
+    // the repository root and in a fixed order so a failure prints one shape.
+    let mut dirs: Vec<String> = Vec::new();
+    let mut stack = vec![dir.join(".ank")];
+    while let Some(d) = stack.pop() {
+        dirs.push(
+            d.strip_prefix(&dir)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/"),
+        );
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            if e.file_type().is_ok_and(|t| t.is_dir()) {
+                stack.push(e.path());
+            }
+        }
+    }
+    dirs.sort();
+    assert_eq!(
+        dirs,
+        vec![".ank".to_string(), ".ank/entities".to_string()],
+        "a fresh corpus carries a directory no verb writes into:\n{said}"
+    );
+
+    // And the greeting is the other half of the same claim: it is what tells a
+    // caller what the run made.
+    let created = said
+        .lines()
+        .find(|l| l.starts_with("created "))
+        .unwrap_or_else(|| panic!("init said nothing about what it created:\n{said}"));
+    assert_eq!(
+        created, "created .ank/entities",
+        "the greeting names a directory the run did not make:\n{said}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `init` refuses `--repo` by name, and writes nowhere while doing it.
 ///
 /// The shape of the fixture is the defect: the process runs **inside** one

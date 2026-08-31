@@ -123,8 +123,12 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     /// The directories this run made, in the order they were made. A list and
-    /// not a flag: the flag named both whenever either was missing, so a run
-    /// that created one of the two reported creating a directory it found.
+    /// not a flag, which is what it was before: the flag named every directory
+    /// whenever any one of them was missing, so a run that created one of two
+    /// reported creating a directory it had found. There is one of them today
+    /// (TASK-acaf2c3159dd) and the list stays a list, because `created` is an
+    /// array in the machine contract and a reader parses one shape whatever the
+    /// count.
     pub created_dirs: Vec<String>,
     /// The declarations file a `--at` run wrote into (ADR-96174f1ac2b7).
     ///
@@ -236,16 +240,35 @@ pub fn init_at(root: &Path) -> Result<Report> {
     let mut report = Report::default();
     let ank = root.join(repo::ANK_DIR);
 
-    // One directory for every kind, and one for the logs beside it (§6). The
-    // previous layout's `tasks/` and `adr/` are read where they already exist
-    // and are never created: a writer does not produce a layout it is only
-    // keeping readable.
-    for sub in [Store::ENTITIES_DIR, "log"] {
-        let dir = ank.join(sub);
-        if !dir.is_dir() {
-            fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
-            report.created_dirs.push(format!("{}/{sub}", repo::ANK_DIR));
-        }
+    // **One directory, and it is the only one this verb makes** (§6). Every
+    // entity of every kind lives in `.ank/entities/`, an entry included since
+    // ADR-25f977377fa0 made it an entity like any other.
+    //
+    // The previous layouts -- `tasks/`, `adr/`, and the `log/` that held one
+    // file of lines per entity -- are read where they already exist and are
+    // never created. `docs/format.md` puts it in four words, of a reader and a
+    // writer respectively: *must accept all of them*, *must never produce
+    // them*, and this verb is a writer. `log/` outlived that rule by ten
+    // weeks. Measured on ddf11c9: `ank init` in a fresh repository printed
+    // `created .ank/entities .ank/log`, and after `new task`, `claim` and
+    // `log`, `.ank/log` held zero files while the three entities -- the task,
+    // the claim record and the entry -- were all in `.ank/entities/`
+    // (TASK-acaf2c3159dd). It survived because `check` counts the *files* in
+    // that directory and an empty one is nothing to count, so every corpus this
+    // binary made was born with a directory no verb writes into and no verb
+    // complains about -- which is what ADR-c9f9d0d6f05d rules out in as many
+    // words: no directory means anything, and none is added to make one mean
+    // something.
+    //
+    // Nothing is removed here. A corpus that already carries a `.ank/log/` from
+    // an older release keeps it, keeps being read, and is moved by `ank migrate`
+    // and never by this verb.
+    let dir = ank.join(Store::ENTITIES_DIR);
+    if !dir.is_dir() {
+        fs::create_dir_all(&dir).map_err(|e| io(&dir, e))?;
+        report
+            .created_dirs
+            .push(format!("{}/{}", repo::ANK_DIR, Store::ENTITIES_DIR));
     }
 
     let cfg = ank.join("config.yml");
@@ -420,9 +443,15 @@ mod tests {
         let t = Temp::new_repo();
         let r = init_at(&t.0).unwrap();
 
-        assert_eq!(r.created_dirs, vec![".ank/entities", ".ank/log"]);
+        assert_eq!(r.created_dirs, vec![".ank/entities"]);
         assert!(t.0.join(".ank/entities").is_dir());
-        assert!(t.0.join(".ank/log").is_dir());
+        // The directory of the previous layout, which this verb read for one
+        // window and made for ten weeks after it stopped writing into it
+        // (TASK-acaf2c3159dd).
+        assert!(
+            !t.0.join(".ank/log").exists(),
+            "init made the previous layout's log directory"
+        );
 
         assert!(r.wrote_config);
         let cfg = fs::read_to_string(t.0.join(".ank/config.yml")).unwrap();
