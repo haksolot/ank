@@ -1,23 +1,36 @@
-//! Writing and comparing a fixture of `tests/golden-json/`, for the suites that
-//! capture one outside `cli.rs` (TASK-49b10f02d209).
+//! The one redaction every fixture of `tests/golden-json/` is written under,
+//! and the comparison that pins it (TASK-7a9d945640e3).
 //!
 //! ADR-6fd69efb629c asks for a golden fixture per document the surface returns,
-//! and `cli.rs` captures twenty-six of them. Two cannot be captured there. `read`
-//! could be and is not, and `tui` cannot: its document only exists on a terminal
-//! (`ank tui --json` refuses at exit 9 into a pipe), so the one place it can be
-//! captured is the pseudo-terminal harness in `tui.rs`. An integration test is a
-//! crate of its own, so `cli.rs`'s `golden` is not reachable from either suite,
-//! and the choice was a second copy or a fixture nothing regenerates.
+//! and three suites capture them: `cli.rs` twenty-six, `schema.rs` `read`, and
+//! `tui.rs` `tui`, whose document only exists on a terminal (`ank tui --json`
+//! refuses at exit 9 into a pipe) so the pseudo-terminal harness is the one
+//! place it can be captured. An integration test is a crate of its own, so a
+//! function in `cli.rs` is not reachable from either of the others: this module
+//! is compiled into all three, which is what makes one redaction serve them.
 //!
-//! **What is copied is the redaction, and it is copied deliberately.** The two
-//! masks -- an instant, and an identifier the binary minted -- are what make a
-//! captured document comparable at all, and a fixture written under a different
-//! pair of masks would not be the same kind of file as the twenty-six beside it.
-//! Folding `cli.rs` onto this module is TASK-7a9d945640e3 and is not done here:
-//! that file is a perimeter three other agents are working in, and this task's
-//! footprint in it is one number.
+//! **The masks are what make a captured document comparable at all**, and they
+//! have to be the same masks for every file in the directory: an instant, and
+//! an identifier the binary minted. A fixture written under a different pair
+//! would not be the same kind of file as the twenty-seven beside it, and until
+//! this module became the only copy nothing failed when the two drifted apart:
+//! the shape ADR-6fd69efb629c spends its first page on -- four escapers that
+//! did not agree -- one rung down, in the suite rather than in the tool.
+//!
+//! Captured from the process and never from a function. A fixture compared
+//! against what an emitter returns proves the emitter, and what §4 promises is
+//! what leaves the process.
+//!
+//! Volatile values are named rather than kept: an instant, a commit, an
+//! identifier the binary generated. A golden that changes every run pins
+//! nothing, and everything outside those three is compared byte for byte.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// `tests/golden-json/`, the directory every fixture lives in.
+pub fn dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden-json")
+}
 
 fn is_word_char(c: char) -> bool {
     c.is_ascii_alphanumeric()
@@ -84,12 +97,12 @@ fn redact(s: &str) -> String {
 /// `tests/golden-json/<name>.json`, compared against what the process printed,
 /// or written when `ANK_BLESS_GOLDEN` is set.
 ///
-/// The same env var `cli.rs` blesses on, so one variable regenerates every
-/// fixture in the directory whichever suite captured it.
+/// One env var regenerates every fixture in the directory, whichever suite
+/// captured it, and under the one redaction they are all written with. Read the
+/// diff a bless produces before committing it: that diff is the contract
+/// changing.
 pub fn pin(name: &str, actual: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/golden-json")
-        .join(format!("{name}.json"));
+    let path = dir().join(format!("{name}.json"));
     let actual = format!("{}\n", redact(actual.trim_end_matches('\n')));
     if std::env::var_os("ANK_BLESS_GOLDEN").is_some() {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
