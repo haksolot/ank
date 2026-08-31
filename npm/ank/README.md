@@ -30,6 +30,7 @@ The skill an agent loads is a separate install, and
 specification and the source.
 
 Apache-2.0. Your `.ank/` files, the third-party tools that read or write them,
-and anything you build on top are yours. Ank was GPL-3.0-only until 0.3.0, and
-the change is prospective: a release you already received under GPL-3.0 stays
-available to you under GPL-3.0.
+and anything you build on top are yours. Ank was GPL-3.0-only up to and
+including 0.3.0, the last release made under that licence; 0.4.0 is the first
+released under Apache-2.0. The change is prospective: a release you already
+received under GPL-3.0 stays available to you under GPL-3.0.

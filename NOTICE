@@ -15,7 +15,8 @@ limitations under the License.
 
 ---
 
-Ank was distributed under GPL-3.0-only up to and including 0.2.0. That change
-is prospective, and this notice does not withdraw it: a release received under
-GPL-3.0 stays available under GPL-3.0 to whoever received it
-(ADR-534c7a3e6cf8).
+Ank was distributed under GPL-3.0-only up to and including 0.3.0, the last
+release made under that licence; 0.4.0 is the first released under the Apache
+License, Version 2.0. The change is prospective, and this notice does not
+withdraw it: a release received under GPL-3.0 stays available under GPL-3.0 to
+whoever received it (ADR-534c7a3e6cf8).

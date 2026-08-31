@@ -5,7 +5,7 @@ slug: the-relicensing-notice-names-0-2-0-where-0-3-0-w
 title: The relicensing notice names 0.2.0 where 0.3.0 was the last GPL release
 created: 2026-08-31T07:51:45Z
 author: claude-code/opus-5+drift2
-status: open
+status: in_progress
 scope:
   - NOTICE
   - npm/ank/README.md
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on 2026-08-31 against the tags themselves, not against the prose.
