@@ -8,19 +8,19 @@ edition = "2021"
 # The workspace floor, for the reason ank-core's manifest gives: one lockfile,
 # one build.
 rust-version = "1.95"
-# Apache-2.0, like the whole tree (ADR-9f03438f5422).
+# Apache-2.0, like the whole tree (ADR-534c7a3e6cf8).
 license = "Apache-2.0"
 authors = ["Sean Lamet"]
 description = "The Ank watcher: it keeps declared corpora warm, answers no verb, and nothing depends on it."
 
-# **A library, and no `[[bin]]`** (ADR-a22cd3196529, ADR-1ea31c2f3c5a). The
+# **A library, and no `[[bin]]`** (ADR-24e21cb83793, ADR-1ea31c2f3c5a). The
 # watcher is the verb `ank watch`, so this crate is linked into the one
 # executable every route carries rather than shipped beside it -- the same shape
 # `ank-tui` and `ank-mcp` have, and folded for the reason ADR-8bd76e8d7c4e gave
 # there: a separate file is invisible to precisely the people it exists for, and
 # has to be distributed, documented and discovered as a third thing.
 #
-# **Being started by a verb is not answering one.** ADR-a22cd3196529's clause is
+# **Being started by a verb is not answering one.** ADR-24e21cb83793's clause is
 # that the watcher serves no verb and exposes no query surface, and it is
 # untouched by this: `ank watch` starts a process that still answers nothing.
 # The note at the top of `src/lib.rs` says it where a reader meets it.

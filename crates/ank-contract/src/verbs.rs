@@ -409,7 +409,7 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
 /// The refusal every path-taking verb performs, declared once and named six
 /// times.
 ///
-/// SPEC-fe8bdb84faca states it for all of them at once — a path naming nothing
+/// SPEC-d58b3a9e4e4d states it for all of them at once — a path naming nothing
 /// inside the repository, because it is absolute or because it climbs above the
 /// root, is refused with the command to run next and never answered — and the
 /// six verbs reach it through one helper, `context::normalised`. One sentence
@@ -508,7 +508,7 @@ pub struct CommandSpec {
     /// carries a `.ank/`, and `init` is what produces one. `watch` refuses
     /// `--repo` and `--worktree`: both address *a* corpus, and the watcher is
     /// told which corpora to keep warm by the reader's declaration and by
-    /// nothing else (ADR-a22cd3196529) -- a flag that looked like it named one
+    /// nothing else (ADR-24e21cb83793) -- a flag that looked like it named one
     /// would be the discovery that decision refuses, offered from the caller's
     /// side.
     ///
@@ -938,7 +938,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // kind. Found while pinning the goldens for TASK-2c12b027f805.
         notes: &[
             "exit 8 means findings, as it does for check; a signal alone leaves it 0",
-            "the signers are what .ank/allowed_signers declares; this is where they are read, since ADR-01b6dd05f0db closes that file to a direct read",
+            "the signers are what .ank/allowed_signers declares; this is where they are read, since ADR-e45e1a29fe91 closes that file to a direct read",
         ],
         refuses_globals: &[],
         output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
@@ -1293,7 +1293,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "watch",
         group: "look around",
         // It takes no claim, holds none on anybody's behalf and renews none
-        // (ADR-a22cd3196529, §4). A lease is renewed by working, and this
+        // (ADR-24e21cb83793, §4). A lease is renewed by working, and this
         // process does not work on a task -- it warms an index
         // (ADR-0bb7ea8991bc).
         renews: Renews::Never,
@@ -1356,7 +1356,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // here, because what this verb watches is what the reader declared in
         // watch.yml -- so a caller who typed `ank watch --repo <tree>` would
         // have addressed a corpus that is not being watched and been told
-        // nothing. That is the discovery ADR-a22cd3196529 refuses, reached from
+        // nothing. That is the discovery ADR-24e21cb83793 refuses, reached from
         // the caller's side instead of the filesystem's.
         refuses_globals: &["--repo", "--worktree"],
         // **No `--json` document leaves this verb either, and the empty list is

@@ -54,7 +54,7 @@ fn push_once(verbs: &mut Vec<String>, verb: String) {
 /// **Read through the binary, and that is the point rather than a detour.** The
 /// specification is no longer a file in `docs/` — it is ten entities of kind
 /// `spec` in `.ank/` (ADR-c88f99e1c16e) — and `.ank/` is reached through the CLI
-/// and never by opening the files (ADR-01b6dd05f0db). A test that walked the
+/// and never by opening the files (ADR-e45e1a29fe91). A test that walked the
 /// directory would be the one reader in the repository exempt from the rule the
 /// repository enforces on every agent.
 ///
@@ -238,11 +238,11 @@ fn help_order() -> Vec<String> {
 /// shipping fails until the line is gone.
 ///
 /// `mcp` and `watch` were both declared here (ADR-fd98f4bc6dea,
-/// ADR-a22cd3196529, TASK-36666e36744e), while SPEC-fe8bdb84faca was still
-/// `proposed` and the block this suite walks was its predecessor: the signed
-/// `accept` is the moment §4 gains a verb, and declaring it beforehand is what
-/// makes the ratification itself green rather than red on a human act nobody is
-/// watching. Both have now been through the round trip whole -- the document is
+/// ADR-24e21cb83793, TASK-36666e36744e), while the §4 document of the day was
+/// still `proposed` and the block this suite walks was its predecessor: the
+/// signed `accept` is the moment §4 gains a verb, and declaring it beforehand
+/// is what makes the ratification itself green rather than red on a human act
+/// nobody is watching. Both have now been through the round trip whole -- the document is
 /// ratified, TASK-e655d28c83cb dispatched `mcp` and TASK-9dd22f2b0430
 /// dispatched `watch`, and each lost its entry here in the very commit that
 /// started shipping it, because the test below fails a declared verb that has
@@ -682,9 +682,10 @@ fn declared_revision(front: &str) -> Option<String> {
 /// **A copy in the wild says which revision it is.** Measured on 2026-08-02:
 /// the SKILL.md installed at `~/.claude/skills/ank` was byte-identical to the
 /// blob at a004ac7, two commits and nine hours behind a tree that had just
-/// withdrawn the invitation to read `.ank/` by hand (ADR-01b6dd05f0db). It was
-/// not merely old, it instructed against a ratified decision -- and it carried
-/// nothing by which its reader or its owner could have noticed.
+/// withdrawn the invitation to read `.ank/` by hand -- the rule
+/// ADR-e45e1a29fe91 states today. It was not merely old, it instructed against
+/// a ratified decision -- and it carried nothing by which its reader or its
+/// owner could have noticed.
 ///
 /// The marker is a hash of the body rather than a version anyone keeps by hand,
 /// for two reasons. A hand-kept number drifts the first time somebody edits the
@@ -905,17 +906,17 @@ fn the_binary_names_the_skill_revision_it_was_built_alongside() {
 }
 
 // ---------------------------------------------------------------------------
-// The licence, discovered rather than listed (ADR-9f03438f5422)
+// The licence, discovered rather than listed (ADR-534c7a3e6cf8)
 // ---------------------------------------------------------------------------
 
 /// Every manifest in the tree that declares a licence, found by walking rather
 /// than by a list somebody keeps.
 ///
 /// **A list is what let this drift.** TASK-47beb64fd204 swept the tree when
-/// ADR-9f03438f5422 relicensed it, and its criterion was met: every one of the
-/// eleven files it enumerated said Apache-2.0. `.claude-plugin/plugin.json` was
-/// not among the eleven, so it went on declaring `GPL-3.0-only` for thirteen
-/// days, in the one place a person installing the plugin reads a licence.
+/// the relicensing landed, and its criterion was met: every one of the eleven
+/// files it enumerated said Apache-2.0. `.claude-plugin/plugin.json` was not
+/// among the eleven, so it went on declaring `GPL-3.0-only` for thirteen days,
+/// in the one place a person installing the plugin reads a licence.
 /// Nothing noticed, because nothing was looking at anything but the list.
 ///
 /// So this walks. A manifest added tomorrow is held to the same answer without
@@ -937,7 +938,7 @@ fn declared_licences() -> Vec<(String, String)> {
                 .to_string();
             // Not build output, not vendored code, and not the corpus: `.ank/`
             // records what the licence *was*, and that history is the thing the
-            // relicensing is careful to keep (ADR-9f03438f5422).
+            // relicensing is careful to keep (ADR-534c7a3e6cf8).
             if path.is_dir() {
                 if !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".ank") {
                     stack.push(path);
@@ -978,7 +979,7 @@ fn declared_licences() -> Vec<(String, String)> {
     found
 }
 
-/// **Every declaration in the tree says Apache-2.0** (ADR-9f03438f5422).
+/// **Every declaration in the tree says Apache-2.0** (ADR-534c7a3e6cf8).
 #[test]
 fn every_manifest_declares_the_ratified_licence() {
     let found = declared_licences();
@@ -989,7 +990,7 @@ fn every_manifest_declares_the_ratified_licence() {
     let wrong: Vec<_> = found.iter().filter(|(_, v)| v != "Apache-2.0").collect();
     assert!(
         wrong.is_empty(),
-        "ADR-9f03438f5422 relicensed this tree to Apache-2.0 whole, and these \
+        "ADR-534c7a3e6cf8 holds this tree to Apache-2.0 whole, and these \
          still say otherwise: {wrong:#?}"
     );
 }
@@ -1001,7 +1002,8 @@ fn every_manifest_declares_the_ratified_licence() {
 /// came, the licence GitHub renders at the root of the repository asserts a
 /// copyright for nobody, in the one place most people ever look. There are four
 /// copies of the text in this tree, and they are found by walking rather than
-/// listed, for the reason ADR-9f03438f5422's own sweep gives.
+/// listed, for the reason ADR-534c7a3e6cf8 gives when it stops maintaining a
+/// list of channels of its own.
 #[test]
 fn every_licence_text_names_its_copyright_owner() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
