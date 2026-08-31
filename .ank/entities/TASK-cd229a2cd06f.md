@@ -19,7 +19,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 2
+version: 4
 ---
 
 Six supersessions were merged to main as proposals. ADR-3b6ba766a42e refuses a ratification while any tracked file outside .ank/ still cites the retired document, and names the two repairs: point the citation at the successor, or drop it and leave the history to ank show. A citation naming a proposed successor is the state that refusal exists to produce.

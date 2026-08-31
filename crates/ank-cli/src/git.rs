@@ -2425,7 +2425,7 @@ mod tests {
         assert!(hint.contains("git remote set-head origin -a"), "{hint}");
         // The second fix names the command, not the file to open: telling an
         // agent to edit .ank/config.yml is the tool instructing it to do what
-        // ADR-01b6dd05f0db forbids (ADR-e64dfaafd578).
+        // ADR-e45e1a29fe91 forbids (ADR-e64dfaafd578).
         assert!(hint.contains("ank config default_branch <name>"), "{hint}");
         assert!(
             !hint.contains(".ank/config.yml"),
