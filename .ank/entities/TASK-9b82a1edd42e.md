@@ -5,7 +5,7 @@ slug: the-relicensing-notice-names-0-2-0-where-0-3-0-w
 title: The relicensing notice names 0.2.0 where 0.3.0 was the last GPL release
 created: 2026-08-31T07:51:45Z
 author: claude-code/opus-5+drift2
-status: in_progress
+status: done
 scope:
   - NOTICE
   - npm/ank/README.md
@@ -15,8 +15,21 @@ done_criteria: |
   Every tracked statement outside .ank/ of when the GPL-to-Apache change took effect names 0.3.0 as the last release distributed under GPL-3.0-only and 0.4.0 as the first under Apache-2.0; NOTICE and npm/ank/README.md agree on that boundary; and a test in crates/ank-cli/tests/skill.rs fails when a tracked file states a different one.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/ca53baefe30c@bbdf494
+    tree: scope/54b2d675a14e
+    criteria: bac966a2fa4a
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@bbdf494
+    tree: scope/54b2d675a14e
+    criteria: bac966a2fa4a
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 2
+version: 3
 ---
 
 Measured on 2026-08-31 against the tags themselves, not against the prose.
