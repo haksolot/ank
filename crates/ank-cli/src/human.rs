@@ -5575,7 +5575,16 @@ pub fn close(
     store.write(&closed, base_version)?;
     record_entry(&store, repo, &closed, identity, format!("closed: {reason}"))?;
 
-    let revoked = claim::delete(&repo.corpus, &id)?;
+    let deleted = claim::delete(&repo.corpus, &id)?;
+    let revoked = deleted.existed;
+    // The same warning `release` owes, for the same reason: `close` revokes a
+    // claim, and a revocation the remote never heard leaves the task closed
+    // here and held there. ADR-af533e7a3e03 has both verbs degrading, warning
+    // and exiting zero; the exit code was already right and this is the middle
+    // term. Standard error in both modes, beside `done`'s.
+    if let Some(w) = deleted.sync.revocation_warning() {
+        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+    }
     if inv.json() {
         let doc = Obj::document()
             .str("task", &id.to_string())
