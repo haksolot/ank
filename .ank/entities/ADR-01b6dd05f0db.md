@@ -4,14 +4,14 @@ type: adr
 slug: the-ank-directory-is-reached-only-through-the-cl
 title: The .ank directory is reached only through the CLI
 created: 2026-08-01T01:58:41Z
-status: accepted
+status: superseded
 scope:
   - .ank/**
 constraint: |
   Entities in .ank/ are read and written through the ank CLI only. Reading is ank show, ank find and ank context; writing is ank new, claim, log, done, release, attest, close and accept. No agent opens, greps, lists or edits a file under .ank/ directly. This constrains the agent, not the tool: a human with an editor keeps every power they had, and check remains what notices.
 ratified: ea7020bae33d
 schema: 1
-version: 2
+version: 3
 ---
 
 `.ank/` should be as opaque to an agent as `.git/` is. Nobody opens `.git/refs/heads/main` to read a branch; they run `git rev-parse`. The reason is not secrecy, it is that the tool knows things the file does not: the budget of section 5, the truncation notice, the freeze anchored where the file's editor cannot reach it, what is claimable and by whom.

@@ -5,14 +5,18 @@ slug: the-ank-directory-is-reached-only-through-the-cl
 title: The .ank directory is reached only through the CLI, and the routes are the ones that dispatch
 created: 2026-08-31T04:01:01Z
 author: claude-code/opus-5+corpus
-status: proposed
+status: accepted
 scope:
   - .ank/**
 constraint: |
   Entities in .ank/ are read and written through the ank CLI only. Reading is ank show, ank find, ank context, ank scope, ank graph, ank status, ank review, ank check and the read form of ank log; writing is ank new, claim, log, done, release, attest, close, accept, amend, edit, config and read. No agent opens, greps, lists or edits a file under .ank/ directly. This constrains the agent, not the tool: a human with an editor keeps every power they had, and check remains what notices.
 supersedes: ADR-01b6dd05f0db
+ratified: 1f884b7a61e2
+verified:
+  - by: claude-code/opus-5+ratify
+    at: 2026-08-31T08:12:42Z
 schema: 4
-version: 1
+version: 2
 ---
 
 `.ank/` should be as opaque to an agent as `.git/` is. Nobody opens

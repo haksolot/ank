@@ -4,7 +4,7 @@ type: adr
 slug: the-name-is-ank
 title: The project is called ank
 created: 2026-07-29T10:40:00Z
-status: accepted
+status: superseded
 scope:
   - crates/**
   - docs/**
@@ -19,7 +19,7 @@ constraint: |
   at an external artifact.
 ratified: c0c1dc33a814
 schema: 1
-version: 3
+version: 4
 ---
 
 Three letters, typed on every call of the agent loop and present in every path
