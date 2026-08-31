@@ -5,7 +5,7 @@ slug: the-project-is-called-ank-and-every-crate-carrie
 title: The project is called ank, and every crate carries the name
 created: 2026-08-31T04:10:34Z
 author: claude-code/opus-5+corpus
-status: proposed
+status: accepted
 scope:
   - crates/**
   - docs/**
@@ -19,8 +19,12 @@ constraint: |
   falsify: log entries already written, and proof references pointing at an
   external artifact.
 supersedes: ADR-85e6bbb195b8
+ratified: bd1f6317b930
+verified:
+  - by: claude-code/opus-5+ratify
+    at: 2026-08-31T08:12:43Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Three letters, typed on every call of the agent loop and present in every path of
