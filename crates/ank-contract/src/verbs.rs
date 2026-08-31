@@ -628,6 +628,48 @@ config_keys!(
     "verifiers.<name>.default",
 );
 
+// ---------------------------------------------------------------------------
+// What a refused push does to the exit code (ADR-af533e7a3e03)
+// ---------------------------------------------------------------------------
+//
+// The constraint: a verb whose whole product is a ref exits non-zero when the
+// push of that ref is refused, a verb that also wrote to disk degrades and
+// exits zero, and **which of the two a verb is, its help says** — a caller
+// never has to infer it from what the verb happens to touch.
+//
+// Three sentences, one per class, named from the table rather than written out
+// at each verb. Eight coordinating verbs spelling one rule eight ways would be
+// that same inference wearing a uniform: two of the eight would drift, and the
+// caller reading the drifted one would be told something the binary does not
+// do. A verb picks a side here; it does not get to describe one.
+//
+// Measured on ank 0.7.0 against a corpus whose origin is a path that does not
+// exist: `claim`, `log` and `done` warn and exit 0; `release` and `close` exit
+// 0 with the local write standing; `attest --detached` exits 9; `accept` writes
+// no ref under `refs/ank/` at all, and neither does `init`.
+
+/// The verb wrote to disk as well, so the ref is not the whole product and the
+/// exit code does not depend on the push (§2).
+pub const PUSH_DEGRADES: &str =
+    "the ref is not the whole product: a push the remote refuses leaves the write standing in \
+     this clone, and the verb exits 0";
+
+/// The ref is the whole product on at least one path, so a refused push is a
+/// failure. Which path is the verb's own business to name, and the verb that
+/// carries this today names it in a refusal.
+pub const PUSH_FAILS: &str =
+    "where the ref is the whole product a push the remote refuses is a failure and not a \
+     warning, and the verb exits non-zero rather than degrading";
+
+/// The verb coordinates but pushes nothing, so no remote can move its exit
+/// code. Stated rather than left out: silence is exactly the inference
+/// ADR-af533e7a3e03 forbids, and a verb that needs git is the one a caller
+/// would guess wrong about.
+pub const PUSH_NONE: &str = "this verb pushes no ref, so no remote can change its exit code";
+
+/// The three, for a caller — or a test — checking that a verb states one.
+pub const PUSH_NOTES: &[&str] = &[PUSH_DEGRADES, PUSH_FAILS, PUSH_NONE];
+
 /// The twelve verbs of §4, plus `init` and `help` (§9).
 ///
 /// **The order is the specification's, and it is load-bearing**: §4 puts the
@@ -670,7 +712,12 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(ExitCode::Unavailable, "the task is held by another agent, or finished on another branch"),
             refuses(ExitCode::Prerequisite, "the task is blocked, or has no done_criteria to freeze"),
         ],
-        notes: &["--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one"],
+        notes: &[
+            "--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one",
+            // §2's own example: the claim holds in this clone, the work goes on,
+            // and the risk of a concurrent claim is displayed rather than hidden.
+            PUSH_DEGRADES,
+        ],
         refuses_globals: &[],
         output: &[one(CLAIM_OUT), when("this identity holds a live claim in another corpus the reader declared", CLAIM_OUT_ELSEWHERE)],
         owner_task: None,
@@ -716,7 +763,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         positional_help: "[<id>] [<message>]",
         flags: &[],
         refuses: &[refuses(ExitCode::Transition, "writing to an open or in_progress task with no claim held by this agent")],
-        notes: &["a done or closed task has to be named: HEAD never points at one"],
+        notes: &[
+            "a done or closed task has to be named: HEAD never points at one",
+            // The entry is a file; the ref this verb touches is the renewal of
+            // the claim, which is the lease and not the entry.
+            PUSH_DEGRADES,
+        ],
         refuses_globals: &[],
         output: &[when("reading, `ank log <id>`", &[f("about", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("entries", Type::Array(LOG_ENTRY)), f("machinery", Type::Array(LOG_ENTRY))]), when("appending, `ank log <id> <message>`", &[f("about", Type::Str), f("entry", Type::Str), f("logged", Type::Bool), f("warnings", Type::Strings)])],
         owner_task: None,
@@ -743,6 +795,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
             "config.yml defines the verifiers; the task's verify: list decides which of them run",
+            // The task file carries the proof and the new status; the ref is the
+            // claim being given up.
+            PUSH_DEGRADES,
         ],
         refuses_globals: &[],
         output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("commit", Type::Str), opt("branch", Type::Str), f("proofs", Type::Num)])],
@@ -759,7 +814,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
         refuses: &[refuses(ExitCode::Transition, "no claim held by this agent")],
-        notes: &[],
+        // The task is back to `open` in the file whatever the remote did; the
+        // ref is the claim being deleted. A deletion that did not travel leaves
+        // another clone reading a claim this one has given up, which is a risk
+        // to state and not a reason to fail: the hand-back stands here.
+        notes: &[PUSH_DEGRADES],
         refuses_globals: &[],
         output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("reason", Type::Str), f("warnings", Type::Strings)])],
         owner_task: None,
@@ -915,6 +974,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "the one act ank commits for; it is a human act, signed",
             "the citations of the retired document are re-pointed first: the refusal names every site with its line, is not suppressed by --quiet, and there is no flag around it",
+            // The ratification is a commit, and a commit reaches the default
+            // branch through a pull request rather than through this verb. It
+            // coordinates — it needs git and it needs the default branch — so a
+            // caller has every reason to expect a push here, and gets told there
+            // is none.
+            PUSH_NONE,
         ],
         refuses_globals: &[],
         output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), opt("superseded", Type::Str), f("commit", Type::Str), f("anchor", Type::Str)])],
@@ -970,7 +1035,10 @@ pub const COMMANDS: &[CommandSpec] = &[
             ),
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
         ],
-        notes: &[],
+        // The task is `closed` in the file whatever the remote did; the ref is
+        // the claim this revokes, and `claim_revoked` above says whether there
+        // was one.
+        notes: &[PUSH_DEGRADES],
         refuses_globals: &[],
         output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("claim_revoked", Type::Bool)])],
         owner_task: None,
@@ -1034,6 +1102,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
             "--detached records the proof in refs/ank/proof/<id> and writes no file, so a pipeline anchors a run without a commit",
+            // The class, beside the refusal that names the path it applies on.
+            // The refusal says `--detached and the remote unreachable`; this
+            // says what that costs, in the same words every other verb uses.
+            PUSH_FAILS,
         ],
         refuses_globals: &[],
         output: &[one(&[f("task", Type::Str), f("appended", Type::Object(&[f("type", Type::Str), f("ref", Type::Str)])), f("proofs", Type::Num)])],
@@ -1391,6 +1463,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "a target elsewhere is ank init <path>; with no argument it initialises the current directory",
             "--at <path> puts the corpus outside this tree and declares it, so the tree gains no file",
+            // It adds the refspec that will carry `refs/ank/*` and pushes
+            // nothing over it: the summary naming a refspec is the strongest
+            // reason a caller would guess otherwise.
+            PUSH_NONE,
         ],
         refuses_globals: &["--repo"],
         output: &[one(&[f("created", Type::Strings), f("wrote", Type::Strings), f("added", Type::Strings), f("changed", Type::Bool)])],
