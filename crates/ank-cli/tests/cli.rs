@@ -16760,6 +16760,80 @@ fn a_conflict_marker_in_a_log_is_a_fault_like_one_in_an_entity() {
     );
 }
 
+/// An *empty* previous-layout directory is not a previous-layout corpus, and
+/// `check` is right to say nothing about it (TASK-a33a34288e2f).
+///
+/// The signal above counts `.md` files under `.ank/log/`, so a directory with
+/// none is never reported. That is a decision and not an oversight, and this
+/// test is what stops it drifting into either an accident or a signal somebody
+/// adds later in good faith.
+///
+/// The reason it stays silent is that the sentence would be false and the
+/// remedy empty: the signal reads "N entities keep their log in .ank/log/ (ank
+/// migrate)", and at N = 0 there is no entity keeping anything and `ank migrate`
+/// answers "nothing to migrate". Measured alongside this: `init` creates no such
+/// directory, `migrate` removes it once it has emptied it, `git rm` and a
+/// `checkout` past the last log file both remove it, and `git add` of an empty
+/// one tracks nothing — git cannot carry the state to a second clone at all.
+/// What is left is a directory somebody made by hand in one working tree, and a
+/// finding whose only possible effect is to be dismissed is the kind that
+/// teaches people to stop reading `check`.
+///
+/// **Asserted as an equality, not as an absence.** "It does not mention the log"
+/// would still pass if `check` stopped reporting the populated case too, which
+/// is the regression that would actually matter. So the two corpora differ by
+/// the empty directory and nothing else, their whole output is compared, and the
+/// last third puts one file in and watches the signal appear.
+#[test]
+fn an_empty_previous_layout_directory_is_reported_by_nobody() {
+    let bare = Repo::new();
+    bare.seed_task(LOGGED, Some("A verifiable criterion."));
+    let empty = Repo::new();
+    empty.seed_task(LOGGED, Some("A verifiable criterion."));
+    let dir = empty.0.join(".ank/log");
+    std::fs::create_dir_all(&dir).unwrap();
+    assert!(
+        std::fs::read_dir(&dir).unwrap().next().is_none(),
+        "the fixture is the empty directory and nothing else"
+    );
+
+    for args in [
+        vec!["check"],
+        vec!["check", "--json"],
+        vec!["find"],
+        vec!["status"],
+    ] {
+        let without = bare.ank("claude-code@ank", &args);
+        let with = empty.ank("claude-code@ank", &args);
+        assert_eq!(
+            code(&without),
+            code(&with),
+            "ank {args:?} changed its exit code over an empty directory"
+        );
+        assert_eq!(
+            stdout(&without),
+            stdout(&with),
+            "ank {args:?} answered differently over an empty directory"
+        );
+    }
+
+    // And the moment there is something in it, the signal is there — so the
+    // silence above is about the directory being empty and not about `check`
+    // having stopped looking.
+    std::fs::write(
+        dir.join(format!("{LOGGED}.md")),
+        "- 2026-08-15T08:00Z claude-code@ank — an entry\n",
+    )
+    .unwrap();
+    let out = empty.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("keep their log in") && text.contains("ank migrate"),
+        "one file in the previous layout is the case the signal exists for: {text}"
+    );
+}
+
 /// `log` and `show` answer under `context_budget` and say what they cut.
 ///
 /// They were the two readers in the tool with no budget and no flags, while
