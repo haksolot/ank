@@ -5,7 +5,7 @@ slug: ank-is-apache-2-0-whole-declared-by-the-channels
 title: Ank is Apache-2.0 whole, declared by the channels that still ship
 created: 2026-08-31T04:05:44Z
 author: claude-code/opus-5+corpus
-status: proposed
+status: accepted
 scope:
   - LICENSE
   - README.md
@@ -27,8 +27,12 @@ constraint: |
   stays available under GPL-3.0 to whoever received it, and nothing in the tree
   claims to withdraw that.
 supersedes: ADR-9f03438f5422
+ratified: 11f332dddc55
+verified:
+  - by: claude-code/opus-5+ratify
+    at: 2026-08-31T08:12:42Z
 schema: 4
-version: 1
+version: 2
 ---
 
 The licence is ADR-9f03438f5422's and it does not move: Apache-2.0, whole,
