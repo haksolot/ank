@@ -59,6 +59,8 @@
 //! facts about a process and a git repository, so all three are asserted
 //! against a real one.
 
+#[cfg(unix)]
+mod fixture;
 mod scratch;
 
 use std::path::PathBuf;
@@ -1724,6 +1726,62 @@ fn json_on_a_terminal_answers_one_document_and_opens_no_session() {
         document.contains(TASK_TITLE),
         "with the titles the list draws:\n{document}"
     );
+}
+
+/// The same frame, pinned as a fixture of `tests/golden-json/`
+/// (ADR-6fd69efb629c, TASK-49b10f02d209).
+///
+/// **Why it is captured here and nowhere else.** ADR-6fd69efb629c asks for a
+/// golden fixture per document the surface returns, and `cli.rs` captures
+/// twenty-six of them into a pipe. `tui` cannot be one of them: without a
+/// terminal on both streams the verb refuses at exit 9
+/// ([`json_does_not_exempt_a_caller_from_the_terminal`]), so the only place its
+/// document exists at all is a session driven through a pseudo-terminal, and
+/// that harness is this file. Until this test, `tui`'s declared shape was
+/// published by `ank help --json` and compared against nothing the binary
+/// printed.
+///
+/// **What the test above cannot do, and this one does.** That one reads three
+/// fields out of the document and asserts they are there. This one holds the
+/// whole of it, byte for byte, which is the difference between checking that a
+/// frame mentions the task and pinning the shape a client would bind: a field
+/// renamed, retyped or dropped anywhere in it turns this red, and under
+/// ADR-6fd69efb629c that is a contract change rather than a diff to bless
+/// without reading.
+///
+/// **Unix only, and the gap is stated rather than hidden.** A pseudo-terminal
+/// on Windows is ConPTY and this workspace calls no console API, so the frame
+/// is captured on the two platforms this suite can drive one on. The fixture
+/// itself is a file, so `every_golden_conforms_to_the_shape_its_verb_declares`
+/// checks it against the declaration on all three; what does not run on Windows
+/// is the comparison against a freshly captured document.
+///
+/// The short forms are masked here rather than in the redaction, because they
+/// are the only value in this document derived from an identifier without
+/// carrying it: four characters of a minted identifier are not a minted
+/// identifier to look at, and the test knows which four because it knows the
+/// identifiers.
+#[cfg(unix)]
+#[test]
+fn the_json_frame_is_pinned_by_a_golden() {
+    let repo = Repo::seeded("json-golden");
+    let seen = on_a_terminal(&repo, HOLDER, &["tui", "--json"], &[]);
+    let document = seen
+        .raw
+        .lines()
+        .find(|l| l.trim_start().starts_with('{'))
+        .unwrap_or_else(|| panic!("no document on the stream:\n{}", seen.raw))
+        .trim()
+        .to_string();
+
+    let mut masked = document.clone();
+    for id in ids_of(&document) {
+        masked = masked.replace(
+            &format!("\"short\":\"{}\"", short_of(&id)),
+            "\"short\":\"<SHORT>\"",
+        );
+    }
+    fixture::pin("tui", &masked);
 }
 
 // ---------------------------------------------------------------------------

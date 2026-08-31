@@ -18753,7 +18753,15 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
         checked += 1;
     }
 
-    assert_eq!(checked, 26, "one fixture per document the surface returns");
+    // Twenty-eight since TASK-49b10f02d209: `read` and `tui` declared a
+    // document that no fixture pinned, and this walk could not have said so --
+    // it starts at the directory, so an absent fixture is a file it never opens.
+    // The walk that asks the other question is
+    // `every_verb_that_declares_a_document_has_a_golden_fixture`, in
+    // `tests/schema.rs`, and the two fixtures it now demands are captured where
+    // each verb can be: `read` there, `tui` through the pseudo-terminal in
+    // `tests/tui.rs`, because `ank tui --json` refuses at exit 9 into a pipe.
+    assert_eq!(checked, 28, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
