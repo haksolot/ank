@@ -1071,3 +1071,181 @@ fn the_copyright_is_asserted_in_a_notice() {
         "NOTICE does not name the licence it notices:\n{notice}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The historical boundary, stated the same way wherever it is stated
+// (ADR-534c7a3e6cf8)
+// ---------------------------------------------------------------------------
+
+/// The boundary, measured at the tags: 0.3.0 is the last release distributed
+/// under GPL-3.0-only and 0.4.0 the first under Apache-2.0. Stated here in one
+/// window, so the walk below reads this file too and holds it to its own rule.
+const LAST_COPYLEFT_RELEASE: &str = "0.3.0";
+const FIRST_APACHE_RELEASE: &str = "0.4.0";
+
+/// Every `N.N.N` in a line, which is what a release is called in prose here.
+fn release_versions(line: &str) -> Vec<String> {
+    let bytes: Vec<char> = line.chars().collect();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !bytes[i].is_ascii_digit() || (i > 0 && bytes[i - 1] == '.') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        let mut dots = 0;
+        while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == '.') {
+            if bytes[i] == '.' {
+                if i + 1 >= bytes.len() || !bytes[i + 1].is_ascii_digit() {
+                    break;
+                }
+                dots += 1;
+            }
+            i += 1;
+        }
+        if dots == 2 {
+            found.push(bytes[start..i].iter().collect::<String>());
+        }
+    }
+    found
+}
+
+/// Every line in the tree that names a release close enough to the word `GPL`
+/// to be read as saying when the copyleft era ended.
+///
+/// A window of two lines either side, because the sentence wraps and a
+/// paragraph is not a line. `crates/ank-cli/Cargo.toml` declares a package
+/// version eleven lines above its licence comment and is untouched by that
+/// distance, which is the point of a window rather than a whole file: a
+/// manifest names its own version for reasons that have nothing to do with
+/// this, and so do `install.sh`, `install.ps1` and `release.yml`.
+///
+/// Returned as `(path, line number, versions named, the line)`.
+fn boundary_statements() -> Vec<(String, usize, Vec<String>, String)> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut found = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+            // The same exclusions the licence walk above uses, and for the same
+            // reason: `.ank/` records what the licence *was*, and that history
+            // is the thing the relicensing is careful to keep.
+            if path.is_dir() {
+                if !matches!(name.as_str(), "target" | "node_modules" | ".git" | ".ank") {
+                    stack.push(path);
+                }
+                continue;
+            }
+            // Not a list of extensions: a file that is not text fails to decode
+            // and is skipped, so a format nobody thought of is still read.
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                let versions = release_versions(line);
+                if versions.is_empty() {
+                    continue;
+                }
+                let lo = i.saturating_sub(2);
+                let hi = (i + 3).min(lines.len());
+                if !lines[lo..hi].iter().any(|l| l.contains("GPL")) {
+                    continue;
+                }
+                let shown = path
+                    .strip_prefix(&root)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                found.push((shown, i + 1, versions, line.trim().to_string()));
+            }
+        }
+    }
+    found.sort();
+    found
+}
+
+/// **Wherever the tree says when the copyleft era ended, it says the same
+/// thing, and it says both ends of it** (ADR-534c7a3e6cf8).
+///
+/// The sentence is not decoration. The relicensing is prospective, so a release
+/// received under the old terms stays available under them, and the notice is
+/// how its recipient learns they are owed that. A boundary drawn one release
+/// early silently writes those recipients out of a guarantee they hold.
+///
+/// It was drawn one release early. `NOTICE` put the end of the copyleft era at
+/// 0.2.0, and `npm/ank/README.md` said "until 0.3.0", which a reader cannot
+/// settle either way. Measured at the tags rather than read from the prose:
+/// `git show v0.3.0:LICENSE` is the GNU General Public License version 3, and
+/// so is v0.2.0's, while `git show v0.4.0:LICENSE` is the Apache License; every
+/// manifest at each tag agrees with its own LICENSE.
+///
+/// Nothing was looking. `declared_licences()` above walks manifests for the
+/// licence they declare *now*, which is a different claim entirely -- it would
+/// stay green with the date of the change stated wrongly in every document in
+/// the tree.
+///
+/// So both ends are required, not just the correct one. A statement naming only
+/// the last release under the old licence can be read as inclusive or exclusive
+/// of it, and the two documents that carried this were read the two different
+/// ways. Naming the first release under the new licence as well leaves no
+/// reading in which they disagree.
+#[test]
+fn the_relicensing_boundary_is_stated_the_same_way_everywhere() {
+    let statements = boundary_statements();
+
+    let wrong: Vec<_> = statements
+        .iter()
+        .filter(|(_, _, versions, _)| {
+            versions
+                .iter()
+                .any(|v| v != LAST_COPYLEFT_RELEASE && v != FIRST_APACHE_RELEASE)
+        })
+        .collect();
+    assert!(
+        wrong.is_empty(),
+        "{LAST_COPYLEFT_RELEASE} is the last release distributed under \
+         GPL-3.0-only and {FIRST_APACHE_RELEASE} the first under Apache-2.0, \
+         measured at the tags. These say otherwise: {wrong:#?}"
+    );
+
+    let mut files: Vec<String> = statements.iter().map(|(p, _, _, _)| p.clone()).collect();
+    files.sort();
+    files.dedup();
+    for file in &files {
+        let named: Vec<&str> = statements
+            .iter()
+            .filter(|(p, _, _, _)| p == file)
+            .flat_map(|(_, _, versions, _)| versions.iter().map(|v| v.as_str()))
+            .collect();
+        assert!(
+            named.contains(&LAST_COPYLEFT_RELEASE) && named.contains(&FIRST_APACHE_RELEASE),
+            "{file} says when the licence changed but names only {named:?}: a \
+             boundary given as one release can be read as including it or not, \
+             and both readings were taken. Name {LAST_COPYLEFT_RELEASE} as the \
+             last under GPL-3.0-only and {FIRST_APACHE_RELEASE} as the first \
+             under Apache-2.0."
+        );
+    }
+
+    // A recipient of a copyleft release reads one of these two, and neither is
+    // allowed to fall silent: an assertion over an empty walk passes.
+    for document in ["NOTICE", "npm/ank/README.md"] {
+        assert!(
+            files.iter().any(|f| f == document),
+            "{document} no longer states when the licence changed, so the \
+             guarantee owed to whoever received a GPL-3.0-only release is not \
+             written down there. Found statements in: {files:?}"
+        );
+    }
+}
