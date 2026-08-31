@@ -372,6 +372,43 @@ struct CorporaFile {
     corpora: BTreeMap<String, String>,
 }
 
+/// The refusal a `corpora.yml` newer than this binary earns, or `None` where
+/// there is none to give.
+///
+/// **The version first, and the fields afterwards**, which is the rule
+/// `parse()` applies to `.ank/config.yml` and `docs/format.md` states for
+/// entities: "Newer is refused, and refused **on the version rather than on the
+/// first field it does not recognise**." `CorporaFile` denies unknown fields
+/// and compares `schema` only after the deserialize has already succeeded, so a
+/// file one version ahead was reported as *unknown field `mirrors`* and its
+/// reader went looking for a typo in a file that had none.
+///
+/// Reused rather than inlined because this file is read at two call sites that
+/// answer with different exit codes -- [`declarations`] is resolving the
+/// reader's environment and [`parse_corpora`] is guarding a write -- and one
+/// sentence at both is the whole point. Like the probe in `parse()`, it may
+/// only ever *add* a refusal: where it cannot read a version it says nothing
+/// and the caller's own parse produces the diagnosis it always produced.
+fn newer_than_this_ank(text: &str, path: &Path, code: ExitCode) -> Option<CliError> {
+    let found = serde_yaml::from_str::<SchemaProbe>(text)
+        .ok()
+        .map(|p| p.schema)?;
+    if found <= SUPPORTED_SCHEMA {
+        return None;
+    }
+    Some(
+        CliError::new(
+            code,
+            format!(
+                "{}: schema {found}, this binary reads {SUPPORTED_SCHEMA}: \
+                 the file is newer than this ank",
+                path.display()
+            ),
+        )
+        .with_hint("ank --version names the build, npm install -g @haksolot/ank replaces it"),
+    )
+}
+
 /// Where this reader's declarations live, or `None` where the environment names
 /// no home.
 ///
@@ -442,10 +479,15 @@ pub fn declarations() -> Result<BTreeMap<String, String>> {
             ))
         }
     };
+    if let Some(refusal) = newer_than_this_ank(&text, &path, ExitCode::Environment) {
+        return Err(refusal);
+    }
     let file: CorporaFile = serde_yaml::from_str(&text).map_err(|e| {
         CliError::new(ExitCode::Environment, format!("{}: {e}", path.display()))
             .with_hint("schema: 1 and a corpora: map of repository identity to path")
     })?;
+    // Below the range rather than above it, exactly as `parse()` splits them:
+    // no binary ever read schema 0, so there is no older tool to name.
     if file.schema != SUPPORTED_SCHEMA {
         return Err(CliError::new(
             ExitCode::Environment,
@@ -1646,6 +1688,19 @@ pub fn run_user(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
         return Ok(ExitCode::Ok);
     }
 
+    // **A file from a newer ank is not edited**, and the differential below
+    // cannot say so: it refuses a write that *introduces* a parse failure, so a
+    // file that already fails both sides of that comparison passes it silently.
+    // Measured before the guard existed: this verb wrote its entry into a
+    // `corpora.yml` declaring `schema: 2` and exited 0, leaving a file the same
+    // binary refuses to read a second later. Taken here rather than inside
+    // `parse_corpora` because the read above stays available — a line-addressed
+    // read of one declaration is answerable at any version, and refusing it
+    // would leave a reader with no way to see what the file says.
+    if let Some(refusal) = newer_than_this_ank(&text, &path, ExitCode::Generic) {
+        return Err(refusal);
+    }
+
     // The skeleton, and only on the way to a write. `--unset` on an absent file
     // has nothing to remove and writes nothing at all.
     let text = if text.trim().is_empty() && !unset {
@@ -1734,6 +1789,12 @@ pub fn declare_corpus(identity: &str, path: &str) -> Result<std::path::PathBuf> 
             ))
         }
     };
+    // The same guard `run_user` takes, and for the same reason: `init --at` is
+    // the other gesture that edits this file, and the differential below is
+    // blind to a file that was already unreadable.
+    if let Some(refusal) = newer_than_this_ank(&text, &file, ExitCode::Generic) {
+        return Err(refusal);
+    }
     let mut lines = split_lines(&text);
     let key = Key::Under {
         map: "corpora",
@@ -1762,6 +1823,9 @@ pub fn declare_corpus(identity: &str, path: &str) -> Result<std::path::PathBuf> 
 
 /// The declarations file parsed, for the differential refusal above.
 fn parse_corpora(text: &str, path: &Path) -> Result<()> {
+    if let Some(refusal) = newer_than_this_ank(text, path, ExitCode::Generic) {
+        return Err(refusal);
+    }
     let file: CorporaFile = serde_yaml::from_str(text)
         .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
     if file.schema != SUPPORTED_SCHEMA {
