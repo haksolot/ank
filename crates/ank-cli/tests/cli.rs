@@ -7238,6 +7238,87 @@ page:
     }
 }
 
+/// The notes `ank help <verb> --json` carries, as raw strings.
+///
+/// Scanned rather than parsed, since the suite carries no JSON dependency. The
+/// array is bounded by the key that follows it in the document, which is fixed
+/// by the rendering and pinned by `tests/golden-json/help-verb.json`; the three
+/// sentences this is read for carry no quote and no backslash, so a raw
+/// substring over the slice answers the same question an unescaping parser
+/// would.
+fn json_notes(document: &str, verb: &str) -> String {
+    let open = "\"notes\":[";
+    let at = document
+        .find(open)
+        .unwrap_or_else(|| panic!("`ank help {verb} --json` carries no notes array:\n{document}"))
+        + open.len();
+    let end = document[at..]
+        .find("],\"refuses\":")
+        .unwrap_or_else(|| panic!("`ank help {verb} --json` never closes its notes array"));
+    document[at..at + end].to_string()
+}
+
+/// Every coordinating verb's help says what a refused push does to its exit
+/// code, and no other verb says it (ADR-af533e7a3e03).
+///
+/// The constraint is that a caller never infers the class from what the verb
+/// happens to touch, and inference is exactly what silence leaves it to.
+/// Measured on 0.7.0 before this test existed: of the eight verbs the table
+/// marks `coordinates: true`, `attest` alone said anything, in a refusal —
+/// `claim`, `log`, `done`, `release`, `close`, `accept` and `init` said nothing
+/// at all, while `claim`, `log` and `done` warn and exit 0, `release` and
+/// `close` exit 0 silently, `attest --detached` exits 9, and `accept` and
+/// `init` push no ref whatever.
+///
+/// **Keyed on `coordinates`, which is the declaration a new verb cannot avoid
+/// making.** A list of verb names written here would be the thing that goes
+/// stale the day a ninth coordinating verb arrives — and it would arrive
+/// silent, which is the defect this test exists to catch rather than to
+/// reproduce. `coordinates: true` is a superset of "writes a ref": `accept` and
+/// `init` coordinate and push nothing, and they say so, which is the honest
+/// answer to the same question.
+///
+/// Through the binary, because the criterion is about what `ank help --json`
+/// carries to a caller. A unit test over `COMMANDS` would agree with the table
+/// about a note the process never printed.
+#[test]
+fn every_coordinating_verb_says_what_a_refused_push_does() {
+    for spec in ank_contract::COMMANDS {
+        let document = stdout(
+            &ank_command()
+                .args(["help", spec.name, "--json"])
+                .output()
+                .unwrap(),
+        );
+        let notes = json_notes(&document, spec.name);
+        let said: Vec<&str> = ank_contract::verbs::PUSH_NOTES
+            .iter()
+            .copied()
+            .filter(|sentence| notes.contains(sentence))
+            .collect();
+
+        if !spec.coordinates {
+            assert!(
+                said.is_empty(),
+                "`ank help {} --json` states what a refused push does, for a verb that never \
+                 reaches a remote: {said:?}",
+                spec.name
+            );
+            continue;
+        }
+
+        assert_eq!(
+            said.len(),
+            1,
+            "`ank help {} --json` states {} of the three push classes; a coordinating verb states \
+             exactly one, and ADR-af533e7a3e03 is what says so:
+notes: {notes}",
+            spec.name,
+            said.len()
+        );
+    }
+}
+
 /// The seven readers exit with the codes their pages now declare, and `status`
 /// answers where the other six refuse.
 ///
