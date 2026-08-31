@@ -2280,7 +2280,19 @@ pub fn release(
     // The file first, the ref second. A ref deleted over a task still marked
     // in_progress would read as claimable and as in progress at the same time;
     // the reverse merely waits for the TTL.
-    claim::delete(&repo.corpus, &id)?;
+    let deleted = claim::delete(&repo.corpus, &id)?;
+    // A deletion that did not reach the remote leaves the task open here and
+    // held everywhere else until the lease runs out. The hand-back stands, so
+    // the exit code does not move — ADR-af533e7a3e03 puts `release` on the
+    // degrading side and `help` says so — but degrading in silence is not what
+    // that constraint allows: it says degrades, *warns* and exits zero.
+    //
+    // On standard error and in both modes, which is where `done` puts the same
+    // class of warning: it is not the answer, and `release --json` is a
+    // parser's input (ADR-6fd69efb629c).
+    if let Some(w) = deleted.sync.revocation_warning() {
+        eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
+    }
 
     if inv.json() {
         let doc = Obj::document()

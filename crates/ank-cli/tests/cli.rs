@@ -5735,6 +5735,115 @@ fn an_unreachable_remote_warns_and_the_claim_still_holds_locally() {
     );
 }
 
+/// A revocation that did not reach the remote degrades, warns and exits zero
+/// (TASK-c5c93cc8e5f8, ADR-af533e7a3e03).
+///
+/// `release` and `close` both delete the claim ref, both declare `PUSH_DEGRADES`
+/// in the verb table, and both used to do two thirds of what that class
+/// promises: the hand-back stood on disk, the exit code stayed 0, and nothing
+/// at all was said. The push result was discarded inside `claim::delete_at`, so
+/// neither verb could have warned.
+///
+/// **Measured against a remote that was reachable and then was not**, which is
+/// the only shape where the risk is real: a claim that never travelled cannot go
+/// stale on a remote that never had it. So origin is a bare repository the claim
+/// genuinely reaches, and it is moved out of the way between the claim and the
+/// revocation. The assertion at the end is the risk itself, not the sentence
+/// describing it -- origin still holds the claim, which is exactly what the
+/// warning tells the reader.
+#[test]
+fn release_and_close_warn_when_the_claim_deletion_does_not_reach_the_remote() {
+    const RELEASED: &str = "TASK-000000000d01";
+    const CLOSED: &str = "TASK-000000000d02";
+
+    /// Every claim ref the bare origin holds. Read from origin itself rather
+    /// than through `ls-remote` from the clone, so a fetch configuration cannot
+    /// stand between the question and the answer.
+    fn origin_claims(origin: &Path) -> String {
+        let out = git_command(origin)
+            .args(["for-each-ref", "--format=%(refname)", "refs/ank/claims/"])
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "for-each-ref: {}", stderr(&out));
+        stdout(&out)
+    }
+
+    let r = Repo::new();
+    r.seed_task(RELEASED, Some("A verifiable criterion."));
+    r.seed_task(CLOSED, Some("A verifiable criterion."));
+    let (origin, _other) = r.cloned();
+    let moved = origin.with_extension("moved");
+
+    for (id, verb, args) in [
+        (
+            RELEASED,
+            "release",
+            vec!["release", "--reason", "origin is gone"],
+        ),
+        (
+            CLOSED,
+            "close",
+            vec!["close", CLOSED, "--reason", "origin is gone"],
+        ),
+    ] {
+        let out = r.ank("claude-code@ank", &["claim", id]);
+        assert_eq!(code(&out), 0, "claim: {}{}", stdout(&out), stderr(&out));
+        assert!(
+            origin_claims(&origin).contains(id),
+            "the claim never reached origin, so {verb} has no stale ref to warn about"
+        );
+
+        // The remote configured and gone: a URL that resolves to nothing, which
+        // is the shape a laptop off the network actually has.
+        std::fs::rename(&origin, &moved).unwrap();
+        let out = r.ank("claude-code@ank", &args);
+        assert_eq!(
+            code(&out),
+            0,
+            "{verb} is on the degrading side and must still exit zero:\n{}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        assert!(
+            said.contains("deletion not pushed") && said.contains("still reads the task as held"),
+            "{verb} degraded in silence, which is not what degrade, warn and exit zero says: {said}"
+        );
+        assert!(
+            r.claim_ref(id).is_none(),
+            "{verb} did not revoke the claim locally, which is the half that must not degrade"
+        );
+        std::fs::rename(&moved, &origin).unwrap();
+
+        // The warning is not decoration: origin is still holding the claim the
+        // reader was just told about.
+        assert!(
+            origin_claims(&origin).contains(id),
+            "the risk the warning names did not happen, so the warning is wrong"
+        );
+    }
+
+    // And with no remote at all -- level 0, the default mode -- there is no
+    // deletion to fail to push and nothing to say. A warning here would fire on
+    // every release of every solo repository.
+    let solo = Repo::new();
+    solo.seed_task(RELEASED, Some("A verifiable criterion."));
+    solo.seed_task(CLOSED, Some("A verifiable criterion."));
+    for (id, args) in [
+        (RELEASED, vec!["release", "--reason", "no remote here"]),
+        (CLOSED, vec!["close", CLOSED, "--reason", "no remote here"]),
+    ] {
+        let out = solo.ank("claude-code@ank", &["claim", id]);
+        assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+        let out = solo.ank("claude-code@ank", &args);
+        assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+        assert!(
+            !format!("{}{}", stdout(&out), stderr(&out)).contains("deletion not pushed"),
+            "level 0 is not a degradation and must stay silent"
+        );
+    }
+}
+
 /// What a holder of a claim sees of the coordination plane (TASK-dacbcae6134c).
 ///
 /// The agent best placed to notice a collision is the one currently working,

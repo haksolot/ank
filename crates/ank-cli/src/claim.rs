@@ -642,6 +642,30 @@ impl Sync {
     /// no degraded mode left to fall back to and `attest --detached` exits 9.
     /// A method named `warning` returning the text of an error would be a
     /// comment that lies in the one place a reader checks first.
+    /// The same sentence for a claim being given back, and it is a third
+    /// sentence because it is a third risk. [`Sync::warning`] reports an
+    /// acquisition that did not travel, where the danger is that the task is
+    /// taken twice; this reports a *revocation* that did not travel, where the
+    /// danger is the mirror image — the claim is gone here and reads as live
+    /// everywhere else, until the lease on the stale ref runs out. Which is
+    /// why it does not name the local status: `release` leaves the task open
+    /// and `close` leaves it closed, and one sentence serves both.
+    ///
+    /// `release` and `close` are both on the degrading side of
+    /// ADR-af533e7a3e03: the hand-back is written to disk and stands whatever
+    /// the remote did, so the verb exits 0. The constraint says degrades,
+    /// *warns* and exits zero, and this is the warning half.
+    pub fn revocation_warning(&self) -> Option<String> {
+        match self {
+            Sync::Local | Sync::Pushed => None,
+            Sync::Unsynchronised(_) => Some(
+                "claim deletion not pushed: the claim is gone in this clone only, and \
+                 another clone still reads the task as held until the claim expires"
+                    .to_string(),
+            ),
+        }
+    }
+
     pub fn proof_failure(&self) -> Option<String> {
         match self {
             Sync::Local | Sync::Pushed => None,
@@ -784,23 +808,53 @@ pub fn sync_ref_from_remote(cwd: &Path, name: &str) -> Result<()> {
 /// therefore owes an answer to. The remote failing to take it is not worth
 /// failing the release over: the handback is durable state and already written,
 /// and the stale ref expires on its own.
-pub fn delete(cwd: &Path, id: &EntityId) -> Result<bool> {
+pub fn delete(cwd: &Path, id: &EntityId) -> Result<Deleted> {
     delete_at(cwd, &claim_ref(id))
 }
 
 /// The same deletion, addressed by ref. `check` prunes a proof ref through it
 /// once the file on the default branch carries the same attestation.
-pub fn delete_at(cwd: &Path, name: &str) -> Result<bool> {
+pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
     let Some(witness) = current_object(cwd, name)? else {
-        return Ok(false);
+        return Ok(Deleted {
+            existed: false,
+            sync: Sync::Local,
+        });
     };
     let args = ["update-ref", "-d", name];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
     }
-    let _ = push(cwd, name, None, Some(&witness));
-    Ok(true)
+    // **The push result is carried out, not swallowed.** It used to be dropped
+    // here, and the two verbs that delete a claim therefore had nothing to warn
+    // from: they degraded and exited 0 in complete silence, which is two of the
+    // three things ADR-af533e7a3e03 asks of a degrading verb. A failure to
+    // reach the remote is still not a failure of the verb — the hand-back is
+    // already on disk — so it leaves as a value the caller reports rather than
+    // as an error.
+    let sync = match push(cwd, name, None, Some(&witness)) {
+        Ok(written) => written.sync,
+        // The push helper itself could not run git at all. The deletion took
+        // locally, so this is the same degradation with a coarser reason.
+        Err(e) => Sync::Unsynchronised(e.to_string()),
+    };
+    Ok(Deleted {
+        existed: true,
+        sync,
+    })
+}
+
+/// What a deletion of a coordination ref did: whether there was one to delete,
+/// and how far the deletion reached.
+///
+/// Two facts and not one because the callers need both and for different
+/// reasons: `close` reports `claim_revoked` from `existed`, and both `close`
+/// and `release` owe a warning when `sync` says the remote never heard.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Deleted {
+    pub existed: bool,
+    pub sync: Sync,
 }
 
 // ---------------------------------------------------------------------------
@@ -2992,9 +3046,12 @@ mod tests {
         let task = open_task("000000000001");
         t.seed(&task);
 
-        assert!(!delete(&t.0, &task.id).unwrap(), "nothing to delete yet");
+        assert!(
+            !delete(&t.0, &task.id).unwrap().existed,
+            "nothing to delete yet"
+        );
         take(&t, &task, "claude-code@ank", DEFAULT_TTL).unwrap();
-        assert!(delete(&t.0, &task.id).unwrap());
+        assert!(delete(&t.0, &task.id).unwrap().existed);
         assert!(read(&t.0, &task.id).unwrap().is_none());
         assert!(git::ank_refs(&t.0).unwrap().is_empty());
 
