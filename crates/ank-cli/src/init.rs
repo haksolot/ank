@@ -77,11 +77,33 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
         detachable(cwd, &target)?;
     }
     git::ensure_usable(&target)?;
+    // **Decided here, written after the corpus, and that ordering is the
+    // point** (TASK-0dd151b02854). `detachable` above is documented as taking
+    // everything a detached corpus is refused for before a byte is written,
+    // and the declaration was the one refusal that escaped it: `init_at` ran
+    // first, so a `corpora.yml` this binary cannot read produced a correct
+    // refusal *after* the corpus had been created. Measured: the target was
+    // left holding `.ank/config.yml`, `.ank/entities`, `.ank/log`, `AGENTS.md`,
+    // `.gitattributes`, `.gitignore` and a `+refs/ank/*` refspec written into
+    // its own `.git/config`, with no declaration anywhere pointing at any of
+    // it.
+    //
+    // Refused earlier rather than repaired afterwards. Undoing an `ensure_line`
+    // append to a file that may have pre-existed, and a refspec written into
+    // another repository, is new surface with its own failure modes, and a
+    // rollback that fails leaves worse state than the one it was called to
+    // clean. `plan_corpus` takes every refusal and touches nothing, so there is
+    // nothing left to undo.
+    let pending = match detached {
+        Some(_) => {
+            let identity = repo::identity(cwd).expect("checked by detachable");
+            Some(config::plan_corpus(&identity, &target.to_string_lossy())?)
+        }
+        None => None,
+    };
     let mut report = init_at(&target)?;
-    if detached.is_some() {
-        let identity = repo::identity(cwd).expect("checked by detachable");
-        let file = config::declare_corpus(&identity, &target.to_string_lossy())?;
-        report.declared = Some(file.to_string_lossy().to_string());
+    if let Some(pending) = pending {
+        report.declared = Some(pending.write()?.to_string_lossy().to_string());
     }
     // `--json` is available on every command without exception (§4), and this
     // verb was the exception: it printed its prose and ignored the flag. The

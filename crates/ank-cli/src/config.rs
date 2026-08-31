@@ -1758,15 +1758,55 @@ pub fn run_user(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     Ok(ExitCode::Ok)
 }
 
-/// Declares `path` as the corpus of the repository `identity`, and answers with
-/// the file it wrote.
+/// A declaration this binary has decided on and has not yet written.
+///
+/// **The two halves exist so the refusals can be taken first**
+/// (TASK-0dd151b02854). `init --at` writes in two places -- a corpus in the
+/// directory the caller named, and a line in the reader's declarations file --
+/// and it used to write the first before deciding whether the second was
+/// allowed. A refused declaration then arrived after the corpus it was
+/// supposed to authorise already existed, leaving a directory nothing pointed
+/// at. Every reason this file may not be written is settled by
+/// [`plan_corpus`], which touches nothing; [`PendingDeclaration::write`] is
+/// the only part that can no longer refuse.
+pub struct PendingDeclaration {
+    file: std::path::PathBuf,
+    /// The whole file as it will stand, not the line being added: the surgery
+    /// below is line-based and its result is what gets written.
+    text: String,
+}
+
+impl PendingDeclaration {
+    /// Writes the decided declaration and answers with the file it wrote.
+    ///
+    /// What is left here is filesystem failure and nothing else. A caller that
+    /// has already created the corpus this declares cannot be handed a
+    /// refusal by this function, which is the whole point of the split.
+    pub fn write(self) -> Result<std::path::PathBuf> {
+        if let Some(dir) = self.file.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| {
+                CliError::new(ExitCode::Environment, format!("{}: {e}", dir.display()))
+            })?;
+        }
+        std::fs::write(&self.file, self.text).map_err(|e| {
+            CliError::new(
+                ExitCode::Environment,
+                format!("{}: {e}", self.file.display()),
+            )
+        })?;
+        Ok(self.file)
+    }
+}
+
+/// Decides the declaration naming `path` as the corpus of the repository
+/// `identity`, taking every refusal and writing nothing.
 ///
 /// **The same surgery `--user` performs**, and deliberately not a serialiser:
 /// this file is hand-edited, and a round trip through `serde_yaml` would
 /// rewrite somebody's comments and key order to add one line. `init --at` is
 /// the gesture that makes a declaration without a text editor and a printed
 /// sha; it is not a licence to reformat the file it lands in.
-pub fn declare_corpus(identity: &str, path: &str) -> Result<std::path::PathBuf> {
+pub fn plan_corpus(identity: &str, path: &str) -> Result<PendingDeclaration> {
     let Some(file) = corpora_path() else {
         return Err(CliError::new(
             ExitCode::Environment,
@@ -1812,13 +1852,7 @@ pub fn declare_corpus(identity: &str, path: &str) -> Result<std::path::PathBuf> 
         )
         .with_hint(format!("ank config --user corpora.{identity}")));
     }
-    if let Some(dir) = file.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| CliError::new(ExitCode::Environment, format!("{}: {e}", dir.display())))?;
-    }
-    std::fs::write(&file, after)
-        .map_err(|e| CliError::new(ExitCode::Environment, format!("{}: {e}", file.display())))?;
-    Ok(file)
+    Ok(PendingDeclaration { file, text: after })
 }
 
 /// The declarations file parsed, for the differential refusal above.
