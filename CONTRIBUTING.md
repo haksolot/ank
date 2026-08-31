@@ -56,9 +56,12 @@ produces a task that claims to be finished with nothing behind the claim, and an
 agent, or a human, that grades its own work can simply be wrong.
 
 **`.ank/` is reached through the CLI, not by opening the files**
-(ADR-01b6dd05f0db). `ank show <id>` gives an entity whole, `ank find` lists,
-`ank context` binds. This constrains agents, not people: a human with an editor
-keeps every power they had, and `ank check` remains what notices.
+(ADR-e45e1a29fe91). `ank show <id>` gives an entity whole, `ank find` lists,
+`ank context` binds, and `scope`, `graph`, `status`, `review`, `check` and the
+read form of `log` answer the rest. That ADR enumerates every route on each
+side, because a short list gets read as the whole one. This constrains agents,
+not people: a human with an editor keeps every power they had, and `ank check`
+remains what notices.
 
 ## Ratifying a decision
 

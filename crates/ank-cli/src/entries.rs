@@ -307,7 +307,7 @@ fn write_entry(
 /// newline gained on the way through an editor does not read as a different
 /// past.
 ///
-/// It anchors nothing, which is what ADR-ff294eff4d1a requires of the log: no
+/// It anchors nothing, which is what ADR-67a4ac10c534 requires of the log: no
 /// verb consults it, no hash chains over it, and deleting the entry that
 /// carries it changes no answer the tool gives.
 pub fn replaced_hash(before: &Entity) -> String {

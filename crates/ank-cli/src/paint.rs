@@ -1,7 +1,8 @@
 //! The entity `show` prints, lit for a reader at a terminal (§4).
 //!
 //! `show` is the one command that does not summarise: it returns the entity
-//! byte for byte (ADR-01b6dd05f0db). This module keeps that true and still
+//! byte for byte, which is the guarantee ADR-e45e1a29fe91 rests on when it
+//! closes `.ank/` to a direct read. This module keeps that true and still
 //! gives a human hierarchy, by emitting nothing but escape sequences. An escape
 //! occupies no column, so stripping the escapes from what this writes yields
 //! the byte sequence `show` wrote before it existed — same characters, same
