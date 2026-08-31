@@ -413,7 +413,7 @@ rebuild. It is a verb of the same one executable every route installs
 (ADR-1ea31c2f3c5a), so every installation already has it -- and running one is
 still nobody's condition for anything, which is the statement below about
 nothing depending on it. Everything else worth knowing about it as an
-integrator is what it refuses to be (ADR-a22cd3196529).
+integrator is what it refuses to be (ADR-24e21cb83793).
 
 **It is not a surface.** No socket, no protocol, no query of its own, and no
 subset of the verbs. There is nothing here to ask: a caller that wants an answer
@@ -519,7 +519,7 @@ handed; each line says which corpus it is about.
 and no entity content of any kind, and it never will: an event that carried the
 new state of a task would save you a call and would make the watcher a source of
 corpus data that nothing generated from the verb table ever validated
-(ADR-a22cd3196529). What changed is on the stream; what is now true of it is what
+(ADR-24e21cb83793). What changed is on the stream; what is now true of it is what
 the CLI answers, and `no_event_carries_entity_content_a_reader_would_get_from_the_cli`
 asserts the absence rather than promising it. An event also never says what to do
 about itself. There is one sensible thing to do, which is to read the corpus

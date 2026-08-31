@@ -1,5 +1,5 @@
 //! Keeping a declared corpus's index current, and doing it through the CLI
-//! (ADR-a22cd3196529).
+//! (ADR-24e21cb83793).
 //!
 //! **The daemon is not a second implementation of the index.** `index.rs` is a
 //! cache the CLI rebuilds from the files at read time, comparing a content hash
@@ -10,7 +10,7 @@
 //! answers rather than fails.
 //!
 //! So this spawns `ank` and asks it for a listing. That is also what keeps
-//! ADR-a22cd3196529's first clause true by construction: a process that has to
+//! ADR-24e21cb83793's first clause true by construction: a process that has to
 //! run the CLI to learn anything is not a second dispatch path, because it has
 //! no dispatch of its own to be one. It is the rule ADR-8bd7ea0e8f2b already
 //! set for the terminal reader, applied to the one other thing that reads a

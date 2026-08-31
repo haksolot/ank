@@ -855,10 +855,10 @@ fn mcp(inv: &Invocation, cwd: &std::path::Path, out: &mut dyn std::io::Write) ->
     Ok(ExitCode::Ok)
 }
 
-/// `watch`, the watcher (ADR-a22cd3196529, ADR-1ea31c2f3c5a, §4).
+/// `watch`, the watcher (ADR-24e21cb83793, ADR-1ea31c2f3c5a, §4).
 ///
 /// **It answers no verb, and being started by one does not change that.** The
-/// clause a reader meets first in ADR-a22cd3196529 is the easiest one in this
+/// clause a reader meets first in ADR-24e21cb83793 is the easiest one in this
 /// tree to read backwards, so it is worth saying in the place the reading
 /// happens: what the decision forbids is a *query surface* -- a socket, a
 /// protocol, a subset of the CLI answering out of a resident process. It says
@@ -1225,7 +1225,7 @@ fn dispatch(
         return mcp(&inv, cwd, out);
     }
     // The sixth, and it goes one step further than the two above it
-    // (ADR-a22cd3196529). `watch` resolves no corpus at all: what it keeps warm
+    // (ADR-24e21cb83793). `watch` resolves no corpus at all: what it keeps warm
     // is what the reader declared outside every repository, so there is nothing
     // in the working directory for it to need, and a `.ank/` demanded here
     // would refuse the watcher in the one place a person is most likely to

@@ -1,5 +1,5 @@
 //! `ank watch`: it keeps declared corpora warm, and that is the whole of it
-//! (ADR-a22cd3196529).
+//! (ADR-24e21cb83793).
 //!
 //! **It answers no verb.** There is no query surface here, no socket, no
 //! protocol and no subset of the CLI wearing a different name. A caller that
@@ -108,7 +108,7 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 /// process and no search to get it wrong. There is deliberately no corpus here
 /// -- the corpora are what the reader declared in [`declare::WATCH_FILE`], and
 /// a watcher that took one from the directory it was started in would be
-/// discovering a corpus, which is the thing ADR-a22cd3196529 refuses first.
+/// discovering a corpus, which is the thing ADR-24e21cb83793 refuses first.
 pub struct Address {
     /// The binary a warming runs. `std::env::current_exe()` of the process
     /// serving the verb -- see the note on [`warm`].
@@ -284,7 +284,7 @@ fn identity_of(root: &Path) -> Option<String> {
 /// exactly as long as they were not editing -- which is most of the time, and
 /// all of the time that matters after a `git checkout`. That pass is a warming
 /// and not a change, so it says so: an event states what changed
-/// (ADR-a22cd3196529), and a first sighting is not one.
+/// (ADR-24e21cb83793), and a first sighting is not one.
 ///
 /// **Two kinds of change, because there are two things to see.** The files
 /// under `.ank/` moving is one; the mirror of somebody else's `refs/ank/*`

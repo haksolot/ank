@@ -1,5 +1,5 @@
 //! The declaration: which corpora this reader wants kept warm
-//! (ADR-a22cd3196529).
+//! (ADR-24e21cb83793).
 //!
 //! **Declared, never discovered.** ADR-621a7fd96ce1 says it and
 //! ADR-96174f1ac2b7 repeats it: nothing walks a filesystem looking for a

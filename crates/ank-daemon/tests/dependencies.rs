@@ -1,5 +1,5 @@
 //! **The watcher is not a second implementation of anything**, made mechanical
-//! (ADR-a22cd3196529, TASK-9dd22f2b0430).
+//! (ADR-24e21cb83793, TASK-9dd22f2b0430).
 //!
 //! The file folded into `ank`; the read did not. That is the clause the decision
 //! rests its first paragraph on, and its reason is not symmetry: a process that
@@ -20,7 +20,7 @@
 //! **What this crate may do that those two may not is spawn `git`**, and the
 //! assertions below say so rather than copying a prohibition that does not
 //! belong here. Mirroring `refs/ank/*` into a tracking namespace is the one
-//! thing ADR-a22cd3196529 has this process write into somebody else's
+//! thing ADR-24e21cb83793 has this process write into somebody else's
 //! repository, and it is a fetch and nothing else -- which is a claim about
 //! *which* git commands are reachable, so that is what is asserted.
 
@@ -87,7 +87,7 @@ fn the_graph_carries_neither_the_dispatch_nor_the_core() {
     for forbidden in ["ank-cli", "ank-core"] {
         assert!(
             !names.iter().any(|n| n == forbidden),
-            "ank-daemon links {forbidden}, and ADR-a22cd3196529 forbids it: what \
+            "ank-daemon links {forbidden}, and ADR-24e21cb83793 forbids it: what \
              folded into the one binary is the file and never the read, so the \
              watcher warms the index by running `ank` or it is a second \
              implementation of one.\n{tree}"
@@ -160,7 +160,7 @@ fn the_crate_declares_a_library_and_no_binary() {
     assert!(
         declarations.contains(&"[lib]"),
         "the crate declares no library target, and the verb `ank watch` links \
-         one (ADR-a22cd3196529, ADR-1ea31c2f3c5a)"
+         one (ADR-24e21cb83793, ADR-1ea31c2f3c5a)"
     );
     assert!(
         !declarations.contains(&"[[bin]]"),
@@ -207,7 +207,7 @@ fn nothing_that_reaches_into_a_watched_checkout_opens_what_it_finds() {
                 "{file} calls {forbidden} inside a watched checkout: the \
                  watcher learns what a corpus holds by running the binary, and \
                  a second reader of these files drifts silently because a stale \
-                 cache answers rather than fails (ADR-a22cd3196529)"
+                 cache answers rather than fails (ADR-24e21cb83793)"
             );
         }
     }
@@ -237,7 +237,7 @@ fn the_only_document_this_crate_parses_is_the_declaration() {
             !text.contains("serde_yaml") && !text.contains("Deserialize"),
             "{file} parses a document, and the one document this process reads \
              is the reader's own declaration in declare.rs: what a corpus holds \
-             is what the binary answers (ADR-a22cd3196529)"
+             is what the binary answers (ADR-24e21cb83793)"
         );
     }
 }
@@ -255,7 +255,7 @@ fn the_only_document_this_crate_parses_is_the_declaration() {
 /// The git commands are enumerated rather than counted, because "we only fetch
 /// `refs/ank/*`" is a sentence that stays true right up until a second command
 /// is added beside it. A subcommand not on this list is a write into somebody's
-/// repository that ADR-a22cd3196529 did not authorise -- and the ones that are
+/// repository that ADR-24e21cb83793 did not authorise -- and the ones that are
 /// here are read-only but for the fetch, whose refspec
 /// `a_watching_cycle_moves_the_tracking_namespace_and_nothing_else` pins.
 #[test]
@@ -296,7 +296,7 @@ fn the_sources_spawn_git_and_the_binary_the_dispatch_named() {
                 "{file} runs `git {subcommand}`, which is not one of \
                  {allowed_git:?}: the one thing this process writes into a \
                  repository is a fetch into the tracking namespace \
-                 (ADR-a22cd3196529)"
+                 (ADR-24e21cb83793)"
             );
         }
     }

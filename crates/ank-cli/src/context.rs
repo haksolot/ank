@@ -93,7 +93,7 @@ impl Coordination {
 /// is what reports a damaged ref, and a reader must not fail for having nothing
 /// to say about one.
 /// Where the watcher mirrors the remote's `refs/ank/*`, when somebody is
-/// running one (ADR-a22cd3196529).
+/// running one (ADR-24e21cb83793).
 ///
 /// **A mirror, and never the plane itself.** `refs/ank/claims/<id>` is where a
 /// claim of this clone lives, so a background process writing there would be
