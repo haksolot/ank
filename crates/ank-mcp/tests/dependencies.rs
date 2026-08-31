@@ -102,9 +102,13 @@ fn the_graph_carries_neither_the_dispatch_nor_the_core() {
 /// git library.
 ///
 /// The list is the manifest's argument written as an assertion. `ank-contract`
-/// is the table this surface is generated from (ADR-6fd69efb629c); `serde_yaml`
-/// is already in the tree four times over and is what reads JSON-RPC, since
-/// `ank-contract::json` writes and does not read.
+/// is the table this surface is generated from (ADR-6fd69efb629c);
+/// `serde_json` reads JSON-RPC and the `--json` documents a call reads back,
+/// since `ank-contract::json` writes and does not read; `serde_yaml` is left
+/// with `corpora.yml`, the one document here that is YAML. Neither reader is a
+/// crate the tree did not already carry -- `serde_json` is `ank-tui`'s and
+/// `serde_yaml` is `ank-core`'s -- so the list grew by a name and the graph did
+/// not grow by a crate (TASK-1bc1186ad9e7).
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     let tree = tree();
@@ -120,9 +124,9 @@ fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     direct.sort();
     assert_eq!(
         direct,
-        ["ank-contract", "serde_yaml"],
+        ["ank-contract", "serde_json", "serde_yaml"],
         "a dependency arrived. It may well be the right call -- and the \
-         argument for it belongs in the manifest beside the two that are \
+         argument for it belongs in the manifest beside the ones that are \
          there, and in this list.\n{tree}"
     );
 }

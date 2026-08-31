@@ -286,7 +286,13 @@ impl<'a> Reach<'a> {
         if out.refused() {
             return None;
         }
-        let doc: serde_yaml::Value = serde_yaml::from_str(&out.stdout).ok()?;
+        // `--json`, read by the JSON reader (TASK-1bc1186ad9e7). Nothing the
+        // CLI writes carries a surrogate pair -- `ank_contract::json::string`
+        // escapes nothing above U+001F -- so this line was never the defect;
+        // it is here because the document is JSON and there is now a reader for
+        // JSON in this crate. `serde_yaml` is left with `corpora.yml`, which is
+        // the one thing here that is YAML.
+        let doc: serde_json::Value = serde_json::from_str(&out.stdout).ok()?;
         doc.get("corpus")
             .and_then(|v| v.as_str())
             .filter(|v| is_identity(v))

@@ -44,10 +44,32 @@ path = "src/lib.rs"
 # CLI (ADR-6fd69efb629c). A verb the table does not carry is a verb neither
 # surface has, which is the whole condition ADR-fd98f4bc6dea carries forward.
 ank-contract = { path = "../ank-contract" }
-# **No new crate enters the tree for this.** JSON-RPC has to be *read*, and
-# nothing here wrote a parser before: `ank-contract::json` writes and does not
-# read. `serde_yaml` is already a dependency of `ank-core` and `ank-cli`, and
-# YAML 1.2 is a superset of JSON, so a request on one line parses as flow YAML.
-# §13 spends a dependency only on necessity, and the same reasoning already
-# carries the conformance test that reads the JSON goldens.
+# **JSON-RPC is read by a JSON reader** (TASK-1bc1186ad9e7). This slot held
+# `serde_yaml` alone, and the argument written here was that "YAML 1.2 is a
+# superset of JSON, so a request on one line parses as flow YAML". Measured
+# against the binary, it is not. `{"jsonrpc":"2.0","id":"\ud83d\ude00-alpha",
+# "method":"ping"}` came back `-32700` with `id: null`: RFC 8259 spells a non-BMP
+# code point as a surrogate pair, YAML's `\u` escape is a single 16-bit unit with
+# no pairing, and `json.dumps` in Python's standard library escapes every
+# non-ASCII character that way by default. A client written against that library
+# therefore could not send an emoji, a CJK character or an accented name through
+# any tool this surface offers. A repeated key was refused the same way, where a
+# JSON reader takes the last one. The superset claim is about the grammar and
+# never about the resolver, which is the reading `crates/ank-tui`'s manifest
+# already gave when it took `serde_json` for `--json`.
+#
+# **Still no new crate in the tree.** `serde_json` is already `ank-tui`'s and is
+# in the lockfile, so §13 spends nothing here; what changes is which of two
+# readers already present reads which document.
+#
+# `preserve_order` for `ank-tui`'s reason and one of this crate's: a call's
+# arguments reach the command line in the order the client wrote them, where
+# `serde_json`'s default map would sort them. The parser moved and nothing else
+# did.
+serde_json = { version = "1", features = ["preserve_order"] }
+# **YAML, for the one document that is YAML.** `corpora.yml` is the reader's
+# declaration (ADR-96174f1ac2b7) and it is the only thing left here that is not
+# JSON: the request above and the `--json` document `corpora.rs` reads back both
+# go through `serde_json` now. Already a dependency of `ank-core` and `ank-cli`,
+# so this one is not spent either.
 serde_yaml = "0.9"

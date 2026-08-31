@@ -853,6 +853,126 @@ fn the_surface_reports_the_version_the_binary_prints_and_writes_under_it() {
     let _ = std::fs::remove_dir_all(&repo);
 }
 
+/// The escape forms a JSON client actually writes (TASK-1bc1186ad9e7).
+///
+/// `json.dumps` in Python's standard library escapes every non-ASCII character
+/// by default, and RFC 8259 spells a non-BMP code point as a surrogate pair. The
+/// first line below is that library's output byte for byte, and this surface
+/// answered it `-32700` with `id: null`: a valid request refused, and refused
+/// unattributably, so the client could not even tell which of its requests died.
+/// The second repeats a key, where RFC 8259 leaves the choice open and every
+/// reader in service takes the last value. Both were measured against the binary
+/// before the parser moved, and both are what this holds.
+///
+/// **Driven through the binary, because what is broken is interoperability.** A
+/// test that called the parse function would prove the function; what a
+/// mainstream client meets is a process reading a line off a pipe, so a process
+/// is what is run. The third and fourth lines are controls that already passed
+/// before the change -- a BMP escape, and the same character sent as literal
+/// UTF-8 -- so a red run says which half moved rather than only that something
+/// did. The literal is a fixture asserting a byte sequence, which is the one
+/// thing ADR-d3a8dcf38817 exempts.
+///
+/// **The tool call is the other half of the harm**, and it is the half that
+/// reaches the corpus. A refused id costs one reply; a refused argument means no
+/// client written this way can put an emoji, a CJK character or an accented name
+/// into a title through `ank_new`, a message through `ank_log` or a reason
+/// through `ank_close`. So the title is read back out of the corpus with the
+/// binary: what is asserted is the code point that arrived, not merely that a
+/// line parsed.
+#[test]
+fn a_request_that_escapes_a_non_bmp_character_is_read_and_not_refused() {
+    let repo = corpus();
+    let replies = talk(
+        &repo,
+        &[
+            r#"{"jsonrpc": "2.0", "id": "\ud83d\ude00-alpha", "method": "ping"}"#,
+            r#"{"jsonrpc":"2.0","id":3,"method":"ping","id":3}"#,
+            r#"{"jsonrpc": "2.0", "id": "\u00e9-beta", "method": "ping"}"#,
+            r#"{"jsonrpc":"2.0","id":"😀-literal","method":"ping"}"#,
+            r#"{"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "ank_new", "arguments": {"arguments": ["task"], "title": "\ud83d\ude00 an escaped title", "scope": "src/**", "criteria": "A verifiable criterion."}}}"#,
+        ],
+    );
+    assert_eq!(
+        replies.len(),
+        5,
+        "every one of the five carries an id and is a request: {replies:?}"
+    );
+
+    for reply in &replies {
+        assert!(
+            !reply.contains("-32700"),
+            "a valid JSON document was refused as unparseable. The manifest's \
+             superset claim is about the grammar and not about the resolver \
+             (TASK-1bc1186ad9e7): {reply}"
+        );
+        assert!(
+            !reply.contains("\"id\":null"),
+            "a reply carries no id, so a client matching replies to requests \
+             cannot attribute this one to anything: {reply}"
+        );
+    }
+
+    assert_eq!(
+        field(&replies[0], "id").as_deref(),
+        Some("\u{1f600}-alpha"),
+        "the id must come back the string the client sent, decoded from its \
+         surrogate pair: {}",
+        replies[0]
+    );
+    assert_eq!(
+        field(&replies[1], "id").as_deref(),
+        Some("3"),
+        "a repeated key is a document a JSON reader resolves, not one it \
+         refuses: {}",
+        replies[1]
+    );
+    assert_eq!(
+        field(&replies[2], "id").as_deref(),
+        Some("\u{e9}-beta"),
+        "the BMP control moved, so this is no longer a test of the surrogate \
+         pair alone: {}",
+        replies[2]
+    );
+    assert_eq!(
+        field(&replies[3], "id").as_deref(),
+        Some("\u{1f600}-literal"),
+        "the literal control moved, so the escape form is not the difference \
+         any more: {}",
+        replies[3]
+    );
+    assert_eq!(
+        field(&replies[4], "exitCode").as_deref(),
+        Some("0"),
+        "the call must have run for its argument to have arrived anywhere: {}",
+        replies[4]
+    );
+
+    // Out of the corpus and through the binary, because the claim is about the
+    // code point and not about the parse: a reader that decoded the pair to
+    // anything else would still have answered without a -32700.
+    let listed = ank(
+        &repo,
+        &[
+            "find",
+            "--type",
+            "task",
+            "--repo",
+            &repo.display().to_string(),
+            "--json",
+        ],
+    );
+    assert!(listed.status.success(), "the direct run must succeed");
+    let printed = String::from_utf8_lossy(&listed.stdout).to_string();
+    assert!(
+        printed.contains("\u{1f600} an escaped title"),
+        "the escaped argument did not reach the corpus as the character it \
+         spells: {printed}"
+    );
+
+    let _ = std::fs::remove_dir_all(&repo);
+}
+
 /// Every git repository inside a fixture, found rather than listed.
 ///
 /// A directory holding a `HEAD` file and an `objects` directory is one,

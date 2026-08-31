@@ -63,6 +63,7 @@ name = "ank-mcp"
 version = "0.6.0"
 dependencies = [
  "ank-contract",
+ "serde_json",
  "serde_yaml",
 ]
 

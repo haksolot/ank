@@ -154,8 +154,24 @@ pub fn serve(address: &Address, input: &mut dyn BufRead, out: &mut dyn Write) {
 /// `None` for a notification, which is a message with no `id` and must never be
 /// answered: a reply to one is a protocol error on our side, and the client that
 /// sent `notifications/initialized` is waiting for nothing.
+///
+/// **Read as JSON, because it is JSON** (TASK-1bc1186ad9e7). This was
+/// `serde_yaml::from_str`, on the manifest's claim that YAML 1.2 is a superset
+/// of JSON. The grammar is; the resolver is not. RFC 8259 spells a non-BMP code
+/// point as a surrogate pair and YAML's `\u` escape is a single 16-bit unit
+/// that does not pair, so `{"id":"\ud83d\ude00-alpha"}` -- which is what
+/// `json.dumps` emits by default -- was answered `-32700` with `id: null`, and
+/// a repeated key was refused where JSON takes the last one. Both were measured
+/// through the binary and both are held there, by
+/// `crates/ank-cli/tests/mcp.rs`.
+///
+/// **A parse failure still answers `id: null`, and that is not the same
+/// silence.** The reply below is for a line no reader can attribute, which after
+/// this change means a line that is not JSON at all rather than a JSON document
+/// this reader happened not to accept. The client is told which of its requests
+/// failed by the fact that one did, and there is nothing else honest to say.
 fn handle(line: &str, reach: &corpora::Reach) -> Option<String> {
-    let request: serde_yaml::Value = match serde_yaml::from_str(line) {
+    let request: serde_json::Value = match serde_json::from_str(line) {
         Ok(value) => value,
         // Unparseable and therefore unattributable: no id to answer against, so
         // the only honest reply is the one JSON-RPC reserves for it.
@@ -231,7 +247,7 @@ fn handle(line: &str, reach: &corpora::Reach) -> Option<String> {
 /// name, reported as success.
 fn call_tool(
     id: Option<String>,
-    params: Option<&serde_yaml::Value>,
+    params: Option<&serde_json::Value>,
     reach: &corpora::Reach,
 ) -> String {
     let params = match params {
@@ -247,9 +263,9 @@ fn call_tool(
 
     let mut args = call::Arguments::default();
     let mut named: Option<String> = None;
-    if let Some(map) = params.get("arguments").and_then(|a| a.as_mapping()) {
+    if let Some(map) = params.get("arguments").and_then(|a| a.as_object()) {
         for (key, value) in map {
-            let Some(key) = key.as_str() else { continue };
+            let key = key.as_str();
             // The one argument that is the surface's rather than the verb's, so
             // it is taken out before the table is consulted: the table knows
             // nothing about it and would refuse it by name, which is the right
@@ -259,7 +275,7 @@ fn call_tool(
                 continue;
             }
             if key == "arguments" {
-                if let Some(list) = value.as_sequence() {
+                if let Some(list) = value.as_array() {
                     for item in list {
                         args.positionals.push(scalar(item));
                     }
@@ -289,7 +305,7 @@ fn call_tool(
                     ),
                 );
             }
-            let values = match (known.takes_value, value.as_sequence()) {
+            let values = match (known.takes_value, value.as_array()) {
                 (false, _) => vec![String::new()],
                 (true, Some(list)) => list.iter().map(scalar).collect(),
                 (true, None) => vec![scalar(value)],
@@ -320,25 +336,22 @@ fn call_tool(
 }
 
 /// A scalar argument as the string the command line will carry.
-fn scalar(value: &serde_yaml::Value) -> String {
+fn scalar(value: &serde_json::Value) -> String {
     match value {
-        serde_yaml::Value::String(s) => s.clone(),
-        serde_yaml::Value::Bool(b) => b.to_string(),
-        serde_yaml::Value::Number(n) => n.to_string(),
-        other => serde_yaml::to_string(other)
-            .unwrap_or_default()
-            .trim()
-            .to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Bool(b) => b.to_string(),
+        serde_json::Value::Number(n) => n.to_string(),
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 
 /// The request id, rendered back exactly as JSON-RPC requires: a string stays a
 /// string and a number stays a number, because a client matching replies by
 /// identity would not recognise a retyped one.
-fn render_id(id: &serde_yaml::Value) -> String {
+fn render_id(id: &serde_json::Value) -> String {
     match id {
-        serde_yaml::Value::String(s) => string(s),
-        serde_yaml::Value::Number(n) => n.to_string(),
+        serde_json::Value::String(s) => string(s),
+        serde_json::Value::Number(n) => n.to_string(),
         other => string(&scalar(other)),
     }
 }
