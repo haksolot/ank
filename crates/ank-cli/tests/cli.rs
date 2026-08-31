@@ -16,6 +16,7 @@
 //! and `ank-cli` has no library target — so there is no unit test that could
 //! spawn the binary even if we wanted one.
 
+mod fixture;
 mod scratch;
 
 use std::collections::BTreeMap;
@@ -18258,101 +18259,18 @@ fn a_log_check_cannot_read_is_reported_rather_than_read_as_empty() {
 // The JSON goldens (TASK-2c12b027f805)
 // ---------------------------------------------------------------------------
 
-/// Where a caller's parser meets this binary, pinned one file per verb.
-///
-/// Captured from the process and never from a function. A fixture compared
-/// against what an emitter returns proves the emitter, and what §4 promises is
-/// what leaves the process — the same distinction this whole file exists for.
-///
-/// Volatile values are named rather than kept: an instant, a commit, an
-/// identifier the binary generated. A golden that changes every run pins
-/// nothing, and everything outside those three is compared byte for byte.
-///
-/// Bless a new or deliberately changed shape with
-/// `ANK_BLESS_GOLDEN=1 cargo test --test cli -- json_golden`, and read the diff
-/// before committing it: that diff is the contract changing.
-const GOLDEN_DIR: &str = "tests/golden-json";
-
-fn is_word_char(c: char) -> bool {
-    c.is_ascii_alphanumeric()
-}
-
-/// `dddd-dd-ddTdd:dd:ddZ`, the only instant the format writes.
-fn timestamp_len_at(b: &[char], i: usize) -> Option<usize> {
-    const SHAPE: &str = "nnnn-nn-nnTnn:nn:nnZ";
-    if i + SHAPE.len() > b.len() {
-        return None;
-    }
-    for (k, want) in SHAPE.chars().enumerate() {
-        let got = b[i + k];
-        let ok = match want {
-            'n' => got.is_ascii_digit(),
-            c => got == c,
-        };
-        if !ok {
-            return None;
-        }
-    }
-    Some(SHAPE.len())
-}
-
-fn redact(s: &str) -> String {
-    let b: Vec<char> = s.chars().collect();
-    let mut out = String::with_capacity(s.len());
-    let mut i = 0;
-    while i < b.len() {
-        if let Some(n) = timestamp_len_at(&b, i) {
-            out.push_str("<TIME>");
-            i += n;
-            continue;
-        }
-        if b[i].is_ascii_hexdigit() {
-            let mut j = i;
-            while j < b.len() && b[j].is_ascii_hexdigit() {
-                j += 1;
-            }
-            let word: String = b[i..j].iter().collect();
-            let whole =
-                (i == 0 || !is_word_char(b[i - 1])) && (j == b.len() || !is_word_char(b[j]));
-            // A seeded identifier is deterministic and worth pinning; the
-            // zero prefix is what the fixtures in this file use for one. Only
-            // what the binary minted itself is named away.
-            if whole && word.len() == 40 {
-                out.push_str("<SHA>");
-            } else if whole && word.len() == 12 && !word.starts_with("0000") {
-                out.push_str("<HEX>");
-            } else {
-                out.push_str(&word);
-            }
-            i = j;
-            continue;
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    out
-}
-
-fn golden(name: &str, actual: &str) {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join(GOLDEN_DIR)
-        .join(format!("{name}.json"));
-    let actual = format!("{}\n", redact(actual.trim_end_matches('\n')));
-    if std::env::var_os("ANK_BLESS_GOLDEN").is_some() {
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(&path, actual.as_bytes()).unwrap();
-        return;
-    }
-    let expected = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("no golden for {name} at {}: {e}", path.display()))
-        .replace("\r\n", "\n");
-    assert_eq!(
-        actual, expected,
-        "the --json document of `{name}` is not what the golden pins.\n\
-         If the contract really changed, bless it and read the diff:\n  \
-         ANK_BLESS_GOLDEN=1 cargo test --test cli -- json_golden"
-    );
-}
+// Where a caller's parser meets this binary, pinned one file per verb.
+//
+// Captured from the process and never from a function — the same distinction
+// this whole file exists for. What redacts a captured document and what compares
+// it to its fixture live in `tests/fixture/mod.rs`, because `schema.rs` and
+// `tui.rs` capture two of these documents and an integration test is a crate of
+// its own: a copy here would be a second redaction nothing holds to the first
+// (TASK-7a9d945640e3).
+//
+// Bless a new or deliberately changed shape with
+// `ANK_BLESS_GOLDEN=1 cargo test --workspace`, and read the diff before
+// committing it: that diff is the contract changing.
 
 /// A corpus with one of everything, so that a document has something to carry.
 ///
@@ -18435,8 +18353,8 @@ fn golden_repo() -> Repo {
     r
 }
 
-/// The identifiers the golden corpus is built from, zero-prefixed so that
-/// [`redact`] leaves them alone: they are seeded and deterministic, where an
+/// The identifiers the golden corpus is built from, zero-prefixed so that the
+/// redaction in `tests/fixture/mod.rs` leaves them alone: they are seeded and deterministic, where an
 /// identifier the binary minted is named away.
 /// Long enough to be measured against a budget, and that is the point of its
 /// length rather than a taste for prose: `check.findings[].charge` is the
@@ -18490,7 +18408,7 @@ fn json_golden_reading_verbs() {
             "{name} emitted no document: {}",
             stderr(&out)
         );
-        golden(name, &stdout(&out));
+        fixture::pin(name, &stdout(&out));
     }
 }
 
@@ -18511,7 +18429,7 @@ fn json_golden_status() {
     assert_eq!(code(&out), 0, "a claim by somebody else: {}", stderr(&out));
     let out = r.ank(AGENT, &["status", "--json"]);
     assert_eq!(code(&out), 0, "status: {}", stderr(&out));
-    golden("status", &stdout(&out));
+    fixture::pin("status", &stdout(&out));
 }
 
 /// The verbs that write. One fixture each: a document that depended on the
@@ -18534,19 +18452,19 @@ fn json_golden_writing_verbs() {
             "--json",
         ],
     );
-    golden("new", &stdout(&out));
+    fixture::pin("new", &stdout(&out));
 
     // claim, then the verbs that need a live claim
     let r = golden_repo();
     let out = r.ank(AGENT, &["claim", GOLDEN_READY, "--json"]);
-    golden("claim", &stdout(&out));
+    fixture::pin("claim", &stdout(&out));
     let out = r.ank(AGENT, &["log", "what I learned", "--json"]);
-    golden("log-write", &stdout(&out));
+    fixture::pin("log-write", &stdout(&out));
     let out = r.ank(
         AGENT,
         &["release", "--reason", "the criterion is wrong", "--json"],
     );
-    golden("release", &stdout(&out));
+    fixture::pin("release", &stdout(&out));
 
     // done, over a claim and a proof the caller holds
     let r = golden_repo();
@@ -18556,14 +18474,14 @@ fn json_golden_writing_verbs() {
         AGENT,
         &["done", "--proof", &format!("commit:{head}"), "--json"],
     );
-    golden("done", &stdout(&out));
+    fixture::pin("done", &stdout(&out));
 
     // attest, on the task that proof now names
     let out = r.ank(
         AGENT,
         &["attest", GOLDEN_READY, "--proof", "test:12345", "--json"],
     );
-    golden("attest", &stdout(&out));
+    fixture::pin("attest", &stdout(&out));
 
     // amend and close, on a corpus that never claimed. A fourth task, because
     // the corpus already blocks ID on GOLDEN_BLOCKER: a blocker the task
@@ -18574,17 +18492,17 @@ fn json_golden_writing_verbs() {
         AGENT,
         &["amend", ID, "--blocked-by", GOLDEN_UNRELATED, "--json"],
     );
-    golden("amend", &stdout(&out));
+    fixture::pin("amend", &stdout(&out));
     let out = r.ank(
         AGENT,
         &["close", ID, "--reason", "overtaken by events", "--json"],
     );
-    golden("close", &stdout(&out));
+    fixture::pin("close", &stdout(&out));
 
     // config, writing
     let r = golden_repo();
     let out = r.ank(AGENT, &["config", "context_budget", "9000", "--json"]);
-    golden("config-write", &stdout(&out));
+    fixture::pin("config-write", &stdout(&out));
 }
 
 /// The four that need an environment of their own: a signature, an editor, a
@@ -18596,7 +18514,7 @@ fn json_golden_verbs_needing_their_own_environment() {
     let r = golden_repo();
     let out = r.ank(AGENT, &["accept", GOLDEN_ADR_PROPOSED, "--json"]);
     assert_eq!(code(&out), 0, "accept: {}", stderr(&out));
-    golden("accept", &stdout(&out));
+    fixture::pin("accept", &stdout(&out));
 
     // edit, with an editor that saves
     let r = Repo::new();
@@ -18604,7 +18522,7 @@ fn json_golden_verbs_needing_their_own_environment() {
     let editor = r.editor_saving(EDITED_TASK);
     let out = r.ank_edit(AGENT, &["edit", ID, "--json"], Some(&editor));
     assert_eq!(code(&out), 0, "edit: {}", stderr(&out));
-    golden("edit", &stdout(&out));
+    fixture::pin("edit", &stdout(&out));
 
     // migrate, over the layout that is read and never written
     let r = golden_repo();
@@ -18616,7 +18534,7 @@ fn json_golden_verbs_needing_their_own_environment() {
     .unwrap();
     let out = r.ank(AGENT, &["migrate", "--json"]);
     assert_eq!(code(&out), 0, "migrate: {}", stderr(&out));
-    golden("migrate", &stdout(&out));
+    fixture::pin("migrate", &stdout(&out));
 
     // init, which refuses --repo by name and so is run from a directory. Two
     // fixtures and not one: the second run is the idempotent case, and the
@@ -18633,10 +18551,10 @@ fn json_golden_verbs_needing_their_own_environment() {
     };
     let out = init_json(&fresh);
     assert_eq!(code(&out), 0, "init: {}", stderr(&out));
-    golden("init", &stdout(&out));
+    fixture::pin("init", &stdout(&out));
     let out = init_json(&fresh);
     assert_eq!(code(&out), 0, "init, again: {}", stderr(&out));
-    golden("init-again", &stdout(&out));
+    fixture::pin("init-again", &stdout(&out));
     let _ = std::fs::remove_dir_all(&fresh);
 }
 
@@ -18673,7 +18591,7 @@ fn json_golden_verbs_needing_their_own_environment() {
 /// reads is not one.
 #[test]
 fn every_golden_conforms_to_the_shape_its_verb_declares() {
-    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join(GOLDEN_DIR);
+    let dir = fixture::dir();
     let mut checked = 0;
     let mut empty: Vec<String> = Vec::new();
     let mut filled: Vec<String> = Vec::new();
