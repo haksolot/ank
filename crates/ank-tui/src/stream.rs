@@ -1,4 +1,4 @@
-//! Following the watcher's change stream (TASK-2f7777a1fdff, ADR-a22cd3196529).
+//! Following the watcher's change stream (TASK-2f7777a1fdff, ADR-24e21cb83793).
 //!
 //! The corpus is a working tree and it moves under a screen left open. Until
 //! this module the only answer was `r`, and the only alternative anybody ever
@@ -11,7 +11,7 @@
 //! **Following is not asking.** Nothing here talks to the watcher, and there is
 //! nothing to talk to: the stream is a file, the watcher writes it, and several
 //! readers follow the same bytes without it knowing any of them exist. That is
-//! what keeps ADR-a22cd3196529's "answers no verb" true with a consumer
+//! what keeps ADR-24e21cb83793's "answers no verb" true with a consumer
 //! attached, and it is why the watcher's absence costs a repaint that has to be
 //! typed rather than an error.
 //!
@@ -140,7 +140,7 @@ impl Follower {
         };
         let len = meta.len();
         if len < self.offset {
-            // The watcher started the file over (ADR-a22cd3196529's stream is
+            // The watcher started the file over (ADR-24e21cb83793's stream is
             // news and is bounded, not kept). Reading from the beginning again
             // costs at most one repaint of a corpus that has certainly changed.
             self.offset = 0;

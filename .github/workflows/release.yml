@@ -130,7 +130,7 @@ jobs:
       # One binary, and the workspace is what makes it one: the protocol
       # surface and the watcher are libraries linked into `ank` and dispatched
       # by the verbs `mcp` and `watch` (ADR-1ea31c2f3c5a, ADR-fd98f4bc6dea,
-      # ADR-a22cd3196529). A surface built from an older table than the CLI
+      # ADR-24e21cb83793). A surface built from an older table than the CLI
       # beside it used to be a thing that could happen; one executable built
       # once cannot disagree with itself.
       - name: build

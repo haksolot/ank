@@ -1,5 +1,5 @@
 //! The change stream: what the watcher says happened, and where it says it
-//! (ADR-a22cd3196529, TASK-2f7777a1fdff).
+//! (ADR-24e21cb83793, TASK-2f7777a1fdff).
 //!
 //! `ank-daemon` already knows when a corpus it watches moves. Until this module
 //! that knowledge reached a person as a line on stderr and reached a program not
@@ -8,7 +8,7 @@
 //! that answer best are the verbs that renew a lease (ADR-0bb7ea8991bc).
 //!
 //! **An event says what changed, and never what to do about it.** That is the
-//! line ADR-a22cd3196529 draws to keep the watcher from becoming a third
+//! line ADR-24e21cb83793 draws to keep the watcher from becoming a third
 //! dispatch path, and it is easy to cross by kindness: an event carrying the new
 //! state of a task would save its reader a call, and would make the watcher a
 //! source of entity content that nothing generated from `COMMANDS` ever
@@ -16,7 +16,7 @@
 //! constructor that takes anything else, and the test at the foot of this file
 //! is what keeps it that way.
 //!
-//! **A file, and deliberately not a socket.** ADR-a22cd3196529 says the watcher
+//! **A file, and deliberately not a socket.** ADR-24e21cb83793 says the watcher
 //! answers no verb and exposes no query surface of its own. A socket is a place
 //! a caller connects *to*, and the first convenient question asked over one is
 //! the beginning of the surface that decision refused. A file is a place the

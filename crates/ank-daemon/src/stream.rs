@@ -1,4 +1,4 @@
-//! Putting a change onto the stream (ADR-a22cd3196529, TASK-2f7777a1fdff).
+//! Putting a change onto the stream (ADR-24e21cb83793, TASK-2f7777a1fdff).
 //!
 //! The shape of an event, where it goes and what it may carry are
 //! [`ank_contract::events`], because a stream has two ends and they must not
@@ -6,17 +6,18 @@
 //! starting it over when it has grown past what news is worth.
 //!
 //! **Writing is best-effort, in the way everything this process does is.**
-//! Nothing depends on the watcher (ADR-a22cd3196529), so a stream that cannot be
+//! Nothing depends on the watcher (ADR-24e21cb83793), so a stream that cannot be
 //! written is a stream nobody gets, exactly as if no watcher were running. A
 //! full disk, a configuration directory somebody removed, a permission somebody
 //! changed: each costs a line on stderr and the next poll, and none of them
 //! reaches the exit code of anything the person is running.
 //!
 //! **An event is not a log entry**, and the difference is why this file is
-//! allowed to be thrown away. `.ank/log/` is a work trace with a grammar and an
-//! append-only rule (ADR-ff29); this is news, nothing is anchored in it and no
-//! hash chains over it, so a reader that was not running missed what happened
-//! while it was not running, and the file is bounded rather than kept.
+//! allowed to be thrown away. An entity's log is a work trace with a grammar,
+//! kept as entities of its own (ADR-67a4ac10c534); this is news, nothing is
+//! anchored in it and no hash chains over it, so a reader that was not running
+//! missed what happened while it was not running, and the file is bounded
+//! rather than kept.
 
 use ank_contract::events::{self, Change, Event};
 use std::io::Write;
@@ -64,7 +65,7 @@ pub fn emit(path: &Path, identity: &str, change: Change) -> Result<(), String> {
 /// reader of the old bytes, nothing refers back to them, and a rotation would
 /// leave a directory of files somebody has to clean up. A follower notices
 /// because the file is suddenly shorter than the offset it holds, which
-/// ADR-a22cd3196529's reader handles by reading from the beginning again.
+/// ADR-24e21cb83793's reader handles by reading from the beginning again.
 fn start_over_if_long(path: &Path) -> Result<(), String> {
     let long = std::fs::metadata(path).map(|m| m.len() >= events::CAP);
     if !matches!(long, Ok(true)) {

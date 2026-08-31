@@ -4781,7 +4781,7 @@ mod tests {
             entities: vec![
                 row("ADR-8bd76e8d7c4e", "adr", "accepted", "A terminal reader"),
                 row("TASK-49746735127f", "task", "in_progress", "ank tui opens"),
-                row("SPEC-fe8bdb84faca", "spec", "accepted", "The CLI surface"),
+                row("SPEC-d58b3a9e4e4d", "spec", "accepted", "The CLI surface"),
             ],
             total: 3,
         }
@@ -6254,7 +6254,7 @@ mod tests {
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
-            "SPEC-fe8b",
+            "SPEC-d58b",
             "accepted",
             "in_progress",
             "wave4/tui-verb",
@@ -7238,7 +7238,7 @@ mod tests {
             [2, 1, 1, 1],
             "the list did not follow the needle keystroke by keystroke"
         );
-        assert_eq!(rendered_rows(&a), ["SPEC-fe8bdb84faca"]);
+        assert_eq!(rendered_rows(&a), ["SPEC-d58b3a9e4e4d"]);
         assert_eq!(a.note, None, "narrowing said something");
 
         // A Backspace widens it again, on the keystroke, for the same reason.
@@ -7750,13 +7750,13 @@ mod tests {
             // makes a selection mean anything.
             assert_eq!(
                 a.selected_id(Focus::Entities).as_deref(),
-                Some("SPEC-fe8bdb84faca")
+                Some("SPEC-d58b3a9e4e4d")
             );
             // The mark is drawn on it, and on no other row.
             let frame = a.frame();
             let marked = frame
                 .lines()
-                .filter(|l| l.contains("> ") && l.contains("SPEC-fe8b"))
+                .filter(|l| l.contains("> ") && l.contains("SPEC-d58b"))
                 .count();
             assert_eq!(marked, 1, "{frame}");
         }
@@ -7814,7 +7814,7 @@ mod tests {
 
             press_at(&mut a, &ank, at, start + SECOND_PRESS);
             assert!(
-                reached_for(&a).contains("SPEC-fe8bdb84faca"),
+                reached_for(&a).contains("SPEC-d58b3a9e4e4d"),
                 "two presses on the row at {size:?} opened nothing: {}",
                 reached_for(&a)
             );
@@ -7884,7 +7884,7 @@ mod tests {
 
         press_at(&mut a, &ank, at, past + Duration::from_millis(1));
         assert!(
-            reached_for(&a).contains("SPEC-fe8bdb84faca"),
+            reached_for(&a).contains("SPEC-d58b3a9e4e4d"),
             "the press past the interval was not counted as the one that \
              chooses: {}",
             reached_for(&a)
