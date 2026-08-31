@@ -55,6 +55,27 @@ const SUPPORTED_SCHEMA: u32 = 1;
 /// through the binary and never through the code that reads it.
 pub const ANK_DIR: &str = ".ank";
 
+/// `schema:` alone, read before anything else in the file is looked at.
+///
+/// **The one shape in this file that tolerates an unknown key**, which is the
+/// whole reason it exists. `WatchFileDoc` denies them, so a file one version
+/// newer than this build was reported as *unknown field `mirrors`* -- the
+/// reader was told a key is wrong when the truth is that the tool is old, and
+/// went hunting for a typo in a file that had none. `docs/format.md` already
+/// legislates it: "Newer is refused, and refused **on the version rather than
+/// on the first field it does not recognise**." The version has to be readable
+/// without reading the rest, or the rest refuses first and the version never
+/// gets asked.
+///
+/// Spelled here rather than shared with `ank-cli`'s copy for the reason the
+/// rest of this module is: that crate has no library target. The shape is the
+/// same one `parse()` and `newer_than_this_ank()` use there, deliberately, so
+/// `watch.yml` and `corpora.yml` answer a reader in one sentence.
+#[derive(Debug, Deserialize)]
+struct SchemaProbe {
+    schema: u32,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WatchFileDoc {
@@ -169,12 +190,38 @@ pub fn resolve(
     path: &Path,
     identity_of: &dyn Fn(&Path) -> Option<String>,
 ) -> Result<Declaration> {
+    // **The version first, and the fields afterwards**, which is the rule
+    // `corpora.yml` and `.ank/config.yml` already follow. Like the probe in
+    // `ank-cli`'s `parse()`, this may only ever *add* a refusal: where it
+    // cannot read a version it says nothing and the deserialize below produces
+    // exactly the diagnosis it always produced, a missing `schema` and a file
+    // that is not a mapping included.
+    if let Some(found) = serde_yaml::from_str::<SchemaProbe>(text)
+        .ok()
+        .map(|p| p.schema)
+    {
+        if found > SUPPORTED_SCHEMA {
+            return Err(Fail::new(
+                ExitCode::Environment,
+                format!(
+                    "{}: schema {found}, this binary reads {SUPPORTED_SCHEMA}: \
+                     the file is newer than this ank",
+                    path.display()
+                ),
+            )
+            .with_hint("ank --version names the build, npm install -g @haksolot/ank replaces it"));
+        }
+    }
+
     let doc: WatchFileDoc = serde_yaml::from_str(text).map_err(|e| {
         Fail::new(ExitCode::Environment, format!("{}: {e}", path.display())).with_hint(
             "schema: 1 and a watch: map of repository identity to the path of a checkout, \
              or to a list of them",
         )
     })?;
+    // Below the range rather than above it, exactly as `ank-cli` splits them:
+    // no binary ever read schema 0, so there is no older tool to name and the
+    // file is simply wrong.
     if doc.schema != SUPPORTED_SCHEMA {
         return Err(Fail::new(
             ExitCode::Environment,
@@ -347,10 +394,42 @@ mod tests {
         );
     }
 
+    /// **The unknown key is the fixture, not decoration.**
+    ///
+    /// This test used to feed `schema: 7\nwatch: {}\n` -- a file one version
+    /// ahead with no unknown field -- so the deserialize succeeded, the number
+    /// check ran, and the ordering the refusal actually depends on was
+    /// exercised by nothing. It stayed green for as long as the bug lived
+    /// (TASK-56d188a1f8b3). With `mirrors` in the file and the probe removed,
+    /// `deny_unknown_fields` answers first and the reader is sent after a typo
+    /// in a file that has none.
     #[test]
-    fn an_unknown_schema_is_refused_by_number() {
-        let err = resolve("schema: 7\nwatch: {}\n", Path::new("watch.yml"), &none).unwrap_err();
-        assert!(err.message.contains("schema 7 is not 1"), "{err:?}");
+    fn a_newer_schema_is_refused_as_newer_before_any_field_is_read() {
+        let err = resolve(
+            "schema: 7\nwatch: {}\nmirrors:\n  - somewhere\n",
+            Path::new("watch.yml"),
+            &none,
+        )
+        .unwrap_err();
+        assert_eq!(err.code, ExitCode::Environment);
+        assert!(err.message.contains("schema 7"), "{err:?}");
+        assert!(err.message.contains("reads 1"), "{err:?}");
+        assert!(err.message.contains("newer than this ank"), "{err:?}");
+        assert!(
+            !err.message.contains("mirrors"),
+            "the version is the answer, never the key: {err:?}"
+        );
+    }
+
+    /// Below the range is not "newer", and is not reported as such: no build
+    /// ever read schema 0, so there is no older tool for a reader to go and
+    /// install.
+    #[test]
+    fn a_schema_below_the_range_is_refused_by_number() {
+        let err = resolve("schema: 0\nwatch: {}\n", Path::new("watch.yml"), &none).unwrap_err();
+        assert_eq!(err.code, ExitCode::Environment);
+        assert!(err.message.contains("schema 0 is not 1"), "{err:?}");
+        assert!(!err.message.contains("newer than this ank"), "{err:?}");
     }
 
     #[test]

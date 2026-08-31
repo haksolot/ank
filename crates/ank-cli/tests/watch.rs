@@ -479,6 +479,48 @@ fn a_declaration_that_does_not_exist_refuses_to_start() {
     assert!(said.contains("watch.yml"), "{said}");
 }
 
+/// A declaration one version ahead is refused on its version, and the reader is
+/// never sent after a key.
+///
+/// **The unknown key is the point of the fixture, not decoration.** `watch.yml`
+/// is read by a shape that denies unknown fields, so a file newer than this
+/// build fails to deserialize before its `schema` is ever compared -- and the
+/// sentence the reader got named `mirrors`, a key that is not wrong, in a file
+/// that is not wrong either. `docs/format.md` legislates the opposite: "Newer
+/// is refused, and refused **on the version rather than on the first field it
+/// does not recognise**", which is the answer `corpora.yml` has given since
+/// TASK-409e4c7d8aac and `.ank/config.yml` since TASK-742cd978a806.
+///
+/// The control is the same file at `schema: 1`, where the key really is the
+/// fault and naming it is the correct answer. Both are driven through the
+/// binary because the ordering lives in a file the daemon reads at startup, and
+/// the version of this that lived in `declare.rs` alone fed a file with no
+/// unknown field and so proved nothing (TASK-56d188a1f8b3).
+#[test]
+fn a_declaration_newer_than_this_ank_is_refused_on_its_version_and_not_on_a_key() {
+    let home = Home::new();
+    home.declare("schema: 2\nwatch: {}\nmirrors:\n  - somewhere\n");
+    let out = home.daemon(&["--once"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(9), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("schema 2"), "{said}");
+    assert!(said.contains("reads 1"), "{said}");
+    assert!(said.contains("newer than this ank"), "{said}");
+    assert!(
+        !said.contains("mirrors"),
+        "the reader is told the tool is old, never that a key is wrong: {said}"
+    );
+
+    // The same file one version back: here the key is genuinely the fault, and
+    // the refusal that names it is the one to keep.
+    home.declare("schema: 1\nwatch: {}\nmirrors:\n  - somewhere\n");
+    let out = home.daemon(&["--once"]).output().unwrap();
+    assert_eq!(out.status.code(), Some(9), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("mirrors"), "{said}");
+    assert!(!said.contains("newer than this ank"), "{said}");
+}
+
 #[test]
 fn the_watch_file_sits_beside_the_corpora_file() {
     let home = Home::new();
