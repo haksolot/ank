@@ -41,6 +41,31 @@ knowledge crossing organisations, where a rejected document is knowledge lost; a
 optimises for a criterion that cannot be quietly weakened, where an
 accepted-but-malformed file is a rule that silently stopped applying.
 
+## Against a process-skills workflow
+
+[Matt Pocock's skills][pocock] are the richest example: two dozen prompts
+covering the whole cycle — interview the human until the spec is precise, cut it
+into tickets, drive the implementation test-first, review before merge. The
+skill is the method, and the agent is held to it while it works.
+
+Ank holds the other end. The agent is free of its method and the result is
+measured: the criterion is frozen by hash at claim, `done` runs the declared
+verifiers itself instead of believing a report, and the proof records the route
+by which it arrived. A prompt can tell an agent to write the test first, and
+nothing notices when it did not; a verifier notices nothing either, because it
+measures the tree and not the process — which is the point. An agent graded on
+its process learns to fake the process. An agent graded on the tree has to
+change the tree.
+
+So the two are layers, not rivals: process above, coordination below. Ank's own
+skills are its process layer — one policy per activity, planning as an
+interview, drift as an audit, the loop as consumption — and the CLI stays a set
+of primitives those policies reach for, because judgment is not dispatch.
+
+The cost is the mirror of retrieval's: ank will never guide the method. A team
+that wants test-first as a practice writes a skill for it, and ank verifies
+only the outcome; the discipline lives in the prompt, the truth in the proof.
+
 ## What it costs to run
 
 Two numbers rather than an adjective. The skill costs about 58 tokens in every
@@ -49,4 +74,5 @@ loaded whether or not the skill is ever invoked, the body being read only when i
 is. And orientation is bounded at 8000 characters.
 
 [okf]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
+[pocock]: https://github.com/mattpocock/skills
 [wiki]: https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f
