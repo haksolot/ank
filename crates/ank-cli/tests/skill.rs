@@ -748,15 +748,16 @@ fn sibling_skills() -> Vec<(String, String)> {
     found
 }
 
-/// Three of the activities ADR-e4a5a8873fe3 names, which are the three the tree
-/// holds today: `tdd` and `diagnose` are the two that decision adds, and they
-/// arrive with TASK-135cde611e3f and TASK-587a185bef49 rather than here. A
-/// sibling beyond these is allowed and anchored like the rest; one of these
-/// missing is the skill system shipping a contract without its policies.
+/// The activities ADR-e4a5a8873fe3 names, enrolled here as each one lands:
+/// `tdd` arrives with TASK-135cde611e3f and `diagnose` with TASK-587a185bef49,
+/// which is the remaining one. A sibling beyond these is allowed and anchored
+/// like the rest; one of these missing is the skill system shipping a contract
+/// without its policies -- the tests below hold whatever exists, and this one
+/// is what makes a sibling's disappearance a failure rather than a silence.
 #[test]
-fn the_three_sibling_skills_exist() {
+fn the_named_sibling_skills_exist() {
     let names: Vec<String> = sibling_skills().into_iter().map(|(n, _)| n).collect();
-    for expected in ["drift", "loop", "plan"] {
+    for expected in ["drift", "loop", "plan", "tdd"] {
         assert!(
             names.contains(&expected.to_string()),
             "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 names it as \
