@@ -10,28 +10,30 @@ Everything below is for the cases those two do not fit.
 
 ## The skill
 
-Four plain markdown files, one per skill. Each is the only copy that exists in
+Six plain markdown files, one per skill. Each is the only copy that exists in
 git, and every route below points at it rather than holding one of its own, so
 no route can fall behind it.
 
-    ank         ../skill/SKILL.md          the contract
-    ank-plan    ../skill/plan/SKILL.md     interview a goal into ADRs, specs, tasks
-    ank-drift   ../skill/drift/SKILL.md    audit decisions against the code
-    ank-loop    ../skill/loop/SKILL.md     work the backlog autonomously
+    ank           ../skill/SKILL.md           the contract
+    ank-plan      ../skill/plan/SKILL.md      interview a goal into ADRs and tasks
+    ank-drift     ../skill/drift/SKILL.md     audit decisions against the code
+    ank-loop      ../skill/loop/SKILL.md      work the backlog autonomously
+    ank-tdd       ../skill/tdd/SKILL.md       drive an implementation test-first
+    ank-diagnose  ../skill/diagnose/SKILL.md  work a defect back to its cause
 
 [`../skill/SKILL.md`](../skill/SKILL.md) is the one an agent loads by default,
 and it is self-sufficient: why ank is shaped as it is, the verbs grouped by the
 moment each is used, and the rules that are not negotiable. It names the other
-three so an agent reaching for an activity knows what to load, and never
-depends on them being installed. The three carry a policy each and are loaded
+five so an agent reaching for an activity knows what to load, and never
+depends on them being installed. The five carry a policy each and are loaded
 when the activity calls for them (ADR-e4a5a8873fe3).
 
 **What that costs a session is the frontmatter, not the page.** The projection
-below is `~58 tok` always-on per skill, and that is a skill's `name` and
-`description`; a body is read when its skill is invoked. The ceiling on the
-bodies is kept anyway, because the by-hand route at the end of this page copies
-whole files into whatever a harness loads, and some harnesses load all of it
-every session, so it bounds the worst route rather than the measured one.
+below runs from `~50` to `~80 tok` always-on per skill, and that is a skill's
+`name` and `description`; a body is read when its skill is invoked. The ceiling
+on the bodies is kept anyway, because the by-hand route at the end of this page
+copies whole files into whatever a harness loads, and some harnesses load all of
+it every session, so it bounds the worst route rather than the measured one.
 
 One convention it carries is worth knowing before you watch an agent follow it:
 **`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
@@ -48,7 +50,7 @@ install:
     $ npx skills add haksolot/ank --list
     Source: https://github.com/haksolot/ank.git
     Repository cloned
-    Found 4 skills
+    Found 6 skills
 
     Available Skills
     Ank
@@ -56,6 +58,9 @@ install:
         Read a repository's tasks and binding constraints, claim work, and
         finish it with proof. Use when working in a repo that has a .ank/
         directory.
+      ank-diagnose
+        Work a defect back to its cause before changing anything, and close it
+        with a regression test. ...
       ank-drift
         Audit the decisions in .ank/ against the current code and report what
         no longer holds. ...
@@ -64,6 +69,9 @@ install:
         a time. ...
       ank-plan
         Interview a goal into decisions and tasks recorded in .ank/. ...
+      ank-tdd
+        Drive an implementation test-first, red before green, against a claimed
+        task's frozen criterion. ...
 
     Use --skill <name> to install specific skills
 
@@ -89,19 +97,21 @@ worth asking of anything loaded on every session:
     agent can call.
 
     Component inventory
-      Skills (4)  ank, ank-drift, ank-loop, ank-plan
+      Skills (6)  ank, ank-diagnose, ank-drift, ank-loop, ank-plan, ank-tdd
 
     Projected token cost
-      Always-on:   ~282 tok   added to every session
+      Always-on:   ~411 tok   added to every session
 
     Per-component (rounded)
-      component  always-on  on-invoke
-      ank              ~50      ~1.9k
-      ank-plan         ~70       ~740
-      ank-drift        ~80       ~560
-      ank-loop         ~70       ~630
+      component     always-on  on-invoke
+      ank                 ~50      ~2.1k
+      ank-plan            ~70       ~830
+      ank-drift           ~80       ~540
+      ank-loop            ~70      ~1.3k
+      ank-tdd             ~60      ~1.3k
+      ank-diagnose        ~70      ~1.9k
 
-**Read the two columns as what they are.** Always-on is four descriptions, paid
+**Read the two columns as what they are.** Always-on is six descriptions, paid
 by every session whether or not anything fires; on-invoke is a body, paid by
 the session that wanted it. Splitting the teaching moved cost from the second
 column to the first, which is the trade the plural skill system makes: an agent
@@ -129,9 +139,10 @@ routes below.
 Each skill is one file with nothing generated in it. Where none of the routes
 above fits your harness, copy `skill/SKILL.md` into whatever that harness loads
 and you have lost nothing: the routes exist to save you a copy, not to add
-anything to it. Copy `skill/plan/SKILL.md`, `skill/drift/SKILL.md` and
-`skill/loop/SKILL.md` beside it for the activity policies, or copy none of them
-and keep the contract, which stands alone.
+anything to it. Copy `skill/plan/SKILL.md`, `skill/drift/SKILL.md`,
+`skill/loop/SKILL.md`, `skill/tdd/SKILL.md` and `skill/diagnose/SKILL.md`
+beside it for the activity policies, or copy none of them and keep the
+contract, which stands alone.
 
 ## The binary
 
