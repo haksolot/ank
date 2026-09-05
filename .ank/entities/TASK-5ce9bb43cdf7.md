@@ -5,7 +5,7 @@ slug: the-specification-carries-the-post-done-amend-ru
 title: The specification carries the post-done amend rule the ratified ADR states
 created: 2026-09-05T14:18:38Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - .ank/**
   - crates/ank-contract/src/verbs.rs
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [check-repo]
 schema: 4
-version: 1
+version: 2
 ---
 
 Found while preparing TASK-d64c3dbfe0a3: ADR-b9156403c3d5 was ratified while
