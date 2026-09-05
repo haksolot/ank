@@ -5,7 +5,7 @@ slug: the-skill-system-gains-tdd-and-diagnose-and-meth
 title: The skill system gains tdd and diagnose, and method stays policy rather than dispatch
 created: 2026-09-02T13:55:04Z
 author: claude-code/fable-5
-status: proposed
+status: accepted
 scope:
   - skill/**
   - crates/ank-cli/tests/skill.rs
@@ -20,8 +20,12 @@ constraint: |
   
   The frontmatter description is the only part every session pays for. It names the activity that should trigger the load and nothing else, and it does not grow without a measurement. Bodies stay within 180 lines and 1500 words per skill.
 supersedes: ADR-91b77f036884
+ratified: 1c544ead40c1
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-09-05T12:22:17Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
