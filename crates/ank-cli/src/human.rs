@@ -1951,6 +1951,35 @@ fn check_task(
         }
     }
 
+    // The same freeze, replayed after `done`. The anchor moves from the claim
+    // record to the proof entry when the task closes (ADR-6b3f19e08a24), and
+    // nothing used to read it back: a criterion edited by hand on a finished
+    // task produced two byte-identical `check` runs, exit 0 both times, while
+    // the proof carried the hash all along (issue #385). One finding per
+    // distinct anchor, because one edit is one fact however many proof entries
+    // anchor the same text.
+    let anchors: BTreeSet<&str> = proofs
+        .iter()
+        .filter_map(|p| p.criteria.as_deref())
+        .collect();
+    for anchor in anchors {
+        match &t.done_criteria {
+            Some(criteria) if verify_frozen(criteria, anchor) => {}
+            Some(criteria) => report.findings.push(Finding::fault(
+                &t.id,
+                format!(
+                    "done_criteria diverges from the proof (proved {anchor}, now {}): \
+                     edited after done, and the git diff names the edit",
+                    freeze::freeze_hash_short(criteria)
+                ),
+            )),
+            None => report.findings.push(Finding::fault(
+                &t.id,
+                format!("done_criteria diverges from the proof (proved {anchor}, now absent)"),
+            )),
+        }
+    }
+
     // The field is declarative and git is the anchor. A creation in the future
     // is the half of that check reachable without porcelain (§4).
     if let Some(created) = claim::parse_utc(&t.created) {
