@@ -6254,7 +6254,7 @@ mod tests {
         for expected in [
             "ADR-8bd7",
             "TASK-4974",
-            "SPEC-d58b",
+            "SPEC-4b79",
             "accepted",
             "in_progress",
             "wave4/tui-verb",
@@ -7756,7 +7756,7 @@ mod tests {
             let frame = a.frame();
             let marked = frame
                 .lines()
-                .filter(|l| l.contains("> ") && l.contains("SPEC-d58b"))
+                .filter(|l| l.contains("> ") && l.contains("SPEC-4b79"))
                 .count();
             assert_eq!(marked, 1, "{frame}");
         }
