@@ -5,7 +5,7 @@ slug: skill-tdd-teaches-red-green-against-the-frozen-c
 title: skill/tdd teaches red-green against the frozen criterion
 created: 2026-09-02T13:55:27Z
 author: claude-code/fable-5
-status: open
+status: done
 scope:
   - skill/tdd/**
   - skill/SKILL.md
@@ -16,8 +16,15 @@ done_criteria: |
   skill/tdd/SKILL.md exists, opens by stating the ank contract applies, teaches the red-green loop against a task's frozen done_criteria, and names the forbidden anti-patterns: tautological tests, horizontal slicing, testing the implementation rather than the behaviour. It declares metadata.revision as the hash of its own body and tests/skill.rs recomputes it. The body stays within 180 lines and 1500 words. .claude-plugin/plugin.json and skill/SKILL.md list the sibling. cargo test --workspace passes.
 criteria_by: creator
 verify: [cargo-test]
+proof:
+  - type: test
+    ref: local/e0eaf408ae26@e3490f9
+    tree: scope/0e6a01b71b28
+    criteria: d12f1f73edd6
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Blocked on the citation sweep because the sibling is only legal once
