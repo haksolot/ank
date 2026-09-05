@@ -7931,6 +7931,117 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
     );
 }
 
+const SETTLED: &str = "TASK-000000005e77";
+
+/// §3's post-`done` regime after ADR-b9156403c3d5: `scope` stays amendable on
+/// a finished task — it describes where the work happened and no proof anchors
+/// it — while `done_criteria` and `blocked_by` stay settled and the refusal
+/// names the settled field rather than the whole plan. Before this, a dead
+/// scope on a `done` task was a fault no verb could clear (issue #385):
+/// `amend` refused wholesale, and the only exit was the hand edit the skill
+/// contract forbids — a guard holding only the traceable path.
+#[test]
+fn amend_fixes_the_scope_of_a_done_task_and_the_criterion_stays_settled() {
+    let r = Repo::new();
+    seed_done(&r, SETTLED, "  - type: commit\n    ref: abc1234\n");
+    // A dead entry beside a live one: the perimeter has no hole, and the fault
+    // fires anyway — the exact shape the issue reports.
+    let text = r
+        .task_text(SETTLED)
+        .replace("  - src/**", "  - src/**\n  - config");
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{SETTLED}.md")),
+        text,
+    )
+    .unwrap();
+    r.seed_task("TASK-000000000002", Some("Another criterion."));
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "the dead scope is a fault first: {said}");
+    assert!(said.contains("dead scope 'config'"), "{said}");
+
+    // The settled fields keep their refusal, and the message names the field
+    // instead of claiming the whole plan.
+    let before = r.task_text(SETTLED);
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", SETTLED, "--criteria", "A rewritten criterion."],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("done_criteria"),
+        "the refusal names the settled field: {}",
+        stderr(&out)
+    );
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", SETTLED, "--blocked-by", "TASK-000000000002"],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert_eq!(r.task_text(SETTLED), before, "a refusal writes nothing");
+
+    // The scope amend passes, and the log carries the correction.
+    let out = r.ank(
+        "marie@laptop",
+        &[
+            "amend",
+            SETTLED,
+            "--drop-scope",
+            "config",
+            "--scope",
+            "docs/**",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let text = r.task_text(SETTLED);
+    assert!(!text.contains("- config"), "the dead entry is gone: {text}");
+    assert!(
+        text.contains("- docs/**"),
+        "the added entry is there: {text}"
+    );
+    assert!(
+        r.log_text(SETTLED).contains("-scope config")
+            && r.log_text(SETTLED).contains("+scope docs/**"),
+        "the log says what changed: {}",
+        r.log_text(SETTLED)
+    );
+
+    // And the fault the issue called permanent is cleared through the
+    // traceable path. docs/ exists below so the added entry is alive.
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/note.md"), "note\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "docs"]);
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "the correction clears the fault: {said}");
+
+    // `close` keeps the same regime on the same terms (ADR-b9156403c3d5).
+    let closed = "TASK-00000000c105";
+    seed_done(&r, closed, "  - type: commit\n    ref: abc1234\n");
+    let text = r
+        .task_text(closed)
+        .replace("status: done", "status: closed");
+    std::fs::write(r.0.join(".ank/entities").join(format!("{closed}.md")), text).unwrap();
+    let out = r.ank("marie@laptop", &["amend", closed, "--scope", "docs/**"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "a closed task's scope amends: {}",
+        stderr(&out)
+    );
+    let out = r.ank(
+        "marie@laptop",
+        &["amend", closed, "--criteria", "A rewritten criterion."],
+    );
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+}
+
 const EDITED_CRITERIA: &str = "TASK-00000000ed17";
 
 /// The proof anchors `done_criteria` by hash, and `check` replays that anchor
@@ -14663,16 +14774,17 @@ fn an_accepted_adr_is_offered_a_supersession_and_never_an_amend() {
     );
 }
 
-/// The two task states, which `amend` treats as opposites.
+/// The two task states, which `amend` no longer treats as opposites.
 ///
 /// An open task is amended, and the rename is what tells a typo from a file
-/// that moved under the work. A finished one is not: §3 allows a single write
-/// to it and that write is a proof, so `amend` exits 7 — and a proposal naming
-/// it would be the refusal this feature exists to avoid. The rename is named
-/// either way, because where the file went is the answer in both states.
+/// that moved under the work. A finished one gets the same command since
+/// §3's post-completion regime (ADR-b9156403c3d5) keeps `scope` amendable:
+/// the proposal would have been a refusal before, which is why it used to be
+/// withheld, and now it is not. The rename is named either way, because
+/// where the file went is the answer in both states.
 #[test]
-fn a_finished_task_is_told_where_the_file_went_and_offered_no_command() {
-    for (status, expected) in [("open", Some("ank amend ")), ("done", None)] {
+fn a_finished_task_is_told_where_the_file_went_and_offered_the_amend() {
+    for (status, expected) in [("open", Some("ank amend ")), ("done", Some("ank amend "))] {
         let r = Repo::new();
         std::fs::create_dir_all(r.0.join("src")).unwrap();
         std::fs::write(r.0.join("src/old.rs"), SIMILAR).unwrap();

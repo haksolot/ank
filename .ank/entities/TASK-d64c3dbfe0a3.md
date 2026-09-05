@@ -5,7 +5,7 @@ slug: amend-fixes-the-scope-of-a-done-task-and-journal
 title: amend fixes the scope of a done task, and journals the correction
 created: 2026-09-05T13:44:55Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/cli.rs
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check, check-repo]
 schema: 4
-version: 3
+version: 4
 ---
 
 Implements ADR-b9156403c3d5 (issue #385, direction 1). The refusal today is at

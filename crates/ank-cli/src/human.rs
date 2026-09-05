@@ -1584,9 +1584,10 @@ fn literal_prefix(glob: &str) -> Option<(String, String)> {
 /// The one command that changes the scope of this entity without refusing on
 /// the spot.
 ///
-/// Four states and three answers, because `amend` accepts a scope change on
-/// exactly two of them. The refusals it would otherwise raise are what decides
-/// each branch, and each is a refusal this file writes itself.
+/// The refusals `amend` would otherwise raise are what decides each branch,
+/// and each is a refusal this file writes itself: a task's scope amends in
+/// every status, a ratified decision's change is a succession, and a log
+/// entry offers nothing.
 fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
     let id = entity.id();
     let amend = format!("ank amend {id} --drop-scope \"{from}\" --scope \"{to}\"");
@@ -1597,12 +1598,11 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
         Entity::Task(t) if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) => {
             Some(amend)
         }
-        // Done or closed, and `amend` refuses it: §3 allows one write to a
-        // finished task and it is a proof. The scope records where the work
-        // happened, which is a fact about the past that a later rename does not
-        // falsify — so the rename is named and nothing is proposed. Naming a
-        // command that exits 7 would be worse than naming none.
-        Entity::Task(_) => None,
+        // Done or closed: the scope of a finished task stays amendable under
+        // §3's post-completion regime (ADR-b9156403c3d5) — it records where
+        // the work happened, and no proof anchors it — so the same command an
+        // open task gets no longer refuses on the spot, and it is named.
+        Entity::Task(_) => Some(amend),
         Entity::Adr(a) if a.status == AdrStatus::Proposed => Some(amend),
         // Accepted or superseded: `constraint` and `scope` are hashed into the
         // ratification commit, so `amend` refuses with code 6 and the change is
@@ -6002,16 +6002,28 @@ pub fn amend(
 
     match loaded.entity {
         Entity::Task(mut task) => {
-            // §3 allows exactly one write to a task after completion, and it is
-            // an addition to the proof list — which is `attest`, not this.
-            // Amending a finished task would produce the corpus fault `check`
-            // reports as "done task modified beyond appending a proof".
-            if matches!(task.status, TaskStatus::Done | TaskStatus::Closed) {
+            // §3's post-completion regime (ADR-b9156403c3d5): `scope` stays
+            // amendable — it describes where the work happened, and no proof
+            // anchors it — while `done_criteria` is anchored by the hash the
+            // proof records and `blocked_by` is the plan's history, so both
+            // stay settled. The refusal names the settled fields rather than
+            // the whole plan: the wholesale refusal left a dead scope on a
+            // finished task as a fault no verb could clear, and a guard that
+            // holds only the traceable path pushes toward the untraceable one.
+            if matches!(task.status, TaskStatus::Done | TaskStatus::Closed)
+                && (criteria.is_some() || !add_blocked.is_empty() || !drop_blocked.is_empty())
+            {
                 return Err(CliError::new(
                     ExitCode::Prerequisite,
-                    format!("{id} is {}, and its plan is settled", task.status.as_str()),
+                    format!(
+                        "{id} is {}: done_criteria and blocked_by are settled, \
+                         and only scope stays amendable",
+                        task.status.as_str()
+                    ),
                 )
-                .with_hint(format!("ank show {id}")));
+                .with_hint(format!(
+                    "ank amend {id} --scope <glob> | --drop-scope <glob>"
+                )));
             }
 
             for b in &drop_blocked {
@@ -9385,17 +9397,26 @@ mod tests {
         assert!(!out.contains("warning"), "{out}");
     }
 
-    /// §3 allows exactly one write to a task after completion and it is
-    /// `attest`'s. Amending a finished task would produce the corpus fault
-    /// `check` reports as a done task modified beyond appending a proof.
+    /// §3's post-completion regime (ADR-b9156403c3d5): a finished task's
+    /// `scope` amends — no proof anchors it — while `done_criteria` and
+    /// `blocked_by` stay settled, and the refusal names the settled fields
+    /// rather than the whole plan.
     #[test]
     fn amend_refuses_a_finished_task_and_a_ratified_scope() {
         let t = Temp::new();
         t.write(&task("000000000001", TaskStatus::Done, &[]));
-        let err = t
+        let (code, out) = t
             .call(&["amend", "0000", "--scope", "docs/**"], "marie@laptop")
+            .unwrap();
+        assert_eq!(code, ExitCode::Ok, "{out}");
+        let err = t
+            .call(
+                &["amend", "0000", "--criteria", "Rewritten."],
+                "marie@laptop",
+            )
             .unwrap_err();
         assert_eq!(err.code, ExitCode::Prerequisite, "{}", err.message);
+        assert!(err.message.contains("done_criteria"), "{}", err.message);
         assert!(err.message.contains("settled"), "{}", err.message);
 
         // An accepted ADR's scope is hashed into the ratification commit, so
