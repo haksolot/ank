@@ -466,7 +466,7 @@ fn live_claims_where(
 /// is a different question, answered by the transition check and by `acquire`,
 /// and this refusal has no business intercepting it.
 ///
-/// Refusing on state and never on identity (ADR-91b77f036884): what is read is
+/// Refusing on state and never on identity (ADR-e4a5a8873fe3): what is read is
 /// the coordination plane — which refs exist and who holds them — and the
 /// answer is the same for every caller. A lapsed claim is not a live one, so
 /// pickup after expiry (§3) passes through untouched.
@@ -1217,7 +1217,7 @@ fn renewed_by_working(
 /// freezes nothing, which is the reading `log` and `done` already apply.
 ///
 /// Any live claim, not this agent's: refusals are on state and never on identity
-/// (ADR-91b77f036884).
+/// (ADR-e4a5a8873fe3).
 pub fn live(cwd: &Path, id: &EntityId) -> Result<Option<ClaimRecord>> {
     let Some(Record::Claim(c)) = read(cwd, id)?.map(|h| h.record) else {
         return Ok(None);
@@ -2390,7 +2390,7 @@ fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> 
 /// module lands on them: claims in refs (ADR-4e7c25b1f639), the ref's second
 /// state (ADR-6d8736c04cfa), git per verb and plumbing by criterion
 /// (ADR-9307e5d214a7), freeze by hash (ADR-6b3f19e08a24), one surface
-/// (ADR-91b77f036884).
+/// (ADR-e4a5a8873fe3).
 #[cfg(test)]
 mod tests {
     use super::*;

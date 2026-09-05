@@ -1,7 +1,7 @@
 //! check, review, accept, close, attest, amend and show (§4, §8, §11).
 //!
 //! **This is a file, not a side.** The CLI exposes one surface
-//! (ADR-91b77f036884): every verb here is available to every caller, and what
+//! (ADR-e4a5a8873fe3): every verb here is available to every caller, and what
 //! the module holds is what grew together rather than what a class of caller
 //! was allowed to run. Successive headers described this as the human half, the
 //! side that may grow freely, the half outside the loop — each true when

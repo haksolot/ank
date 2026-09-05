@@ -344,7 +344,7 @@ fn check_frozen(repo: &Repo, before: &Entity, after: &Entity) -> Result<()> {
                 return Ok(());
             }
             // Any live claim, not this agent's: refusals are on state and never
-            // on identity (ADR-91b77f036884). An expired claim is not in force
+            // on identity (ADR-e4a5a8873fe3). An expired claim is not in force
             // and freezes nothing, which is the same reading `log` and `done`
             // already apply to it.
             let Some(anchor) = live_claim_anchor(&repo.corpus, id)? else {

@@ -330,7 +330,7 @@ jobs:
       # tarball is what the registry receives -- a `files` entry that stopped
       # matching would leave the file on disk and out of the package.
       #
-      # Every skill, not only the contract (ADR-91b77f036884): an install that
+      # Every skill, not only the contract (ADR-e4a5a8873fe3): an install that
       # receives `ank` and none of `ank-plan`, `ank-drift`, `ank-loop` teaches
       # the rules and none of the activities. The list is walked from the tree
       # rather than written here, so a skill added later is checked by existing,
