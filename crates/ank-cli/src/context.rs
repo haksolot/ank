@@ -1110,7 +1110,7 @@ pub(crate) fn coordination_of<'a>(
 /// carries it. The relevance argument for putting it in `context` is real —
 /// this is what an agent reads every turn — and it loses to two others.
 ///
-/// `context` is loaded on every call and ADR-91b77f036884 treats every word in
+/// `context` is loaded on every call and ADR-e4a5a8873fe3 treats every word in
 /// it as paid for, so a line covering a state that is rare, already announced
 /// at acquisition, and reported by a verb costing nothing would be paid on
 /// every turn of every session that never hits it. And the place the collision

@@ -15,11 +15,11 @@
 //! exactly the drift the `owner_task` field was added to prevent.
 //!
 //! **The listing is grouped by the moment a verb is reached for, and inside a
-//! group the order of [`COMMANDS`] survives untouched** (ADR-91b77f036884). It
+//! group the order of [`COMMANDS`] survives untouched** (ADR-e4a5a8873fe3). It
 //! once grouped verbs under headings named after callers, which was the
 //! two-surface model still speaking through the output an agent reads; a
 //! heading that sorts callers is a claim about who a verb is for, and there is
-//! no such claim left to make. ADR-91b77f036884 removed those headings and left
+//! no such claim left to make. ADR-e4a5a8873fe3 removed those headings and left
 //! §4's order to carry the structure alone, which works for five verbs and not
 //! for twenty-one: the order only says something to a reader who already knows
 //! it is meaningful, which is precisely what a first reader does not know. So
@@ -505,7 +505,7 @@ fn globals_of(spec: &CommandSpec) -> Vec<&'static FlagSpec> {
 /// It states what the three globals of §4 are, once, for the surface — the
 /// exception belongs on the page of the verb that makes it, where a reader
 /// asking about `init` is looking. Qualifying it in the listing would put a
-/// second structure under headings that already carry one (ADR-91b77f036884),
+/// second structure under headings that already carry one (ADR-e4a5a8873fe3),
 /// on the three lines the whole surface shares.
 fn globals_line(globals: &[&'static FlagSpec], with_short: bool) -> String {
     globals
@@ -571,7 +571,7 @@ fn json_of(specs: &[&CommandSpec]) -> String {
             // same structure to everyone and lets only colour depend on the
             // reader, so giving a machine the grouping and withholding it from
             // the caller who scripts against it would be the split this ADR
-            // rejected, the other way round (ADR-91b77f036884).
+            // rejected, the other way round (ADR-e4a5a8873fe3).
             // What comes back, which is the half this document was missing
             // (ADR-6fd69efb629c). A caller can discover a flag by being refused
             // one; it cannot discover a field by being handed it, because it has
@@ -622,7 +622,7 @@ fn json_of(specs: &[&CommandSpec]) -> String {
 /// silently is worse than refusing the wrong one loudly.
 ///
 /// The listing is grouped by [`GROUPS`], and inside a group the order is
-/// [`COMMANDS`]', which is §4's (ADR-91b77f036884). No verb is hidden and there
+/// [`COMMANDS`]', which is §4's (ADR-e4a5a8873fe3). No verb is hidden and there
 /// is no second listing to ask for: git shows the common commands and sends the
 /// rest to `git help -a`, and hiding a verb from the one surface claiming to be
 /// complete is worse than never teaching it.
@@ -688,7 +688,7 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     // says so rather than leaving the reader to discover it.
     //
     // **The width is computed across all of [`COMMANDS`] and never per group**
-    // (ADR-91b77f036884). Five widths would stop the columns lining up between
+    // (ADR-e4a5a8873fe3). Five widths would stop the columns lining up between
     // sections, and the listing would read as five tables rather than one thing
     // with five parts — which is the opposite of what the grouping is for.
     let width = COMMANDS.iter().map(|c| usage(c).len()).max().unwrap_or(0);
@@ -726,7 +726,7 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     );
     // A trailing pointer, beside the one above it and in the same shape. The
     // three trailer lines are not a group and take no heading: they say where
-    // to look next rather than when a verb is used (ADR-91b77f036884). A flag
+    // to look next rather than when a verb is used (ADR-e4a5a8873fe3). A flag
     // nobody can discover answers nobody's question.
     let _ = writeln!(out, "ank --version for the build");
     Ok(ExitCode::Ok)
@@ -1601,7 +1601,7 @@ mod tests {
     #[test]
     fn the_listing_keeps_the_table_order_inside_every_group() {
         // The grouping is a second axis laid over COMMANDS, not a re-sort
-        // (ADR-91b77f036884) -- so it is asserted rather than assumed. The test
+        // (ADR-e4a5a8873fe3) -- so it is asserted rather than assumed. The test
         // above passes just as well on a renderer that sorts alphabetically,
         // which would bury the loop in the middle of its own group.
         let text = help_out(&["help"]);
@@ -1631,7 +1631,7 @@ mod tests {
     fn every_verb_has_a_group_and_every_group_has_verbs() {
         // The two halves of what stops a twenty-second verb from being added
         // with no home and disappearing off the end of a listing that renders
-        // by group (ADR-91b77f036884). The integration suite asserts the same
+        // by group (ADR-e4a5a8873fe3). The integration suite asserts the same
         // property through the binary, which is where a caller reads it; this
         // one fails at the table, which is where the mistake is made.
         for spec in COMMANDS {
@@ -1665,7 +1665,7 @@ mod tests {
         assert!(text.contains("--criteria <v>"), "{text}");
         assert!(
             !text.contains("audience"),
-            "the audience line is what ADR-91b77f036884 removes:\n{text}"
+            "the audience line is what ADR-e4a5a8873fe3 removes:\n{text}"
         );
         // One verb means one verb: no other usage line rides along.
         assert!(!text.contains("ank accept"), "{text}");

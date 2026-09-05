@@ -483,7 +483,7 @@ pub fn long_of(c: char) -> Option<&'static str> {
 pub struct CommandSpec {
     pub name: &'static str,
     /// **When** the verb is reached for, which is the heading `ank help` prints
-    /// it under (ADR-91b77f036884). One of [`GROUPS`], and never a claim about
+    /// it under (ADR-e4a5a8873fe3). One of [`GROUPS`], and never a claim about
     /// who may run it: `check` sits under keeping the corpus honest whether a
     /// human or an agent types it, and the refusal machinery consults no caller.
     ///
@@ -568,10 +568,10 @@ pub struct CommandSpec {
 }
 
 /// The moments a verb is reached for, in the order `ank help` prints them
-/// (ADR-91b77f036884).
+/// (ADR-e4a5a8873fe3).
 ///
 /// A group says **when** a verb is used and never **who** may use it. The
-/// layering ADR-91b77f036884 removed was the residue of an agent surface and a
+/// layering ADR-e4a5a8873fe3 removed was the residue of an agent surface and a
 /// human surface — headings that told a caller which verbs were theirs, behind
 /// a wall built from `$ANK_AGENT`, which the caller sets itself. Nothing here
 /// reopens that: the distinction is the one between a map and a gate.
@@ -675,7 +675,7 @@ pub const PUSH_NOTES: &[&str] = &[PUSH_DEGRADES, PUSH_FAILS, PUSH_NONE];
 /// **The order is the specification's, and it is load-bearing**: §4 puts the
 /// loop first — `context claim show log done`, then `release new find` — and
 /// the rest after it. `help` groups this table by [`GROUPS`] and keeps this
-/// order inside each group (ADR-91b77f036884): the grouping is a second axis
+/// order inside each group (ADR-e4a5a8873fe3): the grouping is a second axis
 /// laid over §4's order, not a re-sort, so a verb never moves relative to its
 /// neighbours and sorting this list would still erase what §4 says.
 pub const COMMANDS: &[CommandSpec] = &[

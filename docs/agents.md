@@ -24,7 +24,7 @@ and it is self-sufficient: why ank is shaped as it is, the verbs grouped by the
 moment each is used, and the rules that are not negotiable. It names the other
 three so an agent reaching for an activity knows what to load, and never
 depends on them being installed. The three carry a policy each and are loaded
-when the activity calls for them (ADR-91b77f036884).
+when the activity calls for them (ADR-e4a5a8873fe3).
 
 **What that costs a session is the frontmatter, not the page.** The projection
 below is `~58 tok` always-on per skill, and that is a skill's `name` and

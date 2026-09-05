@@ -92,7 +92,7 @@ cp ../../LICENSE LICENSE
 # pi reads a package's skills from its pi.skills path, and its convention is
 # skills/<name>/SKILL.md. The sources are skill/SKILL.md at the repository root
 # and every skill/<dir>/SKILL.md beside it: the contract and one policy per
-# activity (ADR-91b77f036884). Each is anchored where it lives -- build.rs
+# activity (ADR-e4a5a8873fe3). Each is anchored where it lives -- build.rs
 # hashes the contract into `ank --version`, tests/skill.rs holds every skill to
 # its declared revision -- and a copy committed beside them would have no such
 # anchor and would drift with nothing turning red, which is what
