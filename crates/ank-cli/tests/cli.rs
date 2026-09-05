@@ -7931,6 +7931,78 @@ fn an_unattested_task_is_not_reported_until_the_default_branch_carries_it() {
     );
 }
 
+const EDITED_CRITERIA: &str = "TASK-00000000ed17";
+
+/// The proof anchors `done_criteria` by hash, and `check` replays that anchor
+/// on a finished task (ADR-6b3f19e08a24: every freeze is checked at the point
+/// of use, and after `done` the point of use is `check`). Before this, a hand
+/// edit of the criterion on a `done` task produced two byte-identical `check`
+/// runs, exit 0 both times — effective and invisible, issue #385.
+///
+/// The fault is actionable, unlike the dead scope: the git diff names the
+/// edit, and reverting it is the repair the run below performs.
+#[test]
+fn check_replays_the_criteria_anchor_of_a_done_task_and_an_edited_criterion_is_a_fault() {
+    let r = Repo::new();
+    // `0d23d56872d6` is sha256("A verifiable criterion.") truncated to 12 —
+    // the anchor `done` would have recorded for the criterion `seed_done`
+    // writes.
+    seed_done(
+        &r,
+        EDITED_CRITERIA,
+        "  - type: commit\n    ref: abc1234\n    criteria: 0d23d56872d6\n",
+    );
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // A criterion that matches its anchor reports nothing new.
+    let out = r.ank("claude-code@ank", &["check"]);
+    let before = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "a matching anchor is silent: {before}");
+    assert!(
+        !before.contains("diverges from the proof"),
+        "a matching anchor is silent: {before}"
+    );
+
+    // The hand edit issue #385 documents, made between two runs.
+    let entity =
+        r.0.join(".ank/entities")
+            .join(format!("{EDITED_CRITERIA}.md"));
+    let intact = std::fs::read_to_string(&entity).unwrap();
+    std::fs::write(
+        &entity,
+        intact.replace("A verifiable criterion.", "Another criterion entirely."),
+    )
+    .unwrap();
+
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "an edited anchored field is a fault: {said}");
+    let fault: Vec<&str> = said
+        .lines()
+        .filter(|l| l.contains("diverges from the proof"))
+        .collect();
+    assert_eq!(fault.len(), 1, "one edit, one finding: {said}");
+    assert!(
+        fault[0].contains(EDITED_CRITERIA),
+        "the fault names the task: {said}"
+    );
+    assert!(
+        fault[0].contains("0d23d56872d6"),
+        "the fault names the anchor the proof holds: {said}"
+    );
+
+    // Reverting the edit is the repair, and the output says exactly what it
+    // said before the edit: nothing lingers.
+    std::fs::write(&entity, intact).unwrap();
+    let out = r.ank("claude-code@ank", &["check"]);
+    let after = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "the revert clears the fault: {after}");
+    assert_eq!(before, after, "the two green runs read the same");
+}
+
 const REMOVED_SCOPE: &str = "TASK-00000000de1e";
 const REMOVED_TREE: &str = "TASK-00000000d132";
 const NEVER_SCOPE: &str = "TASK-00000000f00d";
