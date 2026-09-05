@@ -5,7 +5,7 @@ slug: the-specification-carries-the-post-done-amend-ru
 title: The specification carries the post-done amend rule the ratified ADR states
 created: 2026-09-05T14:18:38Z
 author: haksolot@vmi3223161
-status: in_progress
+status: done
 scope:
   - .ank/**
   - crates/ank-contract/src/verbs.rs
@@ -15,8 +15,15 @@ done_criteria: |
   Successors are proposed for the specs stating that appending a proof is the only legal post-done write: SPEC-a89b3e0b3f3d (the data model, section 3), SPEC-d58b3a9e4e4d (the CLI surface, the amend and attest entries) and SPEC-88e1 (proof, its two citing sentences), each carried forward whole with only the post-done regime amended to what ADR-b9156403c3d5 states: amend --scope/--drop-scope is legal on a done task and journalled, done_criteria and blocked_by stay settled. Every workspace citation of the three retired ids is re-pointed to its successor, so accept will not refuse the supersession (ADR-3b6ba766a42e). ank check green.
 criteria_by: creator
 verify: [check-repo]
+proof:
+  - type: test
+    ref: local/5a3105020e09@c08f852
+    tree: scope/2512f94bee67
+    criteria: 4705625452ab
+    verifier: check-repo@5734e9cf9d3d
+    via: verifier
 schema: 4
-version: 2
+version: 3
 ---
 
 Found while preparing TASK-d64c3dbfe0a3: ADR-b9156403c3d5 was ratified while
