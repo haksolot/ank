@@ -2,7 +2,7 @@
 name: ank-loop
 description: Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
 metadata:
-  revision: "8ff677f38578"
+  revision: "e2b07833509b"
 ---
 
 # ank-loop
@@ -23,6 +23,7 @@ This file adds the loop policy only.
     ank claim <id>
     ank show <id>                    the body carries the reasoning; read it first
     work; ank log "<discovery>" as you learn, not when you finish
+    review your own diff             two axes, below; ank log what it found
     ank done                         with its proof
     next pass
 
@@ -52,6 +53,37 @@ what you finished, and which task carries the remainder.
 
 Work you discover is a new task with blocked_by, left for a later pass. Never
 a detour in this one.
+
+## Reviewing your own diff
+
+Before `ank done`, never after it, read the diff you are about to close on two
+axes.
+
+    against the criterion     every clause answered, and nothing it did not ask for
+    against the constraints   every ADR that binds the paths the diff touches
+
+The first axis takes the frozen criterion clause by clause and points each one
+at a hunk. A clause you cannot point at is not done. A hunk no clause asked for
+is scope you took without being given it, and it comes back out.
+
+The second axis takes the constraints, not your memory of them: run `ank
+context <path>` again over the paths the diff actually touches, which is rarely
+the set you ran it on at the start of the pass, and read the diff against what
+comes back.
+
+Then `ank log` the outcome, whichever way it came out: the two axes, what each
+one found, and nothing found where nothing was. The log is what outlives the
+session, and a review nobody can read afterwards was not one.
+
+A finding is acted on in the pass that found it. A constraint the diff breaks
+is fixed before the close; scope the criterion never asked for comes back out
+of the diff; a clause left unanswered is the release of the table above, and
+never a smaller criterion.
+
+The review is not a grade and does not replace one. `ank done` still runs the
+verifiers and still measures. What the two axes catch is what a green suite
+cannot: a criterion answered beside the point, and a constraint no test
+encodes.
 
 ## Never in the loop
 
