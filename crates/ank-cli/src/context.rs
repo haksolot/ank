@@ -329,6 +329,8 @@ pub enum Mode {
         short: String,
         title: String,
         criteria: Option<String>,
+        /// The sibling skill the task designates, if it designates one.
+        method: Option<String>,
         log: Vec<String>,
     },
 }
@@ -1022,6 +1024,7 @@ fn build_execution(
                 .done_criteria
                 .as_ref()
                 .map(|c| c.trim_end().to_string()),
+            method: task.method.clone(),
             log,
             id,
         },
@@ -1314,6 +1317,7 @@ fn execution_head(view: &View, style: Style) -> Vec<String> {
         short,
         title,
         criteria,
+        method,
         ..
     } = &view.mode
     else {
@@ -1326,6 +1330,16 @@ fn execution_head(view: &View, style: Style) -> Vec<String> {
         for line in c.lines() {
             out.push(format!("  {}", line.trim_end()));
         }
+    }
+    // One line, beneath the criterion and above the rules, and never cut: it
+    // costs what a short line costs, and naming the skill at the moment the
+    // work starts is the whole of what the field is for (ADR-a8f9c603a0e7).
+    // Here in the head, which the budget prices before the log, so an entry
+    // yields to it and never the reverse. A task designating none gets no line
+    // at all rather than a line saying so.
+    if let Some(m) = method {
+        out.push(String::new());
+        out.push(method_line(m, style));
     }
     if !view.constraints.is_empty() {
         out.push(String::new());
@@ -1343,6 +1357,18 @@ fn execution_head(view: &View, style: Style) -> Vec<String> {
     // yields, so a spec line never costs an entry.
     out.extend(spec_section(&view.specs, 0, ".", style));
     out
+}
+
+/// `METHOD <name>`, and the sentence that says what to do with it.
+///
+/// The harness knows the skill by its frontmatter name, `ank-<name>`, so the
+/// line gives that too: the short name is what the task stores, and the long one
+/// is what an agent asks its harness to load.
+fn method_line(method: &str, style: Style) -> String {
+    format!(
+        "{} {method}, the skill to load before the first edit: ank-{method}",
+        style.header("METHOD")
+    )
 }
 
 /// The log section of execution mode, over the entries the budget kept.
@@ -2030,6 +2056,7 @@ After a blank one."
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],
+            method: None,
             proof: vec![],
             verified: Vec::new(),
             schema: 1,
@@ -2914,6 +2941,88 @@ The document.
         // and the first is on neither.
         assert_eq!(kept.last(), log.last());
         assert!(!kept.contains(&log[0]), "the oldest survived the cut");
+    }
+
+    /// The execution page of one claimed task with a twenty-entry log, with or
+    /// without a method, fitted at `budget`: the page, and the entries kept.
+    fn execution_page(method: Option<&str>, budget: usize) -> (String, Vec<String>) {
+        let t = Temp::new();
+        let mut body = String::from("\nBody.\n\n## Log\n");
+        for i in 1..=20 {
+            body.push_str(&format!(
+                "- 2026-07-28T10:{i:02}Z a@h — entry number {i}, long enough to cost \
+                 something against a small budget\n"
+            ));
+        }
+        let Entity::Task(mut task_entity) = task(
+            "000000000001",
+            "The task",
+            &["src/**"],
+            &[],
+            TaskStatus::Open,
+        ) else {
+            panic!("not a task")
+        };
+        task_entity.body = body;
+        task_entity.method = method.map(str::to_string);
+        t.write(&Entity::Task(task_entity));
+        t.write(&adr(
+            "00000000aaaa",
+            "A rule",
+            &["src/**"],
+            "Every session goes through the store.\n",
+            AdrStatus::Accepted,
+        ));
+        let id = EntityId::parse("TASK-000000000001").unwrap();
+        t.claim_as(&id, "claude-code@ank");
+        let view = t.view("claude-code@ank", None);
+        let kept = fit(&view, budget).log;
+        (render(&view, budget, crate::style::PLAIN), kept)
+    }
+
+    /// The method line sits beneath the criterion, is absent on a task
+    /// designating none, and is charged before the log (ADR-a8f9c603a0e7).
+    ///
+    /// Measured rather than assumed free. Unbudgeted, the page with the line is
+    /// the page without it plus the line and its separator, and nothing else.
+    /// Budgeted, the line is paid for out of the log and never the reverse: the
+    /// entries a page with the line keeps at a budget are exactly the entries a
+    /// page without it keeps at that budget less what the line costs.
+    #[test]
+    fn the_method_line_is_charged_before_the_log_and_absent_without_a_method() {
+        let line = "METHOD tdd, the skill to load before the first edit: ank-tdd";
+        let (with, _) = execution_page(Some("tdd"), 100_000);
+        let (without, _) = execution_page(None, 100_000);
+        assert!(!without.contains("METHOD"), "{without}");
+
+        let lines: Vec<&str> = with.lines().collect();
+        let at = lines.iter().position(|l| *l == line).expect(&with);
+        assert_eq!(lines[at - 2], "  A verifiable criterion.", "{with}");
+        assert_eq!(lines[at - 1], "", "{with}");
+        assert!(
+            lines[at + 1..].iter().any(|l| l.starts_with("CONSTRAINTS")),
+            "{with}"
+        );
+        assert_eq!(
+            with.replacen(&format!("\n{line}\n"), "", 1),
+            without,
+            "the line and its separator are the whole difference"
+        );
+        let cost = chars(&[String::new(), line.to_string()]);
+        assert_eq!(cost, 62, "the separator, the line and two newlines");
+        assert_eq!(with.chars().count(), without.chars().count() + cost);
+
+        for budget in [600, 800, 1000, 1200] {
+            let (with, kept_with) = execution_page(Some("tdd"), budget);
+            let (_, kept_without) = execution_page(None, budget - cost);
+            assert!(with.contains(line), "the line yielded at {budget}:\n{with}");
+            assert!(kept_with.len() < 20, "the budget did no work at {budget}");
+            assert_eq!(kept_with, kept_without, "at {budget}");
+            assert!(
+                with.contains(&format!("LOG ({} of 20)", kept_with.len())),
+                "{with}"
+            );
+        }
     }
 
     /// Every git repository inside a fixture, found rather than listed.

@@ -69,6 +69,7 @@ static TASK_FIELDS: &[FieldSpec] = &[
     opt("done_criteria"),
     opt("criteria_by"),
     opt("verify"),
+    opt("method"),
     opt("proof"),
     opt("verified"),
     req("schema"),
@@ -252,6 +253,10 @@ impl Fields for Task {
                 }
                 Flow(self.verify.clone())
             }
+            // A scalar and not bare: every name a binary carries is written
+            // bare by it anyway, and a value no binary would write, arriving by
+            // hand, is quoted rather than turned into different YAML.
+            "method" => Scalar(self.method.as_deref()?),
             "proof" => {
                 if self.proof.is_empty() {
                     return None;

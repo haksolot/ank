@@ -699,6 +699,7 @@ mod tests {
                 done_criteria: Some("A verifiable criterion.\n".into()),
                 criteria_by: Some(CriteriaBy::Creator),
                 verify: verify.iter().map(|v| v.to_string()).collect(),
+                method: None,
                 proof: vec![],
                 verified: Vec::new(),
                 schema: 1,

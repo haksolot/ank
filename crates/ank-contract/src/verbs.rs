@@ -842,14 +842,19 @@ pub const COMMANDS: &[CommandSpec] = &[
             multi("--reference"),
             multi("--verify"),
             switch("--no-verify"),
+            flag("--method"),
             flag("--body"),
         ],
-        refuses: &[refuses(ExitCode::Environment, "no --title or --scope and $EDITOR is unset, so there is nothing to open")],
+        refuses: &[
+            refuses(ExitCode::Environment, "no --title or --scope and $EDITOR is unset, so there is nothing to open"),
+            refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
+        ],
         notes: &[
             "a scope is mandatory: an entity attached to nothing is invisible",
             "--body - reads the body from stdin, so a long one needs no shell quoting",
             "--reference declares what a spec rests on; it takes a spec or an adr, and check resolves it",
             "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
+            "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); context prints it after the claim, and done never reads it",
         ],
         refuses_globals: &[],
         output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("created", Type::Str)])],
@@ -1064,14 +1069,19 @@ pub const COMMANDS: &[CommandSpec] = &[
             // offer the verb turns down). It stops being an offer the verb
             // rejects the moment the verb accepts it on state (§4).
             flag("--criteria"),
+            flag("--method"),
         ],
-        refuses: &[refuses(
-            ExitCode::Transition,
-            "--criteria while a live claim freezes the criterion; that case is a release",
-        )],
+        refuses: &[
+            refuses(
+                ExitCode::Transition,
+                "--criteria while a live claim freezes the criterion; that case is a release",
+            ),
+            refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
+        ],
         notes: &[
             "adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten",
             "--criteria replaces the criterion outright, and leaves criteria_by where it stands",
+            "--method replaces a task's method outright, on a done task too: nothing anchors a recommendation",
             "--reference and --drop-reference reach a spec's citations, on an accepted one too: the anchor covers its body and scope, not what it cites",
         ],
         refuses_globals: &[],

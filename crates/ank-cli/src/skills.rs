@@ -38,6 +38,70 @@ include!(concat!(env!("OUT_DIR"), "/skills.rs"));
 pub const NONE: &str =
     "this build carries no skills: there was no skill/ directory to read when it was built";
 
+/// The names a task's `method` may hold: one per sibling skill this binary
+/// carries, and never the contract (§3, ADR-a8f9c603a0e7).
+///
+/// **The name is the sibling's directory under `skill/`**, `tdd` for
+/// `skill/tdd/SKILL.md`, and not the `ank-tdd` its frontmatter declares. It is
+/// derived here from the frontmatter, which is what [`Embedded`] carries: every
+/// sibling is named `ank-<directory>`, which the Agent Skills format and the
+/// plugin manifest both hold it to, so stripping the prefix gives the directory
+/// back without a second list to keep in step. The contract is `ank` with no
+/// prefix to strip, and it is not a method: it is the skill every session
+/// loads, and a recommendation that names it recommends nothing.
+///
+/// One spelling and not two. `ank-tdd` is refused rather than read as `tdd`,
+/// because every reader that counts designations would otherwise have to
+/// normalise the pair, and the refusal names the spelling to type.
+pub fn methods() -> Vec<&'static str> {
+    methods_of(EMBEDDED)
+}
+
+fn methods_of(skills: &'static [Embedded]) -> Vec<&'static str> {
+    skills
+        .iter()
+        .filter_map(|s| s.name.strip_prefix(SIBLING))
+        .collect()
+}
+
+/// The prefix every sibling's frontmatter name carries.
+const SIBLING: &str = "ank-";
+
+/// A `--method` value, checked against what the binary carries at the moment
+/// the task is written, the way `--verify` is checked against `config.yml`: a
+/// name misremembered fails here rather than in silence at the one moment the
+/// recommendation was for.
+pub fn method(raw: &str) -> Result<String> {
+    method_among(raw.trim(), &methods())
+}
+
+fn method_among(name: &str, carried: &[&str]) -> Result<String> {
+    if carried.contains(&name) {
+        return Ok(name.to_string());
+    }
+    if carried.is_empty() {
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!("no sibling skill named '{name}': this build carries no skills"),
+        )
+        .with_hint("ank skills"));
+    }
+    let hint = match name.strip_prefix(SIBLING) {
+        Some(short) if carried.contains(&short) => {
+            format!("a method is the sibling's short name: --method {short}")
+        }
+        _ => format!("carried: {}", carried.join(" ")),
+    };
+    Err(CliError::new(
+        ExitCode::Prerequisite,
+        format!(
+            "no sibling skill named '{name}' in this binary, which carries {}",
+            carried.join(", ")
+        ),
+    )
+    .with_hint(hint))
+}
+
 pub fn run(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     // **Refused rather than ignored** (§4, §9). Under `--json` stdout is a
     // document a parser reads and nothing else, and this verb returns none: its
@@ -225,6 +289,45 @@ mod tests {
             assert_eq!(code, ExitCode::Ok);
             assert_eq!(String::from_utf8(out).unwrap(), format!("{NONE}\n"));
         }
+    }
+
+    /// What the binary carries, measured against the tree it was built from:
+    /// one method per sibling directory under `skill/`, and the contract none.
+    #[test]
+    fn the_methods_are_the_sibling_directories_and_never_the_contract() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skill");
+        let mut dirs: Vec<String> = std::fs::read_dir(&root)
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .filter(|p| p.join("SKILL.md").is_file())
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        dirs.sort();
+        assert!(!dirs.is_empty(), "no sibling under {}", root.display());
+        assert_eq!(methods(), dirs);
+        assert!(!methods().contains(&"ank"));
+    }
+
+    #[test]
+    fn a_method_the_binary_does_not_carry_is_refused_naming_the_ones_it_does() {
+        let carried = ["diagnose", "tdd"];
+        assert_eq!(method_among("tdd", &carried).unwrap(), "tdd");
+        for (name, hint) in [
+            ("ank", "carried: diagnose tdd"),
+            ("", "carried: diagnose tdd"),
+            ("ank-tdd", "--method tdd"),
+        ] {
+            let err = method_among(name, &carried).unwrap_err();
+            assert_eq!(err.code, ExitCode::Prerequisite, "{name}");
+            assert!(err.message.contains("diagnose, tdd"), "{}", err.message);
+            assert!(
+                err.hint.as_deref().unwrap().contains(hint),
+                "{name}: {:?}",
+                err.hint
+            );
+        }
+        let err = method_among("tdd", &[]).unwrap_err();
+        assert!(err.message.contains("carries no skills"), "{}", err.message);
     }
 
     #[test]

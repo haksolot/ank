@@ -6037,6 +6037,13 @@ pub fn amend(
         Some(c) => Some(claim::ensure_trailing_newline(c.trim())),
         None => None,
     };
+    // Checked against what the binary carries before anything is loaded, as
+    // `new task --method` checks it: the refusal is the same wherever the name
+    // is typed (ADR-a8f9c603a0e7).
+    let method = inv
+        .value("--method")
+        .map(crate::skills::method)
+        .transpose()?;
 
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
@@ -6089,13 +6096,14 @@ pub fn amend(
         && add_refs.is_empty()
         && drop_refs.is_empty()
         && criteria.is_none()
+        && method.is_none()
     {
         return Err(
             CliError::new(ExitCode::Prerequisite, format!("nothing to amend on {id}")).with_hint(
                 format!(
                     "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
                  --scope <glob> | --drop-scope <glob> | --criteria \"<c>\" | \
-                 --reference <id> | --drop-reference <id>"
+                 --method <name> | --reference <id> | --drop-reference <id>"
                 ),
             ),
         );
@@ -6134,12 +6142,12 @@ pub fn amend(
                     ExitCode::Prerequisite,
                     format!(
                         "{id} is {}: done_criteria and blocked_by are settled, \
-                         and only scope stays amendable",
+                         and only scope and method stay amendable",
                         task.status.as_str()
                     ),
                 )
                 .with_hint(format!(
-                    "ank amend {id} --scope <glob> | --drop-scope <glob>"
+                    "ank amend {id} --scope <glob> | --drop-scope <glob> | --method <name>"
                 )));
             }
 
@@ -6206,6 +6214,19 @@ pub fn amend(
                     // `creator` would assert something about the caller, which
                     // nothing else on this surface does. The log entry below is
                     // what records the amend, as it does for the other fields.
+                }
+            }
+
+            // Replaced whatever the status, a done task included, and under a
+            // live claim too. Nothing anchors it: `done` never reads it, no
+            // proof hashes it and no freeze covers it, so the post-completion
+            // regime has nothing here to protect, and a recommendation
+            // corrected after the work is still worth reading afterwards
+            // (ADR-a8f9c603a0e7). The edit record below is what journals it.
+            if let Some(method) = method {
+                if task.method.as_deref() != Some(method.as_str()) {
+                    changes.push(format!("method {method}"));
+                    task.method = Some(method);
                 }
             }
 
@@ -6279,6 +6300,13 @@ pub fn amend(
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
             }
+            if method.is_some() {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "method applies to a task: an ADR is a decision, not work",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
             // `constraint` and `scope` are hashed into the ratification commit
             // (§8), so amending the scope of an accepted ADR would diverge from
             // the anchor and `check` would call it altered — while suspending
@@ -6341,6 +6369,13 @@ pub fn amend(
                 return Err(CliError::new(
                     ExitCode::Generic,
                     "done_criteria applies to a task: a spec declares no criterion",
+                )
+                .with_hint(format!("ank amend {id} --scope <glob>")));
+            }
+            if method.is_some() {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "method applies to a task: a spec is a document, not work",
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
             }
@@ -7388,6 +7423,7 @@ mod tests {
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],
+            method: None,
             proof: if status == TaskStatus::Done {
                 vec![Proof {
                     proof_type: ProofType::Commit,

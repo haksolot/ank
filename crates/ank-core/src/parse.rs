@@ -42,6 +42,9 @@ struct TaskFm {
     criteria_by: Option<CriteriaBy>,
     #[serde(default)]
     verify: Vec<String>,
+    // Optional at every version in the range: it arrived at schema 4 without a
+    // bump, so its absence is never a sign of age (§3).
+    method: Option<String>,
     #[serde(default)]
     proof: Vec<Proof>,
     // Absent before schema 3, and `default` rather than `Option` because an
@@ -316,6 +319,7 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
         done_criteria: raw.done_criteria,
         criteria_by: raw.criteria_by,
         verify: raw.verify,
+        method: raw.method,
         proof: raw.proof,
         verified: raw.verified,
         schema: raw.schema,
