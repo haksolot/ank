@@ -467,7 +467,7 @@ $(supported_lines)
 the two questions:
   With a terminal attached, once ank is installed and verified, this asks
   two things and nothing else. The first offers to run:
-    npx skills add ${repo}
+    ank skills --install
   which teaches an agent how to use ank. The second offers to print three
   prompts that adopt ank in a repository that already has code and no
   .ank; they are in docs/getting-started.md too, and printing them writes
@@ -939,10 +939,12 @@ esac
 # abandoned half-done, and half-done is the worst state for a tool whose next
 # action is `ank context`.
 #
-# `npx skills add <owner>/ank` is what skill/SKILL.md already teaches, and it
-# serves every agent the skills CLI knows about rather than one. An installer
-# that learned where each of them keeps its skills is an installer that goes
-# stale silently, so this one hands that work to the tool whose job it is.
+# The question is this script's and the answer is the binary's
+# (ADR-e1d750884b82). `ank skills --install` writes out the skills it carries
+# and hands them to the skills CLI, which serves every agent it knows about
+# rather than one, and the verb already decides what to say when node is
+# missing and what a failure means. A second copy of that logic here would be
+# a second copy to drift.
 offer_skills() {
   human_at_terminal || return 0
 
@@ -951,7 +953,7 @@ offer_skills() {
   say "${ui_pad}per activity. They install through the skills CLI, which puts them where"
   say "${ui_pad}each agent looks."
   say ""
-  say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
+  say "${ui_pad}  ${ui_cyan}ank skills --install${ui_off}"
   say ""
 
   # /dev/tty and nowhere else, which is the trap ADR-5fbd99bf6fd5 exists to
@@ -985,43 +987,35 @@ offer_skills() {
     *) return 0 ;;
   esac
 
-  if ! have node; then
-    say ""
-    say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
-    say "node is not on PATH, so that was not run."
-    return 0
-  fi
-
-  say ""
-
+  # The binary just installed, by the path it was installed at: the directory
+  # may not be on PATH, and a different `ank` found there would answer for a
+  # build this script did not place.
+  #
   # Two redirections, each doing something this cannot work without.
   #
-  # `< /dev/tty` for the reason the prompt above reads from there: standard
-  # input is still this script, and npx asks its own question on a cold cache
-  # -- "Ok to proceed?" -- which it would answer with the next lines of this
-  # file. npm_config_yes is `npx --yes` spelled as the environment, so that
-  # question is not asked at all: the person already answered it, once, above.
-  # It is set for the child and not exported, which is what keeps it out of
-  # every other command here.
+  # `< /dev/null` because standard input is still this script under
+  # `curl ... | sh`: the verb asks nothing and reads nothing, and this is what
+  # makes that a guarantee rather than a property of one build of it.
   #
-  # `>&2` for the reason `say` writes there: the interesting use of this script
-  # is `curl ... | sh`, and npx's output on stdout would land in whatever the
-  # caller was reading. A redirection and not a pipe, so nothing is buffered
-  # and the terminal shows npx working while it works.
+  # `>&2` for the reason `say` writes there: stdout belongs to whoever is
+  # reading `curl ... | sh`. A redirection and not a pipe, so nothing is
+  # buffered and the terminal shows the skills CLI working while it works.
+  #
+  # Nothing is printed on success, and that is deliberate: the verb exits 0
+  # both when the skills went in and when node is missing and it printed the
+  # command to run instead, so a line of this script's own would be claiming
+  # something only the verb's output knows.
   offer_code=0
-  npm_config_yes=1 npx skills add "$repo" < /dev/tty >&2 || offer_code=$?
+  "${install_dir}/ank" skills --install < /dev/null >&2 || offer_code=$?
 
-  if [ "$offer_code" -eq 0 ]; then
+  if [ "$offer_code" -ne 0 ]; then
     say ""
-    ok "the skills are installed"
-  else
-    say ""
-    say "npx skills add ${repo} exited ${offer_code}, so the skills are not"
+    say "ank skills --install exited ${offer_code}, so the skills are not"
     say "installed. ank is, and it is exactly the ank this script installs when"
     say "nobody is asked anything at all."
     say ""
-    say "Run that line again when you want them:"
-    say "${ui_pad}  ${ui_cyan}npx skills add ${repo}${ui_off}"
+    say "Run it again when you want them:"
+    say "${ui_pad}  ${ui_cyan}ank skills --install${ui_off}"
   fi
 }
 
