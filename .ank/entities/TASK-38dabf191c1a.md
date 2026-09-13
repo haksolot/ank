@@ -5,7 +5,7 @@ slug: the-specification-succeeds-with-the-skills-verb
 title: The specification succeeds with the skills verb, the method field and the method record
 created: 2026-09-13T09:21:01Z
 author: claude-code/fable-5.1+planning
-status: open
+status: done
 scope:
   - .ank/entities/SPEC-4b79c265ccb6.md
   - .ank/entities/SPEC-e258796162c4.md
@@ -15,8 +15,27 @@ done_criteria: |
   Two proposed spec successors exist, each created with ank new spec --supersedes and carrying the predecessor's body whole with the changes below and nothing else. The successor of SPEC-4b79c265ccb6 lists skills in the Commands block with --install, lists --method on new task, amend and log, states that skills reports designated, fired and undesignated counts per sibling, and keeps every other line of the block. The successor of SPEC-e258796162c4 adds method to the task's optional fields in canonical order, states it earns no schema bump on via's terms, and adds method and create beside edit in the records vocabulary, create being the record new writes at birth (ADR-52bb0da2023a); docs/format.md's numbered table carries the same field in the same position. Both successors cite ADR-e1d750884b82, ADR-a8f9c603a0e7 and ADR-52bb0da2023a. ank check reports no fault, cargo test stays green because the suite still reads the accepted predecessor, and the two successors are named as waiting for accept in the closing log entry.
 criteria_by: creator
 verify: [cargo-test, fmt-check, check-repo]
+proof:
+  - type: test
+    ref: local/e27a1076ac42@8f41d51
+    tree: scope/c5ac228ca913
+    criteria: 3a5b2e317c99
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@8f41d51
+    tree: scope/c5ac228ca913
+    criteria: 3a5b2e317c99
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
+  - type: test
+    ref: local/49671cbff6ae@8f41d51
+    tree: scope/c5ac228ca913
+    criteria: 3a5b2e317c99
+    verifier: check-repo@5734e9cf9d3d
+    via: verifier
 schema: 4
-version: 3
+version: 5
 ---
 
 The suite reads the CLI surface out of the ratified spec document and names
