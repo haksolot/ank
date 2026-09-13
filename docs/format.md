@@ -212,15 +212,30 @@ than a parse error here (§3).
 | 7 | `scope` | block sequence | mandatory; the subject's scope as it stood |
 | 8 | `about` | bare | mandatory, an entity id of any kind |
 | 9 | `seq` | integer | mandatory; rank among that entity's entries, from 0 |
-| 10 | `verified` | block sequence of maps | optional, omitted when empty |
-| 11 | `schema` | integer | |
-| 12 | `version` | integer | |
+| 10 | `records` | scalar | optional; what a machinery entry records (below) |
+| 11 | `verified` | block sequence of maps | optional, omitted when empty |
+| 12 | `schema` | integer | |
+| 13 | `version` | integer | |
 
 **No `status`, and that is not an omission**: an entry is written once and has
 nothing to transition to, so the registry declares the kind without one and your
 parser must not require it. `version` stays, and on this kind it is a detector
 rather than a counter: an entry above 1 has been rewritten, which the format
 says should not happen.
+
+**`records` marks an entry a verb wrote, not a holder.** Absent, the entry is
+work. Two values are known, and both carry the versions the write moved between
+and the hash of the content it produced, in one grammar:
+
+    title (version 1 to 2, replaced 4e0e2f1a9b3c, produced aa11bb22cc33)
+    created (version 0 to 1, produced 0a1b2c3d4e5f)
+
+`edit` is a change of content outside a status transition, and names the fields
+it changed and the hash of the state it replaced. `create` is the record `new`
+writes at birth: version 0 is the state before the file existed, and `replaced`
+is absent because nothing was. An entry about a log entry never carries
+`create`, since an entry is the record. A value your reader does not know is
+read as machinery and never refused.
 
 **Optional fields are omitted, never emitted empty.** An entity with no author
 serialises without the key at all. Writing `author:` with nothing after it would

@@ -255,6 +255,35 @@ pub fn record_edit(
     )
 }
 
+/// The record of a creation, written by the verb that created the entity
+/// (ADR-52bb0da2023a).
+///
+/// **Same door, same grammar, a different word.** What separates a creation
+/// from an edit is only that nothing was replaced, and [`create_message`] is
+/// [`edit_message`] with that clause absent, so the one reader `check` has
+/// parses both.
+///
+/// Never called for a log entry: an entry is the record, and `ank log` writes
+/// through [`record`], which carries no word at all.
+pub fn record_create(
+    store: &Store,
+    index: &Index,
+    subject: &Entity,
+    identity: &str,
+    created: &str,
+) -> Result<EntityId> {
+    let message = create_message(crate::store::version_of(subject), &content_hash(subject));
+    write_entry(
+        store,
+        index,
+        subject,
+        identity,
+        created,
+        &message,
+        Some(ank_core::model::RECORDS_CREATE),
+    )
+}
+
 /// The one door, whatever the entry records.
 fn write_entry(
     store: &Store,
@@ -401,6 +430,34 @@ pub fn edit_message(
     format!("{what} (version {from} to {to}, replaced {replaced}, produced {produced})")
 }
 
+/// The message a creation record carries (ADR-52bb0da2023a):
+///
+/// ```text
+/// created (version 0 to <to>, produced <hash>)
+/// ```
+///
+/// **`replaced` is absent, and not a fixed word standing in for nothing.** A
+/// creation replaced no state, and a word such as `none` in the place of a hash
+/// would be a value some reader could mistake for one. Version 0 is the state
+/// before the file existed, which is what the store's first write moves from.
+pub fn create_message(to: u64, produced: &str) -> String {
+    format!("created (version 0 to {to}, produced {produced})")
+}
+
+/// Whether an entry carries the hash of content a verb produced: machinery,
+/// and a message stating a `produced` clause (ADR-52bb0da2023a).
+///
+/// An entity with at least one such entry has had the CLI pass over it, which
+/// is the whole of what the rule on creation asks, whether that pass was its
+/// birth or an edit afterwards.
+///
+/// Asked of the two shapes an entry reaches a reader in, the entity `check`
+/// parsed and the [`Entry`] `about` answers, so it takes the two fields both
+/// carry rather than either type.
+pub fn carries_produced_hash(records: Option<&str>, message: &str) -> bool {
+    records.is_some() && parse_edit_message(message).is_some_and(|a| a.produced.is_some())
+}
+
 /// The version transition a machinery entry states, read back out of its
 /// message (ADR-52bb0da2023a).
 ///
@@ -434,14 +491,21 @@ pub fn parse_edit_message(message: &str) -> Option<Accounted> {
     const OPEN: &str = " (version ";
     let at = message.rfind(OPEN)?;
     let tail = message[at + OPEN.len()..].strip_suffix(')')?;
-    let (versions, rest) = tail.split_once(", replaced ")?;
-    // The clause that may or may not be there, and its absence is not a defect:
-    // an entry written before ADR-52bb0da2023a ends at the hash it replaced.
-    let (replaced, produced) = match rest.split_once(", produced ") {
-        Some((replaced, produced)) => (replaced, Some(produced)),
-        None => (rest, None),
+    // Three shapes, and a clause is never inferred from another: an edit
+    // written before ADR-52bb0da2023a ends at the hash it replaced, an edit
+    // since carries both, and a creation replaced nothing and carries only the
+    // content it produced. A transition carrying neither hash is not one.
+    let (versions, replaced, produced) = match tail.split_once(", replaced ") {
+        Some((versions, rest)) => match rest.split_once(", produced ") {
+            Some((replaced, produced)) => (versions, Some(replaced), Some(produced)),
+            None => (versions, Some(rest), None),
+        },
+        None => {
+            let (versions, produced) = tail.split_once(", produced ")?;
+            (versions, None, Some(produced))
+        }
     };
-    if replaced.is_empty() || replaced.contains(' ') {
+    if replaced.is_some_and(|r| r.is_empty() || r.contains(' ')) {
         return None;
     }
     if produced.is_some_and(|p| p.is_empty() || p.contains(' ')) {
@@ -572,6 +636,23 @@ mod tests {
         );
     }
 
+    /// A creation replaced nothing, so the clause is absent rather than filled
+    /// with a word, and the one reader parses it all the same
+    /// (ADR-52bb0da2023a).
+    #[test]
+    fn a_creation_reads_back_with_nothing_replaced() {
+        let message = create_message(1, "0a1b2c3d4e5f");
+        assert_eq!(message, "created (version 0 to 1, produced 0a1b2c3d4e5f)");
+        assert_eq!(
+            parse_edit_message(&message),
+            Some(Accounted {
+                from: 0,
+                to: 1,
+                produced: Some("0a1b2c3d4e5f".to_string()),
+            })
+        );
+    }
+
     /// A message this build cannot read is not a defect it has found: an entry
     /// is written once, and one marked as machinery by another writer is
     /// entitled to a message of its own shape.
@@ -584,6 +665,8 @@ mod tests {
             "title (version 1 to 2)",
             "title (version 1 to 2, replaced abcdefabcdef, produced )",
             "title (version 1 to 2, replaced abcdefabcdef, produced two words)",
+            "created (version 0 to 1, produced )",
+            "created (version 0 to one, produced 0a1b2c3d4e5f)",
             "",
         ] {
             assert_eq!(parse_edit_message(message), None, "{message}");

@@ -255,6 +255,16 @@ pub fn new(
     };
 
     store.create(&entity)?;
+    // **Born accounted** (ADR-52bb0da2023a): the entity and the record of its
+    // creation, in that order, so a creation that failed leaves no record, and
+    // the record carries the instant the entity does.
+    entries::record_create(
+        &store,
+        &Index::open(&repo.ank)?,
+        &entity,
+        identity,
+        &created,
+    )?;
     if inv.json() {
         let doc = Obj::document()
             .str("id", &id.to_string())
@@ -404,7 +414,7 @@ fn new_interactive(
                 format!("cannot read back {}: {e}", scratch.display()),
             )
         })?;
-        create_filled(inv, repo, &store, cfg, &skeleton, &filled, out)
+        create_filled(inv, repo, &store, cfg, identity, &skeleton, &filled, out)
     })();
 
     match outcome {
@@ -596,6 +606,7 @@ fn create_filled(
     repo: &Repo,
     store: &Store,
     cfg: &Config,
+    identity: &str,
     skeleton: &Entity,
     filled: &str,
     out: &mut dyn Write,
@@ -756,6 +767,15 @@ fn create_filled(
     let id = entity.id().clone();
     let title = entity.title().to_string();
     store.create(&entity)?;
+    // The same record the flag form writes: one verb, two ways to express it,
+    // and never two outcomes (ADR-52bb0da2023a).
+    entries::record_create(
+        store,
+        &Index::open(&repo.ank)?,
+        &entity,
+        identity,
+        entity.created(),
+    )?;
     if inv.json() {
         let doc = Obj::document()
             .str("id", &id.to_string())
@@ -2419,9 +2439,13 @@ mod tests {
             let store = self.store();
             let loaded = store.load(id).unwrap();
             let index = Index::in_memory(store.root()).unwrap();
+            // The work trace, which is what every caller here means by the log:
+            // `new` leaves a creation record beside it (ADR-52bb0da2023a), and
+            // that is machinery a holder never wrote.
             crate::entries::about(&store, &index, &loaded.entity)
                 .unwrap()
                 .into_iter()
+                .filter(|e| !e.is_machinery())
                 .map(|e| e.line)
                 .collect()
         }

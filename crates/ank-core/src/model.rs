@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// string so that an entry written by a newer build is read rather than
 /// refused, and this list is what `check` compares against to say that a word
 /// is unknown to *this* build (ADR-3877fef1d662).
-pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT];
+pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT, RECORDS_CREATE];
 
 /// The word an entry carries when it records a change of content made outside
 /// a status transition (ADR-52bb0da2023a).
@@ -16,6 +16,14 @@ pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT];
 /// Named once and written from one place, so the vocabulary above and the verb
 /// that writes into it cannot drift apart by a typo.
 pub const RECORDS_EDIT: &str = "edit";
+
+/// The word an entry carries when it records the creation of the entity it is
+/// about: the version the creation produced and the hash of the content it
+/// produced (ADR-52bb0da2023a).
+///
+/// Never carried by an entry about a log entry, because an entry is the record
+/// and a record of the record recurses.
+pub const RECORDS_CREATE: &str = "create";
 
 /// Format version this crate **writes**, and the newest it reads.
 ///

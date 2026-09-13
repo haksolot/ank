@@ -1678,6 +1678,12 @@ static RATIFICATIONS: Memo = OnceLock::new();
 pub struct Ratification {
     pub sha: String,
     pub anchor: String,
+    /// The commit's author date, in seconds since the epoch: the instant a
+    /// decision started binding, which is what a rule that spares whatever it
+    /// predates compares against (ADR-52bb0da2023a). `None` where the header
+    /// would not read, which leaves such a rule without an instant rather than
+    /// with a wrong one.
+    pub authored: Option<i64>,
 }
 
 /// `paths` are the candidate paths of the entity, canonical first. There is
@@ -1758,10 +1764,12 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
     // the same machinery, where `log` is the porcelain ADR-9307e5d214a7 refuses
     // by name. `--format` makes `rev-list` print a `commit <sha>` line of its
     // own before each record, which is what the reader below steps past.
+    // `%at` rides in the same walk, so the instant a ratification took effect
+    // costs no process of its own (ADR-52bb0da2023a).
     let args = [
         "rev-list",
         "--full-history",
-        "--format=%H%x00%s%x00%b%x00",
+        "--format=%H%x00%at%x00%s%x00%b%x00",
         "HEAD",
     ];
     let out = output(cwd, &args)?;
@@ -1780,17 +1788,18 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
         // An empty field is a field, so counting is what a separator could not
         // do.
         let fields: Vec<&str> = text.split('\0').collect();
-        for record in fields.chunks_exact(3) {
+        for record in fields.chunks_exact(4) {
             let sha = record[0];
             // `--format` implies `--pretty`, whose own `commit <sha>` line
             // precedes the format output. `%H` is the last line of this field
             // and is the same object name said twice; reading the header's
             // instead would rest on the two never disagreeing.
             let sha = sha.lines().next_back().unwrap_or_default().trim();
-            let Some(id) = record[1].trim().strip_prefix("ratify ") else {
+            let authored = record[1].trim().parse::<i64>().ok();
+            let Some(id) = record[2].trim().strip_prefix("ratify ") else {
                 continue;
             };
-            let body = record[2];
+            let body = record[3];
             // Newest first, and the newest wins: `rev-list` returned the same
             // order and the search took the first match, so a decision ratified
             // twice answers with the same commit it answered with before.
@@ -1810,6 +1819,7 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
                     Ratification {
                         sha: sha.to_string(),
                         anchor,
+                        authored,
                     },
                 );
             }
@@ -1902,6 +1912,14 @@ fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Rati
         // Headers, one empty line, then the message. The blank line inside an
         // armoured signature is not that separator: every continuation line of
         // a header carries a leading space, so it never reads as empty here.
+        // The author header reads `author <name> <email> <epoch> <zone>`, and
+        // the epoch is the second field from the right whatever the name holds.
+        let authored = text
+            .lines()
+            .take_while(|l| !l.is_empty())
+            .find_map(|l| l.strip_prefix("author "))
+            .and_then(|l| l.rsplit(' ').nth(1))
+            .and_then(|epoch| epoch.parse::<i64>().ok());
         let mut lines = text.lines().skip_while(|l| !l.is_empty());
         if lines.next().is_none() {
             continue;
@@ -1922,6 +1940,7 @@ fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Rati
             .map(|anchor| Ratification {
                 sha: sha.trim().to_string(),
                 anchor,
+                authored,
             }));
     }
     Ok(None)
