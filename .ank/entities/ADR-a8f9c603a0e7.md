@@ -5,7 +5,7 @@ slug: a-task-names-its-method-the-load-is-recorded-and
 title: A task names its method, the load is recorded, and the rate is read, never enforced
 created: 2026-09-13T09:20:42Z
 author: claude-code/fable-5.1+planning
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
   - crates/ank-core/**
@@ -14,8 +14,12 @@ scope:
   - docs/**
 constraint: |
   A task may carry method, one name among the sibling skills the binary carries, set by ank new task --method <name> or ank amend --method <name>; a name the binary does not carry is refused at exit 7 when the task is written, naming the ones it does. The field is optional, its absence means nobody designated one, and it earns no schema bump: a reader without the field concludes nothing false from its absence. ank context in execution mode prints the designated method on one line beneath the criterion, as the skill to load before the first edit. done never reads the field, check never faults a task for a method that did not fire, and no verifier inspects the route: the field is a recommendation, and ADR-e4a5a8873fe3 stands whole. A sibling that executes under a claim opens, after the claim, with one instruction that exists in no other file: ank log --method <name>, which writes a log entry whose records is method and whose title is the name, refused exactly where a log write is refused. ank skills, run in a corpus, reports per sibling how many tasks designate it, how many of those carry its entry, and how many entries fired on tasks that designated none; the rate is read from the corpus, printed to whoever asks, and sent nowhere. ank-plan teaches to set the method when the task's shape calls for one.
+ratified: c5d285f77ee8
+verified:
+  - by: claude-code/fable-5.1+ratify
+    at: 2026-09-13T09:57:04Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
