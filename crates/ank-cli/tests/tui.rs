@@ -2642,7 +2642,8 @@ fn a_document_ratified_through_the_reader_is_what_a_shell_accept_makes() {
 /// commit that made it binding. Two things are replaced and no more: the
 /// identifier, and every instant. Two documents are two documents and two acts
 /// happen at two moments, so a comparison that kept either would be asserting
-/// something false.
+/// something false. The creation record's identifier and produced hash are
+/// derived from those two, and [`masked_records`] says why they go with them.
 ///
 /// **The anchor is compared and never masked**, and that is the assertion doing
 /// the most work here. These two proposals carry the same constraint over the
@@ -2668,7 +2669,48 @@ fn ratification(repo: &Repo, id: &str) -> String {
         message.contains("ratify"),
         "no ratification commit for {id}:\n{message}"
     );
-    masked_instants(&format!("{shown}\n--\n{message}").replace(id, "<id>"))
+    masked_records(&masked_instants(
+        &format!("{shown}\n--\n{message}").replace(id, "<id>"),
+    ))
+}
+
+/// The two values of a creation record that follow from the identifier, masked
+/// (ADR-52bb0da2023a).
+///
+/// `new` leaves one entry about each document, and the entry's own identifier
+/// and the hash of the content it produced are both computed over a document
+/// whose identifier and instant differ from the other's: masking the document's
+/// identifier afterwards cannot make them agree. So they are masked the way the
+/// identifier is, by shape: `LOG-` and `produced ` each followed by twelve hex
+/// characters. The anchor under `ratified` carries neither prefix and is still
+/// compared byte for byte.
+#[cfg(unix)]
+fn masked_records(text: &str) -> String {
+    let mut out = text.to_string();
+    for (prefix, mask) in [("LOG-", "LOG-<entry>"), ("produced ", "produced <hash>")] {
+        let mut masked = String::new();
+        let mut rest = out.as_str();
+        while let Some(at) = rest.find(prefix) {
+            masked.push_str(&rest[..at]);
+            let after = &rest[at + prefix.len()..];
+            let hex = after
+                .get(..12)
+                .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()));
+            match hex {
+                Some(_) => {
+                    masked.push_str(mask);
+                    rest = &after[12..];
+                }
+                None => {
+                    masked.push_str(prefix);
+                    rest = after;
+                }
+            }
+        }
+        masked.push_str(rest);
+        out = masked;
+    }
+    out
 }
 
 /// Every RFC 3339 instant of a text, replaced.
