@@ -5,14 +5,18 @@ slug: an-entity-is-born-accounted-and-one-born-outside
 title: An entity is born accounted, and one born outside the CLI is a fault
 created: 2026-09-13T09:42:10Z
 author: claude-code/fable-5.1+planning
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
 constraint: |
   A verb that creates an entity of any kind but log writes a log entry recording the creation, the version it produced and the hash of the content it produced, on the terms the edit record already sets: the entry anchors nothing, no authority rests on it and no verb refuses on it. A verb that changes an entity's content outside a status transition keeps writing the edit record, with the fields it changed, the versions it moved between, the hash of the state it replaced and the hash of the content it produced. Content is every field a transition does not write: status, proof, ratified and verified belong to a transition and version belongs to the store, and the rest is content. check compares the newest produced hash an entity's entries carry against the entity as it stands and reports a signal naming both when they differ; an edit outside the CLI stays a signal, because a human with an editor keeps every power they had. An entity of any kind but log whose created instant is later than the ratification of this decision and whose entries carry no creation record is a fault, and the fault names ank edit <id> as the command that accounts for it, saying that the id and the verifiers are the reader's to check. An entity created before that instant, or carrying at least one entry with a produced hash, is silent, because the corpus is not migrated by a rule it predates. A log entry is the record and carries none. The version count is kept for the kinds whose transitions their own fields evidence, and is not attempted for a task. Nothing here refuses an edit: what the record buys is that an entity nobody's verb wrote is visible, and red in CI, on every harness alike.
 supersedes: ADR-f7dc76886db2
+ratified: f98317bfee0a
+verified:
+  - by: claude-code/fable-5.1+ratify
+    at: 2026-09-13T10:19:43Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
