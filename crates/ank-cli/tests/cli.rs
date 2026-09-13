@@ -9321,6 +9321,98 @@ fn context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_i
     assert!(!stdout(&out).contains("METHOD"), "{}", stdout(&out));
 }
 
+/// The document every other surface reads carries what the page names: `ank
+/// mcp` and `ank tui` see `context` only through `--json` (TASK-be0e6704e415).
+#[test]
+fn context_json_carries_the_method_beside_the_criterion_and_null_without_one() {
+    let r = Repo::new();
+    let designated = created_id_of(new_task(
+        &r,
+        "Designated",
+        &[
+            "--criteria",
+            "A verifiable criterion.",
+            "--method",
+            "diagnose",
+        ],
+    ));
+    let undesignated = created_id_of(new_task(
+        &r,
+        "Undesignated",
+        &["--criteria", "Another criterion."],
+    ));
+    let context = |agent: &str| {
+        let out = r.ank(agent, &["context", "--json"]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let raw = stdout(&out);
+        let doc: serde_yaml::Value = serde_yaml::from_str(&raw).unwrap();
+        assert_eq!(doc["contract"].as_u64(), Some(1), "the contract moved");
+        (raw, doc)
+    };
+
+    // Orientation: the key is there, and null, because nobody is executing.
+    let (raw, doc) = context("claude-code@ank");
+    assert_eq!(doc["mode"].as_str(), Some("orientation"), "{raw}");
+    assert!(raw.contains("\"criteria\":null,\"method\":null,"), "{raw}");
+
+    // Execution on a task designating one: the name, directly after the criterion.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &designated])), 0);
+    let (raw, doc) = context("claude-code@ank");
+    assert_eq!(doc["mode"].as_str(), Some("execution"), "{raw}");
+    assert_eq!(doc["method"].as_str(), Some("diagnose"), "{raw}");
+    assert!(
+        raw.contains("\"criteria\":\"A verifiable criterion.\",\"method\":\"diagnose\","),
+        "{raw}"
+    );
+
+    // Execution on a task designating none: null, never absent.
+    assert_eq!(code(&r.ank("codex/1.0", &["claim", &undesignated])), 0);
+    let (raw, doc) = context("codex/1.0");
+    assert_eq!(doc["mode"].as_str(), Some("execution"), "{raw}");
+    assert_eq!(
+        doc["criteria"].as_str(),
+        Some("Another criterion."),
+        "{raw}"
+    );
+    assert!(
+        raw.contains("\"criteria\":\"Another criterion.\",\"method\":null,"),
+        "{raw}"
+    );
+
+    // The contract declares it, optional, beside `criteria`, and the version
+    // it is declared under is the one it was before.
+    let help: serde_yaml::Value = serde_yaml::from_str(&help_document()).unwrap();
+    assert_eq!(help["contract"].as_u64(), Some(1));
+    let verb = help["verbs"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .find(|v| v["name"].as_str() == Some("context"))
+        .unwrap();
+    let fields: Vec<(&str, bool)> = verb["returns"][0]["fields"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["name"].as_str().unwrap(),
+                f["nullable"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    let at = fields.iter().position(|(n, _)| *n == "criteria").unwrap();
+    assert_eq!(fields[at + 1], ("method", true), "{fields:?}");
+    let method = &verb["returns"][0]["fields"][at + 1];
+    assert_eq!(method["type"].as_str(), Some("string"), "{method:?}");
+}
+
+fn created_id_of(text: String) -> String {
+    text.lines()
+        .find_map(|l| l.strip_prefix("id: "))
+        .unwrap()
+        .to_string()
+}
+
 #[test]
 fn help_json_carries_method_on_new_amend_and_log_and_on_nothing_else() {
     let out = help_document();

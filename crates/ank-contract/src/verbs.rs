@@ -156,6 +156,10 @@ const CONTEXT_OUT: &[Field] = &[
     f("mode", Type::Str),
     opt("head", Type::Str),
     opt("criteria", Type::Str),
+    // Gained within contract 1, as `status.corpus` was (ADR-6fd69efb629c): the
+    // sibling a claimed task designates, null in orientation and on a task
+    // designating none (ADR-a8f9c603a0e7).
+    opt("method", Type::Str),
     f(
         "constraints",
         Type::Array(&[

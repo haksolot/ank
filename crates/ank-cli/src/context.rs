@@ -1814,6 +1814,15 @@ pub fn render_json(view: &View, budget: usize) -> String {
         } => Some(c.clone()),
         _ => None,
     };
+    // What the page names beneath the criterion, and null wherever it names
+    // nothing: `ank mcp` and `ank tui` read this document and never the page
+    // (TASK-be0e6704e415).
+    let method = match &view.mode {
+        Mode::Execution {
+            method: Some(m), ..
+        } => Some(m.as_str()),
+        _ => None,
+    };
     // The entries the budget kept, which in execution mode is the one section
     // that yields: the criterion above it is why the mode exists and a
     // constraint is never cut, so the log is where a `--json` caller and a
@@ -1824,6 +1833,7 @@ pub fn render_json(view: &View, budget: usize) -> String {
         .str("mode", mode)
         .opt_str("head", head.as_deref())
         .opt_str("criteria", criteria.as_deref())
+        .opt_str("method", method)
         .array("constraints", constraints)
         .array("proposed", proposals)
         .array("specs", specs)
