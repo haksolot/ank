@@ -2,7 +2,7 @@
 name: ank-plan
 description: Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
 metadata:
-  revision: "c006ab14a4df"
+  revision: "83130b664c7e"
 ---
 
 # ank-plan
@@ -60,6 +60,11 @@ Each settled decision becomes exactly one kind of entity:
     concrete bounded work               ank new task    scope and criteria mandatory
     an ordering between tasks           ank amend --blocked-by
     a passing observation               ank log
+
+A task names the policy its shape calls for with `ank new task --method
+<name>`: `diagnose` when the criterion names a defect, `tdd` when it names
+behaviour to build. Leave it unset otherwise, since an absent method says only
+that nobody designated one. The name is the sibling's directory, never ank-tdd.
 
 A done_criteria states what a verifier can check, not what an executor should
 attempt. If the criterion will not write, the decision is not settled: back to
