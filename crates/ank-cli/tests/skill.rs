@@ -262,9 +262,14 @@ fn help_order() -> Vec<String> {
 /// TASK-7ed19b16895e, TASK-49746735127f) turned the suite red until this line
 /// was edited, in the same commit.
 ///
-/// `skills` was declared here ahead of the ratification of SPEC-e89b6a498634,
-/// which lists it, and left in the commit of TASK-544ec9655570 that ships it.
-const NOT_YET_DISPATCHED: [&str; 0] = [];
+/// `skills` was declared here ahead of the ratification of the §4 document
+/// that lists it, now SPEC-77689b90b211, and left in the commit of
+/// TASK-544ec9655570 that ships it.
+///
+/// `update` is declared ahead of the ratification of SPEC-77689b90b211, which
+/// lists it (ADR-64f32c74a0f9), and leaves in the commit of TASK-161c402c27fb
+/// that ships it.
+const NOT_YET_DISPATCHED: [&str; 1] = ["update"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
