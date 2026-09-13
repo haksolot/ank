@@ -29,6 +29,7 @@
 //! guards that decision is a positive assertion instead, below.
 
 use ank_core::log::MESSAGE_LINE_MAX;
+use ank_core::registry::{by_type_name, FieldValue};
 use ank_core::*;
 use std::fs;
 use std::path::PathBuf;
@@ -246,6 +247,121 @@ fn an_adr_carries_a_reading_too() {
     // `verified` sits between `ratified` and `schema`, and the round-trip test
     // is what proves the position rather than this one.
     assert_eq!(a.ratified.as_deref(), Some("9f2b41c70de8"));
+}
+
+/// `method` is optional, earns no bump, and sits between `verify` and `proof`
+/// (§3, ADR-a8f9c603a0e7). The round-trip test proves the position byte for
+/// byte; this one proves the value is read, that the fixture sits at the schema
+/// the field arrived in without raising it, and that a task written without the
+/// field, at any version in the range, reads as nobody having designated one.
+#[test]
+fn a_task_names_its_method_and_one_without_it_names_none() {
+    let input = fs::read_to_string(golden_dir("valid").join("TASK-4d1a6e3b9c07.md")).unwrap();
+    let t = parse_task(&input).unwrap();
+    assert_eq!(t.method.as_deref(), Some("diagnose"));
+    assert_eq!(t.schema, 4);
+    assert_eq!(SCHEMA_VERSION, 4, "method earns no bump");
+    let written = serialize_task(&t);
+    let verify = written.find("\nverify: ").expect("verify is written");
+    let method = written
+        .find("\nmethod: diagnose\n")
+        .expect("method is written");
+    let schema = written.find("\nschema: ").expect("schema is written");
+    assert!(verify < method && method < schema, "{written}");
+
+    for older in [
+        "TASK-51c2a7f0b3d9.md",
+        "TASK-8f3a91c2d4e7.md",
+        "TASK-2f8c41ba07d3.md",
+    ] {
+        let input = fs::read_to_string(golden_dir("valid").join(older)).unwrap();
+        let t = parse_task(&input).unwrap_or_else(|e| panic!("{older}: {e}"));
+        assert_eq!(t.method, None, "{older}");
+        assert!(!serialize_task(&t).contains("method:"), "{older}");
+    }
+}
+
+/// `docs/format.md` writes the registry out as four tables, and a reader porting
+/// the format reads the tables and not this crate. So the tables are compared
+/// against what the serializer actually does: each row's field, in order, is
+/// the registry's, and each row's emission is the form the serializer wrote
+/// that field in, over every valid fixture that carries it.
+#[test]
+fn the_tables_in_docs_format_md_match_the_serializer() {
+    let doc =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/format.md"))
+            .unwrap()
+            .replace("\r\n", "\n");
+
+    // The rows under each `### <Kind>` heading, as (field, emission).
+    let table = |heading: &str| -> Vec<(String, String)> {
+        let start = doc
+            .find(&format!("\n### {heading}\n"))
+            .unwrap_or_else(|| panic!("docs/format.md has no ### {heading}"));
+        doc[start..]
+            .lines()
+            .skip(2)
+            .skip_while(|l| !l.starts_with("| # |"))
+            .skip(2)
+            .take_while(|l| l.starts_with('|'))
+            .map(|l| {
+                let cells: Vec<&str> = l.split('|').map(str::trim).collect();
+                (cells[2].trim_matches('`').to_string(), cells[3].to_string())
+            })
+            .collect()
+    };
+
+    let mut observed: Vec<(&str, String, String)> = Vec::new();
+    for path in entity_fixtures("valid") {
+        let input = fs::read_to_string(&path).unwrap();
+        let entity = parse_entity(&input).unwrap();
+        let spec = entity.kind_spec();
+        for field in spec.fields {
+            let Some(value) = entity.field_value(field.name) else {
+                continue;
+            };
+            let form = match value {
+                FieldValue::Bare(s) if s.parse::<u64>().is_ok() => "integer",
+                FieldValue::Bare(_) => "bare",
+                FieldValue::Scalar(_) => "scalar",
+                FieldValue::Block(_) => "literal block",
+                FieldValue::Flow(_) => "flow list",
+                FieldValue::Seq(_) => "block sequence",
+                FieldValue::Proofs(_) | FieldValue::Readings(_) => "block sequence of maps",
+            };
+            observed.push((spec.name, field.name.to_string(), form.to_string()));
+        }
+    }
+
+    for (kind, heading) in [
+        ("task", "Task"),
+        ("adr", "ADR"),
+        ("spec", "Spec"),
+        ("log", "Log entry"),
+    ] {
+        let rows = table(heading);
+        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
+        let registry: Vec<&str> = by_type_name(kind)
+            .unwrap()
+            .fields
+            .iter()
+            .map(|f| f.name)
+            .collect();
+        assert_eq!(
+            names, registry,
+            "docs/format.md ### {heading} is not the registry"
+        );
+        for (k, name, form) in &observed {
+            if *k != kind {
+                continue;
+            }
+            let (_, documented) = rows.iter().find(|(n, _)| n == name).unwrap();
+            assert_eq!(
+                documented, form,
+                "docs/format.md ### {heading} writes {name} as {documented}, the serializer as {form}"
+            );
+        }
+    }
 }
 
 /// Goldens are the specification made executable, and this is the assertion

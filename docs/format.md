@@ -127,7 +127,7 @@ refusals answer different questions: `priorty:` in a `task` is a typo, and
 | 10 | `done_criteria` | literal block | optional |
 | 11 | `criteria_by` | bare | `creator` \| `claimer`; invalid without `done_criteria` |
 | 12 | `verify` | flow list | omitted when empty |
-| 13 | `method` | bare | optional, omitted when absent; one sibling skill the binary carries |
+| 13 | `method` | scalar | optional, omitted when absent; one sibling skill the binary carries |
 | 14 | `proof` | block sequence of maps | omitted when empty |
 | 15 | `verified` | block sequence of maps | optional, omitted when empty |
 | 16 | `schema` | integer | |

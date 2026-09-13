@@ -343,6 +343,16 @@ pub struct Task {
     pub done_criteria: Option<String>,
     pub criteria_by: Option<CriteriaBy>,
     pub verify: Vec<String>,
+    /// The sibling skill the author recommends for this work, by the name the
+    /// binary carries it under (§3, ADR-a8f9c603a0e7).
+    ///
+    /// `None` means nobody designated one, and never that the file predates
+    /// the field: the two are the same statement, which is why the field earns
+    /// no schema bump. A free string at parse time, like `records`: which names
+    /// are known is a property of the binary reading the file, and a corpus
+    /// written by a build carrying a sibling this one does not must stay
+    /// readable. Nothing reads it as more than a recommendation.
+    pub method: Option<String>,
     pub proof: Vec<Proof>,
     /// Readings, optional and empty by default (§3).
     pub verified: Vec<Verified>,

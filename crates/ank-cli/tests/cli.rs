@@ -9099,6 +9099,255 @@ fn new_refuses_a_verifier_that_config_does_not_declare() {
 }
 
 // ---------------------------------------------------------------------------
+// The method a task names (ADR-a8f9c603a0e7, TASK-e0d72ec220a1)
+// ---------------------------------------------------------------------------
+
+/// The siblings this binary carries, as `--method` spells them: the directory
+/// names under `skill/`, which the build embeds. Read from the tree rather than
+/// listed, so a sibling added beside the others is one this suite expects.
+fn sibling_directories() -> Vec<String> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skill");
+    let mut dirs: Vec<String> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join("SKILL.md").is_file())
+        .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    dirs.sort();
+    assert!(dirs.contains(&"diagnose".to_string()), "{dirs:?}");
+    assert!(dirs.contains(&"tdd".to_string()), "{dirs:?}");
+    dirs
+}
+
+#[test]
+fn new_writes_the_method_in_its_canonical_position_and_show_prints_it() {
+    let r = Repo::new();
+    let text = new_task(
+        &r,
+        "Designated",
+        &["--criteria", "A criterion.", "--method", "diagnose"],
+    );
+    // After `verify`'s position and before `schema`: this task declares no
+    // verifier and no proof, so `method` sits directly after `criteria_by`.
+    assert!(
+        text.contains("criteria_by: creator\nmethod: diagnose\nschema: 4\n"),
+        "{text}"
+    );
+    let id = text
+        .lines()
+        .find_map(|l| l.strip_prefix("id: "))
+        .unwrap()
+        .to_string();
+    let out = r.ank("claude-code@ank", &["show", &id]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("\nmethod: diagnose\n"),
+        "{}",
+        stdout(&out)
+    );
+
+    // With a verifier declared, it follows `verify`.
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    let text = new_task(&r, "Verified", &["--verify", "ok", "--method", "tdd"]);
+    assert!(
+        text.contains("verify: [ok]\nmethod: tdd\nschema: 4\n"),
+        "{text}"
+    );
+
+    // And a task that names none carries no line at all.
+    let text = new_task(&r, "Undesignated", &[]);
+    assert!(!text.contains("method"), "{text}");
+}
+
+#[test]
+fn new_refuses_a_method_the_binary_does_not_carry_naming_the_ones_it_does() {
+    let r = Repo::new();
+    let carried = sibling_directories();
+    // `ank` is the contract and not a sibling; `ank-tdd` is the frontmatter
+    // spelling, refused so that one method has one name.
+    for name in ["nope", "ank", "ank-tdd"] {
+        let out = r.ank(
+            "claude-code@ank",
+            &[
+                "new", "task", "--title", "T", "--scope", "src/**", "--method", name,
+            ],
+        );
+        let err = stderr(&out);
+        assert_eq!(code(&out), 7, "{name}: {err}");
+        assert!(err.contains(&format!("'{name}'")), "{err}");
+        for sibling in &carried {
+            assert!(err.contains(sibling.as_str()), "{sibling} not named: {err}");
+        }
+    }
+    let written = std::fs::read_dir(r.0.join(".ank/entities"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("TASK-")
+        })
+        .count();
+    assert_eq!(written, 0, "a refused name wrote a task");
+
+    // The frontmatter spelling is told the short one.
+    let out = r.ank(
+        "claude-code@ank",
+        &[
+            "new", "task", "--title", "T", "--scope", "src/**", "--method", "ank-tdd",
+        ],
+    );
+    assert!(stderr(&out).contains("--method tdd"), "{}", stderr(&out));
+
+    // An ADR and a spec are not work, and the flag is refused, never dropped.
+    for kind in [
+        &[
+            "new",
+            "adr",
+            "--title",
+            "T",
+            "--scope",
+            "src/**",
+            "--constraint",
+            "A rule.",
+        ][..],
+        &["new", "spec", "--title", "T", "--scope", "src/**"][..],
+    ] {
+        let mut args = kind.to_vec();
+        args.extend(["--method", "tdd"]);
+        let out = r.ank("claude-code@ank", &args);
+        assert_ne!(
+            code(&out),
+            0,
+            "{args:?}: a dropped flag teaches the caller it worked"
+        );
+        assert!(stderr(&out).contains("--method"), "{}", stderr(&out));
+    }
+}
+
+/// The whole life of the field through the binary: written by `new`, named by
+/// `context` after the claim and by nothing before it, ignored by `done`, and
+/// replaced by `amend` on the done task, with the edit journaled.
+#[test]
+fn context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_it() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    let text = new_task(
+        &r,
+        "Designated",
+        &[
+            "--criteria",
+            "A verifiable criterion.",
+            "--verify",
+            "ok",
+            "--method",
+            "diagnose",
+        ],
+    );
+    let id = text
+        .lines()
+        .find_map(|l| l.strip_prefix("id: "))
+        .unwrap()
+        .to_string();
+    let line = "METHOD diagnose, the skill to load before the first edit: ank-diagnose";
+
+    // Orientation names no method: nobody is executing anything yet.
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(!stdout(&out).contains("METHOD"), "{}", stdout(&out));
+
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", &id])), 0);
+    let out = r.ank("claude-code@ank", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    let lines: Vec<&str> = page.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| *l == line)
+        .unwrap_or_else(|| panic!("no method line:\n{page}"));
+    assert_eq!(page.matches("METHOD").count(), 1, "{page}");
+    assert_eq!(lines[at - 2], "  A verifiable criterion.", "{page}");
+    assert!(lines[..at].iter().any(|l| *l == "DONE_CRITERIA"), "{page}");
+
+    // No entry recording the method was ever written, and done closes green on
+    // its verifiers alone: it never reads the field.
+    let out = r.ank("claude-code@ank", &["log", &id]);
+    assert!(!stdout(&out).contains("diagnose"), "{}", stdout(&out));
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let done = r.task_text(&id);
+    assert!(done.contains("status: done"), "{done}");
+    assert!(done.contains("via: verifier"), "{done}");
+    assert!(done.contains("\nmethod: diagnose\n"), "{done}");
+
+    // Replaced on the done task, and the edit is journaled with the value.
+    let out = r.ank("claude-code@ank", &["amend", &id, "--method", "tdd"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let amended = r.task_text(&id);
+    assert!(amended.contains("\nmethod: tdd\n"), "{amended}");
+    assert!(!amended.contains("diagnose"), "{amended}");
+    assert!(amended.contains("status: done"), "{amended}");
+    let out = r.ank("claude-code@ank", &["log", &id]);
+    assert!(
+        stdout(&out).contains("method tdd (version"),
+        "the amend was not journaled:\n{}",
+        stdout(&out)
+    );
+
+    // The same value again is nothing to write, and an unknown one is refused
+    // on the done task exactly as on an open one.
+    let out = r.ank("claude-code@ank", &["amend", &id, "--method", "tdd"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["amend", &id, "--method", "nope"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+    assert!(stderr(&out).contains("diagnose"), "{}", stderr(&out));
+    assert!(r.task_text(&id).contains("\nmethod: tdd\n"));
+
+    // A task designating none: after its claim, context prints no line at all.
+    let text = new_task(&r, "Undesignated", &["--criteria", "Another criterion."]);
+    let other = text
+        .lines()
+        .find_map(|l| l.strip_prefix("id: "))
+        .unwrap()
+        .to_string();
+    assert_eq!(code(&r.ank("codex/1.0", &["claim", &other])), 0);
+    let out = r.ank("codex/1.0", &["context"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("Another criterion."),
+        "{}",
+        stdout(&out)
+    );
+    assert!(!stdout(&out).contains("METHOD"), "{}", stdout(&out));
+}
+
+#[test]
+fn help_json_carries_method_on_new_and_amend_and_on_nothing_else() {
+    let out = help_document();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
+    let verbs = doc["verbs"].as_sequence().expect(&out);
+    let mut carrying: Vec<&str> = verbs
+        .iter()
+        .filter(|v| {
+            v["flags"]
+                .as_sequence()
+                .unwrap()
+                .iter()
+                .any(|f| f["name"].as_str() == Some("--method"))
+        })
+        .map(|v| v["name"].as_str().unwrap())
+        .collect();
+    carrying.sort_unstable();
+    assert_eq!(carrying, ["amend", "new"], "{out}");
+}
+
+fn help_document() -> String {
+    let out = help_from_nowhere(&["help", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    stdout(&out)
+}
+
+// ---------------------------------------------------------------------------
 // The verifiers a task is born with (ADR-443590981e41, TASK-935f4fb886f3)
 // ---------------------------------------------------------------------------
 
@@ -12082,6 +12331,9 @@ fn valid_value(flag: &str) -> &'static str {
         // makes dropping a citation to a deleted document possible at all.
         "--reference" | "--drop-reference" => "SPEC-000000000001",
         "--verify" => "cargo-test",
+        // A sibling this binary carries: any other name is the verb correctly
+        // refusing the value, which is not a refusal of the flag.
+        "--method" => "tdd",
         "--criteria" => "A measurable thing.",
         "--reason" => "a reason",
         "--title" => "A title",
@@ -13146,7 +13398,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 29] = [
+const NOT_A_PATH: [&str; 30] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13198,6 +13450,9 @@ const NOT_A_PATH: [&str; 29] = [
     // Carries no value at all: it declines the verifiers `config.yml` marks,
     // and a verifier is named rather than located (ADR-443590981e41).
     "--no-verify",
+    // A sibling skill's name, which the binary carries rather than locates
+    // (ADR-a8f9c603a0e7).
+    "--method",
     "--body",
     "--type",
     "--status",

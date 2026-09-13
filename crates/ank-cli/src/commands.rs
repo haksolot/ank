@@ -157,6 +157,7 @@ pub fn new(
                 criteria_by: criteria.as_ref().map(|_| CriteriaBy::Creator),
                 done_criteria: criteria,
                 verify: verifiers_of(inv, cfg)?,
+                method: method_of(inv)?,
                 proof: Vec::new(),
                 // A reading is recorded by whoever reads, never by `new` (§3).
                 verified: Vec::new(),
@@ -184,6 +185,17 @@ pub fn new(
                 return Err(CliError::new(
                     ExitCode::Generic,
                     "--no-verify applies to a task: an ADR declares no verifier",
+                )
+                .with_hint(
+                    "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
+                ));
+            }
+            // A method is how a piece of work is carried out, and an ADR is not
+            // work (ADR-a8f9c603a0e7).
+            if inv.value("--method").is_some() {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "--method applies to a task: an ADR is a decision, not work",
                 )
                 .with_hint(
                     "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
@@ -324,7 +336,7 @@ fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
         )
         .with_hint(hint));
     }
-    for flag in ["--criteria", "--blocked-by", "--verify"] {
+    for flag in ["--criteria", "--blocked-by", "--verify", "--method"] {
         if !inv.values(flag).is_empty() {
             return Err(CliError::new(
                 ExitCode::Generic,
@@ -463,6 +475,7 @@ fn skeleton(
             done_criteria: inv.value("--criteria").map(ensure_newline),
             criteria_by: inv.value("--criteria").map(|_| CriteriaBy::Creator),
             verify: verifiers_of(inv, cfg)?,
+            method: method_of(inv)?,
             proof: Vec::new(),
             // A reading is recorded by whoever reads, never by `new` (§3).
             verified: Vec::new(),
@@ -653,6 +666,9 @@ fn create_filled(
             }
             resolve_blockers(store, &t.blocked_by, &hint)?;
             check_verifiers(&t.verify, cfg)?;
+            // A name typed into the template is checked where the flag is, and
+            // for the same reason: the form is not a way around the refusal.
+            t.method = t.method.as_deref().map(crate::skills::method).transpose()?;
             // A glob typed into the template is caller-supplied like any other,
             // and it is about to be written into an entity.
             t.scope = context::normalised_globs(&t.scope, repo, "ank new task --scope")?;
@@ -981,6 +997,15 @@ fn verifiers_of(inv: &Invocation, cfg: &Config) -> Result<Vec<String>> {
         return Ok(cfg.default_verifiers.clone());
     }
     Ok(out)
+}
+
+/// `--method`, checked against the siblings this binary carries (§4).
+///
+/// Absent is `None` and nothing is seeded: unlike `verify`, no default exists
+/// for a method, because which one a task calls for is its author's judgement
+/// about its shape and `config.yml` cannot know it (ADR-a8f9c603a0e7).
+fn method_of(inv: &Invocation) -> Result<Option<String>> {
+    inv.value("--method").map(crate::skills::method).transpose()
 }
 
 /// The ADR this one replaces, resolved at creation.

@@ -484,6 +484,7 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
             note("done_criteria", a.done_criteria != b.done_criteria);
             note("criteria_by", a.criteria_by != b.criteria_by);
             note("verify", a.verify != b.verify);
+            note("method", a.method != b.method);
             note("proof", a.proof != b.proof);
             note("verified", a.verified != b.verified);
             note("schema", a.schema != b.schema);
@@ -570,6 +571,7 @@ mod tests {
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],
+            method: None,
             proof: vec![],
             verified: Vec::new(),
             schema: 2,
