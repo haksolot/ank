@@ -1497,13 +1497,19 @@ jobs:
           # What the installer printed between its question about the skills
           # and its next question: the answer's own output, and nothing else if
           # the script adds nothing of its own.
+          #
+          # The prompt is looked for without the space that ends it: a
+          # transcript records a line written with -NoNewline trimmed, so the
+          # space is not there to find. Measured on a runner, where the lookup
+          # with it found nothing, and on a local transcript, where the prompt
+          # is followed directly by a line break.
           function Get-AfterTheAnswer {
               param([string]$Out)
-              $prompt = 'Install them now? [Y/n] '
-              $start = $Out.IndexOf($prompt)
+              $prompt = 'Install them now? [Y/n]'
+              $start = $Out.IndexOf($prompt, [System.StringComparison]::Ordinal)
               if ($start -lt 0) { return $null }
               $start += $prompt.Length
-              $end = $Out.IndexOf('Print the three prompts', $start)
+              $end = $Out.IndexOf('Print the three prompts', $start, [System.StringComparison]::Ordinal)
               if ($end -lt 0) { return $null }
               return (Get-Plain $Out.Substring($start, $end - $start))
           }
