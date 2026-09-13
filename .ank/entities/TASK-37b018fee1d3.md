@@ -5,7 +5,7 @@ slug: the-installers-answer-their-question-with-ank-sk
 title: The installers answer their question with ank skills --install
 created: 2026-09-13T09:21:21Z
 author: claude-code/fable-5.1+planning
-status: in_progress
+status: done
 scope:
   - install.sh
   - install.ps1
@@ -15,8 +15,21 @@ done_criteria: |
   On acceptance both installers run the binary they just installed with skills --install and report its outcome; the string npx skills add appears in neither script, and with node absent the installer prints nothing of its own beyond what the verb printed. Declining, Enter on the default, no terminal, end of input and the disabling flag behave as before, proved by the existing pty rehearsals staying green. install.yml still makes the skill step fail on purpose on all three platforms and shows the installer exiting 0 with the binary in place. Nothing else in either installer changes.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/71cd6a381259@390e712
+    tree: scope/f6ca8d67a0de
+    criteria: 9ac388f8ddc0
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@390e712
+    tree: scope/f6ca8d67a0de
+    criteria: 9ac388f8ddc0
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 The question stays where it is: it is proved on three platforms through a
