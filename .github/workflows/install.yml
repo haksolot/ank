@@ -40,6 +40,10 @@ env:
   # release instead of the staged one cannot pass.
   STAGED_VERSION: "9.9.9"
   STAGED_PORT: "8731"
+  # A second staged release, carrying the ank this tree builds rather than a
+  # stand-in. The skill step runs the installed binary's own verb, so the
+  # rehearsals of it need a binary that has one; served beside the first.
+  BUILT_VERSION: "9.9.8"
 
 jobs:
   install-unix:
@@ -96,10 +100,17 @@ jobs:
           # thing --help says it does: a caller who reads this and is then
           # asked a question they were not told about has been surprised by
           # their installer.
-          printf '%s' "$out" | grep -q -- 'npx skills add haksolot/ank' || {
+          printf '%s' "$out" | grep -q -- 'ank skills --install' || {
             echo "--help does not name the command the offer runs"
             exit 1
           }
+          # And the offer is the binary's verb, not an npx call of the script's
+          # own (ADR-e1d750884b82): asked of the file, since a comment carrying
+          # the old command would be the first step back towards it.
+          if grep -nF 'npx skills add' install.sh; then
+            echo "install.sh still carries an npx invocation of its own"
+            exit 1
+          fi
           # One executable lands, so --help says one lands, and it names the
           # two verbs that used to be the reason to look for a second file: a
           # caller who reads this and then goes hunting for a protocol surface
@@ -318,6 +329,53 @@ jobs:
           }
           echo "one executable, and it answers"
 
+      # The skill step is `ank skills --install` run by the binary the script
+      # just installed (ADR-e1d750884b82), so its rehearsal needs a release
+      # whose binary has that verb. No published release has one yet, and a
+      # stand-in printing what the verb prints would rehearse the stand-in. So
+      # the release below carries ank as this tree builds it, and a stub npx is
+      # the only thing faked.
+      #
+      # Built for the runner's own triple, whichever one the archive name
+      # carries: the script picks an archive by name and never reads the
+      # format of what is inside, and what has to run here is this machine.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-install-
+
+      - name: stage a release carrying the ank this tree builds
+        run: |
+          set -e
+          cargo build --locked --bin ank
+          name="ank-${BUILT_VERSION}-${{ matrix.target }}"
+          mkdir -p "built/$name"
+          cp target/debug/ank "built/$name/ank"
+          # Asked before it is packaged: a build that carried no skills would
+          # answer every case below with one line and still exit 0.
+          "built/$name/ank" skills
+          "built/$name/ank" skills | grep -q '^ank ' || {
+            echo "the built binary lists no ank skill"
+            exit 1
+          }
+
+          cd built
+          tar czf "${name}.tar.gz" "$name"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          else
+            shasum -a 256 "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          fi
+          mkdir -p "../stage/srv/v${BUILT_VERSION}"
+          cp "${name}.tar.gz" "${name}.tar.gz.sha256" "../stage/srv/v${BUILT_VERSION}/"
+          curl -fs -o /dev/null "http://127.0.0.1:${STAGED_PORT}/v${BUILT_VERSION}/${name}.tar.gz.sha256"
+          echo "serving ${name} on ${STAGED_PORT}"
+
       # The offer ADR-5fbd99bf6fd5 describes, driven through a real pty, which
       # is the only place it exists: it is gated on a terminal, and a workflow
       # step is precisely a machine without one. `os.forkpty` gives the
@@ -332,30 +390,28 @@ jobs:
       #
       # `npx` is replaced by one that fails on purpose, which is the last
       # clause of the criterion asked as a falsification rather than as a
-      # review: an install that has already finished stays finished, so the
-      # exit code is 0, the binary is in place, and the failure is
-      # reported instead of swallowed.
+      # review: the installed binary's `skills --install` fails because the
+      # npx it hands the skills to fails, and an install that has already
+      # finished stays finished, so the exit code is 0, the binary is in place,
+      # and the failure is reported instead of swallowed.
       - name: the offer is asked at a terminal, and no failure of it changes the exit code
         env:
           ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
         run: |
           set -e
 
-          # A node and an npx that exist, answer, and fail. The marker is how
-          # "it was not run" is asserted about a command rather than about a
-          # message: a file that is not there is not an absence of prose.
+          # An npx that exists, answers, and fails. The marker is how "it was
+          # not run" is asserted about a command rather than about a message: a
+          # file that is not there is not an absence of prose. No node beside
+          # it: the verb looks for npx and nothing else.
           mkdir -p fakenode
-          cat > fakenode/node <<'EOF'
-          #!/bin/sh
-          echo "staged stand-in for node"
-          EOF
           cat > fakenode/npx <<'EOF'
           #!/bin/sh
           printf 'npx ran: %s\n' "$*" >> "$NPX_MARKER"
           echo "npx: this one fails on purpose" >&2
           exit 1
           EOF
-          chmod +x fakenode/node fakenode/npx
+          chmod +x fakenode/npx
 
           # A PATH with no node on it, built by naming what the installer uses
           # rather than by removing entries from the real one: node lives in
@@ -370,12 +426,13 @@ jobs:
             fi
           done
           test ! -e nonode/node || { echo "the node-free PATH has a node on it"; exit 1; }
+          test ! -e nonode/npx || { echo "the node-free PATH has an npx on it"; exit 1; }
 
           cat > offer.py <<'PY'
-          import fcntl, os, re, select, signal, struct, sys, termios
+          import fcntl, os, re, select, signal, struct, subprocess, sys, termios
 
           INSTALL = os.path.join(os.getcwd(), "install.sh")
-          VERSION = os.environ["STAGED_VERSION"]
+          VERSION = os.environ["BUILT_VERSION"]
           HERE = os.getcwd()
           FAKE = os.path.join(HERE, "fakenode")
           NONODE = os.path.join(HERE, "nonode")
@@ -504,17 +561,44 @@ jobs:
               code, out, timed_out = drive(args, keys, env)
               skills_asked = out.count(SKILLS_Q)
               adopt_asked = out.count(ADOPT_Q)
+              ran = os.path.exists(marker)
+              handed = open(marker).read() if ran else ""
               print("=" * 70)
               print(label, "-> exit", code,
                     "| skills asked", skills_asked, "| adoption asked", adopt_asked,
-                    "| npx ran", os.path.exists(marker), "| timed out", timed_out)
+                    "| npx ran", ran, "| timed out", timed_out)
               sys.stdout.write(out.replace("\r", ""))
               sys.stdout.write("\n")
+              if handed:
+                  sys.stdout.write(handed)
               return {
                   "label": label, "code": code, "out": out, "timed_out": timed_out,
                   "skills_asked": skills_asked, "adopt_asked": adopt_asked,
-                  "ran": os.path.exists(marker), "dir": target,
+                  "ran": ran, "handed": handed, "dir": target,
               }
+
+          # The temporary directory the verb writes is new on every run, so two
+          # runs are compared with its name folded to one spelling.
+          def plain(text):
+              text = ESCAPES.sub("", text).replace("\r\n", "\n")
+              return re.sub(r"ank-skills-[0-9]+-[0-9]+-[0-9]+", "ank-skills-N", text).strip()
+
+          # What the installer printed between its question about the skills
+          # and its next question: the answer's own output, and nothing else if
+          # the script adds nothing of its own.
+          SKILLS_PROMPT = SKILLS_Q + " [Y/n] "
+          def after_the_answer(out):
+              start = out.index(SKILLS_PROMPT) + len(SKILLS_PROMPT)
+              return plain(out[start:out.index(ADOPT_Q, start)])
+
+          # What the verb prints run by hand, from the binary the case installed
+          # and on the same PATH: the reference the installer's output is held to.
+          def the_verb_alone(run, path):
+              done = subprocess.run(
+                  [os.path.join(run["dir"], "ank"), "skills", "--install"],
+                  env=dict(os.environ, PATH=path), stdin=subprocess.DEVNULL,
+                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+              return done.returncode, plain(done.stdout.decode("utf-8", "replace"))
 
           def want(run, ok, why):
               if not ok:
@@ -553,10 +637,14 @@ jobs:
           want(run, drew_the_mark(run["out"]),
                "what was drawn is not the shape of assets/ank.svg")
           asked_once(run)
-          want(run, run["ran"], "it accepted and never ran npx")
+          want(run, run["ran"], "it accepted and npx never ran")
+          # Run by the installed binary and not by the script: the verb hands
+          # npx the directory it wrote, and the script never names one.
+          want(run, re.search(r"^npx ran: skills add \S*ank-skills-", run["handed"], re.M) is not None,
+               "npx was not handed the directory the verb writes: %r" % run["handed"])
           want(run, installed(run), "the binary is not in place after the offer failed")
-          want(run, "npx skills add haksolot/ank" in run["out"], "it never named the command it ran")
-          want(run, "exited 1" in run["out"], "it swallowed the failure instead of reporting it")
+          want(run, "ank skills --install exited 1" in run["out"],
+               "it swallowed the failure instead of reporting it")
 
           # Enter is the default the criterion names, so it has to reach npx
           # the way a typed yes does.
@@ -593,23 +681,32 @@ jobs:
           want(run, not drew_logo(run["out"]), "--no-welcome drew the logo at a terminal")
           want(run, installed(run), "--no-welcome cost the install its binary")
 
-          # node absent: the command, and one line saying why it was not run.
+          # node absent: the verb says what to run and exits 0, and the script
+          # adds nothing of its own to that. Held to the verb run by hand, so
+          # "nothing of its own" is a comparison and not a list of phrases.
           run = case("nonode", b"y\ny\n", node=False)
           want(run, run["code"] == 0, "exit %d" % run["code"])
           asked_once(run)
-          want(run, not run["ran"], "it ran npx with no node to run it")
-          want(run, "npx skills add haksolot/ank" in run["out"], "it did not print the command")
-          want(run, "node is not on PATH" in run["out"], "it did not say why it was not run")
+          want(run, not run["ran"], "npx ran with no node to run it")
           want(run, installed(run), "the binary is not in place")
+          if installed(run):
+              alone_code, alone = the_verb_alone(run, NONODE)
+              print("the verb alone -> exit", alone_code)
+              print(alone)
+              want(run, alone_code == 0, "the verb alone exited %d with no npx" % alone_code)
+              want(run, "npx is not on PATH" in alone, "the verb alone did not say npx is missing")
+              said = after_the_answer(run["out"])
+              want(run, said == alone,
+                   "after the answer it printed %r, and the verb alone prints %r" % (said, alone))
 
           print("=" * 70)
           if failures:
               for line in failures:
                   print("FAIL", line)
               sys.exit(1)
-          print("each offer asked once at a terminal, both defaulted to yes on Enter, and")
-          print("a skill step that failed left the install reporting success with the")
-          print("binary in place")
+          print("each offer asked once at a terminal, both defaulted to yes on Enter, the")
+          print("installed binary ran the skill step, and a skill step that failed left the")
+          print("install reporting success with the binary in place")
           PY
 
           python3 offer.py
@@ -893,11 +990,20 @@ jobs:
           foreach ($needle in 'x86_64-pc-windows-msvc', 'ANK_BASE_URL', 'install.sh',
                               '-NoWelcome', 'ANK_NO_WELCOME',
                               'One executable lands', 'ank mcp', 'ank watch',
-                              'npx skills add haksolot/ank') {
+                              'ank skills --install') {
             if ($out -notmatch [regex]::Escape($needle)) {
               "-Help does not name $needle"
               exit 1
             }
+          }
+          # And the offer is the binary's verb, not an npx call of the script's
+          # own (ADR-e1d750884b82): asked of the file, since a comment carrying
+          # the old command would be the first step back towards it.
+          $npx = Select-String -Path ./install.ps1 -SimpleMatch -Pattern 'npx skills add'
+          if ($npx) {
+            $npx | ForEach-Object { "$($_.LineNumber): $($_.Line)" }
+            "install.ps1 still carries an npx invocation of its own"
+            exit 1
           }
           "-Help names the target, the environment, the other script, the switch,"
           "the one file it places and the command the offer runs"
@@ -1112,6 +1218,55 @@ jobs:
           "one executable, and it answers"
           exit 0
 
+      # The skill step is `ank skills --install` run by the binary the script
+      # just installed (ADR-e1d750884b82), so its rehearsal needs a release
+      # whose binary has that verb. No published release has one yet, and a
+      # stand-in printing what the verb prints would rehearse the stand-in. So
+      # the release below carries ank.exe as this tree builds it, and a stub
+      # npx is the only thing faked.
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: ${{ runner.os }}-${{ runner.arch }}-cargo-install-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-${{ runner.arch }}-cargo-install-
+
+      - name: stage a release carrying the ank this tree builds
+        run: |
+          cargo build --locked --bin ank
+          if ($LASTEXITCODE -ne 0) { "cargo build failed"; exit 1 }
+
+          $name = "ank-$env:BUILT_VERSION-x86_64-pc-windows-msvc"
+          New-Item -ItemType Directory -Path "built/pack/$name" -Force | Out-Null
+          Copy-Item 'target/debug/ank.exe' "built/pack/$name/ank.exe"
+
+          # Asked before it is packaged: a build that carried no skills would
+          # answer every case below with one line and still exit 0.
+          $listing = @(& "built/pack/$name/ank.exe" skills)
+          $listing
+          if (-not ($listing | Where-Object { $_ -match '^ank ' })) {
+            "the built binary lists no ank skill"
+            exit 1
+          }
+
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          [System.IO.Compression.ZipFile]::CreateFromDirectory(
+            (Resolve-Path 'built/pack'), (Join-Path $PWD "built/$name.zip"))
+
+          $hash = (Get-FileHash -Path "built/$name.zip" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path "built/$name.zip.sha256" -Value "$hash  $name.zip"
+
+          New-Item -ItemType Directory -Path "stage/srv/v$env:BUILT_VERSION" -Force | Out-Null
+          Copy-Item "built/$name.zip", "built/$name.zip.sha256" "stage/srv/v$env:BUILT_VERSION/"
+
+          $url = "http://127.0.0.1:$env:STAGED_PORT/v$env:BUILT_VERSION/$name.zip.sha256"
+          Invoke-WebRequest -Uri $url -UseBasicParsing -OutFile (Join-Path $env:TEMP 'probe-built') | Out-Null
+          "serving $name on $env:STAGED_PORT"
+          exit 0
+
       # The Windows half of the same claim, and the place the two files stop
       # being translations of each other. install.sh opens /dev/tty; this one
       # reads [Console]::ReadLine, because `irm | iex` never touches this
@@ -1127,22 +1282,21 @@ jobs:
       #
       # `npx` is replaced by one that fails on purpose, which is the last
       # clause of the criterion asked as a falsification rather than as a
-      # review: an install that has already finished stays finished. On this
-      # platform that claim has a second half with no counterpart in sh --
-      # `pwsh -File` exits with $LASTEXITCODE, so an npx that failed would
-      # become the installer's exit code unless something says otherwise.
+      # review: the installed binary's `skills --install` fails because the
+      # npx it hands the skills to fails, and an install that has already
+      # finished stays finished. On this platform that claim has a second half
+      # with no counterpart in sh -- `pwsh -File` exits with $LASTEXITCODE, so
+      # a skill step that failed would become the installer's exit code unless
+      # something says otherwise.
       - name: the offer is asked at a console, and no failure of it changes the exit code
         env:
           ANK_BASE_URL: http://127.0.0.1:${{ env.STAGED_PORT }}
         run: |
-          # A node and an npx that exist, answer, and fail. The marker is how
-          # "it was not run" is asserted about a command rather than about a
-          # message: a file that is not there is not an absence of prose.
+          # An npx that exists, answers, and fails. The marker is how "it was
+          # not run" is asserted about a command rather than about a message: a
+          # file that is not there is not an absence of prose. No node beside
+          # it: the verb looks for npx and nothing else.
           New-Item -ItemType Directory -Path 'fakenode' -Force | Out-Null
-          Set-Content -Path 'fakenode/node.cmd' -Value @(
-            '@echo off',
-            'echo staged stand-in for node'
-          )
           Set-Content -Path 'fakenode/npx.cmd' -Value @(
             '@echo off',
             '>>"%ANK_NPX_MARKER%" echo npx ran %*',
@@ -1153,11 +1307,15 @@ jobs:
           # A PATH with no node on it. Removing the entries that hold one is
           # safe here in a way it is not on Linux: node lives in its own
           # directory on this image, not in the one that carries the shell.
+          # Every spelling of npx the verb would start is looked for, not only
+          # the one npm installs.
           $noNodePath = (($env:Path -split ';') | Where-Object {
             if (-not $_) { return $false }
+            $dir = $_
             try {
-              -not (Test-Path -LiteralPath (Join-Path $_ 'node.exe')) -and
-              -not (Test-Path -LiteralPath (Join-Path $_ 'npx.cmd'))
+              -not (@('node.exe', 'npx.cmd', 'npx.exe', 'npx.bat', 'npx.com') | Where-Object {
+                Test-Path -LiteralPath (Join-Path $dir $_)
+              })
             } catch { $true }
           }) -join ';'
 
@@ -1239,9 +1397,9 @@ jobs:
           Start-Transcript -Path $transcript -Force | Out-Null
           try {
               if ($NoWelcome) {
-                  & $installer -Version $env:STAGED_VERSION -Dir $Dir -NoWelcome
+                  & $installer -Version $env:BUILT_VERSION -Dir $Dir -NoWelcome
               } else {
-                  & $installer -Version $env:STAGED_VERSION -Dir $Dir
+                  & $installer -Version $env:BUILT_VERSION -Dir $Dir
               }
           } finally {
               $code = $global:LASTEXITCODE
@@ -1310,15 +1468,44 @@ jobs:
               # emits is its output, so three strings on the pipeline would
               # reach the caller as an array with the object at the end of it
               # and every assertion below would be read off a string.
+              $ran = Test-Path $marker
+              $handed = ''
+              if ($ran) { $handed = (Get-Content $marker -Raw) }
+
               Write-Host ('=' * 70)
-              Write-Host "$Label -> exit $code | skills asked $skillsAsked | adoption asked $adoptAsked | npx ran $(Test-Path $marker)"
+              Write-Host "$Label -> exit $code | skills asked $skillsAsked | adoption asked $adoptAsked | npx ran $ran"
               Write-Host $out
+              if ($handed) { Write-Host $handed }
 
               return [pscustomobject]@{
                   Label = $Label; Code = $code; Out = $out
                   SkillsAsked = $skillsAsked; AdoptAsked = $adoptAsked
-                  Ran = (Test-Path $marker); Dir = $dir
+                  Ran = $ran; Handed = $handed; Dir = $dir
               }
+          }
+
+          # The temporary directory the verb writes is new on every run, so two
+          # runs are compared with its name folded to one spelling, and each
+          # line without the trailing blanks a transcript may pad it with.
+          function Get-Plain {
+              param([string]$Text)
+              $t = $Text -replace "`r", ''
+              $t = $t -replace 'ank-skills-[0-9]+-[0-9]+-[0-9]+', 'ank-skills-N'
+              return ((($t -split "`n") | ForEach-Object { $_.TrimEnd() }) -join "`n").Trim()
+          }
+
+          # What the installer printed between its question about the skills
+          # and its next question: the answer's own output, and nothing else if
+          # the script adds nothing of its own.
+          function Get-AfterTheAnswer {
+              param([string]$Out)
+              $prompt = 'Install them now? [Y/n] '
+              $start = $Out.IndexOf($prompt)
+              if ($start -lt 0) { return $null }
+              $start += $prompt.Length
+              $end = $Out.IndexOf('Print the three prompts', $start)
+              if ($end -lt 0) { return $null }
+              return (Get-Plain $Out.Substring($start, $end - $start))
           }
 
           function Want {
@@ -1364,10 +1551,12 @@ jobs:
           # regression a person would actually notice.
           Want $run ($run.Out -match $LogoCells) 'no logo was drawn at a console'
           Want-AskedOnce $run
-          Want $run ($run.Ran) 'it accepted and never ran npx'
-          Want $run (Installed $run) 'the executables are not in place after the offer failed'
-          Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it never named the command it ran'
-          Want $run ($run.Out -match 'exited 1') 'it swallowed the failure instead of reporting it'
+          Want $run ($run.Ran) 'it accepted and npx never ran'
+          # Run by the installed binary and not by the script: the verb hands
+          # npx the directory it wrote, and the script never names one.
+          Want $run ($run.Handed -match '(?m)^npx ran skills add \S*ank-skills-') "npx was not handed the directory the verb writes: $($run.Handed)"
+          Want $run (Installed $run) 'the executable is not in place after the offer failed'
+          Want $run ($run.Out -match 'ank skills --install exited 1') 'it swallowed the failure instead of reporting it'
 
           # Enter is the default the criterion names, so it has to reach npx
           # the way a typed yes does.
@@ -1405,23 +1594,38 @@ jobs:
           Want $run ($run.Out -notmatch $LogoCells) '-NoWelcome drew the logo at a console'
           Want $run (Installed $run) '-NoWelcome cost the install its executables'
 
-          # node absent: the command, and one line saying why it was not run.
+          # node absent: the verb says what to run and exits 0, and the script
+          # adds nothing of its own to that. Held to the verb run by hand, from
+          # the binary the case installed and on the same PATH, so "nothing of
+          # its own" is a comparison and not a list of phrases.
           $run = Invoke-Case -Label 'nonode' -Answer 'y' -NoNode
           Want $run ($run.Code -eq 0) "exit $($run.Code)"
           Want-AskedOnce $run
-          Want $run (-not $run.Ran) 'it ran npx with no node to run it'
-          Want $run ($run.Out -match 'npx skills add haksolot/ank') 'it did not print the command'
-          Want $run ($run.Out -match 'node is not on PATH') 'it did not say why it was not run'
-          Want $run (Installed $run) 'the executables are not in place'
+          Want $run (-not $run.Ran) 'npx ran with no node to run it'
+          Want $run (Installed $run) 'the executable is not in place'
+          if (Installed $run) {
+              $env:Path = $noNodePath
+              $global:LASTEXITCODE = 0
+              $aloneLines = @(& (Join-Path $run.Dir 'ank.exe') skills --install 2>&1 | ForEach-Object { "$_" })
+              $aloneCode = $LASTEXITCODE
+              $env:Path = $savedPath
+              $alone = Get-Plain ($aloneLines -join "`n")
+              Write-Host "the verb alone -> exit $aloneCode"
+              Write-Host $alone
+              Want $run ($aloneCode -eq 0) "the verb alone exited $aloneCode with no npx"
+              Want $run ($alone -match 'npx is not on PATH') 'the verb alone did not say npx is missing'
+              $said = Get-AfterTheAnswer $run.Out
+              Want $run ($said -ceq $alone) "after the answer it printed [$said], and the verb alone prints [$alone]"
+          }
 
           '=' * 70
           if ($failures.Count) {
               foreach ($line in $failures) { "FAIL $line" }
               exit 1
           }
-          'each offer asked once at a console, both defaulted to yes on Enter, and a'
-          'skill step that failed left the install reporting success with both'
-          'executables in place'
+          'each offer asked once at a console, both defaulted to yes on Enter, the'
+          'installed binary ran the skill step, and a skill step that failed left the'
+          'install reporting success with the executable in place'
           exit 0
 
       # The second of the two failures that matter, and the reason the .sha256

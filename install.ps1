@@ -192,7 +192,7 @@ function Show-Usage {
     Say 'the two questions:'
     Say '  With a console attached, once ank is installed and verified, this asks two'
     Say '  things and nothing else. The first offers to run:'
-    Say "    npx skills add $Repo"
+    Say '    ank skills --install'
     Say '  which teaches an agent how to use ank. The second offers to print three'
     Say '  prompts that adopt ank in a repository that already has code and no .ank;'
     Say '  they are in docs/getting-started.md too, and printing them writes nothing'
@@ -532,14 +532,18 @@ function Test-HumanAtTerminal {
 # abandoned half-done, and half-done is the worst state for a tool whose next
 # action is `ank context`.
 #
-# `npx skills add <owner>/ank` is what skill/SKILL.md already teaches, and it
-# serves every agent the skills CLI knows about rather than one. An installer
-# that learned where each of them keeps its skills is an installer that goes
-# stale silently, so this one hands that work to the tool whose job it is.
+# The question is this script's and the answer is the binary's
+# (ADR-e1d750884b82). `ank skills --install` writes out the skills it carries
+# and hands them to the skills CLI, which serves every agent it knows about
+# rather than one, and the verb already decides what to say when node is
+# missing and what a failure means. A second copy of that logic here would be
+# a second copy to drift.
 #
 # Nothing in here is allowed to reach the caller as a failure. The call site
 # wraps it, and the exit code is stamped after it returns.
 function Invoke-SkillOffer {
+    param([Parameter(Mandatory = $true)][string]$Ank)
+
     if (-not (Test-HumanAtTerminal)) { return }
 
     Say ''
@@ -547,7 +551,7 @@ function Invoke-SkillOffer {
     Say "${UiPad}per activity. They install through the skills CLI, which puts them where"
     Say "${UiPad}each agent looks."
     Say ''
-    Say -Color $UiCyan "$UiPad  npx skills add $Repo"
+    Say -Color $UiCyan "$UiPad  ank skills --install"
     Say ''
 
     # [Console]::ReadLine and not Read-Host, which is where Windows differs
@@ -570,48 +574,36 @@ function Invoke-SkillOffer {
     $reply = $answer.Trim()
     if ($reply -ne '' -and $reply -notmatch '^(y|yes)$') { return }
 
-    if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-        Say ''
-        Say -Color $UiCyan "$UiPad  npx skills add $Repo"
-        Say 'node is not on PATH, so that was not run.'
-        return
-    }
-
-    Say ''
-
-    # npm_config_yes is `npx --yes` spelled as the environment: on a cold cache
-    # npx asks its own question -- "Ok to proceed?" -- and this one was
-    # answered above, once. It is restored rather than left set, because under
-    # `iex` the environment of this process is the caller's own.
-    $savedYes = $env:npm_config_yes
+    # The binary just installed, by the path it was installed at: the directory
+    # may not be on PATH, and a different ank found there would answer for a
+    # build this script did not place.
+    #
+    # Nothing is printed on success, and that is deliberate: the verb exits 0
+    # both when the skills went in and when node is missing and it printed the
+    # command to run instead, so a line of this script's own would be claiming
+    # something only the verb's output knows.
     $code = 0
     try {
-        $env:npm_config_yes = '1'
         $global:LASTEXITCODE = 0
         # Through Say for the reason Say exists: under `iex` output written to
-        # the pipeline lands in whatever the caller was assembling. 2>&1 so
-        # npx's diagnosis arrives as text rather than as error records a
+        # the pipeline lands in whatever the caller was assembling. 2>&1 so the
+        # verb's diagnosis arrives as text rather than as error records a
         # caller's $ErrorActionPreference could turn into an exception.
-        & npx skills add $Repo 2>&1 | ForEach-Object { Say "$_" }
+        & $Ank skills --install 2>&1 | ForEach-Object { Say "$_" }
         $code = $LASTEXITCODE
     } catch {
         Say "  $($_.Exception.Message)"
         $code = 9
-    } finally {
-        $env:npm_config_yes = $savedYes
     }
 
-    if ($code -eq 0) {
+    if ($code -ne 0) {
         Say ''
-        Ok 'the skills are installed'
-    } else {
-        Say ''
-        Say "npx skills add $Repo exited $code, so the skills are not installed."
+        Say "ank skills --install exited $code, so the skills are not installed."
         Say 'ank is, and it is exactly the ank this script installs when nobody is'
         Say 'asked anything at all.'
         Say ''
-        Say 'Run that line again when you want them:'
-        Say -Color $UiCyan "$UiPad  npx skills add $Repo"
+        Say 'Run it again when you want them:'
+        Say -Color $UiCyan "$UiPad  ank skills --install"
     }
 }
 
@@ -1238,11 +1230,11 @@ try {
     # The stamp is the half that has no counterpart in install.sh, and it is
     # the one that would have been missed by reading. `pwsh -File install.ps1`
     # exits with $LASTEXITCODE, which every native command run above sets: with
-    # nothing here, an npx that failed would silently become this script's exit
-    # code and the caller would read a green install as red. Assigned in the
+    # nothing here, a skill step that failed would silently become this script's
+    # exit code and the caller would read a green install as red. Assigned in the
     # global scope, because an assignment inside a script writes a script-local
     # variable that shadows it and changes nothing the host reads.
-    try { Invoke-SkillOffer } catch { }
+    try { Invoke-SkillOffer -Ank $destination } catch { }
     try { Invoke-AdoptionOffer } catch { }
     $global:LASTEXITCODE = 0
 } finally {

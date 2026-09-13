@@ -5,7 +5,7 @@ slug: the-installers-answer-their-question-with-ank-sk
 title: The installers answer their question with ank skills --install
 created: 2026-09-13T09:21:21Z
 author: claude-code/fable-5.1+planning
-status: open
+status: in_progress
 scope:
   - install.sh
   - install.ps1
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 2
+version: 3
 ---
 
 The question stays where it is: it is proved on three platforms through a
