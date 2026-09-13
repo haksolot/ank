@@ -127,10 +127,11 @@ refusals answer different questions: `priorty:` in a `task` is a typo, and
 | 10 | `done_criteria` | literal block | optional |
 | 11 | `criteria_by` | bare | `creator` \| `claimer`; invalid without `done_criteria` |
 | 12 | `verify` | flow list | omitted when empty |
-| 13 | `proof` | block sequence of maps | omitted when empty |
-| 14 | `verified` | block sequence of maps | optional, omitted when empty |
-| 15 | `schema` | integer | |
-| 16 | `version` | integer | |
+| 13 | `method` | bare | optional, omitted when absent; one sibling skill the binary carries |
+| 14 | `proof` | block sequence of maps | omitted when empty |
+| 15 | `verified` | block sequence of maps | optional, omitted when empty |
+| 16 | `schema` | integer | |
+| 17 | `version` | integer | |
 
 A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
 `criteria`, `verifier` and `via`, each omitted when absent. `type` is one of
