@@ -789,6 +789,34 @@ impl Repo {
         .unwrap();
     }
 
+    /// The creation record `new` writes, about an entity already seeded, so
+    /// that the grammar a creation carries is pinned in `show.machinery` and
+    /// `log-read.machinery` (ADR-52bb0da2023a): version 0 to 1, no `replaced`
+    /// clause, and the content hash of the entity as it stands.
+    ///
+    /// The hash is computed rather than typed, so the fixture stays true of
+    /// the entity it is about and `check` finds nothing to say about it.
+    fn seed_golden_creation(&self, id: &str, about: &str) {
+        let subject =
+            std::fs::read_to_string(self.0.join(".ank/entities").join(format!("{about}.md")))
+                .unwrap();
+        let text = format!(
+            "---\nid: {id}\ntype: log\n\
+             title: created (version 0 to 1, produced {})\n\
+             created: 2026-07-28T00:00:00Z\nauthor: human:marie\n\
+             scope:\n  - src/**\nabout: {about}\n\
+             seq: 0\nrecords: create\nschema: 4\nversion: 1\n---\n",
+            content_hash_of(&subject)
+        );
+        // Through the serialiser, so the quoting is the corpus's and never a
+        // guess: a non-canonical fixture is a fault of its own.
+        std::fs::write(
+            self.0.join(".ank/entities").join(format!("{id}.md")),
+            ank_core::serialize_entity(&ank_core::parse_entity(&text).expect("the record parses")),
+        )
+        .unwrap();
+    }
+
     /// A file under `docs/`, so that a seeded spec's scope names something and
     /// the dead-scope machinery stays out of the fixture under test.
     fn seed_docs(&self) {
@@ -8457,9 +8485,12 @@ fn a_body_piped_on_stdin_reaches_show_byte_for_byte() {
     let (_, after) = shown
         .split_once("\n---\n\n")
         .expect("show prints the frontmatter, then the body");
+    // The body ends where the first section `show` appends begins: the
+    // creation record `new` left (ADR-52bb0da2023a), then the edges.
     let body = after
-        .split("BLOCKED BY")
+        .split("\nEDITS (")
         .next()
+        .and_then(|b| b.split("BLOCKED BY").next())
         .expect("split yields at least one part");
     assert_eq!(
         body.trim_end_matches('\n'),
@@ -11358,7 +11389,14 @@ fn a_spec_is_created_read_listed_and_named_but_never_quoted() {
     // file, exactly, which is what the split with `context` rests on.
     let out = r.ank("marie@laptop", &["show", &id]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    assert_eq!(stdout(&out), text, "show prints the entity whole");
+    // The file, then the creation record `new` left, in a section of its own
+    // (ADR-52bb0da2023a): everything before that section is the file exactly.
+    let shown = stdout(&out);
+    let (whole, edits) = shown
+        .split_once("\nEDITS (")
+        .unwrap_or_else(|| panic!("the creation record has a section: {shown}"));
+    assert_eq!(whole, text, "show prints the entity whole");
+    assert!(edits.contains("created (version 0 to 1"), "{edits}");
 
     // Listed by its own kind, and not by another's.
     let out = r.ank("marie@laptop", &["find", "--type", "spec"]);
@@ -13721,7 +13759,20 @@ fn find_json_dates_every_row_and_names_the_corpus_it_answered_about() {
         "the fixture proves nothing if the minted instant is the seeded one"
     );
     let rows = doc["results"].as_sequence().expect("results is an array");
-    assert_eq!(rows.len(), 3, "the corpus holds three entities: {rows:?}");
+    // Three entities, and the creation record `new` left beside the one it
+    // wrote (ADR-52bb0da2023a), which is an entity of kind log.
+    assert_eq!(
+        rows.len(),
+        4,
+        "the corpus holds three entities and one record: {rows:?}"
+    );
+    assert_eq!(
+        rows.iter()
+            .filter(|r| r["kind"].as_str() == Some("log"))
+            .count(),
+        1,
+        "{rows:?}"
+    );
     for (id, created) in &want {
         let row = rows
             .iter()
@@ -18507,6 +18558,8 @@ fn golden_repo() -> Repo {
     // Both kinds about one entity, which is what makes the split visible: the
     // work trace answers with one entry and the machinery with the other.
     r.seed_golden_machinery(GOLDEN_EDIT, ID);
+    // And the record of its birth, which is the grammar a creation pins.
+    r.seed_golden_creation(GOLDEN_CREATE, ID);
 
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "seed"]);
@@ -18566,6 +18619,7 @@ const GOLDEN_READY: &str = "TASK-000000000002";
 const GOLDEN_BLOCKED: &str = "TASK-000000000003";
 const GOLDEN_LOG: &str = "LOG-0000000000ef";
 const GOLDEN_EDIT: &str = "LOG-0000000000fe";
+const GOLDEN_CREATE: &str = "LOG-0000000000cc";
 const GOLDEN_UNRELATED: &str = "TASK-000000000004";
 
 const AGENT: &str = "claude-code/1.0.0";
@@ -19927,7 +19981,16 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
     );
 
     let entries = r.machinery_of(&id);
-    assert_eq!(entries.len(), 2, "one per write: {entries:?}");
+    assert_eq!(
+        entries.len(),
+        3,
+        "one per write, the creation included: {entries:?}"
+    );
+    assert!(
+        entries[0].starts_with("created (version 0 to 1, produced "),
+        "the creation opens the record: {entries:?}"
+    );
+    let entries = &entries[1..];
     assert_eq!(
         entries[0],
         format!(
@@ -19953,7 +20016,10 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
     assert_eq!(code(&logged), 0, "{}", both_streams(&logged));
     let said = stdout(&logged);
     let (_, edits) = said.split_once("EDITS").expect("a section of its own");
-    let printed: Vec<&str> = edits.lines().filter(|l| l.contains("version ")).collect();
+    let printed: Vec<&str> = edits
+        .lines()
+        .filter(|l| l.contains("version ") && !l.contains("created (version 0 to 1"))
+        .collect();
     assert_eq!(printed.len(), 2, "{edits}");
     assert!(printed[0].contains("title (version 1 to 2"), "{edits}");
     assert!(
@@ -20305,6 +20371,300 @@ fn deleting_every_machinery_entry_changes_no_answer() {
         without_edits(&stdout(&logged_before)),
         "the work trace never held them and does not miss them"
     );
+}
+
+// ---------------------------------------------------------------------------
+// An entity is born accounted (ADR-52bb0da2023a, TASK-1ce7abea9608)
+// ---------------------------------------------------------------------------
+//
+// The measurement logged on the decision, reproduced: a task written whole into
+// .ank/entities/ in canonical form read exactly like one `ank new` wrote. The
+// heredoc entity is the fixture and the entity the verb wrote is the control.
+
+/// The decision whose ratification turns the fault on, by the id `check` asks
+/// about.
+const BORN_ACCOUNTED: &str = "ADR-52bb0da2023a";
+
+/// The words the fault prints, whichever entity it is about.
+const BORN_OUTSIDE: &str = "no entry about it carries a produced hash";
+
+/// The author date `accept` is given, so the instant is the fixture's and not
+/// the clock's: every seeded `created` below is placed on one side of it.
+const RULE_RATIFIED_AT: &str = "2026-08-01T00:00:00+0000";
+
+/// The `records` words of the entries about an entity, in the order of §3.
+fn records_of(r: &Repo, id: &str) -> Vec<(String, String)> {
+    let mut rows: Vec<((String, u64), (String, String))> = Vec::new();
+    for entry in std::fs::read_dir(r.0.join(".ank/entities"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+            if l.about.to_string() == id {
+                rows.push((
+                    (l.created.clone(), l.seq),
+                    (l.records.clone().unwrap_or_default(), l.message()),
+                ));
+            }
+        }
+    }
+    rows.sort();
+    rows.into_iter().map(|(_, row)| row).collect()
+}
+
+/// A file in exactly the form the corpus serialises, written past every verb.
+///
+/// Canonical on purpose: a file that was not would be rewritten by the first
+/// `edit`, and the test would prove that a normalisation leaves an entry, which
+/// was never in doubt. What has to be proved is the case where the verb has
+/// nothing to change.
+fn seed_by_hand(r: &Repo, text: &str) -> String {
+    let entity = ank_core::parse_entity(text).expect("the fixture parses");
+    let id = entity.id().to_string();
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        ank_core::serialize_entity(&entity),
+    )
+    .unwrap();
+    id
+}
+
+/// A corpus holding the decision, proposed, and a signing key to ratify it with.
+fn corpus_under_the_rule() -> Repo {
+    let r = ready_to_ratify();
+    r.seed_adr(BORN_ACCOUNTED, "Every entity is born accounted.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    r
+}
+
+/// The ratification, at the instant the fixture chose.
+fn ratify_the_rule(r: &Repo) {
+    let out = r.ank_env(
+        "human:marie",
+        &["accept", BORN_ACCOUNTED],
+        &[
+            ("GIT_AUTHOR_DATE", Some(RULE_RATIFIED_AT)),
+            ("GIT_COMMITTER_DATE", Some(RULE_RATIFIED_AT)),
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+}
+
+/// The three kinds `new` creates each leave one entry, and it is machinery.
+#[test]
+fn new_leaves_a_creation_record_for_every_kind_it_creates() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let created = |args: &[&str]| -> String {
+        let out = r.ank("claude-code/1.0", args);
+        assert_eq!(code(&out), 0, "{}", both_streams(&out));
+        stdout(&out)
+            .split_whitespace()
+            .nth(1)
+            .expect("created <id> <title>")
+            .to_string()
+    };
+    let task = created(&[
+        "new",
+        "task",
+        "--title",
+        "A task",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "A verifiable criterion.",
+    ]);
+    let adr = created(&[
+        "new",
+        "adr",
+        "--title",
+        "A decision",
+        "--scope",
+        "src/**",
+        "--constraint",
+        "Do not do X.",
+    ]);
+    let spec = created(&["new", "spec", "--title", "A document", "--scope", "src/**"]);
+
+    for id in [&task, &adr, &spec] {
+        let text = entity_text(&r, id);
+        assert_eq!(
+            records_of(&r, id),
+            vec![(
+                "create".to_string(),
+                format!(
+                    "created (version 0 to 1, produced {})",
+                    content_hash_of(&text)
+                )
+            )],
+            "one entry, the version it produced and the content it produced, \
+             and no state replaced because there was none: {id}"
+        );
+
+        // Apart from the work trace, on the page a reader opens.
+        let shown = stdout(&r.ank("claude-code/1.0", &["show", id]));
+        let (trace, edits) = shown
+            .split_once("EDITS")
+            .unwrap_or_else(|| panic!("the record has a section of its own: {shown}"));
+        assert!(!trace.contains("created (version 0 to 1"), "{trace}");
+        assert!(edits.contains("created (version 0 to 1"), "{edits}");
+    }
+
+    // And the entity-creating entry is the record, and carries none of its own.
+    assert_eq!(code(&r.ank("claude-code/1.0", &["claim", &task])), 0);
+    let out = r.ank("claude-code/1.0", &["log", "made progress"]);
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let logged: Vec<String> = std::fs::read_dir(r.0.join(".ank/entities"))
+        .unwrap()
+        .flatten()
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|t| match ank_core::parse_entity(&t) {
+            Ok(ank_core::Entity::Log(l)) if l.message() == "made progress" => {
+                Some(l.id.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert!(
+        records_of(&r, &logged[0]).is_empty(),
+        "an entry is the record: {:?}",
+        records_of(&r, &logged[0])
+    );
+}
+
+/// The heredoc entity is a fault once the rule is ratified, silent before, and
+/// `ank edit` with nothing to change is still the road out.
+#[test]
+fn an_entity_born_after_the_rule_without_a_record_is_a_fault_until_edit_accounts_for_it() {
+    let r = corpus_under_the_rule();
+    let task = seed_by_hand(
+        &r,
+        "---\nid: TASK-0000000b0001\ntype: task\ntitle: Written by hand\n\
+         created: 2026-09-01T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+         blocked_by: []\nschema: 4\nversion: 1\n---\n",
+    );
+    let adr = seed_by_hand(
+        &r,
+        "---\nid: ADR-0000000b0002\ntype: adr\ntitle: Decided by hand\n\
+         created: 2026-09-01T00:00:01Z\nstatus: proposed\nscope:\n  - src/**\n\
+         constraint: |\n  Do not do Y.\nschema: 4\nversion: 1\n---\n",
+    );
+    let spec = seed_by_hand(
+        &r,
+        "---\nid: SPEC-0000000b0003\ntype: spec\ntitle: Specified by hand\n\
+         created: 2026-09-01T00:00:02Z\nstatus: proposed\nscope:\n  - src/**\n\
+         schema: 4\nversion: 1\n---\n",
+    );
+    // Before the instant, and never migrated by a rule it predates.
+    let older = seed_by_hand(
+        &r,
+        "---\nid: TASK-0000000b0004\ntype: task\ntitle: Written long ago\n\
+         created: 2026-07-01T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+         blocked_by: []\nschema: 4\nversion: 1\n---\n",
+    );
+
+    // Proposed, the decision has no instant, and nothing fires.
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    assert!(
+        !both_streams(&checked).contains(BORN_OUTSIDE),
+        "a proposal binds nobody: {}",
+        both_streams(&checked)
+    );
+
+    ratify_the_rule(&r);
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    assert_eq!(code(&checked), 8, "{said}");
+    for id in [&task, &adr, &spec] {
+        let line = said
+            .lines()
+            .find(|l| l.contains(BORN_OUTSIDE) && l.contains(id.as_str()))
+            .unwrap_or_else(|| panic!("{id} is reported: {said}"));
+        // A fault prints as `error:`, where a signal prints as `signal:`.
+        assert!(line.starts_with("error:"), "{line}");
+        assert!(line.contains(&format!("ank edit {id}")), "{line}");
+        assert!(
+            line.contains("the id and the verifiers are yours to check"),
+            "{line}"
+        );
+    }
+    assert!(
+        !said
+            .lines()
+            .any(|l| l.contains(BORN_OUTSIDE) && l.contains(older.as_str())),
+        "an entity created before the instant is silent: {said}"
+    );
+
+    // The road out, with nothing to change: the file is canonical and the title
+    // is the one it carries, so what the verb owes is its pass over the entity.
+    for (id, title) in [
+        (&task, "Written by hand"),
+        (&adr, "Decided by hand"),
+        (&spec, "Specified by hand"),
+    ] {
+        let out = r.ank_edit("claude-code/1.0", &["edit", id, "--title", title], None);
+        assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    }
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    assert!(!said.contains(BORN_OUTSIDE), "{said}");
+    assert_eq!(code(&checked), 0, "{said}");
+}
+
+/// A hand edit after a creation record is what it was before this rule: a
+/// signal, because a human with an editor keeps every power they had.
+#[test]
+fn a_hand_edit_after_a_creation_record_stays_a_signal() {
+    let r = corpus_under_the_rule();
+    ratify_the_rule(&r);
+    let out = r.ank(
+        "claude-code/1.0",
+        &[
+            "new",
+            "task",
+            "--title",
+            "Written by the verb",
+            "--scope",
+            "src/**",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <title>")
+        .to_string();
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    assert_eq!(code(&checked), 0, "the control is silent: {said}");
+    assert!(!said.contains(BORN_OUTSIDE), "{said}");
+    assert!(!said.contains("content is"), "{said}");
+
+    let text = entity_text(&r, &id);
+    std::fs::write(
+        r.0.join(".ank/entities").join(format!("{id}.md")),
+        text.replace("title: Written by the verb", "title: Retitled by hand"),
+    )
+    .unwrap();
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    assert_eq!(code(&checked), 0, "{said}");
+    assert!(!said.contains(BORN_OUTSIDE), "{said}");
+    let line = said
+        .lines()
+        .find(|l| l.contains("content is"))
+        .unwrap_or_else(|| panic!("the existing signal fires: {said}"));
+    assert!(line.starts_with("signal:") && line.contains(&id), "{line}");
 }
 
 // ---------------------------------------------------------------------------

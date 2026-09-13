@@ -354,13 +354,29 @@ fn the_entries_are_read_under_the_entity_in_the_order_they_were_written() {
 /// **The document of an entity carrying none draws no empty rule where they
 /// would be.**
 ///
-/// The ADR of this corpus has nothing logged against it, and what its document
-/// draws is what it drew before any of this: no heading, no count, and not the
-/// blank line that would separate a section from the body above it.
+/// An ADR with nothing logged against it draws what its document drew before
+/// any of this: no heading, no count, and not the blank line that would
+/// separate a section from the body above it.
+///
+/// **Written past the verb, and necessarily**: `new` leaves the record of every
+/// creation beside the entity (ADR-52bb0da2023a), so no entity it writes
+/// carries nothing. The seeded decision is stamped under an identifier in a
+/// range `new` does not draw from, the liberty `Repo::crowded` takes.
 #[test]
 fn an_entity_nobody_has_logged_against_draws_no_section_at_all() {
     let repo = corpus();
-    let adr = only(&repo, "adr");
+    let entities = repo.0.join(".ank").join("entities");
+    let seeded = repo.only(&["--type", "adr"]);
+    let bare = "ADR-7000000000ad";
+    let text = std::fs::read_to_string(entities.join(format!("{seeded}.md")))
+        .expect("the seeded decision is readable");
+    std::fs::write(
+        entities.join(format!("{bare}.md")),
+        text.replace(&seeded, bare),
+    )
+    .expect("a stamped entity is writable");
+    repo.warm_find();
+    let adr = terminal::short_of(bare);
     assert!(
         terminal::ids_of(&repo.stdout(&["find", "--type", "log", "--json"])).len() >= SAID.len(),
         "the corpus has annotations, and this one entity has none"

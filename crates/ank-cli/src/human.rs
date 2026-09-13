@@ -671,6 +671,11 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     check_entries(&entities, &in_scope, &unread, &mut report);
     check_prose_identifiers(&entities, &in_scope, &unread, &mut report);
     check_accounting(&entities, &in_scope, &mut report);
+    // No history, no ratification to take an instant from: skipped like every
+    // other question that needs git, and without starting a process to learn it.
+    if has_git {
+        check_born_accounted(&entities, &in_scope, repo, &mut report);
+    }
     // Over the file list already walked above for the scopes, so the tree is
     // read once for both questions (ADR-3b6ba766a42e).
     check_stale_citations(&entities, &in_scope, &repo.worktree, &files, &mut report);
@@ -2796,7 +2801,12 @@ fn check_accounting(
             // The word this build knows, and only it. An entry recording
             // something else is already a signal of its own, and counting a
             // word whose meaning is unknown would be guessing at arithmetic.
-            if l.records.as_deref() == Some(ank_core::RECORDS_EDIT) {
+            // A creation is the first write an entity accounts for, from
+            // version 0, so it opens the regime exactly as an edit does.
+            if matches!(
+                l.records.as_deref(),
+                Some(ank_core::RECORDS_EDIT | ank_core::model::RECORDS_CREATE)
+            ) {
                 machinery.entry(&l.about).or_default().push(l);
             }
         }
@@ -2867,6 +2877,113 @@ fn check_accounting(
         ));
     }
 }
+
+/// The decision that makes an entity born outside the CLI a fault, by the id
+/// its ratification is found under.
+pub const BORN_ACCOUNTED: &str = "ADR-52bb0da2023a";
+
+/// The instant [`BORN_ACCOUNTED`] started binding, in seconds since the epoch:
+/// the author date of its ratification commit.
+///
+/// **`None` is a rule that does not bind yet**, and every reason lands there
+/// alike: the decision absent from this corpus, still proposed, or ratified by
+/// a commit no history here carries. An instant that cannot be read is never
+/// guessed at, because guessing late spares a hand-written entity and guessing
+/// early condemns a corpus the rule predates.
+///
+/// A superseded decision keeps its instant: a successor restating the rule
+/// binds from its own ratification onwards, and what was born in between was
+/// still born under this one.
+///
+/// The walk this reads is the one the anchors already paid for, so asking costs
+/// no process that `check` was not already starting.
+pub fn born_accounted_instant(repo: &Repo, rule: Option<&Entity>) -> Option<i64> {
+    let Some(Entity::Adr(adr)) = rule else {
+        return None;
+    };
+    if adr.ratified.is_none() || adr.id.to_string() != BORN_ACCOUNTED {
+        return None;
+    }
+    let paths = entity_rel_paths(repo, &adr.id);
+    git::ratification_at(&repo.corpus, BORN_ACCOUNTED, &paths)
+        .ok()
+        .flatten()
+        .and_then(|r| r.authored)
+}
+
+/// Whether an entity owes the record of its birth: created after `instant`, of
+/// a kind that is not a log entry, and carrying no entry with a produced hash
+/// (ADR-52bb0da2023a).
+///
+/// **One predicate for the two verbs that ask it.** `check` reports what it
+/// answers and `edit` writes the entity back when it answers yes with nothing
+/// to change, so the fault and its road out can never disagree about which
+/// entities they are about.
+///
+/// A `created` that does not read as an instant is spared, for the reason the
+/// instant itself is never guessed: a date nobody can place is not evidence of
+/// being late.
+/// `accounted` is whether any entry about it carries a produced hash, which
+/// each caller reads from the shape its entries reach it in
+/// ([`crate::entries::carries_produced_hash`]).
+pub fn owes_birth_record(entity: &Entity, instant: i64, accounted: bool) -> bool {
+    if accounted || entity.id().kind() == EntityKind::Log {
+        return false;
+    }
+    claim::parse_utc(entity.created()).is_some_and(|born| born > instant)
+}
+
+/// An entity no verb wrote, once the rule saying so binds (ADR-52bb0da2023a).
+///
+/// **A fault, where a hand edit is a signal**, and the difference is the
+/// decision's: an edit is a power a human with an editor keeps, a creation
+/// outside the CLI is the drift the rule exists for, and the CI job already
+/// fails on exit 8. The fault names the one verb that accounts for the entity
+/// and what no verb can repair for the reader: an id nobody drew and a
+/// `verify:` nobody filled.
+fn check_born_accounted(
+    entities: &[(PathBuf, Entity)],
+    in_scope: &dyn Fn(&Entity) -> bool,
+    repo: &Repo,
+    report: &mut Report,
+) {
+    let rule = entities
+        .iter()
+        .map(|(_, e)| e)
+        .find(|e| e.id().to_string() == BORN_ACCOUNTED);
+    let Some(instant) = born_accounted_instant(repo, rule) else {
+        return;
+    };
+    let accounted: HashSet<&EntityId> = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Log(l)
+                if crate::entries::carries_produced_hash(l.records.as_deref(), &l.message()) =>
+            {
+                Some(&l.about)
+            }
+            _ => None,
+        })
+        .collect();
+    for (_, e) in entities {
+        if !in_scope(e) || !owes_birth_record(e, instant, accounted.contains(e.id())) {
+            continue;
+        }
+        let id = e.id();
+        report.findings.push(Finding::fault(
+            id,
+            format!(
+                "created {}, after {BORN_ACCOUNTED} was ratified, and {BORN_OUTSIDE}: \
+                 no ank verb wrote it (ank edit {id} accounts for it; the id and the \
+                 verifiers are yours to check)",
+                e.created()
+            ),
+        ));
+    }
+}
+
+/// The words the born-outside fault prints, and the words a reader greps for.
+const BORN_OUTSIDE: &str = "no entry about it carries a produced hash";
 
 /// What a log entry owes: `about` names an entity this corpus holds, and the
 /// entry has not been rewritten (§3, ADR-25f977377fa0).

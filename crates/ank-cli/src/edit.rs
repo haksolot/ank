@@ -59,7 +59,7 @@ pub fn run(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -
     // text, handed to the same [`write_back`] the editor path uses, so the two
     // meet every refusal at the same place and in the same words.
     if let Some(edited) = named(inv, &loaded.entity)? {
-        if edited == original {
+        if edited == original && !owes_a_pass(repo, &store, &loaded.entity)? {
             report_unchanged(inv, &id, base_version, out);
             return Ok(ExitCode::Ok);
         }
@@ -101,7 +101,7 @@ pub fn run(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -
                 format!("cannot read back {}: {e}", scratch.display()),
             )
         })?;
-        if edited == original {
+        if edited == original && !owes_a_pass(repo, &store, &loaded.entity)? {
             report_unchanged(inv, &id, base_version, out);
             return Ok(ExitCode::Ok);
         }
@@ -124,6 +124,34 @@ pub fn run(inv: &Invocation, repo: &Repo, identity: &str, out: &mut dyn Write) -
         }
         Err(e) => Err(editor::kept(e, &scratch)),
     }
+}
+
+/// Whether an edit with nothing to change still owes the entity a write,
+/// because `check` reports it as born outside the CLI (ADR-52bb0da2023a).
+///
+/// **`ank edit <id>` is the road out that fault names**, and a hand-written
+/// file already in canonical form, edited to the title it carries, is exactly
+/// the case where the verb has nothing to change. Answering `unchanged` there
+/// would name a command that cannot clear the finding. So the write happens,
+/// canonical form and all, and the entry it leaves carries the hash it produced.
+///
+/// Asked only once the edit is known to change nothing, and through the one
+/// predicate `check` asks, so the fault and its repair are about the same
+/// entities. Everywhere else the no-op stays a no-op: an entity the rule does
+/// not bind, or one already accounted for, is not written for having been
+/// looked at.
+fn owes_a_pass(repo: &Repo, store: &Store, entity: &Entity) -> Result<bool> {
+    let rule = store
+        .load_prefix(human::BORN_ACCOUNTED)
+        .ok()
+        .map(|loaded| loaded.entity);
+    let Some(instant) = human::born_accounted_instant(repo, rule.as_ref()) else {
+        return Ok(false);
+    };
+    let accounted = entries::about(store, &Index::open(&repo.ank)?, entity)?
+        .iter()
+        .any(|e| entries::carries_produced_hash(e.records.as_deref(), &e.line.message));
+    Ok(human::owes_birth_record(entity, instant, accounted))
 }
 
 /// The entity with the named fields changed, rendered as text, or `None`

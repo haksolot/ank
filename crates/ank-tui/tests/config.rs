@@ -482,7 +482,9 @@ fn the_pane_is_read_when_it_is_focused_and_a_reload_does_not_charge_it() {
     repo.warm();
     let made = ids_of(&repo.stdout(&["find", "--json"]))
         .into_iter()
-        .find(|id| !before.contains(id))
+        // The task and not the record of its creation `new` writes beside it
+        // (ADR-52bb0da2023a): a log entry is never a row of the listing.
+        .find(|id| !before.contains(id) && id.starts_with("TASK-"))
         .expect("a task was made while the reader was open");
 
     // The reload, and a key after it whose effect is visible on the pane: the

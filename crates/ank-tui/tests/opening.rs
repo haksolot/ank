@@ -125,8 +125,9 @@ fn the_frame_that_arrives_first_names_its_screen_and_says_it_has_not_read() {
 /// so a reader that drew quickly and then read half a corpus would fail here
 /// rather than pass on having been fast.
 ///
-/// The count is `CROWD + 2`: [`Repo::crowded`] stamps its tasks onto the two
-/// entities [`Repo::seeded`] writes.
+/// The count is `CROWD + 4`: [`Repo::crowded`] stamps its tasks onto the two
+/// entities [`Repo::seeded`] writes, and `find` also counts the record of each
+/// creation `new` leaves beside them (ADR-52bb0da2023a).
 #[test]
 fn the_rows_arrive_after_the_first_frame_and_the_whole_corpus_is_there() {
     let repo = Repo::crowded(CROWD);
@@ -134,7 +135,7 @@ fn the_rows_arrive_after_the_first_frame_and_the_whole_corpus_is_there() {
 
     let live = Live::open(&repo, WINDOW.0, WINDOW.1);
     live.until("the first frame", |t| t.contains("ank tui"));
-    let carried = CROWD + 2;
+    let carried = CROWD + 4;
     live.until("the rows to arrive", |t| {
         t.contains(&format!("({carried} in the corpus)"))
     });
