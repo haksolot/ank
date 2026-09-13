@@ -5,7 +5,7 @@ slug: an-entity-accounts-for-its-content-by-hash-and-t
 title: An entity accounts for its content by hash, and the count is kept where it closes
 created: 2026-08-22T20:17:11Z
 author: claude-code/opus-5
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/**
 constraint: |
@@ -16,7 +16,7 @@ verified:
   - by: claude-code/opus-5
     at: 2026-08-22T20:39:47Z
 schema: 4
-version: 3
+version: 4
 ---
 
 ADR-16813b3bcf37 asked an entity to account for the versions it carries, and
