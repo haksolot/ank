@@ -2,7 +2,7 @@
 name: ank-loop
 description: Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
 metadata:
-  revision: "e2b07833509b"
+  revision: "fe8928eb3770"
 ---
 
 # ank-loop
@@ -21,6 +21,7 @@ This file adds the loop policy only.
     ank find --status open --free    open tasks no live claim overlaps
     pick one task                    see below
     ank claim <id>
+    ank log --method loop            record that this policy was loaded, once
     ank show <id>                    the body carries the reasoning; read it first
     work; ank log "<discovery>" as you learn, not when you finish
     review your own diff             two axes, below; ank log what it found

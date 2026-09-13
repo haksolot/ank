@@ -2,7 +2,7 @@
 name: ank-tdd
 description: Drive an implementation test-first, red before green, against a claimed task's frozen criterion. Use when implementing a task in a repository with a .ank/ directory.
 metadata:
-  revision: "5c0133123d36"
+  revision: "96d151e6812e"
 ---
 
 # ank-tdd
@@ -12,6 +12,8 @@ one, clause by clause, and writes each test before the code that answers it.
 
 The ank skill is the contract and applies here in full. This file adds the
 test-first policy only.
+
+After `ank claim`, run `ank log --method tdd` once, before the first edit.
 
 ## The criterion is the specification
 

@@ -2,7 +2,7 @@
 name: ank-diagnose
 description: Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
 metadata:
-  revision: "98cd5d5badff"
+  revision: "b5d9c0b96462"
 ---
 
 # ank-diagnose
@@ -12,6 +12,8 @@ name the cause, and the distance between the two is the whole of this file.
 
 The ank skill is the contract and applies here in full. This file adds the
 diagnosis policy only.
+
+After `ank claim`, run `ank log --method diagnose` once, before the first edit.
 
 ## The loop
 

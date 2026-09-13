@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "82162945914d"
+  revision: "277d77875f23"
 ---
 
 # ank
@@ -38,8 +38,9 @@ This file is the contract. One skill per activity carries the policy:
     ank-tdd      drive an implementation test-first against a frozen criterion
     ank-diagnose work a defect back to its cause, and close it with a regression test
 
-Load them when the activity calls for them. Everything below suffices on its
-own to execute work.
+Load them when the activity calls for them. A claimed task may name its method,
+the one to load before the first edit, and `ank context` prints it beneath the
+criterion. Everything below suffices on its own to execute work.
 
 ## The verbs
 
