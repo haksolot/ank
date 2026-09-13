@@ -61,6 +61,30 @@ const LOG_ENTRY: &[Field] = &[
     opt("records", Type::Str),
 ];
 
+/// `skills --json`: the catalogue, and the rate per sibling when a corpus
+/// answered (ADR-a8f9c603a0e7). `counted` is false outside a corpus, where
+/// `methods` is empty rather than absent, because a document keeps its keys.
+const SKILLS_OUT: &[Field] = &[
+    f(
+        "skills",
+        Type::Array(&[
+            f("name", Type::Str),
+            f("revision", Type::Str),
+            f("description", Type::Str),
+        ]),
+    ),
+    f("counted", Type::Bool),
+    f(
+        "methods",
+        Type::Array(&[
+            f("name", Type::Str),
+            f("designated", Type::Num),
+            f("fired", Type::Num),
+            f("undesignated", Type::Num),
+        ]),
+    ),
+];
+
 /// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
 ///
 /// `tui` draws a screen and, under `--json`, answers what that screen holds:
@@ -761,10 +785,18 @@ pub const COMMANDS: &[CommandSpec] = &[
         // Both optional, and what is given decides which of the two things the
         // verb does: an id alone reads, a message writes (§4).
         positional_help: "[<id>] [<message>]",
-        flags: &[],
-        refuses: &[refuses(ExitCode::Transition, "writing to an open or in_progress task with no claim held by this agent")],
+        flags: &[flag("--method")],
+        refuses: &[
+            refuses(ExitCode::Transition, "writing to an open or in_progress task with no claim held by this agent"),
+            refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
+            refuses(ExitCode::Generic, "--method given with an id or a message"),
+        ],
         notes: &[
             "a done or closed task has to be named: HEAD never points at one",
+            // Describes the flag and never tells anybody to use it: the
+            // instruction to write the entry lives in a sibling's body alone
+            // (ADR-a8f9c603a0e7).
+            "--method <name> writes an entry about the claimed task whose records is method and whose title is the name, and takes no message",
             // The entry is a file; the ref this verb touches is the renewal of
             // the claim, which is the lease and not the entry.
             PUSH_DEGRADES,
@@ -1493,7 +1525,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // the binary at build time, and the installers run this verb straight
         // after unpacking, wherever the person happens to be.
         coordinates: false,
-        summary: "the skills this binary carries, one line each; --install writes them to a directory and hands it to npx skills add",
+        summary: "the skills this binary carries, one line each, and in a corpus how often each sibling is designated and fires; --install writes them to a directory and hands it to npx skills add",
         subcommands: &[],
         max_positionals: 0,
         positional_help: "",
@@ -1501,7 +1533,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(
                 ExitCode::Generic,
-                "--json: this verb returns no document, only a listing for a person",
+                "--json with --install, which returns no document: npx writes to the same stdout",
             ),
             refuses(
                 ExitCode::Environment,
@@ -1514,19 +1546,22 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &[
             "each line is a skill's name, the revision its file declares, and its description; a build with no skill/ to read carries none and says so in one line",
+            "run in a corpus, a METHODS section follows with one line per sibling: designated, the tasks naming it as method; fired, those of them carrying its method entry; undesignated, its entries on tasks naming no method",
+            "outside a corpus it prints the catalogue and no counts, and --json says counted: false",
             "--install writes a new directory under the temporary directory, one subdirectory per skill named as its frontmatter names it, and runs npx skills add <that directory> with npm_config_yes set",
             "without npx on PATH it prints the directory it wrote and the command to run, and exits 0",
             "an npx that fails is this verb failing: it exits with npx's own code, and npx's output is the reason",
             "it never reads standard input and never asks: the flag given is the consent",
         ],
-        // `--json` is refused by name, so it is not offered: stdout under it is
-        // a document and this verb has none to give (§4, §9).
-        refuses_globals: &["--json"],
-        // **No document, and the empty list is the answer.** What `skills`
-        // prints is a listing for a person, and what `--install` produces is a
-        // directory on disk and the skills CLI's own run, which is why `--json`
-        // is refused above rather than answered with prose.
-        output: &[],
+        refuses_globals: &[],
+        // **The catalogue and the counts, as data** (ADR-a8f9c603a0e7). The
+        // verb had no document while its answer was a listing for a person;
+        // the counts are what a program asks for, and the `skills` tool of
+        // `ank mcp`, which always passes `--json`, was refused until this shape
+        // existed. `--install` keeps having none: what it produces is a
+        // directory and npx's own run on the same stdout, so `--json` beside it
+        // is refused above.
+        output: &[one(SKILLS_OUT)],
         owner_task: None,
     },
     CommandSpec {

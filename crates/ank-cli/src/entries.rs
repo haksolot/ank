@@ -284,6 +284,32 @@ pub fn record_create(
     )
 }
 
+/// The record that a sibling skill opened under the claim, written by `ank log
+/// --method <name>` (ADR-a8f9c603a0e7).
+///
+/// **The title is the name and nothing else**, so the count `ank skills`
+/// reports keys on a value and never on a message somebody rewrote. The name
+/// arrives validated against the siblings the binary carries; this function
+/// writes what it is given.
+pub fn record_method(
+    store: &Store,
+    index: &Index,
+    subject: &Entity,
+    identity: &str,
+    created: &str,
+    name: &str,
+) -> Result<EntityId> {
+    write_entry(
+        store,
+        index,
+        subject,
+        identity,
+        created,
+        name,
+        Some(ank_core::model::RECORDS_METHOD),
+    )
+}
+
 /// The one door, whatever the entry records.
 fn write_entry(
     store: &Store,

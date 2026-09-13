@@ -1869,6 +1869,9 @@ pub fn log(
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
+    if let Some(raw) = inv.value("--method") {
+        return log_method(inv, repo, cfg, identity, &store, raw, out);
+    }
     match inv.positionals.as_slice() {
         [one] => match store.resolve(one) {
             Ok(id) => log_read(inv, repo, cfg, &store, &id, out),
@@ -2161,14 +2164,97 @@ fn log_write(
         }
     }
 
-    let (id, witness, record, warnings) = acting_on(
-        &repo.corpus,
+    log_held(
+        inv,
+        repo,
+        cfg,
+        identity,
         store,
         given,
-        identity,
-        "log",
         " \"<message>\"",
-    )?;
+        |subject| {
+            entries::record(
+                store,
+                &Index::open(&repo.ank)?,
+                subject,
+                identity,
+                &claim::now_utc(),
+                message,
+            )
+        },
+        out,
+    )
+}
+
+/// `log --method <name>`: the entry a sibling skill writes after the claim,
+/// recording that it opened (ADR-a8f9c603a0e7, §4).
+///
+/// **Refused exactly where a log write is refused**, because it is one: the
+/// same claim on the same task, through the same renewal. It differs in two
+/// things only. It takes no message, since the title is the name and a count
+/// that keyed on prose would count rewrites; and the name is checked against
+/// the siblings this binary carries before anything else, the way `new task
+/// --method` checks it, so a misremembered name fails at exit 7 instead of
+/// writing an entry nothing will ever count.
+///
+/// The help line describes the flag and does not tell anybody to use it: the
+/// instruction to write this entry lives in the sibling's body and nowhere
+/// else, which is what makes the entry evidence that the body was read.
+fn log_method(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    store: &Store,
+    raw: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    if !inv.positionals.is_empty() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--method takes no message: the entry's title is the sibling's name",
+        )
+        .with_hint("ank log --method <name>"));
+    }
+    let name = crate::skills::method(raw)?;
+    log_held(
+        inv,
+        repo,
+        cfg,
+        identity,
+        store,
+        None,
+        " --method <name>",
+        |subject| {
+            entries::record_method(
+                store,
+                &Index::open(&repo.ank)?,
+                subject,
+                identity,
+                &claim::now_utc(),
+                &name,
+            )
+        },
+        out,
+    )
+}
+
+/// The write under the claim, whatever the entry records: the task the caller
+/// holds, the entry, and the renewal the write earns.
+#[allow(clippy::too_many_arguments)]
+fn log_held(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    store: &Store,
+    given: Option<&String>,
+    usage: &str,
+    write: impl FnOnce(&Entity) -> Result<EntityId>,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let (id, witness, record, warnings) =
+        acting_on(&repo.corpus, store, given, identity, "log", usage)?;
     warn_before_acting(inv, &warnings);
 
     let loaded_for_log = store.load(&id)?;
@@ -2177,14 +2263,7 @@ fn log_write(
     // word). The entity the entry is about is not opened for writing at all: no
     // frontmatter, no version bump, and nothing touched that carries a frozen
     // field. What lands is one new file.
-    let entry = entries::record(
-        store,
-        &Index::open(&repo.ank)?,
-        &loaded_for_log.entity,
-        identity,
-        &claim::now_utc(),
-        message,
-    )?;
+    let entry = write(&loaded_for_log.entity)?;
 
     // Renewed by writing: working is enough to keep the lock, and there is no
     // heartbeat verb to memorise (§3). The compare-and-swap is on the record we

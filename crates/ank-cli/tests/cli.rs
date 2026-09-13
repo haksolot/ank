@@ -9322,7 +9322,7 @@ fn context_names_the_method_after_the_claim_done_ignores_it_and_amend_replaces_i
 }
 
 #[test]
-fn help_json_carries_method_on_new_and_amend_and_on_nothing_else() {
+fn help_json_carries_method_on_new_amend_and_log_and_on_nothing_else() {
     let out = help_document();
     let doc: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
     let verbs = doc["verbs"].as_sequence().expect(&out);
@@ -9338,7 +9338,202 @@ fn help_json_carries_method_on_new_and_amend_and_on_nothing_else() {
         .map(|v| v["name"].as_str().unwrap())
         .collect();
     carrying.sort_unstable();
-    assert_eq!(carrying, ["amend", "new"], "{out}");
+    assert_eq!(carrying, ["amend", "log", "new"], "{out}");
+}
+
+/// The entry files about `id` whose `records` is `method`, as `(title, body)`,
+/// read off the corpus rather than asked of the binary that wrote them.
+fn method_entries(r: &Repo, id: &str) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    for entry in std::fs::read_dir(r.0.join(".ank/entities"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+            if l.about.to_string() == id && l.records.as_deref() == Some("method") {
+                rows.push((l.title.clone(), l.body.clone()));
+            }
+        }
+    }
+    rows
+}
+
+/// `ank log --method <name>` through the binary (ADR-a8f9c603a0e7): refused at 6
+/// with no claim, at 7 on a name the binary does not carry, refused with a
+/// message beside it, and under the claim one entry recording `method`, titled
+/// with the name and nothing else, with the lease renewed.
+#[test]
+fn log_method_records_the_load_on_the_claimed_task_and_renews_the_claim() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // No claim: the refusal every write to an open task gets.
+    let out = r.ank("claude-code@ank", &["log", "--method", "tdd"]);
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    assert!(r.entry_ids(ID).is_empty(), "a refused write left an entry");
+
+    let out = r.ank("claude-code@ank", &["claim", ID, "--ttl", "2h"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // A name the binary does not carry, the frontmatter spelling included.
+    for name in ["nope", "ank", "ank-tdd"] {
+        let out = r.ank("claude-code@ank", &["log", "--method", name]);
+        assert_eq!(code(&out), 7, "{name}: {}", stderr(&out));
+        assert!(stderr(&out).contains("tdd"), "{}", stderr(&out));
+    }
+    // The entry takes no message: its title is the name.
+    let out = r.ank("claude-code@ank", &["log", "--method", "tdd", "loaded it"]);
+    assert_ne!(code(&out), 0, "a message beside --method was accepted");
+    assert!(r.entry_ids(ID).is_empty(), "a refused write left an entry");
+
+    r.revive_claim(ID);
+    let out = r.ank("claude-code@ank", &["log", "--method", "tdd"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        method_entries(&r, ID),
+        [("tdd".to_string(), String::new())],
+        "one entry, records method, titled with the name alone"
+    );
+    let renewed = expiry_span_of(&r, ID);
+    assert!(
+        (7000..=7300).contains(&renewed),
+        "ank log --method did not renew the lease: {renewed}s from now"
+    );
+
+    // One work entry beside it: show counts the trace as the trace, and lists
+    // the method entry apart, under the machinery.
+    let out = r.ank("claude-code@ank", &["log", "a work entry"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["show", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    assert!(page.contains("\nLOG (1 of 1)\n"), "{page}");
+    let machinery = page
+        .split("\nEDITS (")
+        .nth(1)
+        .unwrap_or_else(|| panic!("no machinery section:\n{page}"));
+    assert!(machinery.starts_with("1)\n"), "{page}");
+    assert!(machinery.contains("— tdd"), "{page}");
+    let trace = page.split("\nLOG (").nth(1).unwrap();
+    let trace = trace.split("\nEDITS (").next().unwrap();
+    assert!(
+        !trace.contains("— tdd"),
+        "the method entry joined the trace:\n{page}"
+    );
+
+    // check knows the word.
+    let out = r.ank("claude-code@ank", &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(!said.contains("records 'method'"), "{said}");
+    assert!(!said.contains("does not know"), "{said}");
+}
+
+/// The rate per sibling, through the binary, on a corpus of three tasks whose
+/// counts are known (ADR-a8f9c603a0e7).
+///
+/// `tdd` is designated by one task that fires it twice, which counts once, and
+/// fires on a task designating none; `diagnose` is designated by one task that
+/// never fires it. Every other sibling is zero on all three.
+#[test]
+fn skills_reports_designated_fired_and_undesignated_per_sibling() {
+    let r = Repo::new();
+    let id_of = |text: &str| {
+        text.lines()
+            .find_map(|l| l.strip_prefix("id: "))
+            .unwrap()
+            .to_string()
+    };
+    let designated_tdd = id_of(&new_task(
+        &r,
+        "Tdd",
+        &["--criteria", "A.", "--method", "tdd"],
+    ));
+    let designated_diagnose = id_of(&new_task(
+        &r,
+        "Diagnose",
+        &["--criteria", "B.", "--method", "diagnose"],
+    ));
+    let none = id_of(&new_task(&r, "None", &["--criteria", "C."]));
+
+    let fire = |agent: &str, id: &str, names: &[&str]| {
+        let out = r.ank(agent, &["claim", id]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        for name in names {
+            let out = r.ank(agent, &["log", "--method", name]);
+            assert_eq!(code(&out), 0, "{}", stderr(&out));
+        }
+    };
+    fire("claude-code/1.0", &designated_tdd, &["tdd", "tdd"]);
+    fire("codex/1.0", &designated_diagnose, &[]);
+    fire("gemini/1.0", &none, &["tdd"]);
+
+    let expected = |name: &str| match name {
+        "tdd" => (1, 1, 1),
+        "diagnose" => (1, 0, 0),
+        _ => (0, 0, 0),
+    };
+    let siblings = sibling_directories();
+
+    let out = r.ank("claude-code@ank", &["skills"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let page = stdout(&out);
+    let (catalogue, report) = page
+        .split_once("\nMETHODS\n")
+        .unwrap_or_else(|| panic!("no report beneath the catalogue:\n{page}"));
+    assert!(
+        catalogue.lines().any(|l| l.starts_with("ank-tdd ")),
+        "{page}"
+    );
+    let lines: Vec<&str> = report.lines().collect();
+    assert_eq!(lines.len(), siblings.len(), "one line per sibling:\n{page}");
+    for sibling in &siblings {
+        let line = lines
+            .iter()
+            .find(|l| l.split_whitespace().next() == Some(sibling.as_str()))
+            .unwrap_or_else(|| panic!("no line for {sibling}:\n{page}"));
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (d, f, u) = expected(sibling);
+        assert_eq!(
+            words,
+            [
+                sibling.as_str(),
+                "designated",
+                &d.to_string(),
+                "fired",
+                &f.to_string(),
+                "undesignated",
+                &u.to_string()
+            ],
+            "{page}"
+        );
+    }
+
+    let out = r.ank("claude-code@ank", &["skills", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+    assert_eq!(doc["counted"].as_bool(), Some(true), "{}", stdout(&out));
+    let methods = doc["methods"].as_sequence().expect("methods is an array");
+    assert_eq!(methods.len(), siblings.len(), "{}", stdout(&out));
+    for m in methods {
+        let name = m["name"].as_str().unwrap();
+        let (d, f, u) = expected(name);
+        assert_eq!(
+            (
+                m["designated"].as_u64(),
+                m["fired"].as_u64(),
+                m["undesignated"].as_u64()
+            ),
+            (Some(d), Some(f), Some(u)),
+            "{name}: {}",
+            stdout(&out)
+        );
+    }
+    let skills = doc["skills"].as_sequence().expect("skills is an array");
+    assert_eq!(skills.len(), siblings.len() + 1, "{}", stdout(&out));
 }
 
 fn help_document() -> String {
@@ -12434,8 +12629,11 @@ fn every_flag_the_help_offers_can_be_given_to_the_verb() {
     // what it does: `ank init --at <path>` refuses on the state of the target,
     // which is a statement about that path and not about whether the help lies.
     // Listed rather than skipped by a rule, so adding a second one is a
-    // decision somebody writes down (TASK-49fce8b49d00).
-    const SELECTS_AN_ACT: [(&str, &str); 1] = [("init", "--at")];
+    // decision somebody writes down (TASK-49fce8b49d00). `ank log --method`
+    // is the second: it writes the record that a sibling opened and takes no
+    // message, so the positional this walk hands `log` is refused beside it
+    // (ADR-a8f9c603a0e7, TASK-a6c9d98a38ac).
+    const SELECTS_AN_ACT: [(&str, &str); 2] = [("init", "--at"), ("log", "--method")];
 
     let mut walked = 0;
     for (verb, positionals) in verbs {
@@ -18898,6 +19096,7 @@ fn json_golden_reading_verbs() {
         ("context", &["context", "src/**", "--json"][..]),
         ("config-read", &["config", "claim_ttl_max", "--json"][..]),
         ("log-read", &["log", ID, "--json"][..]),
+        ("skills", &["skills", "--json"][..]),
     ] {
         let out = r.ank(AGENT, args);
         assert!(
@@ -19176,7 +19375,8 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // `tests/schema.rs`, and the two fixtures it now demands are captured where
     // each verb can be: `read` there, `tui` through the pseudo-terminal in
     // `tests/tui.rs`, because `ank tui --json` refuses at exit 9 into a pipe.
-    assert_eq!(checked, 28, "one fixture per document the surface returns");
+    // Twenty-nine since TASK-a6c9d98a38ac, which gave `skills` a document.
+    assert_eq!(checked, 29, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the

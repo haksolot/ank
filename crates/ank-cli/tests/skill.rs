@@ -966,8 +966,13 @@ fn manifest_skills() -> Vec<(String, String, Vec<u8>)> {
 /// reported.
 fn skills_run(args: &[&str], path: &Path, tmp: &Path, record: &Path) -> Output {
     for _ in 0..5 {
+        // **From `tmp`, and never from the directory cargo runs the suite in**,
+        // which sits inside this repository's corpus: run there, the listing
+        // would carry the report a corpus earns (ADR-a8f9c603a0e7), and these
+        // tests are about the catalogue a verb prints outside one.
         let out = Command::new(env!("CARGO_BIN_EXE_ank"))
             .args(args)
+            .current_dir(tmp)
             .env("PATH", path)
             .env("TMPDIR", tmp)
             .env("TMP", tmp)
@@ -1090,6 +1095,58 @@ fn ank_skills_prints_one_line_per_skill_it_carries() {
              description {rel} declares:\n{line}"
         );
     }
+}
+
+/// **Outside a corpus, the catalogue and no counts**, in both renderings: the
+/// listing above is one line per skill and nothing beneath it, and the document
+/// carries the same skills with `counted` false and no method rows. `--install`
+/// has no document to give, since npx writes to the same stdout, and says so.
+#[test]
+fn ank_skills_json_outside_a_corpus_carries_the_catalogue_and_no_counts() {
+    let empty = scratch::dir("skills-json");
+    let out = skills_run(&["skills", "--json"], &empty, &empty, &empty.join("record"));
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout).expect("a JSON document");
+    assert_eq!(doc["counted"].as_bool(), Some(false), "{stdout}");
+    assert_eq!(
+        doc["methods"].as_sequence().map(Vec::len),
+        Some(0),
+        "{stdout}"
+    );
+    let mut names: Vec<String> = doc["skills"]
+        .as_sequence()
+        .expect("skills is an array")
+        .iter()
+        .map(|s| s["name"].as_str().unwrap().to_string())
+        .collect();
+    names.sort();
+    let mut expected: Vec<String> = manifest_skills().into_iter().map(|(n, _, _)| n).collect();
+    expected.sort();
+    assert_eq!(names, expected, "{stdout}");
+
+    let out = skills_run(
+        &["skills", "--install", "--json"],
+        &empty,
+        &empty,
+        &empty.join("record"),
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
 }
 
 /// **`--install` writes every skill, hands the directory to npx, and exits with
