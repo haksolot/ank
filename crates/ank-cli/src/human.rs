@@ -2113,7 +2113,7 @@ fn record_entry(
     )
 }
 
-/// The machinery entry a write of content owes (ADR-f7dc76886db2).
+/// The machinery entry a write of content owes (ADR-52bb0da2023a).
 ///
 /// **Beside [`record_entry`] and never inside it.** The two write the same kind
 /// of entity through the same door, and what separates them is one word and the
@@ -2383,7 +2383,7 @@ fn check_references(
         //
         // Nothing is written to make this resolve. The file keeps the
         // identifier its author wrote, the version does not move, and no
-        // machinery entry is deposited by a read (ADR-f7dc76886db2).
+        // machinery entry is deposited by a read (ADR-52bb0da2023a).
         let mut named = target.clone();
         if view.status == AdrStatus::Superseded {
             if let Some(head) = chain_head(target, entities) {
@@ -2762,7 +2762,7 @@ fn evidenced_writes(entity: &Entity) -> Option<u64> {
 }
 
 /// An entity against what its entries say of it: the content the last write
-/// produced, and the versions they account for (ADR-f7dc76886db2).
+/// produced, and the versions they account for (ADR-52bb0da2023a).
 ///
 /// **The first entry opens the regime, and everything before it is forgiven.**
 /// That is what makes this affordable at all: no schema moves, no corpus is
@@ -2814,7 +2814,7 @@ fn check_accounting(
         };
 
         // **The content, compared against what the last write produced**
-        // (ADR-f7dc76886db2). The newest entry and not the newest that carries
+        // (ADR-52bb0da2023a). The newest entry and not the newest that carries
         // a produced hash: an entry written after one that has none says the
         // content moved since, and reaching past it to an older hash would
         // report a difference the corpus already explains.
@@ -4750,7 +4750,7 @@ fn refuse_stale_citations(repo: &Repo, retired: &EntityId, successor: &EntityId)
 /// records a reading and writes no entry either: the reading *is* the record,
 /// on the entity, carrying the actor and the instant, and a line saying the same
 /// thing in the work trace would be the same fact written twice. Nor a machinery
-/// entry: ADR-f7dc76886db2 puts `verified` on the transition side of its own
+/// entry: ADR-52bb0da2023a puts `verified` on the transition side of its own
 /// definition of content, beside `status`, `proof` and `ratified`, so the write
 /// leaves the content hash where it was.
 pub fn read(
@@ -5927,7 +5927,7 @@ pub fn amend(
     let id = loaded.entity.id().clone();
     // The state every arm below replaces, kept before the match consumes it:
     // the machinery entry hashes it, and the hash is of what was there and not
-    // of what the amend produced (ADR-f7dc76886db2).
+    // of what the amend produced (ADR-52bb0da2023a).
     let before = loaded.entity.clone();
 
     // Refused on what was typed, before the normaliser sees it: `+src/**` is a
@@ -6115,7 +6115,7 @@ pub fn amend(
             let version = store.write(&amended, base_version)?;
             // Machinery rather than work, since TASK-3c12e0ced2c0: an amend is a
             // change of content outside a status transition, which is the case
-            // ADR-f7dc76886db2 names. The line it used to write into the work
+            // ADR-52bb0da2023a names. The line it used to write into the work
             // trace said the same thing in a place `ank log` reads for what a
             // previous holder learned, and an entity amended eight times made
             // that verb answer with eight of these.
@@ -6191,7 +6191,7 @@ pub fn amend(
             }
             // Recorded by an entry of its own, on the same terms a task's
             // amend is: any kind may carry entries (ADR-25f977377fa0), and
-            // ADR-f7dc76886db2 asks for one per write of content whatever the
+            // ADR-52bb0da2023a asks for one per write of content whatever the
             // kind. It used to be `version` and the diff alone, which said
             // nothing a reader could reach without git.
             let amended = Entity::Adr(adr);
@@ -6572,7 +6572,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     if body_carries_its_own_log(&loaded.entity) {
         log.retain(|e| e.id.is_some());
     }
-    // The work trace and the machinery part here (ADR-f7dc76886db2). What the
+    // The work trace and the machinery part here (ADR-52bb0da2023a). What the
     // budget below is spent on is the trace, because that is what a reader came
     // for; the machinery is listed under it, out of what is left, and an entity
     // edited eight times therefore does not answer "what did the last holder
@@ -6682,7 +6682,7 @@ fn log_json(entries: &[crate::entries::Entry]) -> String {
 
 /// The machinery, printed under the work trace and never mixed into it.
 ///
-/// **A section of its own, and not a filter.** ADR-f7dc76886db2 asks that an
+/// **A section of its own, and not a filter.** ADR-52bb0da2023a asks that an
 /// edit leave a record a reader can find, which a record nobody prints does not
 /// satisfy; and TASK-027a429aad2e asks that the work trace stop carrying it,
 /// which mixing the two does not satisfy either. Two sections answer both, and

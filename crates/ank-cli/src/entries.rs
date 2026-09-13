@@ -54,7 +54,7 @@ use ank_core::{
 pub struct Entry {
     pub id: Option<EntityId>,
     /// What the entry records, when it records something other than work
-    /// (ADR-f7dc76886db2). `None` is the work trace, which is what a reader
+    /// (ADR-52bb0da2023a). `None` is the work trace, which is what a reader
     /// means by the log and what every line of the previous layout is.
     pub records: Option<String>,
     /// The rank of §3: the entry's own `seq`, and the line's index in the file
@@ -91,7 +91,7 @@ impl Entry {
 /// changes is the presentation: `ank log` is what an agent reads before
 /// repeating what a previous holder already tried, and an entity edited eight
 /// times would answer that question with eight mechanical lines
-/// (ADR-f7dc76886db2).
+/// (ADR-52bb0da2023a).
 pub fn split(entries: Vec<Entry>) -> (Vec<Entry>, Vec<Entry>) {
     entries.into_iter().partition(|e| !e.is_machinery())
 }
@@ -226,7 +226,7 @@ pub fn record(
 }
 
 /// The same write, marked as machinery rather than as work
-/// (ADR-f7dc76886db2).
+/// (ADR-52bb0da2023a).
 ///
 /// **The word is the only difference**, and that is deliberate: an entry an
 /// agent wrote and an entry a verb wrote are the same kind of entity, written
@@ -294,7 +294,7 @@ fn write_entry(
 }
 
 /// The hash a machinery entry carries: the state the write replaced
-/// (ADR-f7dc76886db2).
+/// (ADR-52bb0da2023a).
 ///
 /// **The whole entity and never the field that moved.** What the entry hands a
 /// reader is a claim about how an entity *read* at a version, and a hash over
@@ -315,7 +315,7 @@ pub fn replaced_hash(before: &Entity) -> String {
 }
 
 /// The hash of an entity's **content**: every field a transition does not write
-/// (ADR-f7dc76886db2).
+/// (ADR-52bb0da2023a).
 ///
 /// **This is what makes the accounting survive a claim.** `status`, `proof`,
 /// `ratified` and `verified` are written by transitions and `version` by the
@@ -380,7 +380,7 @@ pub fn content_hash(entity: &Entity) -> String {
 /// The grammar is what `check` reads (TASK-dfe5a1bb0857), and that is the only
 /// reader it will ever have.
 ///
-/// **`produced` is the clause added by ADR-f7dc76886db2**, and it is appended
+/// **`produced` is the clause added by ADR-52bb0da2023a**, and it is appended
 /// rather than inserted so that an entry written before it parses exactly as it
 /// did — which is the whole of the bootstrap that decision rests on. `replaced`
 /// is the state that went and `produced` is the content that came, and the two
@@ -402,7 +402,7 @@ pub fn edit_message(
 }
 
 /// The version transition a machinery entry states, read back out of its
-/// message (ADR-f7dc76886db2).
+/// message (ADR-52bb0da2023a).
 ///
 /// The other direction of [`edit_message`], and the pair is why the grammar is
 /// written in one place: the writer and the only reader sit beside each other,
@@ -414,7 +414,7 @@ pub struct Accounted {
     /// The version it moved to.
     pub to: u64,
     /// The hash of the content the write produced, where the entry carries one
-    /// (ADR-f7dc76886db2). `None` for an entry written before the clause
+    /// (ADR-52bb0da2023a). `None` for an entry written before the clause
     /// existed, which is silent rather than suspicious.
     pub produced: Option<String>,
 }
@@ -436,7 +436,7 @@ pub fn parse_edit_message(message: &str) -> Option<Accounted> {
     let tail = message[at + OPEN.len()..].strip_suffix(')')?;
     let (versions, rest) = tail.split_once(", replaced ")?;
     // The clause that may or may not be there, and its absence is not a defect:
-    // an entry written before ADR-f7dc76886db2 ends at the hash it replaced.
+    // an entry written before ADR-52bb0da2023a ends at the hash it replaced.
     let (replaced, produced) = match rest.split_once(", produced ") {
         Some((replaced, produced)) => (replaced, Some(produced)),
         None => (rest, None),
@@ -482,7 +482,7 @@ pub fn from_line(id: EntityId, subject: &Entity, seq: u64, line: &LogEntry) -> L
         // Work unless the caller says otherwise: `ank log` is a holder saying
         // what they learned and a migration carries a line a holder wrote, and
         // neither is machinery. [`record_edit`] is the one caller that sets the
-        // word, on the entry this function has just built (ADR-f7dc76886db2).
+        // word, on the entry this function has just built (ADR-52bb0da2023a).
         records: None,
         verified: Vec::new(),
         schema: ank_core::SCHEMA_VERSION,
@@ -521,7 +521,7 @@ mod tests {
         );
     }
 
-    /// The bootstrap ADR-f7dc76886db2 rests on: an entry written before the
+    /// The bootstrap ADR-52bb0da2023a rests on: an entry written before the
     /// clause existed parses exactly as it did, and says nothing about the
     /// content.
     #[test]

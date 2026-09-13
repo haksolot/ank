@@ -2016,7 +2016,7 @@ fn run_with(
     let loaded = store.load_prefix(prefix)?;
     let base_version = crate::store::version_of(&loaded.entity);
     // What a `--criteria` that writes one would replace, kept before the
-    // destructuring consumes it (ADR-f7dc76886db2).
+    // destructuring consumes it (ADR-52bb0da2023a).
     let before = loaded.entity.clone();
     let Entity::Task(mut task) = loaded.entity else {
         return Err(
@@ -2110,7 +2110,7 @@ fn run_with(
     let claimed = Entity::Task(task.clone());
     let version = store.write(&claimed, base_version)?;
 
-    // **The criterion this call wrote, accounted for** (ADR-f7dc76886db2).
+    // **The criterion this call wrote, accounted for** (ADR-52bb0da2023a).
     // `claim` is on the list of three because `--criteria` writes a
     // `done_criteria` the task did not have, which is content, and the whole
     // authority model then rests on it. The status this same write moved is a
