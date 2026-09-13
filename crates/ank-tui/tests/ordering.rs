@@ -172,9 +172,13 @@ fn restamp(entities: &std::path::Path, id: &str, was: &str, status: &str, create
 
 /// The short form every listing prints, of every identifier the fixture holds,
 /// in the order the corpus hands them over: `find`'s own `ORDER BY id`.
+///
+/// Log entries left out, because they are never rows (ADR-559eebf5c6f5) and
+/// `new` leaves one beside each entity it writes (ADR-52bb0da2023a).
 fn as_they_arrive(repo: &Repo) -> Vec<String> {
     terminal::ids_of(&repo.stdout(&["find", "--json"]))
         .iter()
+        .filter(|id| !id.starts_with("LOG-"))
         .map(|id| terminal::short_of(id))
         .collect()
 }

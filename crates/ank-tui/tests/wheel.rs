@@ -63,9 +63,10 @@ const CROWD: usize = 40;
 /// testing rather than one that fails.
 const THUMB: &str = ank_tui::view::BOXES.thumb();
 
-/// How many entities the corpus below carries: the crowd, and the two the
-/// seeding writes.
-const TOTAL: usize = CROWD + 2;
+/// How many entities the corpus below carries: the crowd, the two the seeding
+/// writes, and the record of each of those two creations `new` leaves beside
+/// them (ADR-52bb0da2023a).
+const TOTAL: usize = CROWD + 4;
 
 /// The identifier of the nth stamped row, in the twelve hex every identifier
 /// here is spelled in.
@@ -344,7 +345,8 @@ fn the_bar_is_drawn_where_the_content_overruns_and_nowhere_else() {
     let short = Repo::seeded();
     short.warm_find();
     let live = Live::open(&short, WINDOW.0, WINDOW.1);
-    live.until("the session to open", |t| t.contains("(2 in the corpus)"));
+    // Two entities and their two creation records (ADR-52bb0da2023a).
+    live.until("the session to open", |t| t.contains("(4 in the corpus)"));
     let fits = live.frame();
     assert!(
         !fits.contains(THUMB),
