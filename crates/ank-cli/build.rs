@@ -30,12 +30,22 @@
 //! The skill revision is watched the same way and for the same reason: the file
 //! it is derived from is outside this package, so nothing Cargo watches by
 //! default would notice it moving (TASK-ecda4070354f).
+//!
+//! **Every skill under `skill/` is embedded too** (ADR-e1d750884b82,
+//! TASK-544ec9655570): the contract and each sibling, frontmatter and body, read
+//! whole from the one source ADR-8b3045cf11db names and handed to the crate as
+//! bytes, so `ank skills --install` writes what the tree holds and nothing is
+//! committed a second time for it. The whole directory is watched, because a
+//! sibling added beside the others is a skill the next build has to carry.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// The skill whose revision is stamped in, relative to this package.
 const SKILL: &str = "../../skill/SKILL.md";
+
+/// The directory every embedded skill is read from, relative to this package.
+const SKILLS: &str = "../../skill";
 
 /// Where `SCHEMA_VERSION` is declared, as git addresses it: repository-relative,
 /// which is what `cat-file` takes whatever directory the build runs in.
@@ -49,8 +59,14 @@ fn main() {
         "cargo:rustc-env=ANK_RELEASED_SCHEMA={}",
         released_schema(&dir)
     );
+    let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    std::fs::write(out.join("skills.rs"), embedded_skills(&dir))
+        .unwrap_or_else(|e| panic!("{}: {e}", out.join("skills.rs").display()));
     if PathBuf::from(&dir).join(SKILL).is_file() {
         println!("cargo:rerun-if-changed={SKILL}");
+    }
+    if PathBuf::from(&dir).join(SKILLS).is_dir() {
+        println!("cargo:rerun-if-changed={SKILLS}");
     }
     for path in watched(&dir) {
         println!("cargo:rerun-if-changed={path}");
@@ -111,6 +127,78 @@ fn skill_revision(dir: &str) -> String {
         .find("\n---\n")
         .unwrap_or_else(|| panic!("{}: frontmatter must be closed", path.display()));
     ank_core::freeze_hash_short(&rest[end + "\n---\n".len()..])
+}
+
+/// The Rust source `src/skills.rs` includes: one `Embedded` per skill under
+/// `skill/`, the contract first and the siblings after it in name order.
+///
+/// **What is read from the frontmatter is what the file declares**, `name`,
+/// `description` and `metadata.revision`, and nothing is recomputed: whether the
+/// declared revision is the hash of the body is `tests/skill.rs`'s question, and
+/// answering it here too would be a second place for the answer to live. The
+/// content itself is `include_bytes!` of the file in the tree, so the bytes the
+/// binary carries are the bytes git checked out, line endings included.
+///
+/// **No `skill/` to read is an empty list, never a failure**, for the reason the
+/// revision is `unknown` there: a published crate or a vendored dependency has
+/// no tree, and `ank skills` says it carries none. A file that is present and
+/// unreadable as a skill fails loudly, as `skill_revision` does.
+fn embedded_skills(dir: &str) -> String {
+    let root = PathBuf::from(dir).join(SKILLS);
+    let mut files: Vec<PathBuf> = Vec::new();
+    if root.join("SKILL.md").is_file() {
+        files.push(root.join("SKILL.md"));
+    }
+    if let Ok(entries) = std::fs::read_dir(&root) {
+        for entry in entries {
+            let path = entry
+                .unwrap_or_else(|e| panic!("{}: {e}", root.display()))
+                .path();
+            if path.is_dir() && path.join("SKILL.md").is_file() {
+                files.push(path.join("SKILL.md"));
+            }
+        }
+    }
+    let mut skills: Vec<(String, String, String, PathBuf)> = files
+        .into_iter()
+        .map(|path| {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+                .replace("\r\n", "\n");
+            let front = text
+                .strip_prefix("---\n")
+                .and_then(|rest| rest.find("\n---\n").map(|end| rest[..end].to_string()))
+                .unwrap_or_else(|| panic!("{}: must open with closed frontmatter", path.display()));
+            let field = |key: &str| {
+                front
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix(key))
+                    .map(|v| v.trim().trim_matches('"').to_string())
+                    .filter(|v| !v.is_empty())
+                    .unwrap_or_else(|| panic!("{}: declares no {key}", path.display()))
+            };
+            // Absolute already: `CARGO_MANIFEST_DIR` is, and `include_bytes!`
+            // resolves a relative path against the generated file instead.
+            // Not canonicalised, which on Windows would hand the macro a
+            // verbatim `\\?\` path.
+            (
+                field("name:"),
+                field("description:"),
+                field("revision:"),
+                path,
+            )
+        })
+        .collect();
+    skills.sort();
+    let mut source = String::from("pub const EMBEDDED: &[Embedded] = &[\n");
+    for (name, description, revision, path) in skills {
+        source.push_str(&format!(
+            "    Embedded {{ name: {name:?}, description: {description:?}, revision: {revision:?}, content: include_bytes!({:?}) }},\n",
+            path.display().to_string()
+        ));
+    }
+    source.push_str("];\n");
+    source
 }
 
 /// The entity schema the newest release reads, or empty where there is nothing
