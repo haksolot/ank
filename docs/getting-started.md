@@ -614,17 +614,47 @@ reads the code.
 
 ## Handing the loop to an agent
 
-Four routes install the same file (the `skills` CLI, the Claude Code plugin,
-`pi`, and copying one markdown file by hand) and they are walked with their real
-output in [agents.md](agents.md), along with `$ANK_AGENT` and what changes when
-more than one agent works the same repository.
+Five routes install the same files (the binary itself, the `skills` CLI, the
+Claude Code plugin, `pi`, and copying one markdown file by hand) and they are
+walked with their real output in [agents.md](agents.md), along with `$ANK_AGENT`
+and what changes when more than one agent works the same repository.
 
-The shortest of them, which detects what you run and links it to a single copy:
+The shortest of them is the binary you just installed, which carries the skills
+its build read:
+
+    $ ank skills
+    ank           82162945914d  Read a repository's tasks and binding constraints, claim work, and finish it with proof. ...
+    ank-diagnose  98cd5d5badff  Work a defect back to its cause before changing anything, and close it with a regression test. ...
+    ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. ...
+    ank-loop      e2b07833509b  Work through the open tasks in .ank/ without supervision, one claim at a time. ...
+    ank-plan      c006ab14a4df  Interview a goal into decisions and tasks recorded in .ank/. ...
+    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
+
+`ank skills --install` writes those six files to a temporary directory and hands
+it to `npx skills add`, which detects what you run and installs them for it,
+without asking and without cloning anything:
+
+    $ ank skills --install
+    wrote 6 skills to C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+    running: npx skills add C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+
+    ●   claude-code_2-1-270_agent  Agent detected — installing non-interactively
+    ◇  Source: C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+    ◇  Local path validated
+    ◇  Found 6 skills
+    ...
+    ◇  Installed 6 skills
+    ...
+    └  Done!  Review skills before use; they run with full agent permissions.
+
+On a machine that has node and no ank, the same skills come from the repository
+instead:
 
     npx skills add haksolot/ank
 
-That installs the skill, not the binary. The skill teaches one page, and it is
-loaded on every session, which is why its content is deliberately small.
+That one installs the skill, not the binary. The skill teaches one page,
+and it is loaded on every session, which is why its content is deliberately
+small.
 
 ## Adopting ank where there is already code
 
