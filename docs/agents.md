@@ -5,14 +5,14 @@ separate acts, and this page covers both: the routes that reach an agent, and
 the binary channels the two commands in the README do not cover.
 
 If you only want the short version, it is in the README: `npm install -g
-@haksolot/ank` for the binary, `npx skills add haksolot/ank` for the skill.
+@haksolot/ank` for the binary, `ank skills --install` for the skills it carries.
 Everything below is for the cases those two do not fit.
 
 ## The skill
 
 Six plain markdown files, one per skill. Each is the only copy that exists in
-git, and every route below points at it rather than holding one of its own, so
-no route can fall behind it.
+git. Every route below points at it, or, for the binary, carries the copy its
+build read, so no route holds a copy somebody keeps in step by hand.
 
     ank           ../skill/SKILL.md           the contract
     ank-plan      ../skill/plan/SKILL.md      interview a goal into ADRs and tasks
@@ -41,11 +41,65 @@ One convention it carries is worth knowing before you watch an agent follow it:
 knows what the files do not: the context budget, the frozen criterion, who holds
 which claim. A human with an editor keeps every power they had.
 
+## The routes
+
+    ank skills --install                      from the binary you installed, nothing cloned
+    npx skills add haksolot/ank               a machine with node and no ank
+    /plugin marketplace add haksolot/ank      Claude Code, as a plugin
+    pi install npm:@haksolot/ank              pi, binary and skill together
+    pi install git:github.com/haksolot/ank    pi, from source
+    by hand                                   copy skill/SKILL.md where your harness loads it
+
+### From the binary
+
+The build embeds the six files, so the binary in your hand already carries the
+skills written for it. `ank skills` lists them, with the revision each file
+declares:
+
+    $ ank skills
+    ank           82162945914d  Read a repository's tasks and binding constraints, claim work, and finish it with proof. ...
+    ank-diagnose  98cd5d5badff  Work a defect back to its cause before changing anything, and close it with a regression test. ...
+    ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. ...
+    ank-loop      e2b07833509b  Work through the open tasks in .ank/ without supervision, one claim at a time. ...
+    ank-plan      c006ab14a4df  Interview a goal into decisions and tasks recorded in .ank/. ...
+    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
+
+`ank skills --install` writes them into a new directory under the temporary
+directory and hands that directory to the `skills` CLI below. It never asks: the
+flag is the consent. Run from a Claude Code session, it went on like this:
+
+    $ ank skills --install
+    wrote 6 skills to C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+    running: npx skills add C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+
+    ●   claude-code_2-1-270_agent  Agent detected — installing non-interactively
+    ◇  Source: C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+    ◇  Local path validated
+    ◇  Found 6 skills
+    ●  Installing all 6 skills
+    ...
+    ◇  Installed 6 skills
+      ✓ .\.agents\skills\ank
+        universal: Amp, Antigravity, Antigravity CLI, Cline, Codex +15 more
+      ...
+      ✓ .\.agents\skills\ank-tdd
+        universal: Amp, Antigravity, Antigravity CLI, Cline, Codex +15 more
+
+    └  Done!  Review skills before use; they run with full agent permissions.
+
+Nothing is cloned: the files are the binary's, so they match the build
+`ank --version` names rather than whatever the repository holds today. `npx`
+itself is not offline, and fetches the `skills` CLI the first time it has none
+cached. With an agent detected, the run above installed copies into
+`.agents/skills` of the directory it ran from, and they outlive the temporary
+directory. Without `npx` on your `PATH`, the verb prints the directory it wrote
+and the command to run later, and exits 0.
+
 ### The `skills` CLI
 
-Detects what you run (Claude Code, Codex, Cursor, OpenCode and some thirty more)
-and links each one to a single copy. Ask it what it found before you let it
-install:
+The route for a machine that has node and no ank. Detects what you run (Claude
+Code, Codex, Cursor, OpenCode and some thirty more) and links each one to a
+single copy. Ask it what it found before you let it install:
 
     $ npx skills add haksolot/ank --list
     Source: https://github.com/haksolot/ank.git
