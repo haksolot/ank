@@ -25,9 +25,12 @@ same table:
       }
     }
 
-The skill an agent loads is a separate install, and
-[the documentation](https://github.com/haksolot/ank) covers both, along with the
-specification and the source.
+The skills an agent loads come from the binary. `ank skills` lists the ones it
+carries, and `ank skills --install` hands them to `npx skills add` for the agent
+you run, with nothing cloned. It is still a second command: installing the
+package installs no skill.
+[The documentation](https://github.com/haksolot/ank) covers every route, along
+with the specification and the source.
 
 Apache-2.0. Your `.ank/` files, the third-party tools that read or write them,
 and anything you build on top are yours. Ank was GPL-3.0-only up to and

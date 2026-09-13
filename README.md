@@ -13,10 +13,12 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 
 ```sh
 npm install -g @haksolot/ank     # one executable, and nothing beside it
-npx skills add haksolot/ank      # the skill, into whichever agent you run
+ank skills --install             # the skills, offline from the binary, into whichever agent you run
 ```
 
-Needs **git 2.34 or newer**. Every other route is in [handing ank to an agent][agents].
+The skill is not the binary: the first line installs no skill, and the second
+hands the ones the binary carries to the agent you run. Needs **git 2.34 or
+newer**. Every other route is in [handing ank to an agent][agents].
 
 ---
 
