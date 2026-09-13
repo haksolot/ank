@@ -1239,9 +1239,11 @@ fn dispatch(
     // answers about is this binary, not a corpus: the skills were read into it
     // at build time, and the installers run it right after unpacking, in
     // whatever directory the person happened to be in. A `.ank/` or a git
-    // demanded here would refuse the verb exactly where it is run.
+    // demanded here would refuse the verb exactly where it is run. The counts
+    // it reads from a corpus it resolves for itself, and only where one answers
+    // (ADR-a8f9c603a0e7).
     if inv.command == "skills" {
-        return crate::skills::run(&inv, out);
+        return crate::skills::run(&inv, cwd, out);
     }
 
     let s = startup(&inv, cwd)?;

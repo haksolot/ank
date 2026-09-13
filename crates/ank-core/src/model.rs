@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 /// string so that an entry written by a newer build is read rather than
 /// refused, and this list is what `check` compares against to say that a word
 /// is unknown to *this* build (ADR-3877fef1d662).
-pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT, RECORDS_CREATE];
+pub const RECORDS_KINDS: &[&str] = &[RECORDS_EDIT, RECORDS_CREATE, RECORDS_METHOD];
 
 /// The word an entry carries when it records a change of content made outside
 /// a status transition (ADR-52bb0da2023a).
@@ -24,6 +24,15 @@ pub const RECORDS_EDIT: &str = "edit";
 /// Never carried by an entry about a log entry, because an entry is the record
 /// and a record of the record recurses.
 pub const RECORDS_CREATE: &str = "create";
+
+/// The word an entry carries when it records that a sibling skill opened under
+/// a claim: `ank log --method <name>` writes it, and the entry's title is the
+/// name and nothing else (ADR-a8f9c603a0e7).
+///
+/// Machinery like the two above, and for the reason they are: it is a record a
+/// verb wrote rather than work a holder described, so it stays out of the trace
+/// and anchors nothing. What reads it is `ank skills`, which counts it.
+pub const RECORDS_METHOD: &str = "method";
 
 /// Format version this crate **writes**, and the newest it reads.
 ///
@@ -506,7 +515,9 @@ pub struct Log {
     /// **Absent means a work entry**, which is what `ank log` means to a reader
     /// and what every entry written before this field existed is. A value names
     /// machinery: `edit`, written by the verbs that change an entity's content
-    /// outside a status transition (ADR-52bb0da2023a).
+    /// outside a status transition, `create`, written at birth
+    /// (ADR-52bb0da2023a), and `method`, written by `ank log --method`
+    /// (ADR-a8f9c603a0e7).
     ///
     /// **A free string at parse time, a vocabulary at `check` time**, on the
     /// terms ADR-3877fef1d662 sets for a typed actor: a value the tool does not

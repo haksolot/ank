@@ -17,7 +17,13 @@
 //! as the environment, the same value the installers pass.
 
 use crate::cli::{CliError, Invocation, Result};
+use crate::index::Index;
+use crate::json::Obj;
+use crate::repo::Repo;
+use crate::store::Store;
 use ank_contract::ExitCode;
+use ank_core::{Entity, EntityId, EntityKind};
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -102,22 +108,189 @@ fn method_among(name: &str, carried: &[&str]) -> Result<String> {
     .with_hint(hint))
 }
 
-pub fn run(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
-    // **Refused rather than ignored** (§4, §9). Under `--json` stdout is a
-    // document a parser reads and nothing else, and this verb returns none: its
-    // listing is for a person, and what `--install` produces is a directory and
-    // the skills CLI's own run. Printing the listing anyway would hand a parser
-    // prose; printing nothing would answer a question with silence. A document
-    // can be declared later without breaking a caller, and a refusal is what
-    // keeps that open.
-    if inv.json() {
-        return Err(CliError::new(
-            ExitCode::Generic,
-            "--json: skills returns no document, only a listing for a person",
-        )
-        .with_hint("ank skills"));
+pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    if inv.has("--install") {
+        // **Refused rather than ignored** (§4, §9). Under `--json` stdout is a
+        // document a parser reads and nothing else, and what `--install`
+        // produces is a directory and npx's own run on that same stdout.
+        if inv.json() {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                "--json: skills --install returns no document, npx writes to the same stdout",
+            )
+            .with_hint("ank skills --json"));
+        }
+        return run_over(EMBEDDED, true, out);
     }
-    run_over(EMBEDDED, inv.has("--install"), out)
+    let rates = match corpus(inv, cwd)? {
+        Some(repo) => Some(rates(&repo, &methods())?),
+        None => None,
+    };
+    if inv.json() {
+        let _ = writeln!(out, "{}", document(EMBEDDED, rates.as_deref()));
+        return Ok(ExitCode::Ok);
+    }
+    run_over(EMBEDDED, false, out)?;
+    if let Some(rates) = rates.filter(|r| !r.is_empty()) {
+        let _ = write!(
+            out,
+            "\n{}\n{}",
+            inv.style().header("METHODS"),
+            report(&rates)
+        );
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// The corpus the counts are read from, or `None` where there is none to read.
+///
+/// **A verb run for the catalogue outside a corpus pays nothing for it**
+/// (ADR-f3d1, ADR-a8f9c603a0e7). The installers run this verb in whatever
+/// directory the person was in, so a walk that finds no `.ank/`, or a
+/// declaration it cannot use, is the catalogue alone and never a refusal. An
+/// address the caller wrote is different: `--repo` or `--worktree` naming
+/// nothing is the refusal every verb gives it, since answering without the
+/// counts would read as a corpus holding none.
+fn corpus(inv: &Invocation, cwd: &Path) -> Result<Option<Repo>> {
+    let addressed = inv.repo().is_some() || inv.worktree().is_some();
+    let mut notes = Vec::new();
+    match crate::repo::resolve(inv.repo(), inv.worktree(), cwd, &mut notes) {
+        Ok(repo) => {
+            if !inv.quiet() {
+                let style = inv.style().on_stderr();
+                for note in notes {
+                    eprintln!("{} {note}", style.yellow("warning:"));
+                }
+            }
+            Ok(Some(repo))
+        }
+        Err(e) if addressed => Err(e),
+        Err(_) => Ok(None),
+    }
+}
+
+/// One sibling's three counts (ADR-a8f9c603a0e7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rate {
+    pub name: &'static str,
+    /// The tasks whose `method` names it.
+    pub designated: usize,
+    /// Those of them carrying at least one of its `method` entries: a task is
+    /// counted once however many times the sibling opened on it.
+    pub fired: usize,
+    /// Its `method` entries on tasks whose `method` names nothing. An entry on
+    /// a task designating another sibling counts for neither.
+    pub undesignated: usize,
+}
+
+/// The counts for every sibling in `names`, read from the corpus once.
+///
+/// **One pass over each plane, and no git** (ADR-cc659b2b7bd5). The tasks are
+/// read whole, because `method` is a field the index does not hold; the entries
+/// are narrowed on the index first, by a title naming a sibling, and only those
+/// are opened to confirm that `records` says `method`. The title is the name and
+/// nothing else, so the narrowing loses nothing: an entry whose title is not a
+/// sibling's name is not an entry this report counts.
+pub fn rates(repo: &Repo, names: &[&'static str]) -> Result<Vec<Rate>> {
+    let store = Store::new(&repo.ank);
+    let index = Index::open(&repo.ank)?;
+
+    let mut tasks: HashSet<EntityId> = HashSet::new();
+    let mut designated: HashMap<EntityId, String> = HashMap::new();
+    for row in index.by_kind(EntityKind::Task)? {
+        let Entity::Task(task) = store.load(&row.id)?.entity else {
+            continue;
+        };
+        tasks.insert(task.id.clone());
+        if let Some(method) = task.method {
+            designated.insert(task.id, method);
+        }
+    }
+
+    let mut fired: HashSet<(String, EntityId)> = HashSet::new();
+    let mut undesignated: HashMap<String, usize> = HashMap::new();
+    for row in index.by_kind(EntityKind::Log)? {
+        if !names.contains(&row.title.as_str()) {
+            continue;
+        }
+        let Entity::Log(entry) = store.load(&row.id)?.entity else {
+            continue;
+        };
+        if entry.records.as_deref() != Some(ank_core::model::RECORDS_METHOD) {
+            continue;
+        }
+        match designated.get(&entry.about) {
+            Some(method) if *method == entry.title => {
+                fired.insert((entry.title, entry.about));
+            }
+            Some(_) => {}
+            None if tasks.contains(&entry.about) => {
+                *undesignated.entry(entry.title).or_default() += 1;
+            }
+            None => {}
+        }
+    }
+
+    Ok(names
+        .iter()
+        .map(|&name| Rate {
+            name,
+            designated: designated.values().filter(|m| *m == name).count(),
+            fired: fired.iter().filter(|(m, _)| m == name).count(),
+            undesignated: undesignated.get(name).copied().unwrap_or(0),
+        })
+        .collect())
+}
+
+/// One line per sibling, each count named beside its number, so a line read
+/// alone says what it counts. Names padded to one width, numbers to theirs.
+fn report(rates: &[Rate]) -> String {
+    let name = rates.iter().map(|r| r.name.len()).max().unwrap_or(0);
+    let digits = |count: fn(&Rate) -> usize| {
+        rates
+            .iter()
+            .map(|r| count(r).to_string().len())
+            .max()
+            .unwrap_or(1)
+    };
+    let (d, f, u) = (
+        digits(|r| r.designated),
+        digits(|r| r.fired),
+        digits(|r| r.undesignated),
+    );
+    rates
+        .iter()
+        .map(|r| {
+            format!(
+                "{:<name$}  designated {:>d$}  fired {:>f$}  undesignated {:>u$}\n",
+                r.name, r.designated, r.fired, r.undesignated
+            )
+        })
+        .collect()
+}
+
+/// `skills --json`: the catalogue, and the counts where a corpus answered.
+fn document(skills: &[Embedded], rates: Option<&[Rate]>) -> String {
+    let catalogue = skills.iter().map(|s| {
+        Obj::new()
+            .str("name", s.name)
+            .str("revision", s.revision)
+            .str("description", s.description)
+            .finish()
+    });
+    let methods = rates.unwrap_or_default().iter().map(|r| {
+        Obj::new()
+            .str("name", r.name)
+            .num("designated", r.designated)
+            .num("fired", r.fired)
+            .num("undesignated", r.undesignated)
+            .finish()
+    });
+    Obj::document()
+        .array("skills", catalogue)
+        .bool("counted", rates.is_some())
+        .array("methods", methods)
+        .finish()
 }
 
 fn run_over(skills: &[Embedded], install: bool, out: &mut dyn Write) -> Result<ExitCode> {
@@ -328,6 +501,59 @@ mod tests {
         }
         let err = method_among("tdd", &[]).unwrap_err();
         assert!(err.message.contains("carries no skills"), "{}", err.message);
+    }
+
+    #[test]
+    fn the_report_names_each_count_beside_its_number_in_columns() {
+        let rates = [
+            Rate {
+                name: "diagnose",
+                designated: 12,
+                fired: 3,
+                undesignated: 0,
+            },
+            Rate {
+                name: "tdd",
+                designated: 1,
+                fired: 1,
+                undesignated: 10,
+            },
+        ];
+        assert_eq!(
+            report(&rates),
+            "diagnose  designated 12  fired 3  undesignated  0\n\
+             tdd       designated  1  fired 1  undesignated 10\n"
+        );
+    }
+
+    #[test]
+    fn the_document_says_whether_it_counted() {
+        let skills = [Embedded {
+            name: "ank-tdd",
+            description: "The loop.",
+            revision: "000000000002",
+            content: b"",
+        }];
+        let catalogue =
+            r#""skills":[{"name":"ank-tdd","revision":"000000000002","description":"The loop."}]"#;
+        let outside = document(&skills, None);
+        assert!(
+            outside.ends_with(&format!(r#",{catalogue},"counted":false,"methods":[]}}"#)),
+            "{outside}"
+        );
+        let rates = [Rate {
+            name: "tdd",
+            designated: 2,
+            fired: 1,
+            undesignated: 0,
+        }];
+        let inside = document(&skills, Some(&rates));
+        assert!(
+            inside.ends_with(&format!(
+                r#",{catalogue},"counted":true,"methods":[{{"name":"tdd","designated":2,"fired":1,"undesignated":0}}]}}"#
+            )),
+            "{inside}"
+        );
     }
 
     #[test]

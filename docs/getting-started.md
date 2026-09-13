@@ -630,6 +630,32 @@ its build read:
     ank-plan      c006ab14a4df  Interview a goal into decisions and tasks recorded in .ank/. ...
     ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
 
+Run inside a corpus, the same verb also reports how each sibling is used. A task
+can name the sibling its work calls for with `ank new task --method tdd`, and a
+sibling that opens under a claim writes an entry saying so, titled with its name
+and kept apart from the work trace. Here is the report on a
+corpus of three tasks: one designating `tdd` whose holder loaded it, one
+designating `diagnose` whose holder never did, and one designating nothing where
+`tdd` was loaded anyway:
+
+    $ ank skills
+    ank           82162945914d  Read a repository's tasks and binding constraints, claim work, and finish it with proof. ...
+    ...
+    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
+
+    METHODS
+    diagnose  designated 1  fired 0  undesignated 0
+    drift     designated 0  fired 0  undesignated 0
+    loop      designated 0  fired 0  undesignated 0
+    plan      designated 0  fired 0  undesignated 0
+    tdd       designated 1  fired 1  undesignated 1
+
+`designated` counts the tasks naming the sibling, `fired` those of them carrying
+its entry, and `undesignated` its entries on tasks naming none. `ank skills
+--json` carries the same counts as integers. The numbers are read from the
+corpus, printed to whoever asks, and sent nowhere; outside a corpus the verb
+prints the catalogue alone.
+
 `ank skills --install` writes those six files to a temporary directory and hands
 it to `npx skills add`, which detects what you run and installs them for it,
 without asking and without cloning anything:
