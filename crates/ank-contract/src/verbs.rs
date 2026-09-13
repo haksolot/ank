@@ -57,7 +57,7 @@ const LOG_ENTRY: &[Field] = &[
     f("who", Type::Str),
     f("message", Type::Str),
     // Absent on the work trace, which is what an entry is unless it says
-    // otherwise (ADR-f7dc76886db2). Present, it names what the entry records.
+    // otherwise (ADR-52bb0da2023a). Present, it names what the entry records.
     opt("records", Type::Str),
 ];
 

@@ -518,7 +518,7 @@ impl Repo {
     }
 
     /// The machinery entries about an entity, oldest first, as the messages
-    /// they carry (ADR-f7dc76886db2).
+    /// they carry (ADR-52bb0da2023a).
     ///
     /// Read off the files rather than through the binary, on the same reasoning
     /// `log_text` is: what has to be true is the state of the corpus, and a
@@ -769,7 +769,7 @@ impl Repo {
     }
 
     /// An entry that records machinery rather than work, which is what
-    /// `show.machinery` and `log-read.machinery` are (ADR-f7dc76886db2).
+    /// `show.machinery` and `log-read.machinery` are (ADR-52bb0da2023a).
     ///
     /// Written by hand and at schema 4, because no verb writes one yet: the
     /// verbs that will are TASK-3c12e0ced2c0, and a declaration no fixture
@@ -3423,7 +3423,7 @@ fn check_names_the_prose_identifiers_that_resolve_to_nothing_once_for_the_corpus
 /// have made the tool a gatekeeper over prose, which ADR-6b3f19e08a24 refuses
 /// in general and which would also refuse the legitimate mention of an entity
 /// since deleted; repairing the prose in place would have made a read move the
-/// corpus, which is the argument ADR-f7dc76886db2 already settled for
+/// corpus, which is the argument ADR-52bb0da2023a already settled for
 /// citations.
 ///
 /// Byte for byte, and not "still parses": a rewrite that round-tripped would
@@ -3520,7 +3520,7 @@ fn a_citation_two_hops_behind_resolves_and_the_file_is_not_touched() {
 
     // **Nothing is written to make a reference resolve.** The whole argument
     // against repairing citations in place was that one `accept` would write to
-    // nine entities and, under ADR-f7dc76886db2, leave nine machinery entries
+    // nine entities and, under ADR-52bb0da2023a, leave nine machinery entries
     // behind. A read that writes is the same defect one verb further along.
     let after = std::fs::read(r.0.join(".ank/entities").join(format!("{BEHIND}.md"))).unwrap();
     assert_eq!(before, after, "check wrote to the citing document");
@@ -8746,7 +8746,7 @@ fn amend_adds_and_removes_without_disturbing_the_rest() {
     // The record of an amend is machinery since TASK-3c12e0ced2c0, so it names
     // the fields alone and the `amended:` opening is gone. What it gained is
     // the version transition and the hash of the state replaced, which is what
-    // makes the entry account for the write (ADR-f7dc76886db2).
+    // makes the entry account for the write (ADR-52bb0da2023a).
     assert!(
         r.log_text(ID).contains("+blocked_by TASK-000000000002"),
         "the log says what changed: {}",
@@ -19341,7 +19341,7 @@ fn the_corpus_named_as_its_own_work_tree_answers_identically() {
 }
 
 // ---------------------------------------------------------------------------
-// The work trace and the machinery (ADR-f7dc76886db2, TASK-027a429aad2e)
+// The work trace and the machinery (ADR-52bb0da2023a, TASK-027a429aad2e)
 // ---------------------------------------------------------------------------
 
 /// One entry about `about`, written by hand because no verb writes machinery
@@ -19494,7 +19494,7 @@ fn an_entity_with_no_machinery_grows_no_section() {
 
 // ---------------------------------------------------------------------------
 // A write of content accounts for the version it moved
-// (ADR-f7dc76886db2, TASK-3c12e0ced2c0)
+// (ADR-52bb0da2023a, TASK-3c12e0ced2c0)
 // ---------------------------------------------------------------------------
 //
 // Through the binary throughout, and the criterion says so for a reason that
@@ -19502,7 +19502,7 @@ fn an_entity_with_no_machinery_grows_no_section() {
 // file, by a verb, in the order the two writes happen.
 
 // ---------------------------------------------------------------------------
-// An entity accounts for its content by hash (ADR-f7dc76886db2,
+// An entity accounts for its content by hash (ADR-52bb0da2023a,
 // TASK-cbc6963fd0ef)
 // ---------------------------------------------------------------------------
 
@@ -19625,7 +19625,7 @@ fn content_edited_by_hand_is_reported_with_both_hashes() {
 /// An entry written before the clause existed says nothing about content, and
 /// an entity carrying none says nothing at all.
 ///
-/// The bootstrap ADR-f7dc76886db2 states in the same breath as the clause: no
+/// The bootstrap ADR-52bb0da2023a states in the same breath as the clause: no
 /// corpus is migrated by a rule it predates.
 #[test]
 fn an_entry_without_a_produced_hash_leaves_the_entity_silent() {
@@ -19651,7 +19651,7 @@ fn an_entry_without_a_produced_hash_leaves_the_entity_silent() {
 }
 
 /// The content hash a machinery entry records, computed the way any reader
-/// holding the file would (ADR-f7dc76886db2).
+/// holding the file would (ADR-52bb0da2023a).
 ///
 /// **Recomputed here rather than asked of the binary**, which is what makes it
 /// an assertion: the entity with every field a transition writes neutralised,
@@ -19698,7 +19698,7 @@ fn replaced_hash_of(text: &str) -> String {
     ))
 }
 
-/// The three verbs ADR-f7dc76886db2 names, and the two doors `edit` has.
+/// The three verbs ADR-52bb0da2023a names, and the two doors `edit` has.
 ///
 /// One test over the four because the property is one property: whichever door
 /// the write came through, the entity ends up accounting for the version it
@@ -19968,7 +19968,7 @@ fn an_entity_edited_twice_answers_log_with_both_entries_in_order() {
 
 // ---------------------------------------------------------------------------
 // The version count is kept where a transition's own fields evidence it
-// (ADR-f7dc76886db2, TASK-dfe5a1bb0857)
+// (ADR-52bb0da2023a, TASK-dfe5a1bb0857)
 // ---------------------------------------------------------------------------
 //
 // The falsification is a direct file write, performed rather than described:
@@ -20025,7 +20025,7 @@ fn an_entity_that_cannot_account_for_a_version_is_reported_with_both_counts() {
     // anything, which is the premise the whole mechanism rests on.
     //
     // **The version and nothing else**, which is what the count still catches
-    // after ADR-f7dc76886db2 and the one thing the content hash cannot see:
+    // after ADR-52bb0da2023a and the one thing the content hash cannot see:
     // `version` is machinery, and a hash of the content is deliberately blind
     // to it.
     std::fs::write(
