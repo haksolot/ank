@@ -1235,6 +1235,14 @@ fn dispatch(
     if inv.command == "watch" {
         return watch(&inv, out);
     }
+    // The seventh, and the reason is `help`'s (ADR-e1d750884b82). What `skills`
+    // answers about is this binary, not a corpus: the skills were read into it
+    // at build time, and the installers run it right after unpacking, in
+    // whatever directory the person happened to be in. A `.ank/` or a git
+    // demanded here would refuse the verb exactly where it is run.
+    if inv.command == "skills" {
+        return crate::skills::run(&inv, out);
+    }
 
     let s = startup(&inv, cwd)?;
     let code = match inv.command {
@@ -1407,7 +1415,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            26,
+            27,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1484,7 +1492,7 @@ mod tests {
         // routed today, and all must be clear of it.
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
-            "attest", "amend", "show", "edit", "migrate", "tui", "mcp", "watch",
+            "attest", "amend", "show", "edit", "migrate", "tui", "mcp", "watch", "skills",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,

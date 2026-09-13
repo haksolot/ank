@@ -46,6 +46,7 @@ mod graph;
 mod human;
 mod index;
 mod migrate;
+mod skills;
 mod status;
 mod verify;
 

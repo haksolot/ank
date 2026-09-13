@@ -13146,7 +13146,11 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 28] = [
+const NOT_A_PATH: [&str; 29] = [
+    // Carries no value at all: the directory it writes is made under the
+    // temporary directory by the verb, and nothing about it comes off the
+    // command line (ADR-e1d750884b82).
+    "--install",
     // A scope and not a path: it says *which* file of declarations, and there
     // is one (ADR-96174f1ac2b7).
     "--user",

@@ -13,9 +13,11 @@
 //! criterion nothing executes is a criterion nobody checked, and a proof that
 //! covers less than it appears to is worse than a missing one.
 
+mod scratch;
+
 use std::fs;
-use std::path::PathBuf;
-use std::process::Command;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 use std::sync::OnceLock;
 
 fn repo_file(rel: &str) -> String {
@@ -260,9 +262,9 @@ fn help_order() -> Vec<String> {
 /// TASK-7ed19b16895e, TASK-49746735127f) turned the suite red until this line
 /// was edited, in the same commit.
 ///
-/// `skills` is declared ahead of the ratification of SPEC-e89b6a498634, which
-/// lists it, and leaves in the commit of TASK-544ec9655570 that ships it.
-const NOT_YET_DISPATCHED: [&str; 1] = ["skills"];
+/// `skills` was declared here ahead of the ratification of SPEC-e89b6a498634,
+/// which lists it, and left in the commit of TASK-544ec9655570 that ships it.
+const NOT_YET_DISPATCHED: [&str; 0] = [];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the
@@ -910,6 +912,288 @@ fn the_binary_names_the_skill_revision_it_was_built_alongside() {
         printed, declared,
         "the binary and the file disagree on the revision: whichever is stale, \
          the comparison this exists for would mislead its reader"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The skills the binary carries (ADR-e1d750884b82, TASK-544ec9655570)
+// ---------------------------------------------------------------------------
+
+/// Every skill in the tree as `(frontmatter name, path relative to the
+/// repository, bytes)`, walked from the plugin manifest: the manifest is how a
+/// harness finds the skills, and `the_plugin_manifest_lists_every_skill_directory`
+/// above already holds it to the directories that exist.
+fn manifest_skills() -> Vec<(String, String, Vec<u8>)> {
+    let manifest = repo_file(".claude-plugin/plugin.json");
+    let list = manifest
+        .split_once("\"skills\"")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(list, _)| list.to_string())
+        .expect(".claude-plugin/plugin.json lists no skills");
+    let mut found: Vec<(String, String, Vec<u8>)> = list
+        .split('"')
+        .filter(|s| s.starts_with("./"))
+        .map(|dir| {
+            let rel = format!("{}/SKILL.md", dir.trim_start_matches("./"));
+            let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../..")
+                .join(&rel);
+            let bytes = fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            let (front, _) = split_skill(&String::from_utf8_lossy(&bytes));
+            let name = front
+                .lines()
+                .find_map(|l| l.strip_prefix("name:"))
+                .map(|v| v.trim().to_string())
+                .unwrap_or_else(|| panic!("{rel} declares no name"));
+            (name, rel, bytes)
+        })
+        .collect();
+    found.sort();
+    found
+}
+
+/// The binary with standard input closed, `PATH` reduced to `path` and the
+/// temporary directory moved to `tmp`, so what `--install` writes lands where
+/// this suite sweeps it and the only `npx` it can find is the one put there.
+///
+/// **Closed on every run, not only on the one that says so**: the verb never
+/// reads standard input, and a run that happened to be given one would prove
+/// nothing about that.
+///
+/// A stub written a moment ago can be refused as busy on Linux when another
+/// thread of this suite forked while its file was still open for writing. That
+/// is the suite's race and not the verb's answer, so it is retried rather than
+/// reported.
+fn skills_run(args: &[&str], path: &Path, tmp: &Path, record: &Path) -> Output {
+    for _ in 0..5 {
+        let out = Command::new(env!("CARGO_BIN_EXE_ank"))
+            .args(args)
+            .env("PATH", path)
+            .env("TMPDIR", tmp)
+            .env("TMP", tmp)
+            .env("TEMP", tmp)
+            .env("ANK_STUB_RECORD", record)
+            .env_remove("npm_config_yes")
+            .stdin(Stdio::null())
+            .output()
+            .expect("the binary must have been built");
+        let busy = String::from_utf8_lossy(&out.stderr).contains("busy");
+        if !(out.status.code() == Some(9) && busy) {
+            return out;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    panic!("the stub npx stayed busy through five runs");
+}
+
+/// The directory `--install` says it wrote, read off its first line.
+fn written_directory(stdout: &str) -> PathBuf {
+    let first = stdout.lines().next().unwrap_or_default();
+    let (_, dir) = first
+        .split_once(" skills to ")
+        .unwrap_or_else(|| panic!("--install did not say where it wrote:\n{stdout}"));
+    PathBuf::from(dir)
+}
+
+/// What the stub exits with. Not a code of §4 on purpose: an ank code would let
+/// a verb that translated npx's failure into one of its own pass.
+const STUB_CODE: i32 = 42;
+
+/// An `npx` in `dir` that records what it was handed into `$ANK_STUB_RECORD`,
+/// one `key:value` line each, and exits [`STUB_CODE`]: every argument, the
+/// value of `npm_config_yes`, whether the contract's `SKILL.md` was already in
+/// the directory it was given, and whether a read from its standard input
+/// found anything.
+///
+/// `npx.cmd` on Windows, because that is what node installs there and what a
+/// lookup appending `.exe` alone would miss; a POSIX script elsewhere.
+fn stub_npx(dir: &Path) {
+    if cfg!(windows) {
+        let record = "\"%ANK_STUB_RECORD%\"";
+        let mut script = String::from("@echo off\r\n");
+        script.push_str(&format!("type nul > {record}\r\n"));
+        for n in 1..=5 {
+            script.push_str(&format!(
+                "if not \"%~{n}\"==\"\" >> {record} echo(arg:%~{n}\r\n"
+            ));
+        }
+        script.push_str(&format!(">> {record} echo(yes:%npm_config_yes%\r\n"));
+        script.push_str(&format!(
+            "if exist \"%~3\\ank\\SKILL.md\" (>> {record} echo(written:yes) else (>> {record} echo(written:no)\r\n"
+        ));
+        script.push_str(&format!(
+            "set /p _= && (>> {record} echo(stdin:open) || (>> {record} echo(stdin:closed)\r\n"
+        ));
+        script.push_str(&format!("exit /b {STUB_CODE}\r\n"));
+        fs::write(dir.join("npx.cmd"), script).expect("the stub must be writable");
+    } else {
+        let script = format!(
+            "#!/bin/sh\n\
+             {{\n\
+             for a in \"$@\"; do printf 'arg:%s\\n' \"$a\"; done\n\
+             printf 'yes:%s\\n' \"${{npm_config_yes-}}\"\n\
+             if [ -f \"$3/ank/SKILL.md\" ]; then echo written:yes; else echo written:no; fi\n\
+             if read -r _; then echo stdin:open; else echo stdin:closed; fi\n\
+             }} > \"$ANK_STUB_RECORD\"\n\
+             exit {STUB_CODE}\n"
+        );
+        let path = dir.join("npx");
+        fs::write(&path, script).expect("the stub must be writable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755))
+                .expect("the stub must be made executable");
+        }
+    }
+}
+
+/// **Six lines, one per skill in the tree, each carrying what its file
+/// declares.** Through the binary, with no repository and no `PATH`: the verb
+/// answers about what the build read, so it has to answer from a directory
+/// that holds nothing at all.
+#[test]
+fn ank_skills_prints_one_line_per_skill_it_carries() {
+    let empty = scratch::dir("skills-list");
+    let out = skills_run(&["skills"], &empty, &empty, &empty.join("record"));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "ank skills: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let lines: Vec<&str> = stdout.lines().collect();
+    let skills = manifest_skills();
+    assert_eq!(skills.len(), 6, "the tree holds {} skills", skills.len());
+    assert_eq!(
+        lines.len(),
+        skills.len(),
+        "one line per skill under skill/:\n{stdout}"
+    );
+    for (name, rel, bytes) in &skills {
+        let (front, _) = split_skill(&String::from_utf8_lossy(bytes));
+        let description = front
+            .lines()
+            .find_map(|l| l.strip_prefix("description:"))
+            .map(str::trim)
+            .unwrap_or_else(|| panic!("{rel} declares no description"));
+        let revision = declared_revision(&front)
+            .unwrap_or_else(|| panic!("{rel} declares no metadata.revision"));
+        let line = lines
+            .iter()
+            .find(|l| l.split_whitespace().next() == Some(name.as_str()))
+            .unwrap_or_else(|| panic!("no line names {name}:\n{stdout}"));
+        assert!(
+            line.contains(&revision) && line.contains(description),
+            "the line for {name} does not carry the revision {revision} and the \
+             description {rel} declares:\n{line}"
+        );
+    }
+}
+
+/// **`--install` writes every skill, hands the directory to npx, and exits with
+/// npx's code.** The stub is what proves the argv, and what it records is read
+/// back rather than the code that builds the command: `skills`, `add`, the
+/// directory, and nothing after it; `npm_config_yes` set; the files already
+/// written when npx started; and a standard input that answered nothing.
+///
+/// Every embedded body is compared byte for byte with the tree's file here,
+/// through the only door by which the bytes leave the binary.
+#[test]
+fn ank_skills_install_runs_npx_on_the_directory_it_wrote() {
+    let bin = scratch::dir("skills-stub-bin");
+    let tmp = scratch::dir("skills-stub-tmp");
+    let record = scratch::path("skills-stub-record");
+    stub_npx(&bin);
+
+    let out = skills_run(&["skills", "--install"], &bin, &tmp, &record);
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(STUB_CODE),
+        "the verb's exit code is the stub's:\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    let dir = written_directory(&stdout);
+    assert!(
+        dir.starts_with(&tmp),
+        "{} is not under the temporary directory the verb was given, {}",
+        dir.display(),
+        tmp.display()
+    );
+
+    let recorded = fs::read_to_string(&record)
+        .unwrap_or_else(|e| panic!("the stub never ran ({e}):\n{stdout}\n{stderr}"));
+    let args: Vec<&str> = recorded
+        .lines()
+        .filter_map(|l| l.strip_prefix("arg:"))
+        .collect();
+    assert_eq!(
+        args,
+        ["skills", "add", dir.to_string_lossy().as_ref()],
+        "the argv npx received:\n{recorded}"
+    );
+    for fact in ["yes:1", "written:yes", "stdin:closed"] {
+        assert!(
+            recorded.lines().any(|l| l.trim_end() == fact),
+            "the stub did not record {fact}:\n{recorded}"
+        );
+    }
+
+    let skills = manifest_skills();
+    let mut subdirectories: Vec<String> = fs::read_dir(&dir)
+        .unwrap_or_else(|e| panic!("{}: {e}", dir.display()))
+        .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    subdirectories.sort();
+    let names: Vec<String> = skills.iter().map(|(name, _, _)| name.clone()).collect();
+    assert_eq!(
+        subdirectories, names,
+        "one subdirectory per skill, named as the manifest's skills name themselves"
+    );
+    for (name, rel, bytes) in &skills {
+        let written = fs::read(dir.join(name).join("SKILL.md"))
+            .unwrap_or_else(|e| panic!("{name}/SKILL.md was not written: {e}"));
+        assert!(
+            written == *bytes,
+            "{name}/SKILL.md is not byte for byte {rel}: the binary carries \
+             another body than the tree's"
+        );
+    }
+}
+
+/// **No node on `PATH` is not a failure.** The directory is written and stays,
+/// and the verb prints it with the command to run later, and exits 0.
+#[test]
+fn ank_skills_install_without_node_prints_the_directory_and_the_command() {
+    let bin = scratch::dir("skills-no-node-bin");
+    let tmp = scratch::dir("skills-no-node-tmp");
+    let out = skills_run(
+        &["skills", "--install"],
+        &bin,
+        &tmp,
+        &scratch::path("skills-no-node-record"),
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{stdout}{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dir = written_directory(&stdout);
+    assert!(
+        dir.join("ank").join("SKILL.md").is_file(),
+        "the directory it printed holds no skill: {}",
+        dir.display()
+    );
+    assert!(
+        stdout
+            .lines()
+            .any(|l| l.trim() == format!("npx skills add {}", dir.display())),
+        "the command to run later is not printed:\n{stdout}"
     );
 }
 

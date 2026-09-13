@@ -1472,6 +1472,53 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[one(&[f("created", Type::Strings), f("wrote", Type::Strings), f("added", Type::Strings), f("changed", Type::Bool)])],
         owner_task: None,
     },
+    // After `init` and before `help`, which is §4's order, and in their group
+    // for the reason both are there: what it answers about is the binary and
+    // what arrives with it, before any corpus is involved (ADR-e1d750884b82).
+    CommandSpec {
+        name: "skills",
+        group: "set up a repository",
+        renews: Renews::Never,
+        // It reads no corpus and asks git nothing: the skills were read into
+        // the binary at build time, and the installers run this verb straight
+        // after unpacking, wherever the person happens to be.
+        coordinates: false,
+        summary: "the skills this binary carries, one line each; --install writes them to a directory and hands it to npx skills add",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[switch("--install")],
+        refuses: &[
+            refuses(
+                ExitCode::Generic,
+                "--json: this verb returns no document, only a listing for a person",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "--install, and the temporary directory cannot be created or written",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "--install, and the npx found on PATH cannot be started",
+            ),
+        ],
+        notes: &[
+            "each line is a skill's name, the revision its file declares, and its description; a build with no skill/ to read carries none and says so in one line",
+            "--install writes a new directory under the temporary directory, one subdirectory per skill named as its frontmatter names it, and runs npx skills add <that directory> with npm_config_yes set",
+            "without npx on PATH it prints the directory it wrote and the command to run, and exits 0",
+            "an npx that fails is this verb failing: it exits with npx's own code, and npx's output is the reason",
+            "it never reads standard input and never asks: the flag given is the consent",
+        ],
+        // `--json` is refused by name, so it is not offered: stdout under it is
+        // a document and this verb has none to give (§4, §9).
+        refuses_globals: &["--json"],
+        // **No document, and the empty list is the answer.** What `skills`
+        // prints is a listing for a person, and what `--install` produces is a
+        // directory on disk and the skills CLI's own run, which is why `--json`
+        // is refused above rather than answered with prose.
+        output: &[],
+        owner_task: None,
+    },
     CommandSpec {
         name: "help",
         group: "set up a repository",
