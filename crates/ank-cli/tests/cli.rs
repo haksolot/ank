@@ -23046,6 +23046,66 @@ fn a_fixture_repository_is_not_maintained_under_the_test() {
     }
 }
 
+/// **A cold rebuild of the index is linear in the corpus, through the binary**
+/// (TASK-b646631fa10a).
+///
+/// The cost every fresh clone, every worktree and every CI job pays once: the
+/// first verb finds no `index.db` and indexes the whole corpus. It was
+/// quadratic, because each insert into the search table was preceded by a
+/// delete FTS5 answers by scanning the table -- measured on a release build,
+/// 2.2 s at 1921 entity files and 8.8 s at 3842.
+///
+/// A ratio and not a wall (ADR-cc65f1388a71): a runner's clock is not the same
+/// number twice, but doubling the corpus doubles a linear rebuild on any of
+/// them and quadruples a quadratic one. The minimum of three runs is the one
+/// the rest of the machine disturbed least, and `index.db` is deleted before
+/// each so that every run is the cold one.
+#[test]
+fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() {
+    fn fastest_cold_find(tasks: usize) -> std::time::Duration {
+        let r = Repo::new();
+        for i in 0..tasks {
+            r.seed_task(
+                &format!("TASK-0000000{i:05x}"),
+                Some("A verifiable criterion."),
+            );
+        }
+        let db = r.0.join(".ank/index.db");
+        (0..3)
+            .map(|_| {
+                let _ = std::fs::remove_file(&db);
+                let start = std::time::Instant::now();
+                let out = r.ank("claude-code@ank", &["find", "--json"]);
+                let took = start.elapsed();
+                assert_eq!(code(&out), 0, "{}", stderr(&out));
+                assert!(
+                    stdout(&out).contains(&format!("\"total\":{tasks},")),
+                    "the rebuild did not index the whole corpus: {:.300}",
+                    stdout(&out)
+                );
+                assert!(db.exists(), "the run rebuilt no index at all");
+                took
+            })
+            .min()
+            .unwrap()
+    }
+
+    const N: usize = 1500;
+    let at_n = fastest_cold_find(N);
+    let at_2n = fastest_cold_find(2 * N);
+    let ratio = at_2n.as_secs_f64() / at_n.as_secs_f64();
+    eprintln!(
+        "cold find --json: {at_n:?} at {N}, {at_2n:?} at {}, ratio {ratio:.2}",
+        2 * N
+    );
+    assert!(
+        ratio <= 2.5,
+        "a cold find over {} tasks took {ratio:.2} times one over {N} \
+         ({at_2n:?} against {at_n:?}): the rebuild is no longer linear",
+        2 * N
+    );
+}
+
 // ---------------------------------------------------------------------------
 // A foreign namespace under refs/ank/ (TASK-4dab9aa4573d, ADR-4b45f344344f)
 // ---------------------------------------------------------------------------
