@@ -574,6 +574,9 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     };
     let (coord, detached, default_branch) = if has_git {
         let (coord, detached) = coordination(&repo.corpus, &mut report)?;
+        // The names `coordination` just walked, and the same walk: `ank_refs`
+        // is memoised per directory, so this starts no process (ADR-cc65f1388a71).
+        foreign_namespaces(&git::ank_refs(&repo.corpus)?, &mut report);
         let branch = git::resolve_default_branch(
             cfg.default_branch.as_deref(),
             git::origin_head(&repo.corpus)?.as_deref(),
@@ -814,6 +817,67 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
         }
     }
     Ok((map, proofs))
+}
+
+/// The namespace under `refs/ank/` a ref belongs to, or `None` for one a reader
+/// serves.
+///
+/// Served are the three a verb reads: `claims/`, `proof/`, and the mirror's
+/// `watch/<remote>/claims/` (ADR-4b45f344344f; the mirror's prefix is
+/// `context::WATCH_PREFIX`). Anything else is grouped by its first segment, or
+/// by `watch/<remote>/<segment>/` under the mirror, so a former feature's
+/// three hundred refs are one namespace to the reader and not three hundred.
+fn foreign_namespace(name: &str) -> Option<String> {
+    let root = git::ANK_NAMESPACE_PATTERN.trim_end_matches('*');
+    if name.starts_with(claim::CLAIMS_PREFIX) || name.starts_with(claim::PROOF_PREFIX) {
+        return None;
+    }
+    let rest = name.strip_prefix(root)?;
+    let depth = if rest.starts_with("watch/") { 3 } else { 1 };
+    let segments: Vec<&str> = rest.splitn(depth + 1, '/').collect();
+    if segments.len() <= depth {
+        // No tail below the namespace: the ref names the namespace itself.
+        return Some(name.to_string());
+    }
+    let namespace = segments[..depth].join("/");
+    if depth == 3 && segments[2] == "claims" {
+        return None;
+    }
+    Some(format!("{root}{namespace}/"))
+}
+
+/// A ref under `refs/ank/` in a namespace no reader serves (ADR-4b45f344344f).
+///
+/// **A signal and never a fault**, on the terms of the previous-layout signal:
+/// such a corpus answers every verb, since nothing reads the ref. **And never a
+/// prune**: ank did not write it, so ank does not delete it. The reader gets one
+/// finding per namespace and one deletion per ref, by name -- a wildcard push
+/// over `refs/ank/*` from a worktree force-reverts the attestations a CI wrote.
+/// The local deletion rides on the same line, because a ref deleted only on the
+/// remote comes back with the next wildcard push from this clone.
+fn foreign_namespaces(refs: &[git::AnkRef], report: &mut Report) {
+    let mut by_namespace: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+    for r in refs {
+        if let Some(ns) = foreign_namespace(&r.name) {
+            by_namespace.entry(ns).or_default().push(&r.name);
+        }
+    }
+    for (namespace, mut names) in by_namespace {
+        names.sort_unstable();
+        let mut finding = Finding::signal(
+            &namespace,
+            format!(
+                "{} ref(s) in a namespace no reader serves: no verb reads \
+                 them, so ank deletes none; delete each by name, never with a wildcard",
+                names.len()
+            ),
+        );
+        finding.note = names
+            .iter()
+            .map(|n| format!("git push origin :{n}; git update-ref -d {n}"))
+            .collect();
+        report.findings.push(finding);
+    }
 }
 
 /// One entry of `.ank/allowed_signers`: an identity allowed to ratify (§8).
