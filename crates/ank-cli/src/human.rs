@@ -839,7 +839,24 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
         match read {
             Ok(Some(held)) => match (held.record, proof_ns) {
                 (Record::Proof(p), true) => {
-                    proofs.insert(id, p.proofs);
+                    // A ref that grew with runs (ADR-4b45f344344f). Reported
+                    // once per ref and never repaired here: the rewrite is a
+                    // push, and a push is the reader's to run, one ref by name.
+                    let extra = claim::redundant_attestations(&p.proofs);
+                    if extra > 0 {
+                        report.findings.push(Finding::signal(
+                            &r.name,
+                            format!(
+                                "{} attestations of {} fact(s): the ref grows with runs \
+                                 (ank attest {id} --compact --detached)",
+                                p.proofs.len(),
+                                p.proofs.len() - extra
+                            ),
+                        ));
+                    }
+                    // And judged as the rule would have left it, so no finding
+                    // below counts one fact a hundred times.
+                    proofs.insert(id, claim::one_per_fact(p.proofs));
                 }
                 (record, false) if !matches!(record, Record::Proof(_)) => {
                     map.insert(id, record);
@@ -5969,6 +5986,10 @@ pub fn attest(
     };
     let id = task.id.clone();
 
+    if inv.has("--compact") {
+        return compact(inv, repo, &id, out);
+    }
+
     // The proof below names a commit of the code, so git is needed in the work
     // tree and not only in the corpus (ADR-9e56318631f3).
     crate::git::ensure_worktree_usable(repo)?;
@@ -6141,6 +6162,85 @@ fn detached(
     // The hint is a push and not a re-run: the local swap succeeded, so the
     // record is already in this clone and one command finishes the job.
     if let Some(failure) = written.sync.proof_failure() {
+        return Err(CliError::new(ExitCode::Environment, failure)
+            .with_hint(format!("git push origin {}", claim::proof_ref(id))));
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// `--compact --detached`: rewrites `refs/ank/proof/<id>` to one entry per
+/// fact and adds nothing (ADR-4b45f344344f).
+///
+/// For a ref written before the rule, and run once per ref by whoever holds the
+/// remote, one ref by name: the rewrite is a push, and a wildcard push over
+/// `refs/ank/*` from a worktree force-reverts what a pipeline attested. No task
+/// state is asked for, since nothing about the task is written, and no file is
+/// touched.
+///
+/// **On the fail side of ADR-af533e7a3e03, as `--detached` is**: the ref is the
+/// whole product, so a compaction that did not reach the remote is reported and
+/// then exits 9, naming the push that finishes it.
+fn compact(inv: &Invocation, repo: &Repo, id: &EntityId, out: &mut dyn Write) -> Result<ExitCode> {
+    let exact = format!("ank attest {id} --compact --detached");
+    // The rule governs the ref and nothing else. The file's proof list is
+    // append-only and anchored by the commits that carry it, so a compaction of
+    // it would be the one rewrite §3 forbids.
+    if !inv.has("--detached") {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--compact rewrites the proof ref, and needs --detached to say so",
+        )
+        .with_hint(exact));
+    }
+    if inv.value("--proof").is_some() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--compact adds nothing, so it takes no --proof",
+        )
+        .with_hint(exact));
+    }
+
+    let done = claim::compact_proofs(&repo.corpus, id)?;
+    if done
+        .written
+        .as_ref()
+        .is_some_and(|w| w.cas == claim::Cas::Lost)
+    {
+        return Err(CliError::new(
+            ExitCode::Unavailable,
+            format!("an attestation reached {id} while it was compacted"),
+        )
+        .with_hint(exact));
+    }
+
+    if inv.json() {
+        let doc = Obj::document()
+            .str("task", &id.to_string())
+            .num("detached_proofs", done.kept)
+            .num("removed", done.removed)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+    } else if !inv.quiet() {
+        let style = inv.style();
+        if done.removed == 0 {
+            let _ = writeln!(
+                out,
+                "{} already holds one entry per fact ({} detached)",
+                style.id(&id.to_string()),
+                done.kept
+            );
+        } else {
+            let _ = writeln!(
+                out,
+                "{} {} removed {} ({} detached)",
+                style.advanced("compacted"),
+                style.id(&id.to_string()),
+                done.removed,
+                done.kept
+            );
+        }
+    }
+    if let Some(failure) = done.written.and_then(|w| w.sync.proof_failure()) {
         return Err(CliError::new(ExitCode::Environment, failure)
             .with_hint(format!("git push origin {}", claim::proof_ref(id))));
     }
