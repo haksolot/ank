@@ -37,9 +37,10 @@ use std::path::{Path, PathBuf};
 ///
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
 /// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
-/// `files` and to 9 by `entities.archived`: nothing migrated any of those
-/// times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 9;
+/// `files`, to 9 by `entities.archived` and to 10 by the three columns an
+/// archived entry is read back from: nothing migrated any of those times, and
+/// nothing had to.
+pub const SCHEMA_VERSION: u32 = 10;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -140,7 +141,10 @@ CREATE TABLE entities (
     about      TEXT NOT NULL,
     seq        INTEGER NOT NULL,
     version    INTEGER NOT NULL,
-    archived   INTEGER NOT NULL DEFAULT 0
+    archived   INTEGER NOT NULL DEFAULT 0,
+    author     TEXT,
+    records    TEXT,
+    body       TEXT
 );
 CREATE INDEX entities_by_path ON entities (path);
 CREATE INDEX entities_by_kind ON entities (kind, status);
@@ -1154,10 +1158,102 @@ impl Index {
         }
     }
 
+    /// Every archived log entry, rebuilt from its row and never from its file,
+    /// in the order of §3 (TASK-5b11a5f4633b).
+    ///
+    /// `check` reads an entity's entries from both roots -- the accounting of
+    /// ADR-52bb0da2023a, the discrepancies recorded against a criterion -- and
+    /// may not parse an archived file to do it (ADR-467ce7e9cda1). The row was
+    /// written when the index first read the file, and an archived row is never
+    /// rewritten, so what comes back is the entry as it arrived: the same
+    /// title, author, records and body, and therefore the same message and the
+    /// same line. Empty unless this index was asked for the archive.
+    pub fn archived_entries(&self) -> Result<Vec<ank_core::Log>> {
+        if !self.archive {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, title, created, author, scope, about, seq, records, version, body \
+                 FROM entities WHERE archived = 1 AND kind = 'log' ORDER BY created, seq, id",
+            )
+            .map_err(|e| self.err(e))?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, i64>(6)?,
+                    r.get::<_, Option<String>>(7)?,
+                    r.get::<_, i64>(8)?,
+                    r.get::<_, Option<String>>(9)?,
+                ))
+            })
+            .map_err(|e| self.err(e))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id, title, created, author, scope, about, seq, records, version, body) =
+                row.map_err(|e| self.err(e))?;
+            // A row whose identifiers do not read back is skipped, the way a
+            // malformed file is: the index declines to hold what it cannot
+            // name, and `check` verifies the file by digest regardless.
+            let (Ok(id), Ok(about)) = (EntityId::parse(&id), EntityId::parse(&about)) else {
+                continue;
+            };
+            out.push(ank_core::Log {
+                id,
+                slug: None,
+                title,
+                created,
+                author,
+                scope: split_list(&scope),
+                about,
+                seq: seq.max(0) as u64,
+                records,
+                verified: Vec::new(),
+                schema: ank_core::SCHEMA_VERSION,
+                version: version.max(0) as u64,
+                body: body.unwrap_or_default(),
+            });
+        }
+        Ok(out)
+    }
+
     /// Every archived file the index holds a digest for, as its path relative
     /// to `.ank/` and the content hash it arrived with, ordered by path
     /// (ADR-467ce7e9cda1). What `check` verifies an archived file against, and
     /// empty unless this index was asked for the archive.
+    /// The author and the instant of every archived entity that is not a log
+    /// entry and names an author, in id order (TASK-5b11a5f4633b).
+    ///
+    /// What the burst-of-creation signal counts is acts of creation, and moving
+    /// a document into the archive does not undo the act: a burst that was
+    /// there before `ank archive` is there after it. Read from the row, like
+    /// every other archived fact `check` uses. Empty unless this index was
+    /// asked for the archive.
+    pub fn archived_creations(&self) -> Result<Vec<(String, String)>> {
+        if !self.archive {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT author, created FROM entities \
+                 WHERE archived = 1 AND kind <> 'log' AND author IS NOT NULL ORDER BY id",
+            )
+            .map_err(|e| self.err(e))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| self.err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.err(e))
+    }
+
     pub fn archived_digests(&self) -> Result<Vec<(String, String)>> {
         if !self.archive {
             return Ok(Vec::new());
@@ -1596,6 +1692,20 @@ fn upsert(
             l.seq,
         ),
     };
+    // **What an entry is read back from, once it is archived**
+    // (TASK-5b11a5f4633b). `check` never parses an archived file
+    // (ADR-467ce7e9cda1), and the accounting of ADR-52bb0da2023a and the
+    // discrepancy reading still need an archived entry's author, what it
+    // records and its message whole -- the title alone is cut at a line. So an
+    // entry's row carries the three fields its message and its line are made
+    // of. Every other kind carries its author, which is what the burst of
+    // creations counts, and leaves the other two empty -- a spec's body above
+    // all, which is measured in hundreds of kilobytes and read by nobody here.
+    let author = entity.author().map(str::to_string);
+    let (records, body) = match entity {
+        Entity::Log(l) => (l.records.clone(), Some(l.body.clone())),
+        _ => (None, None),
+    };
     // The path is not the key: an entity that moved file must not survive
     // twice, so the old row goes first. Same for its searchable twin, and by
     // the same reasoning as in `forget`: resolve it through `entities` before
@@ -1614,14 +1724,15 @@ fn upsert(
     let rid = w.one(
         "INSERT INTO entities \
            (id, kind, path, title, status, created, scope, blocked_by, about, seq, version, \
-            archived) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
+            archived, author, records, body) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
          ON CONFLICT(id) DO UPDATE SET \
            kind = excluded.kind, path = excluded.path, title = excluded.title, \
            status = excluded.status, created = excluded.created, \
            scope = excluded.scope, blocked_by = excluded.blocked_by, \
            about = excluded.about, seq = excluded.seq, version = excluded.version, \
-           archived = excluded.archived \
+           archived = excluded.archived, author = excluded.author, \
+           records = excluded.records, body = excluded.body \
          RETURNING rid",
         params![
             id,
@@ -1636,6 +1747,9 @@ fn upsert(
             seq as i64,
             version as i64,
             is_archived(rel),
+            author,
+            records,
+            body,
         ],
     )?;
     w.run(

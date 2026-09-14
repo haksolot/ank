@@ -24929,3 +24929,159 @@ fn help_watch_says_the_mirror_carries_claims_and_nothing_else() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// The accounting reads both roots (TASK-5b11a5f4633b, ADR-467ce7e9cda1)
+// ---------------------------------------------------------------------------
+
+/// The entries about `id`, by the ids of their files, hot corpus only.
+fn entry_ids_about(r: &Repo, id: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(r.0.join(".ank/entities"))
+        .unwrap()
+        .flatten()
+    {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        if let Ok(ank_core::Entity::Log(l)) = ank_core::parse_entity(&text) {
+            if l.about.to_string() == id {
+                out.push(l.id.to_string());
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
+/// **An entity whose entries are archived is still accounted for by them**,
+/// through the binary (ADR-52bb0da2023a read against both roots,
+/// ADR-467ce7e9cda1). Two tasks are born through the CLI under the ratified
+/// rule; one is then edited by hand, the other carries a discrepancy; every
+/// entry about either moves into the archive by hand, creation records
+/// included. `check` owes neither a born-outside fault, and still says what
+/// those entries say: the hand edit and the discrepancy. A task written by hand
+/// is still a fault, archive or not.
+#[test]
+fn an_entity_whose_entries_are_archived_is_still_accounted_for_by_them() {
+    let r = corpus_under_the_rule();
+    ratify_the_rule(&r);
+    let born = |title: &str| -> String {
+        let out = r.ank(
+            "claude-code/1.0",
+            &[
+                "new",
+                "task",
+                "--title",
+                title,
+                "--scope",
+                "src/**",
+                "--criteria",
+                "A verifiable criterion.",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", both_streams(&out));
+        stdout(&out).split_whitespace().nth(1).unwrap().to_string()
+    };
+    let edited = born("Born through the CLI and edited by hand");
+    let disputed = born("Born through the CLI and disputed");
+    let by_hand = seed_by_hand(
+        &r,
+        "---\nid: TASK-0000000b0101\ntype: task\ntitle: Written by hand\n\
+         created: 2026-09-01T00:00:00Z\nstatus: open\nscope:\n  - src/**\n\
+         blocked_by: []\nschema: 4\nversion: 1\n---\n",
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "born"]);
+    assert_eq!(code(&r.ank("claude-code/1.0", &["claim", &disputed])), 0);
+    let out = r.ank(
+        "claude-code/1.0",
+        &[
+            "log",
+            "discrepancy: the criterion names a file the scope does not",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
+    let file = r.0.join(format!(".ank/entities/{edited}.md"));
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replace("edited by hand", "edited by a hand")).unwrap();
+
+    let before = both_streams(&r.ank("claude-code/1.0", &["check"]));
+    let hand_edit = format!("{edited}: content is");
+    let discrepancy = format!("{disputed}: discrepancy recorded against the frozen criterion");
+    assert!(before.contains(&hand_edit), "{before}");
+    assert!(before.contains(&discrepancy), "{before}");
+
+    let mut moved = entry_ids_about(&r, &edited);
+    moved.extend(entry_ids_about(&r, &disputed));
+    assert_eq!(
+        moved.len(),
+        3,
+        "two creation records and a discrepancy: {moved:?}"
+    );
+    for id in &moved {
+        archive_by_hand(&r, id);
+    }
+
+    let checked = r.ank("claude-code/1.0", &["check"]);
+    let said = both_streams(&checked);
+    for id in [&edited, &disputed] {
+        assert!(
+            !said
+                .lines()
+                .any(|l| l.contains(BORN_OUTSIDE) && l.contains(id.as_str())),
+            "{id}'s creation record is archived and reads as missing: {said}"
+        );
+    }
+    assert!(
+        said.contains(&hand_edit),
+        "the hand edit is no longer reported: {said}"
+    );
+    assert!(
+        said.contains(&discrepancy),
+        "the discrepancy is no longer reported: {said}"
+    );
+    let line = said
+        .lines()
+        .find(|l| l.contains(BORN_OUTSIDE) && l.contains(by_hand.as_str()))
+        .unwrap_or_else(|| panic!("the task written by hand is no longer reported: {said}"));
+    assert!(line.starts_with("error:"), "{line}");
+}
+
+/// **A burst of creation is not undone by archiving what it produced**
+/// (TASK-5b11a5f4633b): eleven documents by one author inside an hour are a
+/// burst before six of them move into the archive, and the same burst after,
+/// counted from the archived rows rather than from the archived files.
+#[test]
+fn a_burst_of_creation_survives_archiving_what_it_produced() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "").unwrap();
+    let ids: Vec<String> = (0..11)
+        .map(|i| {
+            let id = format!("ADR-00000000c{i:03x}");
+            write_entity(
+                &r,
+                &id,
+                format!(
+                    "---\nid: {id}\ntype: adr\nslug: a-decision\ntitle: Decision {i}\n\
+                     created: 2026-08-01T00:{i:02}:00Z\nauthor: claude-code/burst\n\
+                     status: superseded\nscope:\n  - src/**\nconstraint: |\n  A rule.\n\
+                     schema: 4\nversion: 1\n---\n\nWhy.\n"
+                ),
+            );
+            id
+        })
+        .collect();
+    let burst = "burst creation by claude-code/burst: 11 entities within an hour";
+    let before = both_streams(&r.ank("claude-code@ank", &["check"]));
+    assert!(before.contains(burst), "{before}");
+    for id in &ids[..6] {
+        archive_by_hand(&r, id);
+    }
+    let after = both_streams(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        after.contains(burst),
+        "archiving silenced the burst: {after}"
+    );
+}
