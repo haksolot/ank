@@ -5,15 +5,19 @@ slug: the-corpus-has-a-cold-half-an-entry-is-cold-with
 title: The corpus has a cold half, an entry is cold with its subject, and its weight is a finding
 created: 2026-09-14T13:18:05Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
   - docs/**
 constraint: |
   .ank/archive/entities/<ID>.md is a second fixed, flat directory in the same format as .ank/entities/, one file per entity, readable with no parser. The index scan does not walk it unless asked; show, log and find --all resolve into it; check verifies an archived file by digest and never re-parses it, reports an archived file that changed as a fault, and resolves a reference, a supersession, a blocker and a log subject against both roots, so that naming an archived entity is never reported as naming nothing. What is cold is a superseded document, and a log entry whose subject is cold: an entry about a superseded document, or about a task done on the default branch. A task is never cold, and an entry never outlives its subject in the hot corpus. ank archive moves the cold set, commits nothing and lands by pull request; check reports a hot entity that is cold by this rule as a signal naming that verb. config.yml declares weight: {hot_files, plane_bytes}, and check signals a corpus over either, naming what grew.
 supersedes: ADR-306fdb75e265
+ratified: b80ffb34e497
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-09-14T13:32:30Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Supersedes ADR-306fdb75e265 on one point, measured before `ank archive`
