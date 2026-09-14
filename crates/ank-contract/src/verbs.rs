@@ -305,6 +305,8 @@ const CHECK_OUT: &[Field] = &[
     f("signals", Type::Num),
     f("tasks", Type::Num),
     f("adr", Type::Num),
+    f("hot_files", Type::Num),
+    f("plane_bytes", Type::Num),
     f("pruned", Type::Strings),
     f(
         "findings",
@@ -654,6 +656,8 @@ config_keys!(
     "verifiers.<name>.run",
     "verifiers.<name>.timeout",
     "verifiers.<name>.default",
+    "weight.hot_files",
+    "weight.plane_bytes",
 );
 
 // ---------------------------------------------------------------------------

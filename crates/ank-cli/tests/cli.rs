@@ -23453,3 +23453,252 @@ fn a_foreign_namespace_costs_check_no_git_process() {
         foreign as i64 - clean as i64
     );
 }
+
+// ---------------------------------------------------------------------------
+// The declared weight of a corpus (TASK-b858b5965b07, ADR-306fdb75e265)
+// ---------------------------------------------------------------------------
+
+/// The config every fixture writes, with a `weight:` block in it.
+fn weighted_config(hot_files: u64, plane_bytes: u64) -> String {
+    format!(
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n\
+         weight:\n  hot_files: {hot_files}\n  plane_bytes: {plane_bytes}\n"
+    )
+}
+
+/// Three tasks and one detached proof, committed: something to count on both
+/// counters.
+fn weighed_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_task("TASK-000000000001", Some("A verifiable criterion."));
+    r.seed_task("TASK-000000000002", Some("A verifiable criterion."));
+    r.seed_task("TASK-000000000003", Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a corpus"]);
+    r.forge_detached_proof("TASK-000000000001");
+    r
+}
+
+/// The findings whose subject names a weight counter.
+fn weight_findings(findings: &[serde_yaml::Value]) -> Vec<&serde_yaml::Value> {
+    findings
+        .iter()
+        .filter(|f| {
+            f["subject"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("weight"))
+        })
+        .collect()
+}
+
+/// `init` writes both keys, each with a number, and the file it wrote is one
+/// `check` and `config` read back.
+#[test]
+fn init_declares_the_corpus_weight_with_both_counters() {
+    let dir = fresh_git_dir("init-weight");
+    let out = ank_command()
+        .args(["init"])
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(&dir)
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let text = std::fs::read_to_string(dir.join(".ank/config.yml")).unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
+    for key in ["hot_files", "plane_bytes"] {
+        assert!(
+            doc["weight"][key].as_u64().is_some_and(|n| n > 0),
+            "init wrote no number for weight.{key}:\n{text}"
+        );
+        let out = ank_command()
+            .args(["config", &format!("weight.{key}")])
+            .env("ANK_AGENT", "claude-code@ank")
+            .current_dir(&dir)
+            .output()
+            .unwrap();
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out).trim(),
+            doc["weight"][key].as_u64().unwrap().to_string(),
+            "config reads weight.{key} as something other than the file says"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// **Over `hot_files`: one signal, naming the counter, the value, the budget
+/// and the verb that resolves it.** Three entity files against a budget of two.
+#[test]
+fn a_corpus_over_its_hot_files_budget_is_one_signal_naming_archive() {
+    let r = weighed_fixture();
+    r.set_config(&weighted_config(2, 1_000_000));
+    let (exit, findings) = check_findings(&r);
+    let weight = weight_findings(&findings);
+    assert_eq!(weight.len(), 1, "{findings:#?}");
+    let f = weight[0];
+    assert_eq!(f["level"].as_str(), Some("signal"), "{f:#?}");
+    assert_eq!(exit, 0, "a signal alone leaves the exit code 0");
+    let said = format!(
+        "{} {} {:?}",
+        f["subject"].as_str().unwrap(),
+        f["message"].as_str().unwrap(),
+        f["note"]
+    );
+    assert!(
+        said.contains("hot_files"),
+        "the counter is not named: {said}"
+    );
+    assert!(said.contains(" 3 "), "the value is not named: {said}");
+    assert!(
+        said.contains("budget of 2"),
+        "the budget is not named: {said}"
+    );
+    assert!(
+        said.contains("ank archive"),
+        "the verb is not named: {said}"
+    );
+
+    // The human reading carries the same line.
+    let text = stdout(&r.ank("claude-code@ank", &["check"]));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("signal: weight.hot_files") && l.contains("ank archive")),
+        "{text}"
+    );
+}
+
+/// **Over `plane_bytes`: the same, and the value is the size git gives for
+/// the records `check` reads.** Asked of git here, independently of the binary.
+#[test]
+fn a_corpus_over_its_plane_bytes_budget_is_one_signal_naming_compaction() {
+    let r = weighed_fixture();
+    let bytes: u64 = r
+        .git(&["cat-file", "-s", "refs/ank/proof/TASK-000000000001"])
+        .parse()
+        .unwrap();
+    r.set_config(&weighted_config(1000, bytes - 1));
+    let (exit, findings) = check_findings(&r);
+    let weight = weight_findings(&findings);
+    assert_eq!(weight.len(), 1, "{findings:#?}");
+    let f = weight[0];
+    assert_eq!(f["level"].as_str(), Some("signal"), "{f:#?}");
+    assert_eq!(exit, 0);
+    let said = format!(
+        "{} {} {:?}",
+        f["subject"].as_str().unwrap(),
+        f["message"].as_str().unwrap(),
+        f["note"]
+    );
+    assert!(said.contains("plane_bytes"), "{said}");
+    assert!(
+        said.contains(&format!(" {bytes} ")),
+        "the value is not named: {said}"
+    );
+    assert!(
+        said.contains(&format!("budget of {}", bytes - 1)),
+        "the budget is not named: {said}"
+    );
+    assert!(
+        said.contains("--compact"),
+        "the resolution is not named: {said}"
+    );
+
+    // At the budget exactly is not over it.
+    r.set_config(&weighted_config(1000, bytes));
+    let (_, findings) = check_findings(&r);
+    assert!(weight_findings(&findings).is_empty(), "{findings:#?}");
+}
+
+/// **Under both, nothing new; and the counters are in the document either way,
+/// as numbers, beside the fields that were there.**
+#[test]
+fn a_corpus_under_both_budgets_reports_nothing_new_and_json_carries_both_counters() {
+    let r = weighed_fixture();
+    let bytes = r.git(&["cat-file", "-s", "refs/ank/proof/TASK-000000000001"]);
+
+    r.set_config(&weighted_config(1000, 1_000_000));
+    let under = stdout(&r.ank("claude-code@ank", &["check", "--json"]));
+    // The same corpus with no weight declared at all, where the defaults `init`
+    // writes apply: this corpus is under them too.
+    r.set_config("schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n");
+    let undeclared = stdout(&r.ank("claude-code@ank", &["check", "--json"]));
+
+    for doc in [&under, &undeclared] {
+        let v: serde_yaml::Value = serde_yaml::from_str(doc).unwrap();
+        let findings = v["findings"].as_sequence().unwrap();
+        assert!(weight_findings(findings).is_empty(), "{doc}");
+        assert!(
+            findings.iter().all(|f| {
+                let m = f["message"].as_str().unwrap_or_default();
+                !m.contains("hot_files") && !m.contains("plane_bytes")
+            }),
+            "{doc}"
+        );
+        assert_eq!(v["hot_files"].as_u64(), Some(3), "{doc}");
+        assert_eq!(
+            v["plane_bytes"].as_u64(),
+            Some(bytes.parse().unwrap()),
+            "{doc}"
+        );
+        for (key, number) in [
+            ("faults", true),
+            ("signals", true),
+            ("tasks", true),
+            ("adr", true),
+        ] {
+            assert_eq!(v[key].is_u64(), number, "{key} retyped: {doc}");
+        }
+        assert!(
+            v["pruned"].is_sequence() && v["findings"].is_sequence(),
+            "{doc}"
+        );
+    }
+    assert_eq!(
+        under, undeclared,
+        "a declared budget above the corpus moved the answer"
+    );
+}
+
+/// **The counters come from the walk and the batch `check` already makes**
+/// (ADR-cc65f1388a71), counted with `GIT_TRACE2_EVENT`. One corpus under both
+/// budgets and the same corpus over both start the same processes; and a corpus
+/// with twenty more entities and twenty more proof refs starts the same as well.
+#[test]
+fn weighing_the_corpus_costs_check_no_git_process() {
+    fn starts(r: &Repo, tag: &str) -> usize {
+        let trace = r.0.join(format!("trace-{tag}.json"));
+        let out = ank_command()
+            .args(["check", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", AGENT)
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert!(code(&out) <= 8, "{}", stderr(&out));
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let _ = std::fs::remove_file(&trace);
+        let n = text.matches("\"event\":\"start\"").count();
+        assert!(n > 0, "the trace records no git process: {text:.400}");
+        n
+    }
+    let r = weighed_fixture();
+    r.set_config(&weighted_config(1000, 1_000_000));
+    let under = starts(&r, "under");
+    r.set_config(&weighted_config(1, 1));
+    let over = starts(&r, "over");
+    assert_eq!(under, over, "crossing a budget started a process");
+
+    for i in 0..20 {
+        let id = format!("TASK-0000000001{i:02}");
+        r.seed_task(&id, Some("A verifiable criterion."));
+    }
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "twenty more"]);
+    for i in 0..20 {
+        r.forge_detached_proof(&format!("TASK-0000000001{i:02}"));
+    }
+    let heavier = starts(&r, "heavier");
+    assert_eq!(over, heavier, "the weight grew with the corpus it weighs");
+}

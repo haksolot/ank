@@ -154,6 +154,16 @@ pub struct Report {
     /// itself; the field exists so `status` says the same thing out of the same
     /// pass rather than computing a second answer able to disagree.
     pub drift: Option<Drift>,
+    /// Entity files under `.ank/entities/`, counted by the walk that parses
+    /// them (ADR-306fdb75e265). Files, not entities: an unparseable one is
+    /// still a file every reader pays for.
+    pub hot_files: usize,
+    /// Bytes of the claim and proof records `check` moved through its batch,
+    /// each object once. Zero where the coordination half did not run.
+    pub plane_bytes: usize,
+    /// The heaviest proof refs of that batch, heaviest first, for the note
+    /// under a `plane_bytes` signal. Never rendered on its own.
+    pub heaviest_proofs: Vec<(String, usize)>,
 }
 
 /// The corpus of this checkout against the corpus of the default branch, once
@@ -238,6 +248,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             let p = entry.path();
             if p.extension().and_then(|s| s.to_str()) != Some("md") {
                 continue;
+            }
+            // The hot corpus is the flat directory alone: the previous layout
+            // has its own signal, and counting it here would report one file
+            // location twice.
+            if kind_of_dir.is_none() {
+                report.hot_files += 1;
             }
             let name = p
                 .file_name()
@@ -751,6 +767,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         None => {}
     }
 
+    check_weight(cfg, &mut report);
+
     report.findings.sort_by(|a, b| {
         a.level
             .cmp(&b.level)
@@ -773,6 +791,22 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
     // claims and the proofs it unions with the files (ADR-493471d64ba0). The
     // mirror is a watcher's copy and not this clone's to judge.
     let (refs, records) = git::ank_records(cwd, git::Namespaces::CLAIMS | git::Namespaces::PROOF)?;
+    // The weight of what was just moved, from the batch itself: each object
+    // once, as the batch read it (ADR-306fdb75e265, ADR-cc65f1388a71).
+    report.plane_bytes = records.values().map(String::len).sum();
+    let mut heaviest: Vec<(String, usize)> = refs
+        .iter()
+        .filter(|r| {
+            matches!(
+                git::Namespaces::of(&r.name),
+                Some((git::Namespaces::PROOF, _))
+            )
+        })
+        .filter_map(|r| Some((r.name.clone(), records.get(&r.object)?.len())))
+        .collect();
+    heaviest.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    heaviest.truncate(3);
+    report.heaviest_proofs = heaviest;
     for r in refs {
         // One walk over both namespaces. `check` asks the same question of
         // every ref under `refs/ank/`, and two loops would be free to disagree
@@ -2126,6 +2160,55 @@ fn check_task(
                 );
             }
         }
+    }
+}
+
+/// A corpus over the weight it declares (ADR-306fdb75e265): one signal per
+/// counter crossed, naming the counter, the value, the budget and the verb.
+///
+/// Modelled on the over-constrained signal above, and for its reason: a number
+/// in `config.yml`, a signal when it is crossed, and the fact the corpus
+/// outgrew in the message, so bloat stops being something a reader discovers
+/// by timing a verb. **A signal and never a fault**, because a heavy corpus
+/// answers every verb correctly, only more slowly. At the budget is not over it.
+fn check_weight(cfg: &Config, report: &mut Report) {
+    let budget = cfg.weight;
+    let hot = report.hot_files as u64;
+    if hot > budget.hot_files {
+        report.findings.push(Finding::signal(
+            "weight.hot_files",
+            format!(
+                "{hot} entity files under .ank/entities/, over the budget of {}: \
+                 ank archive moves the cold half, superseded documents and the \
+                 entries of tasks done on the default branch",
+                budget.hot_files
+            ),
+        ));
+    }
+    let bytes = report.plane_bytes as u64;
+    if bytes > budget.plane_bytes {
+        let note: Vec<String> = report
+            .heaviest_proofs
+            .iter()
+            .filter_map(|(name, size)| {
+                let id = name.strip_prefix(claim::PROOF_PREFIX)?;
+                Some(format!(
+                    "{name} holds {size} bytes: ank attest {id} --compact --detached"
+                ))
+            })
+            .collect();
+        report.findings.push(
+            Finding::signal(
+                "weight.plane_bytes",
+                format!(
+                    "{bytes} bytes of claim and proof records under refs/ank/, over the \
+                     budget of {}: ank attest <id> --compact --detached leaves one entry \
+                     per fact on a proof ref, and the refs check signals name the rest",
+                    budget.plane_bytes
+                ),
+            )
+            .with_note(note),
+        );
     }
 }
 
@@ -4331,6 +4414,8 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             .num("signals", report.signals())
             .num("tasks", report.tasks)
             .num("adr", report.adrs)
+            .num("hot_files", report.hot_files)
+            .num("plane_bytes", report.plane_bytes)
             .strings("pruned", &report.pruned)
             .array("findings", items)
             .finish();

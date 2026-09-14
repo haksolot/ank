@@ -23,6 +23,16 @@ pub const DEFAULT_CLAIM_TTL_MAX: &str = "2h";
 /// spellings of one number is exactly how they start to disagree.
 pub const DEFAULT_CLAIM_TTL: &str = "30m";
 pub const DEFAULT_VERIFIER_TIMEOUT: &str = "10m";
+/// The hot corpus a reader pays per file for, as `init` declares it
+/// (ADR-306fdb75e265). Measured on 2026-09-14, this repository held 1979 files
+/// under `.ank/entities/`; 3000 leaves it half again, which at August's rate of
+/// 1645 entities a month is crossed within a month unless the cold half moves.
+pub const DEFAULT_WEIGHT_HOT_FILES: u64 = 3000;
+/// The bytes of claim and proof records `check` moves through its batch, as
+/// `init` declares it. The same day this repository's batch was 3 285 580
+/// bytes, nearly all proofs appended once per CI run; 4 MB is the next growth
+/// of that mechanism, not a size a corpus reaches by accumulating facts.
+pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = 4_000_000;
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
@@ -73,6 +83,38 @@ struct ConfigFile {
     roles: BTreeMap<String, Role>,
     #[serde(default)]
     identities: BTreeMap<String, String>,
+    #[serde(default)]
+    weight: Weight,
+}
+
+/// `weight:`, what the corpus declares it may grow to before `check` says so
+/// (ADR-306fdb75e265). A counter left out takes its default, exactly as an
+/// absent `context_budget` does, so a corpus that predates the key is still
+/// weighed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Weight {
+    #[serde(default = "default_hot_files")]
+    pub hot_files: u64,
+    #[serde(default = "default_plane_bytes")]
+    pub plane_bytes: u64,
+}
+
+impl Default for Weight {
+    fn default() -> Weight {
+        Weight {
+            hot_files: DEFAULT_WEIGHT_HOT_FILES,
+            plane_bytes: DEFAULT_WEIGHT_PLANE_BYTES,
+        }
+    }
+}
+
+fn default_hot_files() -> u64 {
+    DEFAULT_WEIGHT_HOT_FILES
+}
+
+fn default_plane_bytes() -> u64 {
+    DEFAULT_WEIGHT_PLANE_BYTES
 }
 
 fn default_budget() -> usize {
@@ -158,6 +200,7 @@ pub struct Config {
     pub default_verifiers: Vec<String>,
     pub roles: BTreeMap<String, Role>,
     pub identities: BTreeMap<String, String>,
+    pub weight: Weight,
 }
 
 impl Config {
@@ -308,6 +351,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         default_verifiers,
         roles: raw.roles,
         identities: raw.identities,
+        weight: raw.weight,
     })
 }
 
@@ -330,20 +374,27 @@ pub fn load(path: &Path) -> Result<Config> {
 /// §7 refuses. Detection through `refs/remotes/origin/HEAD` covers the case,
 /// and the error names the key to add when it does not.
 pub fn default_yaml() -> String {
-    "\
+    // The weight is written from the constants and not typed a second time: a
+    // default `init` writes and a default the parser falls back to are one
+    // number, or a corpus born today and one that predates the key disagree.
+    format!(
+        "\
 schema: 1
 context_budget: 8000
 claim_ttl_max: 2h
-verifiers: {}
+verifiers: {{}}
 roles:
   agent:
     can: [context, find, claim, log, done, new:task, new:adr:proposed]
     cannot: [adr:accept, adr:edit-constraint, task:close, delete]
   human:
     can: [\"*\"]
-identities: {}
+identities: {{}}
+weight:
+  hot_files: {DEFAULT_WEIGHT_HOT_FILES}
+  plane_bytes: {DEFAULT_WEIGHT_PLANE_BYTES}
 "
-    .to_string()
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -576,7 +627,16 @@ enum Key {
     /// there are two of them now and the second arrived in a different file.
     /// One shape, one implementation, and the name it is written under is what
     /// the caller supplies.
-    Under { map: &'static str, name: String },
+    ///
+    /// `weight` is the third, and the first whose values are numbers: written
+    /// verbatim for the reason [`Key::Top`] gives, and resolved to the default
+    /// the parser falls back to when absent.
+    Under {
+        map: &'static str,
+        name: String,
+        verbatim: bool,
+        default: Option<String>,
+    },
 }
 
 fn unknown_key(path: &str) -> CliError {
@@ -688,6 +748,8 @@ fn resolve_key(path: &str) -> Result<Key> {
             Ok(Key::Under {
                 map: "peers",
                 name: (*name).to_string(),
+                verbatim: false,
+                default: None,
             })
         }
         ["peers", _, ..] => Err(CliError::new(
@@ -695,6 +757,24 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("'{path}': a peer is one path, not a block"),
         )
         .with_hint("ank config peers.<name> <path>")),
+        ["weight", counter @ ("hot_files" | "plane_bytes")] => Ok(Key::Under {
+            map: "weight",
+            name: (*counter).to_string(),
+            verbatim: true,
+            default: Some(
+                if *counter == "hot_files" {
+                    DEFAULT_WEIGHT_HOT_FILES
+                } else {
+                    DEFAULT_WEIGHT_PLANE_BYTES
+                }
+                .to_string(),
+            ),
+        }),
+        ["weight", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': the weight has two counters"),
+        )
+        .with_hint("ank config weight.hot_files   or   weight.plane_bytes")),
         ["roles", ..] => Err(structured("roles")),
         ["identities", ..] => Err(structured("identities")),
         ["verifiers"] => Err(CliError::new(
@@ -1193,11 +1273,14 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
             Some(i) => scalar_at(&lines[i], name),
             None => Ok(from_default(default)),
         },
-        // No default: a peer nobody declared is a peer that does not exist, and
-        // there is nothing for the tool to resolve in its place.
-        Key::Under { map, name } => match locate_under(lines, map, name) {
+        // No default for a peer: a peer nobody declared is a peer that does not
+        // exist, and there is nothing for the tool to resolve in its place. A
+        // weight counter has one, because the parser applies it.
+        Key::Under {
+            map, name, default, ..
+        } => match locate_under(lines, map, name) {
             Some(i) => scalar_at(&lines[i], &format!("{map}.{name}")),
-            None => Ok(Value::Unset),
+            None => Ok(from_default(default)),
         },
         Key::Field {
             verifier,
@@ -1267,7 +1350,12 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
             verbatim,
             ..
         } => write_field(lines, verifier, field, *verbatim, value),
-        Key::Under { map, name } => write_under(lines, map, name, value),
+        Key::Under {
+            map,
+            name,
+            verbatim,
+            ..
+        } => write_under(lines, map, name, *verbatim, value),
     }
 }
 
@@ -1277,9 +1365,15 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
 /// The `{}` promotion is the same byte and the same reason: a mapping written
 /// empty cannot receive a child, and the parent of the key being written is the
 /// one byte outside the line that a write is allowed to move (§4).
-fn write_under(lines: &mut Vec<Line>, map: &'static str, name: &str, value: &str) -> Result<()> {
+fn write_under(
+    lines: &mut Vec<Line>,
+    map: &'static str,
+    name: &str,
+    verbatim: bool,
+    value: &str,
+) -> Result<()> {
     let eol = dominant_eol(lines);
-    let rendered = render_value(value, false, None);
+    let rendered = render_value(value, verbatim, None);
 
     let Some(pi) = find_key(lines, 0..lines.len(), 0, map) else {
         terminate_last(lines, &eol);
@@ -1297,10 +1391,10 @@ fn write_under(lines: &mut Vec<Line>, map: &'static str, name: &str, value: &str
     let (_, after) = key_of(&lines[pi].text).expect("found by its key");
     let span = value_span(&lines[pi].text, after);
     if span.blocky {
-        return Err(blocky("peers"));
+        return Err(blocky(map));
     }
     if !span.value.is_empty() && span.value != "{}" {
-        return Err(flow_mapping("peers"));
+        return Err(flow_mapping(map));
     }
 
     if span.value == "{}" {
@@ -1324,9 +1418,9 @@ fn write_under(lines: &mut Vec<Line>, map: &'static str, name: &str, value: &str
             let (_, after) = key_of(&lines[i].text).expect("found by its key");
             let span = value_span(&lines[i].text, after);
             if span.blocky {
-                return Err(blocky(&format!("peers.{name}")));
+                return Err(blocky(&format!("{map}.{name}")));
             }
-            let rendered = render_value(value, false, span.quote);
+            let rendered = render_value(value, verbatim, span.quote);
             splice(&mut lines[i], &span, &rendered);
             Ok(())
         }
@@ -1518,7 +1612,7 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
             }
             Ok(())
         }
-        Key::Under { map, name } => {
+        Key::Under { map, name, .. } => {
             let Some((pi, _)) = named_block(lines, map) else {
                 return Ok(());
             };
@@ -1613,6 +1707,8 @@ fn resolve_user_key(path: &str) -> Result<Key> {
             Ok(Key::Under {
                 map: "corpora",
                 name: (*identity).to_string(),
+                verbatim: false,
+                default: None,
             })
         }
         ["corpora", _, ..] => Err(CliError::new(
@@ -1839,6 +1935,8 @@ pub fn plan_corpus(identity: &str, path: &str) -> Result<PendingDeclaration> {
     let key = Key::Under {
         map: "corpora",
         name: identity.to_string(),
+        verbatim: false,
+        default: None,
     };
     write_key(&mut lines, &key, path)?;
     let after = join_lines(&lines);
@@ -2688,5 +2786,41 @@ identities: {}
         assert!(key_of("run:cargo").is_none());
         assert!(key_of("- item").is_none());
         assert!(key_of("verifiers:").is_some());
+    }
+
+    /// `weight:` is read whole, a counter left out takes the default `init`
+    /// writes, and a third counter is refused by name (ADR-306fdb75e265).
+    #[test]
+    fn the_weight_is_two_counters_with_the_defaults_init_writes() {
+        let base = "schema: 1\n";
+        assert_eq!(parse(base, p()).unwrap().weight, Weight::default());
+        assert_eq!(
+            parse(&default_yaml(), p()).unwrap().weight,
+            Weight {
+                hot_files: 3000,
+                plane_bytes: 4_000_000
+            }
+        );
+        let partial = parse(&format!("{base}weight:\n  hot_files: 12\n"), p()).unwrap();
+        assert_eq!(partial.weight.hot_files, 12);
+        assert_eq!(partial.weight.plane_bytes, 4_000_000);
+        let e = parse(&format!("{base}weight:\n  bytes: 12\n"), p()).unwrap_err();
+        assert!(e.message.contains("bytes"), "{}", e.message);
+    }
+
+    /// Written through `ank config` as numbers, where the block exists and
+    /// where it does not; read back with the default when absent.
+    #[test]
+    fn a_weight_counter_is_written_as_a_number() {
+        let after = edit(&default_yaml(), "weight.hot_files", Some("12")).unwrap();
+        assert!(after.contains("\n  hot_files: 12\n"), "{after}");
+        assert_eq!(parse(&after, p()).unwrap().weight.hot_files, 12);
+
+        let after = edit("schema: 1\n", "weight.plane_bytes", Some("500")).unwrap();
+        assert_eq!(after, "schema: 1\nweight:\n  plane_bytes: 500\n");
+        assert_eq!(parse(&after, p()).unwrap().weight.plane_bytes, 500);
+
+        assert!(resolve_key("weight.bytes").is_err());
+        assert!(resolve_key("weight").is_err());
     }
 }
