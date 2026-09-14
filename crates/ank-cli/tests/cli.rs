@@ -13688,7 +13688,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 32] = [
+const NOT_A_PATH: [&str; 33] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13733,6 +13733,9 @@ const NOT_A_PATH: [&str; 32] = [
     // A switch: it widens `find` to the archive and names no path
     // (TASK-da978b214eca).
     "--all",
+    // A switch: it prints the list `archive` would move, and names no path
+    // (TASK-97fd1992567a).
+    "--dry-run",
     // Carries no value either: the remote it reads is `origin` by name, the
     // refs it asks for are the claims namespace, and neither comes off the
     // command line (ADR-47e2ac102f58).
@@ -19330,6 +19333,13 @@ fn json_golden_verbs_needing_their_own_environment() {
     assert_eq!(code(&out), 0, "migrate: {}", stderr(&out));
     fixture::pin("migrate", &stdout(&out));
 
+    // archive, over a corpus holding what is cold, and without moving it: the
+    // list is the document (TASK-97fd1992567a)
+    let r = cold_corpus();
+    let out = r.ank(AGENT, &["archive", "--dry-run", "--json"]);
+    assert_eq!(code(&out), 0, "archive: {}", stderr(&out));
+    fixture::pin("archive", &stdout(&out));
+
     // init, which refuses --repo by name and so is run from a directory. Two
     // fixtures and not one: the second run is the idempotent case, and the
     // shape it returns is the point — three empty lists and `changed: false`,
@@ -19473,8 +19483,9 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // `tests/schema.rs`, and the two fixtures it now demands are captured where
     // each verb can be: `read` there, `tui` through the pseudo-terminal in
     // `tests/tui.rs`, because `ank tui --json` refuses at exit 9 into a pipe.
-    // Twenty-nine since TASK-a6c9d98a38ac, which gave `skills` a document.
-    assert_eq!(checked, 29, "one fixture per document the surface returns");
+    // Twenty-nine since TASK-a6c9d98a38ac, which gave `skills` a document, and
+    // thirty since TASK-97fd1992567a, which gave `archive` one.
+    assert_eq!(checked, 30, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
@@ -24889,4 +24900,32 @@ fn ank_archive_asks_git_once_however_many_tasks_are_done() {
         "twelve done tasks cost archive {} more git process(es)",
         many as i64 - few as i64
     );
+}
+
+/// `ank help watch` describes the mirror the watcher actually keeps
+/// (TASK-660535c73244, ADR-4b45f344344f).
+///
+/// PR #426 narrowed the fetch to the claims namespace, and the help page went
+/// on saying the watcher mirrors `refs/ank/*`. Both surfaces a reader has are
+/// asked -- the page and the `--json` entry -- because each is rendered from the
+/// table and a caller reads whichever it reads.
+#[test]
+fn help_watch_says_the_mirror_carries_claims_and_nothing_else() {
+    let text = stdout(&ank_command().args(["help", "watch"]).output().unwrap());
+    let json = stdout(
+        &ank_command()
+            .args(["help", "watch", "--json"])
+            .output()
+            .unwrap(),
+    );
+    for (surface, said) in [("help watch", &text), ("help watch --json", &json)] {
+        assert!(
+            said.contains("refs/ank/claims/*") && said.contains("refs/ank/watch/<remote>/claims/"),
+            "{surface} does not say the mirror carries the claims namespace:\n{said}"
+        );
+        assert!(
+            !said.contains("mirror of refs/ank/*"),
+            "{surface} still says the watcher mirrors refs/ank/*:\n{said}"
+        );
+    }
 }

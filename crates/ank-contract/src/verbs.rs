@@ -439,7 +439,7 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
 /// The refusal every path-taking verb performs, declared once and named six
 /// times.
 ///
-/// SPEC-77689b90b211 states it for all of them at once — a path naming nothing
+/// SPEC-f90c92993843 states it for all of them at once — a path naming nothing
 /// inside the repository, because it is absolute or because it climbs above the
 /// root, is refused with the command to run next and never answered — and the
 /// six verbs reach it through one helper, `context::normalised`. One sentence
@@ -1398,7 +1398,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &[
             "it declares nothing: watch.yml in this reader's configuration directory says which corpora to keep warm, and --where prints where that is",
-            "the only things it writes into a repository are that repository's own index and a mirror of refs/ank/* under refs/ank/watch/; it moves no branch, no tag and no claim of yours",
+            "the only things it writes into a repository are that repository's own index and a mirror of refs/ank/claims/* under refs/ank/watch/<remote>/claims/, the claims and nothing else; it moves no branch, no tag and no claim of yours",
             "a change it sees becomes a line on events.jsonl beside watch.yml, saying which corpus moved and what kind of change it was, and never what to do about it",
             "every verb behaves the same with it stopped, its absence is never an error, and no route makes running it a condition of using ank",
             "--json changes nothing: what a program follows is events.jsonl, whose shape is the event stream's own",

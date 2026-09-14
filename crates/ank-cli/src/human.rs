@@ -813,12 +813,12 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                         cold.len()
                     ),
                 )
-                .with_note(
-                    cold.iter()
-                        .take(5)
-                        .map(|id| id.to_string())
-                        .collect::<Vec<_>>(),
-                ),
+                // The ids are not listed: `ank archive --dry-run` is the list, read
+                // where it is acted on, and a note naming a retired document
+                // here would be one more finding about history nobody edits.
+                .with_note(vec![
+                    "ank archive --dry-run lists them and moves nothing".to_string(),
+                ]),
             );
         }
     }
