@@ -24640,3 +24640,31 @@ fn an_archive_resolves_only_what_it_holds_and_silences_no_whole_corpus_claim() {
         "{prose:?}"
     );
 }
+
+/// `ank help watch` describes the mirror the watcher actually keeps
+/// (TASK-660535c73244, ADR-4b45f344344f).
+///
+/// PR #426 narrowed the fetch to the claims namespace, and the help page went
+/// on saying the watcher mirrors `refs/ank/*`. Both surfaces a reader has are
+/// asked -- the page and the `--json` entry -- because each is rendered from the
+/// table and a caller reads whichever it reads.
+#[test]
+fn help_watch_says_the_mirror_carries_claims_and_nothing_else() {
+    let text = stdout(&ank_command().args(["help", "watch"]).output().unwrap());
+    let json = stdout(
+        &ank_command()
+            .args(["help", "watch", "--json"])
+            .output()
+            .unwrap(),
+    );
+    for (surface, said) in [("help watch", &text), ("help watch --json", &json)] {
+        assert!(
+            said.contains("refs/ank/claims/*") && said.contains("refs/ank/watch/<remote>/claims/"),
+            "{surface} does not say the mirror carries the claims namespace:\n{said}"
+        );
+        assert!(
+            !said.contains("mirror of refs/ank/*"),
+            "{surface} still says the watcher mirrors refs/ank/*:\n{said}"
+        );
+    }
+}
