@@ -24640,3 +24640,253 @@ fn an_archive_resolves_only_what_it_holds_and_silences_no_whole_corpus_claim() {
         "{prose:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// ank archive (TASK-97fd1992567a, ADR-467ce7e9cda1)
+// ---------------------------------------------------------------------------
+
+const COLD_SPEC: &str = "SPEC-00000000f01d";
+const HOT_SPEC: &str = "SPEC-00000000f0e1";
+const COLD_ADR: &str = "ADR-00000000f01d";
+const HOT_ADR: &str = "ADR-00000000f0e1";
+const DONE_ON_MAIN: &str = "TASK-00000000f0d1";
+const DONE_HERE_ONLY: &str = "TASK-00000000f0d2";
+const WROTE_THE_SPEC: &str = "TASK-00000000f0d3";
+const STILL_OPEN: &str = "TASK-00000000f0a1";
+const ABOUT_COLD_SPEC: &str = "LOG-00000000f001";
+const ABOUT_COLD_ADR: &str = "LOG-00000000f002";
+const ABOUT_DONE_ON_MAIN: &str = "LOG-00000000f003";
+const ABOUT_HOT_SPEC: &str = "LOG-00000000f004";
+const ABOUT_STILL_OPEN: &str = "LOG-00000000f005";
+const ABOUT_DONE_HERE_ONLY: &str = "LOG-00000000f006";
+
+/// The corpus the criterion names, committed on the default branch: superseded
+/// and accepted documents, entries about each, a task done on the default
+/// branch, a task done only in this working tree, an open task, and a done task
+/// whose scope names the file of the superseded spec.
+fn cold_corpus() -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "").unwrap();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/index.md"), "").unwrap();
+    r.seed_spec(COLD_SPEC, "superseded", &[], None);
+    r.seed_spec(HOT_SPEC, "accepted", &[COLD_SPEC], Some(COLD_SPEC));
+    seed_adr_status(&r, COLD_ADR, "superseded", None);
+    seed_adr_status(&r, HOT_ADR, "accepted", Some(COLD_ADR));
+    seed_done(&r, DONE_ON_MAIN, "  - type: commit\n    ref: abc1234\n");
+    seed_task_full(&r, DONE_HERE_ONLY, "open", &[], "Free body.");
+    seed_done_scoped(&r, WROTE_THE_SPEC, &format!(".ank/entities/{COLD_SPEC}.md"));
+    seed_task_full(&r, STILL_OPEN, "open", &[], "Free body.");
+    r.seed_log_saying(ABOUT_COLD_SPEC, COLD_SPEC, 0, "about the retired spec");
+    r.seed_log_saying(ABOUT_COLD_ADR, COLD_ADR, 0, "about the retired decision");
+    r.seed_log_saying(
+        ABOUT_DONE_ON_MAIN,
+        DONE_ON_MAIN,
+        0,
+        "about a task done on main",
+    );
+    r.seed_log_saying(ABOUT_HOT_SPEC, HOT_SPEC, 0, "about the accepted spec");
+    r.seed_log_saying(ABOUT_STILL_OPEN, STILL_OPEN, 0, "about an open task");
+    r.seed_log_saying(
+        ABOUT_DONE_HERE_ONLY,
+        DONE_HERE_ONLY,
+        0,
+        "about a task done here only",
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a corpus"]);
+    // Done in this working tree and not yet on the default branch: its entries
+    // are not cold until the default branch says so.
+    let here = r
+        .task_text(DONE_HERE_ONLY)
+        .replace("status: open", "status: done");
+    let here = here.replace(
+        "criteria_by: creator\n",
+        "criteria_by: creator\nproof:\n  - type: commit\n    ref: abc1234\n",
+    );
+    write_entity(&r, DONE_HERE_ONLY, here);
+    r
+}
+
+fn listed_ids(text: &str) -> Vec<String> {
+    let mut ids: Vec<String> = text
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| ank_core::EntityId::parse(w).is_ok())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// **`ank archive` moves exactly what is cold, prints it, and commits nothing**,
+/// through the binary (ADR-467ce7e9cda1). `--dry-run` prints the same list and
+/// moves nothing. Before the move `check` names the verb once; after it `check`
+/// is green, including for the done task whose scope names the superseded
+/// spec's file, which is confronted with both roots.
+#[test]
+fn ank_archive_moves_exactly_the_cold_set_and_commits_nothing() {
+    let r = cold_corpus();
+    let head = r.git(&["rev-parse", "HEAD"]);
+    let mut cold = vec![
+        COLD_SPEC.to_string(),
+        COLD_ADR.to_string(),
+        ABOUT_COLD_SPEC.to_string(),
+        ABOUT_COLD_ADR.to_string(),
+        ABOUT_DONE_ON_MAIN.to_string(),
+    ];
+    cold.sort();
+    let hot = [
+        HOT_SPEC,
+        HOT_ADR,
+        DONE_ON_MAIN,
+        DONE_HERE_ONLY,
+        WROTE_THE_SPEC,
+        STILL_OPEN,
+        ABOUT_HOT_SPEC,
+        ABOUT_STILL_OPEN,
+        ABOUT_DONE_HERE_ONLY,
+    ];
+
+    let (_, before) = said_by_check(&r);
+    let naming: Vec<&String> = before
+        .iter()
+        .filter(|l| l.contains("ank archive"))
+        .collect();
+    assert_eq!(naming.len(), 1, "one signal names the verb: {before:#?}");
+    assert!(naming[0].starts_with("signal corpus:"), "{naming:?}");
+
+    let dry = r.ank("claude-code@ank", &["archive", "--dry-run"]);
+    assert_eq!(code(&dry), 0, "{}", stderr(&dry));
+    assert_eq!(listed_ids(&stdout(&dry)), cold, "{}", stdout(&dry));
+    for id in &cold {
+        assert!(
+            r.0.join(format!(".ank/entities/{id}.md")).exists(),
+            "--dry-run moved {id}"
+        );
+    }
+    assert!(!r.0.join(".ank/archive/entities").exists());
+
+    let moved = r.ank("claude-code@ank", &["archive"]);
+    assert_eq!(code(&moved), 0, "{}", stderr(&moved));
+    assert_eq!(
+        listed_ids(&stdout(&moved)),
+        listed_ids(&stdout(&dry)),
+        "the move printed another list than the dry run:\n{}",
+        stdout(&moved)
+    );
+    for id in &cold {
+        assert!(
+            !r.0.join(format!(".ank/entities/{id}.md")).exists(),
+            "{id} is still hot"
+        );
+        assert!(
+            r.0.join(format!(".ank/archive/entities/{id}.md")).exists(),
+            "{id} is not archived"
+        );
+    }
+    for id in hot {
+        assert!(
+            r.0.join(format!(".ank/entities/{id}.md")).exists(),
+            "{id} was moved"
+        );
+    }
+    assert_eq!(
+        r.git(&["rev-parse", "HEAD"]),
+        head,
+        "archive wrote a commit"
+    );
+    r.git(&["add", "-A", ".ank"]);
+    let staged = r.git(&["diff", "--cached", "-M", "--name-status"]);
+    assert_eq!(
+        staged.lines().filter(|l| l.starts_with("R100")).count(),
+        cold.len(),
+        "git does not see {} renames:\n{staged}",
+        cold.len()
+    );
+
+    let (exit, after) = said_by_check(&r);
+    let faults: Vec<&String> = after.iter().filter(|l| l.starts_with("fault")).collect();
+    assert!(faults.is_empty(), "{faults:#?}");
+    assert_eq!(exit, 0, "{after:#?}");
+    assert!(
+        !after.iter().any(|l| l.contains("ank archive")),
+        "{after:#?}"
+    );
+    assert!(
+        !after
+            .iter()
+            .any(|l| l.contains(WROTE_THE_SPEC) && l.contains("scope")),
+        "a scope naming an archived entity's file is reported: {after:#?}"
+    );
+
+    // Nothing left to move: the verb is idempotent and says so.
+    let again = r.ank("claude-code@ank", &["archive"]);
+    assert_eq!(code(&again), 0, "{}", stderr(&again));
+    assert!(listed_ids(&stdout(&again)).is_empty(), "{}", stdout(&again));
+}
+
+/// **A scope naming an entity file in neither root is still dead**: the
+/// confrontation with the archive resolves what it holds and nothing else.
+#[test]
+fn a_scope_naming_an_entity_file_in_neither_root_is_still_dead() {
+    let r = cold_corpus();
+    let out = r.ank("claude-code@ank", &["archive"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    const NOWHERE: &str = "TASK-00000000f0d4";
+    seed_done_scoped(&r, NOWHERE, ".ank/entities/SPEC-00000000dead.md");
+    let (_, said) = said_by_check(&r);
+    assert!(
+        said.iter().any(|l| l.contains(NOWHERE)
+            && l.contains("dead scope '.ank/entities/SPEC-00000000dead.md'")),
+        "{said:#?}"
+    );
+}
+
+/// **What `ank archive` asks git does not grow with the corpus**
+/// (ADR-cc65f1388a71): "done on the default branch" is read for every candidate
+/// task in one batch, so two done tasks with entries and twelve start the same
+/// git processes. Counted with `GIT_TRACE2_EVENT`.
+#[test]
+fn ank_archive_asks_git_once_however_many_tasks_are_done() {
+    fn starts(tasks: usize) -> usize {
+        let r = Repo::new();
+        for i in 0..tasks {
+            let id = format!("TASK-0000000{i:05x}");
+            seed_done(&r, &id, "  - type: commit\n    ref: abc1234\n");
+            r.seed_log_saying(&format!("LOG-0000000{i:05x}"), &id, 0, "an entry");
+        }
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "a corpus"]);
+        let trace = r.0.join("trace.json");
+        let out = ank_command()
+            .args(["archive", "--json", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", "claude-code@ank")
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let moved = stdout(&out).matches("LOG-").count();
+        assert_eq!(
+            moved,
+            tasks,
+            "every entry about a done task moves: {}",
+            stdout(&out)
+        );
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let starts = text.matches("\"event\":\"start\"").count();
+        assert!(starts > 0, "this test measures nothing");
+        starts
+    }
+    let few = starts(2);
+    let many = starts(12);
+    assert_eq!(
+        few,
+        many,
+        "twelve done tasks cost archive {} more git process(es)",
+        many as i64 - few as i64
+    );
+}

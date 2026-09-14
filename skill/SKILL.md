@@ -84,6 +84,8 @@ Shape:
     ank review            the ratification queue, and the scopes gone dead
     ank graph             the blocked_by DAG: what is genuinely a root
     ank check             the mechanical invariants; findings are for reading, not silencing
+    ank archive           moves what check calls cold into .ank/archive/entities/ and commits
+                          nothing; --dry-run first, and the move lands by pull request
 
 **accept is not yours to run.** It turns a proposed decision into a binding
 one, and it is a human act: signed, on the default branch, with no way around

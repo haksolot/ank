@@ -1469,6 +1469,33 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[one(&[f("files", Type::Num), f("entries", Type::Num), f("created", Type::Num)])],
         owner_task: None,
     },
+    // Beside `migrate`, the other verb that moves corpus files and commits
+    // nothing: what it moves is chosen by ADR-467ce7e9cda1, and the move lands by
+    // pull request like a ratification (TASK-97fd1992567a).
+    CommandSpec {
+        name: "archive",
+        group: "keep the corpus honest",
+        renews: Renews::Never,
+        coordinates: false,
+        summary: "moves what is cold into .ank/archive/entities/: superseded documents, and every entry whose subject is cold",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[switch("--dry-run")],
+        refuses: &[refuses(
+            ExitCode::Generic,
+            "an entity the archive already holds: a move never chooses between two copies",
+        )],
+        notes: &[
+            "an entry is cold with its subject: a superseded document, a task done on the default branch, or an entity already archived",
+            "a task is never moved, and an archived file is never rewritten: check verifies it by digest",
+            "--dry-run prints the same list and moves nothing",
+            "it writes files and never commits: git add -A .ank, commit, and land it by pull request",
+        ],
+        refuses_globals: &[],
+        output: &[one(&[f("moved", Type::Strings), f("dry_run", Type::Bool)])],
+        owner_task: None,
+    },
     // After `check` and before `init`: §4's order. It sits beside the verb
     // that writes `config.yml` in the first place, which is the reading §9
     // states -- what `init` writes, `config` maintains.

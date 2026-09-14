@@ -576,7 +576,22 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // grows faster than the corpus: globs and files both grow, so their product
     // grows twice as fast as either. Keyed on the pattern rather than on the
     // entity, so two entities scoping one path are answered once.
-    let verdicts = scope_verdicts(&entities, &files);
+    //
+    // **An entity file is confronted with both roots** (ADR-467ce7e9cda1). A
+    // scope naming `.ank/entities/<ID>.md` names an entity, and an entity the
+    // archive holds is still there: a done task that wrote a spec and scoped
+    // itself to its file did not start claiming to touch a file that is gone
+    // the day the spec was archived. So each archived file is also offered at
+    // the address it had hot, and a glob matching that address is alive. What
+    // exists in neither root is matched by nothing and stays dead.
+    let mut scope_files = files.clone();
+    let ank_rel = ank_relative(repo);
+    scope_files.extend(
+        archived
+            .iter()
+            .map(|id| format!("{ank_rel}/{}/{id}.md", Store::ENTITIES_DIR)),
+    );
+    let verdicts = scope_verdicts(&entities, &scope_files);
     // One history walk for every dead scope this pass finds, read the first
     // time one is found and never before (TASK-1b3d7b61dc8f).
     let walked: OnceCell<git::History> = OnceCell::new();
@@ -762,6 +777,51 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     }
     check_entries(&entities, &in_scope, &unread, &archived, &mut report);
     check_prose_identifiers(&entities, &in_scope, &unread, &archived, &mut report);
+    // **A hot entity that is cold is a signal naming the verb that moves it**
+    // (ADR-467ce7e9cda1): once for the corpus, never once per entity, and a
+    // signal because nothing is wrong with a corpus that has not been archived
+    // yet -- it is heavier than it needs to be. The rule is `archive::cold`'s,
+    // the same function the verb moves by, and "done on the default branch" is
+    // read from the batch preloaded above, so this starts no process.
+    {
+        let hot: Vec<crate::archive::Hot> = entities
+            .iter()
+            .map(|(_, e)| crate::archive::Hot {
+                id: e.id(),
+                kind: e.id().kind(),
+                status: match e {
+                    Entity::Task(t) => t.status.as_str(),
+                    Entity::Adr(a) => a.status.as_str(),
+                    Entity::Spec(s) => s.status.as_str(),
+                    Entity::Log(_) => "",
+                },
+                about: match e {
+                    Entity::Log(l) => Some(&l.about),
+                    _ => None,
+                },
+            })
+            .collect();
+        let branch = default_branch.as_ref().and_then(|b| b.as_deref().ok());
+        let cold = crate::archive::cold(&hot, &archived, &|id| done_on(repo, branch, id));
+        if !cold.is_empty() {
+            report.findings.push(
+                Finding::signal(
+                    "corpus",
+                    format!(
+                        "{} hot entities are cold and belong in .ank/archive/entities/, \
+                         with every entry about them (ank archive)",
+                        cold.len()
+                    ),
+                )
+                .with_note(
+                    cold.iter()
+                        .take(5)
+                        .map(|id| id.to_string())
+                        .collect::<Vec<_>>(),
+                ),
+            );
+        }
+    }
     check_accounting(&entities, &in_scope, &mut report);
     // No history, no ratification to take an instant from: skipped like every
     // other question that needs git, and without starting a process to learn it.
@@ -3935,7 +3995,7 @@ fn is_object_name(reference: &str) -> bool {
 /// branch with no commit yet, git refusing. Unable to ask is not permission to
 /// accuse, and `inspect` already reports the unaskable case once, as a corpus
 /// line rather than once per task.
-fn done_on(repo: &Repo, default_branch: Option<&str>, id: &EntityId) -> bool {
+pub(crate) fn done_on(repo: &Repo, default_branch: Option<&str>, id: &EntityId) -> bool {
     let Some(branch) = default_branch else {
         return false;
     };
@@ -4450,7 +4510,7 @@ fn ank_relative(repo: &Repo) -> String {
 /// takes the first answer. And when `accept` stages a commit it stages both,
 /// because a write moves the file out of the previous layout and a commit that
 /// staged only the destination would leave the removal uncommitted.
-fn entity_rel_paths(repo: &Repo, id: &EntityId) -> Vec<String> {
+pub(crate) fn entity_rel_paths(repo: &Repo, id: &EntityId) -> Vec<String> {
     let rel = ank_relative(repo);
     let mut paths = vec![format!("{rel}/{}/{id}.md", Store::ENTITIES_DIR)];
     if let Some(sub) = Store::legacy_subdir(id.kind()) {
