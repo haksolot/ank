@@ -525,6 +525,21 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         .filter(|id| !seen.contains(*id))
         .cloned()
         .collect();
+    // **The archive has a set of its own, beside `unread` and never inside it**
+    // (ADR-467ce7e9cda1). An archived entity exists: a reference, a
+    // supersession, a blocker, an entry's subject or a line of prose naming one
+    // names something, and saying it names nothing is the one answer worse than
+    // a slow one. Read from the file names and never from the files, since an
+    // archived file is verified by digest and never parsed. And kept apart from
+    // `unread` because `unread.is_empty()` is what licenses a claim about the
+    // whole corpus -- "nothing supersedes this" -- and an archive that exists
+    // is not a part of the corpus that failed to read.
+    let archived: BTreeSet<String> = store
+        .archived_ids()
+        .unwrap_or_default()
+        .iter()
+        .map(|id| id.to_string())
+        .collect();
     if !unread.is_empty() {
         let ahead = unread
             .iter()
@@ -707,6 +722,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 repo,
                 &statuses,
                 &unread,
+                &archived,
                 &coord,
                 detached.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 cfg,
@@ -717,8 +733,24 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 &adrs,
                 &mut report,
             ),
-            Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &unread, &mut report),
-            Entity::Spec(s) => check_spec(s, repo, &spec_ids, &entities, &unread, &mut report),
+            Entity::Adr(a) => check_adr(
+                a,
+                repo,
+                &adr_ids,
+                &entities,
+                &unread,
+                &archived,
+                &mut report,
+            ),
+            Entity::Spec(s) => check_spec(
+                s,
+                repo,
+                &spec_ids,
+                &entities,
+                &unread,
+                &archived,
+                &mut report,
+            ),
             // A log entry's are checked where they can be: `about` is validated
             // against the corpus below, once, with a count rather than one line
             // per entry — there are five hundred of them. What is checked here
@@ -728,8 +760,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             Entity::Log(_) => {}
         }
     }
-    check_entries(&entities, &in_scope, &unread, &mut report);
-    check_prose_identifiers(&entities, &in_scope, &unread, &mut report);
+    check_entries(&entities, &in_scope, &unread, &archived, &mut report);
+    check_prose_identifiers(&entities, &in_scope, &unread, &archived, &mut report);
     check_accounting(&entities, &in_scope, &mut report);
     // No history, no ratification to take an instant from: skipped like every
     // other question that needs git, and without starting a process to learn it.
@@ -1790,6 +1822,7 @@ fn check_task(
     repo: &Repo,
     statuses: &HashMap<EntityId, TaskStatus>,
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     coord: &HashMap<EntityId, Record>,
     detached: &[claim::AttestedProof],
     cfg: &Config,
@@ -1815,6 +1848,10 @@ fn check_task(
             // Absent from what was read is not absent from the corpus when
             // something did not read (TASK-5c7aae69a4c0).
             None if unread.contains(&b.to_string()) => {}
+            // An archived blocker exists (ADR-467ce7e9cda1). Its status is
+            // not read, since an archived file is never parsed, so what it
+            // leaves the dependent is judged nowhere here.
+            None if archived.contains(&b.to_string()) => {}
             None => report.findings.push(Finding::fault(
                 &t.id,
                 format!("blocked_by names {b}, which does not exist"),
@@ -2446,10 +2483,11 @@ fn check_adr(
     adr_ids: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     let view = Anchored::from(a);
-    check_succession(&view, adr_ids, entities, unread, report);
+    check_succession(&view, adr_ids, entities, unread, archived, report);
     check_anchor(&view, repo, "its constraint is no longer injected", report);
     if a.constraint.trim().is_empty() {
         report
@@ -2471,11 +2509,12 @@ fn check_spec(
     spec_ids: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     let view = Anchored::from(s);
-    check_succession(&view, spec_ids, entities, unread, report);
-    check_references(s, entities, unread, report);
+    check_succession(&view, spec_ids, entities, unread, archived, report);
+    check_references(s, entities, unread, archived, report);
     check_anchor(
         &view,
         repo,
@@ -2532,6 +2571,7 @@ fn check_references(
     s: &Spec,
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     if s.status == SpecStatus::Superseded {
@@ -2551,6 +2591,20 @@ fn check_references(
                     s.id
                 ),
             ));
+            continue;
+        }
+        // **An archived document is followed and not read** (ADR-467ce7e9cda1).
+        // Its own file is never parsed, so its status is not in hand; but a
+        // document in the archive is there because something replaced it, and
+        // what replaced it is hot and parsed. So the citation is judged where
+        // its succession ends, exactly as a hot superseded one is, and left
+        // unjudged when nothing in the hot corpus names it as replaced.
+        if find(target).is_none() && archived.contains(&target.to_string()) {
+            if let Some((view, named)) = chain_head(target, entities)
+                .and_then(|head| find(&head).and_then(Anchored::of).map(|v| (v, head)))
+            {
+                judge_reference(s, target, view, &named, unread, report);
+            }
             continue;
         }
         let Some(entity) = find(target) else {
@@ -2604,49 +2658,64 @@ fn check_references(
             }
         }
 
-        match view.status {
-            // The chain ends on an accepted document, whatever its length: the
-            // reference resolves and nothing is owed.
-            AdrStatus::Accepted => {}
-            AdrStatus::Proposed => report.findings.push(Finding::signal(
+        judge_reference(s, target, view, &named, unread, report);
+    }
+}
+
+/// What a citation owes once the document it ends on is in hand: nothing when
+/// that document is accepted, a signal when it is only proposed, and a signal
+/// when it is superseded with nowhere left to follow -- the last only when the
+/// whole corpus was read, since the next link may be a file that did not parse.
+fn judge_reference(
+    s: &Spec,
+    target: &EntityId,
+    view: Anchored,
+    named: &EntityId,
+    unread: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    match view.status {
+        // The chain ends on an accepted document, whatever its length: the
+        // reference resolves and nothing is owed.
+        AdrStatus::Accepted => {}
+        AdrStatus::Proposed => report.findings.push(Finding::signal(
+            &s.id,
+            if named == target {
+                format!("references {target}, which is not accepted (ank accept {target})")
+            } else {
+                format!(
+                    "references {target}, whose succession ends on {named}, which is \
+                     not accepted (ank accept {named})"
+                )
+            },
+        )),
+        // A superseded entity nothing supersedes is already a fault against
+        // that entity, reported by `check_succession`. Here it means the
+        // citation has nowhere to follow to, and saying so is more use than
+        // naming a successor that does not exist.
+        //
+        // Reached only when the whole corpus was read: a chain whose next
+        // link is a file that did not parse leads somewhere this build
+        // cannot see, which is not the same as leading nowhere
+        // (TASK-5c7aae69a4c0). That guard also covers the head this walk
+        // could not load, which is the same case one link further on.
+        AdrStatus::Superseded if unread.is_empty() => {
+            report.findings.push(Finding::signal(
                 &s.id,
-                if named == *target {
-                    format!("references {target}, which is not accepted (ank accept {target})")
+                if named == target {
+                    format!(
+                        "references {target}, which is superseded and names no successor \
+                         (ank show {target})"
+                    )
                 } else {
                     format!(
                         "references {target}, whose succession ends on {named}, which is \
-                         not accepted (ank accept {named})"
+                         superseded and names no successor (ank show {named})"
                     )
                 },
-            )),
-            // A superseded entity nothing supersedes is already a fault against
-            // that entity, reported by `check_succession`. Here it means the
-            // citation has nowhere to follow to, and saying so is more use than
-            // naming a successor that does not exist.
-            //
-            // Reached only when the whole corpus was read: a chain whose next
-            // link is a file that did not parse leads somewhere this build
-            // cannot see, which is not the same as leading nowhere
-            // (TASK-5c7aae69a4c0). That guard also covers the head this walk
-            // could not load, which is the same case one link further on.
-            AdrStatus::Superseded if unread.is_empty() => {
-                report.findings.push(Finding::signal(
-                    &s.id,
-                    if named == *target {
-                        format!(
-                            "references {target}, which is superseded and names no successor \
-                             (ank show {target})"
-                        )
-                    } else {
-                        format!(
-                            "references {target}, whose succession ends on {named}, which is \
-                             superseded and names no successor (ank show {named})"
-                        )
-                    },
-                ));
-            }
-            AdrStatus::Superseded => {}
+            ));
         }
+        AdrStatus::Superseded => {}
     }
 }
 
@@ -2787,6 +2856,7 @@ fn check_succession(
     peers: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     // **A claim about the whole corpus cannot be made while part of it is
@@ -2797,7 +2867,12 @@ fn check_succession(
     let whole_corpus_read = unread.is_empty();
     let kind = view.id.kind();
     if let Some(target) = view.supersedes {
-        if !peers.contains(target) && !unread.contains(&target.to_string()) {
+        if archived.contains(&target.to_string()) && !peers.contains(target) {
+            // The replaced document is in the archive, which is where a
+            // replaced document goes (ADR-467ce7e9cda1). It exists, and whether
+            // it learned of its succession is in a file this pass never parses:
+            // what the archive holds is verified by digest, not re-judged.
+        } else if !peers.contains(target) && !unread.contains(&target.to_string()) {
             report.findings.push(Finding::fault(
                 view.id,
                 format!("supersedes {target}, which does not exist"),
@@ -3209,6 +3284,7 @@ fn check_entries(
     entities: &[(PathBuf, Entity)],
     in_scope: &dyn Fn(&Entity) -> bool,
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     // An entry above version 1 has been rewritten, and the format says it
@@ -3279,7 +3355,9 @@ fn check_entries(
         .filter(|(_, e)| in_scope(e))
         .filter_map(|(_, e)| match e {
             Entity::Log(l)
-                if !present.contains(&l.about) && !unread.contains(&l.about.to_string()) =>
+                if !present.contains(&l.about)
+                    && !unread.contains(&l.about.to_string())
+                    && !archived.contains(&l.about.to_string()) =>
             {
                 Some(format!("{} is about {}", l.id, l.about))
             }
@@ -3379,6 +3457,7 @@ fn check_prose_identifiers(
     entities: &[(PathBuf, Entity)],
     in_scope: &dyn Fn(&Entity) -> bool,
     unread: &BTreeSet<String>,
+    archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
     let held: HashSet<&EntityId> = entities.iter().map(|(_, e)| e.id()).collect();
@@ -3390,7 +3469,10 @@ fn check_prose_identifiers(
     let mut dead: BTreeMap<EntityId, BTreeSet<EntityId>> = BTreeMap::new();
     for (_, e) in entities.iter().filter(|(_, e)| in_scope(e)) {
         for named in prose_of(e).into_iter().flat_map(minted_identifiers_in) {
-            if held.contains(&named) || unread.contains(&named.to_string()) {
+            if held.contains(&named)
+                || unread.contains(&named.to_string())
+                || archived.contains(&named.to_string())
+            {
                 continue;
             }
             dead.entry(named).or_default().insert(e.id().clone());
