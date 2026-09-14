@@ -1133,7 +1133,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 1,
         positional_help: "<id>",
-        flags: &[flag("--proof"), switch("--detached")],
+        flags: &[flag("--proof"), switch("--detached"), switch("--compact")],
         refuses: &[
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
             // Which side of ADR-af533e7a3e03 this verb is on, said here so that
@@ -1148,13 +1148,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
             "--detached records the proof in refs/ank/proof/<id> and writes no file, so a pipeline anchors a run without a commit",
+            "a proof ref holds one attestation per type, criteria hash and identity: a second run of the same fact replaces the first",
+            "--compact --detached rewrites a proof ref written before that rule to one entry per fact, adds nothing, and pushes that one ref",
             // The class, beside the refusal that names the path it applies on.
             // The refusal says `--detached and the remote unreachable`; this
             // says what that costs, in the same words every other verb uses.
             PUSH_FAILS,
         ],
         refuses_globals: &[],
-        output: &[one(&[f("task", Type::Str), f("appended", Type::Object(&[f("type", Type::Str), f("ref", Type::Str)])), f("proofs", Type::Num)])],
+        output: &[one(&[f("task", Type::Str), f("appended", Type::Object(&[f("type", Type::Str), f("ref", Type::Str)])), f("proofs", Type::Num)]), when("compacting, `ank attest <id> --compact --detached`", &[f("task", Type::Str), f("detached_proofs", Type::Num), f("removed", Type::Num)])],
         owner_task: None,
     },
     // After `attest` and before `graph`: §4's order, and the last gap in it.

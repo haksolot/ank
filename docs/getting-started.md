@@ -612,6 +612,19 @@ flag reads the same fact. What it must not do is read the flag *instead* of the
 code, because the two now say the same thing. This repository's own `ci.yml`
 reads the code.
 
+Attest on every run without worrying about the ref: it grows with facts and
+never with runs. A fact is a proof type, the criteria hash it was attested
+against and the identity attesting it, and a second run of the same fact
+replaces the first, so `show` lists the latest run. A corpus whose proof refs
+were written before that rule carries one entry per run, and `check` names each
+such ref with the command that rewrites it, one ref by name:
+
+    ank attest <id> --compact --detached
+
+It keeps one entry per fact, adds nothing and pushes that one ref. Never push
+`refs/ank/*` with a wildcard to do the same: from a worktree, that force-reverts
+the attestations a pipeline wrote.
+
 ## Handing the loop to an agent
 
 Five routes install the same files (the binary itself, the `skills` CLI, the
