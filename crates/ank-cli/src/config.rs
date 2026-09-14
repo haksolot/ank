@@ -24,7 +24,7 @@ pub const DEFAULT_CLAIM_TTL_MAX: &str = "2h";
 pub const DEFAULT_CLAIM_TTL: &str = "30m";
 pub const DEFAULT_VERIFIER_TIMEOUT: &str = "10m";
 /// The hot corpus a reader pays per file for, as `init` declares it
-/// (ADR-306fdb75e265). Measured on 2026-09-14, this repository held 1979 files
+/// (ADR-467ce7e9cda1). Measured on 2026-09-14, this repository held 1979 files
 /// under `.ank/entities/`; 3000 leaves it half again, which at August's rate of
 /// 1645 entities a month is crossed within a month unless the cold half moves.
 pub const DEFAULT_WEIGHT_HOT_FILES: u64 = 3000;
@@ -88,7 +88,7 @@ struct ConfigFile {
 }
 
 /// `weight:`, what the corpus declares it may grow to before `check` says so
-/// (ADR-306fdb75e265). A counter left out takes its default, exactly as an
+/// (ADR-467ce7e9cda1). A counter left out takes its default, exactly as an
 /// absent `context_budget` does, so a corpus that predates the key is still
 /// weighed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -2789,7 +2789,7 @@ identities: {}
     }
 
     /// `weight:` is read whole, a counter left out takes the default `init`
-    /// writes, and a third counter is refused by name (ADR-306fdb75e265).
+    /// writes, and a third counter is refused by name (ADR-467ce7e9cda1).
     #[test]
     fn the_weight_is_two_counters_with_the_defaults_init_writes() {
         let base = "schema: 1\n";

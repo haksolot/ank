@@ -436,7 +436,7 @@ impl Store {
     pub const ENTITIES_DIR: &'static str = "entities";
 
     /// The archive: a second fixed, flat directory in the format of
-    /// [`Store::ENTITIES_DIR`], one file per entity (ADR-306fdb75e265).
+    /// [`Store::ENTITIES_DIR`], one file per entity (ADR-467ce7e9cda1).
     ///
     /// **Read on demand and never by default.** Nothing that walks the corpus
     /// walks it: [`Store::list_ids`], [`Store::resolve`], [`Store::load`] and
@@ -496,7 +496,7 @@ impl Store {
     }
 
     /// The identifiers the archive holds, read from the file names and never
-    /// from the files (ADR-306fdb75e265: an archived file is verified by digest
+    /// from the files (ADR-467ce7e9cda1: an archived file is verified by digest
     /// and never parsed). What a resolution that must know an archived entity
     /// exists -- a reference, a supersession, the subject of an entry -- asks,
     /// without paying for its content. Sorted, each once.
@@ -508,7 +508,7 @@ impl Store {
     }
 
     /// Prefix resolution over the hot corpus **and** the archive, for the verbs
-    /// that are asked for an archived entity by id (ADR-306fdb75e265). An id in
+    /// that are asked for an archived entity by id (ADR-467ce7e9cda1). An id in
     /// both is one entity; ambiguity is still an error listing its candidates.
     pub fn resolve_with_archive(&self, prefix: &str) -> Result<EntityId> {
         let mut ids = self.list_ids()?;
@@ -548,7 +548,7 @@ impl Store {
     /// the path it now has: **the seam `ank archive` is built on**
     /// (TASK-97fd1992567a). One rename, so the file is in exactly one root
     /// before and after, and the bytes do not change -- an archived file is
-    /// verified by the digest it arrived with (ADR-306fdb75e265). Refused when
+    /// verified by the digest it arrived with (ADR-467ce7e9cda1). Refused when
     /// the hot corpus does not hold the id, and when the archive already does:
     /// deciding which of two copies is the entity is not a move's to make.
     pub fn move_to_archive(&self, id: &EntityId) -> Result<PathBuf> {
@@ -1386,7 +1386,7 @@ mod tests {
     /// The archive is a root only for the readers that ask for it: a moved
     /// entity is gone from `resolve`, `load` and `list_ids`, reached whole by
     /// the `_with_archive` readers, and the move changes no byte of it
-    /// (ADR-306fdb75e265, TASK-da978b214eca).
+    /// (ADR-467ce7e9cda1, TASK-da978b214eca).
     #[test]
     fn an_archived_entity_is_reached_only_by_the_readers_that_ask() {
         let (_root, store, e) = seeded();
