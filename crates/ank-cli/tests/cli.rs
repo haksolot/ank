@@ -23189,3 +23189,189 @@ fn claim_reads_no_more_entity_files_on_a_corpus_twice_the_size() {
     assert_eq!(taken[0], taken[1], "claim at n and 2n: {taken:?}");
     assert_eq!(refused[0], refused[1], "refusal at n and 2n: {refused:?}");
 }
+
+// ---------------------------------------------------------------------------
+// A foreign namespace under refs/ank/ (TASK-4dab9aa4573d, ADR-4b45f344344f)
+// ---------------------------------------------------------------------------
+
+/// The findings of `check --json`, parsed, with the process's exit code.
+///
+/// Parsed with `serde_yaml` for the reason the golden walk gives: YAML 1.2
+/// reads JSON, and a second parser would be a dependency spent on nothing.
+fn check_findings(r: &Repo) -> (i32, Vec<serde_yaml::Value>) {
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&stdout(&out)).expect("check --json must be readable");
+    let findings = doc["findings"]
+        .as_sequence()
+        .expect("findings is an array")
+        .clone();
+    (code(&out), findings)
+}
+
+/// A corpus with a task, a claim, a detached proof and a mirrored claim: every
+/// namespace a reader serves holds a ref.
+fn served_namespaces_fixture() -> Repo {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a corpus"]);
+    assert_eq!(code(&r.ank("codex@host-9", &["claim", ID])), 0);
+    r.forge_detached_proof(ID);
+    let claim = r.claim_ref(ID).expect("the claim was just taken");
+    r.write_ref(&format!("refs/ank/watch/origin/claims/{ID}"), &claim);
+    r
+}
+
+/// **A ref nobody reads is a signal naming it and its deletion, one ref by
+/// name.** The namespace is forged the way one arrives: a former feature, or a
+/// session's namespace left behind, pushed with a wildcard. ank did not write
+/// it, so ank does not delete it; the reader is handed the command.
+#[test]
+fn a_ref_in_a_namespace_no_reader_serves_is_one_signal_naming_it_and_its_deletion() {
+    let r = served_namespaces_fixture();
+    let (before_code, before) = check_findings(&r);
+
+    r.write_ref("refs/ank/foo/TASK-x", "state: whatever\n");
+    let (after_code, after) = check_findings(&r);
+
+    let new: Vec<&serde_yaml::Value> = after.iter().filter(|f| !before.contains(f)).collect();
+    assert_eq!(
+        new.len(),
+        1,
+        "one foreign ref is one new finding, not {}: {new:#?}",
+        new.len()
+    );
+    assert_eq!(
+        after.len(),
+        before.len() + 1,
+        "the foreign ref moved a finding it has nothing to do with: {before:#?} {after:#?}"
+    );
+    let f = new[0];
+    assert_eq!(f["level"].as_str(), Some("signal"), "never a fault: {f:#?}");
+    assert_eq!(
+        before_code, after_code,
+        "a signal leaves the exit code where it was"
+    );
+
+    // The existing shape, field for field and type for type.
+    let map = f.as_mapping().expect("a finding is an object");
+    let keys: Vec<&str> = map.keys().filter_map(|k| k.as_str()).collect();
+    assert_eq!(keys, ["level", "subject", "message", "note", "charge"]);
+    assert!(
+        f["subject"].is_string() && f["message"].is_string(),
+        "{f:#?}"
+    );
+    assert!(
+        f["charge"].as_sequence().is_some_and(|c| c.is_empty()),
+        "{f:#?}"
+    );
+    let note: Vec<&str> = f["note"]
+        .as_sequence()
+        .expect("note is an array of strings")
+        .iter()
+        .map(|l| l.as_str().expect("a note line is a string"))
+        .collect();
+
+    let said = format!(
+        "{} {} {}",
+        f["subject"].as_str().unwrap(),
+        f["message"].as_str().unwrap(),
+        note.join("\n")
+    );
+    assert!(
+        said.contains("refs/ank/foo/TASK-x"),
+        "the ref is not named: {said}"
+    );
+    assert!(
+        note.iter()
+            .any(|l| l.contains("git push origin :refs/ank/foo/TASK-x")),
+        "the deletion on the remote is not named, by name: {note:?}"
+    );
+    assert!(!said.contains('*'), "a wildcard reached the reader: {said}");
+
+    // The human reading says the same thing, and the command is on its own line.
+    let out = r.ank("claude-code@ank", &["check"]);
+    let text = stdout(&out);
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("signal:") && l.contains("refs/ank/foo/")),
+        "{text}"
+    );
+    assert!(
+        text.lines()
+            .any(|l| l.contains("git push origin :refs/ank/foo/TASK-x")),
+        "{text}"
+    );
+
+    // And the ref is still there: reporting is all `check` does with it.
+    r.git(&["rev-parse", "--verify", "refs/ank/foo/TASK-x"]);
+}
+
+/// **Every served namespace, and nothing new.** A claim, a detached proof and
+/// a mirrored claim are each read by a verb, and a check that signalled one of
+/// them would be telling a human to delete the plane.
+#[test]
+fn refs_in_served_namespaces_add_no_foreign_namespace_finding() {
+    let bare = Repo::new();
+    bare.seed_task(ID, Some("A verifiable criterion."));
+    bare.git(&["add", "-A"]);
+    bare.git(&["commit", "-qm", "a corpus"]);
+    let (_, nothing) = check_findings(&bare);
+
+    let r = served_namespaces_fixture();
+    let (_, served) = check_findings(&r);
+    let about_refs: Vec<&serde_yaml::Value> = served
+        .iter()
+        .filter(|f| {
+            f["subject"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("refs/ank/"))
+                || f["note"].as_sequence().is_some_and(|n| {
+                    n.iter()
+                        .any(|l| l.as_str().is_some_and(|l| l.contains("git push")))
+                })
+        })
+        .collect();
+    assert!(
+        about_refs.is_empty(),
+        "a ref a reader serves was reported: {about_refs:#?} (without refs: {nothing:#?})"
+    );
+}
+
+/// **The signal is read from the enumeration `check` already makes**
+/// (ADR-cc65f1388a71). Counted with `GIT_TRACE2_EVENT`, one `start` per
+/// process, on one corpus before and after forging refs in two foreign
+/// namespaces: a second walk of `refs/ank/` would show here as a start.
+#[test]
+fn a_foreign_namespace_costs_check_no_git_process() {
+    fn starts(r: &Repo, tag: &str) -> usize {
+        let trace = r.0.join(format!("trace-{tag}.json"));
+        let out = ank_command()
+            .args(["check", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", AGENT)
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert!(code(&out) <= 8, "{}", stderr(&out));
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let n = text.matches("\"event\":\"start\"").count();
+        assert!(n > 0, "the trace records no git process: {text:.400}");
+        n
+    }
+    let r = served_namespaces_fixture();
+    let clean = starts(&r, "clean");
+    for i in 0..20 {
+        r.write_ref(&format!("refs/ank/remote-check/proof/TASK-{i:012x}"), "x\n");
+        r.write_ref(&format!("refs/ank/foo/TASK-{i:012x}"), "x\n");
+    }
+    let foreign = starts(&r, "foreign");
+    assert_eq!(
+        clean,
+        foreign,
+        "forty foreign refs cost check {} more git process(es)",
+        foreign as i64 - clean as i64
+    );
+}
