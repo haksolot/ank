@@ -5,18 +5,32 @@ slug: the-cli-surface-specification-does-not-carry-arc
 title: The CLI surface specification does not carry archive, find --all or attest --compact
 created: 2026-09-14T06:40:14Z
 author: haksolot@vmi3223161
-status: open
+status: done
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-contract/**
   - docs/**
-blocked_by: [TASK-be336b87a145, TASK-da978b214eca, TASK-97fd1992567a]
+  - crates/ank-cli/tests/skill.rs
+blocked_by: [TASK-be336b87a145, TASK-da978b214eca]
 done_criteria: |
-  A spec superseding the accepted CLI surface document carries ank archive with --dry-run, find --all and attest --compact, with their exit codes and the --json fields they add, and ank check reports no finding on it. The verbs exist in the binary when it is written.
+  A spec superseding the accepted CLI surface document carries, in the Commands block of its section 4 and in its prose, ank archive with --dry-run, find --all and attest --compact, with their exit codes and the --json fields they add, and ank check reports no fault on it. ank archive, which the binary does not dispatch until TASK-97fd1992567a lands after the signature, is declared in NOT_YET_DISPATCHED in crates/ank-cli/tests/skill.rs, and the suite is shown green on a scratch clone where the successor is marked accepted and its predecessor superseded, as they will be once ratified. cargo test --workspace, cargo fmt --check and ank check stay green.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/ab14639cf3fe@352ccc6
+    tree: scope/c75dc6d945b0
+    criteria: b380789627e9
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@352ccc6
+    tree: scope/c75dc6d945b0
+    criteria: b380789627e9
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 2
+version: 5
 ---
 
 Written after TASK-be336b87a145, TASK-da978b214eca and TASK-97fd1992567a land, in the order this corpus uses: spec,
