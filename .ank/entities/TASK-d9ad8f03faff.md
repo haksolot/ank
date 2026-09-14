@@ -5,7 +5,7 @@ slug: the-cold-rebuild-linearity-tests-decide-on-a-wal
 title: The cold-rebuild linearity tests decide on a wall clock, and a loaded runner loses
 created: 2026-09-14T08:34:00Z
 author: claude-code/opus-5+cold-rebuild
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/tests/cli.rs
@@ -15,8 +15,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/41482df5eea5@a871748
+    tree: scope/057e33b9c31f
+    criteria: 6d0b20f7820b
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@a871748
+    tree: scope/057e33b9c31f
+    criteria: 6d0b20f7820b
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 2
+version: 3
 ---
 
 Measured 2026-09-14: PR #423 (task/bearing-on) went red on macOS on
