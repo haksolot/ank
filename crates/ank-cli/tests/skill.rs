@@ -240,7 +240,7 @@ fn help_order() -> Vec<String> {
 /// shipping fails until the line is gone.
 ///
 /// `mcp` and `watch` were both declared here (ADR-fd98f4bc6dea,
-/// ADR-24e21cb83793, TASK-36666e36744e), while the §4 document of the day was
+/// ADR-4b45f344344f, TASK-36666e36744e), while the §4 document of the day was
 /// still `proposed` and the block this suite walks was its predecessor: the
 /// signed `accept` is the moment §4 gains a verb, and declaring it beforehand
 /// is what makes the ratification itself green rather than red on a human act
