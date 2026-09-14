@@ -323,7 +323,7 @@ pub struct Row {
     pub seq: u64,
     pub version: u64,
     /// Whether the row was read from `.ank/archive/entities/`
-    /// (ADR-306fdb75e265). Only an index opened with
+    /// (ADR-467ce7e9cda1). Only an index opened with
     /// [`Index::open_with_archive`] ever returns one that is.
     pub archived: bool,
 }
@@ -376,7 +376,7 @@ pub struct Index {
     /// has no filesystem clock to record its last write by and so never lets a
     /// stat vouch for a file (ADR-1556aaffe0c5).
     db: Option<PathBuf>,
-    /// Whether this index was asked for the archive (ADR-306fdb75e265): its
+    /// Whether this index was asked for the archive (ADR-467ce7e9cda1): its
     /// refresh walks `.ank/archive/entities/` and its queries answer archived
     /// rows. Without it the archive is neither walked nor answered, and the
     /// archived rows an earlier asking open left in the file are kept and
@@ -393,7 +393,7 @@ impl Index {
     }
 
     /// The index with the archive: walked by the refresh, answered by every
-    /// query (ADR-306fdb75e265). What `show`, `log`, `find --all` and `check`
+    /// query (ADR-467ce7e9cda1). What `show`, `log`, `find --all` and `check`
     /// open, and nothing else: a verb that walks the corpus pays nothing for
     /// what was moved out of it.
     pub fn open_with_archive(ank: &Path) -> Result<Index> {
@@ -615,7 +615,7 @@ impl Index {
                 }
                 continue;
             }
-            // **An archived file is immutable** (ADR-306fdb75e265): the hash
+            // **An archived file is immutable** (ADR-467ce7e9cda1): the hash
             // the index holds is the digest it arrived with, and bytes that no
             // longer match it are a fault `check` reports, not an edit to take
             // in. So the row is left exactly as it is, content and stat, and
@@ -1156,7 +1156,7 @@ impl Index {
 
     /// Every archived file the index holds a digest for, as its path relative
     /// to `.ank/` and the content hash it arrived with, ordered by path
-    /// (ADR-306fdb75e265). What `check` verifies an archived file against, and
+    /// (ADR-467ce7e9cda1). What `check` verifies an archived file against, and
     /// empty unless this index was asked for the archive.
     pub fn archived_digests(&self) -> Result<Vec<(String, String)>> {
         if !self.archive {
@@ -2633,7 +2633,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // The archive (TASK-da978b214eca, ADR-306fdb75e265)
+    // The archive (TASK-da978b214eca, ADR-467ce7e9cda1)
     // -----------------------------------------------------------------------
 
     fn archive(t: &Temp, id: &str) -> PathBuf {

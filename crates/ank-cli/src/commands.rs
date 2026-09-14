@@ -1216,7 +1216,7 @@ pub fn find(
         .first()
         .map(|q| q.to_ascii_lowercase())
         .unwrap_or_default();
-    // `--all` is the one flag that reaches the archive (ADR-306fdb75e265): a
+    // `--all` is the one flag that reaches the archive (ADR-467ce7e9cda1): a
     // listing answers a program whole, and the archive is part of the whole
     // when asked for. Without it the archive is neither walked nor listed.
     let index = if inv.has("--all") {
@@ -1350,7 +1350,7 @@ pub fn find(
                     .str("created", &r.created)
                     // Additive, like `state` and `created` before it: false on
                     // every row a listing without `--all` can return, and true
-                    // on a row `--all` read from the archive (ADR-306fdb75e265).
+                    // on a row `--all` read from the archive (ADR-467ce7e9cda1).
                     .bool("archived", r.archived)
                     .finish()
             })
@@ -1886,7 +1886,7 @@ pub fn log(
     }
     match inv.positionals.as_slice() {
         // Resolved into the archive too: `log <id>` is one of the three readers
-        // an archived entity answers to (ADR-306fdb75e265), and an id that
+        // an archived entity answers to (ADR-467ce7e9cda1), and an id that
         // resolved nowhere would otherwise be written as a message.
         [one] => match store.resolve_with_archive(one) {
             Ok(id) => log_read(inv, repo, cfg, &store, &id, out),

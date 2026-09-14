@@ -155,7 +155,7 @@ pub struct Report {
     /// pass rather than computing a second answer able to disagree.
     pub drift: Option<Drift>,
     /// Entity files under `.ank/entities/`, counted by the walk that parses
-    /// them (ADR-306fdb75e265). Files, not entities: an unparseable one is
+    /// them (ADR-467ce7e9cda1). Files, not entities: an unparseable one is
     /// still a file every reader pays for.
     pub hot_files: usize,
     /// Bytes of the claim and proof records `check` moved through its batch,
@@ -388,7 +388,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
     }
 
-    // **The archive is verified by digest and never parsed** (ADR-306fdb75e265).
+    // **The archive is verified by digest and never parsed** (ADR-467ce7e9cda1).
     // An archived entity is immutable, so the whole of its verification is that
     // its bytes still hash to the digest the index holds for it -- the hash it
     // arrived with, which the index never replaces -- and bytes that do not are
@@ -821,7 +821,7 @@ fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
     // mirror is a watcher's copy and not this clone's to judge.
     let (refs, records) = git::ank_records(cwd, git::Namespaces::CLAIMS | git::Namespaces::PROOF)?;
     // The weight of what was just moved, from the batch itself: each object
-    // once, as the batch read it (ADR-306fdb75e265, ADR-cc65f1388a71).
+    // once, as the batch read it (ADR-467ce7e9cda1, ADR-cc65f1388a71).
     report.plane_bytes = records.values().map(String::len).sum();
     let mut heaviest: Vec<(String, usize)> = refs
         .iter()
@@ -2209,7 +2209,7 @@ fn check_task(
     }
 }
 
-/// A corpus over the weight it declares (ADR-306fdb75e265): one signal per
+/// A corpus over the weight it declares (ADR-467ce7e9cda1): one signal per
 /// counter crossed, naming the counter, the value, the budget and the verb.
 ///
 /// Modelled on the over-constrained signal above, and for its reason: a number
@@ -6985,7 +6985,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     })?;
     let store = Store::new(&repo.ank);
     // Into the archive too, and the index with it: `show` answers an archived
-    // entity whole, and its entries wherever they are (ADR-306fdb75e265).
+    // entity whole, and its entries wherever they are (ADR-467ce7e9cda1).
     let loaded = store.load_prefix_with_archive(prefix)?;
     let text = serialize_entity(&loaded.entity);
     // One index for the verb: the edges of a task and the entries of any entity

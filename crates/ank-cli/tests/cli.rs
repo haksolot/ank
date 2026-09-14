@@ -23846,7 +23846,7 @@ fn compact_leaves_one_entry_per_fact_on_a_ref_written_before_the_rule() {
 }
 
 // ---------------------------------------------------------------------------
-// The declared weight of a corpus (TASK-b858b5965b07, ADR-306fdb75e265)
+// The declared weight of a corpus (TASK-b858b5965b07, ADR-467ce7e9cda1)
 // ---------------------------------------------------------------------------
 
 /// The config every fixture writes, with a `weight:` block in it.
@@ -24095,7 +24095,7 @@ fn weighing_the_corpus_costs_check_no_git_process() {
 }
 
 // ---------------------------------------------------------------------------
-// The archive, read on demand (TASK-da978b214eca, ADR-306fdb75e265)
+// The archive, read on demand (TASK-da978b214eca, ADR-467ce7e9cda1)
 // ---------------------------------------------------------------------------
 
 /// Moves an entity file from `.ank/entities/` to `.ank/archive/entities/` by
@@ -24121,7 +24121,7 @@ fn ids_in(json: &str) -> Vec<String> {
 
 /// **A file moved into the archive leaves every verb that walks the corpus,
 /// and is still answered by the three that are asked for it**, all through the
-/// binary (ADR-306fdb75e265).
+/// binary (ADR-467ce7e9cda1).
 ///
 /// Three files are moved: a task, an entry about that task, and an entry about
 /// a task that stays hot -- the last being the cold shape the decision names, a
@@ -24329,7 +24329,7 @@ fn a_thousand_archived_files_are_hashed_once_and_cost_graph_no_git_process() {
 }
 
 /// **`check` verifies an archived file by the digest the index holds, and never
-/// parses it** (ADR-306fdb75e265). An archived entity is immutable, so bytes
+/// parses it** (ADR-467ce7e9cda1). An archived entity is immutable, so bytes
 /// that no longer match are a fault; and the bytes written here are not an
 /// entity at all, so a single finding saying they changed -- and no parse error
 /// -- is what shows that nothing read them as one.
