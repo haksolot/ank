@@ -270,12 +270,10 @@ fn help_order() -> Vec<String> {
 /// lists it (ADR-64f32c74a0f9), and leaves in the commit of TASK-161c402c27fb
 /// that ships it.
 ///
-/// `archive` is declared ahead of the ratification of SPEC-219033e25653, which
-/// lists it (ADR-467ce7e9cda1), and leaves in the commit of TASK-97fd1992567a
-/// that ships it. That implementation was written first and measured, and held
-/// back because the dispatch would have turned the test above red on a verb no
-/// ratified document listed yet (TASK-2ffdb4cd7806).
-const NOT_YET_DISPATCHED: [&str; 2] = ["update", "archive"];
+/// `archive` was declared here ahead of the ratification of SPEC-219033e25653,
+/// which lists it (ADR-467ce7e9cda1, TASK-2ffdb4cd7806), and left in the commit
+/// of TASK-97fd1992567a that ships it.
+const NOT_YET_DISPATCHED: [&str; 1] = ["update"];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

@@ -118,6 +118,35 @@ the document it retires (ADR-3b6ba766a42e). Re-point those citations first, in
 their own change: the refusal names every site with its line, and there is no
 bypass.
 
+## Archiving what is cold
+
+`ank archive` moves what is cold into `.ank/archive/entities/`: superseded
+documents, and every entry whose subject is cold, meaning a superseded document
+or a task done on the default branch (ADR-467ce7e9cda1). `check` names the verb
+in one signal when the hot corpus holds any of it. Like `accept`, it decides what
+the corpus is, so a human runs it and the result lands by pull request. Unlike
+`accept`, it commits nothing: it renames files and stops, and the commit is
+yours.
+
+```
+git switch main && git pull
+git switch -c archive/<date>
+ank archive --dry-run            # read the list: this is what moves
+ank archive                      # the same list, moved
+ank check                        # green: references, blockers and scopes resolve into the archive
+git add -A .ank                  # git sees each file as a rename
+git commit -m "archive what is cold"
+git push -u origin archive/<date>
+gh pr create --fill --base main --head archive/<date>
+gh pr merge --merge
+```
+
+Run it from a branch cut from the default branch and level with it: an entry is
+cold when its task is done *on the default branch*, which is what the verb reads,
+so a local default branch that is behind leaves entries hot that could have moved. An archived file is
+never edited afterwards; `check` verifies it against the digest it arrived with
+and reports a changed one as a fault.
+
 ## Working from a fork
 
 Claims are git refs under `refs/ank/claims/*`. Pushing them to a shared remote

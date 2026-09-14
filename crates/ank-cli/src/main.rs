@@ -35,6 +35,7 @@ mod style;
 // exist already so that the command table in cli.rs is complete and tested.
 // `index` and `verify` are not verbs: nothing dispatches to them, the other
 // modules call them.
+mod archive;
 mod claim;
 mod commands;
 mod context;
