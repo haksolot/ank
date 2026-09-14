@@ -24373,3 +24373,270 @@ fn check_verifies_an_archived_file_by_digest_and_never_parses_it() {
         .unwrap();
     assert_eq!(fault["level"].as_str(), Some("fault"), "{fault:?}");
 }
+
+// ---------------------------------------------------------------------------
+// check resolves against both roots (TASK-25a56395cf73, ADR-467ce7e9cda1)
+// ---------------------------------------------------------------------------
+
+const SPEC_OLD: &str = "SPEC-00000000a01d";
+const SPEC_NEW: &str = "SPEC-00000000a0e1";
+const SPEC_CITER: &str = "SPEC-00000000c17e";
+const ADR_OLD: &str = "ADR-00000000b01d";
+const ADR_NEW: &str = "ADR-00000000b0e1";
+const TASK_BLOCKER: &str = "TASK-00000000d01d";
+const TASK_WAITS: &str = "TASK-00000000d0e1";
+
+fn write_entity(r: &Repo, id: &str, text: String) {
+    std::fs::write(r.0.join(format!(".ank/entities/{id}.md")), text).unwrap();
+}
+
+fn seed_adr_status(r: &Repo, id: &str, status: &str, supersedes: Option<&str>) {
+    let supersedes = supersedes
+        .map(|s| format!("supersedes: {s}\n"))
+        .unwrap_or_default();
+    write_entity(
+        r,
+        id,
+        format!(
+            "---\nid: {id}\ntype: adr\nslug: a-decision\ntitle: A decision\n\
+             created: 2026-08-01T00:00:00Z\nauthor: human:marie\nstatus: {status}\n\
+             scope:\n  - src/**\nconstraint: |\n  A binding rule.\n{supersedes}\
+             schema: 3\nversion: 1\n---\n\nWhy.\n"
+        ),
+    );
+}
+
+fn seed_task_full(r: &Repo, id: &str, status: &str, blocked_by: &[&str], body: &str) {
+    write_entity(
+        r,
+        id,
+        format!(
+            "---\nid: {id}\ntype: task\nslug: example\ntitle: Example task\n\
+             created: 2026-07-28T00:00:00Z\nauthor: human:marie\nstatus: {status}\n\
+             scope:\n  - src/**\nblocked_by: [{}]\ndone_criteria: |\n  A verifiable criterion.\n\
+             criteria_by: creator\nschema: 3\nversion: 1\n---\n\n{body}\n",
+            blocked_by.join(", ")
+        ),
+    );
+}
+
+/// The corpus the criterion names, before anything is moved: a superseded spec
+/// and its successor, a spec citing the superseded one, an ADR another ADR
+/// supersedes, a task another task is blocked by, an entry about each of
+/// the three that will move, and prose naming them.
+fn resolving_corpus() -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "").unwrap();
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/index.md"), "").unwrap();
+    r.seed_spec(SPEC_OLD, "superseded", &[], None);
+    r.seed_spec(SPEC_NEW, "accepted", &[], Some(SPEC_OLD));
+    r.seed_spec(SPEC_CITER, "accepted", &[SPEC_OLD], None);
+    seed_adr_status(&r, ADR_OLD, "superseded", None);
+    seed_adr_status(&r, ADR_NEW, "accepted", Some(ADR_OLD));
+    seed_task_full(&r, TASK_BLOCKER, "open", &[], "Free body.");
+    seed_task_full(
+        &r,
+        TASK_WAITS,
+        "open",
+        &[TASK_BLOCKER],
+        &format!("Follows {ADR_OLD} and {SPEC_OLD}, after {TASK_BLOCKER}."),
+    );
+    r.seed_log_saying(
+        "LOG-00000000e0a1",
+        SPEC_OLD,
+        0,
+        "an entry about the old spec",
+    );
+    r.seed_log_saying(
+        "LOG-00000000e0a2",
+        ADR_OLD,
+        0,
+        "an entry about the old decision",
+    );
+    r.seed_log_saying(
+        "LOG-00000000e0a3",
+        TASK_BLOCKER,
+        0,
+        "an entry about the blocker",
+    );
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a corpus"]);
+    r
+}
+
+/// The findings of a `check --json`, as `level subject: message` lines.
+fn said_by_check(r: &Repo) -> (i32, Vec<String>) {
+    let (exit, findings) = check_findings(r);
+    let lines = findings
+        .iter()
+        .map(|f| {
+            format!(
+                "{} {}: {}",
+                f["level"].as_str().unwrap_or(""),
+                f["subject"].as_str().unwrap_or(""),
+                f["message"].as_str().unwrap_or("")
+            )
+        })
+        .collect();
+    (exit, lines)
+}
+
+/// **Naming an archived entity is never naming nothing** (ADR-467ce7e9cda1),
+/// through the binary. A superseded spec, a superseded ADR and a blocker
+/// move into the archive by hand with the entry about each; a reference, a
+/// supersession, a `blocked_by`, a hot entry's subject and the prose of a task
+/// all still name them, and `check` owes nothing for any of it. The digest is
+/// still verified, and a hot entry about an archived subject resolves.
+#[test]
+fn check_resolves_what_names_an_archived_entity_against_both_roots() {
+    let r = resolving_corpus();
+    let (_, before) = said_by_check(&r);
+    let faults: Vec<&String> = before.iter().filter(|l| l.starts_with("fault")).collect();
+    assert!(
+        faults.is_empty(),
+        "the corpus is sound before any move: {faults:?}"
+    );
+
+    for id in [
+        SPEC_OLD,
+        ADR_OLD,
+        TASK_BLOCKER,
+        "LOG-00000000e0a1",
+        "LOG-00000000e0a2",
+        "LOG-00000000e0a3",
+    ] {
+        archive_by_hand(&r, id);
+    }
+    // An entry left hot about an archived subject: the log subject clause.
+    r.seed_log_saying(
+        "LOG-00000000e0a4",
+        SPEC_OLD,
+        1,
+        "a hot entry about the old spec",
+    );
+
+    let (exit, after) = said_by_check(&r);
+    let faults: Vec<&String> = after.iter().filter(|l| l.starts_with("fault")).collect();
+    assert!(
+        faults.is_empty(),
+        "moving cold entities made faults: {faults:?}"
+    );
+    assert_eq!(exit, 0, "{after:#?}");
+    for id in [SPEC_OLD, ADR_OLD, TASK_BLOCKER] {
+        let naming: Vec<&String> = after
+            .iter()
+            .filter(|l| l.contains(id))
+            .filter(|l| {
+                l.contains("does not exist")
+                    || l.contains("does not hold")
+                    || l.contains("not marked superseded")
+            })
+            .collect();
+        assert!(naming.is_empty(), "{id} is called missing: {naming:?}");
+    }
+    let prose: Vec<&String> = after
+        .iter()
+        .filter(|l| l.contains("identifiers written in prose"))
+        .collect();
+    assert!(
+        prose.is_empty(),
+        "archived ids counted as naming nothing: {prose:?}"
+    );
+
+    // Followed and not skipped: the citation of the archived spec is judged
+    // where its succession ends, so a successor that is only proposed is
+    // named.
+    let successor = r.0.join(format!(".ank/entities/{SPEC_NEW}.md"));
+    let accepted = std::fs::read_to_string(&successor).unwrap();
+    std::fs::write(
+        &successor,
+        accepted.replace("status: accepted", "status: proposed"),
+    )
+    .unwrap();
+    let (_, followed) = said_by_check(&r);
+    assert!(
+        followed.iter().any(|l| l.contains(&format!(
+            "{SPEC_CITER}: references {SPEC_OLD}, whose succession ends on {SPEC_NEW}, which is not accepted"
+        ))),
+        "{followed:#?}"
+    );
+    std::fs::write(&successor, accepted).unwrap();
+
+    // The digest is still what an archived file is held to.
+    let archived = r.0.join(format!(".ank/archive/entities/{SPEC_OLD}.md"));
+    let text = std::fs::read_to_string(&archived).unwrap();
+    std::fs::write(&archived, text.replace("A document", "A doctored")).unwrap();
+    let (exit, doctored) = said_by_check(&r);
+    assert_eq!(exit, 8, "{doctored:#?}");
+    assert!(
+        doctored
+            .iter()
+            .any(|l| l.starts_with("fault archive/entities/")
+                && l.contains("no longer match the digest")),
+        "{doctored:#?}"
+    );
+}
+
+/// **The archive resolves what it holds and nothing else**, and it does not
+/// stand in for a corpus read whole: a missing reference, a missing
+/// supersession target, a missing blocker, an entry about nothing and prose
+/// naming nothing are reported as before while an archive exists, and so is a
+/// document marked superseded that nothing supersedes.
+#[test]
+fn an_archive_resolves_only_what_it_holds_and_silences_no_whole_corpus_claim() {
+    let r = resolving_corpus();
+    for id in [SPEC_OLD, ADR_OLD, TASK_BLOCKER] {
+        archive_by_hand(&r, id);
+    }
+    const GONE_SPEC: &str = "SPEC-00000000dead";
+    const GONE_ADR: &str = "ADR-00000000dead";
+    const GONE_TASK: &str = "TASK-00000000dead";
+    r.seed_spec("SPEC-00000000c2c2", "accepted", &[GONE_SPEC], None);
+    seed_adr_status(&r, "ADR-00000000b2b2", "accepted", Some(GONE_ADR));
+    seed_task_full(
+        &r,
+        "TASK-00000000d2d2",
+        "open",
+        &[GONE_TASK],
+        &format!("Names {GONE_ADR}, which nobody wrote."),
+    );
+    r.seed_log_saying("LOG-00000000e0b1", GONE_TASK, 0, "an entry about nothing");
+    seed_adr_status(&r, "ADR-00000000b3b3", "superseded", None);
+
+    let (exit, said) = said_by_check(&r);
+    assert_eq!(exit, 8, "{said:#?}");
+    let has = |needle: &str| said.iter().any(|l| l.contains(needle));
+    assert!(
+        has(&format!("references {GONE_SPEC}, which does not exist")),
+        "{said:#?}"
+    );
+    assert!(
+        has(&format!("supersedes {GONE_ADR}, which does not exist")),
+        "{said:#?}"
+    );
+    assert!(
+        has(&format!(
+            "blocked_by names {GONE_TASK}, which does not exist"
+        )),
+        "{said:#?}"
+    );
+    assert!(
+        has("corpus: 1 log entries are about an entity this corpus does not hold"),
+        "{said:#?}"
+    );
+    assert!(
+        has("ADR-00000000b3b3: marked superseded but no ADR supersedes it"),
+        "an archive silenced a whole-corpus claim: {said:#?}"
+    );
+    let prose: Vec<&String> = said
+        .iter()
+        .filter(|l| l.contains("identifiers written in prose"))
+        .collect();
+    assert_eq!(prose.len(), 1, "{said:#?}");
+    assert!(
+        prose[0].contains("signal corpus: 1 identifiers"),
+        "{prose:?}"
+    );
+}
