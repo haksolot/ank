@@ -23055,14 +23055,16 @@ fn a_fixture_repository_is_not_maintained_under_the_test() {
 /// delete FTS5 answers by scanning the table -- measured on a release build,
 /// 2.2 s at 1921 entity files and 8.8 s at 3842.
 ///
-/// A ratio and not a wall (ADR-cc65f1388a71): a runner's clock is not the same
-/// number twice, but doubling the corpus doubles a linear rebuild on any of
-/// them and quadruples a quadratic one. The minimum of three runs is the one
-/// the rest of the machine disturbed least, and `index.db` is deleted before
-/// each so that every run is the cold one.
+/// **Counted, never timed** (TASK-d9ad8f03faff, ADR-cc65f1388a71). It first
+/// compared the fastest of three wall-clock runs, which is a statement about
+/// the runner; its unit twin, built the same way, went red on a loaded macOS
+/// runner. The binary reports the SQLite virtual-machine steps its rebuild
+/// executed into the file `ANK_INDEX_STEPS` names, a number that is the same
+/// on every machine, and the proof that it is is the second run at `n`
+/// asserting the very same count.
 #[test]
 fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() {
-    fn fastest_cold_find(tasks: usize) -> std::time::Duration {
+    fn cold_find_steps(tasks: usize, runs: usize) -> Vec<u64> {
         let r = Repo::new();
         for i in 0..tasks {
             r.seed_task(
@@ -23071,12 +23073,19 @@ fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() 
             );
         }
         let db = r.0.join(".ank/index.db");
-        (0..3)
+        let counted = r.0.join("steps");
+        (0..runs)
             .map(|_| {
                 let _ = std::fs::remove_file(&db);
-                let start = std::time::Instant::now();
-                let out = r.ank("claude-code@ank", &["find", "--json"]);
-                let took = start.elapsed();
+                let _ = std::fs::remove_file(&counted);
+                let out = ank_command()
+                    .args(["find", "--json", "--repo"])
+                    .arg(&r.0)
+                    .env("ANK_AGENT", "claude-code@ank")
+                    .env("ANK_INDEX_STEPS", &counted)
+                    .current_dir(std::env::temp_dir())
+                    .output()
+                    .expect("the binary must have been built");
                 assert_eq!(code(&out), 0, "{}", stderr(&out));
                 assert!(
                     stdout(&out).contains(&format!("\"total\":{tasks},")),
@@ -23084,25 +23093,34 @@ fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() 
                     stdout(&out)
                 );
                 assert!(db.exists(), "the run rebuilt no index at all");
-                took
+                let text = std::fs::read_to_string(&counted)
+                    .expect("a cold rebuild reports the steps it executed");
+                text.trim().parse().expect("a count")
             })
-            .min()
-            .unwrap()
+            .collect()
     }
 
     const N: usize = 1500;
-    let at_n = fastest_cold_find(N);
-    let at_2n = fastest_cold_find(2 * N);
-    let ratio = at_2n.as_secs_f64() / at_n.as_secs_f64();
+    let at_n = cold_find_steps(N, 2);
+    let at_2n = cold_find_steps(2 * N, 1)[0];
+    assert_eq!(
+        at_n[0], at_n[1],
+        "two cold rebuilds of one corpus executed different step counts: the count is not \
+         a count"
+    );
+    assert!(at_n[0] > 0, "this test counts nothing");
+    let ratio = at_2n as f64 / at_n[0] as f64;
     eprintln!(
-        "cold find --json: {at_n:?} at {N}, {at_2n:?} at {}, ratio {ratio:.2}",
+        "cold find --json: {} VM steps at {N}, {at_2n} at {}, ratio {ratio:.3}",
+        at_n[0],
         2 * N
     );
     assert!(
         ratio <= 2.5,
-        "a cold find over {} tasks took {ratio:.2} times one over {N} \
-         ({at_2n:?} against {at_n:?}): the rebuild is no longer linear",
-        2 * N
+        "a cold find over {} tasks executed {ratio:.2} times the SQLite steps of one over {N} \
+         ({at_2n} against {}): the rebuild is no longer linear",
+        2 * N,
+        at_n[0]
     );
 }
 

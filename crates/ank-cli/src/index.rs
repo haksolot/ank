@@ -79,6 +79,15 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// and that is the difference between a guarantee and a margin.
 const BUSY_TIMEOUT_ENV: &str = "ANK_INDEX_BUSY_MS";
 
+/// Where a refresh that wrote reports the steps its writes executed
+/// (TASK-d9ad8f03faff).
+///
+/// **A knob for a test and not for tuning**, on the terms of the one above: it
+/// is how the test through the binary decides that a cold rebuild is linear by
+/// a count, the SQLite virtual-machine steps, rather than by a wall clock that
+/// measures the runner (ADR-cc65f1388a71). Unset, nothing is written anywhere.
+const STEPS_ENV: &str = "ANK_INDEX_STEPS";
+
 fn busy_timeout() -> std::time::Duration {
     match std::env::var(BUSY_TIMEOUT_ENV)
         .ok()
@@ -328,6 +337,9 @@ enum Write {
 pub struct Index {
     conn: Connection,
     ank: PathBuf,
+    /// The SQLite virtual-machine steps the writes of every refresh on this
+    /// index have executed, counted by [`Writer`] (TASK-d9ad8f03faff).
+    written_steps: u64,
 }
 
 impl Index {
@@ -358,6 +370,7 @@ impl Index {
         let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
+            written_steps: 0,
         };
         index.install_schema()?;
         index.refresh()?;
@@ -402,6 +415,7 @@ impl Index {
         let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
+            written_steps: 0,
         };
         index.ensure_schema()?;
         Ok(index)
@@ -559,24 +573,33 @@ impl Index {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
+        let mut w = Writer { tx, steps: 0 };
         for write in &writes {
             match write {
                 Write::Index(rel, hash, entity) => {
-                    upsert(&tx, rel, hash, entity).map_err(|e| db_error(e, &self.ank))?;
+                    upsert(&mut w, rel, hash, entity).map_err(|e| db_error(e, &self.ank))?;
                     done.indexed += 1;
                 }
                 Write::Unreadable(rel, hash) => {
-                    forget(&tx, rel).map_err(|e| db_error(e, &self.ank))?;
-                    remember(&tx, rel, hash).map_err(|e| db_error(e, &self.ank))?;
+                    forget(&mut w, rel).map_err(|e| db_error(e, &self.ank))?;
+                    remember(&mut w, rel, hash).map_err(|e| db_error(e, &self.ank))?;
                     done.unreadable += 1;
                 }
                 Write::Remove(rel) => {
-                    forget(&tx, rel).map_err(|e| db_error(e, &self.ank))?;
+                    forget(&mut w, rel).map_err(|e| db_error(e, &self.ank))?;
                     done.removed += 1;
                 }
             }
         }
+        let Writer { tx, steps } = w;
         tx.commit().map_err(|e| db_error(e, &self.ank))?;
+        self.written_steps += steps;
+        if let Some(path) = std::env::var_os(STEPS_ENV) {
+            // A knob for a test, like the busy wall above: what it reports is
+            // not an answer of any verb, and a file it cannot write costs the
+            // verb nothing.
+            let _ = std::fs::write(path, self.written_steps.to_string());
+        }
         Ok(done)
     }
 
@@ -1033,33 +1056,74 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
     hex::encode(h.finalize())
 }
 
-fn remember(tx: &rusqlite::Transaction, rel: &str, hash: &str) -> rusqlite::Result<()> {
-    tx.execute(
+/// The write transaction of a refresh, and **the only way the write path
+/// reaches it** (TASK-d9ad8f03faff).
+///
+/// Every statement it runs adds the virtual-machine steps SQLite executed for
+/// it to `steps`. That count is how the linearity of a cold rebuild is tested:
+/// a wall clock measures the runner (ADR-cc65f1388a71), where the steps of a
+/// statement are a property of the statement and of the rows, and the same
+/// number on every machine. A delete from `entities_fts` that seeks by rowid
+/// adds a constant; one filtered on a column scans the table and adds its size.
+///
+/// The functions below take a `Writer` and never a `Transaction`, so a
+/// statement written into them cannot run without being counted.
+struct Writer<'c> {
+    tx: rusqlite::Transaction<'c>,
+    steps: u64,
+}
+
+impl Writer<'_> {
+    fn run(&mut self, sql: &str, args: impl rusqlite::Params) -> rusqlite::Result<()> {
+        let mut stmt = self.tx.prepare(sql)?;
+        stmt.execute(args)?;
+        self.steps += steps_of(&stmt);
+        Ok(())
+    }
+
+    fn one(&mut self, sql: &str, args: impl rusqlite::Params) -> rusqlite::Result<i64> {
+        let mut stmt = self.tx.prepare(sql)?;
+        let value = stmt.query_row(args, |r| r.get(0))?;
+        self.steps += steps_of(&stmt);
+        Ok(value)
+    }
+
+    fn all(&mut self, sql: &str, args: impl rusqlite::Params) -> rusqlite::Result<Vec<i64>> {
+        let mut stmt = self.tx.prepare(sql)?;
+        let values = stmt
+            .query_map(args, |r| r.get(0))?
+            .collect::<rusqlite::Result<Vec<i64>>>()?;
+        self.steps += steps_of(&stmt);
+        Ok(values)
+    }
+}
+
+/// The virtual-machine steps SQLite has executed for this statement since it
+/// was prepared.
+fn steps_of(stmt: &rusqlite::Statement) -> u64 {
+    stmt.get_status(rusqlite::StatementStatus::VmStep).max(0) as u64
+}
+
+fn remember(w: &mut Writer, rel: &str, hash: &str) -> rusqlite::Result<()> {
+    w.run(
         "INSERT INTO files (path, hash) VALUES (?1, ?2) \
          ON CONFLICT(path) DO UPDATE SET hash = excluded.hash",
         params![rel, hash],
-    )?;
-    Ok(())
+    )
 }
 
-fn forget(tx: &rusqlite::Transaction, rel: &str) -> rusqlite::Result<()> {
+fn forget(w: &mut Writer, rel: &str) -> rusqlite::Result<()> {
     // The FTS row goes first, while the entity row is still there to name it:
     // the virtual table has no idea what a path is, so `entities` is the only
     // way from one to the other. Reversing these two would leak a searchable
     // row for an entity that no longer exists.
-    let rids = rids_where(tx, "path = ?1", rel)?;
-    unsearchable(tx, &rids)?;
-    tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
-    tx.execute("DELETE FROM files WHERE path = ?1", params![rel])?;
-    Ok(())
+    let rids = w.all("SELECT rid FROM entities WHERE path = ?1", params![rel])?;
+    unsearchable(w, &rids)?;
+    w.run("DELETE FROM entities WHERE path = ?1", params![rel])?;
+    w.run("DELETE FROM files WHERE path = ?1", params![rel])
 }
 
-fn upsert(
-    tx: &rusqlite::Transaction,
-    rel: &str,
-    hash: &str,
-    entity: &Entity,
-) -> rusqlite::Result<()> {
+fn upsert(w: &mut Writer, rel: &str, hash: &str, entity: &Entity) -> rusqlite::Result<()> {
     // `slug` and `criteria` exist only to be searched: they are what a scan
     // used to open the file for, and carrying them here is the whole point.
     // `criteria` is the criterion for a task and the constraint for an ADR --
@@ -1121,14 +1185,16 @@ fn upsert(
     // that row is gone -- by this path, and by this id under whatever path it
     // was indexed at before, so a moved entity is not searchable twice.
     let id = entity.id().to_string();
-    let mut rids = rids_where(tx, "path = ?1", rel)?;
-    rids.extend(rids_where(tx, "id = ?1", &id)?);
-    unsearchable(tx, &rids)?;
-    tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
+    // Two lookups and not one `OR`, each on its own index: an `OR` across
+    // two columns is a plan SQLite is free to answer with a scan.
+    let mut rids = w.all("SELECT rid FROM entities WHERE path = ?1", params![rel])?;
+    rids.extend(w.all("SELECT rid FROM entities WHERE id = ?1", params![id])?);
+    unsearchable(w, &rids)?;
+    w.run("DELETE FROM entities WHERE path = ?1", params![rel])?;
     // The row keeps its `rid` when the id was already there under another
     // path, and gets a fresh one otherwise; either way `RETURNING` names the
     // rowid its searchable twin is written under.
-    let rid: i64 = tx.query_row(
+    let rid = w.one(
         "INSERT INTO entities \
            (id, kind, path, title, status, created, scope, blocked_by, about, seq, version) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
@@ -1151,24 +1217,13 @@ fn upsert(
             seq as i64,
             version as i64,
         ],
-        |r| r.get(0),
     )?;
-    tx.execute(
+    w.run(
         "INSERT INTO entities_fts (rowid, id, title, slug, criteria) \
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![rid, id, title, slug, criteria],
     )?;
-    remember(tx, rel, hash)
-}
-
-/// The rowids of the entity rows matching `filter`, which binds one parameter.
-///
-/// Resolved in `entities`, where a path and an id are indexed, and never in
-/// `entities_fts`, where they are not.
-fn rids_where(tx: &rusqlite::Transaction, filter: &str, arg: &str) -> rusqlite::Result<Vec<i64>> {
-    let mut stmt = tx.prepare(&format!("SELECT rid FROM entities WHERE {filter}"))?;
-    let rids = stmt.query_map(params![arg], |r| r.get(0))?;
-    rids.collect()
+    remember(w, rel, hash)
 }
 
 /// Removes the searchable rows of these entities, **one rowid at a time and by
@@ -1178,11 +1233,11 @@ fn rids_where(tx: &rusqlite::Transaction, filter: &str, arg: &str) -> rusqlite::
 /// scanning every row it holds. The delete this replaced named the `id` column,
 /// and running it before every insert made a cold rebuild quadratic in the
 /// corpus: 2.2 s at 1921 entity files, 8.8 s at 3842. `entities.rid` exists so
-/// that there is a rowid to name.
-fn unsearchable(tx: &rusqlite::Transaction, rids: &[i64]) -> rusqlite::Result<()> {
-    let mut stmt = tx.prepare("DELETE FROM entities_fts WHERE rowid = ?1")?;
+/// that there is a rowid to name, resolved in `entities`, where a path and an
+/// id are indexed, and never in `entities_fts`, where they are not.
+fn unsearchable(w: &mut Writer, rids: &[i64]) -> rusqlite::Result<()> {
     for rid in rids {
-        stmt.execute(params![rid])?;
+        w.run("DELETE FROM entities_fts WHERE rowid = ?1", params![*rid])?;
     }
     Ok(())
 }
@@ -1816,10 +1871,14 @@ mod tests {
     /// Measured before the fix, release build: 0.7 s at 960 files, 2.2 s at
     /// 1921, 8.8 s at 3842.
     ///
-    /// A ratio and not a wall (ADR-cc65f1388a71): what one runner takes is not
-    /// the same number twice, but doubling the corpus doubles a linear rebuild
-    /// wherever it runs, and quadruples a quadratic one. The minimum of three
-    /// is the run the rest of the machine interfered with least.
+    /// **Counted, never timed** (TASK-d9ad8f03faff, ADR-cc65f1388a71). This
+    /// test first took the fastest of three wall-clock rebuilds, landed at a
+    /// ratio of 2.03 against a limit of 2.5, and went red on a loaded macOS
+    /// runner in a pull request that never touched the index. What it decides
+    /// on now is the number of virtual-machine steps SQLite executed for the
+    /// writes, which is a property of the statements and the rows and the same
+    /// number on every machine: a delete that seeks by rowid adds a constant
+    /// per entity, and one that scans adds the size of the table.
     #[test]
     fn a_cold_rebuild_costs_twice_as_much_for_twice_the_corpus() {
         fn corpus(n: u32) -> Temp {
@@ -1837,29 +1896,26 @@ mod tests {
             }
             t
         }
-        fn fastest_rebuild(t: &Temp, n: usize) -> std::time::Duration {
-            (0..3)
-                .map(|_| {
-                    let start = std::time::Instant::now();
-                    let index = Index::in_memory(&t.0).unwrap();
-                    let took = start.elapsed();
-                    assert_eq!(index.all().unwrap().len(), n, "the rebuild is complete");
-                    took
-                })
-                .min()
-                .unwrap()
+        fn rebuild_steps(n: u32) -> u64 {
+            let t = corpus(n);
+            let index = Index::in_memory(&t.0).unwrap();
+            assert_eq!(
+                index.all().unwrap().len(),
+                n as usize,
+                "the rebuild is complete"
+            );
+            index.written_steps
         }
 
-        let small = corpus(2000);
-        let large = corpus(4000);
-        let at_n = fastest_rebuild(&small, 2000);
-        let at_2n = fastest_rebuild(&large, 4000);
-        let ratio = at_2n.as_secs_f64() / at_n.as_secs_f64();
-        eprintln!("in-memory rebuild: {at_n:?} at 2000, {at_2n:?} at 4000, ratio {ratio:.2}");
+        let at_n = rebuild_steps(2000);
+        let at_2n = rebuild_steps(4000);
+        assert!(at_n > 0, "this test counts nothing");
+        let ratio = at_2n as f64 / at_n as f64;
+        eprintln!("in-memory rebuild: {at_n} VM steps at 2000, {at_2n} at 4000, ratio {ratio:.3}");
         assert!(
             ratio <= 2.5,
-            "a rebuild of 4000 entities took {ratio:.2} times one of 2000 \
-             ({at_2n:?} against {at_n:?}): the rebuild is no longer linear"
+            "a rebuild of 4000 entities executed {ratio:.2} times the SQLite steps of one \
+             of 2000 ({at_2n} against {at_n}): the rebuild is no longer linear"
         );
     }
 
