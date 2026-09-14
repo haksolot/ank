@@ -5,7 +5,7 @@ slug: the-cli-surface-specification-does-not-carry-arc
 title: The CLI surface specification does not carry archive, find --all or attest --compact
 created: 2026-09-14T06:40:14Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-contract/**
@@ -17,7 +17,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 3
+version: 4
 ---
 
 Written after TASK-be336b87a145, TASK-da978b214eca and TASK-97fd1992567a land, in the order this corpus uses: spec,
