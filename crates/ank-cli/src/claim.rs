@@ -873,19 +873,61 @@ pub struct Deleted {
 /// is anchored rather than inventing what is not. `check` is where a damaged
 /// coordination ref is reported, and it reports this one through the same walk
 /// as the rest.
+///
+/// **Folded to one entry per fact on the way out** (ADR-4b45f344344f), so a ref
+/// written before the rule reads exactly as the rule would have left it: every
+/// reader answers the same whether a fact was attested once or a hundred times.
 pub fn detached_proofs(cwd: &Path, id: &EntityId) -> Vec<AttestedProof> {
     match read_at(cwd, &proof_ref(id)) {
         Ok(Some(Held {
             record: Record::Proof(p),
             ..
-        })) => p.proofs,
+        })) => one_per_fact(p.proofs),
         _ => Vec::new(),
     }
 }
 
-/// Appends one attestation to the task's proof ref.
+/// What makes two attestations the same fact: the proof type, the criteria hash
+/// it was attested against, and the identity that attested it
+/// (ADR-4b45f344344f). The run reference is deliberately not part of it: a
+/// second run of one pipeline over one criterion says the same thing again, and
+/// a ref that kept both would grow with runs and not with facts.
+fn fact_of(a: &AttestedProof) -> (&'static str, Option<&str>, &str) {
+    (
+        a.proof.proof_type.as_str(),
+        a.proof.criteria.as_deref(),
+        a.identity.as_str(),
+    )
+}
+
+/// The rule applied to a list: one entry per fact, at the place the fact was
+/// first attested, carrying its latest attestation. Latest by the order of the
+/// list, which is the order the writes happened in, and never by the timestamp,
+/// which is whichever clock the attesting machine kept.
+pub fn one_per_fact(proofs: Vec<AttestedProof>) -> Vec<AttestedProof> {
+    let mut out: Vec<AttestedProof> = Vec::with_capacity(proofs.len());
+    for a in proofs {
+        match out.iter_mut().find(|kept| fact_of(kept) == fact_of(&a)) {
+            Some(kept) => *kept = a,
+            None => out.push(a),
+        }
+    }
+    out
+}
+
+/// How many entries a list carries beyond one per fact: what `check` reports
+/// and what `attest --compact` removes.
+pub fn redundant_attestations(proofs: &[AttestedProof]) -> usize {
+    let mut facts: Vec<(&'static str, Option<&str>, &str)> = proofs.iter().map(fact_of).collect();
+    facts.sort();
+    facts.dedup();
+    proofs.len() - facts.len()
+}
+
+/// Records one attestation on the task's proof ref, replacing the entry of the
+/// same fact rather than appending beside it (ADR-4b45f344344f).
 ///
-/// Read, append, compare-and-swap on the object just read — the same three
+/// Read, fold, compare-and-swap on the object just read — the same three
 /// steps every other write of this plane takes, and for the same reason: two
 /// pipelines attesting the same task must not silently overwrite each other.
 /// A lost swap is returned as [`Cas::Lost`] and the caller names the retry;
@@ -919,6 +961,10 @@ pub fn attach_proof(
         attested: now_utc(),
         proof: proof.clone(),
     });
+    // The fold and not a lookup for the one entry: a ref written before the
+    // rule carries its duplicates, and the write that touches it anyway leaves
+    // it holding what the rule would have left.
+    let proofs = one_per_fact(proofs);
     let count = proofs.len();
     let record = Record::Proof(ProofRecord {
         task: id.to_string(),
@@ -926,6 +972,65 @@ pub fn attach_proof(
     });
     let written = put_at(cwd, &name, &record, witness.as_deref())?;
     Ok((written, count))
+}
+
+/// What `attest --compact` did to a proof ref.
+#[derive(Debug)]
+pub struct Compacted {
+    /// The entries the ref holds now, one per fact.
+    pub kept: usize,
+    /// The entries removed, and `0` when the ref was already compact and
+    /// nothing was written.
+    pub removed: usize,
+    /// `None` when nothing was written, or when there was no ref at all.
+    pub written: Option<Written>,
+}
+
+/// Rewrites a proof ref written before ADR-4b45f344344f under its rule, and
+/// adds nothing: every entry kept is one the ref already carried, under the
+/// identity and the instant that attested it.
+///
+/// Remote first, then read, fold and compare-and-swap, as every write of this
+/// plane. A ref already holding one entry per fact is not rewritten: a write
+/// that changes nothing would still be a push, and a push is the one thing a
+/// loop over two hundred refs should not spend for nothing.
+pub fn compact_proofs(cwd: &Path, id: &EntityId) -> Result<Compacted> {
+    let name = proof_ref(id);
+    let _ = sync_ref_from_remote(cwd, &name);
+    let (witness, proofs) = match read_at(cwd, &name)? {
+        Some(Held {
+            object,
+            record: Record::Proof(p),
+        }) => (object, p.proofs),
+        Some(Held { .. }) => return Err(corrupt(&name, "not a proof record")),
+        None => {
+            return Ok(Compacted {
+                kept: 0,
+                removed: 0,
+                written: None,
+            })
+        }
+    };
+    let before = proofs.len();
+    let proofs = one_per_fact(proofs);
+    let kept = proofs.len();
+    if kept == before {
+        return Ok(Compacted {
+            kept,
+            removed: 0,
+            written: None,
+        });
+    }
+    let record = Record::Proof(ProofRecord {
+        task: id.to_string(),
+        proofs,
+    });
+    let written = put_at(cwd, &name, &record, Some(&witness))?;
+    Ok(Compacted {
+        kept,
+        removed: before - kept,
+        written: Some(written),
+    })
 }
 
 // ---------------------------------------------------------------------------

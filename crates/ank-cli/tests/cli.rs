@@ -13688,7 +13688,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 30] = [
+const NOT_A_PATH: [&str; 31] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13727,6 +13727,9 @@ const NOT_A_PATH: [&str; 30] = [
     // Carries no value at all, let alone a path: it names where the proof is
     // written, and that address is a ref (ADR-493471d64ba0).
     "--detached",
+    // A switch: it rewrites the proof ref of the task named, and that address
+    // is a ref (ADR-4b45f344344f).
+    "--compact",
     // Carries no value either: the remote it reads is `origin` by name, the
     // refs it asks for are the claims namespace, and neither comes off the
     // command line (ADR-47e2ac102f58).
@@ -23665,6 +23668,176 @@ fn a_file_whose_size_or_inode_changed_is_hashed() {
     assert!(
         stdout(&out).contains("Omega task, longer"),
         "{}",
+        stdout(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A proof ref grows with facts and never with runs (TASK-be336b87a145,
+// ADR-4b45f344344f)
+// ---------------------------------------------------------------------------
+
+/// `attest --detached` run from `at` under `agent`.
+fn attest_detached(at: &Path, agent: &str, args: &[&str]) -> Output {
+    ank_command()
+        .arg("attest")
+        .args(args)
+        .arg("--detached")
+        .arg("--repo")
+        .arg(at)
+        .env("ANK_AGENT", agent)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap()
+}
+
+/// The proof record `refs/ank/proof/<id>` holds at `at`, read with git and not
+/// through the binary: what has to be true is the state of the ref.
+fn proof_record_at(at: &Path, id: &str) -> String {
+    let out = git_command(at)
+        .args(["cat-file", "-p", &format!("refs/ank/proof/{id}")])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "no proof ref: {}", stderr(&out));
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// The number of attestations a proof record carries: one `- identity:` line
+/// each, the first key `serialize_record` writes for an entry.
+fn attestations_in(record: &str) -> usize {
+    record
+        .lines()
+        .filter(|l| l.starts_with("- identity:"))
+        .count()
+}
+
+/// The runs `show --json` lists under `detached_proofs`.
+fn detached_refs_shown(at: &Path, id: &str) -> Vec<String> {
+    let out = ank_command()
+        .args(["show", id, "--json", "--repo"])
+        .arg(at)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&out)).unwrap();
+    doc["detached_proofs"]
+        .as_sequence()
+        .expect("show --json carries detached_proofs")
+        .iter()
+        .map(|p| {
+            p["ref"]
+                .as_str()
+                .unwrap_or_else(|| panic!("an entry without a ref: {p:?}"))
+                .to_string()
+        })
+        .collect()
+}
+
+/// The same fact attested twice is one entry, and the second run replaces the
+/// first; what differs on the fact -- another identity, another type -- is
+/// another entry.
+#[test]
+fn attesting_one_fact_twice_leaves_one_entry_and_two_facts_leave_two() {
+    let (_r, other) = attestable();
+    const CI: &str = "process:github-actions";
+
+    for _ in 0..2 {
+        let out = attest_detached(&other, CI, &[ID, "--proof", "test:ci-run-1"]);
+        assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    }
+    let record = proof_record_at(&other, ID);
+    assert_eq!(attestations_in(&record), 1, "{record}");
+
+    // A second run of the same fact replaces the first in place: the ref holds
+    // the latest run and not both.
+    let out = attest_detached(&other, CI, &[ID, "--proof", "test:ci-run-2"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let record = proof_record_at(&other, ID);
+    assert_eq!(attestations_in(&record), 1, "{record}");
+    assert!(
+        record.contains("ci-run-2") && !record.contains("ci-run-1"),
+        "{record}"
+    );
+
+    // Two distinct runs by two pipelines are two facts.
+    let out = attest_detached(
+        &other,
+        "process:buildkite",
+        &[ID, "--proof", "test:bk-run-7"],
+    );
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let record = proof_record_at(&other, ID);
+    assert_eq!(attestations_in(&record), 2, "{record}");
+    assert_eq!(
+        detached_refs_shown(&other, ID),
+        vec!["ci-run-2".to_string(), "bk-run-7".to_string()]
+    );
+}
+
+/// A ref written before the rule: 171 entries of one fact, one per CI run, as
+/// TASK-b2c3d4e5f6a7 carried. Readers answer as if it had been attested once,
+/// `check` names the command, `--compact` leaves one entry and adds nothing,
+/// and `show` still lists the fact.
+#[test]
+fn compact_leaves_one_entry_per_fact_on_a_ref_written_before_the_rule() {
+    let (r, _other) = attestable();
+    const CI: &str = "process:github-actions";
+
+    // One real attestation, pushed, whose entry is the template for the forge.
+    let out = attest_detached(&r.0, CI, &[ID, "--proof", "test:ci-run-0"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+    let record = proof_record_at(&r.0, ID);
+    let at = record.find("- identity:").expect("an entry");
+    let (head, entry) = record.split_at(at);
+    let mut forged = head.to_string();
+    for run in 1..=171 {
+        forged.push_str(&entry.replace("ci-run-0", &format!("ci-run-{run}")));
+    }
+    // Pushed, by name: the remote is where such a ref lives, and every write of
+    // this plane reads the remote's copy before its own.
+    let refname = format!("refs/ank/proof/{ID}");
+    r.write_ref(&refname, &forged);
+    r.git(&["push", "-q", "origin", &format!("+{refname}:{refname}")]);
+    assert_eq!(attestations_in(&proof_record_at(&r.0, ID)), 171);
+
+    // Every reader answers as it would for one attestation.
+    assert_eq!(
+        detached_refs_shown(&r.0, ID),
+        vec!["ci-run-171".to_string()]
+    );
+
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    let said = stdout(&out);
+    let signal = format!("ank attest {ID} --compact --detached");
+    assert!(said.contains(&signal), "check names the compaction: {said}");
+    assert_eq!(code(&out), 0, "a signal and never a fault: {said}");
+
+    let out = ank_command()
+        .args(["attest", ID, "--compact", "--detached", "--repo"])
+        .arg(&r.0)
+        .env("ANK_AGENT", "human:sean")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
+
+    let record = proof_record_at(&r.0, ID);
+    assert_eq!(attestations_in(&record), 1, "{record}");
+    // Nothing added: the entry kept is the latest the forge carried, under the
+    // identity that attested it, and not a new one under the caller's.
+    assert!(record.contains("ci-run-171"), "{record}");
+    assert!(!record.contains("human:sean"), "{record}");
+    assert_eq!(
+        detached_refs_shown(&r.0, ID),
+        vec!["ci-run-171".to_string()]
+    );
+
+    let out = r.ank("claude-code@ank", &["check", "--json"]);
+    assert!(
+        !stdout(&out).contains(&signal),
+        "a compact ref is not reported: {}",
         stdout(&out)
     );
 }
