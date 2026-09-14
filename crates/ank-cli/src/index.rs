@@ -108,6 +108,13 @@ fn busy_timeout() -> std::time::Duration {
     }
 }
 
+// `entities.archived` defaults to 0, and that is not for this build's writes,
+// which always name it. A verb of the previous build that opened the index
+// before a newer one rebuilt it under the same file -- `ank done` from an older
+// binary on PATH, while the suite it runs rebuilds this repository's own index
+// -- goes on inserting rows without the column, and with no default every one
+// of them failed with a NOT NULL constraint (TASK-da978b214eca, measured on its
+// own close). A row it writes is a hot row, which is what 0 says.
 const SCHEMA: &str = "\
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -133,7 +140,7 @@ CREATE TABLE entities (
     about      TEXT NOT NULL,
     seq        INTEGER NOT NULL,
     version    INTEGER NOT NULL,
-    archived   INTEGER NOT NULL
+    archived   INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX entities_by_path ON entities (path);
 CREATE INDEX entities_by_kind ON entities (kind, status);
