@@ -753,23 +753,18 @@ type Plane = (
 fn coordination(cwd: &Path, report: &mut Report) -> Result<Plane> {
     let mut map = HashMap::new();
     let mut proofs: HashMap<EntityId, Vec<claim::AttestedProof>> = HashMap::new();
-    let refs = git::ank_refs(cwd)?;
-    // Every record in one process (TASK-5f05e0c22f7b). `read_at` resolves the
-    // ref and then reads the object, two starts each, and `for-each-ref` has
-    // already named the object -- so the resolution was a question whose answer
-    // was in hand and the read was the only one left to ask.
-    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
-    let records = git::cat_file_batch(cwd, &objects).unwrap_or_default();
+    // Every record in one process (TASK-5f05e0c22f7b), through the reading
+    // every other verb shares, and over the two namespaces `check` judges: the
+    // claims and the proofs it unions with the files (ADR-493471d64ba0). The
+    // mirror is a watcher's copy and not this clone's to judge.
+    let (refs, records) = git::ank_records(cwd, git::Namespaces::CLAIMS | git::Namespaces::PROOF)?;
     for r in refs {
         // One walk over both namespaces. `check` asks the same question of
         // every ref under `refs/ank/`, and two loops would be free to disagree
         // about which of them a given ref belongs to.
-        let (rest, proof_ns) = match (
-            r.name.strip_prefix(claim::CLAIMS_PREFIX),
-            r.name.strip_prefix(claim::PROOF_PREFIX),
-        ) {
-            (Some(rest), _) => (rest, false),
-            (_, Some(rest)) => (rest, true),
+        let (rest, proof_ns) = match git::Namespaces::of(&r.name) {
+            Some((git::Namespaces::CLAIMS, rest)) => (rest, false),
+            Some((git::Namespaces::PROOF, rest)) => (rest, true),
             _ => continue,
         };
         let Ok(id) = EntityId::parse(rest) else {

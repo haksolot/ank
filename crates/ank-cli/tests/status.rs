@@ -273,6 +273,32 @@ impl Corpus {
     ///
     /// [`seed_claim`]: Corpus::seed_claim
     fn seed_claims(&self, count: usize) {
+        self.seed_records("refs/ank/claims/", count, |id| {
+            format!(
+                "state: claim\nholder: someone@elsewhere\ntask: {id}\n\
+                 claimed: 2026-07-28T00:00:00Z\nexpires: {LIVE}\ncriteria: abcdefabcdefabcd\n\
+                 constraints: abcdefabcdefabcd\n"
+            )
+        });
+    }
+
+    /// `count` detached proof refs, on the terms [`seed_claims`] writes claims:
+    /// the record `attest --detached` writes, two processes for all of them.
+    ///
+    /// [`seed_claims`]: Corpus::seed_claims
+    fn seed_proofs(&self, count: usize) {
+        self.seed_records("refs/ank/proof/", count, |id| {
+            format!(
+                "state: proof\ntask: {id}\nproofs:\n- identity: process:github-actions\n  \
+                 attested: '2026-07-30T00:00:00Z'\n  proof:\n    type: test\n    \
+                 ref: ci-run-4242\n"
+            )
+        });
+    }
+
+    /// One record per seeded id under `namespace`, every blob in one process and
+    /// every ref in one transaction.
+    fn seed_records(&self, namespace: &str, count: usize, record: impl Fn(&str) -> String) {
         let dir = self.0.join("records");
         std::fs::create_dir_all(&dir).unwrap();
         let mut paths = String::new();
@@ -280,15 +306,7 @@ impl Corpus {
         for n in 0..count {
             let id = id(n);
             let path = dir.join(&id);
-            std::fs::write(
-                &path,
-                format!(
-                    "state: claim\nholder: someone@elsewhere\ntask: {id}\n\
-                     claimed: 2026-07-28T00:00:00Z\nexpires: {LIVE}\ncriteria: abcdefabcdefabcd\n\
-                     constraints: abcdefabcdefabcd\n"
-                ),
-            )
-            .unwrap();
+            std::fs::write(&path, record(&id)).unwrap();
             paths.push_str(&path.display().to_string());
             paths.push('\n');
             ids.push(id);
@@ -296,7 +314,7 @@ impl Corpus {
         let blobs = self.stdin_git(&["hash-object", "-w", "--stdin-paths"], &paths);
         let mut plan = String::new();
         for (id, blob) in ids.iter().zip(blobs.lines()) {
-            plan.push_str(&format!("create refs/ank/claims/{id} {}\n", blob.trim()));
+            plan.push_str(&format!("create {namespace}{id} {}\n", blob.trim()));
         }
         self.stdin_git(&["update-ref", "--stdin"], &plan);
         // The records are a fixture input, not corpus content: left in the tree
@@ -726,6 +744,97 @@ fn status_asks_git_no_question_twice_and_reads_the_plane_in_one_batch() {
     assert_eq!(
         started, single,
         "{REFS} coordination refs cost more git than one does"
+    );
+}
+
+/// A proof ref costs the reading verbs nothing, in processes as in bytes
+/// (TASK-dd3ab6cb2dcc).
+///
+/// `find`, `context`, `graph` and `status` ask who holds what and which claims
+/// a watcher mirrored; none of them reads an attestation. Each still reads the
+/// plane in one enumeration and one batch -- the batch is fed the claims alone,
+/// which `GIT_TRACE` cannot see and the damaged-record test below can -- and the
+/// process list over five hundred proof refs is the list over none.
+#[test]
+fn the_reading_verbs_start_the_same_git_over_five_hundred_proof_refs_as_over_none() {
+    // One claim in both, so both have a record to batch: a plane with nothing
+    // wanted in it starts no `cat-file` at all, and the two lists would differ
+    // for a reason that is not the one being measured.
+    //
+    // And one mirrored claim in both, which `status` reads and nobody else
+    // does: a verb that asked for claims and then widened to the mirror would
+    // start a second batch, and would start it only where a watcher runs.
+    let none = Corpus::new();
+    let many = Corpus::new();
+    for c in [&none, &many] {
+        c.seed_claims(1);
+        c.seed_records("refs/ank/watch/origin/claims/", 1, |id| {
+            format!(
+                "state: claim\nholder: someone@remote\ntask: {id}\n\
+                 claimed: 2026-07-28T00:00:00Z\nexpires: {LIVE}\ncriteria: abcdefabcdefabcd\n\
+                 constraints: abcdefabcdefabcd\n"
+            )
+        });
+    }
+    many.seed_proofs(REFS);
+    // How many times each verb reads the plane. `graph --json` answers with ids,
+    // statuses and edges and returns before the coordination read the drawn
+    // forest needs, so it reads none -- and zero over five hundred is zero over
+    // none, which is the half of the claim it can be held to. The drawn `graph`
+    // is the one that reads, and it is held to one.
+    for (verb, reads) in [
+        (&["find", "--json"][..], 1),
+        (&["context"][..], 1),
+        (&["graph", "--json"][..], 0),
+        (&["graph"][..], 1),
+        (&["status", "--json"][..], 1),
+    ] {
+        // Warm, as the status count above is: the index and the verdict are
+        // built once, and that cost belongs to whatever ran first.
+        for c in [&none, &many] {
+            c.json(verb);
+            c.json(verb);
+        }
+        let (bare, _) = none.git_processes(verb);
+        let (loaded, _) = many.git_processes(verb);
+        let count = |p: &dyn Fn(&str) -> bool| loaded.iter().filter(|a| p(a)).count();
+        assert_eq!(
+            count(&|a| a.starts_with("for-each-ref") && a.contains("refs/ank/")),
+            reads,
+            "{verb:?} enumerates the namespace {reads} time(s): {loaded:#?}"
+        );
+        assert_eq!(
+            count(&|a| a == "cat-file --batch"),
+            reads,
+            "{verb:?} reads the plane in {reads} batch(es): {loaded:#?}"
+        );
+        assert_eq!(
+            loaded, bare,
+            "{verb:?} starts different git over {REFS} proof refs than over none"
+        );
+    }
+}
+
+/// A proof ref whose blob is not a record is `check`'s finding, once, and
+/// never a warning of a verb that does not read proofs (TASK-dd3ab6cb2dcc).
+#[test]
+fn a_damaged_proof_ref_is_one_check_finding_and_no_context_warning() {
+    let c = Corpus::new();
+    c.seed_records("refs/ank/proof/", 1, |_| "not: [a record\n".to_string());
+    let name = format!("refs/ank/proof/{}", id(0));
+
+    let context = c.json(&["context", "--json"]);
+    assert!(
+        context.contains("\"warnings\":[]"),
+        "context reads no proof and warns about none: {context}"
+    );
+
+    let check = c.json(&["check", "--json"]);
+    let subject = format!("\"subject\":\"{name}\"");
+    assert_eq!(
+        check.matches(&subject).count(),
+        1,
+        "check reports the damaged proof ref exactly once: {check}"
     );
 }
 

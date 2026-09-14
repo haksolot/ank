@@ -59,6 +59,27 @@ pub fn run(
     let index = Index::open(&repo.ank)?;
     let rows = index.all()?;
 
+    // **Every live claim in the repository, the caller's and everybody
+    // else's** (§5, TASK-dacbcae6134c). `context` in execution mode shows none
+    // of it and is right not to: it exists to remove choice, and a list of what
+    // other agents hold is choice-shaped. The information is not withheld, it
+    // is relocated here — `status` is off the loop, costs nothing to skip, and
+    // is the verb an agent runs to learn where things stand rather than what to
+    // do next.
+    //
+    // Read through the same plane every listing verb uses, not a second
+    // enumeration of the refs: one plane, one reading, and a second one would
+    // be free to disagree with the first.
+    //
+    // Claims and the mirror, asked together and before `claim::on_task` below asks
+    // for claims alone: the widest request is the first one, so the plane is
+    // one batch (TASK-dd3ab6cb2dcc).
+    let plane = context::plane(
+        &repo.corpus,
+        git::Namespaces::CLAIMS | git::Namespaces::MIRROR_CLAIMS,
+        &mut Vec::new(),
+    )?;
+
     // The claim decides the perimeter, exactly as it decides `context`'s mode
     // (§5): holding one, an agent's question is about its own task. The title
     // and scope come from the index rather than the store, because `status` has
@@ -109,19 +130,6 @@ pub fn run(
         }
         None => Vec::new(),
     };
-
-    // **Every live claim in the repository, the caller's and everybody
-    // else's** (§5, TASK-dacbcae6134c). `context` in execution mode shows none
-    // of it and is right not to: it exists to remove choice, and a list of what
-    // other agents hold is choice-shaped. The information is not withheld, it
-    // is relocated here — `status` is off the loop, costs nothing to skip, and
-    // is the verb an agent runs to learn where things stand rather than what to
-    // do next.
-    //
-    // Read through the same plane every listing verb uses, not a second
-    // enumeration of the refs: one plane, one reading, and a second one would
-    // be free to disagree with the first.
-    let plane = context::plane(&repo.corpus, &mut Vec::new())?;
 
     // **The namespace enumerated once in this module**, for the two questions
     // that need the objects rather than the records: the drift against origin

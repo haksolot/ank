@@ -5,7 +5,7 @@ slug: the-plane-read-is-narrowed-to-the-namespaces-the
 title: The plane read is narrowed to the namespaces the caller asks for
 created: 2026-09-14T06:40:12Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/git.rs
   - crates/ank-cli/src/context.rs
@@ -21,7 +21,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured 2026-09-14, release build of 2a65d0c, this corpus (1921 entities,

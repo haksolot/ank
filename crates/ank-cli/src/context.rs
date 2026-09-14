@@ -77,10 +77,39 @@ impl Coordination {
     }
 }
 
-/// Reads every `refs/ank/claims/*` in one enumeration, then one `cat-file` per
-/// ref that exists — not one per task. Most tasks carry no ref at all, so the
-/// cost is proportional to the coordination in flight rather than to the size
-/// of the corpus, which matters on Windows where spawning is expensive.
+/// What `refs/ank/*` says about who holds what, read in one walk.
+///
+/// Two namespaces answering two questions -- who holds a task here, and who the
+/// remote last said was holding it -- and one enumeration, because a second walk
+/// would be free to disagree with the first about a ref they both read. What
+/// was attested against a task outside its file (ADR-493471d64ba0) is not here:
+/// no reader of the plane presented it, `show` and `check` read it on their own,
+/// and parsing it for every listing was most of what a listing cost
+/// (TASK-dd3ab6cb2dcc).
+#[derive(Debug, Default)]
+pub(crate) struct Plane {
+    pub claims: HashMap<EntityId, Coordination>,
+    /// The remote's claims as a watcher last mirrored them, and **empty
+    /// wherever no watcher runs** -- which is every CI runner, every container
+    /// and most checkouts. Read by `status` alone: it is news about other
+    /// clones, and a verb that decided anything on it would make a background
+    /// process a thing to depend on. Filled only when the caller asks for
+    /// [`git::Namespaces::MIRROR_CLAIMS`].
+    pub mirrored: HashMap<EntityId, Coordination>,
+}
+
+/// The claim half alone, for the callers that only ask who holds what.
+pub(crate) fn coordination(
+    cwd: &std::path::Path,
+    warnings: &mut Vec<String>,
+) -> Result<HashMap<EntityId, Coordination>> {
+    Ok(plane(cwd, git::Namespaces::CLAIMS, warnings)?.claims)
+}
+
+/// Reads the namespaces `wanted` names in one enumeration and one batch, over
+/// the refs that exist and not over the tasks. Most tasks carry no ref at all,
+/// so the cost is proportional to the coordination in flight rather than to the
+/// size of the corpus, which matters on Windows where spawning is expensive.
 ///
 /// A record that cannot be read is reported as a warning and skipped. `claim`
 /// is right to call it a hard error, because it is about to write there;
@@ -92,71 +121,14 @@ impl Coordination {
 /// A listing has no channel for a warning and passes an empty vector — `check`
 /// is what reports a damaged ref, and a reader must not fail for having nothing
 /// to say about one.
-/// Where the watcher mirrors the remote's `refs/ank/*`, when somebody is
-/// running one (ADR-24e21cb83793).
 ///
-/// **A mirror, and never the plane itself.** `refs/ank/claims/<id>` is where a
-/// claim of this clone lives, so a background process writing there would be
-/// rewriting the coordination plane under whoever is working in the tree. The
-/// watcher writes here instead, and this is the only place in the CLI that
-/// reads it: nothing claims against it, nothing prunes it, and a corpus no
-/// watcher has ever touched carries none of it -- which is what makes the
-/// watcher's absence the normal mode rather than a degraded one.
-///
-/// `refs/ank/watch/<remote>/claims/<id>`, so the tail is reached by stripping
-/// the prefix and then the one segment naming the remote.
-const WATCH_PREFIX: &str = "refs/ank/watch/";
-
-/// The task a mirrored claim ref is about, or `None` for any other ref.
-///
-/// The mirror carries whatever the remote's `refs/ank/*` carries, proofs
-/// included; only the claims half is read, because the question it answers --
-/// who holds what, right now, in another clone -- is the one a stale local plane
-/// gets wrong. A mirrored proof is an attestation this clone will receive with
-/// the branch that carries it.
-fn mirrored_claim(name: &str) -> Option<&str> {
-    let rest = name.strip_prefix(WATCH_PREFIX)?;
-    let (_remote, rest) = rest.split_once('/')?;
-    rest.strip_prefix("claims/")
-}
-
-/// Everything `refs/ank/*` says about the corpus, read in one walk.
-///
-/// Three namespaces answering three questions -- who holds a task, what has been
-/// attested against it outside its file (ADR-493471d64ba0), and who the remote
-/// last said was holding it -- and one enumeration, because a second walk would
-/// be free to disagree with the first about a ref they both read.
-#[derive(Debug, Default)]
-pub(crate) struct Plane {
-    pub claims: HashMap<EntityId, Coordination>,
-    /// Empty for a task with no attestation, which is nearly all of them.
-    pub proofs: HashMap<EntityId, Vec<claim::AttestedProof>>,
-    /// The remote's claims as a watcher last mirrored them, and **empty
-    /// wherever no watcher runs** -- which is every CI runner, every container
-    /// and most checkouts. Read by `status` alone: it is news about other
-    /// clones, and a verb that decided anything on it would make a background
-    /// process a thing to depend on.
-    pub mirrored: HashMap<EntityId, Coordination>,
-}
-
-/// Which of the three namespaces a ref was found in, and therefore which
-/// question its record answers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Ns {
-    Claims,
-    Proof,
-    Mirror,
-}
-
-/// The claim half alone, for the callers that only ask who holds what.
-pub(crate) fn coordination(
+/// A ref outside `wanted` is skipped before its record is looked up, so a damaged
+/// proof blob is `check`'s finding and never a listing's warning.
+pub(crate) fn plane(
     cwd: &std::path::Path,
+    wanted: git::Namespaces,
     warnings: &mut Vec<String>,
-) -> Result<HashMap<EntityId, Coordination>> {
-    Ok(plane(cwd, warnings)?.claims)
-}
-
-pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result<Plane> {
+) -> Result<Plane> {
     let mut plane = Plane::default();
     // No repository, no coordination plane — and that is an answer rather than
     // a failure (ADR-9307e5d214a7). It is the same reasoning the damaged-ref
@@ -175,22 +147,22 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
     // rather than one pair each (TASK-5690eae1e008): `claim::on_task` and
     // `claim::live_claims_where` ask the same two questions of the same
     // namespace inside the same invocation.
-    let (refs, records) = git::ank_records(cwd)?;
+    let (refs, records) = git::ank_records(cwd, wanted)?;
     for r in refs {
         // The address decides which question the record answers, and a record
         // whose state contradicts its namespace is reported rather than
         // coerced: a proof blob on a claim ref would read as a free task, which
         // is the silent fallback this module refuses everywhere else.
-        let (rest, ns) = match (
-            r.name.strip_prefix(claim::CLAIMS_PREFIX),
-            r.name.strip_prefix(claim::PROOF_PREFIX),
-            mirrored_claim(&r.name),
-        ) {
-            (Some(rest), _, _) => (rest, Ns::Claims),
-            (_, Some(rest), _) => (rest, Ns::Proof),
-            (_, _, Some(rest)) => (rest, Ns::Mirror),
-            _ => continue,
+        //
+        // A ref outside `wanted` is skipped here, before its record is looked
+        // up: the batch was never fed it, and absent from the batch would read
+        // as unreadable. The proof namespace has no place in this plane at all.
+        let Some((ns, rest)) = git::Namespaces::of(&r.name) else {
+            continue;
         };
+        if ns == git::Namespaces::PROOF || !wanted.contains(ns) {
+            continue;
+        }
         let Ok(id) = EntityId::parse(rest) else {
             continue;
         };
@@ -214,18 +186,7 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
         // differs is which map it lands in, and therefore who is allowed to act
         // on it.
         let state = match record {
-            Record::Proof(p) => {
-                if ns == Ns::Proof {
-                    plane.proofs.insert(id, p.proofs);
-                } else {
-                    warnings.push(format!(
-                        "{} carries a record of the wrong kind for its namespace",
-                        r.name
-                    ));
-                }
-                continue;
-            }
-            _ if ns == Ns::Proof => {
+            Record::Proof(_) => {
                 warnings.push(format!(
                     "{} carries a record of the wrong kind for its namespace",
                     r.name
@@ -250,11 +211,11 @@ pub(crate) fn plane(cwd: &std::path::Path, warnings: &mut Vec<String>) -> Result
                 }
             },
         };
-        match ns {
-            Ns::Claims => plane.claims.insert(id, state),
-            Ns::Mirror => plane.mirrored.insert(id, state),
-            Ns::Proof => unreachable!("a proof namespace never reaches a coordination state"),
-        };
+        if ns == git::Namespaces::MIRROR_CLAIMS {
+            plane.mirrored.insert(id, state);
+        } else {
+            plane.claims.insert(id, state);
+        }
     }
     Ok(plane)
 }

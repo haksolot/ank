@@ -614,6 +614,77 @@ pub const ANK_NAMESPACE_PATTERN: &str = "refs/ank/*";
 const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
 const ORIGIN_PREFIX: &str = "refs/remotes/origin/";
 
+/// Where the watcher mirrors the remote's `refs/ank/*`, when somebody is
+/// running one (ADR-24e21cb83793).
+///
+/// **A mirror, and never the plane itself.** `refs/ank/claims/<id>` is where a
+/// claim of this clone lives, so a background process writing there would be
+/// rewriting the coordination plane under whoever is working in the tree. The
+/// watcher writes here instead, and `status` is the only verb that reads it:
+/// nothing claims against it, nothing prunes it, and a corpus no watcher has
+/// ever touched carries none of it -- which is what makes the watcher's absence
+/// the normal mode rather than a degraded one.
+///
+/// `refs/ank/watch/<remote>/claims/<id>`, so the tail is reached by stripping
+/// the prefix and then the one segment naming the remote.
+const WATCH_PREFIX: &str = "refs/ank/watch/";
+
+/// The namespaces of `refs/ank/*` whose records a reader can ask for, as a set.
+///
+/// **The cost is named at the call site** (ADR-f3d1dea65d84): a caller says
+/// which questions it asks, and [`ank_records`] moves the records of those
+/// namespaces and no others. `find` asks who holds what and pays for claims;
+/// it used to pay for every proof record the repository carried as well, which
+/// on this corpus was 3.3 MB of YAML nobody read (TASK-dd3ab6cb2dcc). A ref in
+/// no namespace here -- a remote-check record, a proof the watcher mirrored --
+/// is moved for nobody.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Namespaces(u8);
+
+impl Namespaces {
+    const NONE: Namespaces = Namespaces(0);
+    /// `refs/ank/claims/<id>`: who holds a task, or finished it.
+    pub const CLAIMS: Namespaces = Namespaces(1);
+    /// `refs/ank/proof/<id>`: what was attested outside the file (ADR-493471d64ba0).
+    pub const PROOF: Namespaces = Namespaces(2);
+    /// `refs/ank/watch/<remote>/claims/<id>`: who the remote last said held it.
+    pub const MIRROR_CLAIMS: Namespaces = Namespaces(4);
+
+    /// The namespace a ref is in, with the tail naming its task, or `None` for
+    /// a ref no reader asks about.
+    pub fn of(name: &str) -> Option<(Namespaces, &str)> {
+        if let Some(rest) = name.strip_prefix(crate::claim::CLAIMS_PREFIX) {
+            return Some((Namespaces::CLAIMS, rest));
+        }
+        if let Some(rest) = name.strip_prefix(crate::claim::PROOF_PREFIX) {
+            return Some((Namespaces::PROOF, rest));
+        }
+        let (_remote, rest) = name.strip_prefix(WATCH_PREFIX)?.split_once('/')?;
+        Some((Namespaces::MIRROR_CLAIMS, rest.strip_prefix("claims/")?))
+    }
+
+    /// Whether every namespace of `other` is in this set.
+    pub fn contains(self, other: Namespaces) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// Whether `name` is a ref of one of these namespaces.
+    fn holds(self, name: &str) -> bool {
+        Namespaces::of(name).is_some_and(|(ns, _)| self.contains(ns))
+    }
+
+    fn without(self, other: Namespaces) -> Namespaces {
+        Namespaces(self.0 & !other.0)
+    }
+}
+
+impl std::ops::BitOr for Namespaces {
+    type Output = Namespaces;
+    fn bitor(self, other: Namespaces) -> Namespaces {
+        Namespaces(self.0 | other.0)
+    }
+}
+
 /// A ref of the `refs/ank/*` namespace and the object it points at.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AnkRef {
@@ -681,7 +752,8 @@ pub fn ank_refs(cwd: &Path) -> Result<Vec<AnkRef>> {
 /// keys, and a stale claim record is not a thing to be clever about.
 type Refs = OnceLock<Mutex<HashMap<PathBuf, Vec<AnkRef>>>>;
 static REFS: Refs = OnceLock::new();
-type Records = OnceLock<Mutex<HashMap<PathBuf, HashMap<String, String>>>>;
+/// The records read so far, and the namespaces whose refs they cover in full.
+type Records = OnceLock<Mutex<HashMap<PathBuf, (Namespaces, HashMap<String, String>)>>>;
 static RECORDS: Records = OnceLock::new();
 
 /// The commands after which the plane read above is no longer what the
@@ -723,20 +795,43 @@ fn forget() {
 ///
 /// A ref whose object git will not hand back is **absent from the map**, which
 /// is what every caller already means by a record it could not read.
-pub fn ank_records(cwd: &Path) -> Result<(Vec<AnkRef>, HashMap<String, String>)> {
+///
+/// **Only the records of `wanted` are read, and only they are returned**
+/// (TASK-dd3ab6cb2dcc). The enumeration stays whole, so every reader still sees
+/// the one list of refs; the batch is fed the objects of the namespaces asked
+/// for. The memo remembers which namespaces it has covered and a wider request
+/// batches the difference alone, so a verb whose widest question comes first
+/// -- `status`, claims and mirror before `claim::on_task` asks for claims --
+/// still starts one `cat-file`.
+pub fn ank_records(
+    cwd: &Path,
+    wanted: Namespaces,
+) -> Result<(Vec<AnkRef>, HashMap<String, String>)> {
     let refs = ank_refs(cwd)?;
     let memo = RECORDS.get_or_init(|| Mutex::new(HashMap::new()));
-    if let Ok(seen) = memo.lock() {
-        if let Some(hit) = seen.get(cwd) {
-            return Ok((refs, hit.clone()));
+    let (covered, mut records) = memo
+        .lock()
+        .ok()
+        .and_then(|seen| seen.get(cwd).cloned())
+        .unwrap_or((Namespaces::NONE, HashMap::new()));
+    let missing = wanted.without(covered);
+    if missing != Namespaces::NONE {
+        let objects: Vec<String> = refs
+            .iter()
+            .filter(|r| missing.holds(&r.name) && !records.contains_key(&r.object))
+            .map(|r| r.object.clone())
+            .collect();
+        records.extend(cat_file_batch(cwd, &objects).unwrap_or_default());
+        if let Ok(mut seen) = memo.lock() {
+            seen.insert(cwd.to_path_buf(), (covered | wanted, records.clone()));
         }
     }
-    let objects: Vec<String> = refs.iter().map(|r| r.object.clone()).collect();
-    let records = cat_file_batch(cwd, &objects).unwrap_or_default();
-    if let Ok(mut seen) = memo.lock() {
-        seen.insert(cwd.to_path_buf(), records.clone());
-    }
-    Ok((refs, records))
+    let asked: HashMap<String, String> = refs
+        .iter()
+        .filter(|r| wanted.holds(&r.name))
+        .filter_map(|r| Some((r.object.clone(), records.get(&r.object)?.clone())))
+        .collect();
+    Ok((refs, asked))
 }
 
 /// Reads a symbolic ref in full form. `symbolic-ref --short` is avoided on
@@ -2324,6 +2419,72 @@ mod tests {
         // A ref outside the namespace is not swept up with them.
         run(&t.0, &["update-ref", "refs/heads/other", &sha]).unwrap();
         assert_eq!(ank_refs(&t.0).unwrap().len(), 1);
+    }
+
+    /// The batch is fed the namespaces asked for and nothing else
+    /// (TASK-dd3ab6cb2dcc): a proof record is not moved, let alone parsed, for a
+    /// caller that only asks who holds what -- and the memo, having served that
+    /// caller, still answers a wider question correctly.
+    #[test]
+    fn ank_records_reads_only_the_namespaces_asked_for() {
+        let t = Temp::new_repo();
+        let blob = |text: &str| {
+            let out = output_with_stdin(&t.0, &["hash-object", "-w", "--stdin"], text.as_bytes())
+                .unwrap();
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        let claim = blob("state: claim\n");
+        let proof = blob("state: proof\n");
+        let mirrored = blob("state: mirrored\n");
+        run(
+            &t.0,
+            &["update-ref", "refs/ank/claims/TASK-000000000001", &claim],
+        )
+        .unwrap();
+        run(
+            &t.0,
+            &["update-ref", "refs/ank/proof/TASK-000000000001", &proof],
+        )
+        .unwrap();
+        run(
+            &t.0,
+            &[
+                "update-ref",
+                "refs/ank/watch/origin/claims/TASK-000000000002",
+                &mirrored,
+            ],
+        )
+        .unwrap();
+
+        let (refs, records) = ank_records(&t.0, Namespaces::CLAIMS).unwrap();
+        assert_eq!(
+            refs.len(),
+            3,
+            "the enumeration is the whole namespace: {refs:?}"
+        );
+        assert!(records.contains_key(&claim), "{records:?}");
+        assert!(
+            !records.contains_key(&proof),
+            "a proof object is not read for the claims namespace: {records:?}"
+        );
+        assert!(!records.contains_key(&mirrored), "{records:?}");
+
+        let (_, records) = ank_records(&t.0, Namespaces::CLAIMS | Namespaces::PROOF).unwrap();
+        assert!(records.contains_key(&claim), "{records:?}");
+        assert!(
+            records.contains_key(&proof),
+            "a proof object is read once the proof namespace is asked for: {records:?}"
+        );
+        assert!(!records.contains_key(&mirrored), "{records:?}");
+
+        // Narrower again after wider: what the memo already holds is not handed
+        // to a caller that did not ask for it.
+        let (_, records) = ank_records(&t.0, Namespaces::CLAIMS).unwrap();
+        assert!(!records.contains_key(&proof), "{records:?}");
+
+        let (_, records) = ank_records(&t.0, Namespaces::MIRROR_CLAIMS).unwrap();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert!(records.contains_key(&mirrored), "{records:?}");
     }
 
     #[test]
