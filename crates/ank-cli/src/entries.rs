@@ -113,7 +113,9 @@ pub fn about(store: &Store, index: &Index, subject: &Entity) -> Result<Vec<Entry
         // the title and the body together, and the index deliberately holds no
         // body (§6). A page prints at most what the budget affords, and that is
         // what bounds the number of files this opens.
-        let Entity::Log(entry) = store.load(&row.id)?.entity else {
+        // With the archive, because the index answered archived rows only if
+        // it was asked for them, and a row it answered is a file to open.
+        let Entity::Log(entry) = store.load_with_archive(&row.id)?.entity else {
             // The row says `log` and the file says otherwise, which is a corpus
             // that disagrees with itself. `check` is what reports it; here it
             // is one entry that does not render, never a read that fails.

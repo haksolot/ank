@@ -914,6 +914,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--status"),
             flag("--scope"),
             switch("--free"),
+            switch("--all"),
         ],
         refuses: &[
             refuses(ExitCode::Generic, "--type names a kind the registry does not declare"),
@@ -923,6 +924,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--status filters on the stored status; a claimed row still displays as [claimed:who]",
             "a listing counts the open rows a claim would refuse, and names --free",
             "--free keeps the open tasks no live claim's scope overlaps, and says how many it hid",
+            "--all includes the entities in .ank/archive/entities/, each row marked archived; without it the archive is neither read nor listed",
         ],
         refuses_globals: &[],
         // `corpus` and `results[].created` are the second demonstration of what
@@ -932,7 +934,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // reason it is optional on `status` -- a tree with no history is the one
         // corpus that cannot be named, and `null` says so; `created` is not,
         // because every entity the index holds has one.
-        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str)]))])],
+        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool)]))])],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
