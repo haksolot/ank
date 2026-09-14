@@ -435,6 +435,18 @@ impl Store {
     /// two.
     pub const ENTITIES_DIR: &'static str = "entities";
 
+    /// The archive: a second fixed, flat directory in the format of
+    /// [`Store::ENTITIES_DIR`], one file per entity (ADR-306fdb75e265).
+    ///
+    /// **Read on demand and never by default.** Nothing that walks the corpus
+    /// walks it: [`Store::list_ids`], [`Store::resolve`], [`Store::load`] and
+    /// [`Store::read_path_of`] answer exactly what they answered before, so no
+    /// verb that writes can land on an archived entity by accident. The
+    /// `_with_archive` readers below are the door, and `show`, `log` and
+    /// `find --all` are the verbs that use it. `/`-separated, like every path
+    /// the index records.
+    pub const ARCHIVE_DIR: &'static str = "archive/entities";
+
     /// The directories of the **previous** layout, one per kind.
     ///
     /// This is a window, not a feature. It exists for the one release across
@@ -475,6 +487,96 @@ impl Store {
             }
         }
         canonical
+    }
+
+    /// Where an entity lives once archived, computed from the id with no
+    /// lookup.
+    pub fn archive_path_of(&self, id: &EntityId) -> PathBuf {
+        self.root.join(Self::ARCHIVE_DIR).join(format!("{id}.md"))
+    }
+
+    /// The identifiers the archive holds, read from the file names and never
+    /// from the files (ADR-306fdb75e265: an archived file is verified by digest
+    /// and never parsed). What a resolution that must know an archived entity
+    /// exists -- a reference, a supersession, the subject of an entry -- asks,
+    /// without paying for its content. Sorted, each once.
+    pub fn archived_ids(&self) -> Result<Vec<EntityId>> {
+        let mut ids = self.ids_in(&self.root.join(Self::ARCHIVE_DIR))?;
+        ids.sort_by_key(|id| id.to_string());
+        ids.dedup();
+        Ok(ids)
+    }
+
+    /// Prefix resolution over the hot corpus **and** the archive, for the verbs
+    /// that are asked for an archived entity by id (ADR-306fdb75e265). An id in
+    /// both is one entity; ambiguity is still an error listing its candidates.
+    pub fn resolve_with_archive(&self, prefix: &str) -> Result<EntityId> {
+        let mut ids = self.list_ids()?;
+        ids.extend(self.archived_ids()?);
+        ids.sort_by_key(|id| id.to_string());
+        ids.dedup();
+        match resolve_prefix(prefix, ids.iter()) {
+            Ok(id) => Ok(id.clone()),
+            Err(ank_core::Error::AmbiguousPrefix { prefix, candidates }) => {
+                Err(StoreError::AmbiguousPrefix { prefix, candidates })
+            }
+            Err(ank_core::Error::PrefixTooShort(p)) => Err(StoreError::PrefixTooShort(p)),
+            Err(_) => Err(StoreError::NotFound(prefix.to_string())),
+        }
+    }
+
+    /// Loads an entity from the hot corpus, or from the archive when the hot
+    /// corpus does not hold it. **Hot wins**, by the rule [`Store::read_path_of`]
+    /// already applies between layouts: a copy left in the archive beside a hot
+    /// one is not a second version of the entity.
+    pub fn load_with_archive(&self, id: &EntityId) -> Result<Loaded> {
+        match self.load(id) {
+            Err(StoreError::NotFound(_)) => match self.load_path(&self.archive_path_of(id)) {
+                Err(StoreError::NotFound(_)) => Err(StoreError::NotFound(id.to_string())),
+                other => other,
+            },
+            other => other,
+        }
+    }
+
+    pub fn load_prefix_with_archive(&self, prefix: &str) -> Result<Loaded> {
+        let id = self.resolve_with_archive(prefix)?;
+        self.load_with_archive(&id)
+    }
+
+    /// Moves an entity from where it is read hot to the archive, and answers
+    /// the path it now has: **the seam `ank archive` is built on**
+    /// (TASK-97fd1992567a). One rename, so the file is in exactly one root
+    /// before and after, and the bytes do not change -- an archived file is
+    /// verified by the digest it arrived with (ADR-306fdb75e265). Refused when
+    /// the hot corpus does not hold the id, and when the archive already does:
+    /// deciding which of two copies is the entity is not a move's to make.
+    pub fn move_to_archive(&self, id: &EntityId) -> Result<PathBuf> {
+        let from = self.read_path_of(id);
+        if !from.exists() {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        let to = self.archive_path_of(id);
+        if to.exists() {
+            return Err(StoreError::Io {
+                path: to,
+                source: std::io::Error::new(
+                    ErrorKind::AlreadyExists,
+                    "the archive already holds this entity",
+                ),
+            });
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent).map_err(|source| StoreError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        fs::rename(&from, &to).map_err(|source| StoreError::Io {
+            path: from.clone(),
+            source,
+        })?;
+        Ok(to)
     }
 
     /// The previous layout's subdirectory for a kind.
@@ -1279,5 +1381,55 @@ mod tests {
         );
         assert!(!store.root().join(Store::LOG_DIR).exists());
         assert_ne!(before, fs::read_to_string(store.path_of(e.id())).unwrap());
+    }
+
+    /// The archive is a root only for the readers that ask for it: a moved
+    /// entity is gone from `resolve`, `load` and `list_ids`, reached whole by
+    /// the `_with_archive` readers, and the move changes no byte of it
+    /// (ADR-306fdb75e265, TASK-da978b214eca).
+    #[test]
+    fn an_archived_entity_is_reached_only_by_the_readers_that_ask() {
+        let (_root, store, e) = seeded();
+        let before = fs::read(store.path_of(e.id())).unwrap();
+        let moved = store.move_to_archive(e.id()).unwrap();
+        assert_eq!(moved, store.archive_path_of(e.id()));
+        assert_eq!(fs::read(&moved).unwrap(), before, "a move rewrites nothing");
+        assert!(!store.path_of(e.id()).exists());
+
+        assert!(store.list_ids().unwrap().is_empty());
+        assert_eq!(store.archived_ids().unwrap(), vec![e.id().clone()]);
+        assert!(matches!(store.load(e.id()), Err(StoreError::NotFound(_))));
+        assert!(matches!(
+            store.resolve("0000"),
+            Err(StoreError::NotFound(_))
+        ));
+
+        assert_eq!(store.resolve_with_archive("0000").unwrap(), *e.id());
+        let loaded = store.load_prefix_with_archive("0000").unwrap();
+        assert_eq!(loaded.entity, e);
+        assert_eq!(loaded.path, moved);
+    }
+
+    /// Hot wins over a copy left in the archive, and a move is refused rather
+    /// than choosing between two copies or moving what the hot corpus does not
+    /// hold.
+    #[test]
+    fn hot_wins_and_a_move_refuses_what_it_cannot_decide() {
+        let (_root, store, e) = seeded();
+        let moved = store.move_to_archive(e.id()).unwrap();
+        let hot = task("000000000001", "Written again, hot");
+        store.create(&hot).unwrap();
+        assert_eq!(store.load_with_archive(e.id()).unwrap().entity, hot);
+        assert_eq!(store.resolve_with_archive("0000").unwrap(), *e.id());
+
+        let err = store.move_to_archive(e.id()).unwrap_err();
+        assert!(matches!(err, StoreError::Io { .. }), "{err}");
+        assert!(store.path_of(e.id()).exists() && moved.exists());
+
+        let absent = EntityId::parse("TASK-00000000abcd").unwrap();
+        assert!(matches!(
+            store.move_to_archive(&absent),
+            Err(StoreError::NotFound(_))
+        ));
     }
 }

@@ -388,6 +388,35 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         }
     }
 
+    // **The archive is verified by digest and never parsed** (ADR-306fdb75e265).
+    // An archived entity is immutable, so the whole of its verification is that
+    // its bytes still hash to the digest the index holds for it -- the hash it
+    // arrived with, which the index never replaces -- and bytes that do not are
+    // a fault. Hashed here in full and not through the stat, because `check`
+    // takes no shortcut (ADR-1556aaffe0c5). A corpus with no archive opens no
+    // index for it: the question does not arise.
+    if repo.ank.join(Store::ARCHIVE_DIR).is_dir() {
+        let index = Index::open_with_archive(&repo.ank)?;
+        for (rel, digest) in index.archived_digests()? {
+            let Ok(bytes) = std::fs::read(repo.ank.join(&rel)) else {
+                report
+                    .findings
+                    .push(Finding::fault(&rel, "unreadable archived file"));
+                continue;
+            };
+            if crate::index::hash_bytes(&bytes) != digest {
+                report.findings.push(Finding::fault(
+                    &rel,
+                    format!(
+                        "archived file changed: its bytes no longer match the digest the \
+                         index holds, and an archived entity is never edited \
+                         (git checkout -- .ank/{rel} restores it)"
+                    ),
+                ));
+            }
+        }
+    }
+
     // A corpus still in the previous layout is a **signal and never a fault**:
     // it parses, it round-trips, and it answers every verb. Exiting 8 over a
     // file location would redden a pipeline for something no reader suffers
@@ -6955,12 +6984,14 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         CliError::new(ExitCode::Generic, "show expects an id").with_hint("ank show <id>")
     })?;
     let store = Store::new(&repo.ank);
-    let loaded = store.load_prefix(prefix)?;
+    // Into the archive too, and the index with it: `show` answers an archived
+    // entity whole, and its entries wherever they are (ADR-306fdb75e265).
+    let loaded = store.load_prefix_with_archive(prefix)?;
     let text = serialize_entity(&loaded.entity);
     // One index for the verb: the edges of a task and the entries of any entity
     // are two questions to it, and opening it per question walked the corpus
     // twice (TASK-8654f0c81393).
-    let index = Index::open(&repo.ank)?;
+    let index = Index::open_with_archive(&repo.ank)?;
     // An ADR has no `blocked_by` to have two directions of, so it costs nothing.
     let edges = match &loaded.entity {
         Entity::Task(t) => Some(edges_of(repo, &index, t)?),

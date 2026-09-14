@@ -5,7 +5,7 @@ slug: the-store-and-the-index-read-ank-archive-and-a-v
 title: The store and the index read .ank/archive/, and a verb reaches it only when asked
 created: 2026-09-14T06:40:13Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/store.rs
   - crates/ank-cli/src/index.rs
@@ -22,7 +22,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 The decision is ADR-306fdb75e265; this task is the reading half. The store already

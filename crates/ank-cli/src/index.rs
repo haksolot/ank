@@ -36,9 +36,10 @@ use std::path::{Path, PathBuf};
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
-/// `signatures`, to 6 by `verdict`, to 7 by `entities.rid` and to 8 by the stat
-/// of `files`: nothing migrated any of those times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 8;
+/// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
+/// `files` and to 9 by `entities.archived`: nothing migrated any of those
+/// times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 9;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -131,7 +132,8 @@ CREATE TABLE entities (
     blocked_by TEXT NOT NULL,
     about      TEXT NOT NULL,
     seq        INTEGER NOT NULL,
-    version    INTEGER NOT NULL
+    version    INTEGER NOT NULL,
+    archived   INTEGER NOT NULL
 );
 CREATE INDEX entities_by_path ON entities (path);
 CREATE INDEX entities_by_kind ON entities (kind, status);
@@ -313,6 +315,10 @@ pub struct Row {
     /// on every other kind, where it means nothing and is never read.
     pub seq: u64,
     pub version: u64,
+    /// Whether the row was read from `.ank/archive/entities/`
+    /// (ADR-306fdb75e265). Only an index opened with
+    /// [`Index::open_with_archive`] ever returns one that is.
+    pub archived: bool,
 }
 
 /// What a refresh actually did. Returned rather than logged: the numbers are
@@ -363,6 +369,12 @@ pub struct Index {
     /// has no filesystem clock to record its last write by and so never lets a
     /// stat vouch for a file (ADR-1556aaffe0c5).
     db: Option<PathBuf>,
+    /// Whether this index was asked for the archive (ADR-306fdb75e265): its
+    /// refresh walks `.ank/archive/entities/` and its queries answer archived
+    /// rows. Without it the archive is neither walked nor answered, and the
+    /// archived rows an earlier asking open left in the file are kept and
+    /// never shown.
+    archive: bool,
 }
 
 impl Index {
@@ -370,7 +382,20 @@ impl Index {
     /// date before returning. There is no way to obtain a stale one: that is
     /// the point of doing it here rather than in a command.
     pub fn open(ank: &Path) -> Result<Index> {
+        Self::open_as(ank, false)
+    }
+
+    /// The index with the archive: walked by the refresh, answered by every
+    /// query (ADR-306fdb75e265). What `show`, `log`, `find --all` and `check`
+    /// open, and nothing else: a verb that walks the corpus pays nothing for
+    /// what was moved out of it.
+    pub fn open_with_archive(ank: &Path) -> Result<Index> {
+        Self::open_as(ank, true)
+    }
+
+    fn open_as(ank: &Path, archive: bool) -> Result<Index> {
         let mut index = Self::open_raw(ank)?;
+        index.archive = archive;
         if index.refresh().is_ok() {
             return Ok(index);
         }
@@ -381,6 +406,7 @@ impl Index {
         drop(index);
         let _ = std::fs::remove_file(ank.join(DB_FILE));
         let mut index = Self::open_raw(ank)?;
+        index.archive = archive;
         index.refresh()?;
         Ok(index)
     }
@@ -395,6 +421,7 @@ impl Index {
             ank: ank.to_path_buf(),
             written_steps: 0,
             db: None,
+            archive: false,
         };
         index.install_schema()?;
         index.refresh()?;
@@ -442,6 +469,7 @@ impl Index {
             ank: ank.to_path_buf(),
             written_steps: 0,
             db: Some(path.to_path_buf()),
+            archive: false,
         };
         index.ensure_schema()?;
         Ok(index)
@@ -546,7 +574,13 @@ impl Index {
         // pays for this walk; on the steady state of a corpus being read, every
         // file matches and not one of them is parsed, decoded or kept
         // (ADR-f3d1dea65d84 — a verb pays for the answer it gives).
-        let known = self.known_files()?;
+        let mut known = self.known_files()?;
+        // An index not asked for the archive does not walk it, so it has
+        // nothing to say about the rows it holds for it: they are neither
+        // compared nor removed, and an asking open finds them as they were.
+        if !self.archive {
+            known.retain(|rel, _| !is_archived(rel));
+        }
         let last_write = self.last_write();
         let on_disk = self.scan(&known, last_write)?;
         let mut done = Refreshed {
@@ -572,6 +606,15 @@ impl Index {
                 if row.map(|k| &k.stat) != Some(&file.stat) {
                     writes.push(Write::Restat(rel.clone(), file.stat));
                 }
+                continue;
+            }
+            // **An archived file is immutable** (ADR-306fdb75e265): the hash
+            // the index holds is the digest it arrived with, and bytes that no
+            // longer match it are a fault `check` reports, not an edit to take
+            // in. So the row is left exactly as it is, content and stat, and
+            // the file is hashed again on every asking open until it is put
+            // back.
+            if row.is_some() && is_archived(rel) {
                 continue;
             }
             // The same predicate the scan applied, so the text is here by
@@ -774,11 +817,16 @@ impl Index {
         let mut seen: BTreeSet<String> = BTreeSet::new();
         // Canonical first, so that `seen` makes the legacy pass skip what the
         // flat layout already holds rather than the other way round.
-        let dirs = [
+        let mut dirs = vec![
             (None, Store::ENTITIES_DIR),
             (Some(EntityKind::Task), "tasks"),
             (Some(EntityKind::Adr), "adr"),
         ];
+        // Last, so that an entity with a hot copy is read hot and its archived
+        // copy is skipped by `seen`, the rule the store applies.
+        if self.archive {
+            dirs.push((None, Store::ARCHIVE_DIR));
+        }
         for (kind_of_dir, dir) in dirs {
             let full = self.ank.join(dir);
             let entries = match std::fs::read_dir(&full) {
@@ -861,7 +909,10 @@ impl Index {
     pub fn get(&self, id: &EntityId) -> Result<Option<Row>> {
         let mut stmt = self
             .conn
-            .prepare(&format!("{SELECT_ROW} WHERE id = ?1"))
+            .prepare(&format!(
+                "{SELECT_ROW} WHERE {} AND id = ?1",
+                self.visible()
+            ))
             .map_err(|e| self.err(e))?;
         stmt.query_row(params![id.to_string()], read_row)
             .optional()
@@ -1008,19 +1059,28 @@ impl Index {
     }
 
     pub fn all(&self) -> Result<Vec<Row>> {
-        self.query(&format!("{SELECT_ROW} ORDER BY id"), params![])
+        self.query(
+            &format!("{SELECT_ROW} WHERE {} ORDER BY id", self.visible()),
+            params![],
+        )
     }
 
     pub fn by_kind(&self, kind: EntityKind) -> Result<Vec<Row>> {
         self.query(
-            &format!("{SELECT_ROW} WHERE kind = ?1 ORDER BY id"),
+            &format!(
+                "{SELECT_ROW} WHERE {} AND kind = ?1 ORDER BY id",
+                self.visible()
+            ),
             params![kind.as_str()],
         )
     }
 
     pub fn by_status(&self, kind: EntityKind, status: &str) -> Result<Vec<Row>> {
         self.query(
-            &format!("{SELECT_ROW} WHERE kind = ?1 AND status = ?2 ORDER BY id"),
+            &format!(
+                "{SELECT_ROW} WHERE {} AND kind = ?1 AND status = ?2 ORDER BY id",
+                self.visible()
+            ),
             params![kind.as_str(), status],
         )
     }
@@ -1040,7 +1100,10 @@ impl Index {
     /// direction the cap of §5 consumes; `log` reverses it.
     pub fn entries_about(&self, about: &EntityId) -> Result<Vec<Row>> {
         self.query(
-            &format!("{SELECT_ROW} WHERE about = ?1 ORDER BY created, seq, id"),
+            &format!(
+                "{SELECT_ROW} WHERE {} AND about = ?1 ORDER BY created, seq, id",
+                self.visible()
+            ),
             params![about.to_string()],
         )
     }
@@ -1061,15 +1124,48 @@ impl Index {
             return Ok(Vec::new());
         };
         let [w_id, w_title, w_slug, w_criteria] = FTS_WEIGHTS;
+        let visible = self.visible();
         // bm25 returns a negative score, better matches being more negative, so
         // ascending is best-first. Sorting on the expression rather than on an
         // alias keeps this one statement portable across SQLite versions.
         let sql = format!(
-            "{SELECT_ROW} WHERE rid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1) \
+            "{SELECT_ROW} WHERE {visible} AND \
+             rid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1) \
              ORDER BY (SELECT bm25(entities_fts, ?2, ?3, ?4, ?5) FROM entities_fts \
                        WHERE entities_fts MATCH ?1 AND entities_fts.rowid = entities.rid), id"
         );
         self.query(&sql, params![expr, w_id, w_title, w_slug, w_criteria])
+    }
+
+    /// The filter every row query carries: archived rows are answered only by
+    /// an index asked for the archive.
+    fn visible(&self) -> &'static str {
+        if self.archive {
+            "1 = 1"
+        } else {
+            "archived = 0"
+        }
+    }
+
+    /// Every archived file the index holds a digest for, as its path relative
+    /// to `.ank/` and the content hash it arrived with, ordered by path
+    /// (ADR-306fdb75e265). What `check` verifies an archived file against, and
+    /// empty unless this index was asked for the archive.
+    pub fn archived_digests(&self) -> Result<Vec<(String, String)>> {
+        if !self.archive {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, hash FROM files WHERE path LIKE ?1 ORDER BY path")
+            .map_err(|e| self.err(e))?;
+        let rows = stmt
+            .query_map(params![format!("{}/%", Store::ARCHIVE_DIR)], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .map_err(|e| self.err(e))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| self.err(e))
     }
 
     fn query(&self, sql: &str, args: impl rusqlite::Params) -> Result<Vec<Row>> {
@@ -1277,7 +1373,13 @@ fn inode_of(_path: &Path, _md: &std::fs::Metadata) -> Option<i64> {
 }
 
 const SELECT_ROW: &str = "SELECT id, kind, path, title, status, created, scope, blocked_by, \
-                          about, seq, version FROM entities";
+                          about, seq, version, archived FROM entities";
+
+/// Whether a path the index records is in the archive.
+fn is_archived(rel: &str) -> bool {
+    rel.strip_prefix(Store::ARCHIVE_DIR)
+        .is_some_and(|rest| rest.starts_with('/'))
+}
 
 /// Reads one row, keeping the two failure kinds apart: a SQLite error is
 /// rusqlite's, an identifier the index cannot parse back is ours, and the outer
@@ -1290,6 +1392,7 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
     let about: String = r.get(8)?;
     let seq: i64 = r.get(9)?;
     let version: i64 = r.get(10)?;
+    let archived: i64 = r.get(11)?;
     let built = (|| -> Result<Row> {
         let bad = |what: &str, v: &str| {
             CliError::new(ExitCode::Generic, format!("index: bad {what} '{v}'"))
@@ -1316,6 +1419,7 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
             about: EntityId::parse(&about).ok(),
             seq: seq.max(0) as u64,
             version: version.max(0) as u64,
+            archived: archived != 0,
         })
     })();
     Ok(built)
@@ -1502,13 +1606,15 @@ fn upsert(
     // rowid its searchable twin is written under.
     let rid = w.one(
         "INSERT INTO entities \
-           (id, kind, path, title, status, created, scope, blocked_by, about, seq, version) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
+           (id, kind, path, title, status, created, scope, blocked_by, about, seq, version, \
+            archived) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12) \
          ON CONFLICT(id) DO UPDATE SET \
            kind = excluded.kind, path = excluded.path, title = excluded.title, \
            status = excluded.status, created = excluded.created, \
            scope = excluded.scope, blocked_by = excluded.blocked_by, \
-           about = excluded.about, seq = excluded.seq, version = excluded.version \
+           about = excluded.about, seq = excluded.seq, version = excluded.version, \
+           archived = excluded.archived \
          RETURNING rid",
         params![
             id,
@@ -1522,6 +1628,7 @@ fn upsert(
             about,
             seq as i64,
             version as i64,
+            is_archived(rel),
         ],
     )?;
     w.run(
@@ -2516,5 +2623,97 @@ mod tests {
             (2, 0),
             "{unavailable:?}"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // The archive (TASK-da978b214eca, ADR-306fdb75e265)
+    // -----------------------------------------------------------------------
+
+    fn archive(t: &Temp, id: &str) -> PathBuf {
+        let id = EntityId::parse(id).unwrap();
+        Store::new(&t.0).move_to_archive(&id).unwrap()
+    }
+
+    /// An index not asked for the archive neither walks nor answers it, and
+    /// leaves the rows an asking open wrote exactly as they were; an index
+    /// asked for it answers them, marked.
+    #[test]
+    fn the_archive_is_walked_and_answered_only_when_asked() {
+        let t = seeded();
+        archive(&t, "TASK-000000000002");
+
+        let asked = Index::open_with_archive(&t.0).unwrap();
+        let rows = asked.all().unwrap();
+        assert_eq!(rows.len(), 3);
+        let cold = rows
+            .iter()
+            .find(|r| r.id.to_string() == "TASK-000000000002")
+            .unwrap();
+        assert!(cold.archived);
+        assert_eq!(cold.path, "archive/entities/TASK-000000000002.md");
+        assert_eq!(asked.search("second").unwrap().len(), 1);
+        assert_eq!(asked.archived_digests().unwrap().len(), 1);
+        drop(asked);
+
+        let mut walking = Index::open(&t.0).unwrap();
+        assert_eq!(walking.all().unwrap().len(), 2);
+        assert!(walking.all().unwrap().iter().all(|r| !r.archived));
+        assert!(walking.search("second").unwrap().is_empty());
+        assert!(walking
+            .get(&EntityId::parse("TASK-000000000002").unwrap())
+            .unwrap()
+            .is_none());
+        let again = walking.refresh().unwrap();
+        assert_eq!((again.removed, again.indexed), (0, 0), "{again:?}");
+        drop(walking);
+
+        let asked = Index::open_with_archive(&t.0).unwrap();
+        assert_eq!(asked.all().unwrap().len(), 3, "the archived row survived");
+    }
+
+    /// **An archived file's digest is the one it arrived with.** Bytes changed
+    /// under it are not taken in: the row keeps its hash and its content, which
+    /// is what `check` verifies the file against.
+    #[test]
+    fn an_archived_row_keeps_the_digest_it_arrived_with() {
+        let t = seeded();
+        let file = archive(&t, "TASK-000000000002");
+        let arrived = hash_bytes(&std::fs::read(&file).unwrap());
+        Index::open_with_archive(&t.0).unwrap();
+
+        std::fs::write(&file, "not an entity any more\n").unwrap();
+        let mut asked = Index::open_with_archive(&t.0).unwrap();
+        let digests = asked.archived_digests().unwrap();
+        assert_eq!(
+            digests,
+            vec![("archive/entities/TASK-000000000002.md".to_string(), arrived)]
+        );
+        let row = asked
+            .get(&EntityId::parse("TASK-000000000002").unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.title, "Second");
+        let again = asked.refresh().unwrap();
+        assert_eq!((again.indexed, again.unreadable), (0, 0), "{again:?}");
+    }
+
+    /// An entity with a hot copy and an archived one is one row, read hot.
+    #[test]
+    fn a_hot_copy_wins_over_an_archived_one() {
+        let t = seeded();
+        let file = archive(&t, "TASK-000000000002");
+        t.write(&task("000000000002", "Second, hot again", TaskStatus::Open));
+        assert!(file.exists());
+
+        let asked = Index::open_with_archive(&t.0).unwrap();
+        let rows: Vec<Row> = asked
+            .all()
+            .unwrap()
+            .into_iter()
+            .filter(|r| r.id.to_string() == "TASK-000000000002")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert!(!rows[0].archived);
+        assert_eq!(rows[0].title, "Second, hot again");
     }
 }

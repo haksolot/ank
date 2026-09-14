@@ -1216,7 +1216,14 @@ pub fn find(
         .first()
         .map(|q| q.to_ascii_lowercase())
         .unwrap_or_default();
-    let index = Index::open(&repo.ank)?;
+    // `--all` is the one flag that reaches the archive (ADR-306fdb75e265): a
+    // listing answers a program whole, and the archive is part of the whole
+    // when asked for. Without it the archive is neither walked nor listed.
+    let index = if inv.has("--all") {
+        Index::open_with_archive(&repo.ank)?
+    } else {
+        Index::open(&repo.ank)?
+    };
 
     // Resolved through the registry rather than against a list written here:
     // a kind the registry declares and this match forgot is a kind `find`
@@ -1341,6 +1348,10 @@ pub fn find(
                     // selects it and `Row` already carries it, so this costs
                     // the bytes and not a query.
                     .str("created", &r.created)
+                    // Additive, like `state` and `created` before it: false on
+                    // every row a listing without `--all` can return, and true
+                    // on a row `--all` read from the archive (ADR-306fdb75e265).
+                    .bool("archived", r.archived)
                     .finish()
             })
             .collect();
@@ -1412,14 +1423,15 @@ pub fn find(
             .unwrap_or_else(|| r.id.to_string());
         let _ = writeln!(
             out,
-            "{}{}  {} {}",
+            "{}{}  {} {}{}",
             marker_of(&held, &r.id),
             style.id(&short),
             style.status(&crate::context::marker_for(
                 &r.status,
                 crate::context::coordination_of(&coord, &r.id)
             )),
-            r.title
+            r.title,
+            if r.archived { "  (archived)" } else { "" }
         );
     }
     if total > shown {
@@ -1873,7 +1885,10 @@ pub fn log(
         return log_method(inv, repo, cfg, identity, &store, raw, out);
     }
     match inv.positionals.as_slice() {
-        [one] => match store.resolve(one) {
+        // Resolved into the archive too: `log <id>` is one of the three readers
+        // an archived entity answers to (ADR-306fdb75e265), and an id that
+        // resolved nowhere would otherwise be written as a message.
+        [one] => match store.resolve_with_archive(one) {
             Ok(id) => log_read(inv, repo, cfg, &store, &id, out),
             Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
         },
@@ -1922,11 +1937,11 @@ fn log_read(
     id: &EntityId,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
-    let loaded = store.load(id)?;
+    let loaded = store.load_with_archive(id)?;
     let title = loaded.entity.title().to_string();
-    // The entries of the corpus, and the previous log directory only where a
-    // corpus has not been migrated yet (§3).
-    let all = entries::about(store, &Index::open(&repo.ank)?, &loaded.entity)?;
+    // The entries of the corpus, archived ones included, and the previous log
+    // directory only where a corpus has not been migrated yet (§3).
+    let all = entries::about(store, &Index::open_with_archive(&repo.ank)?, &loaded.entity)?;
     // This verb *is* the work trace: it is what an agent reads before repeating
     // what a previous holder already tried (ADR-52bb0da2023a). The machinery is
     // listed under it, addressable like every other row, and it is charged no

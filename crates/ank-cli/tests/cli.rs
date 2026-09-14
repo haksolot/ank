@@ -13688,7 +13688,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 31] = [
+const NOT_A_PATH: [&str; 32] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13730,6 +13730,9 @@ const NOT_A_PATH: [&str; 31] = [
     // A switch: it rewrites the proof ref of the task named, and that address
     // is a ref (ADR-4b45f344344f).
     "--compact",
+    // A switch: it widens `find` to the archive and names no path
+    // (TASK-da978b214eca).
+    "--all",
     // Carries no value either: the remote it reads is `origin` by name, the
     // refs it asks for are the claims namespace, and neither comes off the
     // command line (ADR-47e2ac102f58).
@@ -24089,4 +24092,284 @@ fn weighing_the_corpus_costs_check_no_git_process() {
     }
     let heavier = starts(&r, "heavier");
     assert_eq!(over, heavier, "the weight grew with the corpus it weighs");
+}
+
+// ---------------------------------------------------------------------------
+// The archive, read on demand (TASK-da978b214eca, ADR-306fdb75e265)
+// ---------------------------------------------------------------------------
+
+/// Moves an entity file from `.ank/entities/` to `.ank/archive/entities/` by
+/// hand, which is what the criterion is phrased about and what `ank archive`
+/// will do for a reviewer to commit.
+fn archive_by_hand(r: &Repo, id: &str) -> PathBuf {
+    let dir = r.0.join(".ank/archive/entities");
+    std::fs::create_dir_all(&dir).unwrap();
+    let to = dir.join(format!("{id}.md"));
+    std::fs::rename(r.0.join(format!(".ank/entities/{id}.md")), &to).unwrap();
+    to
+}
+
+/// The ids of a `find --json` or `graph --json` document, in the order given.
+fn ids_in(json: &str) -> Vec<String> {
+    json.match_indices("\"id\":\"")
+        .map(|(i, m)| {
+            let rest = &json[i + m.len()..];
+            rest[..rest.find('"').unwrap()].to_string()
+        })
+        .collect()
+}
+
+/// **A file moved into the archive leaves every verb that walks the corpus,
+/// and is still answered by the three that are asked for it**, all through the
+/// binary (ADR-306fdb75e265).
+///
+/// Three files are moved: a task, an entry about that task, and an entry about
+/// a task that stays hot -- the last being the cold shape the decision names, a
+/// trace whose subject is still read.
+#[test]
+fn an_archived_entity_leaves_the_walking_verbs_and_answers_when_asked() {
+    const HOT: &str = "TASK-00000000a0a0";
+    const COLD: &str = "TASK-00000000c0c0";
+    const KEPT: &str = "LOG-00000000e001";
+    const TRACE: &str = "LOG-00000000e002";
+    const ORPHAN: &str = "LOG-00000000e003";
+    let r = Repo::new();
+    r.seed_task_titled(HOT, "A task that stays hot");
+    r.seed_task_titled(COLD, "A task moved to the archive");
+    r.seed_log_saying(KEPT, HOT, 0, "an entry kept hot");
+    r.seed_log_saying(TRACE, HOT, 1, "an archived entry about the hot task");
+    r.seed_log_saying(ORPHAN, COLD, 0, "an archived entry about the cold task");
+    let cold_text = std::fs::read_to_string(r.0.join(format!(".ank/entities/{COLD}.md"))).unwrap();
+    for id in [COLD, TRACE, ORPHAN] {
+        archive_by_hand(&r, id);
+    }
+
+    let find = r.ank("claude-code@ank", &["find", "--json"]);
+    assert_eq!(code(&find), 0, "{}", stderr(&find));
+    let listed = ids_in(&stdout(&find));
+    assert!(listed.contains(&HOT.to_string()), "{listed:?}");
+    for id in [COLD, TRACE, ORPHAN] {
+        assert!(
+            !listed.contains(&id.to_string()),
+            "find lists archived {id}: {listed:?}"
+        );
+    }
+
+    let graph = r.ank("claude-code@ank", &["graph", "--json"]);
+    assert_eq!(code(&graph), 0, "{}", stderr(&graph));
+    assert!(stdout(&graph).contains(HOT), "{}", stdout(&graph));
+    assert!(!stdout(&graph).contains(COLD), "{}", stdout(&graph));
+
+    let scope = r.ank("claude-code@ank", &["scope", "src"]);
+    assert_eq!(code(&scope), 0, "{}", stderr(&scope));
+    assert!(
+        stdout(&scope).contains("A task that stays hot"),
+        "{}",
+        stdout(&scope)
+    );
+    assert!(
+        !stdout(&scope).contains("A task moved to the archive"),
+        "{}",
+        stdout(&scope)
+    );
+
+    let context = r.ank("claude-code@ank", &["context", "--json"]);
+    assert_eq!(code(&context), 0, "{}", stderr(&context));
+    assert!(stdout(&context).contains(HOT), "{}", stdout(&context));
+    assert!(!stdout(&context).contains(COLD), "{}", stdout(&context));
+
+    let show = r.ank("claude-code@ank", &["show", COLD]);
+    assert_eq!(code(&show), 0, "{}", stderr(&show));
+    assert!(
+        stdout(&show).contains(cold_text.trim_end()),
+        "show does not answer the archived entity whole:\n{}",
+        stdout(&show)
+    );
+
+    let log = r.ank("claude-code@ank", &["log", HOT]);
+    assert_eq!(code(&log), 0, "{}", stderr(&log));
+    assert!(
+        stdout(&log).contains("an entry kept hot"),
+        "{}",
+        stdout(&log)
+    );
+    assert!(
+        stdout(&log).contains("an archived entry about the hot task"),
+        "log does not list the archived entry on its subject:\n{}",
+        stdout(&log)
+    );
+    let log = r.ank("claude-code@ank", &["log", COLD]);
+    assert_eq!(code(&log), 0, "{}", stderr(&log));
+    assert!(
+        stdout(&log).contains("an archived entry about the cold task"),
+        "{}",
+        stdout(&log)
+    );
+
+    let all = r.ank("claude-code@ank", &["find", "--all", "--json"]);
+    assert_eq!(code(&all), 0, "{}", stderr(&all));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&stdout(&all)).unwrap();
+    let rows = doc["results"].as_sequence().unwrap();
+    let archived = |id: &str| {
+        rows.iter()
+            .find(|row| row["id"].as_str() == Some(id))
+            .unwrap_or_else(|| panic!("find --all does not list {id}: {}", stdout(&all)))
+            ["archived"]
+            .as_bool()
+            .expect("archived is a boolean")
+    };
+    for id in [COLD, TRACE, ORPHAN] {
+        assert!(archived(id), "{id}");
+    }
+    for id in [HOT, KEPT] {
+        assert!(!archived(id), "{id}");
+    }
+    assert_eq!(doc["total"].as_u64(), Some(5), "{}", stdout(&all));
+
+    // Once an asking verb has indexed the archive, the rows it wrote are in
+    // the index, and the walking verbs still do not answer them.
+    let find = r.ank("claude-code@ank", &["find", "--json"]);
+    let listed = ids_in(&stdout(&find));
+    for id in [COLD, TRACE, ORPHAN] {
+        assert!(
+            !listed.contains(&id.to_string()),
+            "find answers archived {id} from the index: {listed:?}"
+        );
+    }
+    let find = r.ank("claude-code@ank", &["find", "archived", "--json"]);
+    assert!(
+        ids_in(&stdout(&find)).is_empty(),
+        "a search reaches the archive: {}",
+        stdout(&find)
+    );
+    for verb in [
+        &["graph", "--json"][..],
+        &["context", "--json"],
+        &["scope", "src"],
+    ] {
+        let out = r.ank("claude-code@ank", verb);
+        assert_eq!(code(&out), 0, "{verb:?}: {}", stderr(&out));
+        assert!(
+            !stdout(&out).contains(COLD) && !stdout(&out).contains("A task moved to the archive"),
+            "{verb:?} answers the archived task from the index: {}",
+            stdout(&out)
+        );
+    }
+}
+
+/// **A thousand archived files cost the walking verbs nothing, and the verb
+/// that asks for them hashes them once**, counted through the binary: the
+/// files a refresh hashed (`ANK_INDEX_REFRESHED`) and the git processes `graph`
+/// starts (`GIT_TRACE2_EVENT`, ADR-cc65f1388a71). Every file is dated two hours
+/// back, so that the second open's verdict does not depend on a clock tick.
+#[test]
+fn a_thousand_archived_files_are_hashed_once_and_cost_graph_no_git_process() {
+    const HOT: u64 = 5;
+    fn corpus(archived: u64) -> Repo {
+        let r = Repo::new();
+        for i in 0..HOT + archived {
+            let id = format!("TASK-0000000{i:05x}");
+            r.seed_task(&id, Some("A verifiable criterion."));
+            let path = if i < HOT {
+                r.0.join(format!(".ank/entities/{id}.md"))
+            } else {
+                archive_by_hand(&r, &id)
+            };
+            set_mtime(&path, two_hours_ago());
+        }
+        r
+    }
+    fn graph_starts(r: &Repo) -> usize {
+        let trace = r.0.join("trace.json");
+        let _ = std::fs::remove_file(&trace);
+        let out = ank_command()
+            .args(["graph", "--json", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", "claude-code@ank")
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        std::fs::read_to_string(&trace)
+            .unwrap_or_default()
+            .matches("\"event\":\"start\"")
+            .count()
+    }
+    let sum = |lines: &[BTreeMap<String, u64>]| hashed(lines).iter().sum::<u64>();
+
+    let r = corpus(1000);
+    let (out, cold) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(sum(&cold), HOT, "a walking verb read the archive: {cold:?}");
+    let (_, warm) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(sum(&warm), 0, "{warm:?}");
+
+    let (out, asked) = refreshes(&r, &["find", "--all", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("\"total\":1005,"),
+        "{:.200}",
+        stdout(&out)
+    );
+    assert_eq!(sum(&asked), 1000, "{asked:?}");
+    let (_, again) = refreshes(&r, &["find", "--all", "--json"]);
+    assert_eq!(sum(&again), 0, "the archive was hashed again: {again:?}");
+    let (_, walking) = refreshes(&r, &["graph", "--json"]);
+    assert_eq!(sum(&walking), 0, "{walking:?}");
+
+    let with = graph_starts(&r);
+    let without = graph_starts(&corpus(0));
+    assert_eq!(
+        with,
+        without,
+        "a thousand archived files cost graph {} more git process(es)",
+        with as i64 - without as i64
+    );
+}
+
+/// **`check` verifies an archived file by the digest the index holds, and never
+/// parses it** (ADR-306fdb75e265). An archived entity is immutable, so bytes
+/// that no longer match are a fault; and the bytes written here are not an
+/// entity at all, so a single finding saying they changed -- and no parse error
+/// -- is what shows that nothing read them as one.
+#[test]
+fn check_verifies_an_archived_file_by_digest_and_never_parses_it() {
+    const HOT: &str = "TASK-00000000a0a0";
+    const TRACE: &str = "LOG-00000000e002";
+    let r = Repo::new();
+    r.seed_task_titled(HOT, "A task that stays hot");
+    r.seed_log_saying(TRACE, HOT, 0, "an archived entry");
+    let archived = archive_by_hand(&r, TRACE);
+
+    let about = |findings: &[serde_yaml::Value]| -> Vec<String> {
+        findings
+            .iter()
+            .filter(|f| {
+                f["subject"].as_str().is_some_and(|s| s.contains(TRACE))
+                    || f["message"].as_str().is_some_and(|m| m.contains(TRACE))
+            })
+            .map(|f| {
+                format!(
+                    "{} {}",
+                    f["subject"].as_str().unwrap_or(""),
+                    f["message"].as_str().unwrap_or("")
+                )
+            })
+            .collect()
+    };
+    let (_, before) = check_findings(&r);
+    assert!(about(&before).is_empty(), "{:?}", about(&before));
+
+    std::fs::write(&archived, "not front matter, and not an entity any more\n").unwrap();
+    let (exit, after) = check_findings(&r);
+    let said = about(&after);
+    assert_eq!(exit, 8, "{said:?}");
+    assert_eq!(said.len(), 1, "one finding, and no parse error: {said:?}");
+    assert!(said[0].contains("no longer match the digest"), "{said:?}");
+    let fault = after
+        .iter()
+        .find(|f| f["subject"].as_str().is_some_and(|s| s.contains(TRACE)))
+        .unwrap();
+    assert_eq!(fault["level"].as_str(), Some("fault"), "{fault:?}");
 }
