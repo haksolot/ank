@@ -1,5 +1,5 @@
 //! `ank watch`: it keeps declared corpora warm, and that is the whole of it
-//! (ADR-24e21cb83793).
+//! (ADR-4b45f344344f).
 //!
 //! **It answers no verb.** There is no query surface here, no socket, no
 //! protocol and no subset of the CLI wearing a different name. A caller that
@@ -53,7 +53,7 @@
 //! ADR-621a7fd96ce1, held outside every repository. Nothing here walks a
 //! filesystem looking for a corpus, in any direction, under any flag.
 //!
-//! **It mirrors `refs/ank/*` and nothing else.** The one thing it writes into
+//! **It mirrors `refs/ank/claims/*` and nothing else.** The one thing it writes into
 //! somebody else's repository is a fetch into [`fetch::TRACKING`], a namespace
 //! no verb writes and every reader of the plane skips. No branch, no tag, no
 //! working tree, no index of git's, and no local `refs/ank/claims`: a
@@ -108,7 +108,7 @@ const DEFAULT_INTERVAL: Duration = Duration::from_millis(500);
 /// process and no search to get it wrong. There is deliberately no corpus here
 /// -- the corpora are what the reader declared in [`declare::WATCH_FILE`], and
 /// a watcher that took one from the directory it was started in would be
-/// discovering a corpus, which is the thing ADR-24e21cb83793 refuses first.
+/// discovering a corpus, which is the thing ADR-4b45f344344f refuses first.
 pub struct Address {
     /// The binary a warming runs. `std::env::current_exe()` of the process
     /// serving the verb -- see the note on [`warm`].
@@ -244,7 +244,7 @@ fn report(declared: &Declaration, out: &mut dyn Write) {
     // discovers from their forge's rate limit.
     let _ = writeln!(
         out,
-        "mirroring {}* every {}s",
+        "mirroring {}claims/* every {}s",
         fetch::TRACKING,
         declared.fetch.as_secs()
     );
@@ -284,7 +284,7 @@ fn identity_of(root: &Path) -> Option<String> {
 /// exactly as long as they were not editing -- which is most of the time, and
 /// all of the time that matters after a `git checkout`. That pass is a warming
 /// and not a change, so it says so: an event states what changed
-/// (ADR-24e21cb83793), and a first sighting is not one.
+/// (ADR-4b45f344344f), and a first sighting is not one.
 ///
 /// **Two kinds of change, because there are two things to see.** The files
 /// under `.ank/` moving is one; the mirror of somebody else's `refs/ank/*`
@@ -493,7 +493,7 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("watching 1 corpus, 2 checkouts"), "{text}");
         assert!(
-            text.contains("mirroring refs/ank/watch/origin/* every 60s"),
+            text.contains("mirroring refs/ank/watch/origin/claims/* every 60s"),
             "{text}"
         );
     }

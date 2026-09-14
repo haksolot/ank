@@ -13,14 +13,14 @@ license = "Apache-2.0"
 authors = ["Sean Lamet"]
 description = "The Ank watcher: it keeps declared corpora warm, answers no verb, and nothing depends on it."
 
-# **A library, and no `[[bin]]`** (ADR-24e21cb83793, ADR-1ea31c2f3c5a). The
+# **A library, and no `[[bin]]`** (ADR-4b45f344344f, ADR-1ea31c2f3c5a). The
 # watcher is the verb `ank watch`, so this crate is linked into the one
 # executable every route carries rather than shipped beside it -- the same shape
 # `ank-tui` and `ank-mcp` have, and folded for the reason ADR-8bd76e8d7c4e gave
 # there: a separate file is invisible to precisely the people it exists for, and
 # has to be distributed, documented and discovered as a third thing.
 #
-# **Being started by a verb is not answering one.** ADR-24e21cb83793's clause is
+# **Being started by a verb is not answering one.** ADR-4b45f344344f's clause is
 # that the watcher serves no verb and exposes no query surface, and it is
 # untouched by this: `ank watch` starts a process that still answers nothing.
 # The note at the top of `src/lib.rs` says it where a reader meets it.

@@ -413,7 +413,7 @@ rebuild. It is a verb of the same one executable every route installs
 (ADR-1ea31c2f3c5a), so every installation already has it -- and running one is
 still nobody's condition for anything, which is the statement below about
 nothing depending on it. Everything else worth knowing about it as an
-integrator is what it refuses to be (ADR-24e21cb83793).
+integrator is what it refuses to be (ADR-4b45f344344f).
 
 **It is not a surface.** No socket, no protocol, no query of its own, and no
 subset of the verbs. There is nothing here to ask: a caller that wants an answer
@@ -447,7 +447,7 @@ falling back to `$HOME/.config/ank`. It lives outside every repository, and it
 is keyed on the repository identity of ADR-621a7fd96ce1 rather than on a path:
 
     schema: 1
-    # Seconds between two mirrors of refs/ank/*. Optional; 60 when omitted.
+    # Seconds between two mirrors of refs/ank/claims/*. Optional; 60 when omitted.
     fetch: 60
     watch:
       # The key is the root commit, which `ank status --json` prints under
@@ -464,10 +464,12 @@ what would be watched without watching anything, and `ank watch --where` prints
 where the declaration is read from.
 
 **The only things it writes into a repository are that repository's own
-`index.db` and a mirror of `refs/ank/*`.** The mirror lands in
-`refs/ank/watch/origin/*`, a tracking namespace of the watcher's own: no branch,
-no tag, no working tree, no index of git's, and no `refs/ank/claims`. It takes
-no claim, holds none on anybody's behalf, and renews none -- a claim is renewed
+`index.db` and a mirror of `refs/ank/claims/*`.** The mirror lands in
+`refs/ank/watch/origin/claims/*`, a tracking namespace of the watcher's own, and
+carries the remote's claims alone: a mirrored proof is read by nobody, so none
+is fetched (ADR-4b45f344344f). No branch, no tag, no working tree, no index of
+git's, and no `refs/ank/claims`. It takes no claim, holds none on anybody's
+behalf, and renews none -- a claim is renewed
 by working, not by reporting (ADR-0bb7ea8991bc). A fetch that fails is a line on
 stderr and never an exit code: the watcher keeps watching, and a dead network
 downgrades what it offers rather than stopping it.
@@ -519,7 +521,7 @@ handed; each line says which corpus it is about.
 and no entity content of any kind, and it never will: an event that carried the
 new state of a task would save you a call and would make the watcher a source of
 corpus data that nothing generated from the verb table ever validated
-(ADR-24e21cb83793). What changed is on the stream; what is now true of it is what
+(ADR-4b45f344344f). What changed is on the stream; what is now true of it is what
 the CLI answers, and `no_event_carries_entity_content_a_reader_would_get_from_the_cli`
 asserts the absence rather than promising it. An event also never says what to do
 about itself. There is one sensible thing to do, which is to read the corpus
