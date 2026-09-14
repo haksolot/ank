@@ -23458,6 +23458,221 @@ fn a_foreign_namespace_costs_check_no_git_process() {
 }
 
 // ---------------------------------------------------------------------------
+// Stat before hash (TASK-a4565686c619, ADR-1556aaffe0c5)
+// ---------------------------------------------------------------------------
+
+/// What every refresh of the index did in one invocation, one line per refresh,
+/// read from the file the `ANK_INDEX_REFRESHED` test knob names.
+fn refreshes(r: &Repo, args: &[&str]) -> (Output, Vec<BTreeMap<String, u64>>) {
+    let counted = r.0.join("refreshed");
+    let _ = std::fs::remove_file(&counted);
+    let out = ank_command()
+        .args(args)
+        .arg("--repo")
+        .arg(&r.0)
+        .env("ANK_AGENT", "claude-code@ank")
+        .env("ANK_INDEX_REFRESHED", &counted)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    let text = std::fs::read_to_string(&counted).unwrap_or_default();
+    let lines = text
+        .lines()
+        .map(|line| {
+            line.split_whitespace()
+                .filter_map(|pair| pair.split_once('='))
+                .map(|(k, v)| (k.to_string(), v.parse().expect("a count")))
+                .collect()
+        })
+        .collect();
+    (out, lines)
+}
+
+fn hashed(lines: &[BTreeMap<String, u64>]) -> Vec<u64> {
+    lines.iter().map(|l| l["hashed"]).collect()
+}
+
+fn set_mtime(path: &Path, at: std::time::SystemTime) {
+    std::fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(at)
+        .unwrap();
+}
+
+fn two_hours_ago() -> std::time::SystemTime {
+    std::time::SystemTime::now() - std::time::Duration::from_secs(7200)
+}
+
+/// **A verb over a corpus nothing touched reads no entity file**, through the
+/// binary and counted: the first verb hashes every file, because the index
+/// holds nothing to match, and every verb after it hashes none, because each
+/// file's mtime, size and inode match the row and its mtime is older than the
+/// index's last write (ADR-1556aaffe0c5). The files are dated two hours back so
+/// that the verdict does not depend on which clock tick the fixture was
+/// written in.
+#[test]
+fn a_verb_over_an_unchanged_corpus_hashes_no_file() {
+    let r = Repo::new();
+    const N: u64 = 30;
+    for i in 0..N {
+        let id = format!("TASK-0000000{i:05x}");
+        r.seed_task_titled(&id, &format!("Task {i}"));
+        set_mtime(&r.0.join(format!(".ank/entities/{id}.md")), two_hours_ago());
+    }
+
+    let (out, cold) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(
+        hashed(&cold)[0],
+        N,
+        "the cold verb hashes every file: {cold:?}"
+    );
+
+    for verb in [&["find", "--json"][..], &["context"], &["graph", "--json"]] {
+        let (out, warm) = refreshes(&r, verb);
+        assert_eq!(code(&out), 0, "{verb:?}: {}", stderr(&out));
+        assert!(!warm.is_empty(), "{verb:?} reported no refresh at all");
+        assert!(
+            hashed(&warm).iter().all(|&h| h == 0),
+            "{verb:?} hashed files of an unchanged corpus: {warm:?}"
+        );
+    }
+}
+
+/// **The one change a stat cannot see, on both sides of the index's last
+/// write**, through the binary.
+///
+/// A rewrite in place, to the same size, with the mtime put back. Strictly
+/// before the last write the stat vouches for the file and nothing is read,
+/// which is the window the decision accepts and git's index accepts: counted
+/// here as zero hashed. At or after it the racy rule sends the file to the hash
+/// and the new title is what `find` answers. And `check` takes no shortcut: the
+/// same invisible rewrite, made unparseable, is reported by `check` while the
+/// index has not read it.
+#[test]
+fn a_same_size_rewrite_is_reindexed_after_the_last_write_and_check_still_reads_it() {
+    let r = Repo::new();
+    const ID: &str = "TASK-00000000a11a";
+    let file = r.0.join(format!(".ank/entities/{ID}.md"));
+    let db = r.0.join(".ank/index.db");
+    r.seed_task_titled(ID, "Alpha task");
+    let past = two_hours_ago();
+    set_mtime(&file, past);
+    let (out, _) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let rewrite = |from: &str, to: &str, at: std::time::SystemTime| {
+        assert_eq!(from.len(), to.len(), "the rewrite keeps the size");
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.contains(from), "{from:?} is not in the file");
+        std::fs::write(&file, text.replacen(from, to, 1)).unwrap();
+        set_mtime(&file, at);
+    };
+
+    // After the last write: bring the row to a future mtime, then change the
+    // content under a stat that matches it exactly.
+    let future =
+        std::fs::metadata(&db).unwrap().modified().unwrap() + std::time::Duration::from_secs(3600);
+    set_mtime(&file, future);
+    let (out, _) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    rewrite("Alpha task", "Bravo task", future);
+    let (out, racy) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert_eq!(hashed(&racy)[0], 1, "{racy:?}");
+    assert!(stdout(&out).contains("Bravo task"), "{}", stdout(&out));
+
+    // Strictly before the last write: the row is brought back to the past, then
+    // the same invisible rewrite, this time breaking the front matter.
+    set_mtime(&file, past);
+    let (out, _) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let clean = ank_command()
+        .args(["check", "--repo"])
+        .arg(&r.0)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert!(
+        !stdout(&clean).contains(&format!("{ID}.md")),
+        "{}",
+        stdout(&clean)
+    );
+    rewrite("---\nid:", "+++\nid:", past);
+    let (out, older) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        !older.is_empty() && hashed(&older).iter().all(|&h| h == 0),
+        "the stat vouched: {older:?}"
+    );
+    assert!(stdout(&out).contains("Bravo task"), "{}", stdout(&out));
+
+    let checked = ank_command()
+        .args(["check", "--repo"])
+        .arg(&r.0)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&checked), 8, "{}", stdout(&checked));
+    assert!(
+        stdout(&checked).contains(&format!("{ID}.md")),
+        "check trusted what the index trusted: {}",
+        stdout(&checked)
+    );
+}
+
+/// **A file whose size or inode changed is hashed**, through the binary, with
+/// the mtime put back each time so that only the field under test moved.
+#[test]
+fn a_file_whose_size_or_inode_changed_is_hashed() {
+    let r = Repo::new();
+    const ID: &str = "TASK-00000000b22b";
+    let file = r.0.join(format!(".ank/entities/{ID}.md"));
+    r.seed_task_titled(ID, "Alpha task");
+    let past = two_hours_ago();
+    set_mtime(&file, past);
+    let (out, _) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let (_, warm) = refreshes(&r, &["find", "--json"]);
+    assert!(
+        !warm.is_empty() && hashed(&warm).iter().all(|&h| h == 0),
+        "{warm:?}"
+    );
+
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(&file, text.replacen("Alpha task", "Alpha task, longer", 1)).unwrap();
+    set_mtime(&file, past);
+    let (out, sized) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(hashed(&sized)[0], 1, "{sized:?}");
+    assert!(
+        stdout(&out).contains("Alpha task, longer"),
+        "{}",
+        stdout(&out)
+    );
+
+    let beside = r.0.join(".ank/entities/replacement.tmp");
+    let text = std::fs::read_to_string(&file).unwrap();
+    std::fs::write(
+        &beside,
+        text.replacen("Alpha task, longer", "Omega task, longer", 1),
+    )
+    .unwrap();
+    set_mtime(&beside, past);
+    std::fs::rename(&beside, &file).unwrap();
+    let (out, moved) = refreshes(&r, &["find", "--json"]);
+    assert_eq!(hashed(&moved)[0], 1, "{moved:?}");
+    assert!(
+        stdout(&out).contains("Omega task, longer"),
+        "{}",
+        stdout(&out)
+    );
+}
+
+// ---------------------------------------------------------------------------
 // A proof ref grows with facts and never with runs (TASK-be336b87a145,
 // ADR-4b45f344344f)
 // ---------------------------------------------------------------------------
