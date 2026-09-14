@@ -620,6 +620,17 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         let _ = git::preload_at(&repo.corpus, branch, &entries);
     }
 
+    // The decisions, parsed once above and handed to every task below, so what
+    // bears on a task is chosen among them rather than read off the disk again
+    // per task (TASK-8654f0c81393).
+    let adrs: Vec<&ank_core::Adr> = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Adr(a) => Some(a),
+            _ => None,
+        })
+        .collect();
+
     for (_, entity) in &entities {
         if !in_scope(entity) {
             continue;
@@ -655,6 +666,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 entries_of.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
                 &detached_commits,
+                &adrs,
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &unread, &mut report),
@@ -1646,6 +1658,7 @@ fn check_task(
     entries: &[LogEntry],
     default_branch: Option<&str>,
     detached_commits: &BTreeSet<String>,
+    adrs: &[&ank_core::Adr],
     report: &mut Report,
 ) {
     // Every proof against this task, from both sources. ADR-493471d64ba0 is
@@ -1758,7 +1771,9 @@ fn check_task(
         }
         // A constraint accepted while the work is in progress changes what
         // applies to it. `done` warns; so does this.
-        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
+        if let Ok(applicable) =
+            claim::constraints_among(adrs.iter().copied(), repo, t).map(|b| b.applicable)
+        {
             if claim::constraints_hash(&applicable) != c.constraints {
                 report.findings.push(Finding::signal(
                     &t.id,
@@ -2020,7 +2035,9 @@ fn check_task(
     // refusing, and the reader who wants it on a healthy scope has `ank
     // context`.
     if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) {
-        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
+        if let Ok(applicable) =
+            claim::constraints_among(adrs.iter().copied(), repo, t).map(|b| b.applicable)
+        {
             let weight: usize = applicable.iter().map(|(_, c)| c.chars().count()).sum();
             let limit = cfg.context_budget / 2;
             if weight > limit {
@@ -7300,7 +7317,13 @@ mod tests {
                 std::time::Duration::from_secs(1800),
                 &freeze::freeze_hash_short(criteria),
                 &claim::constraints_hash(
-                    &claim::applicable_constraints(&self.store(), &self.repo(), &task).unwrap(),
+                    &claim::applicable_constraints(
+                        &self.store(),
+                        &Index::in_memory(self.store().root()).unwrap(),
+                        &self.repo(),
+                        &task,
+                    )
+                    .unwrap(),
                 ),
                 None,
             )

@@ -958,7 +958,9 @@ fn build_execution(
     // an absence is the one thing a reader cannot notice. Named here, with the
     // command that explains it, because §3 suspends the injection and does not
     // hide the decision.
-    for adr in claim::suspended_constraints(store, repo, &task)? {
+    // Both halves in one pass: what binds, and what is withheld from binding.
+    let bearing = claim::constraints_bearing(store, index, repo, &task)?;
+    for adr in &bearing.suspended {
         warnings.push(format!(
             "{adr} altered since ratification: its constraint is not injected (ank show {adr})"
         ));
@@ -966,7 +968,7 @@ fn build_execution(
     // The constraints matching the scope of the task, computed by the same
     // function the claim record hashes. One rule, one implementation: if the
     // two drifted, `done` would warn about a change no reader ever showed.
-    let applicable = claim::applicable_constraints(store, repo, &task)?;
+    let applicable = bearing.applicable;
     let rows = index.all()?;
     let by_id: HashMap<String, &Row> = rows.iter().map(|r| (r.id.to_string(), r)).collect();
 

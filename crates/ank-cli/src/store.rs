@@ -374,6 +374,35 @@ fn write_atomic(target: &Path, contents: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// The read trace
+// ---------------------------------------------------------------------------
+
+/// Where a process writes one line per corpus read it pays for, when asked.
+///
+/// **An instrument for a test and not a feature**, on the model of `GIT_TRACE`:
+/// set to an absolute path, every entity file the store parses appends
+/// `entity <path>` and every opening of `index.db` appends `index <path>`.
+/// It exists because what a verb costs is counted and never timed
+/// (ADR-cc65f1388a71), and `strace` is not on every machine the suite runs on
+/// (TASK-8654f0c81393). The index's freshness walk hashes bytes and parses
+/// nothing on a warm index; it is the index's cost, and it is not traced here.
+pub const TRACE_READS_ENV: &str = "ANK_TRACE_READS";
+
+/// Appends one line to the read trace, and does nothing when none is asked for.
+/// A trace that cannot be written is dropped in silence: an instrument never
+/// changes what the verb answers.
+pub fn trace_read(what: &str, path: &Path) {
+    static TARGET: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+    let Some(target) = TARGET.get_or_init(|| std::env::var_os(TRACE_READS_ENV).map(PathBuf::from))
+    else {
+        return;
+    };
+    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(target) {
+        let _ = writeln!(f, "{what} {}", path.display());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
@@ -558,6 +587,7 @@ impl Store {
     /// the entity it contains. Without that check, a file renamed by hand
     /// would become a ghost entity: listed under one id, loaded under another.
     pub fn load_path(&self, path: &Path) -> Result<Loaded> {
+        trace_read("entity", path);
         let text = fs::read_to_string(path).map_err(|source| {
             if source.kind() == ErrorKind::NotFound {
                 StoreError::NotFound(path.display().to_string())
