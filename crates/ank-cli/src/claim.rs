@@ -28,7 +28,7 @@ use crate::config::{self, Config};
 use crate::git;
 use crate::human::Freeze;
 use crate::identity::ENV_AGENT;
-use crate::index::Index;
+use crate::index::{Index, Row};
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_contract::ExitCode;
@@ -1255,64 +1255,93 @@ fn remaining_text(claim: &ClaimRecord, now: i64) -> String {
 /// drifting apart would show up as a constraint hash that moves for no reason.
 pub fn applicable_constraints(
     store: &Store,
+    index: &Index,
     repo: &Repo,
     task: &Task,
 ) -> Result<Vec<(String, String)>> {
-    let mut found = Vec::new();
-    for adr in bearing_on(store, repo, task)? {
+    Ok(constraints_bearing(store, index, repo, task)?.applicable)
+}
+
+/// What bears on one task, split by whether it still says what was ratified.
+///
+/// One pass for both halves, because `context` needs both and asking for them
+/// apart walked the ADRs twice and asked each its freeze state twice
+/// (TASK-8654f0c81393).
+#[derive(Debug, Default)]
+pub struct Bearing {
+    /// What `applicable_constraints` answers: id and constraint, sorted by id.
+    pub applicable: Vec<(String, String)>,
+    /// The ids withheld for having diverged from their ratification, sorted.
+    ///
+    /// `context` names them, and that is not decoration: a constraint that
+    /// vanishes in silence is worse than one that binds wrongly, because an
+    /// absence is the one thing a reader cannot notice.
+    pub suspended: Vec<String>,
+}
+
+pub fn constraints_bearing(
+    store: &Store,
+    index: &Index,
+    repo: &Repo,
+    task: &Task,
+) -> Result<Bearing> {
+    constraints_among(&bearing_on(store, index, task)?, repo, task)
+}
+
+/// The same answer over ADRs the caller has already parsed, for `check`, which
+/// reads the whole corpus because that is its answer and has no reason to read
+/// the decisions a second time to learn what bears on each task.
+pub fn constraints_among<'a>(
+    adrs: impl IntoIterator<Item = &'a Adr>,
+    repo: &Repo,
+    task: &Task,
+) -> Result<Bearing> {
+    let mut found = Bearing::default();
+    for adr in adrs {
+        if adr.status != AdrStatus::Accepted || !scopes_intersect(&task.scope, &adr.scope)? {
+            continue;
+        }
         // Suspended, not merely reported. Injecting a constraint that no longer
         // matches what was ratified would let whoever edited the file rewrite
         // the rule every agent afterwards works under, which is the one thing
         // the freeze exists to prevent (§3).
         if matches!(
-            crate::human::freeze_state(repo, &adr),
+            crate::human::freeze_state(repo, adr),
             Freeze::Altered { .. }
         ) {
-            continue;
+            found.suspended.push(adr.id.to_string());
+        } else {
+            found
+                .applicable
+                .push((adr.id.to_string(), adr.constraint.clone()));
         }
-        found.push((adr.id.to_string(), adr.constraint.clone()));
     }
-    found.sort_by(|a, b| a.0.cmp(&b.0));
-    Ok(found)
-}
-
-/// The ids `applicable_constraints` withheld for having diverged from their
-/// ratification.
-///
-/// `context` names them, and that is not decoration: a constraint that vanishes
-/// in silence is worse than one that binds wrongly, because an absence is the
-/// one thing a reader cannot notice.
-pub fn suspended_constraints(store: &Store, repo: &Repo, task: &Task) -> Result<Vec<String>> {
-    let mut found: Vec<String> = bearing_on(store, repo, task)?
-        .into_iter()
-        .filter(|adr| {
-            matches!(
-                crate::human::freeze_state(repo, adr),
-                Freeze::Altered { .. }
-            )
-        })
-        .map(|adr| adr.id.to_string())
-        .collect();
-    found.sort();
+    found.applicable.sort_by(|a, b| a.0.cmp(&b.0));
+    found.suspended.sort();
     Ok(found)
 }
 
 /// Every accepted ADR whose scope meets the task's, before any question of
 /// whether it still says what was ratified.
-fn bearing_on(store: &Store, _repo: &Repo, task: &Task) -> Result<Vec<Adr>> {
+///
+/// **Chosen on the index rows and loaded only once chosen** (ADR-f3d1dea65d84).
+/// A row carries kind, status and scope, which is all the choice needs; the
+/// file is read for what a row does not hold, the constraint and the freeze
+/// state, and only for an ADR that is returned. Loading every entity to keep
+/// the handful bearing on one task made a claimed `context` pay for the whole
+/// corpus (TASK-8654f0c81393).
+fn bearing_on(store: &Store, index: &Index, task: &Task) -> Result<Vec<Adr>> {
     let mut found = Vec::new();
-    for id in store.list_ids()? {
-        if id.kind() != ank_core::EntityKind::Adr {
+    for row in index.by_status(ank_core::EntityKind::Adr, AdrStatus::Accepted.as_str())? {
+        if !scopes_intersect(&task.scope, &row.scope)? {
             continue;
         }
-        let loaded = store.load(&id)?;
-        let Entity::Adr(adr) = loaded.entity else {
+        let Entity::Adr(adr) = store.load(&row.id)?.entity else {
             continue;
         };
-        if adr.status != AdrStatus::Accepted {
-            continue;
-        }
-        if scopes_intersect(&task.scope, &adr.scope)? {
+        // The file is what binds and the row is a cache of it: a row that
+        // disagrees with its file is a corpus mid-edit, and the file decides.
+        if adr.status == AdrStatus::Accepted && scopes_intersect(&task.scope, &adr.scope)? {
             found.push(adr);
         }
     }
@@ -2026,7 +2055,11 @@ fn run_with(
     };
 
     let ttl = resolve_ttl(inv.value("--ttl"), cfg)?;
-    let ready = other_ready_task(&repo.corpus, &store, &task).map(|id| id.to_string());
+    // One index for every question below that a row answers: the blockers'
+    // statuses, the ready task offered, the constraints bearing on the scope.
+    let index = Index::open(&repo.ank)?;
+    let tasks = index.by_kind(ank_core::EntityKind::Task)?;
+    let ready = other_ready_task(&repo.corpus, &tasks, &task).map(|id| id.to_string());
 
     // Preconditions first, in the order of §3: no ref is touched by a claim
     // that was never going to be legal.
@@ -2079,7 +2112,7 @@ fn run_with(
     // cannot be reached — that is the write's news to break, not the read's.
     sync_from_remote(&repo.corpus, &task.id)?;
 
-    check_blockers(&repo.corpus, &store, &task, ready.as_deref())?;
+    check_blockers(&repo.corpus, &tasks, &task, ready.as_deref())?;
     task.status
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| {
@@ -2093,7 +2126,7 @@ fn run_with(
     // refused it anyway has paid for nothing.
     already_holding(&repo.corpus, identity, &task.id, now_secs())?;
 
-    let constraints = constraints_hash(&applicable_constraints(&store, repo, &task)?);
+    let constraints = constraints_hash(&applicable_constraints(&store, &index, repo, &task)?);
     let acquired = acquire(
         &repo.corpus,
         &task,
@@ -2125,7 +2158,7 @@ fn run_with(
     if wrote_criteria {
         crate::entries::record_edit(
             &store,
-            &Index::open(&repo.ank)?,
+            &index,
             &claimed,
             identity,
             &now_utc(),
@@ -2271,17 +2304,26 @@ pub fn renewal_ttl(record: &ClaimRecord, cap: Duration) -> Duration {
     granted.min(cap)
 }
 
-fn status_map(store: &Store) -> Result<HashMap<EntityId, TaskStatus>> {
-    let mut map = HashMap::new();
-    for id in store.list_ids()? {
-        if id.kind() != ank_core::EntityKind::Task {
-            continue;
-        }
-        if let Entity::Task(t) = store.load(&id)?.entity {
-            map.insert(id, t.status);
-        }
-    }
-    Ok(map)
+/// Every task's status, read off the index rows and never off the files
+/// (ADR-f3d1dea65d84): a status is a field a row holds, and loading every task
+/// to learn it made each claim pay for the whole corpus, twice
+/// (TASK-8654f0c81393).
+fn status_map(rows: &[Row]) -> HashMap<EntityId, TaskStatus> {
+    rows.iter()
+        .filter_map(|r| task_status(&r.status).map(|s| (r.id.clone(), s)))
+        .collect()
+}
+
+/// The status a task row carries, as the index keeps it: the canonical text.
+fn task_status(text: &str) -> Option<TaskStatus> {
+    [
+        TaskStatus::Open,
+        TaskStatus::InProgress,
+        TaskStatus::Done,
+        TaskStatus::Closed,
+    ]
+    .into_iter()
+    .find(|s| s.as_str() == text)
 }
 
 /// A blocker that is not `done` refuses the claim with code 7 and names it.
@@ -2294,8 +2336,8 @@ fn status_map(store: &Store) -> Result<HashMap<EntityId, TaskStatus>> {
 /// move — claiming on top of unmerged work is the real risk — only what the
 /// agent is told about it, which is the answer `acquire` already gives for the
 /// claimed task itself.
-fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&str>) -> Result<()> {
-    let map = status_map(store)?;
+fn check_blockers(cwd: &Path, tasks: &[Row], task: &Task, other_ready: Option<&str>) -> Result<()> {
+    let map = status_map(tasks);
     let blockers = task
         .active_blockers(|id| map.get(id).copied())
         .map_err(|e| CliError::new(ExitCode::Prerequisite, e.to_string()).with_hint("ank check"))?;
@@ -2348,26 +2390,29 @@ fn check_blockers(cwd: &Path, store: &Store, task: &Task, other_ready: Option<&s
 /// reading every other caller gets. A record whose expiry does not parse is
 /// treated as live: `acquire` refuses on it too, so offering it would print the
 /// refusing command all over again.
-fn other_ready_task(cwd: &Path, store: &Store, task: &Task) -> Option<EntityId> {
-    let map = status_map(store).ok()?;
+///
+/// Chosen on the index rows, which carry the status, the blockers and the scope
+/// the choice reads, so no file is opened to make it (TASK-8654f0c81393).
+fn other_ready_task(cwd: &Path, tasks: &[Row], task: &Task) -> Option<EntityId> {
+    let map = status_map(tasks);
     let now = now_secs();
-    let mut candidates: Vec<&EntityId> = map
+    // The rows come ordered by id, which is the order the candidates are
+    // offered in.
+    let candidates = tasks
         .iter()
-        .filter(|(id, st)| **st == TaskStatus::Open && **id != task.id)
-        .map(|(id, _)| id)
-        .collect();
-    candidates.sort_by_key(|id| id.to_string());
-    for id in candidates {
-        let Ok(Entity::Task(t)) = store.load(id).map(|l| l.entity) else {
-            continue;
-        };
-        if t.active_blockers(|b| map.get(b).copied())
-            .map(|v| !v.is_empty())
-            .unwrap_or(true)
-        {
+        .filter(|r| task_status(&r.status) == Some(TaskStatus::Open) && r.id != task.id);
+    for row in candidates {
+        let id = &row.id;
+        // Every blocker `done`, and one the corpus does not hold is not ready:
+        // the answer `Task::active_blockers` gives, over the row's list.
+        let ready = row
+            .blocked_by
+            .iter()
+            .all(|b| map.get(b) == Some(&TaskStatus::Done));
+        if !ready {
             continue;
         }
-        if !scopes_intersect(&task.scope, &t.scope).unwrap_or(false) {
+        if !scopes_intersect(&task.scope, &row.scope).unwrap_or(false) {
             continue;
         }
         match read(cwd, id) {
@@ -3209,7 +3254,8 @@ mod tests {
             AdrStatus::Proposed,
         ));
 
-        let applicable = applicable_constraints(&store, &t.repo(), &task).unwrap();
+        let index = Index::in_memory(store.root()).unwrap();
+        let applicable = applicable_constraints(&store, &index, &t.repo(), &task).unwrap();
         let ids: Vec<&str> = applicable.iter().map(|(i, _)| i.as_str()).collect();
         assert_eq!(
             ids,
@@ -3226,7 +3272,10 @@ mod tests {
             "Newly binding.",
             AdrStatus::Accepted,
         ));
-        let after = constraints_hash(&applicable_constraints(&store, &t.repo(), &task).unwrap());
+        // A fresh index, as every verb opens one: the ADR changed on disk.
+        let index = Index::in_memory(store.root()).unwrap();
+        let after =
+            constraints_hash(&applicable_constraints(&store, &index, &t.repo(), &task).unwrap());
         assert_ne!(before, after);
 
         // Editing noise does not move it; a change of meaning does.

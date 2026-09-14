@@ -23125,6 +23125,150 @@ fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() 
 }
 
 // ---------------------------------------------------------------------------
+// What a verb reads to find what bears on one task (TASK-8654f0c81393)
+// ---------------------------------------------------------------------------
+
+/// Runs the binary with the read trace pointed at a file inside `.git`, which
+/// is absolute, outside the corpus and gone with the fixture, and returns the
+/// lines it wrote: `entity <path>` per entity file the store parsed, `index
+/// <path>` per opening of `index.db`.
+///
+/// The count is read off the process and never timed (ADR-cc65f1388a71), and
+/// through this counter rather than `strace`, which is not on every machine
+/// the suite runs on.
+fn traced_reads(r: &Repo, agent: &str, args: &[&str]) -> (Output, Vec<String>) {
+    let trace = r.0.join(".git/ank-read-trace");
+    let _ = std::fs::remove_file(&trace);
+    let out = ank_command()
+        .args(args)
+        .arg("--repo")
+        .arg(&r.0)
+        .env("ANK_AGENT", agent)
+        .env("ANK_TRACE_READS", &trace)
+        .current_dir(std::env::temp_dir())
+        .output()
+        .expect("the binary must have been built");
+    let lines = std::fs::read_to_string(&trace)
+        .unwrap_or_default()
+        .lines()
+        .map(str::to_string)
+        .collect();
+    (out, lines)
+}
+
+fn entity_reads(lines: &[String]) -> Vec<&String> {
+    lines.iter().filter(|l| l.starts_with("entity ")).collect()
+}
+
+/// A corpus of `n` open tasks under `src/**` and `k` ADRs accepted over it,
+/// committed, with the task `ID` among the tasks.
+fn weighed_corpus(n: usize, k: usize) -> Repo {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    for i in 2..=n {
+        r.seed_task(&format!("TASK-{i:012x}"), Some("A verifiable criterion."));
+    }
+    let adrs: Vec<String> = (1..=k).map(|i| format!("ADR-{i:012x}")).collect();
+    for adr in &adrs {
+        r.seed_adr(adr, &format!("Rule {adr}."), "src/**");
+    }
+    // An ADR that bears on nothing the task touches: filtered out on its row,
+    // so it is never read.
+    std::fs::create_dir_all(r.0.join("docs")).unwrap();
+    std::fs::write(r.0.join("docs/x.md"), "x\n").unwrap();
+    r.seed_adr("ADR-0000000000ff", "Rule elsewhere.", "docs/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    for adr in adrs.iter().map(String::as_str).chain(["ADR-0000000000ff"]) {
+        let out = r.ank("marie@laptop", &["accept", adr]);
+        assert_eq!(code(&out), 0, "accept {adr}: {}", stderr(&out));
+    }
+    r
+}
+
+/// Under a live claim, `context` reads the task and the accepted ADRs bearing
+/// on it, and nothing that grows with the tasks the corpus holds: at most k+1
+/// entity files, on a corpus of n tasks and on one of 2n alike.
+#[test]
+fn context_under_a_claim_reads_the_task_and_the_adrs_bearing_on_it_and_nothing_else() {
+    const K: usize = 3;
+    for n in [20, 40] {
+        let r = weighed_corpus(n, K);
+        let out = r.ank("claude-code@ank", &["claim", ID]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+        let (out, lines) = traced_reads(&r, "claude-code@ank", &["context"]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        for i in 1..=K {
+            assert!(
+                stdout(&out).contains(&format!("Rule ADR-{i:012x}.")),
+                "the constraint is still served: {}",
+                stdout(&out)
+            );
+        }
+        let reads = entity_reads(&lines);
+        assert!(
+            reads.len() <= K + 1,
+            "n={n}, k={K}: {} entity files read, at most {} expected:\n{reads:#?}",
+            reads.len(),
+            K + 1
+        );
+    }
+}
+
+/// `show` on a task opens `index.db` once: its edges and its entries are two
+/// questions to one index.
+#[test]
+fn show_opens_the_index_once() {
+    let r = weighed_corpus(5, 1);
+    let (out, lines) = traced_reads(&r, "claude-code@ank", &["show", ID]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let opens: Vec<&String> = lines.iter().filter(|l| l.starts_with("index ")).collect();
+    assert_eq!(opens.len(), 1, "{opens:#?}");
+}
+
+/// `claim` reads what bears on the task, its blockers' statuses and the ready
+/// task it offers from index rows: the entity files it parses are the same
+/// number on a corpus of n tasks as on one of 2n, on the success path and on
+/// the refusal that offers another task.
+#[test]
+fn claim_reads_no_more_entity_files_on_a_corpus_twice_the_size() {
+    const K: usize = 2;
+    let mut taken = Vec::new();
+    let mut refused = Vec::new();
+    for n in [20, 40] {
+        let r = weighed_corpus(n, K);
+        // A blocked task, whose refusal offers the ready task in its scope.
+        const BLOCKED: &str = "TASK-00000000abcd";
+        r.seed_task(BLOCKED, Some("A verifiable criterion."));
+        r.blocked(BLOCKED, &[ID]);
+        r.git(&["add", "-A"]);
+        r.git(&["commit", "-qm", "blocked"]);
+
+        let (out, lines) = traced_reads(&r, "claude-code@ank", &["claim", BLOCKED]);
+        assert_eq!(code(&out), 7, "{}", stderr(&out));
+        assert!(stderr(&out).contains("is blocked by"), "{}", stderr(&out));
+        refused.push(entity_reads(&lines).len());
+
+        let (out, lines) = traced_reads(&r, "claude-code@ank", &["claim", ID]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        taken.push(entity_reads(&lines).len());
+        // Distinct files, because the task is parsed twice by design: once to
+        // be read, once more under the lock of the compare-and-swap that writes
+        // its transition.
+        let files: std::collections::BTreeSet<&String> = entity_reads(&lines).into_iter().collect();
+        assert!(
+            files.len() <= K + 1,
+            "claim reads the task and the ADRs bearing on it: {files:#?}"
+        );
+    }
+    assert_eq!(taken[0], taken[1], "claim at n and 2n: {taken:?}");
+    assert_eq!(refused[0], refused[1], "refusal at n and 2n: {refused:?}");
+}
+
+// ---------------------------------------------------------------------------
 // A foreign namespace under refs/ank/ (TASK-4dab9aa4573d, ADR-4b45f344344f)
 // ---------------------------------------------------------------------------
 

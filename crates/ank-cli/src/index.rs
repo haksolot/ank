@@ -406,6 +406,7 @@ impl Index {
     }
 
     fn try_open(ank: &Path, path: &Path) -> Result<Index> {
+        crate::store::trace_read("index", path);
         let conn = Connection::open(path).map_err(|e| db_error(e, ank))?;
         // Before any statement, including the schema probe below: the probe is
         // a read, a read takes a shared lock, and a shared lock is contended by

@@ -623,6 +623,17 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         let _ = git::preload_at(&repo.corpus, branch, &entries);
     }
 
+    // The decisions, parsed once above and handed to every task below, so what
+    // bears on a task is chosen among them rather than read off the disk again
+    // per task (TASK-8654f0c81393).
+    let adrs: Vec<&ank_core::Adr> = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Adr(a) => Some(a),
+            _ => None,
+        })
+        .collect();
+
     for (_, entity) in &entities {
         if !in_scope(entity) {
             continue;
@@ -658,6 +669,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 entries_of.get(&t.id).map(Vec::as_slice).unwrap_or(&[]),
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
                 &detached_commits,
+                &adrs,
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(a, repo, &adr_ids, &entities, &unread, &mut report),
@@ -1705,6 +1717,7 @@ fn check_task(
     entries: &[LogEntry],
     default_branch: Option<&str>,
     detached_commits: &BTreeSet<String>,
+    adrs: &[&ank_core::Adr],
     report: &mut Report,
 ) {
     // Every proof against this task, from both sources. ADR-493471d64ba0 is
@@ -1817,7 +1830,9 @@ fn check_task(
         }
         // A constraint accepted while the work is in progress changes what
         // applies to it. `done` warns; so does this.
-        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
+        if let Ok(applicable) =
+            claim::constraints_among(adrs.iter().copied(), repo, t).map(|b| b.applicable)
+        {
             if claim::constraints_hash(&applicable) != c.constraints {
                 report.findings.push(Finding::signal(
                     &t.id,
@@ -2079,7 +2094,9 @@ fn check_task(
     // refusing, and the reader who wants it on a healthy scope has `ank
     // context`.
     if matches!(t.status, TaskStatus::Open | TaskStatus::InProgress) {
-        if let Ok(applicable) = claim::applicable_constraints(store, repo, t) {
+        if let Ok(applicable) =
+            claim::constraints_among(adrs.iter().copied(), repo, t).map(|b| b.applicable)
+        {
             let weight: usize = applicable.iter().map(|(_, c)| c.chars().count()).sum();
             let limit = cfg.context_budget / 2;
             if weight > limit {
@@ -6755,10 +6772,13 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let text = serialize_entity(&loaded.entity);
-    // An ADR has no `blocked_by` to have two directions of, so it costs nothing
-    // and the index is never opened for one.
+    // One index for the verb: the edges of a task and the entries of any entity
+    // are two questions to it, and opening it per question walked the corpus
+    // twice (TASK-8654f0c81393).
+    let index = Index::open(&repo.ank)?;
+    // An ADR has no `blocked_by` to have two directions of, so it costs nothing.
     let edges = match &loaded.entity {
-        Entity::Task(t) => Some(edges_of(repo, t)?),
+        Entity::Task(t) => Some(edges_of(repo, &index, t)?),
         // `blocked_by` is the only relation between tasks (§3), so no other
         // kind has two directions of it to show.
         _ => None,
@@ -6774,7 +6794,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     };
     // The entries about this entity, of whatever kind it is: an ADR carries
     // them too (ADR-25f977377fa0).
-    let mut log = crate::entries::about(&store, &Index::open(&repo.ank)?, &loaded.entity)?;
+    let mut log = crate::entries::about(&store, &index, &loaded.entity)?;
     // A body still carrying its own `## Log` section has just been printed
     // above, byte for byte, as part of the entity — so those lines get no
     // second copy under it. They are exactly the ones with no identifier: an
@@ -7095,8 +7115,7 @@ struct Edge {
 /// that is already `done` and a task that is already `done` both keep their
 /// line and carry their status. The §5 ordering counts something else — how
 /// many tasks are still *held up* — and a count is not a list.
-fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
-    let index = Index::open(&repo.ank)?;
+fn edges_of(repo: &Repo, index: &Index, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let all = index.all()?;
     let shorts = crate::context::shorts_of(repo)?;
     let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
@@ -7359,7 +7378,13 @@ mod tests {
                 std::time::Duration::from_secs(1800),
                 &freeze::freeze_hash_short(criteria),
                 &claim::constraints_hash(
-                    &claim::applicable_constraints(&self.store(), &self.repo(), &task).unwrap(),
+                    &claim::applicable_constraints(
+                        &self.store(),
+                        &Index::in_memory(self.store().root()).unwrap(),
+                        &self.repo(),
+                        &task,
+                    )
+                    .unwrap(),
                 ),
                 None,
             )

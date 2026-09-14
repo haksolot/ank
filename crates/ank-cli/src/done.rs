@@ -165,7 +165,13 @@ pub fn run(
     // anything runs for the same reason: an agent told a new rule landed over
     // these files should hear it before it spends a minute on verifiers, not
     // after the transition is already written.
-    warn_on_constraint_drift(&store, repo, &task, claim_record, inv.style());
+    //
+    // One index for the verb: opened here for the constraints bearing on the
+    // scope, and brought up to date again before the entry below is numbered,
+    // since the verifiers run in between and a minute is long enough for the
+    // corpus to move (TASK-8654f0c81393).
+    let mut index = crate::index::Index::open(&repo.ank)?;
+    warn_on_constraint_drift(&store, &index, repo, &task, claim_record, inv.style());
 
     let declared: Vec<String> = task.verify.clone();
     let proofs = if declared.is_empty() {
@@ -211,9 +217,10 @@ pub fn run(
     // The entry after the transition, never before it: an entry claiming a
     // completion that the compare-and-swap refused would be a trace of
     // something that did not happen (ADR-25f977377fa0).
+    index.refresh()?;
     crate::entries::record(
         &store,
-        &crate::index::Index::open(&repo.ank)?,
+        &index,
         &finished,
         identity,
         &claim::now_utc(),
@@ -395,12 +402,13 @@ fn resolve_head(
 /// this is explicitly not.
 fn warn_on_constraint_drift(
     store: &Store,
+    index: &crate::index::Index,
     repo: &Repo,
     task: &ank_core::Task,
     claim: &ClaimRecord,
     style: crate::style::Style,
 ) {
-    let Ok(applicable) = claim::applicable_constraints(store, repo, task) else {
+    let Ok(applicable) = claim::applicable_constraints(store, index, repo, task) else {
         return;
     };
     if claim::constraints_hash(&applicable) == claim.constraints {
