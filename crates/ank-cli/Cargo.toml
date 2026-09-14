@@ -55,7 +55,7 @@ ank-tui = { path = "../ank-tui" }
 # not one process, and `crates/ank-mcp/tests/dependencies.rs` reads the graph to
 # keep that true.
 ank-mcp = { path = "../ank-mcp" }
-# The watcher of ADR-24e21cb83793, which ships as the verb `ank watch` rather
+# The watcher of ADR-4b45f344344f, which ships as the verb `ank watch` rather
 # than as a sibling binary, on the reading ADR-8bd76e8d7c4e gave for `tui` and
 # ADR-1ea31c2f3c5a made general. The dependency points this way and only this
 # way: the watcher reaches a declared corpus by running this binary, so it does

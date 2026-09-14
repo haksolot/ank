@@ -1,4 +1,4 @@
-//! Putting a change onto the stream (ADR-24e21cb83793, TASK-2f7777a1fdff).
+//! Putting a change onto the stream (ADR-4b45f344344f, TASK-2f7777a1fdff).
 //!
 //! The shape of an event, where it goes and what it may carry are
 //! [`ank_contract::events`], because a stream has two ends and they must not
@@ -6,7 +6,7 @@
 //! starting it over when it has grown past what news is worth.
 //!
 //! **Writing is best-effort, in the way everything this process does is.**
-//! Nothing depends on the watcher (ADR-24e21cb83793), so a stream that cannot be
+//! Nothing depends on the watcher (ADR-4b45f344344f), so a stream that cannot be
 //! written is a stream nobody gets, exactly as if no watcher were running. A
 //! full disk, a configuration directory somebody removed, a permission somebody
 //! changed: each costs a line on stderr and the next poll, and none of them
@@ -65,7 +65,7 @@ pub fn emit(path: &Path, identity: &str, change: Change) -> Result<(), String> {
 /// reader of the old bytes, nothing refers back to them, and a rotation would
 /// leave a directory of files somebody has to clean up. A follower notices
 /// because the file is suddenly shorter than the offset it holds, which
-/// ADR-24e21cb83793's reader handles by reading from the beginning again.
+/// ADR-4b45f344344f's reader handles by reading from the beginning again.
 fn start_over_if_long(path: &Path) -> Result<(), String> {
     let long = std::fs::metadata(path).map(|m| m.len() >= events::CAP);
     if !matches!(long, Ok(true)) {
