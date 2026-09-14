@@ -395,8 +395,26 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // a fault. Hashed here in full and not through the stat, because `check`
     // takes no shortcut (ADR-1556aaffe0c5). A corpus with no archive opens no
     // index for it: the question does not arise.
+    //
+    // **And the entries it holds are read back from their rows**
+    // (TASK-5b11a5f4633b). An entry is cold with its subject, but a hot entity's
+    // entries are still what accounts for it: its creation record under
+    // ADR-52bb0da2023a, its last produced hash, the discrepancies recorded
+    // against its criterion. Reading those from the hot corpus alone reported
+    // every task done on the default branch as born outside the CLI the day
+    // its entries were archived. So the entries come from both roots, and the
+    // archived half from the index, which read each file once when it arrived
+    // and is never asked to parse it again here.
+    let mut archived_entries: Vec<ank_core::Log> = Vec::new();
+    let mut archived_creations: Vec<(String, String)> = Vec::new();
     if repo.ank.join(Store::ARCHIVE_DIR).is_dir() {
         let index = Index::open_with_archive(&repo.ank)?;
+        archived_entries = index.archived_entries()?;
+        // Counted only over the whole corpus: a perimeter is decided from a
+        // parsed entity's scope, and an archived one is not parsed here.
+        if path.is_none() {
+            archived_creations = index.archived_creations()?;
+        }
         for (rel, digest) in index.archived_digests()? {
             let Ok(bytes) = std::fs::read(repo.ank.join(&rel)) else {
                 report
@@ -489,6 +507,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 Entity::Log(l) => Some(l),
                 _ => None,
             })
+            .chain(archived_entries.iter())
             .collect();
         // The order of §3, stated once in `ank_core` and read here rather than
         // rebuilt: `created`, then `seq`, then the identifier.
@@ -822,18 +841,24 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             );
         }
     }
-    check_accounting(&entities, &in_scope, &mut report);
+    check_accounting(&entities, &archived_entries, &in_scope, &mut report);
     // No history, no ratification to take an instant from: skipped like every
     // other question that needs git, and without starting a process to learn it.
     if has_git {
-        check_born_accounted(&entities, &in_scope, repo, &mut report);
+        check_born_accounted(&entities, &archived_entries, &in_scope, repo, &mut report);
     }
     // Over the file list already walked above for the scopes, so the tree is
     // read once for both questions (ADR-3b6ba766a42e).
     check_stale_citations(&entities, &in_scope, &repo.worktree, &files, &mut report);
 
     check_cycles(&entities, &mut report);
-    check_authorship(&entities, &coord, &in_scope, &mut report);
+    check_authorship(
+        &entities,
+        &archived_creations,
+        &coord,
+        &in_scope,
+        &mut report,
+    );
 
     // One line for the machine, not one per ADR (§8, and the rule of §4 about
     // reporting a corpus-wide absence once). Says what it would take to make
@@ -3129,26 +3154,35 @@ fn evidenced_writes(entity: &Entity) -> Option<u64> {
 /// it does not own.
 fn check_accounting(
     entities: &[(PathBuf, Entity)],
+    archived_entries: &[ank_core::Log],
     in_scope: &dyn Fn(&Entity) -> bool,
     report: &mut Report,
 ) {
     // Grouped from the corpus already parsed, like every other reading in this
     // walk: `check` has every file in hand, and a second reader over the same
     // directory is a second chance to disagree about what is there.
+    //
+    // The entries of both roots (TASK-5b11a5f4633b): an archived entry still
+    // accounts for the entity it is about.
     let mut machinery: HashMap<&EntityId, Vec<&ank_core::Log>> = HashMap::new();
-    for (_, e) in entities {
-        if let Entity::Log(l) = e {
-            // The word this build knows, and only it. An entry recording
-            // something else is already a signal of its own, and counting a
-            // word whose meaning is unknown would be guessing at arithmetic.
-            // A creation is the first write an entity accounts for, from
-            // version 0, so it opens the regime exactly as an edit does.
-            if matches!(
-                l.records.as_deref(),
-                Some(ank_core::RECORDS_EDIT | ank_core::model::RECORDS_CREATE)
-            ) {
-                machinery.entry(&l.about).or_default().push(l);
-            }
+    let logs = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Log(l) => Some(l),
+            _ => None,
+        })
+        .chain(archived_entries.iter());
+    for l in logs {
+        // The word this build knows, and only it. An entry recording something
+        // else is already a signal of its own, and counting a word whose
+        // meaning is unknown would be guessing at arithmetic. A creation is the
+        // first write an entity accounts for, from version 0, so it opens the
+        // regime exactly as an edit does.
+        if matches!(
+            l.records.as_deref(),
+            Some(ank_core::RECORDS_EDIT | ank_core::model::RECORDS_CREATE)
+        ) {
+            machinery.entry(&l.about).or_default().push(l);
         }
     }
     for rows in machinery.values_mut() {
@@ -3283,6 +3317,7 @@ pub fn owes_birth_record(entity: &Entity, instant: i64, accounted: bool) -> bool
 /// `verify:` nobody filled.
 fn check_born_accounted(
     entities: &[(PathBuf, Entity)],
+    archived_entries: &[ank_core::Log],
     in_scope: &dyn Fn(&Entity) -> bool,
     repo: &Repo,
     report: &mut Report,
@@ -3294,16 +3329,18 @@ fn check_born_accounted(
     let Some(instant) = born_accounted_instant(repo, rule) else {
         return;
     };
+    // From both roots (TASK-5b11a5f4633b): a creation record the archive holds
+    // is still the record of a birth, and a task done on the default branch has
+    // its entries there by rule (ADR-467ce7e9cda1).
     let accounted: HashSet<&EntityId> = entities
         .iter()
         .filter_map(|(_, e)| match e {
-            Entity::Log(l)
-                if crate::entries::carries_produced_hash(l.records.as_deref(), &l.message()) =>
-            {
-                Some(&l.about)
-            }
+            Entity::Log(l) => Some(l),
             _ => None,
         })
+        .chain(archived_entries.iter())
+        .filter(|l| crate::entries::carries_produced_hash(l.records.as_deref(), &l.message()))
+        .map(|l| &l.about)
         .collect();
     for (_, e) in entities {
         if !in_scope(e) || !owes_birth_record(e, instant, accounted.contains(e.id())) {
@@ -3581,6 +3618,7 @@ fn check_prose_identifiers(
 /// `check`.
 fn check_authorship(
     entities: &[(PathBuf, Entity)],
+    archived_creations: &[(String, String)],
     coord: &HashMap<EntityId, Record>,
     in_scope: &dyn Fn(&Entity) -> bool,
     report: &mut Report,
@@ -3709,6 +3747,13 @@ fn check_authorship(
     for e in &created_deliberately {
         if let (Some(author), Some(at)) = (author_of(e), claim::parse_utc(created_of(e))) {
             by_author.entry(author).or_default().push(at);
+        }
+    }
+    // The documents the archive holds were created too, and a burst of
+    // creation is not undone by moving what it produced (TASK-5b11a5f4633b).
+    for (author, created) in archived_creations {
+        if let Some(at) = claim::parse_utc(created) {
+            by_author.entry(author.as_str()).or_default().push(at);
         }
     }
     let mut bursts: Vec<(&str, usize)> = Vec::new();
