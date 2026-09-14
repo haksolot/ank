@@ -5,14 +5,18 @@ slug: synchronisation
 title: Synchronisation
 created: 2026-09-14T12:04:49Z
 author: claude-code/opus-5+plane-namespaces
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/git.rs
 references: [SPEC-aa4b4f119929, SPEC-77d99d8d1ef2, SPEC-861d09f3f85e, ADR-4b45f344344f]
 supersedes: SPEC-183d297253ac
+ratified: f948be2db5a6
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-09-14T13:16:40Z
 schema: 4
-version: 1
+version: 2
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
