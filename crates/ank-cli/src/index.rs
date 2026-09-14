@@ -36,9 +36,9 @@ use std::path::{Path, PathBuf};
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
-/// `signatures`, to 6 by `verdict` and to 7 by `entities.rid`: nothing migrated
-/// any of those times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 7;
+/// `signatures`, to 6 by `verdict`, to 7 by `entities.rid` and to 8 by the stat
+/// of `files`: nothing migrated any of those times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 8;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -88,6 +88,15 @@ const BUSY_TIMEOUT_ENV: &str = "ANK_INDEX_BUSY_MS";
 /// measures the runner (ADR-cc65f1388a71). Unset, nothing is written anywhere.
 const STEPS_ENV: &str = "ANK_INDEX_STEPS";
 
+/// Where every refresh appends what it did, one line of `key=count` pairs
+/// (TASK-a4565686c619).
+///
+/// **A knob for a test**, on the same terms as the two above: it is how the
+/// tests through the binary count the files a verb hashed, which is the
+/// evidence that a stat vouched for the rest (ADR-1556aaffe0c5). Unset, nothing
+/// is written anywhere.
+const REFRESHED_ENV: &str = "ANK_INDEX_REFRESHED";
+
 fn busy_timeout() -> std::time::Duration {
     match std::env::var(BUSY_TIMEOUT_ENV)
         .ok()
@@ -104,8 +113,11 @@ CREATE TABLE meta (
     value TEXT NOT NULL
 );
 CREATE TABLE files (
-    path TEXT PRIMARY KEY,
-    hash TEXT NOT NULL
+    path  TEXT PRIMARY KEY,
+    hash  TEXT NOT NULL,
+    mtime INTEGER,
+    size  INTEGER,
+    inode INTEGER
 );
 CREATE TABLE entities (
     rid        INTEGER PRIMARY KEY,
@@ -315,6 +327,10 @@ pub struct Refreshed {
     /// fatal: reporting a malformed file is `check`'s job, and an index that
     /// refused to open because of one would take the whole tool down with it.
     pub unreadable: usize,
+    /// Files whose bytes were read and hashed. The others were vouched for by
+    /// their stat (ADR-1556aaffe0c5), and this count is how that is tested
+    /// rather than timed (TASK-a4565686c619).
+    pub hashed: usize,
 }
 
 /// One row's worth of work, decided before the write lock is asked for.
@@ -325,11 +341,14 @@ pub struct Refreshed {
 /// all (TASK-4111dfae8a87).
 enum Write {
     /// The file parsed and carries the id its name does: index it under `hash`.
-    Index(String, String, Box<Entity>),
+    Index(String, String, Stat, Box<Entity>),
     /// A file that is an entity by name and did not parse as one, or parsed
     /// under another id. Its hash is recorded so the failure costs one parse
     /// rather than one per command.
-    Unreadable(String, String),
+    Unreadable(String, String, Stat),
+    /// A file whose content the index already holds under a stat that moved:
+    /// only the stat is written, so the next open can trust it.
+    Restat(String, Stat),
     /// A row whose file is gone.
     Remove(String),
 }
@@ -340,6 +359,10 @@ pub struct Index {
     /// The SQLite virtual-machine steps the writes of every refresh on this
     /// index have executed, counted by [`Writer`] (TASK-d9ad8f03faff).
     written_steps: u64,
+    /// The file the index lives in, and `None` for one held in memory, which
+    /// has no filesystem clock to record its last write by and so never lets a
+    /// stat vouch for a file (ADR-1556aaffe0c5).
+    db: Option<PathBuf>,
 }
 
 impl Index {
@@ -371,6 +394,7 @@ impl Index {
             conn,
             ank: ank.to_path_buf(),
             written_steps: 0,
+            db: None,
         };
         index.install_schema()?;
         index.refresh()?;
@@ -417,6 +441,7 @@ impl Index {
             conn,
             ank: ank.to_path_buf(),
             written_steps: 0,
+            db: Some(path.to_path_buf()),
         };
         index.ensure_schema()?;
         Ok(index)
@@ -495,14 +520,39 @@ impl Index {
     /// large enough to feel it; today no verb narrows anything, and a
     /// perimeter parameter nobody passes is a code path nobody tests.
     pub fn refresh(&mut self) -> Result<Refreshed> {
+        let done = self.refresh_counted()?;
+        if let Some(path) = std::env::var_os(REFRESHED_ENV) {
+            // Appended, one line per refresh, because a verb may open the index
+            // more than once and every refresh is a question the test asks.
+            use std::io::Write as _;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(
+                    f,
+                    "hashed={} indexed={} removed={} unchanged={} unreadable={}",
+                    done.hashed, done.indexed, done.removed, done.unchanged, done.unreadable
+                );
+            }
+        }
+        Ok(done)
+    }
+
+    fn refresh_counted(&mut self) -> Result<Refreshed> {
         // The hashes first, so the scan below knows which files it is about to
         // have something to say about. Every verb opens the index and therefore
         // pays for this walk; on the steady state of a corpus being read, every
         // file matches and not one of them is parsed, decoded or kept
         // (ADR-f3d1dea65d84 — a verb pays for the answer it gives).
-        let known = self.known_hashes()?;
-        let on_disk = self.scan(&known)?;
-        let mut done = Refreshed::default();
+        let known = self.known_files()?;
+        let last_write = self.last_write();
+        let on_disk = self.scan(&known, last_write)?;
+        let mut done = Refreshed {
+            hashed: on_disk.values().filter(|f| f.hashed).count(),
+            ..Refreshed::default()
+        };
 
         // **Decided, and parsed, before the lock is asked for**
         // (TASK-4111dfae8a87). What the write has to be is a function of the
@@ -513,8 +563,15 @@ impl Index {
         // ones that had something to write.
         let mut writes: Vec<Write> = Vec::new();
         for (rel, file) in &on_disk {
-            if known.get(rel) == Some(&file.hash) {
+            let row = known.get(rel);
+            if row.map(|k| &k.hash) == Some(&file.hash) {
                 done.unchanged += 1;
+                // The content is what the index holds and the stat is not:
+                // recorded, so the next open can let the stat vouch rather than
+                // hashing this file again on every one.
+                if row.map(|k| &k.stat) != Some(&file.stat) {
+                    writes.push(Write::Restat(rel.clone(), file.stat));
+                }
                 continue;
             }
             // The same predicate the scan applied, so the text is here by
@@ -530,6 +587,7 @@ impl Index {
                     writes.push(Write::Index(
                         rel.clone(),
                         file.hash.clone(),
+                        file.stat,
                         Box::new(entity),
                     ));
                 }
@@ -537,7 +595,7 @@ impl Index {
                 // did not parse at all. The hash is still recorded, so the
                 // failure costs one parse and not one per command; `check`
                 // reports it, the index only declines to hold it.
-                _ => writes.push(Write::Unreadable(rel.clone(), file.hash.clone())),
+                _ => writes.push(Write::Unreadable(rel.clone(), file.hash.clone(), file.stat)),
             }
         }
         for rel in known.keys() {
@@ -577,14 +635,17 @@ impl Index {
         let mut w = Writer { tx, steps: 0 };
         for write in &writes {
             match write {
-                Write::Index(rel, hash, entity) => {
-                    upsert(&mut w, rel, hash, entity).map_err(|e| db_error(e, &self.ank))?;
+                Write::Index(rel, hash, stat, entity) => {
+                    upsert(&mut w, rel, hash, stat, entity).map_err(|e| db_error(e, &self.ank))?;
                     done.indexed += 1;
                 }
-                Write::Unreadable(rel, hash) => {
+                Write::Unreadable(rel, hash, stat) => {
                     forget(&mut w, rel).map_err(|e| db_error(e, &self.ank))?;
-                    remember(&mut w, rel, hash).map_err(|e| db_error(e, &self.ank))?;
+                    remember(&mut w, rel, hash, stat).map_err(|e| db_error(e, &self.ank))?;
                     done.unreadable += 1;
+                }
+                Write::Restat(rel, stat) => {
+                    restat(&mut w, rel, stat).map_err(|e| db_error(e, &self.ank))?;
                 }
                 Write::Remove(rel) => {
                     forget(&mut w, rel).map_err(|e| db_error(e, &self.ank))?;
@@ -592,9 +653,9 @@ impl Index {
                 }
             }
         }
-        let Writer { tx, steps } = w;
-        tx.commit().map_err(|e| db_error(e, &self.ank))?;
+        let steps = w.commit().map_err(|e| db_error(e, &self.ank))?;
         self.written_steps += steps;
+        self.record_last_write();
         if let Some(path) = std::env::var_os(STEPS_ENV) {
             // A knob for a test, like the busy wall above: what it reports is
             // not an answer of any verb, and a file it cannot write costs the
@@ -604,20 +665,70 @@ impl Index {
         Ok(done)
     }
 
-    fn known_hashes(&self) -> Result<BTreeMap<String, String>> {
+    fn known_files(&self) -> Result<BTreeMap<String, Known>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT path, hash FROM files")
+            .prepare("SELECT path, hash, mtime, size, inode FROM files")
             .map_err(|e| self.err(e))?;
         let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    Known {
+                        hash: r.get(1)?,
+                        stat: Stat {
+                            mtime: r.get(2)?,
+                            size: r.get(3)?,
+                            inode: r.get(4)?,
+                        },
+                    },
+                ))
+            })
             .map_err(|e| self.err(e))?;
         let mut map = BTreeMap::new();
         for row in rows {
-            let (p, h) = row.map_err(|e| self.err(e))?;
-            map.insert(p, h);
+            let (p, k) = row.map_err(|e| self.err(e))?;
+            map.insert(p, k);
         }
         Ok(map)
+    }
+
+    /// The instant of the index's last write, as recorded, or `None` where
+    /// none is: an index in memory, one that has never written, or a value that
+    /// does not read back. `None` lets no stat vouch for anything.
+    fn last_write(&self) -> Option<i64> {
+        self.db.as_ref()?;
+        self.conn
+            .query_row("SELECT value FROM meta WHERE key = 'last_write'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .ok()?
+            .parse()
+            .ok()
+    }
+
+    /// Records the instant of the write that just committed, **read off
+    /// `index.db` itself** and so off the clock of the filesystem the corpus is
+    /// on, never off the wall clock of this process (ADR-1556aaffe0c5).
+    ///
+    /// Recording it is itself a write, which moves the file's mtime past the
+    /// value recorded. That is the safe direction: an earlier last write makes
+    /// fewer files strictly older than it, which means more hashing and never a
+    /// stat vouching for a file it should not. And a recording that fails --
+    /// contention, a read-only directory -- leaves the previous value, which is
+    /// earlier still.
+    fn record_last_write(&self) {
+        let Some(db) = &self.db else {
+            return;
+        };
+        let Some(at) = std::fs::metadata(db).ok().and_then(|md| mtime_ns(&md)) else {
+            return;
+        };
+        let _ = self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES ('last_write', ?1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![at.to_string()],
+        );
     }
 
     /// The entity files on disk, keyed by their `/`-separated relative path.
@@ -642,7 +753,23 @@ impl Index {
     /// in order to conclude that nothing had moved. On this repository's own
     /// corpus that is eleven megabytes allocated per invocation of `show`
     /// (ADR-f3d1dea65d84).
-    fn scan(&self, known: &BTreeMap<String, String>) -> Result<BTreeMap<String, ScannedFile>> {
+    ///
+    /// **A stat is taken before the bytes, and may only say unchanged**
+    /// (ADR-1556aaffe0c5). A file whose mtime, size and inode all equal the row
+    /// the index holds, and whose mtime is strictly older than the index's last
+    /// write, is not read: the hash the row holds is its hash. Anything else --
+    /// a field that differs, a field either side cannot state, an mtime at or
+    /// after the last write -- reads and hashes the file exactly as before. The
+    /// last clause is git's racy rule: a rewrite in place, to the same size,
+    /// inside one tick of a coarse clock leaves every field of the stat equal,
+    /// and the only thing that betrays it is that the index cannot have seen the
+    /// file after its own write. The stat is taken before the read so that the
+    /// stat recorded is never newer than the bytes hashed.
+    fn scan(
+        &self,
+        known: &BTreeMap<String, Known>,
+        last_write: Option<i64>,
+    ) -> Result<BTreeMap<String, ScannedFile>> {
         let mut found = BTreeMap::new();
         let mut seen: BTreeSet<String> = BTreeSet::new();
         // Canonical first, so that `seen` makes the legacy pass skip what the
@@ -690,14 +817,38 @@ impl Index {
                 if !seen.insert(id.to_string()) {
                     continue;
                 }
+                let rel = format!("{dir}/{stem}.md");
+                let stat = Stat::of(&path);
+                let row = known.get(&rel);
+                if let Some(row) = row.filter(|row| stat.vouches_for(row, last_write)) {
+                    found.insert(
+                        rel,
+                        ScannedFile {
+                            hash: row.hash.clone(),
+                            hashed: false,
+                            stat,
+                            text: None,
+                            id,
+                        },
+                    );
+                    continue;
+                }
                 let bytes = std::fs::read(&path).map_err(|e| {
                     CliError::new(ExitCode::Generic, format!("{}: {e}", path.display()))
                 })?;
-                let rel = format!("{dir}/{stem}.md");
                 let hash = hash_bytes(&bytes);
-                let text = (known.get(&rel) != Some(&hash))
+                let text = (row.map(|k| &k.hash) != Some(&hash))
                     .then(|| String::from_utf8_lossy(&bytes).into_owned());
-                found.insert(rel, ScannedFile { hash, text, id });
+                found.insert(
+                    rel,
+                    ScannedFile {
+                        hash,
+                        hashed: true,
+                        stat,
+                        text,
+                        id,
+                    },
+                );
             }
         }
         Ok(found)
@@ -985,10 +1136,144 @@ pub struct Verdict {
 
 struct ScannedFile {
     hash: String,
+    /// Whether the bytes were read to obtain `hash`, or the stat vouched for
+    /// the one the index holds.
+    hashed: bool,
+    stat: Stat,
     /// `None` where the hash already matches the one the index holds: nothing
     /// is going to be parsed out of it, so nothing is decoded or kept.
     text: Option<String>,
     id: EntityId,
+}
+
+/// What the index holds for one file.
+struct Known {
+    hash: String,
+    stat: Stat,
+}
+
+/// The three fields of a file's stat the index compares, each `None` where the
+/// platform or the filesystem cannot state it (ADR-1556aaffe0c5).
+///
+/// The mtime is in nanoseconds since the epoch, as the filesystem reports it,
+/// and is only ever compared with another value read off the same filesystem:
+/// a row's, or the mtime of `index.db`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Stat {
+    mtime: Option<i64>,
+    size: Option<i64>,
+    inode: Option<i64>,
+}
+
+impl Stat {
+    /// The stat of the file at `path`, following a link the way the read of
+    /// its bytes does. A file that cannot be stated at all states nothing.
+    fn of(path: &Path) -> Stat {
+        match std::fs::metadata(path) {
+            Ok(md) => Stat {
+                mtime: mtime_ns(&md),
+                size: i64::try_from(md.len()).ok(),
+                inode: inode_of(path, &md),
+            },
+            Err(_) => Stat {
+                mtime: None,
+                size: None,
+                inode: None,
+            },
+        }
+    }
+
+    /// **The predicate of ADR-1556aaffe0c5, and the only place it is stated.**
+    /// True only when all three fields are known on both sides and equal, and
+    /// the mtime is strictly older than the index's last write. Every other
+    /// case is false, which sends the file to the hash: a stat may only ever
+    /// say unchanged.
+    fn vouches_for(&self, row: &Known, last_write: Option<i64>) -> bool {
+        let (Some(mtime), Some(_), Some(_)) = (self.mtime, self.size, self.inode) else {
+            return false;
+        };
+        let Some(last_write) = last_write else {
+            return false;
+        };
+        *self == row.stat && mtime < last_write
+    }
+}
+
+fn mtime_ns(md: &std::fs::Metadata) -> Option<i64> {
+    let since = md
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    i64::try_from(since.as_nanos()).ok()
+}
+
+#[cfg(unix)]
+fn inode_of(_path: &Path, md: &std::fs::Metadata) -> Option<i64> {
+    Some(std::os::unix::fs::MetadataExt::ino(md) as i64)
+}
+
+/// The file index NTFS assigns, read through the handle, since the standard
+/// library states no file identity on Windows on a stable toolchain
+/// (`MetadataExt::file_index` is unstable).
+///
+/// **The one `unsafe` block in the binary, and why it is worth one**
+/// (TASK-a4565686c619, decided with the maintainer). Without an identity every
+/// Windows open would hash every file, since an unavailable field is a mismatch
+/// (ADR-1556aaffe0c5), and the platform that pays the most per file read would
+/// be the one that never saves one. The call is `GetFileInformationByHandle`
+/// from kernel32, which std already links, on a handle std owns and keeps open
+/// for its duration, writing into a buffer of the layout the declaration below
+/// states. A file index of zero, or a call that fails, is a field this
+/// filesystem cannot state, and hashes.
+#[cfg(windows)]
+fn inode_of(path: &Path, _md: &std::fs::Metadata) -> Option<i64> {
+    use std::os::windows::io::AsRawHandle;
+
+    #[repr(C)]
+    struct FileTime {
+        low: u32,
+        high: u32,
+    }
+    #[repr(C)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: FileTime,
+        last_access_time: FileTime,
+        last_write_time: FileTime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetFileInformationByHandle(
+            file: *mut std::ffi::c_void,
+            information: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    let file = std::fs::File::open(path).ok()?;
+    let mut info = std::mem::MaybeUninit::<ByHandleFileInformation>::uninit();
+    // SAFETY: the handle is valid for as long as `file` lives, which outlasts
+    // the call, and `info` is a writable buffer of exactly the structure the
+    // function fills; it is read only after the call reports success.
+    let info = unsafe {
+        if GetFileInformationByHandle(file.as_raw_handle().cast(), info.as_mut_ptr()) == 0 {
+            return None;
+        }
+        info.assume_init()
+    };
+    let index = (u64::from(info.file_index_high) << 32) | u64::from(info.file_index_low);
+    (index != 0).then_some(index as i64)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn inode_of(_path: &Path, _md: &std::fs::Metadata) -> Option<i64> {
+    None
 }
 
 const SELECT_ROW: &str = "SELECT id, kind, path, title, status, created, scope, blocked_by, \
@@ -1075,6 +1360,12 @@ struct Writer<'c> {
 }
 
 impl Writer<'_> {
+    /// Commits, and answers the steps every statement of the transaction took.
+    fn commit(self) -> rusqlite::Result<u64> {
+        self.tx.commit()?;
+        Ok(self.steps)
+    }
+
     fn run(&mut self, sql: &str, args: impl rusqlite::Params) -> rusqlite::Result<()> {
         let mut stmt = self.tx.prepare(sql)?;
         stmt.execute(args)?;
@@ -1105,11 +1396,19 @@ fn steps_of(stmt: &rusqlite::Statement) -> u64 {
     stmt.get_status(rusqlite::StatementStatus::VmStep).max(0) as u64
 }
 
-fn remember(w: &mut Writer, rel: &str, hash: &str) -> rusqlite::Result<()> {
+fn remember(w: &mut Writer, rel: &str, hash: &str, stat: &Stat) -> rusqlite::Result<()> {
     w.run(
-        "INSERT INTO files (path, hash) VALUES (?1, ?2) \
-         ON CONFLICT(path) DO UPDATE SET hash = excluded.hash",
-        params![rel, hash],
+        "INSERT INTO files (path, hash, mtime, size, inode) VALUES (?1, ?2, ?3, ?4, ?5) \
+         ON CONFLICT(path) DO UPDATE SET hash = excluded.hash, mtime = excluded.mtime, \
+           size = excluded.size, inode = excluded.inode",
+        params![rel, hash, stat.mtime, stat.size, stat.inode],
+    )
+}
+
+fn restat(w: &mut Writer, rel: &str, stat: &Stat) -> rusqlite::Result<()> {
+    w.run(
+        "UPDATE files SET mtime = ?2, size = ?3, inode = ?4 WHERE path = ?1",
+        params![rel, stat.mtime, stat.size, stat.inode],
     )
 }
 
@@ -1124,7 +1423,13 @@ fn forget(w: &mut Writer, rel: &str) -> rusqlite::Result<()> {
     w.run("DELETE FROM files WHERE path = ?1", params![rel])
 }
 
-fn upsert(w: &mut Writer, rel: &str, hash: &str, entity: &Entity) -> rusqlite::Result<()> {
+fn upsert(
+    w: &mut Writer,
+    rel: &str,
+    hash: &str,
+    stat: &Stat,
+    entity: &Entity,
+) -> rusqlite::Result<()> {
     // `slug` and `criteria` exist only to be searched: they are what a scan
     // used to open the file for, and carrying them here is the whole point.
     // `criteria` is the criterion for a task and the constraint for an ADR --
@@ -1224,7 +1529,7 @@ fn upsert(w: &mut Writer, rel: &str, hash: &str, entity: &Entity) -> rusqlite::R
          VALUES (?1, ?2, ?3, ?4, ?5)",
         params![rid, id, title, slug, criteria],
     )?;
-    remember(w, rel, hash)
+    remember(w, rel, hash, stat)
 }
 
 /// Removes the searchable rows of these entities, **one rowid at a time and by
@@ -1465,7 +1770,11 @@ mod tests {
                 indexed: 0,
                 removed: 0,
                 unchanged: 3,
-                unreadable: 0
+                unreadable: 0,
+                // Whether a stat vouched for these depends on the clock tick
+                // the files were written in, relative to the index's own
+                // write; what is counted, with mtimes set, is tested below.
+                hashed: again.hashed,
             },
             "an unchanged corpus costs no reindexing"
         );
@@ -1997,5 +2306,215 @@ mod tests {
                 "a delete from entities_fts that is not by rowid: {d}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Stat before hash (TASK-a4565686c619, ADR-1556aaffe0c5)
+    // -----------------------------------------------------------------------
+
+    /// Sets a file's mtime to `at`, which is how these tests put a file on one
+    /// side or the other of the index's last write without waiting on a clock.
+    fn set_mtime(path: &Path, at: std::time::SystemTime) {
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(at)
+            .unwrap();
+    }
+
+    fn mtime_ns(path: &Path) -> i64 {
+        let m = std::fs::metadata(path).unwrap().modified().unwrap();
+        m.duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as i64
+    }
+
+    fn at_ns(ns: i64) -> std::time::SystemTime {
+        std::time::UNIX_EPOCH + std::time::Duration::from_nanos(ns as u64)
+    }
+
+    fn hours_ago(h: u64) -> std::time::SystemTime {
+        std::time::SystemTime::now() - std::time::Duration::from_secs(3600 * h)
+    }
+
+    fn last_write(index: &Index) -> Option<i64> {
+        index
+            .conn
+            .query_row("SELECT value FROM meta WHERE key = 'last_write'", [], |r| {
+                r.get::<_, String>(0)
+            })
+            .optional()
+            .unwrap()
+            .and_then(|v| v.parse().ok())
+    }
+
+    fn file_of(t: &Temp, hex: &str) -> PathBuf {
+        Store::new(&t.0).path_of(&EntityId::parse(&format!("TASK-{hex}")).unwrap())
+    }
+
+    /// A corpus opened a second time hashes nothing: the stat of every file
+    /// matches the row and is older than the index's last write, so no byte is
+    /// read. The first open hashes every one, because there is no row to match.
+    #[test]
+    fn a_second_open_of_an_unchanged_corpus_hashes_no_file() {
+        let t = Temp::new();
+        for i in 0..20u32 {
+            let hex = format!("{i:012x}");
+            t.write(&task(&hex, &format!("Task {i}"), TaskStatus::Open));
+            set_mtime(&file_of(&t, &hex), hours_ago(2));
+        }
+
+        let first = Index::open_raw(&t.0).unwrap().refresh().unwrap();
+        assert_eq!((first.hashed, first.indexed), (20, 20), "{first:?}");
+
+        let second = Index::open_raw(&t.0).unwrap().refresh().unwrap();
+        assert_eq!(
+            (second.hashed, second.indexed, second.unchanged),
+            (0, 0, 20),
+            "an unchanged corpus was read again: {second:?}"
+        );
+    }
+
+    /// The row of a file carries its mtime, size and inode beside its hash, and
+    /// `meta` the instant of the index's last write, read off the same
+    /// filesystem as the files: the mtime of `index.db` itself.
+    #[test]
+    fn the_index_records_each_files_stat_and_its_own_last_write() {
+        let t = Temp::new();
+        t.write(&task("000000000001", "Recorded", TaskStatus::Open));
+        let file = file_of(&t, "000000000001");
+        set_mtime(&file, hours_ago(2));
+
+        let index = Index::open(&t.0).unwrap();
+        let (hash, mtime, size, inode): (String, Option<i64>, Option<i64>, Option<i64>) = index
+            .conn
+            .query_row(
+                "SELECT hash, mtime, size, inode FROM files WHERE path = ?1",
+                params!["entities/TASK-000000000001.md"],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        let md = std::fs::metadata(&file).unwrap();
+        assert_eq!(hash, hash_bytes(&std::fs::read(&file).unwrap()));
+        assert_eq!(mtime, Some(mtime_ns(&file)));
+        assert_eq!(size, Some(md.len() as i64));
+        #[cfg(unix)]
+        assert_eq!(inode, Some(std::os::unix::fs::MetadataExt::ino(&md) as i64));
+        #[cfg(not(unix))]
+        assert!(
+            inode.is_some(),
+            "no file identity was read on this platform"
+        );
+
+        let written = last_write(&index).expect("the index records its last write");
+        assert!(
+            written > mtime.unwrap(),
+            "{written} is not after the file it indexed"
+        );
+        assert!(
+            written <= mtime_ns(&t.db()),
+            "{written} is later than index.db was last written"
+        );
+    }
+
+    /// **A rewrite in place, to the same size, with the mtime put back, is the
+    /// one change a stat cannot see**, and the racy rule is what closes it: a
+    /// file whose mtime is not strictly older than the index's last write is
+    /// hashed whatever its stat says. Both sides of that write, set explicitly.
+    #[test]
+    fn a_same_size_rewrite_is_trusted_only_strictly_before_the_last_write() {
+        let t = Temp::new();
+        let hex = "000000000001";
+        let file = file_of(&t, hex);
+        t.write(&task(hex, "Alpha", TaskStatus::Open));
+        let past = hours_ago(2);
+        set_mtime(&file, past);
+        let mut index = Index::open(&t.0).unwrap();
+
+        // Strictly before: the stat vouches, nothing is read. This is the
+        // window the decision accepts, and it is counted rather than hoped for.
+        t.write(&task(hex, "Delta", TaskStatus::Open));
+        set_mtime(&file, past);
+        let older = index.refresh().unwrap();
+        assert_eq!((older.hashed, older.indexed), (0, 0), "{older:?}");
+
+        // After the last write: the row is brought to a future mtime first, so
+        // that the stat matches exactly when the content changes under it.
+        let future = at_ns(last_write(&index).unwrap()) + std::time::Duration::from_secs(3600);
+        set_mtime(&file, future);
+        index.refresh().unwrap();
+        t.write(&task(hex, "Bravo", TaskStatus::Open));
+        set_mtime(&file, future);
+        let racy = index.refresh().unwrap();
+        assert_eq!((racy.hashed, racy.indexed), (1, 1), "{racy:?}");
+        assert_eq!(
+            index
+                .get(&EntityId::parse(&format!("TASK-{hex}")).unwrap())
+                .unwrap()
+                .unwrap()
+                .title,
+            "Bravo"
+        );
+
+        // Exactly at the last write is not strictly before it.
+        set_mtime(&file, past);
+        index.refresh().unwrap();
+        index
+            .conn
+            .execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'last_write'",
+                params![mtime_ns(&file).to_string()],
+            )
+            .unwrap();
+        t.write(&task(hex, "Echoo", TaskStatus::Open));
+        set_mtime(&file, past);
+        let equal = index.refresh().unwrap();
+        assert_eq!((equal.hashed, equal.indexed), (1, 1), "{equal:?}");
+    }
+
+    /// A stat may only say unchanged: a size or an inode that moved, or a field
+    /// the row does not hold, sends the file to the hash.
+    #[test]
+    fn a_changed_size_or_inode_or_an_unavailable_field_is_hashed() {
+        let t = Temp::new();
+        let hex = "000000000001";
+        let file = file_of(&t, hex);
+        t.write(&task(hex, "Alpha", TaskStatus::Open));
+        let past = hours_ago(2);
+        set_mtime(&file, past);
+        t.write(&task("000000000002", "Other", TaskStatus::Open));
+        set_mtime(&file_of(&t, "000000000002"), past);
+        let mut index = Index::open(&t.0).unwrap();
+        assert_eq!(index.refresh().unwrap().hashed, 0);
+
+        // Size: a longer title, the mtime put back.
+        t.write(&task(hex, "Alpha, longer", TaskStatus::Open));
+        set_mtime(&file, past);
+        let sized = index.refresh().unwrap();
+        assert_eq!((sized.hashed, sized.indexed), (1, 1), "{sized:?}");
+
+        // Inode: another file of the same size renamed over it, mtime put back.
+        let beside = t.0.join(Store::ENTITIES_DIR).join("replacement.tmp");
+        std::fs::write(
+            &beside,
+            serialize_entity(&task(hex, "Omega, longer", TaskStatus::Open)),
+        )
+        .unwrap();
+        set_mtime(&beside, past);
+        std::fs::rename(&beside, &file).unwrap();
+        let moved = index.refresh().unwrap();
+        assert_eq!((moved.hashed, moved.indexed), (1, 1), "{moved:?}");
+
+        // A field the row does not hold is a mismatch, for every file.
+        assert_eq!(index.refresh().unwrap().hashed, 0);
+        index
+            .conn
+            .execute("UPDATE files SET inode = NULL", [])
+            .unwrap();
+        let unavailable = index.refresh().unwrap();
+        assert_eq!(
+            (unavailable.hashed, unavailable.indexed),
+            (2, 0),
+            "{unavailable:?}"
+        );
     }
 }
