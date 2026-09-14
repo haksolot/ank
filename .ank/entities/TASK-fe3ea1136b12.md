@@ -5,7 +5,7 @@ slug: the-synchronisation-specification-says-nothing-o
 title: The synchronisation specification says nothing of idempotent attestation, the mirror's scope or a foreign namespace
 created: 2026-09-14T06:40:14Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-daemon/**
@@ -16,7 +16,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 2
+version: 3
 ---
 
 Written after TASK-be336b87a145, TASK-21de469a0029 and TASK-4dab9aa4573d land. Rests on ADR-4b45f344344f.
