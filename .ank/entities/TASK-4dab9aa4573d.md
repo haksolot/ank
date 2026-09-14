@@ -5,7 +5,7 @@ slug: check-signals-a-ref-under-refs-ank-in-a-namespac
 title: check signals a ref under refs/ank/ in a namespace no reader serves
 created: 2026-09-14T06:40:13Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/cli.rs
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 This repository carries 311 refs under `refs/ank/remote-check/`, 2.7 MB,
