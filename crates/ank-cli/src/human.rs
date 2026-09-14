@@ -6713,10 +6713,13 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     let store = Store::new(&repo.ank);
     let loaded = store.load_prefix(prefix)?;
     let text = serialize_entity(&loaded.entity);
-    // An ADR has no `blocked_by` to have two directions of, so it costs nothing
-    // and the index is never opened for one.
+    // One index for the verb: the edges of a task and the entries of any entity
+    // are two questions to it, and opening it per question walked the corpus
+    // twice (TASK-8654f0c81393).
+    let index = Index::open(&repo.ank)?;
+    // An ADR has no `blocked_by` to have two directions of, so it costs nothing.
     let edges = match &loaded.entity {
-        Entity::Task(t) => Some(edges_of(repo, t)?),
+        Entity::Task(t) => Some(edges_of(repo, &index, t)?),
         // `blocked_by` is the only relation between tasks (§3), so no other
         // kind has two directions of it to show.
         _ => None,
@@ -6732,7 +6735,7 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     };
     // The entries about this entity, of whatever kind it is: an ADR carries
     // them too (ADR-25f977377fa0).
-    let mut log = crate::entries::about(&store, &Index::open(&repo.ank)?, &loaded.entity)?;
+    let mut log = crate::entries::about(&store, &index, &loaded.entity)?;
     // A body still carrying its own `## Log` section has just been printed
     // above, byte for byte, as part of the entity — so those lines get no
     // second copy under it. They are exactly the ones with no identifier: an
@@ -7053,8 +7056,7 @@ struct Edge {
 /// that is already `done` and a task that is already `done` both keep their
 /// line and carry their status. The §5 ordering counts something else — how
 /// many tasks are still *held up* — and a count is not a list.
-fn edges_of(repo: &Repo, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
-    let index = Index::open(&repo.ank)?;
+fn edges_of(repo: &Repo, index: &Index, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let all = index.all()?;
     let shorts = crate::context::shorts_of(repo)?;
     let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
