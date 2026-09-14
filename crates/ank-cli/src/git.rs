@@ -614,8 +614,8 @@ pub const ANK_NAMESPACE_PATTERN: &str = "refs/ank/*";
 const ORIGIN_HEAD: &str = "refs/remotes/origin/HEAD";
 const ORIGIN_PREFIX: &str = "refs/remotes/origin/";
 
-/// Where the watcher mirrors the remote's `refs/ank/*`, when somebody is
-/// running one (ADR-24e21cb83793).
+/// Where the watcher mirrors the remote's `refs/ank/claims/*`, when somebody is
+/// running one (ADR-4b45f344344f).
 ///
 /// **A mirror, and never the plane itself.** `refs/ank/claims/<id>` is where a
 /// claim of this clone lives, so a background process writing there would be

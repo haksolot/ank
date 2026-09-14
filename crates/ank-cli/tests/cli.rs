@@ -6256,7 +6256,7 @@ fn status_says_a_checkout_level_with_origin_in_one_line() {
 }
 
 /// What a watcher mirrors into `refs/ank/watch/*` reaches `status`, and reaches
-/// nothing else (ADR-24e21cb83793).
+/// nothing else (ADR-4b45f344344f).
 ///
 /// The reader's half of the watcher. `refs/ank/claims/*` in this clone is
 /// whatever somebody last fetched by hand, so on a parc of clones `status`
@@ -13697,7 +13697,7 @@ const NOT_A_PATH: [&str; 31] = [
     // is one (ADR-96174f1ac2b7).
     "--user",
     // `watch`'s four, and all four are here for one reason: not one of them
-    // names anything in a corpus (ADR-24e21cb83793). Three carry no value at
+    // names anything in a corpus (ADR-4b45f344344f). Three carry no value at
     // all, and `--interval` carries a number of milliseconds.
     //
     // `--where` is the one worth a sentence, because it is the one that looks

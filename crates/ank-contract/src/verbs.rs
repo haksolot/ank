@@ -536,7 +536,7 @@ pub struct CommandSpec {
     /// carries a `.ank/`, and `init` is what produces one. `watch` refuses
     /// `--repo` and `--worktree`: both address *a* corpus, and the watcher is
     /// told which corpora to keep warm by the reader's declaration and by
-    /// nothing else (ADR-24e21cb83793) -- a flag that looked like it named one
+    /// nothing else (ADR-4b45f344344f) -- a flag that looked like it named one
     /// would be the discovery that decision refuses, offered from the caller's
     /// side.
     ///
@@ -1341,7 +1341,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "watch",
         group: "look around",
         // It takes no claim, holds none on anybody's behalf and renews none
-        // (ADR-24e21cb83793, §4). A lease is renewed by working, and this
+        // (ADR-4b45f344344f, §4). A lease is renewed by working, and this
         // process does not work on a task -- it warms an index
         // (ADR-0bb7ea8991bc).
         renews: Renews::Never,
@@ -1404,7 +1404,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // here, because what this verb watches is what the reader declared in
         // watch.yml -- so a caller who typed `ank watch --repo <tree>` would
         // have addressed a corpus that is not being watched and been told
-        // nothing. That is the discovery ADR-24e21cb83793 refuses, reached from
+        // nothing. That is the discovery ADR-4b45f344344f refuses, reached from
         // the caller's side instead of the filesystem's.
         refuses_globals: &["--repo", "--worktree"],
         // **No `--json` document leaves this verb either, and the empty list is
