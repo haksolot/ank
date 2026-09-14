@@ -36,9 +36,9 @@ use std::path::{Path, PathBuf};
 /// wiped and rebuilt, which is why a schema change costs nothing.
 ///
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
-/// `signatures` and to 6 by `verdict`: nothing migrated any of those times, and
-/// nothing had to.
-pub const SCHEMA_VERSION: u32 = 6;
+/// `signatures`, to 6 by `verdict` and to 7 by `entities.rid`: nothing migrated
+/// any of those times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 7;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -99,7 +99,8 @@ CREATE TABLE files (
     hash TEXT NOT NULL
 );
 CREATE TABLE entities (
-    id         TEXT PRIMARY KEY,
+    rid        INTEGER PRIMARY KEY,
+    id         TEXT NOT NULL UNIQUE,
     kind       TEXT NOT NULL,
     path       TEXT NOT NULL,
     title      TEXT NOT NULL,
@@ -889,9 +890,9 @@ impl Index {
         // ascending is best-first. Sorting on the expression rather than on an
         // alias keeps this one statement portable across SQLite versions.
         let sql = format!(
-            "{SELECT_ROW} WHERE id IN (SELECT id FROM entities_fts WHERE entities_fts MATCH ?1) \
+            "{SELECT_ROW} WHERE rid IN (SELECT rowid FROM entities_fts WHERE entities_fts MATCH ?1) \
              ORDER BY (SELECT bm25(entities_fts, ?2, ?3, ?4, ?5) FROM entities_fts \
-                       WHERE entities_fts MATCH ?1 AND entities_fts.id = entities.id), id"
+                       WHERE entities_fts MATCH ?1 AND entities_fts.rowid = entities.rid), id"
         );
         self.query(&sql, params![expr, w_id, w_title, w_slug, w_criteria])
     }
@@ -1046,10 +1047,8 @@ fn forget(tx: &rusqlite::Transaction, rel: &str) -> rusqlite::Result<()> {
     // the virtual table has no idea what a path is, so `entities` is the only
     // way from one to the other. Reversing these two would leak a searchable
     // row for an entity that no longer exists.
-    tx.execute(
-        "DELETE FROM entities_fts WHERE id IN (SELECT id FROM entities WHERE path = ?1)",
-        params![rel],
-    )?;
+    let rids = rids_where(tx, "path = ?1", rel)?;
+    unsearchable(tx, &rids)?;
     tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
     tx.execute("DELETE FROM files WHERE path = ?1", params![rel])?;
     Ok(())
@@ -1118,14 +1117,18 @@ fn upsert(
     };
     // The path is not the key: an entity that moved file must not survive
     // twice, so the old row goes first. Same for its searchable twin, and by
-    // the same reasoning as in `forget`: resolve the id through `entities`
-    // before that row is gone.
-    tx.execute(
-        "DELETE FROM entities_fts WHERE id IN (SELECT id FROM entities WHERE path = ?1)",
-        params![rel],
-    )?;
+    // the same reasoning as in `forget`: resolve it through `entities` before
+    // that row is gone -- by this path, and by this id under whatever path it
+    // was indexed at before, so a moved entity is not searchable twice.
+    let id = entity.id().to_string();
+    let mut rids = rids_where(tx, "path = ?1", rel)?;
+    rids.extend(rids_where(tx, "id = ?1", &id)?);
+    unsearchable(tx, &rids)?;
     tx.execute("DELETE FROM entities WHERE path = ?1", params![rel])?;
-    tx.execute(
+    // The row keeps its `rid` when the id was already there under another
+    // path, and gets a fresh one otherwise; either way `RETURNING` names the
+    // rowid its searchable twin is written under.
+    let rid: i64 = tx.query_row(
         "INSERT INTO entities \
            (id, kind, path, title, status, created, scope, blocked_by, about, seq, version) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11) \
@@ -1133,9 +1136,10 @@ fn upsert(
            kind = excluded.kind, path = excluded.path, title = excluded.title, \
            status = excluded.status, created = excluded.created, \
            scope = excluded.scope, blocked_by = excluded.blocked_by, \
-           about = excluded.about, seq = excluded.seq, version = excluded.version",
+           about = excluded.about, seq = excluded.seq, version = excluded.version \
+         RETURNING rid",
         params![
-            entity.id().to_string(),
+            id,
             kind,
             rel,
             title,
@@ -1147,18 +1151,40 @@ fn upsert(
             seq as i64,
             version as i64,
         ],
-    )?;
-    // An id can already be present under another path (the upsert above
-    // resolves that); its FTS row must not survive twice either.
-    tx.execute(
-        "DELETE FROM entities_fts WHERE id = ?1",
-        params![entity.id().to_string()],
+        |r| r.get(0),
     )?;
     tx.execute(
-        "INSERT INTO entities_fts (id, title, slug, criteria) VALUES (?1, ?2, ?3, ?4)",
-        params![entity.id().to_string(), title, slug, criteria],
+        "INSERT INTO entities_fts (rowid, id, title, slug, criteria) \
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![rid, id, title, slug, criteria],
     )?;
     remember(tx, rel, hash)
+}
+
+/// The rowids of the entity rows matching `filter`, which binds one parameter.
+///
+/// Resolved in `entities`, where a path and an id are indexed, and never in
+/// `entities_fts`, where they are not.
+fn rids_where(tx: &rusqlite::Transaction, filter: &str, arg: &str) -> rusqlite::Result<Vec<i64>> {
+    let mut stmt = tx.prepare(&format!("SELECT rid FROM entities WHERE {filter}"))?;
+    let rids = stmt.query_map(params![arg], |r| r.get(0))?;
+    rids.collect()
+}
+
+/// Removes the searchable rows of these entities, **one rowid at a time and by
+/// rowid only** (TASK-b646631fa10a).
+///
+/// FTS5 finds a rowid in a b-tree and answers a filter on any of its columns by
+/// scanning every row it holds. The delete this replaced named the `id` column,
+/// and running it before every insert made a cold rebuild quadratic in the
+/// corpus: 2.2 s at 1921 entity files, 8.8 s at 3842. `entities.rid` exists so
+/// that there is a rowid to name.
+fn unsearchable(tx: &rusqlite::Transaction, rids: &[i64]) -> rusqlite::Result<()> {
+    let mut stmt = tx.prepare("DELETE FROM entities_fts WHERE rowid = ?1")?;
+    for rid in rids {
+        stmt.execute(params![rid])?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1780,5 +1806,139 @@ mod tests {
 
         assert_eq!(index.search("opaque").unwrap().len(), 2);
         assert_eq!(index.search("opaque sessions").unwrap().len(), 1);
+    }
+
+    /// **A cold rebuild is linear in the corpus** (TASK-b646631fa10a).
+    ///
+    /// It was quadratic: every insert was preceded by a delete from
+    /// `entities_fts` filtered on a column, which FTS5 answers by scanning the
+    /// whole virtual table, so the n-th entity paid for the n-1 before it.
+    /// Measured before the fix, release build: 0.7 s at 960 files, 2.2 s at
+    /// 1921, 8.8 s at 3842.
+    ///
+    /// A ratio and not a wall (ADR-cc65f1388a71): what one runner takes is not
+    /// the same number twice, but doubling the corpus doubles a linear rebuild
+    /// wherever it runs, and quadruples a quadratic one. The minimum of three
+    /// is the run the rest of the machine interfered with least.
+    #[test]
+    fn a_cold_rebuild_costs_twice_as_much_for_twice_the_corpus() {
+        fn corpus(n: u32) -> Temp {
+            let t = Temp::new();
+            for i in 0..n {
+                let mut e = task(
+                    &format!("{i:012x}"),
+                    &format!("Task number {i}"),
+                    TaskStatus::Open,
+                );
+                if let Entity::Task(ref mut x) = e {
+                    x.done_criteria = Some(format!("Ordinary criterion number {i}.\n"));
+                }
+                t.write(&e);
+            }
+            t
+        }
+        fn fastest_rebuild(t: &Temp, n: usize) -> std::time::Duration {
+            (0..3)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    let index = Index::in_memory(&t.0).unwrap();
+                    let took = start.elapsed();
+                    assert_eq!(index.all().unwrap().len(), n, "the rebuild is complete");
+                    took
+                })
+                .min()
+                .unwrap()
+        }
+
+        let small = corpus(2000);
+        let large = corpus(4000);
+        let at_n = fastest_rebuild(&small, 2000);
+        let at_2n = fastest_rebuild(&large, 4000);
+        let ratio = at_2n.as_secs_f64() / at_n.as_secs_f64();
+        eprintln!("in-memory rebuild: {at_n:?} at 2000, {at_2n:?} at 4000, ratio {ratio:.2}");
+        assert!(
+            ratio <= 2.5,
+            "a rebuild of 4000 entities took {ratio:.2} times one of 2000 \
+             ({at_2n:?} against {at_n:?}): the rebuild is no longer linear"
+        );
+    }
+
+    /// An entity whose file moved is searchable once, under its new path, and
+    /// not once per path it ever lived at. Counted in the virtual table itself:
+    /// `search` resolves through `entities`, which would hide a duplicate.
+    #[test]
+    fn an_entity_moved_to_another_path_is_one_searchable_row() {
+        let t = Temp::new();
+        let mut e = task("000000000001", "Wandering", TaskStatus::Open);
+        if let Entity::Task(ref mut x) = e {
+            x.done_criteria = Some("mentions huckleberry\n".into());
+        }
+        let legacy = t.0.join("tasks");
+        std::fs::create_dir_all(&legacy).unwrap();
+        let old = legacy.join("TASK-000000000001.md");
+        std::fs::write(&old, serialize_entity(&e)).unwrap();
+
+        let mut index = Index::open(&t.0).unwrap();
+        let fts_rows = |index: &Index| -> i64 {
+            index
+                .conn
+                .query_row(
+                    "SELECT count(*) FROM entities_fts WHERE entities_fts MATCH 'huckleberry'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(fts_rows(&index), 1);
+        assert_eq!(
+            index.search("huckleberry").unwrap()[0].path,
+            "tasks/TASK-000000000001.md"
+        );
+
+        std::fs::rename(&old, Store::new(&t.0).path_of(e.id())).unwrap();
+        index.refresh().unwrap();
+        assert_eq!(fts_rows(&index), 1, "the moved entity is searchable twice");
+        let hits = index.search("huckleberry").unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "entities/TASK-000000000001.md");
+
+        // And back, through a file edited on the way, so the text moves too.
+        if let Entity::Task(ref mut x) = e {
+            x.done_criteria = Some("mentions cloudberry\n".into());
+            x.version = 2;
+        }
+        std::fs::remove_file(Store::new(&t.0).path_of(e.id())).unwrap();
+        std::fs::write(&old, serialize_entity(&e)).unwrap();
+        index.refresh().unwrap();
+        assert_eq!(fts_rows(&index), 0, "the previous text is still searchable");
+        assert_eq!(index.search("cloudberry").unwrap().len(), 1);
+    }
+
+    /// **Every delete from `entities_fts` names a rowid** (TASK-b646631fa10a).
+    ///
+    /// FTS5 resolves a rowid in a b-tree and anything else by scanning every
+    /// row it holds, so a delete filtered on a column costs the size of the
+    /// corpus, and one per insert made the rebuild quadratic. The ratio test
+    /// above is the behaviour; this is the statement a reader of a red ratio
+    /// is looking for, read out of the code that runs rather than the tests.
+    #[test]
+    fn every_delete_from_the_search_table_is_by_rowid() {
+        let source = include_str!("index.rs");
+        let code = &source[..source.find("#[cfg(test)]").unwrap()];
+        let deletes: Vec<&str> = code
+            .match_indices("DELETE FROM entities_fts")
+            .map(|(i, _)| {
+                let rest = &code[i..];
+                &rest[..rest.find('"').unwrap_or(rest.len())]
+            })
+            .collect();
+        assert!(!deletes.is_empty(), "this test measures nothing");
+        for d in &deletes {
+            assert!(
+                d.split_whitespace().collect::<Vec<_>>().join(" ")
+                    == "DELETE FROM entities_fts WHERE rowid = ?1",
+                "a delete from entities_fts that is not by rowid: {d}"
+            );
+        }
     }
 }
