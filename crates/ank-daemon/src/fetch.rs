@@ -1,5 +1,5 @@
 //! The one thing this process writes into somebody else's repository
-//! (ADR-24e21cb83793).
+//! (ADR-4b45f344344f).
 //!
 //! **A tracking namespace, and never the corpus's own.** `init` wires
 //! `+refs/ank/*:refs/ank/*`, so the fetch a person runs by hand lands the

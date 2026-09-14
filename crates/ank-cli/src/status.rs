@@ -169,7 +169,7 @@ pub fn run(
         .collect();
 
     // **What a watcher mirrored, which is the same fact arriving without the
-    // round trip** (ADR-24e21cb83793). `refs/ank/claims/*` in this clone is
+    // round trip** (ADR-4b45f344344f). `refs/ank/claims/*` in this clone is
     // whatever somebody last fetched by hand, so on a parc of clones the
     // section above reports holders as of an hour ago and has no way to say so.
     // A watcher mirrors the remote's namespace on the interval its declaration
