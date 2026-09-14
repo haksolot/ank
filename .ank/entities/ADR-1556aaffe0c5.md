@@ -5,13 +5,17 @@ slug: freshness-is-decided-by-stat-before-hash-and-a-s
 title: Freshness is decided by stat before hash, and a stat may only say unchanged
 created: 2026-09-14T06:38:09Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/index.rs
 constraint: |
   The content hash stays the record of freshness: the index holds one per entity file and a file whose hash diverged is reindexed. Beside it the index records the file's mtime, size and inode, and the instant of its own last write, read from the same filesystem clock. On open, a file is hashed unless all three match what the index holds and its mtime is strictly older than that last write. A stat may only say unchanged, never changed: a mismatch, an unavailable field, or an mtime inside the racy window falls back to the hash. check reindexes fully and takes no shortcut.
+ratified: 929052403aad
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-09-14T07:03:11Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on 2026-09-14, release build, this corpus of 1921 entity files:
