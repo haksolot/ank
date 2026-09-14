@@ -409,7 +409,7 @@ fn live_claims_where(
     // walk asked `cat-file` once per claim ref, and a corpus carrying five
     // hundred of them paid five hundred processes to answer a question about
     // one identity.
-    let (refs, records) = git::ank_records(cwd)?;
+    let (refs, records) = git::ank_records(cwd, git::Namespaces::CLAIMS)?;
     for r in refs {
         let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
             continue;
@@ -978,7 +978,7 @@ pub fn on_task(cwd: &Path, identity: &str) -> Result<Option<Standing>> {
     // ref (TASK-5690eae1e008). The record is the one the enumeration named, so
     // this asks the same question it always asked -- in two processes for the
     // whole namespace instead of two per claim in it.
-    let (refs, records) = git::ank_records(cwd)?;
+    let (refs, records) = git::ank_records(cwd, git::Namespaces::CLAIMS)?;
     for r in refs {
         let Some(rest) = r.name.strip_prefix(CLAIMS_PREFIX) else {
             continue;
