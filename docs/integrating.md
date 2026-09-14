@@ -447,7 +447,7 @@ falling back to `$HOME/.config/ank`. It lives outside every repository, and it
 is keyed on the repository identity of ADR-621a7fd96ce1 rather than on a path:
 
     schema: 1
-    # Seconds between two mirrors of refs/ank/*. Optional; 60 when omitted.
+    # Seconds between two mirrors of refs/ank/claims/*. Optional; 60 when omitted.
     fetch: 60
     watch:
       # The key is the root commit, which `ank status --json` prints under
@@ -464,10 +464,12 @@ what would be watched without watching anything, and `ank watch --where` prints
 where the declaration is read from.
 
 **The only things it writes into a repository are that repository's own
-`index.db` and a mirror of `refs/ank/*`.** The mirror lands in
-`refs/ank/watch/origin/*`, a tracking namespace of the watcher's own: no branch,
-no tag, no working tree, no index of git's, and no `refs/ank/claims`. It takes
-no claim, holds none on anybody's behalf, and renews none -- a claim is renewed
+`index.db` and a mirror of `refs/ank/claims/*`.** The mirror lands in
+`refs/ank/watch/origin/claims/*`, a tracking namespace of the watcher's own, and
+carries the remote's claims alone: a mirrored proof is read by nobody, so none
+is fetched (ADR-4b45f344344f). No branch, no tag, no working tree, no index of
+git's, and no `refs/ank/claims`. It takes no claim, holds none on anybody's
+behalf, and renews none -- a claim is renewed
 by working, not by reporting (ADR-0bb7ea8991bc). A fetch that fails is a line on
 stderr and never an exit code: the watcher keeps watching, and a dead network
 downgrades what it offers rather than stopping it.

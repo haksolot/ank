@@ -53,7 +53,7 @@
 //! ADR-621a7fd96ce1, held outside every repository. Nothing here walks a
 //! filesystem looking for a corpus, in any direction, under any flag.
 //!
-//! **It mirrors `refs/ank/*` and nothing else.** The one thing it writes into
+//! **It mirrors `refs/ank/claims/*` and nothing else.** The one thing it writes into
 //! somebody else's repository is a fetch into [`fetch::TRACKING`], a namespace
 //! no verb writes and every reader of the plane skips. No branch, no tag, no
 //! working tree, no index of git's, and no local `refs/ank/claims`: a
@@ -244,7 +244,7 @@ fn report(declared: &Declaration, out: &mut dyn Write) {
     // discovers from their forge's rate limit.
     let _ = writeln!(
         out,
-        "mirroring {}* every {}s",
+        "mirroring {}claims/* every {}s",
         fetch::TRACKING,
         declared.fetch.as_secs()
     );
@@ -493,7 +493,7 @@ mod tests {
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("watching 1 corpus, 2 checkouts"), "{text}");
         assert!(
-            text.contains("mirroring refs/ank/watch/origin/* every 60s"),
+            text.contains("mirroring refs/ank/watch/origin/claims/* every 60s"),
             "{text}"
         );
     }

@@ -1239,6 +1239,120 @@ fn a_watching_cycle_moves_the_tracking_namespace_and_nothing_else() {
     );
 }
 
+/// The mirror carries claims and nothing else (ADR-4b45f344344f,
+/// TASK-21de469a0029).
+///
+/// **Counted under `GIT_TRACE`, and never timed.** A cycle is one fetch, and
+/// the refspec that fetch was given is read out of git's own account of the
+/// process it started rather than out of the source that builds it. The
+/// remote carries a proof as well as a claim, so a refspec that still reached
+/// the whole namespace has something to bring in, and the proof namespace of
+/// the mirror is asserted empty after the cycle. `status` is asked last,
+/// because the mirror exists for it: narrowing it must not cost the one answer
+/// it serves.
+#[test]
+fn a_cycle_mirrors_the_claims_namespace_and_no_proof() {
+    let home = Home::new();
+    let root = scratch("claims-only");
+    let origin = root.join("origin.git");
+    bare(&home, &origin);
+
+    let first = Corpus::new(root.join("first"), &home);
+    first.git(
+        &home,
+        &["config", "remote.origin.url", &origin.display().to_string()],
+    );
+    first.git(&home, &["push", "-q", "-u", "origin", "main"]);
+    let second = clone(&home, &origin, &root.join("second"));
+    let task = first.task_id(&home);
+
+    first.ank_as(
+        &home,
+        "first@ank.local",
+        &["claim", &task, "--criteria", "the mirror carries claims"],
+    );
+    // A detached proof on the remote, forged as a pipeline's attestation
+    // arrives: written into a clone and pushed by name.
+    let record = root.join("proof.yml");
+    std::fs::write(
+        &record,
+        format!(
+            "state: proof\ntask: {task}\nproofs:\n- identity: process:github-actions\n  \
+             attested: '2026-07-30T00:00:00Z'\n  proof:\n    type: test\n    ref: ci-run-4242\n"
+        ),
+    )
+    .unwrap();
+    let blob = first.git(&home, &["hash-object", "-w", &record.display().to_string()]);
+    let blob = String::from_utf8_lossy(&blob.stdout).trim().to_string();
+    let proof = format!("refs/ank/proof/{task}");
+    first.git(&home, &["update-ref", &proof, &blob]);
+    first.git(
+        &home,
+        &["push", "-q", "origin", &format!("{proof}:{proof}")],
+    );
+    let remote = first.git(&home, &["ls-remote", "origin", "refs/ank/*"]);
+    let remote = String::from_utf8_lossy(&remote.stdout).to_string();
+    assert!(
+        remote.contains(&proof) && remote.contains(&format!("refs/ank/claims/{task}")),
+        "the remote carries a claim and a proof: {remote}"
+    );
+
+    home.declare(&format!(
+        "schema: 1\nfetch: 1\nwatch:\n  {}: {}\n",
+        second.identity(&home),
+        second.root.display()
+    ));
+
+    let trace = root.join("cycle.trace");
+    let out = home
+        .daemon(&["--once"])
+        .env("GIT_TRACE", &trace)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    let text = std::fs::read_to_string(&trace).unwrap_or_default();
+    let fetches: Vec<&str> = text
+        .lines()
+        .filter_map(|l| l.split_once("trace: built-in: git fetch"))
+        .map(|(_, argv)| argv)
+        .collect();
+    assert_eq!(fetches.len(), 1, "one fetch per cycle: {text}");
+    assert!(
+        fetches[0].contains("+refs/ank/claims/*:refs/ank/watch/origin/claims/*"),
+        "the fetch names the claims namespace and its mirror: {}",
+        fetches[0]
+    );
+
+    assert_eq!(
+        second.ank_refs(&home, "refs/ank/watch/origin/proof"),
+        "",
+        "a proof was mirrored, and nobody reads one"
+    );
+    assert_eq!(
+        second.ank_refs(&home, "refs/ank/watch").lines().count(),
+        1,
+        "the mirror holds the one claim and nothing beside it: {}",
+        second.ank_refs(&home, "refs/ank/watch")
+    );
+    assert!(
+        second
+            .ank_refs(&home, "refs/ank/watch/origin/claims")
+            .contains(&format!("refs/ank/watch/origin/claims/{task}")),
+        "the claim is mirrored"
+    );
+
+    let status = second.ank_raw(
+        &home,
+        &[OsStr::new("status"), OsStr::new("--json")],
+        &second.root,
+    );
+    let status = String::from_utf8_lossy(&status.stdout).to_string();
+    assert!(
+        status.contains("\"holder\":\"first@ank.local\""),
+        "status still reports the mirrored claim: {status}"
+    );
+}
+
 /// A dead network is a normal Tuesday.
 ///
 /// The watcher is optional by construction, so a failed mirror downgrades what

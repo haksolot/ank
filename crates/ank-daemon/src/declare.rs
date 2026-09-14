@@ -32,7 +32,7 @@ use std::time::Duration;
 /// The reader's watch list, under [`user_dir`].
 pub const WATCH_FILE: &str = "watch.yml";
 
-/// How often `refs/ank/*` is mirrored when the declaration states nothing.
+/// How often `refs/ank/claims/*` is mirrored when the declaration states nothing.
 ///
 /// A minute, and deliberately three orders of magnitude above the warm poll.
 /// The poll is a stat of a local directory and costs nothing; this is a network
@@ -80,7 +80,7 @@ struct SchemaProbe {
 #[serde(deny_unknown_fields)]
 struct WatchFileDoc {
     schema: u32,
-    /// Seconds between two mirrors of `refs/ank/*`, stated by the reader who
+    /// Seconds between two mirrors of `refs/ank/claims/*`, stated by the reader who
     /// pays for them.
     ///
     /// **Optional, and still schema 1.** A field that may be omitted is
