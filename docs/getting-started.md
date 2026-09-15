@@ -251,6 +251,18 @@ remote has none. It refuses rather than guessing:
       -> git remote set-head origin -a
       -> or ank config default_branch <name>
 
+**Coordination between clones needs a remote named `origin`, and nothing
+else.** Whether claims travel is not configured: a repository with an `origin`
+pushes every claim to it as a compare-and-swap, and one without keeps them as
+local refs. GitHub is not required. A bare repository reachable over `file://`
+or `ssh` on the same network is a remote named `origin` like any other: `claim`
+reads it first, so the second clone to take a task is refused with code 4 and
+the holder named, and the push settles a race the read misses. Without one,
+`git worktree`s of a single clone are still arbitrated, because they share
+`refs/ank/`. **Two clones with no common origin are not arbitrated: both claims
+of one task succeed, both agents work, and nothing reports it**, not `status`,
+not `check`, not later.
+
 ## The two kinds this page uses
 
 Flat in `.ank/`, markdown with YAML frontmatter. Four kinds exist and this page
