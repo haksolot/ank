@@ -21,7 +21,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Barrier, OnceLock};
 use std::time::Instant;
 
 const ANK: &str = env!("CARGO_BIN_EXE_ank");
@@ -104,11 +104,21 @@ fn isolated_git_config() -> &'static Path {
     .as_path()
 }
 
+/// Every process this suite starts, git or the binary.
+///
+/// **Neither of git-for-Windows' path conversion switches is inherited.** An
+/// agent's Git Bash exports `MSYS_NO_PATHCONV` or `MSYS2_ARG_CONV_EXCL`, and
+/// with either set git reads a `file:///C:/...` remote as the literal path
+/// `/C:/...` and refuses it (TASK-143a310de8b6). The level 1 fixture below
+/// reaches its origin over `file://`, and whether it can do so is not the
+/// shell's to decide.
 fn spawn(program: impl AsRef<OsStr>) -> Command {
     let mut c = Command::new(program);
     let config = isolated_git_config();
     c.env("GIT_CONFIG_GLOBAL", config)
-        .env("GIT_CONFIG_SYSTEM", config);
+        .env("GIT_CONFIG_SYSTEM", config)
+        .env_remove("MSYS_NO_PATHCONV")
+        .env_remove("MSYS2_ARG_CONV_EXCL");
     c
 }
 
@@ -430,6 +440,12 @@ impl Corpus {
     /// to a file, on all three platforms, and it is git saying it rather than us
     /// inferring it.
     fn git_processes(&self, args: &[&str]) -> (Vec<String>, String) {
+        self.git_processes_at(&self.0, "reader@fixture", args)
+    }
+
+    /// The same count, of the binary run in `tree` under `agent`: another
+    /// worktree of this repository, and another identity working in it.
+    fn git_processes_at(&self, tree: &Path, agent: &str, args: &[&str]) -> (Vec<String>, String) {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let log = scratch::root().join(format!(
             "ank-status-trace-{}-{}",
@@ -438,8 +454,8 @@ impl Corpus {
         ));
         let out = spawn(ANK)
             .args(args)
-            .current_dir(&self.0)
-            .env("ANK_AGENT", "reader@fixture")
+            .current_dir(tree)
+            .env("ANK_AGENT", agent)
             .env("GIT_TRACE", &log)
             .output()
             .expect("the binary under test must run");
@@ -534,7 +550,12 @@ fn config_of(git_dir: &Path, key: &str) -> Option<String> {
 #[test]
 fn a_fixture_repository_is_not_maintained_under_the_test() {
     let c = Corpus::of(2);
-    let repos = repositories_under(&c.0);
+    let mut repos = repositories_under(&c.0);
+    // And the bare origin a level 1 plane pushes to, which is a sibling of its
+    // corpus rather than under it, and which is built by `Plane::new` and not
+    // by `Corpus::of`. Its worktrees share the corpus's own configuration.
+    let plane = Plane::new(Level::One, 2);
+    repos.extend(repositories_under(plane.origin.as_ref().unwrap()));
     assert!(
         !repos.is_empty(),
         "no repository found under {}: this asserts nothing",
@@ -1122,4 +1143,369 @@ fn a_claim_ref_going_stale_moves_the_counters_with_no_file_touched() {
     // that only ever noticed the first change would pass everything above.
     c.seed_claim(&id(0), "2099-01-01T00:00:00Z");
     assert_eq!(c.counters().1, live, "the claim reads live again");
+}
+
+// ---------------------------------------------------------------------------
+// The plane under local concurrency (TASK-24ea4fbba3df)
+// ---------------------------------------------------------------------------
+
+/// Which of the two levels that ship a fixture stands at (§7). Nothing is
+/// configured: the level is whether the repository has a remote named `origin`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Level {
+    /// No remote: a claim is a local ref and nothing is pushed.
+    Zero,
+    /// A bare `origin` reached over `file://`, which every write of the plane is
+    /// pushed to.
+    One,
+}
+
+/// The identity working in the nth worktree.
+///
+/// No slash in it, so the `--json` document carries it byte for byte and the
+/// assertion below reads the holder without a parser.
+fn agent(tree: usize) -> String {
+    format!("agent-{tree}@plane")
+}
+
+/// A `file://` URL for a local path: the path with `file://` in front and
+/// nothing else done to it, which is `file://C:/...` on Windows.
+///
+/// The form `tests/cli.rs` measured (TASK-143a310de8b6, TASK-5052971b8e9c): it
+/// is the one that does not depend on what an agent's shell exports, where the
+/// three-slash form is rewritten or refused according to `MSYS_NO_PATHCONV`.
+/// [`spawn`] clears that variable as well, so the fixture holds on both counts.
+fn file_url(path: &Path) -> String {
+    format!("file://{}", path.to_string_lossy().replace('\\', "/"))
+}
+
+/// One repository checked out in `trees` worktrees, at `level`.
+///
+/// **Worktrees and not clones**, because that is the case the specification
+/// makes a claim about without a remote: every worktree of one repository
+/// shares `refs/ank/`, so the local compare-and-swap arbitrates them, while
+/// each carries its own `index.db`. Separate clones share nothing at level 0,
+/// and §7 says so.
+struct Plane {
+    corpus: Corpus,
+    /// Every working tree, the main one first.
+    trees: Vec<PathBuf>,
+    /// The bare repository `origin` names, at level 1.
+    origin: Option<PathBuf>,
+}
+
+impl Plane {
+    fn new(level: Level, trees: usize) -> Plane {
+        let corpus = Corpus::new();
+        let origin = (level == Level::One).then(|| {
+            let origin = corpus.0.with_extension("origin.git");
+            let _ = std::fs::remove_dir_all(&origin);
+            let at = origin.to_str().unwrap();
+            corpus.git(&["init", "-q", "--bare", "-b", "main", at]);
+            // The bare remote is a repository too, and git maintains one it is
+            // not told not to (TASK-fc6bef21e268): a repack on the far side of a
+            // push would add processes to the count this fixture exists for.
+            corpus.git(&["-C", at, "config", "gc.auto", "0"]);
+            corpus.git(&["-C", at, "config", "maintenance.auto", "false"]);
+            corpus.git(&["remote", "add", "origin", &file_url(&origin)]);
+            corpus.git(&["push", "-q", "origin", "main"]);
+            origin
+        });
+        let mut paths = vec![corpus.0.clone()];
+        for n in 1..trees {
+            let tree = corpus.0.with_extension(format!("tree{n}"));
+            let _ = std::fs::remove_dir_all(&tree);
+            corpus.git(&[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &format!("tree-{n}"),
+                tree.to_str().unwrap(),
+            ]);
+            paths.push(tree);
+        }
+        Plane {
+            corpus,
+            trees: paths,
+            origin,
+        }
+    }
+
+    /// `ank <args>` in the nth worktree, under that worktree's identity.
+    fn ank(&self, tree: usize, args: &[&str]) -> Output {
+        spawn(ANK)
+            .args(args)
+            .current_dir(&self.trees[tree])
+            .env("ANK_AGENT", agent(tree))
+            .output()
+            .expect("the binary under test must run")
+    }
+
+    /// The object `refs/ank/claims/<id>` names on `origin`, `None` when the
+    /// remote carries no such ref.
+    fn on_origin(&self, id: &str) -> Option<String> {
+        let origin = self.origin.as_ref().expect("a level 1 plane has an origin");
+        let listed = self.corpus.git(&[
+            "ls-remote",
+            &file_url(origin),
+            &format!("refs/ank/claims/{id}"),
+        ]);
+        listed.split_whitespace().next().map(str::to_string)
+    }
+}
+
+impl Drop for Plane {
+    fn drop(&mut self) {
+        for tree in self.trees.iter().skip(1) {
+            let _ = std::fs::remove_dir_all(tree);
+        }
+        if let Some(origin) = &self.origin {
+            let _ = std::fs::remove_dir_all(origin);
+        }
+    }
+}
+
+/// The program of every git process a trace lists, sorted.
+///
+/// **Not the argument lists, and not in the order they were written.** An
+/// argument list carries what differs between two fixtures by construction --
+/// an absolute path, a blob named after a record that holds an instant -- and
+/// at level 1 the far side of a `file://` fetch or push is a child writing to
+/// the same trace while the near side goes on, so the order of two lines is
+/// the scheduler's. What is being compared is which processes started and how
+/// many of each.
+fn programs(started: &[String]) -> Vec<String> {
+    let mut programs: Vec<String> = started
+        .iter()
+        .map(|argv| {
+            argv.split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .to_string()
+        })
+        .collect();
+    programs.sort();
+    programs
+}
+
+/// Returns once the clock has moved into a later second than the one it was
+/// called in.
+///
+/// A wait on a state and not a wall: nothing is asserted about how long it
+/// takes, and what it guarantees is that a record stamped afterwards differs
+/// from one stamped before.
+fn the_second_turns() {
+    let second = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    };
+    let called = second();
+    while second() == called {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// Five worktrees, five identities, counted: the three halves of the criterion
+/// at one level.
+///
+/// Phase 0 of the architecture review of 2026-09-15, which assumed that agents
+/// on one machine contend over one `.ank/` and one index, and that a claim needs
+/// the network to reach another agent. §7 asserts otherwise, and this measures
+/// it through the binary rather than reading it.
+///
+/// **Counted, never timed** (ADR-cc65f1388a71), with `GIT_TRACE` at an absolute
+/// path. At level 1 the count includes the processes git starts on the far
+/// side of `file://` -- `upload-pack`, `receive-pack` and what they run --
+/// because they inherit the trace and they are processes the verb caused.
+fn the_plane_under_concurrency(level: Level) {
+    let one = Plane::new(level, 1);
+    let five = Plane::new(level, 5);
+
+    // Every worktree has opened its own index under its own identity, which is
+    // the state five agents working side by side are in. A cold index pays for
+    // its construction once, and that cost belongs to whatever ran first.
+    for plane in [&one, &five] {
+        for tree in 0..plane.trees.len() {
+            let out = plane.ank(tree, &["status", "--json"]);
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "status in tree {tree}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+
+    // (3) The git process count of each verb is the same with five worktrees as
+    // with one. Measured in the main worktree of both, by the same identity,
+    // over the same corpus in the same state.
+    let held = id(0);
+    for verb in [
+        &["claim", held.as_str()][..],
+        &["status"][..],
+        &["context"][..],
+    ] {
+        if verb[0] == "context" {
+            // `context` under a claim renews it, and a record is written to the
+            // second: renewed inside the second both claims were taken, it is
+            // the same blob, already on origin, and the push sends no pack --
+            // four processes fewer at level 1, and which of the two fixtures
+            // landed there was the scheduler's call. Measured failing that way
+            // in two runs of ten. Both renewals are made to change the record,
+            // which is the renewal an agent's work actually performs.
+            the_second_turns();
+        }
+        let (alone, _) = one.corpus.git_processes_at(&one.trees[0], &agent(0), verb);
+        let (among, _) = five
+            .corpus
+            .git_processes_at(&five.trees[0], &agent(0), verb);
+        eprintln!(
+            "level {level:?}: ank {verb:?} started {} git process(es) with one worktree, {} with five",
+            alone.len(),
+            among.len()
+        );
+        assert_eq!(
+            programs(&alone),
+            programs(&among),
+            "level {level:?}: ank {verb:?} starts different git with five worktrees than with one\n\
+             one: {alone:#?}\nfive: {among:#?}"
+        );
+        // The level is a fact of the fixture and not an assumption: a level 1
+        // plane whose claim never reached the network would make every count
+        // above a level 0 count twice.
+        if verb[0] == "claim" {
+            let networked = among
+                .iter()
+                .any(|a| a.starts_with("push ") || a.starts_with("ls-remote "));
+            assert_eq!(
+                networked,
+                level == Level::One,
+                "level {level:?}: the claim's network use: {among:#?}"
+            );
+        }
+    }
+
+    // (2) A claim taken in worktree A is what `status` reports in worktree B:
+    // with no push at level 0, where there is nothing to push to, and after the
+    // push at level 1, which `claim` performed itself.
+    match level {
+        Level::Zero => assert_eq!(five.corpus.git(&["remote"]), "", "level 0 has no remote"),
+        Level::One => assert!(
+            five.on_origin(&held).is_some(),
+            "level 1: the claim taken in tree 0 is on origin"
+        ),
+    }
+    let out = five.ank(1, &["status", "--json"]);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc = String::from_utf8_lossy(&out.stdout).to_string();
+    let elsewhere = doc
+        .split_once("\"elsewhere\":[")
+        .map(|(_, rest)| rest)
+        .unwrap_or_else(|| panic!("status names what other agents hold: {doc}"));
+    assert!(
+        elsewhere.contains(&format!(
+            "\"id\":\"{held}\",\"title\":\"Example task\",\"holder\":\"{}\"",
+            agent(0)
+        )),
+        "level {level:?}: tree 1 does not see the claim tree 0 took: {doc}"
+    );
+
+    // (1) Five claims of one task, one per worktree and issued together: one
+    // winner and four refusals at code 4. Tree 0's identity hands its task back
+    // first, since an identity already holding a claim is refused for being
+    // busy, which is another answer to another question.
+    let out = five.ank(
+        0,
+        &[
+            "release",
+            "--reason",
+            "the race below needs this identity free",
+        ],
+    );
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let contested = id(1);
+    let gate = Barrier::new(five.trees.len());
+    let outs: Vec<Output> = std::thread::scope(|s| {
+        let racers: Vec<_> = (0..five.trees.len())
+            .map(|tree| {
+                let (gate, five, contested) = (&gate, &five, &contested);
+                s.spawn(move || {
+                    gate.wait();
+                    five.ank(tree, &["claim", contested])
+                })
+            })
+            .collect();
+        racers.into_iter().map(|r| r.join().unwrap()).collect()
+    });
+    let transcript = || {
+        outs.iter()
+            .enumerate()
+            .map(|(tree, o)| {
+                format!(
+                    "tree {tree}: {:?} {}{}",
+                    o.status.code(),
+                    String::from_utf8_lossy(&o.stdout),
+                    String::from_utf8_lossy(&o.stderr)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let mut codes: Vec<Option<i32>> = outs.iter().map(|o| o.status.code()).collect();
+    codes.sort();
+    assert_eq!(
+        codes,
+        [Some(0), Some(4), Some(4), Some(4), Some(4)],
+        "level {level:?}: five concurrent claims\n{}",
+        transcript()
+    );
+    let winner = outs
+        .iter()
+        .position(|o| o.status.code() == Some(0))
+        .unwrap();
+    for (tree, out) in outs.iter().enumerate().filter(|(t, _)| *t != winner) {
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(&format!("held by {}", agent(winner))),
+            "level {level:?}: tree {tree} is refused naming the winner\n{}",
+            transcript()
+        );
+    }
+    let local = five
+        .corpus
+        .git(&["rev-parse", &format!("refs/ank/claims/{contested}")]);
+    let record = five.corpus.git(&["cat-file", "-p", &local]);
+    assert!(
+        record.contains(&format!("holder: {}", agent(winner))),
+        "level {level:?}: the ref every worktree shares names the winner: {record}"
+    );
+    if level == Level::One {
+        assert_eq!(
+            five.on_origin(&contested).as_deref(),
+            Some(local.as_str()),
+            "level 1: origin carries the winner's record and no other"
+        );
+    }
+}
+
+#[test]
+fn five_worktrees_under_five_identities_are_arbitrated_and_counted_at_level_0() {
+    the_plane_under_concurrency(Level::Zero);
+}
+
+#[test]
+fn five_worktrees_under_five_identities_are_arbitrated_and_counted_at_level_1_over_file() {
+    the_plane_under_concurrency(Level::One);
 }
