@@ -1245,6 +1245,13 @@ fn dispatch(
     if inv.command == "skills" {
         return crate::skills::run(&inv, cwd, out);
     }
+    // The eighth, for the seventh's reason (ADR-64f32c74a0f9). What `update`
+    // answers about is this binary and the releases published of it, and a
+    // binary that could only learn it is behind from inside a corpus would go
+    // quiet in exactly the directory a person updates from.
+    if inv.command == "update" {
+        return crate::update::run(&inv, cwd, out);
+    }
 
     let s = startup(&inv, cwd)?;
     let code = match inv.command {
@@ -1418,7 +1425,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            28,
+            29,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1496,6 +1503,7 @@ mod tests {
         for routed in [
             "init", "help", "config", "claim", "context", "done", "log", "release", "new", "find",
             "attest", "amend", "show", "edit", "migrate", "tui", "mcp", "watch", "skills",
+            "update",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
