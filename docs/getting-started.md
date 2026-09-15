@@ -166,8 +166,48 @@ reader who follows advice that visibly does nothing concludes the tool is broken
 rather than that their copy is old.
 
 The other half, an old binary reading an old corpus, is not detectable: nothing
-in the files says a newer format exists. That one is `--version` and the
-paragraphs above.
+in the files says a newer format exists. That one is `--version`, the update
+below, and the paragraphs above.
+
+### Updating
+
+`ank update --check` reads the latest release from the repository releases are
+published from, with `git ls-remote --tags`, and installs nothing:
+
+    $ ank update --check
+    running  0.7.0
+    latest   0.7.0
+    up to date
+
+It exits 0 whether or not a newer release exists, because 8 belongs to `check`,
+and when one does its last line says `a newer release exists: ank update installs
+it`. A script branches on `newer`:
+
+    $ ank update --check --json
+    {"contract":1,"current":"0.7.0","latest":"0.7.0","newer":false}
+
+`ank update` installs that release through the route that placed the binary you
+are running: `npm install -g @haksolot/ank@<version>` for a binary inside the npm
+package, and otherwise the installer for your platform, told the directory the
+binary already sits in. It downloads and unpacks nothing itself, so the checksum
+is verified where it always was. At or above the latest release it installs
+nothing and says so:
+
+    $ ank update
+    running  0.7.0
+    latest   0.7.0
+    up to date
+
+Otherwise it prints the command it hands the install to before running it, and
+exits with that command's code. `--version <v>` installs the release it names,
+an older one included. It never installs the skills: when the release it
+installed carries another skill revision than the binary it replaced, it names
+`ank skills --install` in one line and leaves running it to you.
+
+Only this verb asks: no other verb checks for a newer release or announces one,
+so nothing reaches the network for it until you run `ank update`. A binary built
+under a cargo target directory was placed by no route, so `update` refuses it at
+exit 7 and names `cargo build` instead.
 
 ## Initialise a repository
 
