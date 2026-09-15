@@ -82,7 +82,11 @@ fn release_repository(what: &str, tags: &[&str]) -> PathBuf {
 /// A directory of stub route executables.
 ///
 /// Each one appends `start:<name>` and then `arg:<value>` per argument to
-/// `$ANK_STUB_RECORD`, and exits `$ANK_STUB_CODE`. Two of them do what the
+/// `$ANK_STUB_RECORD`, and exits `$ANK_STUB_CODE`. The POSIX stubs write their
+/// lines to a file of their own and append it in one write: `curl` and `sh` run
+/// at once, and line by line their records interleaved on macOS.
+///
+/// Two of them do what the
 /// route they stand in for does to the directory, and only when that code is 0
 /// and `$ANK_STUB_INSTALLED` names a file: the installer (`sh`, `powershell`)
 /// first records whether the running executable is still where it was, as
@@ -118,7 +122,7 @@ fn stubs(what: &str) -> PathBuf {
             let act = match *name {
                 "sh" => {
                     "prev=; for a in \"$@\"; do [ \"$prev\" != --dir ] || d=$a; prev=$a; done\n\
-                     if [ -e \"$d/ank\" ]; then echo exists:yes; else echo exists:no; fi >> \"$ANK_STUB_RECORD\"\n\
+                     if [ -e \"$d/ank\" ]; then echo exists:yes; else echo exists:no; fi >> \"$t\"\n\
                      if [ \"$ANK_STUB_CODE\" = 0 ] && [ -n \"${ANK_STUB_INSTALLED-}\" ]; then\n\
                      rm -f \"$d/ank\"; cp \"$ANK_STUB_INSTALLED\" \"$d/ank\"; chmod +x \"$d/ank\"; fi\n"
                 }
@@ -133,8 +137,10 @@ fn stubs(what: &str) -> PathBuf {
                 &path,
                 format!(
                     "#!/bin/sh\n\
-                     {{ echo start:{name}; for a in \"$@\"; do printf 'arg:%s\\n' \"$a\"; done; }} >> \"$ANK_STUB_RECORD\"\n\
+                     t=\"$ANK_STUB_RECORD.$$\"\n\
+                     {{ echo start:{name}; for a in \"$@\"; do printf 'arg:%s\\n' \"$a\"; done; }} > \"$t\"\n\
                      {act}\
+                     cat \"$t\" >> \"$ANK_STUB_RECORD\"; rm -f \"$t\"\n\
                      exit \"${{ANK_STUB_CODE:-0}}\"\n"
                 ),
             )
