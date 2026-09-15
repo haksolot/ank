@@ -5,7 +5,7 @@ slug: the-guide-states-what-level-1-needs-a-remote-nam
 title: "The guide states what level 1 needs: a remote named origin, and nothing else"
 created: 2026-09-15T09:21:01Z
 author: claude-code/fable-5.1+distributed-review
-status: open
+status: in_progress
 scope:
   - docs/getting-started.md
 blocked_by: []
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 1
+version: 2
 ---
 
 The architecture review of 2026-09-15 took "machines without a common remote"
