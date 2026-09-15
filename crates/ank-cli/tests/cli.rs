@@ -13688,7 +13688,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 33] = [
+const NOT_A_PATH: [&str; 35] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13740,6 +13740,10 @@ const NOT_A_PATH: [&str; 33] = [
     // refs it asks for are the claims namespace, and neither comes off the
     // command line (ADR-47e2ac102f58).
     "--remote",
+    // A switch, and a release version: what `update` asks about is published
+    // somewhere else, and neither names a file (ADR-64f32c74a0f9).
+    "--check",
+    "--version",
     "--reason",
     "--title",
     "--blocked-by",
@@ -19484,8 +19488,10 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // each verb can be: `read` there, `tui` through the pseudo-terminal in
     // `tests/tui.rs`, because `ank tui --json` refuses at exit 9 into a pipe.
     // Twenty-nine since TASK-a6c9d98a38ac, which gave `skills` a document, and
-    // thirty since TASK-97fd1992567a, which gave `archive` one.
-    assert_eq!(checked, 30, "one fixture per document the surface returns");
+    // thirty since TASK-97fd1992567a, which gave `archive` one, and thirty-one
+    // since TASK-161c402c27fb, which gave `update --check` one, pinned in
+    // `tests/update.rs` against a bare repository standing in for the releases.
+    assert_eq!(checked, 31, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the

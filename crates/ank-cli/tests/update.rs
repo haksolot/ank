@@ -11,6 +11,7 @@
 //! a wall clock (CLAUDE.md): a process that did not start leaves no line, on
 //! every platform, however loaded the runner is.
 
+mod fixture;
 mod scratch;
 
 use std::fs;
@@ -355,4 +356,25 @@ fn help_names_the_flags_and_the_repository_seam() {
             "help update does not name {needle}:\n{text}"
         );
     }
+}
+
+/// **The document is pinned by a golden** (ADR-6fd69efb629c), captured from the
+/// process. The running version is masked the way `tui.rs` masks what it knows
+/// is volatile: it moves at every release and the shape does not, and the test
+/// knows the value because the build told it.
+#[test]
+fn the_check_document_is_pinned_by_a_golden() {
+    let bare = release_repository("update-golden", NEWER_TAGS);
+    let run = check(&bare, true);
+    assert_eq!(run.code(), Some(0), "{}", run.stderr());
+    let masked = run.stdout().replace(
+        &format!("\"current\":\"{RUNNING}\""),
+        "\"current\":\"<VERSION>\"",
+    );
+    assert_ne!(
+        masked,
+        run.stdout(),
+        "the running version was not in the document"
+    );
+    fixture::pin("update-check", &masked);
 }
