@@ -5,7 +5,7 @@ slug: five-worktrees-five-identities-counted-the-coord
 title: "Five worktrees, five identities, counted: the coordination plane under local concurrency"
 created: 2026-09-15T09:21:01Z
 author: claude-code/fable-5.1+distributed-review
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/tests/**
 blocked_by: []
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 1
+version: 2
 ---
 
 Phase 0 of the architecture review of 2026-09-15, which assumed that several
