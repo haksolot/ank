@@ -286,6 +286,58 @@ pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
     Ok(refs)
 }
 
+/// Every tag `repository` holds, by name, peeled tags excluded (`--refs`).
+///
+/// The one read `update` makes (ADR-64f32c74a0f9), and the only `ls-remote` in
+/// the tool that names a repository rather than `origin`: what it asks about is
+/// where releases are published, not the corpus this clone coordinates through.
+/// `GIT_TERMINAL_PROMPT=0` because a verb that asks nothing must not let git ask
+/// for credentials on its behalf; a repository that wants them is unreachable.
+///
+/// The error carries the repository and the command, so the refusal names what
+/// was asked.
+pub fn tags_of(cwd: &Path, repository: &str) -> Result<Vec<String>> {
+    let args = ["ls-remote", "--tags", "--refs", repository];
+    debug_assert!(PLUMBING.contains(&args[0]));
+    let out = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .output()
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                env_missing()
+            } else {
+                CliError::new(
+                    ExitCode::Environment,
+                    format!("git {}: {e}", args.join(" ")),
+                )
+            }
+        })?;
+    if !out.status.success() {
+        // The first line is git's reason; what follows is advice about access
+        // rights that the hint below replaces with the command itself.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let reason = stderr
+            .lines()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("")
+            .trim();
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!("the releases of {repository} could not be read: {reason}"),
+        )
+        .with_hint(format!("git {}", args.join(" "))));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text
+        .lines()
+        .filter_map(|l| l.trim_end().split_once('\t'))
+        .filter_map(|(_, name)| name.strip_prefix("refs/tags/"))
+        .map(str::to_string)
+        .collect())
+}
+
 /// Brings the remote's view of one `refs/ank/*` ref into this clone.
 ///
 /// `claim` runs it before deciding, so a task held in another clone is refused

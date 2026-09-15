@@ -49,6 +49,7 @@ mod index;
 mod migrate;
 mod skills;
 mod status;
+mod update;
 mod verify;
 
 fn main() {

@@ -85,6 +85,16 @@ const SKILLS_OUT: &[Field] = &[
     ),
 ];
 
+/// `update --check --json`: the running version, the latest release, and
+/// whether the second is above the first (ADR-64f32c74a0f9). `latest` is null
+/// when the repository holds no tag of the release form, and `newer` is then
+/// false: nothing published is above anything.
+const UPDATE_CHECK_OUT: &[Field] = &[
+    f("current", Type::Str),
+    opt("latest", Type::Str),
+    f("newer", Type::Bool),
+];
+
 /// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
 ///
 /// `tui` draws a screen and, under `--json`, answers what that screen holds:
@@ -1601,6 +1611,51 @@ pub const COMMANDS: &[CommandSpec] = &[
         // directory and npx's own run on the same stdout, so `--json` beside it
         // is refused above.
         output: &[one(SKILLS_OUT)],
+        owner_task: None,
+    },
+    // After `skills` and before `help`, which is §4's order, and in their group
+    // for their reason: what it answers about is this binary, before any corpus
+    // is involved (ADR-64f32c74a0f9).
+    CommandSpec {
+        name: "update",
+        group: "set up a repository",
+        renews: Renews::Never,
+        // It reads no corpus and coordinates nothing: the one git it runs asks
+        // a repository somewhere else which releases exist, and that needs no
+        // repository here, let alone a signing-capable git.
+        coordinates: false,
+        summary: "whether a newer release of this binary exists; --check reports the running and the latest version and installs nothing",
+        subcommands: &[],
+        max_positionals: 0,
+        positional_help: "",
+        flags: &[switch("--check"), flag("--version")],
+        refuses: &[
+            refuses(
+                ExitCode::Environment,
+                "the release repository cannot be read: it is named, with the git ls-remote that failed",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "git is not on PATH, which is how the latest release is read",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "without --check, until installing lands with TASK-1c8c100554a1",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "--version with --check, which reports the latest release and installs none",
+            ),
+        ],
+        notes: &[
+            "the latest release is the highest tag of the exact form vMAJOR.MINOR.PATCH that git ls-remote --tags --refs lists, compared per component as numbers; any other tag is ignored",
+            "the repository asked is https://github.com/haksolot/ank, or the one ANK_UPDATE_REPOSITORY names, a mirror included",
+            "--check exits 0 whether or not a newer release exists, since 8 is check's: the answer is what it prints, and newer under --json",
+            "it is the only verb that reaches the network for this question: no other verb checks for a newer release or announces one",
+            "the running version is the one ank --version prints first",
+        ],
+        refuses_globals: &[],
+        output: &[one(UPDATE_CHECK_OUT)],
         owner_task: None,
     },
     CommandSpec {
