@@ -5,7 +5,7 @@ slug: the-guide-states-what-level-1-needs-a-remote-nam
 title: "The guide states what level 1 needs: a remote named origin, and nothing else"
 created: 2026-09-15T09:21:01Z
 author: claude-code/fable-5.1+distributed-review
-status: open
+status: done
 scope:
   - docs/getting-started.md
 blocked_by: []
@@ -13,8 +13,21 @@ done_criteria: |
   In the section of docs/getting-started.md that covers the default branch and remotes, beside the refs/remotes/origin/HEAD refusal, the guide states that coordination between clones needs only a remote named origin, that a bare repository reachable over file:// or ssh on the same network is one, and that two clones with no common origin are not arbitrated: both claims of one task succeed and nothing reports it. The tests that read the guide, crates/ank-cli/tests/adopt.rs and the guide-reading tests in crates/ank-cli/tests/cli.rs, stay green.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/eb4b8b05a633@c1be31d
+    tree: scope/3232f8d08f7c
+    criteria: "502434214934"
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@c1be31d
+    tree: scope/3232f8d08f7c
+    criteria: "502434214934"
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 The architecture review of 2026-09-15 took "machines without a common remote"
