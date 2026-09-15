@@ -5,7 +5,7 @@ slug: the-history-of-this-repository-counted-how-often
 title: "The history of this repository, counted: how often the corpus was stale under an agent, and how often disjoint claims collided in one file"
 created: 2026-09-15T09:21:01Z
 author: claude-code/fable-5.1+distributed-review
-status: open
+status: in_progress
 scope:
   - .ank/entities/**
 blocked_by: []
@@ -13,7 +13,7 @@ done_criteria: |
   ank log on this task records, for every task branch merged into main between 2026-08-01 and 2026-09-15: (a) how many were opened on a base whose .ank/ was already behind the last change to .ank/ on main at that moment, and out of how many; (b) among pairs of tasks whose claims overlapped in time, how many had intersecting scopes, how many produced a git conflict at merge, and how many a red first CI run. Every number is recorded beside the git or gh command that produced it, so that whoever reads the log can run it again.
 criteria_by: creator
 schema: 4
-version: 1
+version: 2
 ---
 
 Phase 0 of the architecture review of 2026-09-15, the half that no stress
