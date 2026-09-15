@@ -411,13 +411,19 @@ fn write_all(skills: &[Embedded]) -> Result<PathBuf> {
 }
 
 /// `npx`, found the way a shell would find it, or `None`.
+fn npx_on_path() -> Option<PathBuf> {
+    on_path("npx")
+}
+
+/// A program found the way a shell would find it, or `None`.
 ///
 /// **By hand, because `Command::new("npx")` does not find it on Windows.** There
 /// npx is `npx.cmd`, and the standard library's lookup appends `.exe` alone; the
 /// extensionless `npx` beside it is a POSIX script Windows cannot run. So the
 /// walk tries the extensions `PATHEXT` names, in its order, restricted to the
-/// four a process can be started from.
-fn npx_on_path() -> Option<PathBuf> {
+/// four a process can be started from. `update` finds `npm` and `powershell`
+/// the same way, for the same reason.
+pub fn on_path(program: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     let names: Vec<String> = if cfg!(windows) {
         let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
@@ -425,10 +431,10 @@ fn npx_on_path() -> Option<PathBuf> {
             .split(';')
             .map(str::to_ascii_lowercase)
             .filter(|ext| [".com", ".exe", ".bat", ".cmd"].contains(&ext.as_str()))
-            .map(|ext| format!("npx{ext}"))
+            .map(|ext| format!("{program}{ext}"))
             .collect()
     } else {
-        vec!["npx".to_string()]
+        vec![program.to_string()]
     };
     std::env::split_paths(&path)
         .flat_map(|dir| names.iter().map(move |name| dir.join(name)))

@@ -1624,7 +1624,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // a repository somewhere else which releases exist, and that needs no
         // repository here, let alone a signing-capable git.
         coordinates: false,
-        summary: "whether a newer release of this binary exists; --check reports the running and the latest version and installs nothing",
+        summary: "replaces this binary with a published release through the route that placed it; --check reports the running and the latest version and installs nothing",
         subcommands: &[],
         max_positionals: 0,
         positional_help: "",
@@ -1636,15 +1636,23 @@ pub const COMMANDS: &[CommandSpec] = &[
             ),
             refuses(
                 ExitCode::Environment,
-                "git is not on PATH, which is how the latest release is read",
+                "git is not on PATH, which is how the latest release is read; or the route's npm, curl, sh or powershell is not",
             ),
             refuses(
-                ExitCode::Generic,
-                "without --check, until installing lands with TASK-1c8c100554a1",
+                ExitCode::Prerequisite,
+                "the running binary is under a cargo target directory, which no route placed: cargo build replaces it",
             ),
             refuses(
                 ExitCode::Generic,
                 "--version with --check, which reports the latest release and installs none",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "--version that is not MAJOR.MINOR.PATCH, with or without a leading v",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "--json without --check, which returns no document: the route writes to the same stdout",
             ),
         ],
         notes: &[
@@ -1652,7 +1660,11 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the repository asked is https://github.com/haksolot/ank, or the one ANK_UPDATE_REPOSITORY names, a mirror included",
             "--check exits 0 whether or not a newer release exists, since 8 is check's: the answer is what it prints, and newer under --json",
             "it is the only verb that reaches the network for this question: no other verb checks for a newer release or announces one",
-            "the running version is the one ank --version prints first",
+            "the running version is the one ank --version prints first; at or above the latest release nothing is installed, and --version installs the release it names, older included",
+            "a binary inside a node_modules/@haksolot/ank tree runs npm install -g @haksolot/ank@<version>; any other runs install.sh piped from its raw URL, or install.ps1 on Windows, with --version, the directory of the running executable and --no-welcome",
+            "it never downloads or unpacks an archive itself, and exits with the route's own code when the route fails",
+            "on Windows the running executable is renamed aside before the route writes, and put back if the route fails having written none",
+            "after the route exits 0 it runs the installed binary with --version, and names ank skills --install in one line when the skill revision changed; it never runs it",
         ],
         refuses_globals: &[],
         output: &[one(UPDATE_CHECK_OUT)],
