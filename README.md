@@ -20,6 +20,11 @@ The skill is not the binary: the first line installs no skill, and the second
 hands the ones the binary carries to the agent you run. Needs **git 2.34 or
 newer**. Every other route is in [handing ank to an agent][agents].
 
+```sh
+ank update --check               # the running version and the latest release; installs nothing
+ank update                       # the latest release, through the route that placed this binary
+```
+
 ---
 
 An agent that spawns on your codebase can read every line of it. It cannot read

@@ -267,6 +267,8 @@ see for itself that its instructions predate its binary. Worth checking when the
 skill came from a clone and the binary came from a release: those are two points
 in history, and nothing forces them to be the same one.
 
+An agent learns whether its binary is behind with `ank update --check`.
+
 ## One agent, one working tree, one identity
 
 The nominal case is a tree per agent, a clone or a `git worktree`, each on its
