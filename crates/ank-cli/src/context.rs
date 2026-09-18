@@ -96,6 +96,21 @@ pub(crate) struct Plane {
     /// process a thing to depend on. Filled only when the caller asks for
     /// [`git::Namespaces::MIRROR_CLAIMS`].
     pub mirrored: HashMap<EntityId, Coordination>,
+    /// Every claim and completion the walk read, lapsed ones included, with the
+    /// instant its record states: what `context --since` compares against the
+    /// cursor (ADR-894d4bfbf9bd). Filled from the same records as the two maps
+    /// above, so asking for it costs no process.
+    pub recorded: Vec<Recorded>,
+}
+
+/// One claim or completion as the plane read it, and where it was read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Recorded {
+    pub id: EntityId,
+    /// Never a proof: the plane files none.
+    pub record: Record,
+    /// Read from the watcher's mirror of another clone, rather than here.
+    pub mirrored: bool,
 }
 
 /// The claim half alone, for the callers that only ask who holds what.
@@ -185,6 +200,14 @@ pub(crate) fn plane(
         // as the namespace it mirrors, so the reading is the same reading; what
         // differs is which map it lands in, and therefore who is allowed to act
         // on it.
+        let mirrored = ns == git::Namespaces::MIRROR_CLAIMS;
+        if !matches!(record, Record::Proof(_)) {
+            plane.recorded.push(Recorded {
+                id: id.clone(),
+                record: record.clone(),
+                mirrored,
+            });
+        }
         let state = match record {
             Record::Proof(_) => {
                 warnings.push(format!(
@@ -211,7 +234,7 @@ pub(crate) fn plane(
                 }
             },
         };
-        if ns == git::Namespaces::MIRROR_CLAIMS {
+        if mirrored {
             plane.mirrored.insert(id, state);
         } else {
             plane.claims.insert(id, state);
@@ -518,17 +541,7 @@ pub fn build(
     let mut warnings = Vec::new();
     let coord = coordination(&repo.corpus, &mut warnings)?;
 
-    // The default branch is resolved for the warning alone: `context` prunes
-    // nothing, so an unresolvable branch changes no output but that one line
-    // (§7). Read once, warned once.
-    let origin = git::origin_head(&repo.corpus).unwrap_or(None);
-    if git::resolve_default_branch(cfg.default_branch.as_deref(), origin.as_deref()).is_err() {
-        warnings.push(
-            "default branch indeterminable, completion refs kept as they are \
-             (ank config default_branch <name>)"
-                .to_string(),
-        );
-    }
+    warn_on_default_branch(repo, cfg, &mut warnings);
 
     let rows = index.all()?;
     let shorts = shorts_of(repo)?;
@@ -542,6 +555,21 @@ pub fn build(
         None => build_orientation(
             repo, cfg, &store, &rows, &shorts, &coord, path, limit, warnings,
         ),
+    }
+}
+
+/// The default branch is resolved for the warning alone: `context` prunes
+/// nothing, so an unresolvable branch changes no output but that one line
+/// (§7). Read once, warned once, and by both documents, since `--since` names
+/// completions and this is the line about how completion refs are kept.
+fn warn_on_default_branch(repo: &Repo, cfg: &Config, warnings: &mut Vec<String>) {
+    let origin = git::origin_head(&repo.corpus).unwrap_or(None);
+    if git::resolve_default_branch(cfg.default_branch.as_deref(), origin.as_deref()).is_err() {
+        warnings.push(
+            "default branch indeterminable, completion refs kept as they are \
+             (ank config default_branch <name>)"
+                .to_string(),
+        );
     }
 }
 
@@ -1810,6 +1838,221 @@ pub fn render_json(view: &View, budget: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// What moved since the holder's last work (ADR-894d4bfbf9bd)
+// ---------------------------------------------------------------------------
+
+/// An entity whose file moved at or after the cursor: named, never carried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedEntity {
+    pub id: EntityId,
+    pub short: String,
+    pub kind: EntityKind,
+}
+
+/// A claim or a completion recorded at or after the cursor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedRecord {
+    pub id: EntityId,
+    pub short: String,
+    /// The holder of a claim, or the identity that finished the task.
+    pub who: String,
+    /// `claimed` or `completed`, as the record states it.
+    pub at: String,
+}
+
+/// `context --since`: what moved since the caller last worked on the task it
+/// holds, and nothing else.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Since {
+    pub head: EntityId,
+    pub short: String,
+    /// The cursor, `expires - ttl` on the held claim, in the record's format.
+    pub cursor: String,
+    pub entities: Vec<MovedEntity>,
+    pub claims: Vec<MovedRecord>,
+    pub completions: Vec<MovedRecord>,
+    pub warnings: Vec<String>,
+}
+
+/// Reads what moved since the cursor the caller's held claim names.
+///
+/// **From the planes `context` already opens, and from nothing else**
+/// (ADR-cc65f1388a71): the claims namespace and the watcher's mirror in the one
+/// enumeration the plane always is, and the index for the files. The mirror is
+/// asked for here and not by plain `context`, and it costs no process: it is
+/// one more prefix in the same walk.
+///
+/// **At or after, never strictly after.** The cursor is this clone's clock, an
+/// mtime is this filesystem's and a mirrored record another machine's, so a
+/// skew makes the answer either miss a change or repeat one, and only the
+/// second is safe. An instant that does not parse is kept for the same reason.
+///
+/// The renewal the decision makes part of this read is not performed here: it
+/// is the one the dispatch applies to every verb of the holder, after the verb
+/// succeeds, so the cursor is read before it moves.
+pub fn build_since(repo: &Repo, cfg: &Config, identity: &str) -> Result<Since> {
+    let mut warnings = Vec::new();
+    let plane = plane(
+        &repo.corpus,
+        git::Namespaces::CLAIMS | git::Namespaces::MIRROR_CLAIMS,
+        &mut warnings,
+    )?;
+    // No claim, no lease, no cursor: a `--since` with nothing to be since is
+    // refused rather than answered from a guess, and the moment without a claim
+    // is the moment the whole perimeter is the right read anyway.
+    let Some(head) = held_in(&plane.claims, identity) else {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            "no task in progress for this agent: --since is measured from the lease on the task held",
+        )
+        .with_hint("ank claim <id>"));
+    };
+    warn_on_default_branch(repo, cfg, &mut warnings);
+    let cursor = plane
+        .recorded
+        .iter()
+        .find_map(|r| match &r.record {
+            Record::Claim(c) if !r.mirrored && r.id == head => claim::cursor(c),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            CliError::new(
+                ExitCode::Generic,
+                format!("the claim on {head} states no expiry to measure from"),
+            )
+            .with_hint("ank check")
+        })?;
+
+    let index = Index::open(&repo.ank)?;
+    let shorts = shorts_of(repo)?;
+    let short = |id: &EntityId| shorts.get(id).cloned().unwrap_or_else(|| id.to_string());
+    let entities = index
+        .modified_since(cursor.saturating_mul(1_000_000_000))?
+        .into_iter()
+        .map(|row| MovedEntity {
+            short: short(&row.id),
+            id: row.id,
+            kind: row.kind,
+        })
+        .collect();
+
+    let since = |at: &str| claim::parse_utc(at).is_none_or(|t| t >= cursor);
+    let mut claims = Vec::new();
+    let mut completions = Vec::new();
+    for r in &plane.recorded {
+        let (list, who, at) = match &r.record {
+            Record::Claim(c) => (&mut claims, &c.holder, &c.claimed),
+            Record::Completed(c) => (&mut completions, &c.identity, &c.completed),
+            Record::Proof(_) => continue,
+        };
+        if since(at) {
+            list.push(MovedRecord {
+                id: r.id.clone(),
+                short: short(&r.id),
+                who: who.clone(),
+                at: at.clone(),
+            });
+        }
+    }
+    // The mirror carries the same record as the namespace it mirrors once the
+    // two agree, and one fact is named once.
+    for list in [&mut claims, &mut completions] {
+        list.sort_by(|a, b| (&a.id, &a.at, &a.who).cmp(&(&b.id, &b.at, &b.who)));
+        list.dedup();
+    }
+
+    Ok(Since {
+        short: short(&head),
+        head,
+        cursor: claim::format_utc(cursor),
+        entities,
+        claims,
+        completions,
+        warnings,
+    })
+}
+
+/// The page: the cursor, then each kind of movement under its own header, and
+/// the verb that reads what any of them now says.
+pub fn render_since(since: &Since, style: Style) -> String {
+    let mut out: Vec<String> = since
+        .warnings
+        .iter()
+        .map(|w| format!("{} {w}", style.yellow("warning:")))
+        .collect();
+    out.push(format!(
+        "{} {}, the last work on {}",
+        style.header("SINCE"),
+        since.cursor,
+        style.id(&since.short)
+    ));
+    if since.entities.is_empty() && since.claims.is_empty() && since.completions.is_empty() {
+        out.push(String::new());
+        out.push("nothing moved".to_string());
+        return format!("{}\n", out.join("\n"));
+    }
+    if !since.entities.is_empty() {
+        out.push(String::new());
+        out.push(style.header(&format!("CHANGED ({})", since.entities.len())));
+        for e in &since.entities {
+            out.push(format!("  {}  {}", style.id(&e.short), e.kind.as_str()));
+        }
+    }
+    for (title, list) in [("CLAIMED", &since.claims), ("FINISHED", &since.completions)] {
+        if list.is_empty() {
+            continue;
+        }
+        out.push(String::new());
+        out.push(style.header(&format!("{title} ({})", list.len())));
+        for r in list {
+            out.push(format!("  {}  {} at {}", style.id(&r.short), r.who, r.at));
+        }
+    }
+    out.push(String::new());
+    out.push(style.next("> ank show <id> for what any of them says now"));
+    format!("{}\n", out.join("\n"))
+}
+
+/// The document, whole: a listing answers a program whole (ADR-3e6ce108edcd),
+/// and every row is an id and the instant that named it, never the content.
+pub fn render_since_json(since: &Since) -> String {
+    let entities: Vec<String> = since
+        .entities
+        .iter()
+        .map(|e| {
+            Obj::new()
+                .str("id", &e.id.to_string())
+                .str("short", &e.short)
+                .str("kind", e.kind.as_str())
+                .finish()
+        })
+        .collect();
+    let records = |list: &[MovedRecord], who: &str, at: &str| -> Vec<String> {
+        list.iter()
+            .map(|r| {
+                Obj::new()
+                    .str("id", &r.id.to_string())
+                    .str("short", &r.short)
+                    .str(who, &r.who)
+                    .str(at, &r.at)
+                    .finish()
+            })
+            .collect()
+    };
+    Obj::document()
+        .str("head", &since.head.to_string())
+        .str("since", &since.cursor)
+        .array("entities", entities)
+        .array("claims", records(&since.claims, "holder", "claimed"))
+        .array(
+            "completions",
+            records(&since.completions, "identity", "completed"),
+        )
+        .strings("warnings", &since.warnings)
+        .finish()
+}
+
+// ---------------------------------------------------------------------------
 // The verb
 // ---------------------------------------------------------------------------
 
@@ -1831,6 +2074,26 @@ pub fn run(
         None => None,
     };
     let path = perimeter(inv, repo)?;
+    if inv.has("--since") {
+        let mut since = build_since(repo, cfg, identity)?;
+        // A path beside --since is ignored, as it is under a claim without it:
+        // the question is about the task held, and the positional names none.
+        if path.is_some() {
+            since.warnings.insert(
+                0,
+                format!(
+                    "active claim on {}, --since answers for it (release to explore elsewhere)",
+                    since.short
+                ),
+            );
+        }
+        if inv.json() {
+            let _ = writeln!(out, "{}", render_since_json(&since));
+        } else if !inv.quiet() {
+            let _ = write!(out, "{}", render_since(&since, inv.style()));
+        }
+        return Ok(ExitCode::Ok);
+    }
     let mut view = build(repo, cfg, identity, path.as_deref(), limit)?;
 
     // A path argument with a claim in hand is ignored, and said so: exploring

@@ -13688,7 +13688,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 35] = [
+const NOT_A_PATH: [&str; 36] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13756,6 +13756,9 @@ const NOT_A_PATH: [&str; 35] = [
     // A sibling skill's name, which the binary carries rather than locates
     // (ADR-a8f9c603a0e7).
     "--method",
+    // A switch: the instant it answers from is the lease on the task held,
+    // and nothing about it comes off the command line (ADR-894d4bfbf9bd).
+    "--since",
     "--body",
     "--type",
     "--status",
@@ -19503,8 +19506,10 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // Twenty-nine since TASK-a6c9d98a38ac, which gave `skills` a document, and
     // thirty since TASK-97fd1992567a, which gave `archive` one, and thirty-one
     // since TASK-161c402c27fb, which gave `update --check` one, pinned in
-    // `tests/update.rs` against a bare repository standing in for the releases.
-    assert_eq!(checked, 31, "one fixture per document the surface returns");
+    // `tests/update.rs` against a bare repository standing in for the releases,
+    // and thirty-two since TASK-53a8f5ca2539, which gave `context --since` one,
+    // pinned in `tests/context_since.rs` across two worktrees.
+    assert_eq!(checked, 32, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the

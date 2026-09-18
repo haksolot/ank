@@ -1096,6 +1096,24 @@ impl Index {
         )
     }
 
+    /// The entities whose file the refresh recorded as modified at or after
+    /// `at_ns`, nanoseconds since the epoch, by id (ADR-894d4bfbf9bd).
+    ///
+    /// The mtime is the one the refresh that `open` already made wrote into
+    /// `files` (ADR-1556aaffe0c5), so the answer costs one statement and no
+    /// stat of its own. A file whose mtime the filesystem could not state is
+    /// never named: the row holds no instant to compare.
+    pub fn modified_since(&self, at_ns: i64) -> Result<Vec<Row>> {
+        self.query(
+            &format!(
+                "{SELECT_ROW} WHERE {} AND path IN (SELECT path FROM files WHERE mtime >= ?1) \
+                 ORDER BY id",
+                self.visible()
+            ),
+            params![at_ns],
+        )
+    }
+
     /// The log entries about an entity, **oldest first**.
     ///
     /// This is the query the previous layout computed as an address, and the

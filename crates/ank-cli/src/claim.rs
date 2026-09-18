@@ -2409,6 +2409,23 @@ pub fn renewal_ttl(record: &ClaimRecord, cap: Duration) -> Duration {
     granted.min(cap)
 }
 
+/// The instant of the holder's last work on the task a claim is about, in
+/// seconds since the epoch: `expires - ttl` (ADR-894d4bfbf9bd).
+///
+/// **Derived, never stored.** Every renewal recomputes `expires` from the lease
+/// it writes back beside it, so the difference is the moment of that renewal,
+/// and at the claim it is the moment of the claim. A field of its own would be
+/// a schema change for every binary reading a shared ref, since the record is
+/// `deny_unknown_fields`; this one costs none. A record from before `ttl` was
+/// written reads it as the default, as [`renewal_ttl`] does.
+pub fn cursor(record: &ClaimRecord) -> Option<i64> {
+    let ttl = match record.ttl {
+        0 => DEFAULT_TTL.as_secs(),
+        secs => secs,
+    };
+    Some(parse_utc(&record.expires)? - ttl as i64)
+}
+
 /// Every task's status, read off the index rows and never off the files
 /// (ADR-f3d1dea65d84): a status is a field a row holds, and loading every task
 /// to learn it made each claim pay for the whole corpus, twice

@@ -130,6 +130,41 @@ const TUI_OUT: &[Field] = &[
     ),
 ];
 
+/// `context --since`: what moved since the holder's last work on the task it
+/// holds (ADR-894d4bfbf9bd). Every row is an id and the instant that named it,
+/// and never the content, which is what `show` answers.
+const CONTEXT_SINCE_OUT: &[Field] = &[
+    f("head", Type::Str),
+    f("since", Type::Str),
+    f(
+        "entities",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("kind", Type::Str),
+        ]),
+    ),
+    f(
+        "claims",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("holder", Type::Str),
+            f("claimed", Type::Str),
+        ]),
+    ),
+    f(
+        "completions",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("identity", Type::Str),
+            f("completed", Type::Str),
+        ]),
+    ),
+    f("warnings", Type::Strings),
+];
+
 /// An entity row as `scope` and `find` render one.
 const ROW: &[Field] = &[
     f("id", Type::Str),
@@ -730,14 +765,21 @@ pub const COMMANDS: &[CommandSpec] = &[
         subcommands: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
-        flags: &[flag("--limit")],
+        flags: &[flag("--limit"), switch("--since")],
         refuses: &[
             OUTSIDE_THE_REPOSITORY,
             refuses(ExitCode::Generic, "--limit is not a number"),
+            refuses(ExitCode::Transition, "--since with no claim held by this agent: the cursor is the lease"),
         ],
-        notes: &["a constraint is never truncated in execution mode; a cut is always announced"],
+        notes: &[
+            "a constraint is never truncated in execution mode; a cut is always announced",
+            "--since names the entities whose file changed, and the claims and completions recorded, at or after the held claim's expires minus its ttl, by id and never by content; it renews that claim, so the cursor moves when it is read",
+        ],
         refuses_globals: &[],
-        output: &[one(CONTEXT_OUT)],
+        output: &[
+            when("without --since", CONTEXT_OUT),
+            when("with --since", CONTEXT_SINCE_OUT),
+        ],
         owner_task: None,
     },
     CommandSpec {
