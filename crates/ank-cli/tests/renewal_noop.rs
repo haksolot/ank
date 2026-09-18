@@ -30,6 +30,17 @@ const MARK: &str = "trace: built-in: git ";
 const AGENT: &str = "claude-code@holder";
 const T: &str = "TASK-000000000001";
 
+/// The TTL every claim below is taken with, in seconds, and the `--ttl`
+/// spelling of it. A renewal computes `now + ttl`, so the test needs the number
+/// to arrange the expiry a renewal in a chosen second will write.
+const TTL_SECONDS: u64 = 7_200;
+const TTL: &str = "2h";
+
+/// How many seconds a verb is allowed to take between the instant the test
+/// names and the instant the binary stamps. Only the format guard uses it; the
+/// arrangement below does not depend on a duration.
+const TOLERATED_SECONDS: u64 = 3;
+
 fn isolated_git_config() -> &'static Path {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
@@ -87,6 +98,41 @@ fn cross_a_second() {
     while now_secs() == start {
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// Returns at the start of `second`, having spent the wait asleep in short
+/// steps so the return lands near its beginning rather than anywhere in it.
+fn wait_for_second(second: u64) {
+    while now_secs() < second {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+/// `YYYY-MM-DDThh:mm:ssZ`, the stamp `claim` writes into a record.
+///
+/// Restated here because the binary exposes no library to borrow it from, and
+/// a restated format is a format free to drift -- so
+/// [`Level1::assert_stamp_matches_the_binary`] confronts it with one the binary
+/// wrote before anything rests on it.
+fn rfc3339(epoch_secs: u64) -> String {
+    let days = (epoch_secs / 86_400) as i64;
+    let secs = epoch_secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        secs / 3600,
+        (secs % 3600) / 60,
+        secs % 60
+    )
 }
 
 /// A repository with a corpus of one task, and a bare origin it pushes to.
@@ -175,15 +221,49 @@ impl Level1 {
         lines
     }
 
+    /// The `expires:` stamp the record currently carries.
+    fn expiry(&self) -> String {
+        self.record()
+            .lines()
+            .find_map(|l| l.strip_prefix("expires: ").map(str::to_string))
+            .expect("a claim record carries an expiry")
+    }
+
+    /// Confronts [`rfc3339`] with a stamp the binary wrote, so nothing below
+    /// rests on a format this file only believes it shares.
+    ///
+    /// The renewal that produced the record happened somewhere inside the
+    /// second the caller names or the one after it -- the verb is what sits
+    /// between -- so both are admitted, and a format that differs in any other
+    /// way matches neither.
+    fn assert_stamp_matches_the_binary(&self, at_or_after: u64) {
+        let written = self.expiry();
+        let candidates: Vec<String> = (0..=TOLERATED_SECONDS)
+            .map(|d| rfc3339(at_or_after + d + TTL_SECONDS))
+            .collect();
+        assert!(
+            candidates.contains(&written),
+            "the binary writes an expiry this file cannot reproduce: \
+             wrote {written}, this file formats {candidates:?}"
+        );
+    }
+
     /// Moves the claim's expiry on the ref and on the origin alike, so the next
     /// renewal changes the record and its push leases on what the origin holds.
     fn forge_expiry_ahead(&self) {
+        self.forge_expiry("2099-01-01T00:00:00Z");
+    }
+
+    /// The same route, to a stamp of the caller's choosing: the expiry a
+    /// renewal in a chosen second computes, so the identical-record case is
+    /// arranged instead of waited for.
+    fn forge_expiry(&self, stamp: &str) {
         let rewritten: String = self
             .record()
             .lines()
             .map(|l| {
                 if l.starts_with("expires: ") {
-                    "expires: 2099-01-01T00:00:00Z\n".to_string()
+                    format!("expires: {stamp}\n")
                 } else {
                     format!("{l}\n")
                 }
@@ -247,23 +327,39 @@ fn names(lines: &[String]) -> String {
 fn a_renewal_that_changes_nothing_writes_nothing_and_pushes_nothing() {
     let r = Level1::new("renewal-noop");
 
-    // The claim and the context have to land in one second for the renewal to
-    // compute the record already there. Started at the top of a second that is
-    // nearly always so; a run that straddles two is recognised by the record
-    // having moved, released, and taken again.
+    // A renewal writes `now + ttl` and is a no-op when the record already says
+    // so. Racing the claim for that was what made this test fail on a slow
+    // runner for a reason it does not measure (TASK-faf554e366c5): what decided
+    // each attempt was the phase of the second at which `claim` happened to
+    // write, which nothing aligned.
+    //
+    // So the state is arranged. The expiry a renewal in a named second computes
+    // is written onto the ref and the origin first, and the second is then
+    // entered at its start, which leaves a whole second for one `context` to
+    // reach its renewal. The loop remains because a verb can still be slower
+    // than that, and it is now the unlikely case rather than the usual one.
+    cross_a_second();
+    r.ok(&["claim", T, "--ttl", TTL]);
+    let claimed_at = now_secs();
+    let _ = r.traced_context("warm");
+    // Nothing below is trusted until this file and the binary are shown to
+    // write the same twenty characters.
+    r.assert_stamp_matches_the_binary(claimed_at);
+
     let mut identical = None;
     for _ in 0..10 {
-        cross_a_second();
-        r.ok(&["claim", T, "--ttl", "2h"]);
+        let target = now_secs() + 2;
+        r.forge_expiry(&rfc3339(target + TTL_SECONDS));
+        wait_for_second(target);
         let before = r.record();
         let lines = r.traced_context("identical");
         if r.record() == before {
             identical = Some(lines);
             break;
         }
-        r.ok(&["release", "--reason", "straddled a second, taking it again"]);
     }
-    let identical = identical.expect("ten claims never shared a second with their renewal");
+    let identical = identical
+        .expect("ten arranged seconds never held a whole context: the verb takes over a second");
 
     r.forge_expiry_ahead();
     let changing = r.traced_context("changing");
