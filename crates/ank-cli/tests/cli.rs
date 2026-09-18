@@ -16745,9 +16745,22 @@ fn init_writes_the_same_refspec_this_suite_assumes() {
         .output()
         .unwrap();
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let config = std::fs::read_to_string(dir.join(".git/config")).unwrap();
+    // Asked of git and not read off `.git/config`: with no remote, `init`
+    // writes the refspec into a file included once some remote has a URL
+    // (TASK-f067ae7c84ff), so the resolved key is the one that says what a
+    // fetch will use.
+    let out = git_command(&dir)
+        .args(["config", "remote.origin.url", "https://example.invalid/r"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = git_command(&dir)
+        .args(["config", "--get-all", "remote.origin.fetch"])
+        .output()
+        .unwrap();
+    let config = String::from_utf8_lossy(&out.stdout).into_owned();
     assert!(
-        config.contains(init_refspec()),
+        config.lines().any(|l| l == init_refspec()),
         "init no longer writes {}: {config}",
         init_refspec()
     );

@@ -238,10 +238,17 @@ fn an_accepted_declaration_still_creates_the_corpus_and_declares_it() {
         detached.join(".ank").join("config.yml").is_file(),
         "the corpus is created at the target"
     );
+    // Resolved by git once origin has a URL, and not read off the local file:
+    // with no remote, the refspec lives in a file that file includes only
+    // then (TASK-f067ae7c84ff).
+    git(
+        &detached,
+        &["config", "remote.origin.url", "https://example.invalid/r"],
+    );
+    let fetch = git(&detached, &["config", "--get-all", "remote.origin.fetch"]);
     assert!(
-        local_config(&detached).contains("+refs/ank/*:refs/ank/*"),
-        "and carries the refspec: {}",
-        local_config(&detached)
+        fetch.lines().any(|l| l == "+refs/ank/*:refs/ank/*"),
+        "and carries the refspec: {fetch}"
     );
     let declared = reader.text();
     assert!(
