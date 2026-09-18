@@ -1230,12 +1230,31 @@ pub fn renew(
     cap: Duration,
 ) -> Result<Written> {
     let ttl = renewal_ttl(record, cap);
-    let refreshed = Record::Claim(ClaimRecord {
+    let refreshed = ClaimRecord {
         expires: format_utc(now_secs() + ttl.as_secs() as i64),
         ttl: ttl.as_secs(),
         ..record.clone()
-    });
-    put(cwd, id, &refreshed, Some(object))
+    };
+    // **A renewal that changes nothing writes nothing** (TASK-43c2e64d1d30).
+    // The record is stamped to the second, so a renewal inside the second of the
+    // last write computes the record already on the ref; writing it cost a blob,
+    // an `update-ref` of a sha onto itself and, at level 1, a push of bytes the
+    // remote already had — four to five processes that said nothing. The
+    // comparison is in memory, against the record the caller just read.
+    //
+    // Reported as a local write that won: the ref already says what this call
+    // would have made it say, so there is neither a loss to announce nor a
+    // failed push to warn about. What is given up is the compare-and-swap on a
+    // ref read a moment earlier in the same process, and the retry of a push
+    // that failed within that second; the next renewal that moves the expiry
+    // performs both.
+    if &refreshed == record {
+        return Ok(Written {
+            cas: Cas::Won,
+            sync: Sync::Local,
+        });
+    }
+    put(cwd, id, &Record::Claim(refreshed), Some(object))
 }
 
 // ---------------------------------------------------------------------------
