@@ -5,7 +5,7 @@ slug: a-concurrent-claim-reports-a-git-lock-failure-in
 title: A concurrent claim reports a git lock failure instead of the lost race it is
 created: 2026-09-18T14:24:23Z
 author: claude-code/opus-5+ref-lock
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/tests/**
@@ -15,8 +15,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: diagnose
+proof:
+  - type: test
+    ref: local/6dfa79c6b651@9ef235b
+    tree: scope/1dd503010b4c
+    criteria: a895ac73aaea
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@9ef235b
+    tree: scope/1dd503010b4c
+    criteria: a895ac73aaea
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 3
+version: 5
 ---
 
 Found by the release rehearsal of v0.8.0, run 35354395320 on main at fbe3ffb,
