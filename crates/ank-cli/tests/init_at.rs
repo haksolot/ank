@@ -238,13 +238,16 @@ fn an_accepted_declaration_still_creates_the_corpus_and_declares_it() {
         detached.join(".ank").join("config.yml").is_file(),
         "the corpus is created at the target"
     );
-    // Resolved by git once origin has a URL, and not read off the local file:
-    // with no remote, the refspec lives in a file that file includes only
-    // then (TASK-f067ae7c84ff).
+    // `init` writes the refspec only once `origin` itself has a URL, so that
+    // nothing it leaves behind makes `git remote add origin` refuse
+    // (TASK-0878e19675f4): the URL is set first, and a second `init` at the
+    // same target is what installs the key.
     git(
         &detached,
         &["config", "remote.origin.url", "https://example.invalid/r"],
     );
+    let (code, said) = reader.run(&source, &["init", "--at", &detached.to_string_lossy()]);
+    assert_eq!(code, 0, "a second detached init succeeds: {said}");
     let fetch = git(&detached, &["config", "--get-all", "remote.origin.fetch"]);
     assert!(
         fetch.lines().any(|l| l == "+refs/ank/*:refs/ank/*"),

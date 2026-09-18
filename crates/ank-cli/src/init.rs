@@ -372,92 +372,43 @@ fn ensure_line(path: &Path, line: &str) -> Result<bool> {
     Ok(true)
 }
 
-/// The file, beside the repository's own `config`, that holds the refspec
-/// until `origin` exists.
-const DEFERRED_REFSPEC_FILE: &str = "ank-origin.config";
-
-/// The include that reads [`DEFERRED_REFSPEC_FILE`], and only once some remote
-/// has a URL.
-const DEFERRED_INCLUDE: &str = "includeIf.hasconfig:remote.*.url:**.path";
-
-/// Hosts do not fetch non-standard refs on their own (§7). The refspec is set
-/// even without a configured remote: it will be there by the time `origin` is
-/// added, which avoids a silent trap at the first push.
+/// Hosts do not fetch non-standard refs on their own (§7), so `origin` needs
+/// `+refs/ank/*` in its fetch refspec. It is written **only once a remote named
+/// `origin` has a URL**, and never before.
 ///
-/// **Without a remote, it is written where `git remote add` cannot see it**
-/// (TASK-f067ae7c84ff). This wrote `remote.origin.fetch` into `.git/config`
-/// with `--add` whatever the state, and git reads any local key under
-/// `remote.origin` as the remote being configured. Measured on git 2.47:
-/// after `ank init` in a repository with no remote, `git remote add origin
-/// <url>` exited 3 with `remote origin already exists` -- verbatim the command
-/// `ank status --remote` names as the repair -- and `git remote set-url`, the
-/// way round it, left `+refs/ank/*` as the only fetch refspec, so a plain `git
-/// fetch` brought no branches. A plain `include.path` fails the same way: an
-/// included key has the scope of the file including it.
+/// Writing it earlier is what TASK-f067ae7c84ff and TASK-0878e19675f4 were
+/// both about, and the two attempts are worth stating so neither is tried
+/// again. Writing `remote.origin.fetch` into `.git/config` outright made git
+/// read `origin` as already configured, so `git remote add origin <url>` exited
+/// 3 with `remote origin already exists` -- verbatim the command `ank status
+/// --remote` names as the repair -- and `git remote set-url`, the way round it,
+/// left `+refs/ank/*` as the only refspec, so a plain `git fetch` brought no
+/// branch. Deferring the key into a file included under
+/// `includeIf.hasconfig:remote.*.url:**` fixed the common order and not the
+/// general case: `remote.*.url` is git's only form of that condition and cannot
+/// name `origin`, so any remote with a URL turned the include live and the
+/// refusal came back. Measured on git 2.47.3: `remote add upstream` then
+/// `remote add origin` exits 3, and worktree scope hides the key no better.
 ///
-/// So the refspec goes into a file of its own, included under
-/// `hasconfig:remote.*.url:**`. The condition is false while no remote has a
-/// URL, so `git remote add origin <url>` sees no `origin` and writes both its
-/// URL and the `+refs/heads/*` refspec; the URL makes the condition true, and
-/// `remote.origin.fetch` then carries both refspecs with no second command.
-///
-/// Two states keep the direct `--add`, and both are stated rather than
-/// discovered. `origin` already has a URL: the key is harmless there, and
-/// direct. git older than 2.36 does not know the condition and would ignore
-/// the include in silence, which is the trap this function exists to avoid;
-/// the refused `remote add` is the louder of the two failures.
-///
-/// And one state gets nothing: a repository with remotes but none named
-/// `origin`. The include would be live at once, `origin` would be configured
-/// by its refspec alone, and `git remote add origin` would refuse exactly as
-/// before. Writing nothing leaves that command working, and re-running `ank
-/// init` once `origin` exists takes the first branch above.
+/// There is no config placement a plain `git fetch` reads and `git remote add`
+/// does not, so the trap is closed by not setting it early rather than by
+/// hiding it. What that costs is one more `ank init` after the remote is added,
+/// which is the step the guide already describes and which the second branch
+/// below completes; what it buys is that the command `status` prints works from
+/// every state `init` can leave behind.
 fn ensure_refspec(root: &Path) -> Result<bool> {
     let existing =
         git::run(root, &["config", "--get-all", "remote.origin.fetch"]).unwrap_or_default();
     if existing.lines().any(|l| l.trim() == REFSPEC) {
         return Ok(false);
     }
-    // One process for both questions: whether origin has a URL, and whether
-    // any remote does. Exit 1 is "no such key", which is the empty answer.
-    let urls = git::output(root, &["config", "--get-regexp", r"^remote\..*\.url$"])?;
-    let urls = String::from_utf8_lossy(&urls.stdout);
-    let has_origin = urls.lines().any(|l| l.starts_with("remote.origin.url "));
-    let no_remote = urls.trim().is_empty();
-    if !has_origin && !no_remote {
+    // One process for the only question that matters: whether `origin` has a
+    // URL. Exit 1 is "no such key", which is the empty answer.
+    let url = git::run(root, &["config", "--get", "remote.origin.url"]).unwrap_or_default();
+    if url.trim().is_empty() {
         return Ok(false);
     }
-    if has_origin || git::version()? < (2, 36) {
-        git::run(root, &["config", "--add", "remote.origin.fetch", REFSPEC])?;
-        return Ok(true);
-    }
-
-    let included = git::run(root, &["config", "--get-all", DEFERRED_INCLUDE]).unwrap_or_default();
-    if included.lines().any(|l| l.trim() == DEFERRED_REFSPEC_FILE) {
-        return Ok(false);
-    }
-    // In the common directory, beside the `config` that includes it: a
-    // relative include is resolved against the including file, and a linked
-    // worktree shares that `config` with the checkout that made it.
-    let common = git::common_dir(root).ok_or_else(|| {
-        CliError::new(
-            ExitCode::Generic,
-            format!(
-                "{}: no git directory to write the refspec into",
-                root.display()
-            ),
-        )
-    })?;
-    let file = common.join(DEFERRED_REFSPEC_FILE);
-    let file = file.to_string_lossy();
-    git::run(
-        root,
-        &["config", "--file", &file, "remote.origin.fetch", REFSPEC],
-    )?;
-    git::run(
-        root,
-        &["config", "--add", DEFERRED_INCLUDE, DEFERRED_REFSPEC_FILE],
-    )?;
+    git::run(root, &["config", "--add", "remote.origin.fetch", REFSPEC])?;
     Ok(true)
 }
 
@@ -546,17 +497,23 @@ mod tests {
             .unwrap()
             .contains(".ank/"));
 
-        // Deferred, with no remote here: the key is absent until a URL is,
-        // and present with one (TASK-f067ae7c84ff).
-        assert!(r.added_refspec);
+        // Nothing about origin while origin has no URL, and nothing that
+        // would make git read it as configured (TASK-0878e19675f4).
+        assert!(!r.added_refspec);
         let out =
             git::run(&t.0, &["config", "--get-all", "remote.origin.fetch"]).unwrap_or_default();
-        assert!(!out.contains(REFSPEC), "live before any remote: {out}");
+        assert!(!out.contains(REFSPEC), "written before any remote: {out}");
+        let config = fs::read_to_string(t.0.join(".git/config")).unwrap();
+        assert!(!config.contains("includeIf"), "{config}");
+        assert!(!t.0.join(".git/ank-origin.config").exists());
+
+        // And once origin has a URL, the next init writes it outright.
         git::run(
             &t.0,
             &["config", "remote.origin.url", "https://example.invalid/r"],
         )
         .unwrap();
+        assert!(init_at(&t.0).unwrap().added_refspec);
         let out = git::run(&t.0, &["config", "--get-all", "remote.origin.fetch"]).unwrap();
         assert!(out.contains(REFSPEC), "{out}");
     }
@@ -572,14 +529,14 @@ mod tests {
             vec!["already initialised, nothing to do"]
         );
 
-        // The refspec is not duplicated, and neither is its include.
-        let out = git::run(&t.0, &["config", "--get-all", DEFERRED_INCLUDE]).unwrap();
-        assert_eq!(out.lines().count(), 1, "{out}");
+        // Once origin has a URL the refspec is written once, and a further
+        // init adds no second copy.
         git::run(
             &t.0,
             &["config", "remote.origin.url", "https://example.invalid/r"],
         )
         .unwrap();
+        assert!(init_at(&t.0).unwrap().added_refspec);
         let out = git::run(&t.0, &["config", "--get-all", "remote.origin.fetch"]).unwrap();
         assert_eq!(out.lines().filter(|l| l.trim() == REFSPEC).count(), 1);
         assert_eq!(init_at(&t.0).unwrap(), Report::default(), "with origin");

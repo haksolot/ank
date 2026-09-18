@@ -16748,15 +16748,23 @@ fn init_writes_the_same_refspec_this_suite_assumes() {
         .output()
         .unwrap();
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    // Asked of git and not read off `.git/config`: with no remote, `init`
-    // writes the refspec into a file included once some remote has a URL
-    // (TASK-f067ae7c84ff), so the resolved key is the one that says what a
-    // fetch will use.
+    // Asked of git and not read off `.git/config`. `init` writes the refspec
+    // only once `origin` itself has a URL, so that nothing it leaves behind
+    // makes `git remote add origin` refuse (TASK-0878e19675f4): the URL is set
+    // first, and a second `init` is what installs the key.
     let out = git_command(&dir)
         .args(["config", "remote.origin.url", "https://example.invalid/r"])
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", stderr(&out));
+    let out = ank_command()
+        .arg("init")
+        .arg(&dir)
+        .env("ANK_AGENT", "claude-code@ank")
+        .current_dir(std::env::temp_dir())
+        .output()
+        .unwrap();
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
     let out = git_command(&dir)
         .args(["config", "--get-all", "remote.origin.fetch"])
         .output()

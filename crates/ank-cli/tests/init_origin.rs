@@ -1,15 +1,20 @@
 //! `ank init` leaves a repository in which `git remote add origin <url>` works,
 //! and the remote it adds fetches both branches and `refs/ank/*`
-//! (TASK-f067ae7c84ff).
+//! (TASK-f067ae7c84ff, TASK-0878e19675f4).
 //!
-//! Measured before the fix, on git 2.47, in a repository with one commit and no
-//! remote: after `ank init`, `.git/config` held `remote.origin.fetch =
-//! +refs/ank/*:refs/ank/*` and nothing else under `origin`; `ank status
-//! --remote` warned `no remote named origin ... (git remote add origin <url>)`;
-//! running that command exited 3 with `error: remote origin already exists.`;
-//! and `git remote set-url origin <url>`, which does get past it, left
-//! `+refs/ank/*` as the only fetch refspec, so `git fetch origin` brought no
-//! branch at all.
+//! Measured on git 2.47, in a repository with one commit and no remote. Writing
+//! `remote.origin.fetch` at init made git read `origin` as configured, so the
+//! command `ank status --remote` names, `git remote add origin <url>`, exited 3
+//! with `error: remote origin already exists.`; `git remote set-url`, the way
+//! round it, left `+refs/ank/*` as the only fetch refspec, so `git fetch origin`
+//! brought no branch at all. Deferring the key behind
+//! `includeIf.hasconfig:remote.*.url:**` fixed only the order where `origin` is
+//! the first remote: that is git's one form of the condition and cannot name a
+//! remote, so any other remote with a URL turned the include live and the
+//! refusal returned. Worktree scope hides the key no better.
+//!
+//! So the key is written only once `origin` itself has a URL, and the tests
+//! below pin that from each state `init` can be run in.
 //!
 //! **Through the binary, and the command is the one status prints.** The
 //! repair is read off `ank status --remote`, its `<url>` replaced and nothing
@@ -146,10 +151,9 @@ fn the_remote_status_names_can_be_added_after_init_and_fetches_both_planes() {
     let (repo, bare) = repository("init-origin-fresh");
     let (code, said) = ank(&repo, &["init"]);
     assert_eq!(code, 0, "{said}");
-    assert!(
-        said.contains(&format!("refspec added: {ANK_REFSPEC}")),
-        "{said}"
-    );
+    // Nothing about origin is written while origin does not exist.
+    assert!(!said.contains("refspec added"), "{said}");
+    assert!(fetch_refspecs(&repo).is_empty(), "{said}");
 
     // The repair, read off status and run as it is printed.
     let (_, said) = ank(&repo, &["status", "--remote"]);
@@ -176,6 +180,15 @@ fn the_remote_status_names_can_be_added_after_init_and_fetches_both_planes() {
     let (code, out) = run(c);
     assert_eq!(code, 0, "`{hint}`, the command status names, failed: {out}");
 
+    // git wrote its own refspec; the ank one arrives with the next init.
+    assert_eq!(fetch_refspecs(&repo), vec![HEADS_REFSPEC]);
+    let (code, said) = ank(&repo, &["init"]);
+    assert_eq!(code, 0, "{said}");
+    assert!(
+        said.contains(&format!("refspec added: {ANK_REFSPEC}")),
+        "{said}"
+    );
+
     let specs = fetch_refspecs(&repo);
     assert!(
         specs.iter().any(|s| s == ANK_REFSPEC),
@@ -193,7 +206,7 @@ fn the_remote_status_names_can_be_added_after_init_and_fetches_both_planes() {
 
     assert_plain_fetch_brings_both(&repo);
 
-    // And a second init has nothing left to add.
+    // And a third init has nothing left to add.
     let (code, said) = ank(&repo, &["init"]);
     assert_eq!(code, 0, "{said}");
     assert_eq!(said.trim(), "already initialised, nothing to do");
@@ -227,6 +240,52 @@ fn another_remote_leaves_origin_free_and_a_second_init_completes_it() {
     assert!(fetch_refspecs(&repo).is_empty());
 
     git(&repo, &["remote", "add", "origin", &bare.to_string_lossy()]);
+    let (code, said) = ank(&repo, &["init"]);
+    assert_eq!(code, 0, "{said}");
+    assert!(
+        said.contains(&format!("refspec added: {ANK_REFSPEC}")),
+        "{said}"
+    );
+    assert_eq!(fetch_refspecs(&repo), vec![HEADS_REFSPEC, ANK_REFSPEC]);
+    assert_plain_fetch_brings_both(&repo);
+}
+
+/// A remote that is not `origin`, added *after* `ank init` (TASK-0878e19675f4).
+///
+/// The deferred include this file once described was conditional on
+/// `hasconfig:remote.*.url:**`, which is git's only form of that condition: it
+/// cannot name `origin`. So any remote with a URL turned the include live, and
+/// `git remote add origin` refused again -- the very command `ank status
+/// --remote` names. Measured on git 2.47.3: `remote add upstream` then `remote
+/// add origin` exited 3, and `remote.origin.fetch` then held `+refs/ank/*`
+/// alone, so the branch refspec git would have written was lost with it.
+/// Worktree scope hides the key no better; `remote add` refuses there too.
+///
+/// So nothing is written while no `origin` has a URL, in this state as in the
+/// one above, and the refspec is added by the next `ank init`.
+#[test]
+fn a_remote_added_after_init_leaves_origin_free() {
+    let (repo, bare) = repository("init-origin-after");
+    let (code, said) = ank(&repo, &["init"]);
+    assert_eq!(code, 0, "{said}");
+
+    // Nothing about origin is written while it does not exist.
+    assert!(fetch_refspecs(&repo).is_empty(), "{said}");
+    let config = fs::read_to_string(repo.join(".git/config")).unwrap();
+    assert!(!config.contains("includeIf"), "{config}");
+    assert!(!config.contains("[remote \"origin\"]"), "{config}");
+    assert!(!repo.join(".git/ank-origin.config").exists());
+
+    git(
+        &repo,
+        &["remote", "add", "upstream", &bare.to_string_lossy()],
+    );
+    // The command status names, from the state init left behind.
+    let mut c = spawn("git", &repo);
+    c.args(["remote", "add", "origin", &bare.to_string_lossy()]);
+    let (code, out) = run(c);
+    assert_eq!(code, 0, "git remote add origin failed: {out}");
+
     let (code, said) = ank(&repo, &["init"]);
     assert_eq!(code, 0, "{said}");
     assert!(
