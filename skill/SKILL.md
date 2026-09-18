@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "b991532258ba"
+  revision: "0d916cc3d9a5"
 ---
 
 # ank
@@ -49,7 +49,9 @@ One line each, grouped by the moment they are used. Flags and refusals live in
 
 Orient first:
 
-    ank context <path>    what binds this perimeter, what is claimable; run it first, always
+    ank context <path>    what binds this perimeter, what is claimable; run it first, always;
+                          ank context --since, once you hold a claim, names by id what moved
+                          since your last work on it
     ank scope <path>      every entity covering a path: why is this file constrained, and by what
     ank status            where am I: branch, identity, claim held, drift from the default branch
     ank find <query>      titles, scopes and criteria; ank find --type spec reaches the

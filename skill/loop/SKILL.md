@@ -2,7 +2,7 @@
 name: ank-loop
 description: Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
 metadata:
-  revision: "fe8928eb3770"
+  revision: "9f00f607cdb8"
 ---
 
 # ank-loop
@@ -23,10 +23,28 @@ This file adds the loop policy only.
     ank claim <id>
     ank log --method loop            record that this policy was loaded, once
     ank show <id>                    the body carries the reasoning; read it first
+    ank context --since              at the top of every turn while the claim is held
     work; ank log "<discovery>" as you learn, not when you finish
     review your own diff             two axes, below; ank log what it found
     ank done                         with its proof
     next pass
+
+## Every turn under a claim
+
+Other agents keep working while you do. Once the claim is held, start every
+turn with `ank context --since`: the entities whose file changed, and the
+claims and completions recorded, since your last work on the task. Names by
+id and never by content, so `ank show <id>` whatever you need to read whole.
+
+Your last work is the claim's last renewal, so the cursor moves whenever the
+claim is renewed, and reading `--since` is one of those renewals: two calls in
+a row answer differently. Without a claim it is refused, because the cursor is
+the lease.
+
+It does not replace the full `ank context <path>` taken before the claim. That
+one says what binds the perimeter and what is claimable; `--since` says only
+what moved, and a constraint never read in full is not one a diff of changes
+teaches you.
 
 ## Picking
 
