@@ -5,7 +5,7 @@ slug: the-no-op-renewal-test-wins-a-clock-race-instead
 title: The no-op renewal test wins a clock race instead of arranging one
 created: 2026-09-18T15:56:59Z
 author: claude-code/opus-5+noop-clock
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/tests/renewal_noop.rs
 blocked_by: []
@@ -14,8 +14,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: diagnose
+proof:
+  - type: test
+    ref: local/f48c736ad3a4@16b8697
+    tree: scope/56a6ed70a6ba
+    criteria: b770954637de
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@16b8697
+    tree: scope/56a6ed70a6ba
+    criteria: b770954637de
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 3
+version: 5
 ---
 
 Main went red at 298c01a on the `windows-latest` row alone, in the run that
