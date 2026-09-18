@@ -28,6 +28,7 @@ run against.
       entities/ADR-<hex>.md
       entities/SPEC-<hex>.md
       entities/LOG-<hex>.md  one entry of the work trace, written once
+      archive/entities/<ID>.md  the cold half, same format, read on demand, never rewritten
       log/<ID>.md            the previous shape of the trace, read and never written
       index.db               derived, disposable, belongs in .gitignore, never a source of truth
 
@@ -50,6 +51,29 @@ The layout is **fixed, not configured**. A layout read from `config.yml` would
 mean your tool has to parse the configuration before it can find a file, and the
 conformance suite at the end of this page would stop being something anybody can
 run against a directory.
+
+**The archive is the second root, and the only other one.** `.ank/archive/` holds
+the cold half of the corpus at `archive/entities/<ID>.md`, flat and in the same
+format by the same rule as above: one file per entity, the file name is the id,
+readable with no parser and no tool. It is a directory rather than a packfile or
+a walk of git history because either of those would put a parser, or git,
+between a reader and a file.
+
+A tool reading `.ank/` needs three things from it. It is **read on demand and
+never by default**: the listing, the prefix resolution and the load of the hot
+corpus answer exactly what they answered before the archive existed, so a tool
+that ignores it is still correct, only blind to the cold half. It is **resolved
+against both roots wherever an id is resolved**, so a reference, a supersession,
+a blocker or an entry's subject naming an archived entity names something, and a
+scope pointing at `.ank/entities/<ID>.md` for an entity since archived is not
+dead; an id present in both roots is one entity, read hot. And **an archived file
+is never edited**: it is parsed once when it arrives, the content hash recorded
+then is its digest and is never updated, and a file whose bytes stop matching is
+a fault rather than a change to take in.
+
+A writer moves files there with `ank archive` and never by hand; the move
+commits nothing, and what the hot corpus holds is settled by a human reading a
+diff.
 
 **The previous layouts, and the window for them.** Corpora written before the
 flat directory are at `tasks/TASK-<hex>.md` and `adr/ADR-<hex>.md`, with the log
