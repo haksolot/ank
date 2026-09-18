@@ -563,12 +563,41 @@ pub enum Cas {
     Lost,
 }
 
+/// How long a write of `refs/ank/*` waits for the loose-ref lock, in
+/// milliseconds, as `core.filesRefLockTimeout`.
+///
+/// git takes that lock before it can evaluate a compare-and-swap, and its
+/// default is to fail at once rather than wait. Under concurrent writers one
+/// loser is then refused by the lock instead of by the swap, and [`update`]
+/// below re-reads the ref, finds it untouched, and reports a broken git --
+/// which is how a lost race became `error[9]` on the `macos-15-intel` row of
+/// the v0.8.0 release rehearsal (TASK-cf81d7d57d1e).
+///
+/// Waiting is the only answer that is ever true here: the lock is a local
+/// mutex over one file, held for the microseconds a ref write takes, and every
+/// writer contending for it is another ank asking the same question. The wait
+/// is bounded rather than `-1` so that a lock left behind by a killed process
+/// still ends in a message instead of a verb that never returns; five seconds
+/// is four orders of magnitude above what the write costs and well under any
+/// agent's patience.
+///
+/// It is a flag on a process already spawned, so no verb's process count moves
+/// (ADR-cc65f1388a71).
+const REF_LOCK_TIMEOUT_MS: &str = "core.filesRefLockTimeout=5000";
+
 /// `update-ref <ref> <new> <old>`, with `<old>` empty meaning the ref must not
 /// exist. A non-zero exit is the CAS saying no; we distinguish it from a
 /// broken git by re-reading the ref, which the caller needs anyway to name the
 /// winner.
 fn update(cwd: &Path, name: &str, new: &str, old: Option<&str>) -> Result<Cas> {
-    let args = ["update-ref", name, new, old.unwrap_or("")];
+    let args = [
+        "-c",
+        REF_LOCK_TIMEOUT_MS,
+        "update-ref",
+        name,
+        new,
+        old.unwrap_or(""),
+    ];
     let out = git::output(cwd, &args)?;
     if out.status.success() {
         return Ok(Cas::Won);
@@ -821,7 +850,7 @@ pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
             sync: Sync::Local,
         });
     };
-    let args = ["update-ref", "-d", name];
+    let args = ["-c", REF_LOCK_TIMEOUT_MS, "update-ref", "-d", name];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
