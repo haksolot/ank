@@ -5,7 +5,7 @@ slug: ank-init-writes-remote-origin-fetch-and-git-remo
 title: ank init writes remote.origin.fetch, and git remote add origin then refuses the command status tells you to run
 created: 2026-09-18T10:13:59Z
 author: claude-code/opus-5+followups
-status: open
+status: done
 scope:
   - crates/ank-cli/src/init.rs
   - crates/ank-cli/src/status.rs
@@ -15,8 +15,21 @@ done_criteria: |
   Through the binary, in a scratch repository with no remote: after ank init, git remote add origin <url> succeeds, and git config --get-all remote.origin.fetch then carries the +refs/ank/* refspec ank needs together with the +refs/heads/* refspec a plain git fetch needs, so git fetch origin brings branches. ank status --remote keeps naming a command that works from the state ank init leaves. A test drives that whole sequence through the binary and asserts on the refspecs, not only on the exit code.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/1ab740fcfc9a@6acd209
+    tree: scope/96af9aadfd56
+    criteria: 3e6350c31a55
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@6acd209
+    tree: scope/96af9aadfd56
+    criteria: 3e6350c31a55
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Found while writing TASK-7eccd56c8c30 and reported there. `init.rs` adds
