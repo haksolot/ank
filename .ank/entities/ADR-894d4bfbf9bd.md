@@ -5,15 +5,19 @@ slug: a-differential-context-is-anchored-on-the-lease
 title: A differential context is anchored on the lease, and the cursor is what renewal already writes
 created: 2026-09-15T09:20:20Z
 author: claude-code/fable-5.1+distributed-review
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/context.rs
   - crates/ank-cli/src/claim.rs
   - crates/ank-contract/src/verbs.rs
 constraint: |
   context --since answers what moved since the caller last worked on the task it holds: the entities whose file changed, and the claims and completions recorded, at or after the instant the held claim's expires minus its ttl names. That instant is the cursor and nothing else: no field is added to the claim record, no state is kept per reader, and no daemon is consulted. context --since is the holder's work on the task it holds and renews the lease, so the cursor moves when it is read. With no claim held it is refused with the command that takes one. What moved is named and never carried: an entity is listed by id, and its content is what show answers.
+ratified: 8f33ee5e6178
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-09-18T10:43:06Z
 schema: 4
-version: 1
+version: 2
 ---
 
 SPEC-15a56aeedcfd defers differential context under the name `--since`, and it
