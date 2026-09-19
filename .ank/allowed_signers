@@ -19,6 +19,11 @@
 # declined above is still declined -- nothing here changes the signature of
 # ordinary commits.
 #
+# A third key was declared on 2026-09-19: an ssh key held on the maintainer's
+# laptop (omarchy), used for signing only. The same reading as the VPS key
+# holds: ank check judges it against this file, git's verify-commit does not.
+#
 # Layout follows git's allowed-signers file: principal, then the key.
 sean.lamet@dekrow.com gpg 739A603FB05F9F2F7D3C8D50624FCFCC1482554A
 sean.lamet@dekrow.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIERwF3UDr0Cf26Xg5fxAtxqzmV67AK72bnw2s8I3QGI6
+sean.lamet@dekrow.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJc+kNks9S696Iggm8C5E/s3JvoM37y++wp3HbpZK4ul
