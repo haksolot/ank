@@ -11416,8 +11416,11 @@ fn json_number(text: &str, name: &str) -> u64 {
 /// The corpus already knows what is superseded, and a test that asks it needs
 /// nobody to remember.
 fn superseded_ids(repo: &Path) -> Vec<String> {
+    // `--all`, because a superseded document is exactly what `ank archive`
+    // moves out of the hot corpus: without it, archiving the cold half left
+    // this set empty and the guard below had nothing left to look for.
     let out = ank_command()
-        .args(["find", "--status", "superseded", "--json"])
+        .args(["find", "--status", "superseded", "--all", "--json"])
         .arg("--repo")
         .arg(repo)
         .current_dir(std::env::temp_dir())
