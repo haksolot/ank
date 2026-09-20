@@ -24,7 +24,7 @@ and the shortest of them is one line of npm. Whichever you took, check it
 answers:
 
     $ ank --version
-    ank 0.1.3 (f573bc3, skill 3f350ad26459)
+    ank 0.8.0 (8310e75, skill 0d916cc3d9a5)
 
 It prints the version, the commit it was built from, and the revision of the
 skill it was built alongside. The commit matters the first time you suspect the
@@ -126,7 +126,7 @@ it, and the published binary is the one you want. It matters when you are
 working *on* a repository whose corpus is written by a binary newer than yours:
 somebody else's release, or your own tree if you are contributing to Ank
 itself. Then the tool managing the work and the tool being changed are different
-versions, and both print the same `ank 0.2.0`. Only the commit separates them,
+versions, and both print the same `ank 0.8.0`. Only the commit separates them,
 which is why `--version` carries it.
 
 Contributors hit the sharper form of this. Building from source puts a binary in
@@ -143,10 +143,10 @@ a schema newer than the binary reads is refused entity by entity, so every verb
 that lists would answer short of them without a word; instead each says so
 first:
 
-    $ ank find
-    warning: corpus at schema 4, this binary reads 3: 1 entity left out of every listing
+    $ ank find --type task
+    warning: corpus at schema 5, this binary reads 4: 1 entity left out of every listing
       -> the binary is older than the corpus: ank --version names the build, npm install -g @haksolot/ank replaces it
-      TASK-0000  [open] Ordinary task
+      TASK-c971  [open] Ordinary task
 
 It warns and still answers, because the entities this build does understand are worth
 having, and a corpus mid-migration is a real state rather than a broken one.
@@ -159,7 +159,7 @@ no release reads the corpus -- a schema that landed on the default branch after
 the last tag, which is the ordinary case for a contributor -- it says so and
 sends you to the tree instead:
 
-      -> no release is known to read schema 4: ank --version names the build, build from the tree or wait for a release
+      -> no release is known to read schema 5: ank --version names the build, build from the tree or wait for a release
 
 Naming the install there would fetch the build that had just refused, and a
 reader who follows advice that visibly does nothing concludes the tool is broken
@@ -175,8 +175,8 @@ below, and the paragraphs above.
 published from, with `git ls-remote --tags`, and installs nothing:
 
     $ ank update --check
-    running  0.7.0
-    latest   0.7.0
+    running  0.8.0
+    latest   0.8.0
     up to date
 
 It exits 0 whether or not a newer release exists, because 8 belongs to `check`,
@@ -184,7 +184,7 @@ and when one does its last line says `a newer release exists: ank update install
 it`. A script branches on `newer`:
 
     $ ank update --check --json
-    {"contract":1,"current":"0.7.0","latest":"0.7.0","newer":false}
+    {"contract":1,"current":"0.8.0","latest":"0.8.0","newer":false}
 
 `ank update` installs that release through the route that placed the binary you
 are running: `npm install -g @haksolot/ank@<version>` for a binary inside the npm
@@ -194,8 +194,8 @@ is verified where it always was. At or above the latest release it installs
 nothing and says so:
 
     $ ank update
-    running  0.7.0
-    latest   0.7.0
+    running  0.8.0
+    latest   0.8.0
     up to date
 
 Otherwise it prints the command it hands the install to before running it, and
@@ -211,24 +211,47 @@ exit 7 and names `cargo build` instead.
 
 ## Initialise a repository
 
-From the root of a git repository:
+The walk from here to the end of the page was run twice against a fresh
+repository, once with a remote named `origin` and once with none, and the two
+runs differ in exactly one line, named where it appears.
+
+**Three files are in the tree before anything starts**, because every scope and
+every verifier below is pointed at one of them. These are their exact contents,
+one line each, and they are written out because two of the hashes further down
+are hashes of them:
+
+    src/auth/session.ts   export function createSession(id) { return store.put(id) }
+    tests/auth.sh         exit 0
+    README.md             # auth service
+
+What matters is that all three exist. A scope matching no file and a verifier
+whose command is not there are the two ways this walk ends in red, and neither
+says anything until `ank done`, twenty commands later.
+
+From the root of that repository:
 
     $ ank init
-    created .ank/tasks .ank/adr
+    created .ank/entities
     wrote .ank/config.yml
     wrote .gitattributes
     wrote .gitignore
     pointer added to AGENTS.md
     refspec added: +refs/ank/*:refs/ank/*
 
-Six effects, and re-running changes nothing: `init` is idempotent and says
-`already initialised, nothing to do`. The `.gitattributes` line keeps `.ank/`
-in LF on checkout: on Windows git would otherwise convert back to CRLF
-everything the tool has just written, on every clone. The `.gitignore` line is
-`.ank/index.db`, the derived SQLite index: it is rebuilt from the files
-whenever it is missing, so committing it would only track a binary that every
-command rewrites. The refspec is what makes claims travel, since hosts do not
-fetch non-standard refs on their own.
+**The last line is the one a repository with no `origin` does not print**:
+there is no remote to add a refspec to, so `init` reports five effects instead
+of six and the other five are identical. Re-running changes nothing either way:
+`init` is idempotent and says `already initialised, nothing to do`.
+
+One directory is created, not one per kind: entities live flat in
+`.ank/entities` whatever they are (ADR-c9f9d0d6f05d), and a task, an ADR, a
+spec and a log entry are told apart by a field rather than by a folder. The
+`.gitattributes` line keeps `.ank/` in LF on checkout: on Windows git would
+otherwise convert back to CRLF everything the tool has just written, on every
+clone. The `.gitignore` line is `.ank/index.db`, the derived SQLite index: it
+is rebuilt from the files whenever it is missing, so committing it would only
+track a binary that every command rewrites. The refspec is what makes claims
+travel, since hosts do not fetch non-standard refs on their own.
 
 Both git files are appended to, never replaced, so an existing `.gitignore`
 keeps everything already in it.
@@ -244,12 +267,19 @@ is written through the CLI rather than by hand:
     default_branch (unset) -> main
 
 Without it, Ank looks for `refs/remotes/origin/HEAD`, and a repository with no
-remote has none. It refuses rather than guessing:
+remote has none. It refuses rather than guessing, and here is what the verb two
+sections down would have said (`06d2` is the ADR you write there):
 
     $ ank accept 06d2
     error[9]: default branch indeterminable (default_branch absent from .ank/config.yml, refs/remotes/origin/HEAD absent)
       -> git remote set-head origin -a
       -> or ank config default_branch <name>
+
+That is the refusal the run without an `origin` gets, and it is why the key is
+set here rather than later. A clone sets `refs/remotes/origin/HEAD` for you, so
+the run with an `origin` resolves the branch without the key and the command
+above is a no-op it never needed; setting it anyway costs one line and removes
+the difference between the two.
 
 **Coordination between clones needs a remote named `origin`, and nothing
 else.** Whether claims travel is not configured: a repository with an `origin`
@@ -303,7 +333,7 @@ of `constraint` and `scope` at acceptance:
     ratify ADR-06d29e727d24
 
     constraint+scope: c5d4f3478ad5
-    by: you@laptop
+    by: human:marie
 
 That hash is the anchor. Editing the constraint afterwards does not change it,
 which is how `ank check` notices. Sign your commits and list the key in
@@ -365,6 +395,55 @@ With the definitions in place:
 A composite criterion is mechanised by several verifiers, not by one that
 covers half of it. All of them must pass.
 
+### The default list, and declining it
+
+`--verify` names a task's verifiers one at a time, which is the right amount of
+ceremony for a verifier that suits one perimeter and the wrong amount for the
+suite every task in the repository has to pass. A verifier marked `default`
+joins every task written afterwards:
+
+    $ ank config verifiers.no-jwt.default true
+    verifiers.no-jwt.default false (default) -> true
+
+which lands beside the `run` it belongs to, and nowhere else in the file:
+
+    verifiers:
+      auth-tests:
+        run: sh tests/auth.sh
+      no-jwt:
+        run: "! grep -rq jwt.verify src/auth/"
+        default: true
+
+The read form is the same as any other key, and an unmarked verifier answers
+`false (default)` -- the tool's default for the `default` key, which is the one
+place the word does double duty:
+
+    $ ank config verifiers.no-jwt.default
+    true
+    $ ank config verifiers.auth-tests.default
+    false (default)
+
+A task created now with no `--verify` of its own carries `verify: [no-jwt]` in
+its frontmatter, without anybody naming it. `--verify` replaces that list
+rather than adding to it, so a task that names its own verifiers gets exactly
+those.
+
+**`--no-verify` is the third possibility, and it is a judgement, not a
+shortcut.** It writes a task with no `verify:` at all:
+
+    $ ank new task --title "Say in the README what a session is now" \
+        --scope "README.md" \
+        --criteria "The README describes opaque sessions and names no JWT" \
+        --no-verify
+    created TASK-51c2a0f6d418 Say in the README what a session is now
+
+That is the task whose `done` refuses without `--proof`, further down. Use it
+where no declared verifier can settle the criterion -- prose a person has to
+read, a behaviour only a published release answers -- and where that is
+genuinely the case, say so when you write the task, so the empty list is
+visible in its diff. A task that reaches `done` with an empty `verify:` nobody
+decided on closes on a proof nothing ran.
+
 ## Orientation
 
 `ank context` is the first call, and the only one you have to remember. With no
@@ -373,15 +452,24 @@ argument it covers the whole repository; with a path it covers that perimeter.
     $ ank context src/auth/
 
     CONSTRAINTS (1 active)
-      ADR-06d2  Do not introduce self-contained JWTs for user auth. Every session goes through the Redis store.
+      ADR-06d2  Opaque sessions rather than stateless JWT
 
     TASKS (1)
       TASK-820d  [open] Migrate auth to opaque sessions
 
     > ank claim TASK-820d to start
 
-Constraints come first and are never truncated once you are working. The output
-ends with the next command, as every output here does.
+The other task is not here, and that is the two planes doing their work: its
+scope is `README.md`, which `src/auth/` does not cover. Nothing labelled it out
+of this perimeter; the glob did.
+
+**Before a claim a constraint is one line, and that line is its title.** What
+is being answered here is which perimeter to enter, and a survey that spent its
+whole budget on constraint text would answer it worse. The constraint itself
+arrives with the claim, below, where the perimeter is settled and the rule is
+what you are about to be held to; `ank show 06d2` prints it whole at any time.
+Constraints come first in both forms, and once you are working they are never
+truncated. The output ends with the next command, as every output here does.
 
 ## Claim
 
@@ -407,7 +495,7 @@ time, per person and per agent.
 Claiming a second task while you already hold one is refused:
 
     $ ank claim 51c2
-    error[7]: marie@laptop holds a live claim on TASK-820d259af6a7 (expires in 24m)
+    error[7]: human:marie holds a live claim on TASK-820d259af6a7 (expires in 30m)
       -> ank release --reason "<why>"   (a second session on this machine sets its own ANK_AGENT)
 
 If you meant it, the first way out is the one to take: finish the task you hold
@@ -417,7 +505,18 @@ on one machine are the same agent as far as the refs can tell, so they would see
 each other's claims and renew them. Give every concurrent session an identity
 of its own:
 
-    $ ANK_AGENT=marie-2@laptop ank claim 51c2
+    $ ANK_AGENT=human:marie-2 ank claim 51c2
+    claimed TASK-51c2a0f6d418 say-in-the-readme-what-a-session-is-now -> HEAD
+
+**Write it typed.** An identity that goes into an entity says what kind of
+actor it is (ADR-3877fef1d662): `human:<id>` is a person, `<producer>/<version>`
+an agent -- `claude-code/opus-5`, and a suffix after `+` for one session of it
+-- and `process:<id>` something automated, which is the form the pipeline at the
+end of this page uses. The convention is what lets `check` say that an entity
+was written by an agent and read by no human; the fallback
+`<user>@<hostname>` carries no type and so answers that question with nothing.
+It is a signal and not a wall -- anyone can type `human:` in front of a model
+-- and what it buys is that the ordinary case is legible.
 
 That is why the refusal names the identity rather than calling you its holder:
 under a shared identity, the session being refused may have claimed nothing at
@@ -478,10 +577,10 @@ on the entry's own id prints it whole, and `--json` always carries it whole.
 ## Finish
 
     $ ank done
-    running: auth-tests ... ok (0.1s)
-    running: no-jwt ... ok (0.1s)
-    proof recorded: auth-tests@94a1f671c577 -> local/e3b0c44298fc@9c45c50  (scope/b623b24a5777)
-    proof recorded: no-jwt@791cc818d0ad -> local/e3b0c44298fc@9c45c50  (scope/b623b24a5777)
+    running: auth-tests ... ok (0.0s)
+    running: no-jwt ... ok (0.0s)
+    proof recorded: auth-tests@94a1f671c577 -> local/e3b0c44298fc@9c45c50  (scope/18d14da584ab)
+    proof recorded: no-jwt@791cc818d0ad -> local/e3b0c44298fc@9c45c50  (scope/18d14da584ab)
     TASK-820d259af6a7 -> done
 
 This is the point of the tool. Ank ran the verifiers itself and wrote what
@@ -491,11 +590,18 @@ content at that moment. Nobody reported their own result. Never set
 `status: done` by hand: a status written by the party being measured measures
 nothing.
 
-A task with no `verify` takes the other branch, and `--proof` becomes
-mandatory:
+Four of those hashes are content and not identity, so they are the same on your
+machine as on this page. `94a1f671c577` and `791cc818d0ad` are the two verifier
+definitions; `e3b0c44298fc` is what each of them printed, which is nothing; and
+`18d14da584ab` is `src/auth/session.ts` as the section above wrote it. The
+commit is the one your tree is on, so that one is yours.
 
-    $ ank done
-    error[5]: proof required to move TASK-0ff108d8e2ca to done
+The other task takes the other branch. It was written `--no-verify`, so there
+is no verifier to produce anything and `--proof` becomes mandatory -- the
+session holding it is the second one, from the identity section above:
+
+    $ ANK_AGENT=human:marie-2 ank done
+    error[5]: proof required to move TASK-51c2a0f6d418 to done
       -> ank done --proof commit:<sha>
 
 The proof types are `commit`, `test`, `human-review` and `assertion`, and what
@@ -527,21 +633,45 @@ like any other change.
 Before you commit, `check` has something to say:
 
     $ ank check
+    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: TASK-820d259af6a7: finished on another branch, main has not caught up
     signal: allowed_signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: ok — 1 tasks, 1 adr, 2 signal(s)
+    signal: corpus: 6 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
+    check: ok — 2 tasks, 1 adr, 4 signal(s)
 
-The first signal is the mechanism doing its job. `status: done` lives in the
+Four signals and no fault, so exit 0. The first is this walk being one person:
+you wrote the ADR and you ratified it, and `check` says so rather than deciding
+what it means. The last counts what your working tree has that `main` has not,
+and it is the same fact as the second, said about the corpus rather than about
+one task.
+
+The second signal is the mechanism doing its job. `status: done` lives in the
 file, therefore on your branch alone until the merge, and during all that time
 the task would look free to everyone else. The claim ref is not deleted at
 `done`: it becomes a completion ref, and anyone who tries to claim the task is
 refused with the commit and the branch named. Commit, and the ref is pruned:
 
-    $ git add -A && git commit -m "TASK-820d is done"
+    $ git add -A && git commit -m "the migration is done"
     $ ank check
+    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: allowed_signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
+    └── ank archive --dry-run lists them and moves nothing
     pruned refs/ank/claims/TASK-820d259af6a7
-    check: ok — 1 tasks, 1 adr, 1 signal(s)
+    check: ok — 2 tasks, 1 adr, 3 signal(s)
+
+**That is the green this page set out to reach**, with an `origin` and without:
+three signals, no fault, exit 0. The new one is the corpus noticing that three
+log entries are cold -- an entry is cold with its subject, and their subject is
+a task that is done (ADR-467ce7e9cda1):
+
+    $ ank archive --dry-run
+    LOG-3b92d9719950  created (version 0 to 1, produced 4cc65f12691c)
+    LOG-9cfb085b14b3  jwt.verify removed from session.ts
+    LOG-f234f9b08f06  done, proof test:local/e3b0c44298fc@c482be8 test:local/e3b0c44298fc@c482be8
+    3 cold, nothing moved (--dry-run): ank archive moves them
+
+It lists and moves nothing, which on a corpus this size is the right answer.
 
 `check` is what you put in CI. It validates parsing, byte-for-byte round-trip,
 `blocked_by` references, frozen fields against their anchors, and it prunes the
@@ -555,6 +685,8 @@ anything, and the message always ends with the exact command to run next.
 
 | Code | Meaning |
 |---|---|
+| 0 | the verb answered |
+| 1 | generic error: a call the parser refuses, a file the tool cannot make sense of |
 | 2 | entity not found, or ambiguous prefix |
 | 3 | version conflict, re-read and retry |
 | 4 | task unavailable, held by someone else or finished on another branch |
@@ -564,8 +696,15 @@ anything, and the message always ends with the exact command to run next.
 | 8 | `check` found something |
 | 9 | environment: git too old, `sh` missing, default branch indeterminable |
 
-Code 9 is the one to read carefully: it says the environment is broken, not
-that your work is wrong. Fix the machine, not the code.
+Ten codes, and that is all of them: the table above is the whole of
+`crates/ank-contract/src/exit.rs`, which is where they are declared once and
+read by every call site.
+
+Two of them are worth a sentence each. **Code 9** says the environment is
+broken, not that your work is wrong: fix the machine, not the code. **Code 1**
+is the one with no reaction of its own to prescribe -- it is what a
+mistyped command and an unparseable file both get, and a script that routes on
+it is guessing. The `ank mcp --repo /tmp` refusal above is a 1.
 
 ## Running ank in a pipeline
 
@@ -586,6 +725,28 @@ those and you can write the pipeline for a CI system nobody here has heard of.
 no layout, and it stays byte-for-byte what your parser already reads.
 
 That is the contract. Everything below is the CI system's own syntax around it.
+
+**Check out the whole history, and on GitHub that is one line.** `ank check`
+walks it: it reads the ratification commit that anchors a frozen constraint,
+and it asks where a scope that matches nothing went, a rename or a deletion.
+`actions/checkout` fetches one commit by default, and a corpus read from one
+commit does not report itself unreadable -- it reports itself unverified, at
+exit 0. Measured on this repository at 8310e75: a `--depth 1` clone answers
+`check: ok — 440 tasks, 61 adr, 728 signal(s)` where the full clone of the
+same commit answers 663, and 71 of those extra signals read
+`ratified, but no ratification commit is reachable: the freeze cannot be verified`,
+each noting that `the history here is shallow, so where it went cannot be
+verified (git fetch --unshallow)`. Green, and every frozen constraint
+unchecked, which is a worse failure than the red it replaces:
+
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+
+Every host spells the depth its own way, and the thing to carry across is the
+property rather than the key: `check` needs the history that reaches the
+ratification commits, and a shallow checkout is silent about what it could not
+read.
 
 **A bare shell**, which is the recipe the other two wrap:
 
@@ -650,7 +811,52 @@ pipeline can anchor the same task to a run anybody can re-read:
 
 `--detached` writes the proof to `refs/ank/proof/<id>` and touches no file, so
 the pipeline produces **no commit**: it needs no write access to the branch and
-cannot race the merge.
+cannot race the merge. It is still a write to the remote, though, and on GitHub
+that is a permission: this repository's `ci.yml` declares `contents: read` for
+the workflow and the `attest` job is the only one that raises it, to the one
+thing it writes.
+
+    permissions:
+      contents: write
+
+**Which ids.** `check` is the work list, and nothing diffs `.ank/` to build it.
+A finished task with no external anchor carries the signal
+`done with no test proof: nothing external anchors it`, so the ids are the
+subjects of that finding and `--json` is what a pipeline reads them out of:
+
+    ids=$(ank check --json | jq -r '
+      .findings[]
+      | select(.message | startswith("done with no test proof"))
+      | .subject')
+
+**Fetch the proofs already written first**, before that `check` runs.
+`actions/checkout` fetches history and not `refs/ank/*`, so a job that skips
+this reads a corpus in which nothing is anchored and re-attests every finished
+task, on every push, forever. Measured on run 33285805350: 199 ids listed and
+336 seconds spent pushing refs that were already there, against 16 genuinely
+unproved in a clone that carries them.
+
+    git fetch origin '+refs/ank/proof/*:refs/ank/proof/*'
+
+One direction and read-only. A refspec matching nothing is not an error, so a
+corpus with no proofs yet passes through untouched.
+
+**Run it on the default branch and on a push, and nowhere else.** The signal is
+gated on the task appearing done on the default branch, so on a feature branch
+straight after `done` there is nothing to anchor and this job would build for
+two minutes to be told so. A `pull_request` event runs on a merge commit no
+branch carries, and a fork's token cannot push a ref at all, which would fail
+the job for a reason about the event rather than about the corpus:
+
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+
+The identity doing the attesting is typed like any other, and a pipeline is
+`process:`:
+
+    env:
+      ANK_AGENT: process:github-actions
 
 The proof is a ref, so it has to reach the remote to be worth anything, and
 because the ref is the whole of what this verb produces, a push that did not
@@ -688,25 +894,26 @@ The shortest of them is the binary you just installed, which carries the skills
 its build read:
 
     $ ank skills
-    ank           82162945914d  Read a repository's tasks and binding constraints, claim work, and finish it with proof. ...
-    ank-diagnose  98cd5d5badff  Work a defect back to its cause before changing anything, and close it with a regression test. ...
-    ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. ...
-    ank-loop      e2b07833509b  Work through the open tasks in .ank/ without supervision, one claim at a time. ...
-    ank-plan      c006ab14a4df  Interview a goal into decisions and tasks recorded in .ank/. ...
-    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
+    ank           0d916cc3d9a5  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
+    ank-diagnose  b5d9c0b96462  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
+    ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. Use when asked whether ADRs, specs, or tasks are still accurate, after a milestone, or when the corpus and the code seem to disagree.
+    ank-loop      9f00f607cdb8  Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
+    ank-plan      83130b664c7e  Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
+    ank-tdd       96d151e6812e  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. Use when implementing a task in a repository with a .ank/ directory.
 
-Run inside a corpus, the same verb also reports how each sibling is used. A task
-can name the sibling its work calls for with `ank new task --method tdd`, and a
-sibling that opens under a claim writes an entry saying so, titled with its name
-and kept apart from the work trace. Here is the report on a
-corpus of three tasks: one designating `tdd` whose holder loaded it, one
-designating `diagnose` whose holder never did, and one designating nothing where
-`tdd` was loaded anyway:
+One line per file: the name, the revision that file declares, and the
+description whole, wrapped by nothing. The revisions are the build's, not the
+repository's, which is what makes them comparable with the one `--version`
+printed.
 
-    $ ank skills
-    ank           82162945914d  Read a repository's tasks and binding constraints, claim work, and finish it with proof. ...
-    ...
-    ank-tdd       5c0133123d36  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. ...
+Run inside a corpus, the same verb prints that catalogue and then a second
+block, reporting how each sibling is used. A task can name the sibling its work
+calls for with `ank new task --method tdd`, and a sibling that opens under a
+claim writes an entry saying so with `ank log --method tdd`, titled with its
+name and kept apart from the work trace. On a corpus of three tasks -- one
+designating `tdd` whose holder loaded it, one designating `diagnose` whose
+holder never did, and one designating nothing where `tdd` was loaded anyway --
+the block reads:
 
     METHODS
     diagnose  designated 1  fired 0  undesignated 0
@@ -838,13 +1045,13 @@ has to fit in a context window beside the code.
 
 ## Where to go next
 
-- [agents.md](agents.md): the four routes that reach an agent, the binary
-  channels beyond npm, and what running several agents actually requires.
+- [agents.md](agents.md): the five routes that reach an agent, the three that
+  install the binary, and what running several agents actually requires.
 - [format.md](format.md): the file format and canonical form, for anyone
   writing a tool that reads or writes `.ank/`.
 - [alternatives.md](alternatives.md): how this compares to retrieval, an
   LLM-maintained wiki, and OKF.
-- The specification, the source of truth for everything above: ten `spec`
+- The specification, the source of truth for everything above: the `spec`
   documents in `.ank/`, read with `ank find --type spec` and `ank show <id>`.
   They argue the design; they are not a tutorial.
 - `ank help` lists every verb, `ank help <verb>` answers about one.
