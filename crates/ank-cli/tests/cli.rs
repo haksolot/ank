@@ -25120,3 +25120,337 @@ fn a_burst_of_creation_survives_archiving_what_it_produced() {
         "archiving silenced the burst: {after}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Every code a verb returns is a code its own help lists (§4, §9)
+// ---------------------------------------------------------------------------
+//
+// `refuses` is what a client reads *before* it calls, so a code absent from it
+// is a code a caller learns about by being surprised by it. Measured on 0.8.0,
+// before these tests existed, over `ank help --json`: across all twenty-nine
+// verbs the refusals carried only 1, 2, 4, 5, 6, 7 and 9. Code 3 appeared
+// nowhere at all, and code 8 only in the prose of a note, where a parser reading
+// the array finds nothing. Both are codes the binary returns.
+
+/// The codes `ank help <verb> --json` says that verb refuses on.
+///
+/// Scanned rather than parsed, like [`json_verbs`] and [`json_notes`], since the
+/// suite carries no JSON dependency. The array is bounded by the key the
+/// rendering puts after it, and `code` is a number, so the digits run to the
+/// first character that is not one.
+fn json_refusal_codes(document: &str, verb: &str) -> Vec<i32> {
+    let open = "\"refuses\":[";
+    let at = document.find(open).unwrap_or_else(|| {
+        panic!("`ank help {verb} --json` carries no refuses array:\n{document}")
+    }) + open.len();
+    let end = document[at..]
+        .find("],\"returns\":")
+        .unwrap_or_else(|| panic!("`ank help {verb} --json` never closes its refuses array"));
+    document[at..at + end]
+        .split("\"code\":")
+        .skip(1)
+        .map(|c| {
+            c.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+                .parse()
+                .expect("a refusal carries its code as a number")
+        })
+        .collect()
+}
+
+/// `ank help <verb> --json`, read out of the binary the test is measuring.
+fn refusal_codes_of(r: &Repo, verb: &str) -> Vec<i32> {
+    let document = stdout(&r.ank("claude-code@ank", &["help", verb, "--json"]));
+    json_refusal_codes(&document, verb)
+}
+
+/// A finished task, so that `attest` is past the state it refuses on.
+fn a_finished_task(r: &Repo, id: &str) {
+    r.seed_task_with(id, Some("A verifiable criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", id])), 0);
+    let out = r.ank("claude-code@ank", &["done"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+}
+
+/// **`attest` returns 5 on a proof it cannot read, and its help never said so.**
+///
+/// The one the criterion of TASK-78431b544d01 names, because it is the one where
+/// the omission costs most: `--proof` is the verb's only interesting flag, a
+/// malformed value is the ordinary way to get it wrong, and the refusals listed
+/// 2 and 9 — an unknown id and an unreachable remote — so a caller reading the
+/// table concluded the value itself was never refused.
+///
+/// Through the binary, because the criterion is about what the process returns
+/// and what the process publishes, and the defect is precisely those two
+/// disagreeing. A unit test over `COMMANDS` would assert the table against
+/// itself.
+#[test]
+fn attest_returns_five_on_a_malformed_proof_and_its_help_lists_that_code() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    a_finished_task(&r, ID);
+
+    let out = r.ank("claude-code@ank", &["attest", ID, "--proof", "bogus"]);
+    assert_eq!(
+        code(&out),
+        5,
+        "a proof in no readable form is a code 5 (§4):\n{}",
+        stderr(&out)
+    );
+    assert!(
+        stderr(&out).contains("error[5]"),
+        "the stream says a different code from the status:\n{}",
+        stderr(&out)
+    );
+
+    assert!(
+        refusal_codes_of(&r, "attest").contains(&5),
+        "`ank help attest --json` does not list the code the verb just returned"
+    );
+}
+
+/// **Every verb answers an unrecognised flag with 1**, so every verb lists it.
+///
+/// Measured over all twenty-nine verbs of the table: `ank <verb>
+/// --zzz-not-a-flag` exited 1 twenty-nine times out of twenty-nine. It is the
+/// one code the whole surface shares, and thirteen verbs did not carry it —
+/// `claim`, `show`, `done`, `release`, `new`, `status`, `accept`, `close`,
+/// `amend`, `attest`, `tui`, `mcp` and `help`, of which `status` listed no
+/// refusal at all.
+///
+/// Driven from the table rather than from a list written here, for the reason
+/// `every_coordinating_verb_says_what_a_refused_push_does` gives: a thirtieth
+/// verb must not be able to arrive silent.
+#[test]
+fn every_verb_answers_an_unknown_flag_with_one_and_lists_that_code() {
+    let r = Repo::new();
+    for spec in ank_contract::COMMANDS {
+        let out = r.ank("claude-code@ank", &[spec.name, "--zzz-not-a-flag"]);
+        assert_eq!(
+            code(&out),
+            1,
+            "`ank {} --zzz-not-a-flag`:\n{}",
+            spec.name,
+            stderr(&out)
+        );
+        assert!(
+            refusal_codes_of(&r, spec.name).contains(&1),
+            "`ank {}` answers an unknown flag with 1 and its help does not list 1",
+            spec.name
+        );
+    }
+}
+
+/// **`check` and `review` exit 8 on a fault**, and said so only in a note.
+///
+/// A note is prose for a reader; `refuses` is the array a client filters on, and
+/// the two verbs that own code 8 were the two that left it out of theirs. The
+/// fault here is the one the freeze exists to catch: a `done_criteria` edited
+/// under a live claim, which `check` reports and `review` counts.
+#[test]
+fn check_and_review_list_the_findings_code_they_exit_with() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let path = r.flat_task_path(ID);
+    let diverged = r
+        .task_text(ID)
+        .replace("A verifiable criterion.", "Something else entirely.");
+    std::fs::write(&path, diverged).unwrap();
+
+    for verb in ["check", "review"] {
+        let out = r.ank("claude-code@ank", &[verb]);
+        assert_eq!(
+            code(&out),
+            8,
+            "`ank {verb}` over a corpus with a fault:\n{}{}",
+            stdout(&out),
+            stderr(&out)
+        );
+        assert!(
+            refusal_codes_of(&r, verb).contains(&8),
+            "`ank {verb}` exits 8 and its help lists that code nowhere a parser reads"
+        );
+    }
+}
+
+/// **The compare-and-swap is reachable, and code 3 was listed by no verb at
+/// all** — including by the two verbs §4 tells an agentic loop to handle.
+///
+/// Reproduced here through `edit`, where the window is the editor and the race
+/// is therefore deterministic: the editor bumps the entity's version from
+/// another process and then saves, so the write that follows finds a version it
+/// did not read. The other eight were measured by racing concurrent invocations
+/// against one entity and counting the exits — `claim` 32 of 40, `attest` 34 of
+/// 40, `read` 22 of 30, `amend` 9 of 30, `release` 3 of 30, `close` 1 of 40,
+/// `accept` 1 of 20, and `done` deterministically through a declared verifier
+/// that amends mid-run. `log`, `new`, `config` and `archive` were raced 30 ways
+/// each and returned 0 every time, which is what says the list below is the
+/// verbs that swap and not the verbs that write.
+///
+/// A race is not what is asserted, because a test that needs one to fail is a
+/// test that goes green on a slow runner. What is asserted is the published
+/// table, against one reproduction that does not need luck.
+#[test]
+fn a_swapped_write_returns_three_and_every_verb_that_swaps_lists_it() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+
+    // The editor amends the entity from a second process — the version moves
+    // under the `edit` that is waiting for it — and then saves, so the buffer
+    // really did change and `edit` really does try to write it back.
+    let editor = format!(
+        "'{}' amend {ID} --repo '{}' --scope raced.txt >/dev/null 2>&1; printf '\\nraced\\n' >>",
+        ANK,
+        r.0.display(),
+    );
+    let out = r.ank_edit("claude-code@ank", &["edit", ID], Some(&editor));
+    assert_eq!(
+        code(&out),
+        3,
+        "an entity that moved under the write is a code 3 (§4):\n{}{}",
+        stdout(&out),
+        stderr(&out)
+    );
+
+    // Every verb that reaches the same compare-and-swap, measured above.
+    for verb in [
+        "claim", "done", "release", "accept", "read", "close", "amend", "attest", "edit",
+    ] {
+        assert!(
+            refusal_codes_of(&r, verb).contains(&3),
+            "`ank {verb}` can return 3 and its help lists it nowhere"
+        );
+    }
+}
+
+/// **Code 9 is what a verb returns when git is not there**, and seven verbs that
+/// return it did not list it.
+///
+/// Measured by emptying `PATH` and calling every verb with arguments good enough
+/// to reach the work: thirteen exited 9 — `claim`, `log`, `done`, `release`,
+/// `accept`, `close`, `attest`, `amend`, `edit`, `tui`, `watch`, `init` and
+/// `update` — of which `claim`, `log`, `done`, `release`, `close`, `amend` and
+/// `init` listed nothing about an environment to repair.
+#[test]
+fn every_verb_that_needs_git_lists_the_environment_code() {
+    let r = Repo::new();
+    for verb in [
+        "claim", "log", "done", "release", "accept", "close", "attest", "amend", "edit", "tui",
+        "watch", "init", "update",
+    ] {
+        assert!(
+            refusal_codes_of(&r, verb).contains(&9),
+            "`ank {verb}` needs git and its help does not say what happens without one"
+        );
+    }
+}
+
+/// **Ten more codes, found by sweeping rather than by reading**, each one a
+/// state the verb reaches and its page did not publish.
+///
+/// Seventeen invocations were run against each of the twenty-nine verbs in a
+/// seeded corpus — no argument, a live id, an id of the wrong kind, an absent
+/// id, a prefix too short, an unknown flag, a flag missing its value, a path —
+/// and the union of non-zero codes per verb was compared with what that verb's
+/// `refuses` published. The sweep was then rerun against the repaired table,
+/// 1102 invocations over two passes, one of them holding a claim, and it found
+/// two more; a third pass of 2262 invocations, over a corpus holding a closed
+/// task and a ratified decision, found one more. Nine verbs came back short in
+/// all, and every one of the ten rows is reproduced below through the binary,
+/// because each is deterministic and a state named in a comment is a state
+/// nothing re-checks.
+///
+/// `attest` is the shape of what the sweep is for: it published 2 and 9, gained
+/// 5 from the criterion of TASK-78431b544d01, and still said nothing about the
+/// state it refuses on most — a task that is not finished yet, which is every
+/// task until `done` runs.
+#[test]
+fn the_states_a_sweep_found_are_states_the_pages_now_publish() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let other = "TASK-000000000002";
+    r.seed_task(other, Some("Another criterion."));
+    let absent = "TASK-ffffffffffff";
+
+    // An id that resolves to nothing, from the four verbs that resolve one and
+    // never said what happens when it does not.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", absent])), 2);
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["amend", absent, "--scope", "x"])),
+        2
+    );
+    assert_eq!(code(&r.ank("claude-code@ank", &["edit", absent])), 2);
+    assert_eq!(code(&r.ank("claude-code@ank", &["attest", absent])), 2);
+
+    // `--reason` is what makes a release readable by whoever takes the task
+    // next, and `release` is the verb that requires it without saying so.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["release"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+
+    // With a claim held, `done` resolves the id it is given, so the code that
+    // reaches the caller is the store's and not the state machine's.
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+    let out = r.ank("claude-code@ank", &["done", absent]);
+    assert_eq!(code(&out), 2, "{}", stderr(&out));
+    assert_eq!(
+        code(&r.ank("claude-code@ank", &["release", "--reason", "swept"])),
+        0
+    );
+
+    // A task nobody will do is closed, and `closed` is not a state `claim`
+    // transitions out of — nor one `attest` appends to, since there is no proof
+    // of a thing that was never done.
+    let out = r.ank("claude-code@ank", &["close", other, "--reason", "swept"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["claim", other]);
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["attest", other, "--proof", "test:1"]);
+    assert_eq!(code(&out), 7, "{}", stderr(&out));
+
+    // A second close, and a second ratification: both are acts that have already
+    // happened, which is the state `close` and `accept` refuse on and the one
+    // neither of them published.
+    let out = r.ank(
+        "claude-code@ank",
+        &["close", other, "--reason", "swept again"],
+    );
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+
+    let adr = "ADR-000000000001";
+    r.seed_adr(adr, "Every session goes through the store.", "src/**");
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "adr"]);
+    assert_eq!(code(&r.ank("marie@laptop", &["accept", adr])), 0);
+    let out = r.ank("marie@laptop", &["accept", adr]);
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+
+    // And the ratification anchors the constraint, which is a field `edit`
+    // refuses — in a note, until now, and nowhere a parser reads.
+    let out = r.ank(
+        "marie@laptop",
+        &["edit", adr, "--constraint", "Something else."],
+    );
+    assert_eq!(code(&out), 6, "{}", stderr(&out));
+
+    for (verb, code) in [
+        ("claim", 2),
+        ("claim", 6),
+        ("done", 2),
+        ("release", 7),
+        ("amend", 2),
+        ("attest", 2),
+        ("attest", 7),
+        ("edit", 2),
+        ("close", 6),
+        ("accept", 6),
+        ("edit", 6),
+    ] {
+        assert!(
+            refusal_codes_of(&r, verb).contains(&code),
+            "`ank {verb}` returns {code} and its help lists it nowhere"
+        );
+    }
+}
