@@ -1,6 +1,6 @@
 {
   "name": "ank",
-  "description": "The ank skill, served from the repository that carries the tool.",
+  "description": "The ank skills, served from the repository that carries the tool.",
   "owner": {
     "name": "haksolot",
     "url": "https://github.com/haksolot"
@@ -9,7 +9,7 @@
     {
       "name": "ank",
       "source": "./",
-      "description": "Read a repository's tasks and binding constraints, claim work, and finish it with proof."
+      "description": "Carries the six ank skills: the contract that teaches claiming work and finishing it with proof, and one policy each for planning, drift, the loop, test-first and diagnosis."
     }
   ]
 }

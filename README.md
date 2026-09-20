@@ -14,13 +14,29 @@ Tasks and architecture decisions in your repo, behind one CLI any coding agent c
 <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/badge/licence-Apache--2.0-blue"></a></p>
 
 ```sh
-npm install -g @haksolot/ank     # one executable, and nothing beside it
-ank skills --install             # the skills, offline from the binary, into whichever agent you run
+npm install -g @haksolot/ank     # the wrapper, and the binary for your platform beside it
+ank skills --install             # the skills out of the binary, handed to npx skills add
 ```
 
-The skill is not the binary: the first line installs no skill, and the second
-hands the ones the binary carries to the agent you run. Needs **git 2.34 or
-newer**; the npm route needs **Node 18 or newer**. Every other route is in [handing ank to an agent][agents].
+The skill is not the binary. The package carries six `SKILL.md` for an installer
+that reads them, and `npm install -g` places none of them for an agent: the
+second line does that. It writes the six out of the executable, which needs no
+network, and then hands the directory to `npx skills add`, which does. So what
+an agent receives is the build's own copy, and only the placing of it goes near
+a registry. Needs **git 2.34 or newer**; the npm route needs **Node 18 or
+newer**.
+
+Two other routes install the same release, and there are no more than these
+three:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/haksolot/ank/main/install.sh | sh   # Linux and macOS
+irm https://raw.githubusercontent.com/haksolot/ank/main/install.ps1 | iex        # Windows
+```
+
+Both fetch the archive and the `.sha256` published beside it and refuse before
+unpacking if the two disagree. [Handing ank to an agent][agents] has what each
+one covers, and the honest answer when none of the three fits.
 
 ```sh
 ank update --check               # the running version and the latest release; installs nothing
@@ -42,9 +58,11 @@ serves it through one command surface. `.ank/` is opaque to an agent, the way
 <source media="(prefers-color-scheme: dark)" srcset="assets/demo-dark.gif">
 <img src="assets/demo.gif" alt="A terminal session: ank context serves a constraint saying every refusal must name the command that fixes it; ank graph shows which task is takeable; a task is claimed and its criterion frozen; the code written next produces exactly that message; ank done runs the declared verifier and records a hashed proof."></picture></p>
 
-Four verbs carry the loop: `ank context` for what binds here and what is takeable,
-`ank claim` to take a task and freeze its criterion, `ank log` while you work, and
-`ank done` to finish with a proof that `ank check` can verify afterwards.
+Six verbs carry the loop, which is the group `ank help` prints first: `ank context`
+for what binds here and what is takeable, `ank claim` to take a task and freeze its
+criterion, `ank show` for the entity whole, `ank log` while you work, `ank done` to
+finish with a proof that `ank check` can verify afterwards, and `ank release` to hand
+a task back with the reason recorded.
 [Getting started][start] walks all of it with real output, from `ank init` onward.
 
 Installing puts one executable on your `PATH`, and every surface ank has is a
