@@ -10,7 +10,8 @@ the corpus does not. `ank context <path>` serves the decisions and rules that
 bind a perimeter, in full, before you touch it; `ank find --type spec` reaches
 the specification; `ank show <id>` prints any entity whole. How to work is
 taught by the skills in `skill/`: the contract in `skill/SKILL.md`, and one
-policy per activity beside it (ank-plan, ank-drift, ank-loop).
+policy per activity beside it (ank-plan, ank-drift, ank-loop, ank-tdd,
+ank-diagnose).
 
 ## Commands
 
@@ -30,13 +31,17 @@ defect; it bites only a project dogfooding ank on itself.
 
 ## Proof
 
-A task declares its verifiers when it is written. `ank new task --verify
-cargo-test --verify fmt-check` fills `verify:`, and `ank done` then runs every
-verifier in that list, records what ran, and refuses `--proof` outright: the
-close becomes Ank's statement about the tree instead of the agent's. `--verify`
-takes a name `.ank/config.yml` declares -- `cargo-test`, `fmt-check`,
-`check-repo` -- and refuses at exit 7 anything else, so a name you misremember
-fails when you write the task rather than at the close.
+A task declares its verifiers when it is written, and a plain `ank new task`
+already carries them: `.ank/config.yml` marks `cargo-test` and `fmt-check`
+default, so a task created with no flag at all lands with
+`verify: [cargo-test, fmt-check]`. `ank new task --verify cargo-test --verify
+fmt-check` names a list of its own instead, replacing those defaults rather
+than adding to them. `ank done` then runs every verifier in that list, records
+what ran, and refuses `--proof` outright at exit 5: the close becomes Ank's
+statement about the tree instead of the agent's. `--verify` takes a name
+`.ank/config.yml` declares -- `cargo-test`, `fmt-check`, `check-repo` -- and
+refuses at exit 7 anything else, so a name you misremember fails when you write
+the task rather than at the close.
 
 Declare them. A task closing on a proof nothing ran is the failure this
 paragraph exists to stop: TASK-54c95c5f2d18 closed green while `cargo test
@@ -47,10 +52,11 @@ run and took a typed proof instead.
 `--proof` stays, for the criterion no declared verifier can settle -- the one
 only a published release answers, the one a human has to read -- and in that
 case you give a proof you already hold, `commit:<sha>`, never a CI run id you
-would have to wait for. An empty `verify:` is that judgement and nothing else,
-made when the task is written and visible in its diff; it is not the state a
-task arrives in by default. ADR-b6b69053a47b keeps the record honest either way:
-a proof somebody typed in good faith is worth having as what it is, and `check`
+would have to wait for. `--no-verify` is how `verify:` is left empty, and it is
+that judgement and nothing else, made when the task is written and visible in
+its diff; it is not the state a task arrives in by default, because no flag at
+all means the defaults. ADR-b6b69053a47b keeps the record honest either way: a
+proof somebody typed in good faith is worth having as what it is, and `check`
 goes on saying that nothing external anchors it.
 
 Once the task lands on the default branch, the `attest` job records

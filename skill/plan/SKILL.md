@@ -2,7 +2,7 @@
 name: ank-plan
 description: Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
 metadata:
-  revision: "83130b664c7e"
+  revision: "5a5fe2d96230"
 ---
 
 # ank-plan
@@ -57,7 +57,7 @@ Each settled decision becomes exactly one kind of entity:
 
     a durable architectural decision    ank new adr     lands proposed
     a normative rule                    ank new spec    lands proposed
-    concrete bounded work               ank new task    scope and criteria mandatory
+    concrete bounded work               ank new task    a scope is mandatory
     an ordering between tasks           ank amend --blocked-by
     a passing observation               ank log
 
@@ -68,7 +68,9 @@ that nobody designated one. The name is the sibling's directory, never ank-tdd.
 
 A done_criteria states what a verifier can check, not what an executor should
 attempt. If the criterion will not write, the decision is not settled: back to
-the frontier.
+the frontier. `new` is not where it is enforced — it writes a task with no
+criterion and says nothing — `claim` is, and it refuses at 7. So a criterion
+left for later is a task nobody can start, and the plan is short one decision.
 
 ## Where planning ends
 
