@@ -5,7 +5,7 @@ slug: the-conformance-list-in-format-md-matches-golden
 title: The conformance list in format.md matches golden/invalid file for file
 created: 2026-09-20T18:37:17Z
 author: claude-code/opus-5+4eef
-status: in_progress
+status: done
 scope:
   - docs/format.md
 blocked_by: []
@@ -13,8 +13,21 @@ done_criteria: |
   The `invalid/` list in the Conformance section of docs/format.md matches crates/ank-core/tests/golden/invalid/ file for file: one row per fixture, no row without a fixture, the stated count equal to the number of files, and each row naming what that fixture must be refused for as crates/ank-core/tests/golden.rs asserts it. The `valid/` bullet beside it names every fixture whose round-trip assertion is against a normalised input rather than the bytes on disk, not only the CRLF one.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/56e3022eb942@5a1a107
+    tree: scope/250c2b96d470
+    criteria: 6bb233303bf1
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@5a1a107
+    tree: scope/250c2b96d470
+    criteria: 6bb233303bf1
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 ## Why this exists
