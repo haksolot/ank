@@ -293,17 +293,16 @@ fn call_tool(
             let Some(known) = ank_contract::find_flag(spec, &flag) else {
                 return error(id, -32602, &format!("{} takes no {flag}", spec.name));
             };
-            if !tools::client_flag(&flag) {
-                return error(
-                    id,
-                    -32602,
-                    &format!(
-                        "{flag} belongs to the server: name a corpus with the \
-                         {} argument, by the identity ank status --json prints, \
-                         never by a path",
-                        corpora::ARGUMENT
-                    ),
-                );
+            // **A flag of the server's, refused with the reason that flag is
+            // the server's** (TASK-308ce062f427). One sentence stood here for
+            // all three and it was `--repo`'s, so a caller that passed
+            // `"json": true` was told to name a corpus by its identity and
+            // never by a path -- an answer to a question it had not asked.
+            // `tools::withheld` chooses the reason by the flag; it is also what
+            // `client_flag` is derived from, so the refusal and the schema
+            // cannot come to disagree about which flags these are.
+            if let Some(refusal) = tools::withheld(&flag) {
+                return error(id, -32602, &refusal);
             }
             let values = match (known.takes_value, value.as_array()) {
                 (false, _) => vec![String::new()],

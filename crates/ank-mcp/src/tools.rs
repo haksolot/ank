@@ -31,11 +31,52 @@ use ank_contract::{CommandSpec, COMMANDS};
 /// `--json` because the server always wants the machine document and a client
 /// asking for the human one would get a shape nothing describes. `--quiet` means
 /// nothing to a caller that reads a return value rather than a terminal.
-pub const SERVER_FLAGS: [&str; 3] = ["--repo", "--json", "--quiet"];
+///
+/// **Each with the reason it is withheld for, in the same row**
+/// (TASK-308ce062f427). The reason used to be one sentence for all three and
+/// the sentence was `--repo`'s, so a caller that passed `"json": true` was told
+/// to name a corpus by its identity and never by a path -- an answer to a
+/// question it had not asked, which is worse than a bare refusal because a
+/// caller acts on it. A row rather than a `match` beside the list: a name added
+/// here cannot arrive without a reason, and a reason cannot be written for a
+/// name that is not withheld.
+pub const SERVER_FLAGS: [(&str, &str); 3] = [
+    (
+        "--repo",
+        // The one sentence this task did not change. `corpus` is spelled here
+        // and held to `crate::corpora::ARGUMENT` by the unit test below, which
+        // interpolates the constant rather than repeating the word.
+        "name a corpus with the corpus argument, by the identity ank status \
+         --json prints, never by a path",
+    ),
+    (
+        "--json",
+        "a call already comes back as the machine document, and the human one \
+         is a shape this schema does not describe",
+    ),
+    (
+        "--quiet",
+        "it silences a terminal, and a call reads the document it gets back \
+         rather than watching one",
+    ),
+];
+
+/// The refusal a flag of this server earns, or `None` for a flag the client may
+/// pass.
+pub fn withheld(flag: &str) -> Option<String> {
+    SERVER_FLAGS
+        .iter()
+        .find(|(name, _)| *name == flag)
+        .map(|(name, why)| format!("{name} belongs to the server: {why}"))
+}
 
 /// Whether a flag is the client's to pass.
+///
+/// Derived from [`withheld`], so that "may the caller pass this" and "what do
+/// we tell it if not" have exactly one answer between them: a flag the schema
+/// hides is a flag the refusal has a reason for, by construction.
 pub fn client_flag(name: &str) -> bool {
-    !SERVER_FLAGS.contains(&name)
+    withheld(name).is_none()
 }
 
 /// A tool name. `ank_<verb>`, because a bare verb collides with every other
@@ -222,9 +263,65 @@ mod tests {
     /// one.
     #[test]
     fn the_globals_stay_the_servers() {
-        for flag in SERVER_FLAGS {
+        for (flag, _) in SERVER_FLAGS {
             assert!(!client_flag(flag), "{flag} reached the client");
         }
         assert!(client_flag("--json-lines"), "a flag is not a prefix match");
+    }
+
+    /// Each withheld flag has its own reason, and the list cannot outgrow them.
+    ///
+    /// Three assertions and three different failures. The first says the
+    /// refusal opens by naming what it is refusing, which is the half a caller
+    /// reads first. The second is the defect this task closed: a sentence some
+    /// other flag also gets is `--repo`'s reason handed to a caller that asked
+    /// about `--json`, and every one of the three was individually a refusal,
+    /// so a test that only looked for a refusal was green over it. The third
+    /// says a flag that is not withheld earns no reason -- a prefix is not a
+    /// match here any more than it is in `client_flag`.
+    #[test]
+    fn each_withheld_flag_carries_its_own_reason() {
+        let mut seen: Vec<String> = Vec::new();
+        for (flag, _) in SERVER_FLAGS {
+            let refusal = withheld(flag).unwrap_or_else(|| {
+                panic!(
+                    "{flag} is listed as the server's and withheld() has no \
+                     reason for it, so client_flag lets it through"
+                )
+            });
+            assert!(
+                refusal.starts_with(&format!("{flag} belongs to the server: ")),
+                "the refusal for {flag} does not open by naming it: {refusal}"
+            );
+            assert!(
+                !seen.contains(&refusal),
+                "{flag} is refused with a sentence another flag already got, \
+                 which is the defect this test exists for: {refusal}"
+            );
+            seen.push(refusal);
+        }
+        assert_eq!(seen.len(), SERVER_FLAGS.len());
+        assert!(
+            withheld("--json-lines").is_none(),
+            "a reason is not a prefix match either"
+        );
+    }
+
+    /// `--repo` keeps the sentence it had, and keeps it anchored on the
+    /// argument's own constant rather than on a second spelling of the name.
+    #[test]
+    fn the_repo_reason_is_the_one_it_always_was() {
+        assert_eq!(
+            withheld("--repo").as_deref(),
+            Some(
+                format!(
+                    "--repo belongs to the server: name a corpus with the {} \
+                     argument, by the identity ank status --json prints, never \
+                     by a path",
+                    crate::corpora::ARGUMENT
+                )
+                .as_str()
+            )
+        );
     }
 }
