@@ -1,3 +1,5 @@
+
+
 <p align="center"><picture>
 <source media="(prefers-color-scheme: dark)" srcset="assets/ank-dark.svg">
 <img src="assets/ank.svg" alt="" width="88" height="88"></picture></p>
@@ -18,7 +20,7 @@ ank skills --install             # the skills, offline from the binary, into whi
 
 The skill is not the binary: the first line installs no skill, and the second
 hands the ones the binary carries to the agent you run. Needs **git 2.34 or
-newer**. Every other route is in [handing ank to an agent][agents].
+newer**; the npm route needs **Node 18 or newer**. Every other route is in [handing ank to an agent][agents].
 
 ```sh
 ank update --check               # the running version and the latest release; installs nothing
