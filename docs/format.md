@@ -697,21 +697,36 @@ time is what arbitrates (§7).
 port in an afternoon:
 
 - `valid/`: every file must parse, and re-serialising it must reproduce the
-  input byte for byte **once line endings are normalised**. One file,
-  `TASK-c71f0e5a9b23.md`, is in CRLF on purpose and must come back in LF; that
-  is the only file for which the assertion is against the normalised input
-  rather than the bytes on disk. Fixtures at schema 1 and schema 2 are there to
-  stay: a file written before a field existed must survive a rewrite unchanged,
-  and if one of them moves, the version bump has silently become a migration.
-  Every kind carries one: a log entry is an ordinary entity fixture like any
-  other, and a fixture in the previous shape, a whole log keyed by the id of
-  the entity it belongs to, stays for as long as that shape is read.
+  input byte for byte **once it is in canonical form**. Two fixtures are not,
+  and they are the two shapes the format reads and never writes, so for those
+  two the assertion is against the normalised input rather than the bytes on
+  disk:
+
+  | Fixture | What it is not canonical in | What the comparison normalises |
+  |---|---|---|
+  | `TASK-c71f0e5a9b23.md` | CRLF line endings | back to LF |
+  | `TASK-9dd8e04b1358.md` | its closing `---` is the last byte | the final newline is put back |
+
+  Exactly one of each, and the suite asserts the counts rather than the files:
+  a `.gitattributes` that converted the first, or an editor that added a newline
+  to the second, would otherwise leave a green test covering nothing. The second
+  shape can only be an entity with an empty body, since a body puts the newline
+  after the delimiter by construction.
+
+  **Every version in the reader range carries a fixture**, 1 through 4, and the
+  suite fails a bump shipped without one. The old ones are there to stay: a file
+  written before a field existed must survive a rewrite unchanged, and if one of
+  them moves, the version bump has silently become a migration. Every kind
+  carries one too: a log entry is an ordinary entity fixture like any other, and
+  a fixture in the previous shape, a whole log keyed by the id of the entity it
+  belongs to, stays for as long as that shape is read.
 - `invalid/`: every file must be **rejected with the right error**, not merely
-  rejected. Sixteen fixtures, each naming a distinct failure:
+  rejected. Seventeen fixtures, each naming a distinct failure:
 
   | Fixture | What must be refused |
   |---|---|
   | `no-frontmatter.md` | a file with no frontmatter at all |
+  | `unterminated-frontmatter.md` | an opening `---` with no closing one |
   | `bad-id.md` | an identifier that is not 12 hex characters |
   | `bad-schema.md` | a schema outside the range, naming the version found |
   | `bad-status.md` | a status the kind does not declare |
@@ -739,6 +754,15 @@ port in an afternoon:
   in order not to carry. `bad-log-line` must name **line 2**: the file's other
   two lines are entries the grammar accepts, so a fixture whose every line were
   bad would pass for a reader that gave up on the first one.
+
+  The first two rows are one distinction and not two cases of one error, which
+  is why both fixtures exist. `no-frontmatter.md` never opens a frontmatter;
+  `unterminated-frontmatter.md` opens one and never closes it, and its refusal
+  names the **closing** delimiter — *unterminated frontmatter: no closing `---`
+  after the opening one*. Telling a reader that a file which plainly starts with
+  `---` must start with `---` sends them looking for a delimiter that is right
+  there, which is the same hour `---\r\n` already cost. A reader that folds the
+  two into one error passes this fixture and fails the person holding the file.
 
   One case per kind at least, or a kind ships with its strictness untested. The
   list grows with the format; what does not change is that a test asserting only
