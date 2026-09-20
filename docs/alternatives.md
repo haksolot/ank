@@ -44,34 +44,39 @@ accepted-but-malformed file is a rule that silently stopped applying.
 ## Against a process-skills workflow
 
 [Matt Pocock's skills][pocock] are the richest example: two dozen prompts
-covering the whole cycle — interview the human until the spec is precise, cut it
-into tickets, drive the implementation test-first, review before merge. The
-skill is the method, and the agent is held to it while it works.
+covering the whole cycle, interviewing the human until the spec is precise,
+cutting it into tickets, driving the implementation test-first, reviewing before
+merge. The skill is the method, and the agent is held to it while it works.
 
-Ank holds the other end. The agent is free of its method and the result is
-measured: the criterion is frozen by hash at claim, `done` runs the declared
-verifiers itself instead of believing a report, and the proof records the route
-by which it arrived. A prompt can tell an agent to write the test first, and
-nothing notices when it did not; a verifier notices nothing either, because it
-measures the tree and not the process — which is the point. An agent graded on
-its process learns to fake the process. An agent graded on the tree has to
-change the tree.
+Ank ships methods too, and holds the other end of them. Six skills travel
+inside the binary: the contract every agent loads, and five siblings teaching
+one activity each, plan, drift, loop, tdd and diagnose. A task may name any of
+the five. `ank new --method tdd` writes the designation into it, `ank context`
+names it and the sibling to load beneath the criterion once the task is
+claimed, `ank log --method tdd` records that it fired, and `ank skills` counts
+designations against firings per method. A name no sibling carries is refused
+at exit 7, when the task is written rather than when the work starts.
 
-So the two are layers, not rivals: process above, coordination below. Ank's own
-skills are its process layer — one policy per activity, planning as an
-interview, drift as an audit, the loop as consumption — and the CLI stays a set
-of primitives those policies reach for, because judgment is not dispatch.
+What no verb does is enforce one. `done` never reads `method`: the criterion
+is frozen by hash at claim, `done` runs the declared verifiers itself instead
+of believing a report, and the proof records the route by which it arrived. A
+verifier measures the tree and not the process, which is the point
+(ADR-e4a5a8873fe3). An agent graded on its process learns to fake the process.
+An agent graded on the tree has to change the tree.
 
-The cost is the mirror of retrieval's: ank will never guide the method. A team
-that wants test-first as a practice writes a skill for it, and ank verifies
-only the outcome; the discipline lives in the prompt, the truth in the proof.
+So the method is taught and the outcome is measured, and the cost is the mirror
+of retrieval's: a designation nobody honours is a line of frontmatter, and only
+the tree says whether the work was done. A team that wants a practice ank does
+not ship writes a skill for it, and ank still verifies only the outcome.
 
 ## What it costs to run
 
-Two numbers rather than an adjective. The skill costs about 58 tokens in every
-session, which is its frontmatter: the `name` and `description` a harness keeps
-loaded whether or not the skill is ever invoked, the body being read only when it
-is. And orientation is bounded at 8000 characters.
+Two numbers rather than an adjective. The six skills cost about 280 tokens in
+every session, which is their frontmatter: the `name` and `description` a harness
+keeps loaded whether or not a skill is ever invoked, the body being read only when
+it is. That is 38 tokens for the contract and 41 to 57 for each sibling, counted
+with `cl100k_base` over the six `SKILL.md`. And orientation is bounded at 8000
+characters.
 
 [okf]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
 [pocock]: https://github.com/mattpocock/skills
