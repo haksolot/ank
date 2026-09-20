@@ -10,7 +10,7 @@ and stop. This document is for what a pipeline does not need: a board, an
 editor plugin, a dashboard, an agent harness, anything that reads a corpus and
 shows it to somebody.
 
-Four things cost such a reader real time to discover, and all four are below.
+What costs such a reader real time to discover is below.
 
 ## The entry point is `ank help --json`
 
@@ -24,7 +24,7 @@ cannot fall behind what the binary does.
 One verb, whole, is the shape of every entry:
 
     $ ank help close --json
-    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false},{"name":"--worktree","short":null,"takes_value":true,"repeatable":false}],"notes":[],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
+    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false},{"name":"--worktree","short":null,"takes_value":true,"repeatable":false}],"notes":["the ref is not the whole product: a push the remote refuses leaves the write standing in this clone, and the verb exits 0"],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
 
 So a client can discover, without reading a line of Rust: every verb, its flags
 and their short forms, the states it refuses on **with the code each returns**,
@@ -105,6 +105,109 @@ stable too:
     $ ank claim TASK-6da1
     error[4]: TASK-6da126c832be held by tool/1.0 (expires in 30m)
       -> ank context
+
+## A refusal leaves stdout empty, and a warning may not
+
+Under `--json` a refusal writes **nothing at all** to stdout. Not an error
+document, not an empty object: zero bytes. The message and its hint go to
+stderr, the code goes to the exit status, and that is the whole answer.
+Measured across four codes -- `show TASK-9999` (2), `done` with no claim held
+(6), `close` with no `--reason` (7), `accept` off a default branch (9) -- stdout
+was 0 bytes every time. So parse stdout only once the code says 0; a parse error
+on a refusal is a client reading the wrong stream.
+
+**A warning is the other case, and it does not all go to one stream.** There are
+two kinds and the split is deliberate.
+
+**The warnings about the corpus are in the document**, under a `warnings` array
+of strings, with stderr left empty. Four verbs carry the field -- `context`,
+`claim`, `log` in its appending form, and `release` -- and `ank help --json` is
+where to read which, rather than this list:
+
+    $ ank claim TASK-0e61 --json
+    {"contract":1,"task":"TASK-0e6148ab8b03","holder":"tool/2.0","expires":"2026-09-20T18:15:44Z","warnings":["tool/1.0 holds TASK-efd813eedb23, overlapping on src/**"]}
+
+An intersecting claim is named and never refused (ADR-052accd6e3b2), so the fact
+has to reach a caller somewhere it will be read, and under `--json` that is the
+document rather than a stream a parser was told to ignore. The array is present
+and empty when there is nothing to say, so a client reads it unconditionally.
+
+**The warnings about the refs are on stderr, in both modes**, because they are
+not the answer: a write whose ref did not reach the remote leaves the document
+and the exit code exactly as they would have been. `done`, `release` and `close`
+each owe one. `ank done --proof commit:8db4465 --json` against an unreachable
+remote put this on stdout:
+
+    {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1}
+
+and this on stderr, exiting 0:
+
+    warning: claim not pushed: it holds in this clone only, and another clone can take the same task
+
+So read stderr, and do not assume it is empty on success -- but do not look
+there for what the document already carries.
+
+## The global flags, and the two variables
+
+`ank help --json` carries every flag of every verb, so none of this is a list to
+maintain by hand. Four flags are on nearly every verb, and what each one does is
+worth stating once.
+
+**`--json`, short `-j`**, on all 29 verbs. One line on stdout, never coloured.
+
+**`--quiet`, short `-q`**, on all 29 verbs, and it *empties* stdout rather than
+shortening it: `ank check` printed 340 bytes on one corpus, `ank check --quiet`
+printed 0, and both exited 0. What is left is the exit code, which is the point
+-- a caller that only routes on the code pays for no output at all. It does not
+silence a refusal: `ank show TASK-9999 --quiet` still puts `error[2]` on stderr
+and still exits 2. `--json` wins over it, so `--quiet --json` is still a
+document.
+
+**`--repo <path>`, short `-r`**, on 27 verbs: which corpus. `init` refuses it by
+name, and `watch` takes its corpora from the declaration described further down.
+
+**`--worktree <path>`, no short form**, on every verb but `watch`: which *tree*
+that corpus is anchored to. `--repo` says where `.ank/` is; `--worktree` says
+where a scope glob is confronted, where a path argument resolves, where a
+verifier runs, and where a `commit:` proof is looked up (ADR-9e56318631f3). The
+two are equal unless you separate them, and separating them shows: one corpus
+whose single task is scoped `src/**`, checked against a tree that has `src/`,
+reported 3 signals; checked against a tree that does not, 4, the extra one being
+`scope 'src/**' matches no file yet`. That is the flag a tool wants when one
+`.ank/` sits above several checkouts. A path that is not a directory is refused
+at exit 1, naming the confusion the refusal exists for:
+
+    $ ank status --worktree /nope/nope
+    error[1]: --worktree /nope/nope is not a directory
+      -> --worktree names the tree the corpus is anchored to, not its corpus
+
+The remaining short forms belong to one verb or two and are read from `ank help
+<verb> --json` rather than from here: `-c` for `--criteria`, `-b` for
+`--blocked-by`, `-v` for `--verify`, `-p` for `--proof`, `-t` and `-s` for
+`find`'s `--type` and `--status`, `-l` for `context --limit`, `-u` for `config
+--unset`.
+
+**`NO_COLOR` takes the colour and nothing else.** Colour is emitted only when
+stdout is a terminal, so a pipe, a file and `--json` are plain already and the
+variable changes nothing for an integration that reads them. It matters when
+your tool hands a person a terminal: through a pseudo-terminal `ank status` came
+back 538 bytes carrying 22 escape sequences, and `NO_COLOR=1` 448 bytes carrying
+none. The empty value is deliberately not an opt-out -- `NO_COLOR=` is how a
+shell spells "unset this for the child" -- and it measured 538 bytes and 22
+sequences, exactly as unset did. `TERM=dumb` is read the same way as
+`NO_COLOR=1`.
+
+**`ANK_UPDATE_REPOSITORY` names where releases are read from.** `ank update` is
+the only verb that reads it, because it is the only verb that asks the network
+anything (ADR-64f32c74a0f9). It replaces `https://github.com/haksolot/ank` in
+the `git ls-remote --tags --refs` the check makes, so a mirror, an internal
+clone or a fixture all serve. Against a bare clone tagged `v0.9.0` and `v0.7.0`:
+
+    $ ANK_UPDATE_REPOSITORY=/srv/ank-mirror.git ank update --check --json
+    {"contract":1,"current":"0.8.0","latest":"0.9.0","newer":true}
+
+A repository carrying no tag it can parse answers `"latest":null` and
+`"newer":false`, and still exits 0.
 
 ## A task's state is not in its file
 
@@ -216,9 +319,28 @@ is `done` or `closed` on the default branch. The binary says so itself:
                 the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch
       refuses:  the path names nothing inside this repository (1)
 
-A dashboard refreshing every thirty seconds must not call it. `ank status`,
-`ank find` and `ank show` are what a poll uses; `check` is the verb a human or a
-pipeline runs deliberately.
+A dashboard refreshing every thirty seconds must not call it. `ank status` and
+`ank find` are what a poll uses; `check` is the verb a human or a pipeline runs
+deliberately.
+
+**`ank show` is not a poll either, and for a different reason: it renews a
+claim.** Three verbs move the lease, and they were measured by reading the
+expiry out of `ank status --json` before and after each call:
+
+- `ank context`, in every form -- bare, with a path, with `--json`.
+- `ank show <id>`, when `<id>` is the task this identity holds. `ank show` over
+  any other entity leaves the lease alone, so it is the *subject* that renews
+  and not the verb.
+- `ank log "<message>"`, the appending form. `ank log <id>`, which reads, does
+  not.
+
+`find`, `status`, `scope`, `graph`, `check`, `review` and `help` all left the
+expiry untouched. That asymmetry is the point of ADR-0bb7ea8991bc -- a claim is
+renewed by working, not by reporting -- and it is what makes `show` on a timer a
+bug rather than a cost: a screen nobody is sitting at would keep an abandoned
+claim alive all night, and every other agent would go on reading the task as
+held. Poll `status` and `find`; call `context` and `show` when somebody is
+actually working.
 
 **Two planes, and only one of them is precious.** What `check` prunes is the
 **coordination** plane, the refs that say who holds what, and losing a ref
@@ -240,7 +362,7 @@ Exit 8 is findings, meaning faults. Signals leave it 0, and that is deliberate:
 reddening a build over an observation teaches a team to stop reading `check`.
 
     $ ank check --json
-    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
+    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":5,"plane_bytes":173,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
 
 ## The conformance suite is offered to you
 
@@ -337,7 +459,7 @@ ADR-621a7fd96ce1 -- the root commit, never a path. One server, addressed at one
 corpus at startup, answering out of another the reader declared:
 
     --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_find","arguments":{"arguments":["--status","open"],"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70"}}}
-    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\"}]}"}],"isError":false,"exitCode":0}}
+    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false}]}"}],"isError":false,"exitCode":0}}
 
 That permits multiplexing. It still forbids merging, and **telling those two
 apart is the whole of the decision**, so it is worth being exact about which one
@@ -556,8 +678,10 @@ holds that true.
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
-  coloured, and warnings go to stderr precisely so your parser keeps reading what
-  it already read.
+  coloured, and a refusal leaves stdout empty rather than putting a shape there
+  your parser has to tell apart. Warnings split: the ones about the corpus are a
+  `warnings` array inside that document, the ones about a ref that did not reach
+  the remote are on stderr in both modes.
 - **Bind to the exit code**, never to the wording of an error. The message and
   the hint are written for a person to read and may be improved; the code is
   the contract.
@@ -570,6 +694,9 @@ holds that true.
   its own. One process may hold several; nothing merges them. Claims are per
   repository, and nothing merges the claim spaces of two clones, because
   `refs/ank/*` cannot carry such an arbitration.
+- **Do not poll a verb that renews a claim.** `context` and `show` over the held
+  task move the lease; `status` and `find` do not, and they are what a refresh
+  is for.
 - **Do not bind to `ank watch`.** It answers nothing, and it is optional by
   construction. Write your integration against the CLI or the protocol surface,
   and let the watcher make those answers arrive sooner where somebody chose to
