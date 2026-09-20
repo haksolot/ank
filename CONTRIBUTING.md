@@ -15,8 +15,8 @@ own body which sections of the old monolith it carries, so a rule that reads
 
 ## The three gates
 
-`ci.yml` runs these on Linux, macOS and Windows, and a pull request is green
-when all three are:
+`ci.yml` runs these on Linux, macOS and Windows, and they are the three to run
+locally before opening a pull request -- the same commands in both places:
 
 ```
 cargo fmt --check
@@ -27,11 +27,41 @@ cargo run -q --bin ank -- check
 The third is the same line as the `check-repo` verifier in `.ank/config.yml`, on
 purpose: a CI that validated `.ank/` differently from `ank done` would let a
 corpus pass one and fail the other. Exit 8 means findings, and findings are a
-failure. Two further jobs build the workspace on the declared MSRV and prove
-that the minor below it fails. See the MSRV section.
+failure.
 
-Run all three locally before opening a pull request. They are the same commands
-in both places.
+They are not, however, the whole gate. The ruleset on the default branch
+requires six checks by name, and the three above account for three of them:
+
+```
+ubuntu-latest                  the three gates, on Linux
+macos-latest                   the three gates, on macOS
+windows-latest                 the three gates, on Windows
+version check / ubuntu-latest  release.yml's version check, against its fixtures
+msrv / ubuntu-latest           the workspace builds on the declared MSRV
+msrv is tight / ubuntu-latest  the minor below it does not
+```
+
+The last two are the MSRV section below. The version check is the one with no
+local equivalent, and it is worth running by hand:
+
+```
+bash .github/scripts/check-version-fixtures.sh
+```
+
+`release.yml` refuses to build when a tag and the manifests disagree on the
+version, and that refusal only ever ran on a tag, where a tag that refuses is
+already spent. This script exercises the same check against fixture trees on
+every pull request instead. Its first fixture reads the version out of the tree
+and holds every other literal to it, and seven files carry that literal -- two
+`Cargo.toml`, four `package.json` including the wrapper's three pins, and
+`.claude-plugin/plugin.json` -- so a bump that touched six of the seven is red
+on the branch that made it.
+
+`msrv` is a three-platform matrix and only its ubuntu leg is required, because
+the floor is one number for the workspace; the other two legs run and report,
+and they are what would catch a floor that differed per target. The ruleset
+allows the merge commit and nothing else, and it has no bypass actors: read
+**Ratifying a decision** before assuming a maintainer can merge around it.
 
 ## Working the loop
 
@@ -82,17 +112,29 @@ git branch ratify/<id>           # branch first, at the ratification commit
 git reset --hard origin/main     # local main back where it was
 git push -u origin ratify/<id>
 gh pr create --fill --base main --head ratify/<id>
-gh pr merge --merge              # a merge commit, and nothing else
+gh pr merge ratify/<id> --merge  # a merge commit, and nothing else
 git switch main && git pull
 ```
 
 Branch before resetting. The commit is then held by a ref, and a botched ordering
 is a reflog recovery rather than a lost signature.
 
-`--head` is not decoration. After the reset the shell is still standing on `main`,
-so a bare `gh pr create --fill` reads the current branch as the head, finds it is
-also the base, and refuses with "head branch is the same as base branch". Naming
-the branch is what makes the sequence work from where it leaves you.
+**Both of the last two `gh` lines name the branch, and neither naming is
+decoration.** Nothing in this sequence ever switches to `ratify/<id>`: `git
+branch` creates it without moving, and `git push -u origin ratify/<id>` pushes a
+branch you are not standing on. So the shell is still on `main` when `gh` runs,
+and `gh` resolves a pull request from the current branch.
+
+A bare `gh pr create --fill` therefore reads `main` as the head, finds it is also
+the base, and refuses with "head branch is the same as base branch". A bare `gh
+pr merge --merge` looks for the pull request whose head is `main`, finds none,
+and exits 1 with `no pull requests found for branch "main"` -- with the
+ratification sitting unmerged on a branch, which is the worse of the two because
+it looks like the sequence ran. Naming the branch in both is what makes this work
+from where it leaves you.
+
+The archive recipe below does not need it: `git switch -c archive/<date>` puts
+you on the branch, so `gh` resolves it from there.
 
 **Merge with a merge commit, never a squash and never a rebase.** This is
 load-bearing and not a matter of taste. A ratification is located by the *subject*
@@ -185,10 +227,31 @@ written, and one golden is in CRLF on purpose and must come back in LF.
 
 ## The MSRV is measured, never chosen
 
-`rust-version` is declared in both `crates/ank-cli/Cargo.toml` and
-`crates/ank-core/Cargo.toml`, and enforced by two CI jobs: `msrv` builds on the
-declared toolchain, proving it is sufficient, and `msrv-tight` requires the
-minor below it to fail, proving it is not higher than the tree needs.
+`rust-version` is declared in every crate of the workspace, six manifests
+carrying the same number:
+
+```
+crates/ank-contract/Cargo.toml
+crates/ank-core/Cargo.toml
+crates/ank-cli/Cargo.toml
+crates/ank-mcp/Cargo.toml
+crates/ank-daemon/Cargo.toml
+crates/ank-tui/Cargo.toml
+```
+
+Two CI jobs enforce it: `msrv` builds on the declared toolchain, proving it is
+sufficient, and `msrv is tight` requires the minor below it to fail, proving it
+is not higher than the tree needs. Both read the number out of a manifest rather
+than carrying it, so neither job is edited when the floor moves.
+
+They read two of the six, `crates/ank-cli/Cargo.toml` and
+`crates/ank-core/Cargo.toml`, and `msrv` fails when those two disagree. Nothing
+compares the other four, so moving the floor means moving all six by hand, and
+the two directions fail differently. A manifest left *above* the new floor is
+caught, because `msrv` builds on the declared toolchain without
+`--ignore-rust-version` and cargo refuses the package outright, with "rustc
+<running> is not supported by the following package". One left *below* it is
+caught by nothing, and goes on declaring a floor the workspace no longer has.
 
 **Never edit that number to make a build pass.** The floor is a consequence of a
 dependency, not a target held on purpose; it was measured by walking toolchains

@@ -6,9 +6,14 @@ and this template only asks for what neither of them says.
 ## Which task does this close
 
 <!--
-The id, from `ank find --status open`. If there is none, say why: a typo fix
-does not need one, a behaviour change does -- and a change with no task is a
-change with no frozen criterion to measure it against.
+The id, from `ank find --status done`. That is the listing to use here and not
+`--status open`: by the time you open this, `ank done` has moved the task, and
+`--status open` answers "no match" for exactly the id you came to copy. It shows
+as `[finished:<sha> on <branch>]`.
+
+If there is none, say why: a typo fix does not need one, a behaviour change does
+-- and a change with no task is a change with no frozen criterion to measure it
+against.
 -->
 
 TASK-
