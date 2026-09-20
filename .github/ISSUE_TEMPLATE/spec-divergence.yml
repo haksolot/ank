@@ -1,6 +1,10 @@
 name: Specification divergence
 description: The binary and the specification disagree
-labels: ["spec"]
+# No `labels:` here. This repository carries nine labels and none of them names
+# this class (`gh label list`), and a form that applies a label the repository
+# does not have applies nothing -- which is a silent no-op rather than a
+# category. The last question below is the one that decides the label anyway:
+# until it is answered, the report is not yet a code bug or a documentation bug.
 body:
   - type: markdown
     attributes:
@@ -58,7 +62,7 @@ body:
     id: ank_version
     attributes:
       label: ank --version
-      placeholder: ank 0.1.2 (skill 7f3c1a9)
+      placeholder: ank 0.8.0 (298c01a, skill 0d916cc3d9a5)
     validations:
       required: true
 

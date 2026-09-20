@@ -23,8 +23,8 @@ body:
       render: shell
       placeholder: |
         $ ank claim TASK-8ebd
-        error[4]: TASK-8ebd6e02f125 is held by pi@host-3 until 2026-08-06T18:12:00Z
-          -> ank find --status open
+        error[4]: TASK-8ebd6e02f125 held by pi@host-3 (expires in 30m)
+          -> ank context
     validations:
       required: true
 
@@ -56,9 +56,9 @@ body:
     attributes:
       label: ank --version
       description: >
-        The whole line. It names the build and the skill revision it shipped
-        alongside.
-      placeholder: ank 0.1.2 (skill 7f3c1a9)
+        The whole line. It names the version, the commit it was built from and
+        the skill revision it shipped alongside.
+      placeholder: ank 0.8.0 (298c01a, skill 0d916cc3d9a5)
     validations:
       required: true
 

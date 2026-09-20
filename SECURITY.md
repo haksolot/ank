@@ -29,8 +29,17 @@ direct edit is not prevented. It is noticed.
 **Enforcement, where it is real, lives outside ank.** A harness `PreToolUse`
 hook that refuses a tool call cannot be talked out of it by an environment
 variable, because the process it guards does not get to set one. That is the
-layer to reach for when you need a refusal that holds; this repository's own
-hook, refusing direct reads of `.ank/`, is the working example.
+layer to reach for when you need a refusal that holds.
+
+This repository ships no such hook. It had one, refusing direct reads of
+`.ank/`, and it was deleted along with the rest of `.claude/` in 264636c. The
+rule it guarded did not go with it: it is the ratified constraint of
+ADR-e45e1a29fe91, `ank context` serves it every session, and `ank check` reports
+a file written behind the CLI's back. What changed is that the rule is advisory
+here, which is the regime section 1 describes rather than a hole in a defence.
+Install the hook on your own machine if you want the refusal; nothing in this
+repository depends on one being installed, and its absence is not a
+vulnerability.
 
 ## 2. The one hard line, and what it does not prove
 
@@ -85,8 +94,14 @@ ship in the next release rather than in a backport.
 
 | Version | Supported |
 |---|---|
-| 0.1.2 (latest) | yes |
-| earlier 0.1.x | no, upgrade |
+| 0.8.0 (latest) | yes |
+| every earlier release | no, upgrade |
+
+This table names a number, so it goes stale between releases. The releases
+themselves are the answer that cannot:
+<https://github.com/haksolot/ank/releases/latest>. `ank update --check` reports
+the running version against the latest published one and installs nothing, and
+`ank --version` prints the running build.
 
 Ank requires **git 2.34 or newer** and checks at startup.
 
@@ -106,14 +121,61 @@ Expect an acknowledgement within seven days. This is a small project with no
 on-call rotation, so that is a commitment to answer, not to a fix window.
 
 **In scope.** Anything that makes ank do what the repository did not accept, or
-makes `check` report success where the record is not intact. For example:
-execution of a command that is not a declared verifier; a path where `ank`
-writes outside `.ank/` and the refs under `refs/ank/`, or commits when only
-`accept` may; a corpus alteration that leaves `check` green; a hash anchor that
-can be forged rather than detected; secrets leaking into output or into a proof.
+makes `check` report success where the record is not intact.
+
+In the corpus:
+
+- execution of a command that is not a declared verifier;
+- a corpus alteration that leaves `check` green;
+- a hash anchor that can be forged rather than detected;
+- a write outside what the verb run documents as its own: a path where `ank`
+  touches the working tree, a branch, a tag or a ref that its `ank help <verb>`
+  entry does not name, or a commit from any verb but `accept`;
+- secrets leaking into output, into a proof or into an entity.
+
+Each verb's documented perimeter is what that fourth item measures against, so
+read `ank help <verb>` before reporting one. `ank init` writing `.gitattributes`,
+`.gitignore` and a pointer line in `AGENTS.md` at the repository root is the
+obvious case: those writes are what the verb is for, they are printed as they
+happen, and they are not a vulnerability. A verb that wrote them without saying
+so would be.
+
+In the distribution, which is the larger surface and the one an attacker would
+actually reach for:
+
+- `install.sh` and `install.ps1`, the scripts the documentation tells people to
+  pipe into a shell. Both download a release archive and verify it against the
+  `.sha256` published beside it, so what is in scope is a path around that: an
+  archive accepted when the hash did not match or could not be computed, a
+  redirect followed somewhere the script did not intend, an archive that unpacks
+  outside the directory asked for, or an argument that reaches a command
+  unquoted;
+- the npm packages: `@haksolot/ank`, whose `bin/wrapper.js` resolves and spawns
+  a binary out of one of the three platform packages
+  (`@haksolot/ank-linux-x64-musl`, `@haksolot/ank-darwin-arm64`,
+  `@haksolot/ank-win32-x64`) selected through `optionalDependencies`. The
+  wrapper downloads nothing and runs no install script, so what is in scope is
+  the resolution: a path where it can be made to spawn something other than the
+  platform package npm installed, or to pass arguments to it other than the ones
+  it was given;
+- `ank update`, which runs one of those routes as a child process and is the
+  only verb that reaches the network for this question. A path where it installs
+  a build the running route did not authenticate, where `$ANK_UPDATE_REPOSITORY`
+  redirects a user who set nothing, or where the Windows rename-aside leaves the
+  old binary unrecoverable;
+- `ank mcp`, which runs `ank <verb> --repo <corpus> --json` as a child for a
+  client that has no shell: a tool call whose arguments escape into that command
+  line, or a call answering about a corpus other than the one `--repo` addressed
+  at startup;
+- `ank watch`, which fetches `refs/ank/*` from remotes you declared and mirrors
+  claims under `refs/ank/watch/<remote>/claims/`: a fetched ref that can move
+  anything else, a declaration file that makes it read or write outside the
+  corpora it names, or a crafted ref that reaches `events.jsonl` as something
+  other than data.
 
 **Out of scope**, because section 1 already answers it: an agent editing
 `.ank/` directly instead of going through the CLI; a falsified `$ANK_AGENT`; a
 role in `config.yml` not being enforced; a ratification signature produced on a
-machine whose signing key is unlocked. These are documented properties. If you
-think one of them should change, that is an ADR, not an advisory.
+machine whose signing key is unlocked; this repository shipping no `PreToolUse`
+hook. These are documented properties. If you think one of them should change,
+that is an ADR, not an advisory.
