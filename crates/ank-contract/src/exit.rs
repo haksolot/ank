@@ -97,9 +97,24 @@ impl fmt::Display for ExitCode {
     /// The integer, and nothing else.
     ///
     /// This is not a convenience: the code's only rendering anywhere in the
-    /// tool is the one §4 fixes, `error[7]:` on stderr and `"code": 7` under
-    /// `--json`. A `Display` that printed a variant name would be a second
-    /// rendering of a value whose whole purpose is to have exactly one.
+    /// tool is the one §4 fixes, `error[7]:` on standard error. A `Display` that
+    /// printed a variant name would be a second rendering of a value whose whole
+    /// purpose is to have exactly one.
+    ///
+    /// **`--json` prints nothing at all on a refusal**, which is the opposite of
+    /// what this comment claimed until TASK-78431b544d01 measured it. Six
+    /// refusals across six verbs, each run twice to separate the streams:
+    /// `show TASK-9999 --json` (2), `claim TASK-9999 --json` (2), `attest <id>
+    /// --proof bogus --json` (5), `done --json` (5), `new task --json` (7) and
+    /// `config nosuchkey --json` (1) each left **zero bytes** on standard
+    /// output and put `error[<code>]: <message>` on standard error. That is §4
+    /// holding: a refusal is not a document, so nothing is written where a
+    /// parser reads, and the code reaches the caller as the process status and
+    /// in the line beside it. A caller that waits for a `"code"` field waits
+    /// forever — the tool emits that key in exactly two places, neither of them
+    /// an error path: the `refuses` array of `ank help --json`, where it is the
+    /// code a verb *would* return, and the MCP server's error envelope, which
+    /// is a protocol of its own (ADR-fd98).
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.code())
     }

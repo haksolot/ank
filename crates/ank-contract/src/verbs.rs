@@ -495,6 +495,60 @@ const OUTSIDE_THE_REPOSITORY: Refusal = refuses(
     "the path names nothing inside this repository",
 );
 
+/// The refusal **every** verb performs, named on the ones that had no other
+/// reason to carry a code 1 (§4, §9).
+///
+/// Measured on 0.8.0 over all twenty-nine verbs: `ank <verb> --zzz-not-a-flag`
+/// exited 1 twenty-nine times out of twenty-nine, and thirteen of those verbs
+/// listed no code 1 at all — `status` listed no refusal whatever. `refuses` is
+/// the array a client filters *before* it calls, so a code the whole surface
+/// shares is the one a caller is least able to discover by reading a page and
+/// most likely to meet.
+const UNPARSEABLE_CALL: Refusal = refuses(
+    ExitCode::Generic,
+    "a flag this verb does not take, or a value the parser cannot read",
+);
+
+/// The store's compare-and-swap, named by every verb that reaches it (§4).
+///
+/// [`ExitCode::Conflict`] is one of the two codes §4 tells an agentic loop to
+/// handle, and until TASK-78431b544d01 it appeared in no verb's refusals: the
+/// loop was told to expect a code the table said nobody returned. It is reached
+/// wherever a verb reads a version, does something, and writes against the
+/// version it read — `claim`, `done`, `release`, `accept`, `read`, `close`,
+/// `amend`, `attest` and `edit`, measured by racing concurrent invocations at
+/// one entity and counting the exits, and by an editor and a verifier that move
+/// the entity from a second process. `log`, `new`, `config` and `archive` were
+/// raced the same way and never returned it: they write without swapping.
+const ENTITY_MOVED: Refusal = refuses(
+    ExitCode::Conflict,
+    "the entity moved between the read and the write: redo context, somebody else wrote",
+);
+
+/// What `check` and `review` come back with when the corpus has a fault (§4).
+///
+/// Both verbs said this in a note and neither said it in `refuses`, which is
+/// the half a parser reads — so a pipeline filtering the published refusals
+/// concluded 8 was nobody's, and the one distinction §4 draws here, a sick
+/// corpus against a broken tool, was not in the machine surface at all.
+const FINDINGS: Refusal = refuses(
+    ExitCode::Findings,
+    "the corpus carries at least one fault; a signal alone leaves the code at 0",
+);
+
+/// git absent, or too old to answer (§4).
+///
+/// Measured by emptying `PATH` and calling every verb with arguments good enough
+/// to reach the work: thirteen exited 9, and seven of them — `claim`, `log`,
+/// `done`, `release`, `close`, `amend` and `init` — published nothing about an
+/// environment to repair. The distinction is the one [`ExitCode::Environment`]
+/// exists for: none of these is a failure of the agent's work, and a caller
+/// reading 9 as 1 goes looking for sound code to fix.
+const NO_GIT: Refusal = refuses(
+    ExitCode::Environment,
+    "git is absent or older than 2.34: an environment to repair, not work that failed",
+);
+
 /// Global flags, deliberately limited to three (§4). `--json` is available on
 /// every command without exception: full scriptability is an invariant, not an
 /// option — hence adding them mechanically to each command's surface rather
@@ -795,6 +849,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(ExitCode::Unavailable, "the task is held by another agent, or finished on another branch"),
             refuses(ExitCode::Prerequisite, "the task is blocked, or has no done_criteria to freeze"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            NO_GIT,
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            refuses(
+                ExitCode::Transition,
+                "the task is closed or already done: there is no transition to in_progress from either",
+            ),
         ],
         notes: &[
             "--criteria sets a criterion the task does not have, and records it as the claimer's; it never replaces one",
@@ -816,7 +878,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
-        refuses: &[refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one")],
+        refuses: &[
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            UNPARSEABLE_CALL,
+        ],
         notes: &[],
         refuses_globals: &[],
         output: &[when("over a task", SHOW_TASK), when("over an ADR, a spec or a log entry", SHOW_OTHER)],
@@ -850,6 +915,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(ExitCode::Transition, "writing to an open or in_progress task with no claim held by this agent"),
             refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
             refuses(ExitCode::Generic, "--method given with an id or a message"),
+            NO_GIT,
         ],
         notes: &[
             "a done or closed task has to be named: HEAD never points at one",
@@ -883,6 +949,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(ExitCode::Proof, "no proof, and the task's verify: list names no verifier to produce one"),
             refuses(ExitCode::Transition, "no claim held by this agent, or the frozen done_criteria has diverged"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            NO_GIT,
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
         ],
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
@@ -905,7 +975,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
-        refuses: &[refuses(ExitCode::Transition, "no claim held by this agent")],
+        refuses: &[
+            refuses(ExitCode::Transition, "no claim held by this agent"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            NO_GIT,
+            refuses(
+                ExitCode::Prerequisite,
+                "no --reason: a claim given up without one tells the next holder nothing",
+            ),
+        ],
         // The task is back to `open` in the file whatever the remote did; the
         // ref is the claim being deleted. A deletion that did not travel leaves
         // another clone reading a claim this one has given up, which is a risk
@@ -940,6 +1019,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(ExitCode::Environment, "no --title or --scope and $EDITOR is unset, so there is nothing to open"),
             refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
+            UNPARSEABLE_CALL,
         ],
         notes: &[
             "a scope is mandatory: an entity attached to nothing is invisible",
@@ -1002,13 +1082,15 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--remote")],
-        // **Empty, and measured rather than assumed** (TASK-106dccc7f71c). This
-        // verb takes no path, parses no value of its own, and raises no refusal
-        // anywhere in `status.rs`: `--remote` reads an unreachable origin as a
-        // warning and answers on the local plane, which is the paragraph above.
-        // So the vacuous case §9 allows is the true one here, and the empty
-        // array is a fact about the verb rather than a gap nobody looked at.
-        refuses: &[],
+        // **One row, and measured rather than assumed** (TASK-106dccc7f71c,
+        // TASK-78431b544d01). This verb takes no path, parses no value of its
+        // own, and raises no refusal anywhere in `status.rs`: `--remote` reads
+        // an unreachable origin as a warning and answers on the local plane,
+        // which is the paragraph above. What is left is the one refusal the
+        // parser performs for the whole surface, and the array was empty while
+        // `ank status --zzz-not-a-flag` exited 1 — so the vacuous case §9 allows
+        // turned out not to be the true one here after all.
+        refuses: &[UNPARSEABLE_CALL],
         // `coordinates` stays false, and the flag does not change that: without
         // it `status` pays for no network at all, and with it an unreachable
         // origin is a warning and the local answer rather than a refusal. A
@@ -1030,7 +1112,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[OUTSIDE_THE_REPOSITORY],
+        refuses: &[
+            OUTSIDE_THE_REPOSITORY,
+            FINDINGS,
+        ],
         // `review` shares `check`'s report and therefore its exit code, and for
         // a long time it said so nowhere: a caller reading 8 as "check found
         // something" met it from a verb whose page promised nothing of the
@@ -1068,6 +1153,12 @@ pub const COMMANDS: &[CommandSpec] = &[
             refuses(
                 ExitCode::Environment,
                 "the default branch cannot be determined, from config.yml or from origin",
+            ),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            refuses(
+                ExitCode::Transition,
+                "the document is already ratified: the promotion has happened, and the anchor names where",
             ),
         ],
         notes: &[
@@ -1108,6 +1199,7 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Generic,
                 "a log entry: it is written once, and a reading would be a second write",
             ),
+            ENTITY_MOVED,
         ],
         notes: &[
             "the reading names the identity in effect and the instant; nothing is signed, and nothing is refused on who is calling",
@@ -1133,6 +1225,13 @@ pub const COMMANDS: &[CommandSpec] = &[
                 "no --reason: a closure nobody explained is one nobody can reopen",
             ),
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            NO_GIT,
+            refuses(
+                ExitCode::Transition,
+                "the task is already closed or already done: neither is a state this verb moves out of",
+            ),
         ],
         // The task is `closed` in the file whatever the remote did; the ref is
         // the claim this revokes, and `claim_revoked` above says whether there
@@ -1171,6 +1270,10 @@ pub const COMMANDS: &[CommandSpec] = &[
                 "--criteria while a live claim freezes the criterion; that case is a release",
             ),
             refuses(ExitCode::Prerequisite, "--method names no sibling skill this binary carries"),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            NO_GIT,
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
         ],
         notes: &[
             "adds and removes explicitly, never a replacement list, so nothing is dropped by being forgotten",
@@ -1202,6 +1305,16 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Environment,
                 "--detached and the remote unreachable: the ref is the whole product, and a proof no other clone can read is no proof",
             ),
+            UNPARSEABLE_CALL,
+            ENTITY_MOVED,
+            refuses(
+                ExitCode::Proof,
+                "--proof in no readable form, or naming a type this act does not accept",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "the task is not finished: this is the one write allowed after done, and there is nothing yet to append to",
+            ),
         ],
         notes: &[
             "--proof is <type>:<ref>; type is commit, human-review, assertion or test",
@@ -1232,6 +1345,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[
             refuses(ExitCode::Environment, "$EDITOR is unset with no field named, and there is no editor to open"),
             refuses(ExitCode::Generic, "a field named is not one the addressed kind carries"),
+            ENTITY_MOVED,
+            refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
+            refuses(
+                ExitCode::Transition,
+                "a field something else has anchored: the criterion a live claim froze, or the constraint and scope a ratification commit holds",
+            ),
         ],
         notes: &[
             "a named field writes only what is named and never opens an editor; with none, $EDITOR opens on the whole entity",
@@ -1300,7 +1419,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(
             ExitCode::Environment,
             "no terminal on stdin and stdout: a screen cannot be drawn into a pipe",
-        )],
+        ),
+            UNPARSEABLE_CALL,
+        ],
         notes: &[
             // "and writes nothing" stood here for as long as the reader only
             // read, and stopped being true the day claim, log, release, done and
@@ -1367,7 +1488,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(
             ExitCode::Environment,
             "this binary cannot find itself on disk, and every call is a run of it",
-        )],
+        ),
+            UNPARSEABLE_CALL,
+        ],
         notes: &[
             "JSON-RPC on stdio, one message per line: initialize, tools/list, tools/call, ping",
             "every verb of this table is a tool, generated from it: no curated subset, and no second list kept in step by review",
@@ -1487,7 +1610,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
-        refuses: &[OUTSIDE_THE_REPOSITORY],
+        refuses: &[
+            OUTSIDE_THE_REPOSITORY,
+            FINDINGS,
+        ],
         notes: &[
             "exit 8 means findings; a signal alone leaves it 0",
             "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
@@ -1592,7 +1718,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         refuses: &[refuses(
             ExitCode::Generic,
             "--repo: it names a repository that exists, and this verb makes one; the target is positional",
-        )],
+        ),
+            NO_GIT,
+        ],
         notes: &[
             "a target elsewhere is ank init <path>; with no argument it initialises the current directory",
             "--at <path> puts the corpus outside this tree and declares it, so the tree gains no file",
@@ -1722,7 +1850,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<verb>]",
         flags: &[],
-        refuses: &[refuses(ExitCode::NotFound, "no such verb; never a fallback to the general listing")],
+        refuses: &[
+            refuses(ExitCode::NotFound, "no such verb; never a fallback to the general listing"),
+            UNPARSEABLE_CALL,
+        ],
         notes: &[],
         refuses_globals: &[],
         output: &[one(HELP_OUT)],
