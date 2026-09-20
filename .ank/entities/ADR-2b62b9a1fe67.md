@@ -5,15 +5,19 @@ slug: an-output-the-documentation-shows-is-measured-by
 title: An output the documentation shows is measured by the suite, and a reference table is generated from the table it describes
 created: 2026-09-19T18:25:20Z
 author: claude-code/opus-5+docs-audit
-status: proposed
+status: accepted
 scope:
   - docs/**
   - README.md
   - crates/ank-cli/tests/**
 constraint: |
   A block in docs/ or README.md presented as what ank prints is either regenerated from the binary or compared with it by a test in the workspace suite that fails when they differ. A reference table (exit codes, entity fields and their enums, config.yml keys, environment variables) is generated from the source table it describes, never typed. A hand-typed output block with no test behind it is a finding.
+ratified: a46e92c44f15
+verified:
+  - by: haksolot@omarchy
+    at: 2026-09-20T17:19:23Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Evidence
