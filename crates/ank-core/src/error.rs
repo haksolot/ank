@@ -7,6 +7,16 @@ pub enum Error {
     #[error("missing frontmatter: the file must start with '---'")]
     MissingFrontmatter,
 
+    /// An opening `---` was found and no closing one was. Distinct from
+    /// [`Error::MissingFrontmatter`], which is a file that never opened a
+    /// frontmatter at all, and the distinction is the whole point: a reader
+    /// told "the file must start with '---'" about a file that does start
+    /// with `---` goes looking for a delimiter that is right there, which is
+    /// the hour §3 already records against `---\r\n`. The closing delimiter
+    /// is what is missing, so the closing delimiter is what is named.
+    #[error("unterminated frontmatter: no closing '---' after the opening one")]
+    UnterminatedFrontmatter,
+
     /// The one diagnostic in this crate that carries a command, and it does so
     /// because the cause *is* a git configuration: nothing about the file's
     /// content can be corrected, and a reader told only "CRLF line endings"
