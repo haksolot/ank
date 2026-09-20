@@ -172,14 +172,41 @@ pub fn has_crlf(input: &str) -> bool {
 
 /// Separates frontmatter from body. The body is kept verbatim, byte for byte,
 /// including the newline that follows the closing `---`.
+///
+/// A closing `---` that is the **last bytes of the file**, with no newline
+/// after it, is a frontmatter followed by an empty body and is read as one. An
+/// editor that trims the final newline, or a `printf` that never wrote one,
+/// produces exactly that file: non-canonical, not wrong, and the serializer
+/// puts the newline back on first rewrite (§12). Refusing it as *missing*
+/// frontmatter would send the reader looking for a delimiter that is right
+/// there — the same hour `---\r\n` used to cost (§3).
+///
+/// When there is no closing delimiter at all the refusal names the closing
+/// one, never the opening one the file demonstrably has.
 fn split_frontmatter(input: &str) -> Result<(&str, &str)> {
     let rest = input
         .strip_prefix("---\n")
         .ok_or(Error::MissingFrontmatter)?;
-    let end = rest.find("\n---\n").ok_or(Error::MissingFrontmatter)?;
-    let fm = &rest[..end];
-    let body = &rest[end + "\n---\n".len()..];
-    Ok((fm, body))
+    if let Some(end) = rest.find("\n---\n") {
+        let fm = &rest[..end];
+        let body = &rest[end + "\n---\n".len()..];
+        return Ok((fm, body));
+    }
+    if let Some(fm) = rest.strip_suffix("\n---") {
+        return Ok((fm, ""));
+    }
+    // An empty frontmatter: the closing line sits directly against the opening
+    // one, and the `\n` the search needs in front of it is the one
+    // `strip_prefix` has already eaten. Handled here so that the refusal below
+    // never claims a closing delimiter is absent while it is on line two — it
+    // falls to serde, which names the field that is actually missing.
+    if let Some(body) = rest.strip_prefix("---\n") {
+        return Ok(("", body));
+    }
+    if rest == "---" {
+        return Ok(("", ""));
+    }
+    Err(Error::UnterminatedFrontmatter)
 }
 
 // ---------------------------------------------------------------------------

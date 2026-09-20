@@ -62,6 +62,22 @@ fn log_fixtures(sub: &str) -> Vec<PathBuf> {
     paths
 }
 
+/// The canonical form of a valid file: what the round-trip is entitled to come
+/// back as. Two things separate a valid file from its canonical form and both
+/// are read, never written (§3, §12). CRLF is one, and `normalise_line_endings`
+/// carries it. A closing `---` that is the last byte of the file, with no
+/// newline after it, is the other, and it is carried here. That shape can only
+/// be an entity with an empty body — where there is a body, the newline after
+/// the delimiter is there by construction — so putting the newline back is the
+/// whole of the normalisation.
+fn canonical_form(input: &str) -> String {
+    if input.ends_with("\n---") {
+        format!("{input}\n")
+    } else {
+        input.to_string()
+    }
+}
+
 /// The round-trip is the identity **on canonical form** (§3). Valid but
 /// non-canonical input is read correctly and normalised on first rewrite, so
 /// the assertion is byte identity against the *normalised* input: for a file
@@ -76,6 +92,7 @@ fn log_fixtures(sub: &str) -> Vec<PathBuf> {
 fn valid_files_round_trip_byte_identical_once_canonical() {
     let mut checked = 0;
     let mut crlf_seen = 0;
+    let mut no_final_newline_seen = 0;
     let mut schemas = Vec::new();
     for path in entity_fixtures("valid") {
         let input = fs::read_to_string(&path).unwrap();
@@ -91,8 +108,11 @@ fn valid_files_round_trip_byte_identical_once_canonical() {
                 path.display()
             );
         }
+        if !input.ends_with('\n') {
+            no_final_newline_seen += 1;
+        }
         assert_eq!(
-            normalise_line_endings(&input),
+            canonical_form(&normalise_line_endings(&input)),
             output,
             "round-trip differs for {}",
             path.display()
@@ -106,6 +126,13 @@ fn valid_files_round_trip_byte_identical_once_canonical() {
     assert_eq!(
         crlf_seen, 1,
         "the CRLF fixture is missing or was converted to LF on checkout"
+    );
+    // The same guard for the same reason: an editor that adds a final newline
+    // on save, or a tool that tidies the tree, would leave this fixture passing
+    // while testing nothing.
+    assert_eq!(
+        no_final_newline_seen, 1,
+        "the fixture whose closing --- is the last byte is missing or something put the newline back"
     );
     // Every version in the reader range is represented, so that no bump can be
     // shipped without a fixture proving the older ones still round-trip.
@@ -146,6 +173,49 @@ fn crlf_is_read_and_never_diagnosed_as_missing_frontmatter() {
     assert!(!d.contains("missing frontmatter"), "{d}");
 }
 
+/// The twin of the CRLF case, and the same substitution. A file whose closing
+/// `---` is its last byte, with no newline after it, *does* start with `---`,
+/// so "missing frontmatter: the file must start with '---'" sends the reader
+/// hunting for a delimiter that is right there — an editor that trims trailing
+/// whitespace on save is all it takes to produce one. It is read, its body is
+/// empty, and the byte it lacks comes back on the first rewrite (§12).
+#[test]
+fn a_closing_delimiter_at_end_of_file_is_read_and_never_called_missing_frontmatter() {
+    let path = golden_dir("valid").join("TASK-9dd8e04b1358.md");
+    let input = fs::read_to_string(&path).unwrap();
+    assert!(
+        input.ends_with("\n---"),
+        "the fixture must end on the closing delimiter to mean anything"
+    );
+
+    let t = parse_task(&input).expect("a closing delimiter at EOF must be read, not rejected");
+    assert_eq!(t.id.to_string(), "TASK-9dd8e04b1358");
+    assert_eq!(t.scope, vec!["src/parse/**".to_string()]);
+    assert!(
+        t.body.is_empty(),
+        "there is nothing after the delimiter: the body is empty, not absent"
+    );
+
+    // Normalised on first rewrite, and the diff is exactly the missing byte.
+    assert_eq!(serialize_task(&t), format!("{input}\n"));
+
+    // The two non-canonical shapes compose, because the line endings are dealt
+    // with before the split and never after: a file in CRLF whose closing
+    // delimiter is also its last byte is one file, not a case nobody tried.
+    let crlf = input.replace('\n', "\r\n");
+    assert!(crlf.ends_with("\r\n---"));
+    assert_eq!(
+        parse_task(&crlf).unwrap().id.to_string(),
+        "TASK-9dd8e04b1358"
+    );
+
+    // And the one refusal a delimiter can still earn names the closing one.
+    let d = Error::UnterminatedFrontmatter.to_string();
+    assert!(d.contains("closing"), "{d}");
+    assert!(!d.contains("must start with"), "{d}");
+    assert!(!d.contains("missing frontmatter"), "{d}");
+}
+
 #[test]
 fn invalid_files_are_rejected_with_the_right_error() {
     for path in entity_fixtures("invalid") {
@@ -162,6 +232,12 @@ fn invalid_files_are_rejected_with_the_right_error() {
             "type-mismatch" => matches!(err, Error::TypeMismatch { .. }),
             "unknown-field" => matches!(err, Error::Yaml(_)),
             "no-frontmatter" => matches!(err, Error::MissingFrontmatter),
+            // Opened and never closed. The delimiter that is missing is the
+            // closing one, so that is the one named: a reader told "the file
+            // must start with '---'" about a file that plainly does goes
+            // looking for the wrong thing, which is the hour §3 already
+            // records against `---\r\n`.
+            "unterminated-frontmatter" => matches!(err, Error::UnterminatedFrontmatter),
             "criteria-by-without-criteria" => matches!(err, Error::CriteriaByWithoutCriteria),
             "bad-glob" => matches!(err, Error::InvalidGlob(_)),
             // The kind is named, not the id prefix and not the first field the

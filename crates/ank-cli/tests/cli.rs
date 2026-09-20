@@ -11640,7 +11640,15 @@ fn an_invalid_result_leaves_the_entity_untouched_and_says_why() {
     assert_eq!(code(&out), 1, "{}", stderr(&out));
     let err = stderr(&out);
     assert!(err.contains("does not parse"), "{err}");
-    assert!(err.contains("missing frontmatter"), "says why: {err}");
+    // Why, and about the right delimiter: the text opens a frontmatter and
+    // never closes it, so the closing `---` is what the refusal names. Told
+    // "the file must start with '---'" about a file that does, the caller
+    // would re-edit the one line that is already right.
+    assert!(err.contains("unterminated frontmatter"), "says why: {err}");
+    assert!(
+        !err.contains("missing frontmatter"),
+        "names the right one: {err}"
+    );
     assert_eq!(r.task_text(ID), before, "byte for byte");
 
     // The named file is real and holds what the editor saved. A message that
