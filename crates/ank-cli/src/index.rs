@@ -61,6 +61,13 @@ pub const DB_FILE: &str = "index.db";
 /// act on rather than as a verb that never returns. A verb that hangs is worse
 /// than one that fails, and §4 has an exit code for an environment that will not
 /// answer.
+///
+/// **What it still covers is one writer waiting for another**, and no longer a
+/// reader waiting for anybody (TASK-b9701a228f47). [`Index::try_open`] puts the
+/// file in WAL, where a `SELECT` and a write transaction do not see each other;
+/// before that the paragraph above was the whole of a reader's protection, and
+/// this repository's own suite measured a plain read of `files` waiting the five
+/// seconds out behind a rebuild and then refusing.
 const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// The wall above, in milliseconds, for the one test that has to prove the
@@ -278,6 +285,34 @@ fn wipe_in(conn: &Connection) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Every file row the index holds, keyed by repository-relative path.
+///
+/// Over a `&Connection` rather than `&self` for the same reason
+/// [`tables_present_in`] is: a `Transaction` dereferences to one, so the refresh
+/// can ask this question again under its own write lock with the same body.
+fn known_files_in(conn: &Connection) -> rusqlite::Result<BTreeMap<String, Known>> {
+    let mut stmt = conn.prepare("SELECT path, hash, mtime, size, inode FROM files")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            Known {
+                hash: r.get(1)?,
+                stat: Stat {
+                    mtime: r.get(2)?,
+                    size: r.get(3)?,
+                    inode: r.get(4)?,
+                },
+            },
+        ))
+    })?;
+    let mut map = BTreeMap::new();
+    for row in rows {
+        let (p, k) = row?;
+        map.insert(p, k);
+    }
+    Ok(map)
+}
+
 fn install_schema_in(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(SCHEMA)?;
     conn.execute(
@@ -370,6 +405,26 @@ enum Write {
     Remove(String),
 }
 
+impl Write {
+    /// Whether the rows already say what this write would say.
+    ///
+    /// Asked of the `files` table as it stands **under the write lock**, which
+    /// is the only place the answer means anything: everything else here was
+    /// decided from a read taken before the wait.
+    fn already_done(&self, now: &BTreeMap<String, Known>) -> bool {
+        match self {
+            // Content and stat both, because a matching hash under a stat that
+            // moved still owes the row a restat, and dropping the write here
+            // would leave the file hashed again on every open.
+            Write::Index(rel, hash, stat, _) | Write::Unreadable(rel, hash, stat) => now
+                .get(rel)
+                .is_some_and(|k| &k.hash == hash && &k.stat == stat),
+            Write::Restat(rel, stat) => now.get(rel).is_some_and(|k| &k.stat == stat),
+            Write::Remove(rel) => !now.contains_key(rel),
+        }
+    }
+}
+
 pub struct Index {
     conn: Connection,
     ank: PathBuf,
@@ -407,8 +462,21 @@ impl Index {
     fn open_as(ank: &Path, archive: bool) -> Result<Index> {
         let mut index = Self::open_raw(ank)?;
         index.archive = archive;
-        if index.refresh().is_ok() {
-            return Ok(index);
+        match index.refresh() {
+            Ok(_) => return Ok(index),
+            // **The same exemption [`Index::open_raw`] makes, and it was
+            // missing here** (TASK-b9701a228f47). A busy database is not a
+            // damaged one, and the cure for the second is fatal to the first:
+            // the delete below unlinks a file other processes hold open, and
+            // SQLite then reports their next statement as `attempt to write a
+            // readonly database`, `disk I/O error` or `no such table:
+            // entities`. That is TASK-e9dfaf187a1b's cascade exactly, one layer
+            // up the call stack, and it survived that fix because that fix
+            // guarded the open and this is the refresh. Measured with a probe
+            // at the delete, eight readers of a cold corpus: seven reached it
+            // and six arrived carrying the contention error.
+            Err(e) if is_contention(&e) => return Err(e),
+            Err(_) => {}
         }
         // The schema looked right and the refresh still failed, so the file is
         // damaged in a way the checks below did not name. Discarding it is the
@@ -470,11 +538,32 @@ impl Index {
     fn try_open(ank: &Path, path: &Path) -> Result<Index> {
         crate::store::trace_read("index", path);
         let conn = Connection::open(path).map_err(|e| db_error(e, ank))?;
-        // Before any statement, including the schema probe below: the probe is
-        // a read, a read takes a shared lock, and a shared lock is contended by
-        // the writer another process is in the middle of.
+        // Before any statement, including the schema probe below: under the
+        // rollback journal that probe is a read, a read takes a shared lock,
+        // and a shared lock is contended by the writer another process is in
+        // the middle of. The WAL below removes that case; the wall stays for
+        // the one it does not, which is a writer waiting for a writer.
         conn.busy_timeout(busy_timeout())
             .map_err(|e| db_error(e, ank))?;
+        // **A reader never waits for a writer at all, which is what the wall
+        // above cannot promise** (TASK-b9701a228f47). Under the rollback
+        // journal a writer locks the file exclusively for the whole of its
+        // commit, so a plain `SELECT` queues behind it and the five seconds are
+        // all a reader has: measured on this repository's own suite, the
+        // refusal that survived every other fix here came from
+        // `known_files`'s read of `files`, backtrace captured, waiting out the
+        // wall behind somebody rebuilding 2270 rows. Under WAL a reader and a
+        // writer do not see each other, so the case cannot arise -- the same
+        // move TASK-4111dfae8a87 made one layer up, where the fix was not a
+        // wider margin but a reader that asks for no lock.
+        //
+        // Asked as a question because it can be declined: WAL needs shared
+        // memory beside the file, which a network filesystem may not give, and
+        // SQLite answers with the mode it actually kept. Declined, the index
+        // works exactly as it did before, so there is nothing to report and
+        // nothing to fail.
+        let _: std::result::Result<String, _> =
+            conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0));
         let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
@@ -686,6 +775,32 @@ impl Index {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
+
+        // **Asked again under the lock, and this is what stops the queue from
+        // growing with the number of readers** (TASK-b9701a228f47). The writes
+        // above were decided from rows read *before* the wait, so a process
+        // that waited three seconds for a cold rebuild then wrote every one of
+        // those rows a second time: counted with `ANK_INDEX_REFRESHED`, four
+        // concurrent readers of a cold corpus each reported `indexed=2266`. N
+        // readers therefore serialised N full rebuilds, and from the third
+        // onwards the five-second wall was gone and the answer was `database is
+        // locked` -- which is the failure this repository's own suite kept
+        // reporting. Re-reading here costs one scan of `files`, on the path that
+        // already has something to write; it buys the loser of the race the
+        // chance to discover that the winner wrote exactly what it was about to.
+        //
+        // It is the shape [`Index::ensure_schema`] already uses, for the same
+        // reason: a read before the lock decides whether to ask for it, and a
+        // read under the lock decides what is left to do.
+        let now = known_files_in(&tx).map_err(|e| db_error(e, &self.ank))?;
+        writes.retain(|w| !w.already_done(&now));
+        if writes.is_empty() {
+            // Dropped, so the transaction rolls back having written nothing.
+            // The counts are already right: `indexed`, `removed` and
+            // `unreadable` are tallied by the loop below, over what survived.
+            return Ok(done);
+        }
+
         let mut w = Writer { tx, steps: 0 };
         for write in &writes {
             match write {
@@ -720,31 +835,7 @@ impl Index {
     }
 
     fn known_files(&self) -> Result<BTreeMap<String, Known>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, hash, mtime, size, inode FROM files")
-            .map_err(|e| self.err(e))?;
-        let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    Known {
-                        hash: r.get(1)?,
-                        stat: Stat {
-                            mtime: r.get(2)?,
-                            size: r.get(3)?,
-                            inode: r.get(4)?,
-                        },
-                    },
-                ))
-            })
-            .map_err(|e| self.err(e))?;
-        let mut map = BTreeMap::new();
-        for row in rows {
-            let (p, k) = row.map_err(|e| self.err(e))?;
-            map.insert(p, k);
-        }
-        Ok(map)
+        known_files_in(&self.conn).map_err(|e| self.err(e))
     }
 
     /// The instant of the index's last write, as recorded, or `None` where

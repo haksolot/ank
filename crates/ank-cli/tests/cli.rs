@@ -4001,6 +4001,137 @@ fn readers_of_a_warm_corpus_take_no_write_lock() {
     );
 }
 
+/// Everything under `from`, copied into `to`, directories included.
+///
+/// For the fixture below, which needs a corpus of this repository's size and
+/// cannot use this repository's own: the defect being reproduced destroys the
+/// index it runs against, and the rest of this suite is reading that one.
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap().flatten() {
+        let (src, dst) = (entry.path(), to.join(entry.file_name()));
+        if src.is_dir() {
+            copy_tree(&src, &dst);
+        } else {
+            std::fs::copy(&src, &dst).unwrap();
+        }
+    }
+}
+
+/// **A corpus the size of this repository's own, cold, read by eight at once**
+/// (TASK-b9701a228f47).
+///
+/// The two tests above pass on a corpus of twelve seeded tasks, where a rebuild
+/// costs milliseconds and no queue can form. This repository's corpus is 2269
+/// files and rebuilds in about three seconds, and that is the whole difference:
+/// the readers of a cold index of *this* size refuse each other, and this
+/// suite's own red is where it was noticed, twice on one day and from two
+/// worktrees that never saw each other (TASK-4a4920a4ccc4).
+///
+/// Measured before the fix, eight concurrent readers of a cold copy of this
+/// corpus: seven refused, `attempt to write a readonly database`,
+/// `disk I/O error` and `no such table: entities`. Two causes, and the first is
+/// why the second is ever reached. A refresh decides its writes before it asks
+/// for the lock and never re-reads after the wait, so eight cold readers
+/// serialise eight full rebuilds -- counted with `ANK_INDEX_REFRESHED`, four
+/// concurrent readers each wrote `indexed=2266` -- and from the third onwards
+/// the five-second wall is gone and the answer is `database is locked`. Then
+/// `Index::open_as` deletes the index on *any* failed refresh, contention
+/// included, which is the one case `open_raw` ten lines below it is careful to
+/// exempt (TASK-e9dfaf187a1b): the unlink takes the database out from under the
+/// other seven, and one reader's wait becomes everybody's error.
+///
+/// **A third cause is not pinned here, and saying so is the point.** With those
+/// two fixed this test went green while `cargo test --workspace` still failed
+/// three runs in six, on a plain `SELECT` in `known_files` that had waited the
+/// wall out behind a writer's commit -- the rollback journal, answered by
+/// putting the file in WAL. Isolating it wants a reader with nothing to write
+/// meeting a writer that has plenty, and on one corpus those two cannot be
+/// arranged: a cold reader always has the same rebuild to write as everybody
+/// else. So what measures that one is the suite itself, repeatedly, which is
+/// what the task asked for and what its log records -- twelve cold runs of
+/// `cargo test --workspace` green, against three failures in the six
+/// immediately before.
+///
+/// Threads rather than a loop over `spawn`, because the shape being reproduced
+/// is cargo's: several tests of one binary, on its thread pool, each running a
+/// verb against the same corpus.
+///
+/// **Every reader asks for the archive, and that is what makes this
+/// deterministic rather than lucky.** An asking open walks
+/// `.ank/archive/entities/` as well, which is 2269 files here against 715, so
+/// its rebuild is the long one and the queue actually forms: measured on a
+/// fresh copy, three fresh copies in a row, eight asking readers refused three
+/// every time and eight readers on a mix of asking and plain verbs refused none
+/// at all. It is also the shape the defect was reported in twice --
+/// `no_superseded_document_is_cited_in_the_workspace` and
+/// `the_walk_reaches_a_crate_that_is_not_this_one` both go through
+/// `superseded_ids`, which is `find --status superseded --all`, and cargo runs
+/// them on the same pool.
+#[test]
+fn concurrent_readers_of_a_cold_corpus_of_this_size_all_answer() {
+    let r = Repo::new();
+    copy_tree(&workspace_root().join(".ank"), &r.0.join(".ank"));
+    // Cold, which is the state CI starts every run in: the index is gitignored,
+    // so nothing checks one out and the first readers build it together.
+    let db = r.0.join(".ank/index.db");
+    let _ = std::fs::remove_file(&db);
+    assert!(!db.exists(), "the fixture must start without an index");
+    assert!(
+        std::fs::read_dir(r.0.join(".ank/entities"))
+            .unwrap()
+            .count()
+            >= 400,
+        "the corpus must be this repository's, not a seeded one: its size is \
+         what makes a rebuild long enough to queue behind"
+    );
+
+    let verbs: [&[&str]; 3] = [
+        &["find", "--status", "superseded", "--all", "--json"],
+        &["find", "--type", "adr", "--all", "--json"],
+        &["find", "--all", "--json"],
+    ];
+    let readers: Vec<_> = (0..8)
+        .map(|i| {
+            let corpus = r.0.clone();
+            let args: Vec<String> = verbs[i % verbs.len()]
+                .iter()
+                .map(|a| (*a).to_string())
+                .collect();
+            std::thread::spawn(move || {
+                let out = ank_command()
+                    .args(&args)
+                    .arg("--repo")
+                    .arg(&corpus)
+                    .env("ANK_AGENT", format!("agent-{i}@host"))
+                    .current_dir(std::env::temp_dir())
+                    .output()
+                    .expect("the binary must have been built");
+                (args.join(" "), code(&out), stderr(&out))
+            })
+        })
+        .collect();
+
+    let mut refused = Vec::new();
+    for (i, reader) in readers.into_iter().enumerate() {
+        let (verb, code, err) = reader.join().expect("a reader thread must finish");
+        // The index by name, because every message this defect produces carries
+        // it and none of them may reach a reader: the contended wait, and the
+        // three a deleted database gives whoever still had it open.
+        if code != 0 || err.contains("index:") {
+            refused.push(format!("#{i} `ank {verb}` exited {code}: {}", err.trim()));
+        }
+    }
+    assert!(
+        refused.is_empty(),
+        "readers of a cold corpus of this size refused each other. The index is \
+         derived, disposable and rebuildable (§6), so a reader that loses the \
+         race for it waits and answers; it never fails, and it never deletes \
+         the database the others are holding open:\n{}",
+        refused.join("\n")
+    );
+}
+
 /// A corpus is keyed on its root commit, so a path cannot change what it is
 /// (ADR-621a7fd96ce1).
 ///

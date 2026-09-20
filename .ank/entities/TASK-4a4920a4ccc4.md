@@ -5,7 +5,7 @@ slug: two-tests-reading-this-corpus-at-once-lose-the-r
 title: Two tests reading this corpus at once lose the race for index.db
 created: 2026-09-20T18:09:36Z
 author: claude-code/opus-5+308c
-status: open
+status: closed
 scope:
   - crates/ank-cli/tests/**
 blocked_by: []
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured 2026-09-20 on task/308c-mcp-reason, an unrelated diff confined to crates/ank-mcp. 'cargo test --workspace -q', run 1: 367 passed, 1 FAILED --
