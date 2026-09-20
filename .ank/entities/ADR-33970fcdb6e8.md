@@ -5,15 +5,19 @@ slug: the-documentation-is-one-tree-in-docs-and-the-pi
 title: The documentation is one tree in docs/, and the pipeline publishes it as a site
 created: 2026-09-19T18:25:09Z
 author: claude-code/opus-5+docs-audit
-status: proposed
+status: accepted
 scope:
   - docs/**
   - README.md
   - .github/workflows/**
 constraint: |
   Documentation a person reads lives in docs/ of this repository, changes by pull request, and is published as a static site that the pipeline builds from the default branch. No wiki repository and no hand-kept copy elsewhere: a page edited outside this tree is a satellite. The files GitHub reads at fixed paths (README.md, CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, the pull request and issue templates) stay where they are and link into the site. skill/, CLAUDE.md and AGENTS.md stay the agent surface: the site links them, never copies them. A normative rule lives in a spec entity; a page links to it or renders it, and never restates it.
+ratified: 3cb614299726
+verified:
+  - by: haksolot@omarchy
+    at: 2026-09-20T17:19:35Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ## Context
