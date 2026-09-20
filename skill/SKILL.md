@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "0d916cc3d9a5"
+  revision: "9e55a1a6946a"
 ---
 
 # ank
@@ -53,7 +53,9 @@ Orient first:
                           ank context --since, once you hold a claim, names by id what moved
                           since your last work on it
     ank scope <path>      every entity covering a path: why is this file constrained, and by what
-    ank status            where am I: branch, identity, claim held, drift from the default branch
+    ank status            where am I: branch and the default branch, drift, identity,
+                          the claim held and when it expires, the claims other agents
+                          hold, the perimeter, the queue, the corpus's faults and signals
     ank find <query>      titles, scopes and criteria; ank find --type spec reaches the
                           specification, ank find --status open lists what remains
     ank log <id>          the read form, no claim needed: what previous holders tried and
@@ -106,8 +108,9 @@ of planning well.
   `ank context` binds: the CLI knows the budget, the freeze and who holds what;
   the files do not.
 - **One agent, one working tree, one identity.** A tree per agent, a clone or a
-  `git worktree`, each on a branch cut fresh from the default one: `status`
-  names the drift, and a stale base turns a green tree red elsewhere. Set
+  `git worktree`, each on a branch cut fresh from the default one: the drift
+  `status` names is entity files differing from the default branch, never the
+  code, so a base stale in code is git's to tell you and not status's. Set
   `ANK_AGENT` per session; it falls back to `<user>@<hostname>`, so two
   sessions in one tree are one agent to the refs, sharing a claim instead of
   arbitrating over it, a degraded mode rather than the design. ank commits
@@ -123,8 +126,18 @@ of planning well.
   a terminal, never into a pipe, a file or `--json`, so the bytes reaching you
   are plain: there is nothing to configure and no second surface to prefer.
 
-Exit codes carry meaning: `4` unavailable, `6` a frozen field diverged, `8`
-findings, `9` environment. Errors always name the exact next command.
+Exit codes carry meaning, and errors always name the exact next command:
+
+    1  generic
+    2  no such entity, or a prefix matching several
+    3  the entity moved under you: redo `context`
+    4  not yours to take: held by another agent, or finished elsewhere
+    5  a proof missing, malformed or refused, or a declared verifier that failed
+    6  the state forbids the act: a frozen field diverged, or no claim is held
+    7  a prerequisite is missing: blocked, no criterion, a mandatory flag absent,
+       or you already hold a live claim
+    8  `check` or `review` found a fault; a signal alone exits `0`
+    9  an environment to repair rather than work that failed
 
 ## Install
 
