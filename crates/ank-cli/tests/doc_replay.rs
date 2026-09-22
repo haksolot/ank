@@ -58,14 +58,30 @@ const ANK: &str = env!("CARGO_BIN_EXE_ank");
 const PAGES: &[&str] = &[
     "README.md",
     "docs/SUMMARY.md",
-    "docs/agents.md",
     "docs/alternatives.md",
+    "docs/check.md",
+    "docs/ci-jobs.md",
+    "docs/ci.md",
+    "docs/claims.md",
     "docs/config-keys.md",
+    "docs/conventions.md",
+    "docs/demo.md",
     "docs/entity-fields.md",
+    "docs/environment.md",
     "docs/exit-codes.md",
     "docs/format.md",
-    "docs/getting-started.md",
+    "docs/install.md",
     "docs/integrating.md",
+    "docs/mcp.md",
+    "docs/msrv.md",
+    "docs/multi-agent.md",
+    "docs/proof.md",
+    "docs/quickstart.md",
+    "docs/ratifying.md",
+    "docs/releasing.md",
+    "docs/signing.md",
+    "docs/specification.md",
+    "docs/watch.md",
 ];
 
 const KINDS: &[&str] = &["TASK-", "ADR-", "SPEC-", "LOG-"];
@@ -833,18 +849,48 @@ fn the_readme_replays() {
 }
 
 #[test]
-fn getting_started_replays() {
-    replay_page("docs/getting-started.md");
+fn install_replays() {
+    replay_page("docs/install.md");
 }
 
 #[test]
-fn agents_replays() {
-    replay_page("docs/agents.md");
+fn quickstart_replays() {
+    replay_page("docs/quickstart.md");
+}
+
+#[test]
+fn proof_replays() {
+    replay_page("docs/proof.md");
+}
+
+#[test]
+fn claims_replays() {
+    replay_page("docs/claims.md");
+}
+
+#[test]
+fn check_replays() {
+    replay_page("docs/check.md");
+}
+
+#[test]
+fn multi_agent_replays() {
+    replay_page("docs/multi-agent.md");
 }
 
 #[test]
 fn integrating_replays() {
     replay_page("docs/integrating.md");
+}
+
+#[test]
+fn mcp_replays() {
+    replay_page("docs/mcp.md");
+}
+
+#[test]
+fn environment_replays() {
+    replay_page("docs/environment.md");
 }
 
 #[test]
@@ -857,9 +903,19 @@ fn the_other_pages_replay() {
     for page in [
         "docs/SUMMARY.md",
         "docs/alternatives.md",
+        "docs/ci-jobs.md",
+        "docs/ci.md",
         "docs/config-keys.md",
+        "docs/conventions.md",
+        "docs/demo.md",
         "docs/entity-fields.md",
         "docs/exit-codes.md",
+        "docs/msrv.md",
+        "docs/ratifying.md",
+        "docs/releasing.md",
+        "docs/signing.md",
+        "docs/specification.md",
+        "docs/watch.md",
     ] {
         replay_page(page);
     }

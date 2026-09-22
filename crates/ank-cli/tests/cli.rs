@@ -4756,8 +4756,8 @@ fn a_second_claim_under_one_identity_is_refused_and_names_both_ways_out() {
     );
 }
 
-/// The way out sends the reader to `getting-started`, so `getting-started` has
-/// to be where the answer is (TASK-d79dc424c63d, TASK-a548c95261a5).
+/// The way out sends the reader to the page on identity, so `claims.md` has to
+/// be where the answer is (TASK-d79dc424c63d, TASK-a548c95261a5).
 ///
 /// Driven by the binary rather than by a hand-copied string: the point is not
 /// that the guide mentions a variable, it is that the exact line the binary
@@ -4782,7 +4782,7 @@ fn the_guide_documents_the_identity_the_way_out_tells_you_to_set() {
     assert!(!warned.is_empty(), "nothing to document: {said}");
 
     let guide = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/getting-started.md"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/claims.md"),
     )
     .expect("the guide is in the repository the tests run from");
 
@@ -14914,7 +14914,7 @@ fn the_schema_warning_never_reaches_standard_output() {
 ///
 /// Same shape as `the_guide_documents_the_identity_the_way_out_tells_you_to_set`
 /// and for the same reason: the warning tells a reader their binary is behind,
-/// and `getting-started.md` is where they will look for what that means. A
+/// and `install.md` is where they will look for what that means. A
 /// guide that describes a different message is a guide that has drifted.
 ///
 /// Compared with the digits removed from both sides. The numbers belong to one
@@ -14941,7 +14941,7 @@ fn the_guide_carries_the_warning_the_binary_prints_about_a_newer_corpus() {
 
     let guide = skeleton(
         &std::fs::read_to_string(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/getting-started.md"),
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/install.md"),
         )
         .expect("the guide is in the repository the tests run from"),
     );

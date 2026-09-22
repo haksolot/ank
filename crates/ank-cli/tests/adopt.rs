@@ -1,7 +1,7 @@
 //! The three prompts that adopt ank in a repository that already has code.
 //!
 //! They exist in three places -- `install.sh`, `install.ps1` and
-//! `docs/getting-started.md` -- and that is the whole reason this file is here.
+//! `docs/quickstart.md` -- and that is the whole reason this file is here.
 //! Prose duplicated in three files diverges, and this is the prose where
 //! divergence is worst: an installer teaching a prompt the documentation has
 //! since corrected, on the one route where the reader has no way of knowing the
@@ -99,10 +99,10 @@ fn ps_prompts() -> Vec<String> {
 }
 
 fn doc_prompts() -> Vec<String> {
-    let text = repo_file("docs/getting-started.md");
+    let text = repo_file("docs/quickstart.md");
     prompts(
-        "docs/getting-started.md",
-        &marked_region("docs/getting-started.md", &text),
+        "docs/quickstart.md",
+        &marked_region("docs/quickstart.md", &text),
     )
 }
 
@@ -130,7 +130,7 @@ fn the_three_copies_of_each_prompt_are_identical() {
         assert_eq!(
             source,
             &doc[i],
-            "prompt {} differs between install.sh and docs/getting-started.md",
+            "prompt {} differs between install.sh and docs/quickstart.md",
             i + 1
         );
     }
