@@ -54,6 +54,7 @@
 /// a shape is what freezes that shape, and there is none yet.
 pub const CONTRACT_VERSION: u32 = 1;
 
+pub mod env;
 pub mod events;
 pub mod exit;
 pub mod json;

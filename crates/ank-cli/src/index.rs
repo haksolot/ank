@@ -86,7 +86,7 @@ const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 /// twelve cold readers, twelve refused across three rounds. After it, on a warm
 /// index, no reader asks for the write lock at all, so the value cannot matter —
 /// and that is the difference between a guarantee and a margin.
-const BUSY_TIMEOUT_ENV: &str = "ANK_INDEX_BUSY_MS";
+const BUSY_TIMEOUT_ENV: &str = ank_contract::env::ANK_INDEX_BUSY_MS;
 
 /// Where a refresh that wrote reports the steps its writes executed
 /// (TASK-d9ad8f03faff).
@@ -95,7 +95,7 @@ const BUSY_TIMEOUT_ENV: &str = "ANK_INDEX_BUSY_MS";
 /// is how the test through the binary decides that a cold rebuild is linear by
 /// a count, the SQLite virtual-machine steps, rather than by a wall clock that
 /// measures the runner (ADR-cc65f1388a71). Unset, nothing is written anywhere.
-const STEPS_ENV: &str = "ANK_INDEX_STEPS";
+const STEPS_ENV: &str = ank_contract::env::ANK_INDEX_STEPS;
 
 /// Where every refresh appends what it did, one line of `key=count` pairs
 /// (TASK-a4565686c619).
@@ -104,7 +104,7 @@ const STEPS_ENV: &str = "ANK_INDEX_STEPS";
 /// tests through the binary count the files a verb hashed, which is the
 /// evidence that a stat vouched for the rest (ADR-1556aaffe0c5). Unset, nothing
 /// is written anywhere.
-const REFRESHED_ENV: &str = "ANK_INDEX_REFRESHED";
+const REFRESHED_ENV: &str = ank_contract::env::ANK_INDEX_REFRESHED;
 
 fn busy_timeout() -> std::time::Duration {
     match std::env::var(BUSY_TIMEOUT_ENV)

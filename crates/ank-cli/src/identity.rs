@@ -7,7 +7,7 @@
 
 use std::process::Command;
 
-pub const ENV_AGENT: &str = "ANK_AGENT";
+pub const ENV_AGENT: &str = ank_contract::env::ANK_AGENT;
 
 /// Where the identity in effect came from.
 ///
@@ -67,11 +67,11 @@ fn first_env(keys: &[&str]) -> Option<String> {
 }
 
 pub fn user() -> String {
-    first_env(&["USERNAME", "USER", "LOGNAME"]).unwrap_or_else(|| "unknown".to_string())
+    first_env(&ank_contract::env::USER_NAMES).unwrap_or_else(|| "unknown".to_string())
 }
 
 pub fn hostname() -> String {
-    if let Some(h) = first_env(&["COMPUTERNAME", "HOSTNAME"]) {
+    if let Some(h) = first_env(&ank_contract::env::HOST_NAMES) {
         return short_host(&h);
     }
     // Last resort: the binary. Absent from some minimal images, hence the

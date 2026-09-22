@@ -141,7 +141,7 @@ pub fn run(
 ) -> std::io::Result<Outcome> {
     let out = Command::new(&address.exe)
         .args(argv(spec, corpus, args))
-        .env("ANK_AGENT", identity(&address.version))
+        .env(ank_contract::env::ANK_AGENT, identity(&address.version))
         .current_dir(corpus)
         .output()?;
     Ok(Outcome {
@@ -169,7 +169,7 @@ pub fn run(
 ///
 /// [`Address::version`]: crate::Address::version
 pub fn identity(version: &str) -> String {
-    std::env::var("ANK_AGENT")
+    std::env::var(ank_contract::env::ANK_AGENT)
         .ok()
         .filter(|v| !v.trim().is_empty())
         .unwrap_or_else(|| format!("ank-mcp/{version}"))

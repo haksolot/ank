@@ -124,7 +124,7 @@ pub fn find_sh() -> Result<PathBuf> {
 
 fn on_path(name: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &["", ".exe"] } else { &[""] };
-    let path = std::env::var_os("PATH")?;
+    let path = std::env::var_os(ank_contract::env::PATH)?;
     for dir in std::env::split_paths(&path) {
         for ext in exts {
             let p = dir.join(format!("{name}{ext}"));

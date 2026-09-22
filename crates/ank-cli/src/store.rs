@@ -386,7 +386,7 @@ fn write_atomic(target: &Path, contents: &str) -> Result<()> {
 /// (ADR-cc65f1388a71), and `strace` is not on every machine the suite runs on
 /// (TASK-8654f0c81393). The index's freshness walk hashes bytes and parses
 /// nothing on a warm index; it is the index's cost, and it is not traced here.
-pub const TRACE_READS_ENV: &str = "ANK_TRACE_READS";
+pub const TRACE_READS_ENV: &str = ank_contract::env::ANK_TRACE_READS;
 
 /// Appends one line to the read trace, and does nothing when none is asked for.
 /// A trace that cannot be written is dropped in silence: an instrument never

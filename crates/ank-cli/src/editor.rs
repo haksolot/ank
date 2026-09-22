@@ -25,7 +25,10 @@ use std::path::{Path, PathBuf};
 /// running the same thing again, and for the interactive form of `new` it is the
 /// flag form, which §4 names explicitly.
 pub fn command(hint: &str) -> Result<String> {
-    from_env(std::env::var("EDITOR").ok().as_deref(), hint)
+    from_env(
+        std::env::var(ank_contract::env::EDITOR).ok().as_deref(),
+        hint,
+    )
 }
 
 /// The decision, separated from the reading.

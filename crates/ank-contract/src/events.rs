@@ -171,12 +171,12 @@ pub fn user_dir() -> Option<PathBuf> {
             .map(PathBuf::from)
     };
     if cfg!(windows) {
-        return var("APPDATA").map(|p| p.join("ank"));
+        return var(crate::env::APPDATA).map(|p| p.join("ank"));
     }
-    if let Some(xdg) = var("XDG_CONFIG_HOME") {
+    if let Some(xdg) = var(crate::env::XDG_CONFIG_HOME) {
         return Some(xdg.join("ank"));
     }
-    var("HOME").map(|p| p.join(".config").join("ank"))
+    var(crate::env::HOME).map(|p| p.join(".config").join("ank"))
 }
 
 /// The stream itself, or `None` where the environment names no home.

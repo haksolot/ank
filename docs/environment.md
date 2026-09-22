@@ -1,8 +1,48 @@
+<!-- The section between the BEGIN and END markers is generated from crates/ank-contract/src/env.rs; the rest is written by hand.
+     Regenerate: cargo run -q -p ank-contract --bin environment -- docs/environment.md -->
+
 # Environment variables
 
 Every variable the binary reads, and what it changes. None of them is required:
 with the environment empty but for `PATH`, every verb works, and the variables
 below adjust who is acting, where a file is found, and how output looks.
+
+<!-- BEGIN environment -->
+<!-- Generated from crates/ank-contract/src/env.rs; do not edit between the markers. -->
+
+## Every variable
+
+| Variable | Read by | What it changes |
+|---|---|---|
+| `ANK_AGENT` | every verb, and `ank mcp` | the identity this session acts as: who holds a claim, who wrote an entity, who ran `done`. Unset or blank, `<user>@<hostname>`, and `ank mcp` writes under `ank-mcp/<version>` |
+| `USERNAME` | every verb, with `ANK_AGENT` unset | the `<user>` of the fallback identity; the first of `USERNAME`, `USER`, `LOGNAME` set and not blank wins, and none gives `unknown` |
+| `USER` | every verb, with `ANK_AGENT` unset | the `<user>` of the fallback identity, when `USERNAME` gives none |
+| `LOGNAME` | every verb, with `ANK_AGENT` unset | the `<user>` of the fallback identity, when `USERNAME` and `USER` give none |
+| `COMPUTERNAME` | every verb, with `ANK_AGENT` unset | the `<hostname>` of the fallback identity, cut at its first dot and lowercased; the first of `COMPUTERNAME`, `HOSTNAME` set wins, and none asks the `hostname` program, then says `localhost` |
+| `HOSTNAME` | every verb, with `ANK_AGENT` unset | the `<hostname>` of the fallback identity, when `COMPUTERNAME` gives none |
+| `ANK_UPDATE_REPOSITORY` | `ank update` | the repository release tags are read from, in place of `https://github.com/haksolot/ank`; empty counts as unset |
+| `NO_COLOR` | every verb at a terminal, and `ank tui` | set and not empty, takes the colour and nothing else; the empty value is not an opt-out |
+| `TERM` | every verb at a terminal, and `ank tui` | `dumb` takes the colour, as `NO_COLOR=1` does, and draws the structure of `ank tui` in ASCII; on Windows, set at all, it says the console renders escape sequences |
+| `WT_SESSION` | every verb at a Windows terminal | set, says the console renders escape sequences; with none of `WT_SESSION`, `TERM`, `TERM_PROGRAM`, `ConEmuANSI`, `ANSICON` set, the output is plain |
+| `TERM_PROGRAM` | every verb at a Windows terminal | set, says the console renders escape sequences |
+| `ConEmuANSI` | every verb at a Windows terminal | set, says the console renders escape sequences |
+| `ANSICON` | every verb at a Windows terminal | set, says the console renders escape sequences |
+| `EDITOR` | `ank edit` | the editor `ank edit <id>` opens when given no field to change; unset or blank, the verb refuses at exit 9 |
+| `APPDATA` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | on Windows, the reader's configuration directory is `%APPDATA%\ank`; unset, a verb that needs it refuses at exit 9 |
+| `XDG_CONFIG_HOME` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | elsewhere than Windows, the reader's configuration directory is `$XDG_CONFIG_HOME/ank`; empty counts as unset |
+| `HOME` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | with `XDG_CONFIG_HOME` unset, the reader's configuration directory is `$HOME/.config/ank`; neither set, a verb that needs it refuses at exit 9 |
+| `PATH` | `ank done`, `ank skills --install`, `ank update` | where `sh` and `git`, `npx`, and `npm`, `powershell`, `pwsh` and `curl` are looked for; a program found on none of its directories is refused by name |
+| `PATHEXT` | `ank skills --install`, `ank update`, on Windows | the extensions tried on `PATH`, in its order, of `.COM`, `.EXE`, `.BAT`, `.CMD`; unset, those four |
+
+The test suite sets these to observe the binary. They are not an interface, and a release may change or remove any of them without notice:
+
+| Variable | Read by | What it changes |
+|---|---|---|
+| `ANK_INDEX_BUSY_MS` | every verb that opens the index | how long, in milliseconds, a connection waits on an index another process holds locked; unset, five seconds |
+| `ANK_INDEX_STEPS` | every verb that writes the index | a file the SQLite steps a refresh executed are written to |
+| `ANK_INDEX_REFRESHED` | every verb that opens the index | a file every refresh appends what it hashed and reindexed to |
+| `ANK_TRACE_READS` | every verb that reads the corpus | an absolute path every entity parse and every index opening appends a line to |
+<!-- END environment -->
 
 ## `ANK_AGENT`
 
@@ -94,8 +134,9 @@ and names the variable to set.
 
 ## Variables that are not an interface
 
-A few `ANK_` names appear in the source and in nothing above. `ANK_COMMIT`,
+Three `ANK_` names appear in the source and in no table above. `ANK_COMMIT`,
 `ANK_SKILL` and `ANK_RELEASED_SCHEMA` are read by the build, not at run time:
 they are what `ank --version` and the schema warning print. The `ANK_INDEX_`
-names and `ANK_TRACE_READS` exist for the test suite to observe the index and
-the reads, and a release may change or remove any of them without notice.
+names and `ANK_TRACE_READS` are read at run time, which is why the table lists
+them, but they exist for the test suite to observe the index and the reads, and
+a release may change or remove any of them without notice.

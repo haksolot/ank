@@ -295,10 +295,10 @@ pub fn detect() -> Style {
 /// spells "unset this for the child", and reading it as "disable" would make
 /// the variable impossible to turn back off.
 fn opted_out() -> bool {
-    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+    if std::env::var_os(ank_contract::env::NO_COLOR).is_some_and(|v| !v.is_empty()) {
         return true;
     }
-    std::env::var_os("TERM").is_some_and(|v| v == "dumb")
+    std::env::var_os(ank_contract::env::TERM).is_some_and(|v| v == "dumb")
 }
 
 /// Windows: the console has to announce itself.
@@ -312,15 +312,9 @@ fn opted_out() -> bool {
 /// costs its reader nothing.
 #[cfg(windows)]
 fn vt_available() -> bool {
-    [
-        "WT_SESSION",
-        "TERM",
-        "TERM_PROGRAM",
-        "ConEmuANSI",
-        "ANSICON",
-    ]
-    .iter()
-    .any(|key| std::env::var_os(key).is_some())
+    ank_contract::env::WINDOWS_TERMINALS
+        .iter()
+        .any(|key| std::env::var_os(key).is_some())
 }
 
 #[cfg(not(windows))]
