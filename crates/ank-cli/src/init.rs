@@ -27,7 +27,18 @@ pub const GITATTRIBUTES_LINE: &str = ".ank/** text eol=lf";
 /// Root-relative on purpose: a `gitignore` pattern holding a `/` is anchored
 /// to the directory of the file that carries it, so this stays correct when
 /// `init` runs on a subdirectory rather than on the repository root.
-pub const GITIGNORE_LINE: &str = ".ank/index.db";
+///
+/// **A glob, because the index is not one file.** In WAL mode SQLite keeps
+/// `index.db-wal` and `index.db-shm` beside the database and removes them only
+/// when the last connection closes cleanly. Measured on 2026-09-22: `ank find`
+/// killed mid-run left both, and under the literal `.ank/index.db` `git status
+/// --porcelain -uall` offered them for commit (TASK-574dee03ba56). The star
+/// covers them and a rollback `-journal` alike, and nothing else `.ank/` holds
+/// starts with that name.
+pub const GITIGNORE_LINE: &str = ".ank/index.db*";
+/// What `init` wrote before the glob, rewritten in place wherever it is found
+/// so a repository is never left carrying both.
+const LEGACY_GITIGNORE_LINE: &str = ".ank/index.db";
 pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
@@ -281,7 +292,7 @@ pub fn init_at(root: &Path) -> Result<Report> {
     report.wrote_gitattributes = ensure_line(&ga, GITATTRIBUTES_LINE)?;
 
     let gi = root.join(".gitignore");
-    report.wrote_gitignore = ensure_line(&gi, GITIGNORE_LINE)?;
+    report.wrote_gitignore = ensure_gitignore(&gi)?;
 
     let agents = root.join("AGENTS.md");
     report.wrote_agents_pointer = ensure_line(&agents, AGENTS_POINTER)?;
@@ -368,6 +379,33 @@ fn ensure_line(path: &Path, line: &str) -> Result<bool> {
     }
     next.push_str(line);
     next.push('\n');
+    fs::write(path, next).map_err(|e| io(path, e))?;
+    Ok(true)
+}
+
+/// [`ensure_line`] for the ignore line, which first brings the previous one
+/// up to date: the legacy literal is replaced where it stands, keeping the
+/// user's ordering, and dropped outright when the glob is already there.
+fn ensure_gitignore(path: &Path) -> Result<bool> {
+    let existing = match fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(io(path, e)),
+    };
+    if !existing.lines().any(|l| l.trim() == LEGACY_GITIGNORE_LINE) {
+        return ensure_line(path, GITIGNORE_LINE);
+    }
+    let mut placed = existing.lines().any(|l| l.trim() == GITIGNORE_LINE);
+    let mut next = String::with_capacity(existing.len() + 1);
+    for l in existing.split_inclusive('\n') {
+        if l.trim() != LEGACY_GITIGNORE_LINE {
+            next.push_str(l);
+        } else if !placed {
+            next.push_str(GITIGNORE_LINE);
+            next.push_str(if l.ends_with("\r\n") { "\r\n" } else { "\n" });
+            placed = true;
+        }
+    }
     fs::write(path, next).map_err(|e| io(path, e))?;
     Ok(true)
 }
@@ -572,6 +610,20 @@ mod tests {
         assert!(!second.wrote_gitignore);
         let s = fs::read_to_string(&gi).unwrap();
         assert_eq!(s.lines().filter(|l| l.trim() == GITIGNORE_LINE).count(), 1);
+    }
+
+    /// A `.gitignore` carrying both the old literal and the glob, as a hand
+    /// edit may leave it, comes out with the glob alone (TASK-574dee03ba56).
+    #[test]
+    fn a_legacy_ignore_line_beside_the_glob_is_dropped() {
+        let t = Temp::new_repo();
+        let gi = t.0.join(".gitignore");
+        let both = format!("{LEGACY_GITIGNORE_LINE}\r\n/target\r\n{GITIGNORE_LINE}\r\n");
+        fs::write(&gi, both).unwrap();
+        assert!(ensure_gitignore(&gi).unwrap());
+        let s = fs::read_to_string(&gi).unwrap();
+        assert_eq!(s, format!("/target\r\n{GITIGNORE_LINE}\r\n"));
+        assert!(!ensure_gitignore(&gi).unwrap(), "second pass");
     }
 
     /// The test the original bug was asking for: a repository initialised,
