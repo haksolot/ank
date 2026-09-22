@@ -218,10 +218,9 @@ jobs:
             9) echo "ank check: environment unavailable, not a corpus failure"; exit 2 ;;
             *) echo "ank check: unexpected exit $code"; exit 1 ;;
           esac
-          ids=$(printf '%s' "$out" | jq -r '
-            .findings[]
-            | select(.message | startswith("done with no test proof"))
-            | .subject')
+          # Which findings are the unanchored tasks is decided in the script,
+          # where the workspace suite holds it to what check prints.
+          ids=$(printf '%s' "$out" | sh .github/scripts/unanchored.sh)
           echo "$ids"
           {
             echo "ids<<EOF"
