@@ -15,15 +15,21 @@
 //! The field order is **data**, not control flow. It is what makes the
 //! round-trip byte-identical, and it is the single thing most easily lost by
 //! rewriting two straight-line emitters as a generic loop, so it lives in a
-//! table that reads like the table in `docs/format.md` and nowhere else.
+//! table that `docs/entity-fields.md` is printed from, and nowhere else.
 //!
 //! What this registry deliberately does not do is make the format permissive.
 //! An unknown field inside a known kind is still rejected, and an unknown kind
 //! is rejected by name. A kind is cheap to add; nothing else moved.
 
-use crate::model::{Adr, Entity, Log, Proof, Spec, Task, Verified};
+use crate::model::{
+    Adr, AdrStatus, CriteriaBy, Entity, Log, Proof, Spec, Task, TaskStatus, Verified, RECORDS_KINDS,
+};
 
 /// One field, at its canonical position.
+///
+/// Everything the reference page says about a field is a column of this row,
+/// so the page is rendered and never typed (ADR-2b62b9a1fe67): the
+/// `entity-fields` binary walks [`KINDS`] into `docs/entity-fields.md`.
 pub struct FieldSpec {
     pub name: &'static str,
     /// `true` means **always emitted**: `blocked_by` is required and is written
@@ -31,25 +37,107 @@ pub struct FieldSpec {
     /// — which is what lets a file written before a field existed survive a
     /// rewrite unchanged.
     pub required: bool,
+    /// How the value is written. [`FieldValue`] is what the serializer
+    /// actually receives; `tests/reference_pages.rs` holds the two to one
+    /// answer over every golden fixture.
+    pub form: Form,
+    /// What the value may be, where the model closes the set.
+    pub values: Values,
+    /// What a reader needs beyond the columns above, in one line.
+    pub note: &'static str,
 }
 
-const fn req(name: &'static str) -> FieldSpec {
+/// The emission form of a field, as the reference page names it. One label
+/// per [`FieldValue`] variant, except that an integer is written bare and is
+/// named apart because a reader parses it apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Form {
+    Bare,
+    Integer,
+    Scalar,
+    Block,
+    Flow,
+    Seq,
+    Maps,
+}
+
+impl Form {
+    pub fn label(self) -> &'static str {
+        match self {
+            Form::Bare => "bare",
+            Form::Integer => "integer",
+            Form::Scalar => "scalar",
+            Form::Block => "literal block",
+            Form::Flow => "flow list",
+            Form::Seq => "block sequence",
+            Form::Maps => "block sequence of maps",
+        }
+    }
+}
+
+/// The set a field's value is drawn from, when the format closes one.
+#[derive(Clone, Copy)]
+pub enum Values {
+    /// Free, within its form.
+    Any,
+    /// The kind's own prefix, then [`crate::id::ID_HEX_LEN`] hex characters.
+    Id,
+    /// The kind's own name, always.
+    Kind,
+    /// One of these words, read off the model's enum.
+    OneOf(fn() -> Vec<&'static str>),
+}
+
+use Form::*;
+
+const fn req(name: &'static str, form: Form, note: &'static str) -> FieldSpec {
     FieldSpec {
         name,
         required: true,
+        form,
+        values: Values::Any,
+        note,
     }
 }
 
-const fn opt(name: &'static str) -> FieldSpec {
+const fn opt(name: &'static str, form: Form, note: &'static str) -> FieldSpec {
     FieldSpec {
         name,
         required: false,
+        form,
+        values: Values::Any,
+        note,
     }
+}
+
+impl FieldSpec {
+    const fn values(mut self, values: Values) -> FieldSpec {
+        self.values = values;
+        self
+    }
+}
+
+fn task_statuses() -> Vec<&'static str> {
+    TaskStatus::ALL.iter().map(|s| s.as_str()).collect()
+}
+
+fn adr_statuses() -> Vec<&'static str> {
+    AdrStatus::ALL.iter().map(|s| s.as_str()).collect()
+}
+
+fn criteria_by() -> Vec<&'static str> {
+    CriteriaBy::ALL.iter().map(|c| c.as_str()).collect()
+}
+
+fn records() -> Vec<&'static str> {
+    RECORDS_KINDS.to_vec()
 }
 
 pub struct KindSpec {
     /// The value of the `type` field.
     pub name: &'static str,
+    /// What the reference page calls the kind, as its heading.
+    pub title: &'static str,
     /// The id prefix, `TASK-` and the like, trailing dash included.
     pub prefix: &'static str,
     /// Every field, in canonical order.
@@ -57,41 +145,73 @@ pub struct KindSpec {
 }
 
 static TASK_FIELDS: &[FieldSpec] = &[
-    req("id"),
-    req("type"),
-    opt("slug"),
-    req("title"),
-    req("created"),
-    opt("author"),
-    req("status"),
-    req("scope"),
-    req("blocked_by"),
-    opt("done_criteria"),
-    opt("criteria_by"),
-    opt("verify"),
-    opt("method"),
-    opt("proof"),
-    opt("verified"),
-    req("schema"),
-    req("version"),
+    req("id", Bare, "").values(Values::Id),
+    req("type", Bare, "").values(Values::Kind),
+    opt("slug", Scalar, "cosmetic, never resolved on"),
+    req("title", Scalar, ""),
+    req(
+        "created",
+        Scalar,
+        "ISO 8601, always UTC with the `Z` suffix",
+    ),
+    opt(
+        "author",
+        Scalar,
+        "a typed actor; absent means the entity predates the field",
+    ),
+    req("status", Bare, "").values(Values::OneOf(task_statuses)),
+    req("scope", Seq, "globs, never empty"),
+    req("blocked_by", Flow, "task ids, `[]` when empty"),
+    opt("done_criteria", Block, "frozen by hash at claim"),
+    opt("criteria_by", Bare, "invalid without `done_criteria`").values(Values::OneOf(criteria_by)),
+    opt("verify", Flow, "verifier names `config.yml` declares"),
+    opt("method", Scalar, "one sibling skill the binary carries"),
+    opt(
+        "proof",
+        Maps,
+        "keys in order: `type`, `ref`, `tree`, `criteria`, `verifier`, `via`",
+    ),
+    opt(
+        "verified",
+        Maps,
+        "readings: `by`, then `at`, both required in an entry",
+    ),
+    req("schema", Integer, ""),
+    req("version", Integer, ""),
 ];
 
 static ADR_FIELDS: &[FieldSpec] = &[
-    req("id"),
-    req("type"),
-    opt("slug"),
-    req("title"),
-    req("created"),
-    opt("author"),
-    req("status"),
-    req("scope"),
-    req("constraint"),
-    opt("see"),
-    opt("supersedes"),
-    opt("ratified"),
-    opt("verified"),
-    req("schema"),
-    req("version"),
+    req("id", Bare, "").values(Values::Id),
+    req("type", Bare, "").values(Values::Kind),
+    opt("slug", Scalar, "cosmetic, never resolved on"),
+    req("title", Scalar, ""),
+    req(
+        "created",
+        Scalar,
+        "ISO 8601, always UTC with the `Z` suffix",
+    ),
+    opt(
+        "author",
+        Scalar,
+        "a typed actor; absent means the entity predates the field",
+    ),
+    req("status", Bare, "").values(Values::OneOf(adr_statuses)),
+    req("scope", Seq, "globs, never empty"),
+    req(
+        "constraint",
+        Block,
+        "binding on every scope it covers once accepted",
+    ),
+    opt("see", Scalar, "reference code the constraint points at"),
+    opt("supersedes", Bare, "an entity id"),
+    opt("ratified", Scalar, "the signed commit `accept` wrote"),
+    opt(
+        "verified",
+        Maps,
+        "readings: `by`, then `at`, both required in an entry",
+    ),
+    req("schema", Integer, ""),
+    req("version", Integer, ""),
 ];
 
 /// A spec is an ADR's table without `constraint` and without `see`, and the
@@ -108,20 +228,40 @@ static ADR_FIELDS: &[FieldSpec] = &[
 /// nothing to state, and emitting `[]` on every spec written before the field
 /// existed would make each of them non-canonical at the release that added it.
 static SPEC_FIELDS: &[FieldSpec] = &[
-    req("id"),
-    req("type"),
-    opt("slug"),
-    req("title"),
-    req("created"),
-    opt("author"),
-    req("status"),
-    req("scope"),
-    opt("references"),
-    opt("supersedes"),
-    opt("ratified"),
-    opt("verified"),
-    req("schema"),
-    req("version"),
+    req("id", Bare, "").values(Values::Id),
+    req("type", Bare, "").values(Values::Kind),
+    opt("slug", Scalar, "cosmetic, never resolved on"),
+    req("title", Scalar, ""),
+    req(
+        "created",
+        Scalar,
+        "ISO 8601, always UTC with the `Z` suffix",
+    ),
+    opt(
+        "author",
+        Scalar,
+        "a typed actor; absent means the entity predates the field",
+    ),
+    req("status", Bare, "").values(Values::OneOf(adr_statuses)),
+    req(
+        "scope",
+        Seq,
+        "globs, never empty; what the document governs",
+    ),
+    opt("references", Flow, "entity ids"),
+    opt("supersedes", Bare, "an entity id"),
+    opt(
+        "ratified",
+        Scalar,
+        "the signed commit `accept` wrote, over the body and `scope`",
+    ),
+    opt(
+        "verified",
+        Maps,
+        "readings: `by`, then `at`, both required in an entry",
+    ),
+    req("schema", Integer, ""),
+    req("version", Integer, ""),
 ];
 
 /// A log entry carries `about` and `seq` and **no `status`**: an entry is
@@ -131,19 +271,32 @@ static SPEC_FIELDS: &[FieldSpec] = &[
 /// about, and `seq` follows it because it ranks the entry among *that* entity's
 /// entries and means nothing without it.
 static LOG_FIELDS: &[FieldSpec] = &[
-    req("id"),
-    req("type"),
-    opt("slug"),
-    req("title"),
-    req("created"),
-    opt("author"),
-    req("scope"),
-    req("about"),
-    req("seq"),
-    opt("records"),
-    opt("verified"),
-    req("schema"),
-    req("version"),
+    req("id", Bare, "").values(Values::Id),
+    req("type", Bare, "").values(Values::Kind),
+    opt("slug", Scalar, "cosmetic, never resolved on"),
+    req("title", Scalar, "the message, or its head"),
+    req(
+        "created",
+        Scalar,
+        "ISO 8601, always UTC with the `Z` suffix; the instant of the entry",
+    ),
+    opt("author", Scalar, "a typed actor; who wrote the entry"),
+    req("scope", Seq, "the subject's scope as it stood"),
+    req("about", Bare, "an entity id of any kind"),
+    req("seq", Integer, "rank among that entity's entries, from 0"),
+    opt(
+        "records",
+        Scalar,
+        "absent is work; a value unknown to the reader is read as machinery",
+    )
+    .values(Values::OneOf(records)),
+    opt(
+        "verified",
+        Maps,
+        "readings: `by`, then `at`, both required in an entry",
+    ),
+    req("schema", Integer, ""),
+    req("version", Integer, "above 1 means the entry was rewritten"),
 ];
 
 /// The registry. Its order is the order `ank help` and the specification use,
@@ -155,21 +308,25 @@ static LOG_FIELDS: &[FieldSpec] = &[
 pub static KINDS: &[KindSpec] = &[
     KindSpec {
         name: "task",
+        title: "Task",
         prefix: "TASK-",
         fields: TASK_FIELDS,
     },
     KindSpec {
         name: "adr",
+        title: "ADR",
         prefix: "ADR-",
         fields: ADR_FIELDS,
     },
     KindSpec {
         name: "spec",
+        title: "Spec",
         prefix: "SPEC-",
         fields: SPEC_FIELDS,
     },
     KindSpec {
         name: "log",
+        title: "Log entry",
         prefix: "LOG-",
         fields: LOG_FIELDS,
     },

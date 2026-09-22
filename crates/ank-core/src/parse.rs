@@ -565,7 +565,7 @@ fn emit_field(o: &mut String, name: &str, value: &FieldValue<'_>) {
 
 /// **One** serializer, driven by the registry (ADR-c9f9d0d6f05d). There is no
 /// per-kind emitter, and the field order is not written here at all: it is the
-/// table in [`crate::registry`], which is also the table in `docs/format.md`.
+/// table in [`crate::registry`], which is also the table `docs/entity-fields.md` prints.
 /// That is what makes adding a kind a row rather than a second straight-line
 /// function that differs from the first only in which fields it emits.
 fn serialize_fields<F: Fields + ?Sized>(e: &F) -> String {

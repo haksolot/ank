@@ -34,6 +34,17 @@ pub const RECORDS_CREATE: &str = "create";
 /// and anchors nothing. What reads it is `ank skills`, which counts it.
 pub const RECORDS_METHOD: &str = "method";
 
+/// What an entry carrying this `records` word records, as the reference page
+/// prints it; `None` for a word this build does not know.
+pub fn records_meaning(word: &str) -> Option<&'static str> {
+    Some(match word {
+        RECORDS_EDIT => "a change of content outside a status transition: the fields, the versions, the hash replaced and the hash produced",
+        RECORDS_CREATE => "the creation of its subject: version 0 to 1 and the hash produced",
+        RECORDS_METHOD => "a sibling skill opened under a claim; the title is its name",
+        _ => return None,
+    })
+}
+
 /// Format version this crate **writes**, and the newest it reads.
 ///
 /// 3 carried two changes: the log leaving the entity body, and [`Verified`]
@@ -90,6 +101,14 @@ pub enum TaskStatus {
 }
 
 impl TaskStatus {
+    /// Every status, in the order the reference page lists them.
+    pub const ALL: [TaskStatus; 4] = [
+        TaskStatus::Open,
+        TaskStatus::InProgress,
+        TaskStatus::Done,
+        TaskStatus::Closed,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             TaskStatus::Open => "open",
@@ -138,6 +157,13 @@ pub enum AdrStatus {
 }
 
 impl AdrStatus {
+    /// Every status, in the order the reference page lists them.
+    pub const ALL: [AdrStatus; 3] = [
+        AdrStatus::Proposed,
+        AdrStatus::Accepted,
+        AdrStatus::Superseded,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             AdrStatus::Proposed => "proposed",
@@ -181,6 +207,8 @@ pub enum CriteriaBy {
 }
 
 impl CriteriaBy {
+    pub const ALL: [CriteriaBy; 2] = [CriteriaBy::Creator, CriteriaBy::Claimer];
+
     pub fn as_str(self) -> &'static str {
         match self {
             CriteriaBy::Creator => "creator",
@@ -203,6 +231,24 @@ pub enum ProofType {
 }
 
 impl ProofType {
+    /// Every type, in the order the reference page lists them.
+    pub const ALL: [ProofType; 4] = [
+        ProofType::Test,
+        ProofType::Commit,
+        ProofType::HumanReview,
+        ProofType::Assertion,
+    ];
+
+    /// What the reference points at, as the reference page prints it.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            ProofType::Test => "a test run, by a reference to it",
+            ProofType::Commit => "a commit the work is in",
+            ProofType::HumanReview => "somebody read the work",
+            ProofType::Assertion => "a statement, and nothing behind it",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ProofType::Test => "test",
@@ -248,6 +294,22 @@ pub enum ProofVia {
 }
 
 impl ProofVia {
+    /// Every route, in the order the reference page lists them.
+    pub const ALL: [ProofVia; 3] = [ProofVia::Verifier, ProofVia::Attested, ProofVia::Submitted];
+
+    /// Who put the entry there, as the reference page prints it.
+    pub fn meaning(self) -> &'static str {
+        match self {
+            ProofVia::Verifier => "ank ran a verifier `config.yml` declares; its own statement",
+            ProofVia::Attested => {
+                "reached the task on `refs/ank/proof/<id>`, written by whoever held the pipeline"
+            }
+            ProofVia::Submitted => {
+                "a caller passed it to `done --proof` or `attest --proof`; recorded as given"
+            }
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ProofVia::Verifier => "verifier",
