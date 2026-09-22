@@ -757,7 +757,23 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
             sync: Sync::Local,
         });
     }
-    match git::push_ref(cwd, name, new, witness)? {
+    let mut pushed = git::push_ref(cwd, name, new, witness)?;
+    // **A remote with no copy of the ref holds nothing to compare against**
+    // (TASK-2d779142ca70). The lease names the object this clone read, and a
+    // remote that never had the ref -- a claim taken before the remote was
+    // added, or whose push did not travel -- refuses it with nobody else's
+    // write behind the refusal. Read as a loss, it made `log` announce a
+    // takeover while renewing and `done` exit 4 after completing. The absence
+    // is what the remote holds, so the write is retried leasing on exactly that:
+    // a clone that creates the ref in between still wins the swap, and this one
+    // still learns it lost. A deletion has nothing left to do there.
+    if matches!(pushed, git::Pushed::Refused { holds: None }) && witness.is_some() {
+        pushed = match new {
+            Some(_) => git::push_ref(cwd, name, new, None)?,
+            None => git::Pushed::Ok,
+        };
+    }
+    match pushed {
         git::Pushed::Ok => Ok(Written {
             cas: Cas::Won,
             sync: Sync::Pushed,
