@@ -422,7 +422,8 @@ jobs:
   # Deliberately not pinned to `E0658`, the code the floor currently produces.
   # Pinning it would break the day the floor moves for another reason — exactly
   # the event this job exists to notice — and it would go red pointing at the
-  # wrong cause. ADR: the floor is a consequence of a dependency, not a target.
+  # wrong cause. The floor is a consequence of a dependency, not a target: no
+  # ADR records that, TASK-973e9dc3f9ce measured and decided it.
   #
   # One platform, and ubuntu because it is the cheapest that can falsify the
   # claim: the number is one per workspace, and `cfg_select!` is a rustc feature
@@ -496,9 +497,9 @@ jobs:
             echo "::error::the declared MSRV $DECLARED is higher than this tree needs"
             echo "$PREV builds the whole workspace. Re-walk before lowering it:"
             echo "  cargo +$PREV build --workspace --locked --ignore-rust-version"
-            echo "then set rust-version in crates/ank-cli/Cargo.toml and"
-            echo "crates/ank-core/Cargo.toml to the lowest minor that builds and"
-            echo "passes the suite, and update the pin in this workflow."
+            echo "then set rust-version, in every crate manifest that declares it,"
+            echo "to the lowest minor that builds and passes the suite. Both msrv"
+            echo "jobs read the number from the manifests: nothing here to edit."
             exit 1
           fi
 

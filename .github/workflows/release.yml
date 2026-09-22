@@ -355,16 +355,6 @@ jobs:
           echo "$checked skills carried"
           test "$checked" -ge 4
 
-      # The argument publish-npm passes, run on every dispatch and every tag,
-      # with the one flag that stops short of the registry. This is the step
-      # that was missing when v0.1.2 shipped no packages: the smoke job proved
-      # the tarballs install, but it reached them through globs that expand to
-      # real files, and `npm pack` runs from inside the directory. Nothing
-      # anywhere gave npm the path itself, which is precisely the argument that
-      # was wrong -- a bare `npm/ank` is a GitHub shorthand to npm, not a
-      # folder. Tested here because a publish is not something you get to
-      # retry: the tag is spent whether or not the registry accepted it.
-      #
       # The derivation of §9, exercised on both of its branches before anything
       # publishes. This is the half a dry-run cannot reach: the smoke job
       # assembles one version, so the publish below rehearses one branch, and
@@ -462,17 +452,16 @@ jobs:
           printf '%s\n' "$reply" | grep -q '"protocolVersion"'
 
       # The exit codes carry meaning (section 4) and a wrapper is where they go
-      # to die. An unknown verb is a 2, and 2 rather than 1 is the point: a
-      # wrapper collapsing every failure into "it failed" would still pass a
-      # test that only asked for non-zero. It also needs no repository, so what
-      # is under test is the wrapper and not the fixture.
+      # to die. The first case runs `ank help nosuchverb`, which exits 2: help
+      # asked about a verb that does not exist. Not a bare unknown verb, which
+      # `ank frobnicate` shows is a 1 ("unknown command"). 2 rather than 1 is
+      # the point: a wrapper collapsing every failure into "it failed" would
+      # still pass a test that only asked for non-zero. It also needs no
+      # repository, so what is under test is the wrapper and not the fixture.
       #
       # One bin now, so one shim and one wrapper: what a client launches to
       # reach the protocol surface is this same `ank`, given `mcp`
-      # (ADR-1ea31c2f3c5a). 2 rather than 1 is the point of the first case: a
-      # wrapper collapsing every failure into "it failed" would still pass a
-      # test that only asked for non-zero. It also needs no repository, so what
-      # is under test is the wrapper and not the fixture.
+      # (ADR-1ea31c2f3c5a).
       #
       # The second case is the verb the surface lives behind, refusing before
       # any client is listening. It travels through the same shim, so a
@@ -486,7 +475,7 @@ jobs:
           npx ank help nosuchverb
           code=$?
           set -e
-          echo "an unknown verb exited $code"
+          echo "help on an unknown verb exited $code"
           test "$code" -eq 2
 
           set +e
