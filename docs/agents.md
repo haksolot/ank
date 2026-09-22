@@ -21,7 +21,7 @@ build read, so no route holds a copy somebody keeps in step by hand.
     ank-tdd       ../skill/tdd/SKILL.md       drive an implementation test-first
     ank-diagnose  ../skill/diagnose/SKILL.md  work a defect back to its cause
 
-[`../skill/SKILL.md`](../skill/SKILL.md) is the one an agent loads by default,
+[`skill/SKILL.md`](https://github.com/haksolot/ank/blob/main/skill/SKILL.md) is the one an agent loads by default,
 and it is self-sufficient: why ank is shaped as it is, the verbs grouped by the
 moment each is used, and the rules that are not negotiable. It names the other
 five so an agent reaching for an activity knows what to load, and never

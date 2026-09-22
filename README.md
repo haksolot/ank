@@ -52,16 +52,19 @@ ank release --reason "<why>"   # hand the task back
 
 ## Documentation
 
+The documentation is published at <https://haksolot.github.io/ank/>, built from
+[`docs/`](https://github.com/haksolot/ank/tree/main/docs) on every merge.
+
 - [Getting started][start]
 - [Handing ank to an agent][agents]
-- [Integrating with ank](https://github.com/haksolot/ank/blob/main/docs/integrating.md)
-- [The file format](https://github.com/haksolot/ank/blob/main/docs/format.md)
-- [How ank compares](https://github.com/haksolot/ank/blob/main/docs/alternatives.md)
+- [Integrating with ank](https://haksolot.github.io/ank/integrating.html)
+- [The file format](https://haksolot.github.io/ank/format.html)
+- [How ank compares](https://haksolot.github.io/ank/alternatives.html)
 - [Contributing](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md) · [Security](https://github.com/haksolot/ank/blob/main/SECURITY.md) · [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md)
 
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).
 
-[agents]: https://github.com/haksolot/ank/blob/main/docs/agents.md
-[start]: https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+[agents]: https://haksolot.github.io/ank/agents.html
+[start]: https://haksolot.github.io/ank/getting-started.html

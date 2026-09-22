@@ -1,0 +1,14 @@
+[book]
+title = "ank"
+description = "Tasks and architecture decisions in your repo, behind one CLI any coding agent can call."
+language = "en"
+src = "docs"
+
+[build]
+build-dir = "target/book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/haksolot/ank"
+edit-url-template = "https://github.com/haksolot/ank/edit/main/{path}"
+site-url = "/ank/"

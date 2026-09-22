@@ -1,0 +1,134 @@
+name: docs
+
+# The site is derived from docs/ and nothing else (ADR-33970fcdb6e8): every pull
+# request builds it, so a page that breaks the book or a link is red before it
+# lands, and only a push to the default branch publishes it. The build runs on
+# every pull request rather than on those touching docs/, because a check that
+# only sometimes exists cannot be made required.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A superseded pull request run has nothing left to say. Deployments on main are
+# queued rather than cancelled, so the site always ends on the last merge.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # The generator is pinned by version and by the digest of its release archive:
+  # a new mdBook changes the site only through a pull request that changes both.
+  MDBOOK_VERSION: v0.5.4
+  MDBOOK_SHA256: 3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7
+  # book.toml sets site-url to the same prefix: a project site is served under
+  # /<repository>/, and the 404 page links back to it absolutely.
+  SITE_PREFIX: /ank/
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install mdBook
+        run: |
+          archive="mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSLO "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/${archive}"
+          echo "${MDBOOK_SHA256}  ${archive}" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      # book.toml sets create-missing = false, so a page SUMMARY.md lists and
+      # docs/ lacks fails here instead of being written as an empty chapter.
+      - name: Build
+        run: mdbook build
+
+      # mdBook rewrites a link to a .md file into one to its .html and checks
+      # neither. This walks the built site, where every relative href and src
+      # must resolve to a file in it, and every #fragment to an id on that page.
+      # A link leaving docs/ (../skill/, ../README.md) points outside the site
+      # and fails too: it is written as an absolute GitHub URL instead.
+      - name: Check internal links
+        run: |
+          python3 - target/book "$SITE_PREFIX" <<'EOF'
+          import html.parser, pathlib, sys, urllib.parse
+
+          root, prefix = pathlib.Path(sys.argv[1]).resolve(), sys.argv[2]
+
+          class Page(html.parser.HTMLParser):
+              def __init__(self):
+                  super().__init__()
+                  self.ids, self.links = set(), []
+
+              def handle_starttag(self, tag, attrs):
+                  attrs = dict(attrs)
+                  for key in ("id", "name"):
+                      if attrs.get(key):
+                          self.ids.add(attrs[key])
+                  for key in ("href", "src"):
+                      if attrs.get(key):
+                          self.links.append(attrs[key])
+
+          pages = {}
+          for file in root.rglob("*.html"):
+              pages[file] = Page()
+              pages[file].feed(file.read_text(encoding="utf-8"))
+
+          broken = 0
+          for file, page in sorted(pages.items()):
+              for link in page.links:
+                  url = urllib.parse.urlsplit(link)
+                  if url.scheme or url.netloc:
+                      continue
+                  path = urllib.parse.unquote(url.path)
+                  if not path:
+                      target = file
+                  elif path.startswith(prefix):
+                      target = root / path[len(prefix):]
+                  elif path.startswith("/"):
+                      target = None
+                  else:
+                      target = (file.parent / path).resolve()
+                  if target is not None and target.is_dir():
+                      target = target / "index.html"
+                  fragment = urllib.parse.unquote(url.fragment)
+                  if (
+                      target is None
+                      or not target.is_relative_to(root)
+                      or not target.is_file()
+                      or (fragment and target in pages and fragment not in pages[target].ids)
+                  ):
+                      print(f"::error file={file.relative_to(root)}::broken link {link}")
+                      broken += 1
+
+          print(f"{broken} broken internal link(s) in {len(pages)} page(s)")
+          sys.exit(1 if broken else 0)
+          EOF
+
+      - if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: target/book
+
+  # The only job that writes, and only from the default branch: a pull request
+  # builds and checks the site but never publishes it. The github-pages
+  # environment restricts deployments to main on its own side as well.
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
