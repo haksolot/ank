@@ -1,5 +1,5 @@
 /target
-.ank/index.db
+.ank/index.db*
 # Windows Explorer writes this into any folder it has been asked to display
 # differently, `.ank/` included. No slash, so it is caught wherever it lands.
 desktop.ini

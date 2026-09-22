@@ -5,7 +5,7 @@ slug: a-crash-under-wal-leaves-ank-index-db-wal-offere
 title: A crash under WAL leaves .ank/index.db-wal offered for commit
 created: 2026-09-20T19:49:48Z
 author: claude-code/opus-5+flake
-status: open
+status: done
 scope:
   - crates/ank-cli/src/init.rs
   - .gitignore
@@ -15,8 +15,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: diagnose
+proof:
+  - type: test
+    ref: local/67f91c537e69@12c606f
+    tree: scope/c2faca10b663
+    criteria: 9503ab06be6a
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@12c606f
+    tree: scope/c2faca10b663
+    criteria: 9503ab06be6a
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 TASK-b9701a228f47 put the index in WAL mode: a reader never waits for a writer,
