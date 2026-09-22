@@ -84,6 +84,58 @@ pub enum ExitCode {
 }
 
 impl ExitCode {
+    /// Every code, in order: the table `docs/exit-codes.md` is generated from
+    /// (ADR-2b62b9a1fe67), by `cargo run -p ank-contract --bin exit-codes`.
+    ///
+    /// [`Self::meaning`] is an exhaustive match, so a new variant cannot land
+    /// without a line of its own; the list is what orders the rows, and
+    /// `tests/exit_codes_page.rs` names the ten codes it expects on the page.
+    pub const ALL: [ExitCode; 10] = [
+        ExitCode::Ok,
+        ExitCode::Generic,
+        ExitCode::NotFound,
+        ExitCode::Conflict,
+        ExitCode::Unavailable,
+        ExitCode::Proof,
+        ExitCode::Transition,
+        ExitCode::Prerequisite,
+        ExitCode::Findings,
+        ExitCode::Environment,
+    ];
+
+    /// What the code tells the caller, in one line, as the reference page
+    /// prints it. The variant documentation above is the long form.
+    pub const fn meaning(self) -> &'static str {
+        match self {
+            ExitCode::Ok => "the verb answered",
+            ExitCode::Generic => {
+                "generic error: a call the parser refuses, a file the tool cannot make sense of"
+            }
+            ExitCode::NotFound => "no such entity, or a prefix matching more than one",
+            ExitCode::Conflict => {
+                "version conflict: the entity moved under the caller, redo `context`"
+            }
+            ExitCode::Unavailable => {
+                "the task is unavailable: held by another agent, or finished on another branch; take something else"
+            }
+            ExitCode::Proof => {
+                "a proof is missing, malformed, or of a type this act does not accept"
+            }
+            ExitCode::Transition => {
+                "the act is illegal from the state the entity is in: a frozen field diverged, a transition the state machine does not allow, or a write without the claim it needs"
+            }
+            ExitCode::Prerequisite => {
+                "a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, `accept` ran off the default branch, or the caller already holds a live claim"
+            }
+            ExitCode::Findings => {
+                "`check` or `review` found a fault; a signal alone leaves the code at 0"
+            }
+            ExitCode::Environment => {
+                "the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a directory that refuses the lock"
+            }
+        }
+    }
+
     /// The integer a process exits with.
     ///
     /// `const` so a table or a test can name it where a function call would not
@@ -118,6 +170,42 @@ impl fmt::Display for ExitCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.code())
     }
+}
+
+/// The exit-code reference page, as `docs/exit-codes.md` carries it.
+///
+/// Rendered from [`ExitCode::ALL`] and [`ExitCode::meaning`], so the page is
+/// never typed (ADR-2b62b9a1fe67): the `exit-codes` binary prints this, and
+/// the workspace suite fails when the committed page differs from it.
+pub fn reference_page() -> String {
+    let mut page = String::from(
+        "<!-- Generated from crates/ank-contract/src/exit.rs; do not edit.\n     \
+         Regenerate: cargo run -q -p ank-contract --bin exit-codes > docs/exit-codes.md -->\n\n\
+         # Exit codes\n\n\
+         Every ank verb exits with one of these codes, and the code carries the meaning so a \
+         script can route without parsing output. They are stable. `ank help --json` publishes \
+         which verb returns which, under each verb's `refuses`.\n\n\
+         A refusal writes `error[<code>]: <message>` on stderr, followed by the exact command to \
+         run next; under `--json` it leaves stdout empty.\n\n\
+         | Code | Name | Meaning |\n\
+         |---|---|---|\n",
+    );
+    for code in ExitCode::ALL {
+        page.push_str(&format!(
+            "| {} | `{:?}` | {} |\n",
+            code.code(),
+            code,
+            code.meaning()
+        ));
+    }
+    page.push_str(
+        "\nTwo of them are the ones an agentic loop must handle: **3** means somebody moved, \
+         read again, and **4** means take something else. **6 and 7 are two codes on purpose**: \
+         in 6 the state forbids what was asked; in 7 the thing asked for is legal and something \
+         it depends on is absent. **9 is not a failure of the work**, and a pipeline that \
+         collapses it into \"the command failed\" sends somebody to fix sound code.\n",
+    );
+    page
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ slug: the-exit-code-reference-is-generated-from-the-co
 title: The exit-code reference is generated from the contract's table
 created: 2026-09-19T18:26:56Z
 author: claude-code/opus-5+docs-audit
-status: open
+status: done
 scope:
   - docs/**
   - crates/ank-contract/**
@@ -16,8 +16,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/da109bc322be@25b06bd
+    tree: scope/b8f62f1333f4
+    criteria: bbb28d63507e
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@25b06bd
+    tree: scope/b8f62f1333f4
+    criteria: bbb28d63507e
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Rests on ADR-2b62b9a1fe67 and ADR-33970fcdb6e8, both proposed on 2026-09-19: do not claim before they are ratified, since the shape of this work is what they decide. Three documents and the skill carried three different exit-code lists on 2026-09-19.

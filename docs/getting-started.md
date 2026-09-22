@@ -683,22 +683,9 @@ something a reader should see, not a failure.
 The exit code carries the meaning so a script can route without parsing
 anything, and the message always ends with the exact command to run next.
 
-| Code | Meaning |
-|---|---|
-| 0 | the verb answered |
-| 1 | generic error: a call the parser refuses, a file the tool cannot make sense of |
-| 2 | entity not found, or ambiguous prefix |
-| 3 | version conflict, re-read and retry |
-| 4 | task unavailable, held by someone else or finished on another branch |
-| 5 | proof missing or invalid |
-| 6 | illegal transition, or a frozen field diverged |
-| 7 | missing prerequisite: no criterion, task blocked, `accept` off the default branch |
-| 8 | `check` found something |
-| 9 | environment: git too old, `sh` missing, default branch indeterminable |
-
-Ten codes, and that is all of them: the table above is the whole of
-`crates/ank-contract/src/exit.rs`, which is where they are declared once and
-read by every call site.
+Ten codes, and [the exit-code reference](exit-codes.md) lists all of them. That
+page is generated from `crates/ank-contract/src/exit.rs`, where they are declared
+once and read by every call site, so it cannot fall behind the binary.
 
 Two of them are worth a sentence each. **Code 9** says the environment is
 broken, not that your work is wrong: fix the machine, not the code. **Code 1**
