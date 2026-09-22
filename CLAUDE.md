@@ -62,7 +62,7 @@ goes on saying that nothing external anchors it.
 Once the task lands on the default branch, the `attest` job records
 `test:<run-id>` itself, on `refs/ank/proof/<id>`, and turns red rather than
 skipping when the proof does not reach the remote. The recipe and the contract
-it rests on are in `docs/getting-started.md`.
+it rests on are in `docs/ci.md`.
 
 ## Landing
 

@@ -18,17 +18,23 @@ contact_links:
       whole. They settle every question the other documents defer to them,
       including why a verb refuses on state and never on identity.
 
-  - name: Getting started
-    url: https://github.com/haksolot/ank/blob/main/docs/getting-started.md
+  - name: Quickstart
+    url: https://haksolot.github.io/ank/quickstart.html
     about: >
-      Install to a first finished task, with real output -- including the two
-      refusals a fresh repository will give you.
+      One binding constraint, one finished task and a proof Ank wrote itself,
+      with real output -- including the refusals a fresh repository gives you.
 
-  - name: Handing ank to an agent
-    url: https://github.com/haksolot/ank/blob/main/docs/agents.md
+  - name: Install
+    url: https://haksolot.github.io/ank/install.html
     about: >
-      The routes that install the skill, the binary channels beyond npm, and
-      what running several agents against one repository actually requires.
+      The binary channels and the routes that install the skills: two separate
+      acts, and neither does the other unless you ask it to.
+
+  - name: Multi-agent work
+    url: https://haksolot.github.io/ank/multi-agent.html
+    about: >
+      What handing the loop to an agent involves, and what running several
+      agents against one repository actually requires.
 
   - name: Contributing
     url: https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md
