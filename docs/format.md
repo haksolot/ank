@@ -188,6 +188,15 @@ work. The values known to this build are listed
 moved between and the hash of the content it produced. Both of these were
 written by the binary:
 
+<!-- replay trace ANK_AGENT=claude-code/1.4.2
+$ ank init
+$ ank new task --title "Migrate auth" --scope "src/auth/**" --criteria "c" --no-verify
+created TASK-5f1e0a9c2b7d Migrate auth
+$ ank claim TASK-5f1e
+$ ank amend TASK-5f1e --scope "docs/**"
+$ for t in '+scope' 'created'; do grep -h "^title: $t" .ank/entities/LOG-*.md | cut -c8-; done
+-->
+
     +scope docs/** (version 2 to 3, replaced 80bdeffde4e7, produced a06b2b863b0e)
     created (version 0 to 1, produced f9b82c19eaec)
 
@@ -365,9 +374,16 @@ never modified. A correction is a new entry naming the one it corrects.
 
 The line grammar has not changed, and it is now how an entry is **printed**
 rather than how it is stored: a dash and a space, the timestamp, a space, the
-identity, a space, an em dash, a space, the message:
+identity, a space, an em dash, a space, the message. `ank log` prints each
+entry that way, after its short id and two spaces:
 
-    - 2026-07-26T14:02Z claude-code/1.4.2 — jwt.verify removed from session.ts
+<!-- replay trace part
+$ ank log "jwt.verify removed from session.ts"
+logged LOG-9cfb085b14b3 on TASK-5f1e0a9c2b7d
+$ ank log TASK-5f1e
+-->
+
+    LOG-9cfb  - 2026-07-26T14:02:11Z claude-code/1.4.2 — jwt.verify removed from session.ts
 
 So an entry written under either previous shape reads across unchanged and
 nothing about it is reinterpreted: only where it lives has moved, twice.
@@ -462,7 +478,16 @@ recorded.** A message opening with `discrepancy:` says that the frozen
 `done_criteria` of that task rests in part on a false premise, and states what
 was measured instead (§3):
 
-    - 2026-08-14T18:16Z claude-code/03fd — discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help`
+<!-- replay discrepancy part ANK_AGENT=claude-code/03fd
+$ ank init
+$ ank new task --title "The skill tests pass" --scope "**" --criteria "c" --no-verify
+created TASK-2c7a51e0f9b4 The skill tests pass
+$ ank claim TASK-2c7a
+$ ank log 'discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help`'
+$ ank log TASK-2c7a
+-->
+
+    LOG-d41c  - 2026-08-14T18:16:03Z claude-code/03fd — discrepancy: the criterion assumes tests/skill.rs passes untouched; two tests there read `ank help`
 
 It is a convention on the message and never on the grammar, `released: <reason>`
 being the same kind and older, so it costs no field, no schema bump and no
@@ -602,6 +627,16 @@ them.
 **A worked vector, taken from a real `accept`.** An ADR whose `constraint` is
 `Never Y` and whose `scope` is the single glob `src/**`, ratified by the binary,
 produced the commit body
+
+<!-- replay vector part
+$ ank init && ank config default_branch main
+$ ank new adr --title "Y" --scope "src/**" --constraint "Never Y"
+$ mkdir src && echo y > src/y && git add -A && git commit -q -m y
+$ ank accept $(ls .ank/entities | grep '^ADR-' | cut -c1-8)
+$ printf 'Never Y\nsrc/**' | { sha256sum 2>/dev/null || shasum -a 256; } | cut -c1-12
+33045e58af8d
+$ git log -1 --format=%B
+-->
 
     constraint+scope: 33045e58af8d
 

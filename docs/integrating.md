@@ -18,13 +18,17 @@ Not this document, and not the source. The surface describes itself, and the
 description is generated from the same table the binary dispatches from, so it
 cannot fall behind what the binary does.
 
+<!-- replay help -->
+
     $ ank help --json | cut -c1-64
     {"contract":1,"verbs":[{"name":"context","usage":"ank context [<
 
 One verb, whole, is the shape of every entry:
 
+<!-- replay help -->
+
     $ ank help close --json
-    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false},{"name":"--worktree","short":null,"takes_value":true,"repeatable":false}],"notes":["the ref is not the whole product: a push the remote refuses leaves the write standing in this clone, and the verb exits 0"],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
+    {"contract":1,"verbs":[{"name":"close","usage":"ank close <id>","summary":"closes a task that will never be done; --reason is mandatory","group":"shape the work","flags":[{"name":"--reason","short":null,"takes_value":true,"repeatable":false},{"name":"--json","short":"-j","takes_value":false,"repeatable":false},{"name":"--quiet","short":"-q","takes_value":false,"repeatable":false},{"name":"--repo","short":"-r","takes_value":true,"repeatable":false},{"name":"--worktree","short":null,"takes_value":true,"repeatable":false}],"notes":["the ref is not the whole product: a push the remote refuses leaves the write standing in this clone, and the verb exits 0"],"refuses":[{"code":7,"when":"no --reason: a closure nobody explained is one nobody can reopen"},{"code":2,"when":"no such entity, or the prefix matches more than one"},{"code":1,"when":"a flag this verb does not take, or a value the parser cannot read"},{"code":3,"when":"the entity moved between the read and the write: redo context, somebody else wrote"},{"code":9,"when":"git is absent or older than 2.34: an environment to repair, not work that failed"},{"code":6,"when":"the task is already closed or already done: neither is a state this verb moves out of"}],"returns":[{"when":null,"fields":[{"name":"contract","type":"number","nullable":false},{"name":"task","type":"string","nullable":false},{"name":"status","type":"string","nullable":false},{"name":"claim_revoked","type":"boolean","nullable":false}]}]}]}
 
 So a client can discover, without reading a line of Rust: every verb, its flags
 and their short forms, the states it refuses on **with the code each returns**,
@@ -87,6 +91,23 @@ not. A client that conflates them reacts wrongly to one of the two.
 Every refusal names the exact command to run next, on stderr, and that is
 stable too:
 
+<!-- replay state
+$ ank init
+$ mkdir src && echo 'fn main() {}' > src/main.rs
+$ ANK_AGENT=tool/1.0 ank new adr --title "Readers go through the CLI" --scope "src/**" --constraint "Read the corpus through the CLI, never through .ank/."
+created ADR-57715ae64348 Readers go through the CLI
+$ ANK_AGENT=tool/1.0 ank new task --title "The parser reads a corpus without opening a file" --scope "src/**" --criteria "The parser reads every file." --no-verify
+created TASK-6da126c832be The parser reads a corpus without opening a file
+$ ANK_AGENT=tool/1.0 ank amend TASK-6da1 --criteria "A caller reads every entity through the CLI."
+amended TASK-6da126c832be done_criteria
+$ ANK_AGENT=tool/1.0 ank claim TASK-6da1
+claimed TASK-6da126c832be the-parser-reads-a-corpus-without-opening-a-file -> HEAD
+$ ANK_AGENT=tool/1.0 ank log "the layout is not the contract"
+logged LOG-c0f96bc669ae on TASK-6da126c832be
+$ grep -l "^records: edit" .ank/entities/*.md
+.ank/entities/LOG-e6c24bc5f3e2.md
+-->
+
     $ ank show TASK-9999
     error[2]: entity not found: TASK-9999
       -> ank find TASK-9999
@@ -113,7 +134,18 @@ of strings, with stderr left empty. Four verbs carry the field -- `context`,
 `claim`, `log` in its appending form, and `release` -- and `ank help --json` is
 where to read which, rather than this list:
 
-    $ ank claim TASK-0e61 --json
+<!-- replay overlap
+$ ank init
+$ mkdir src && echo 'fn main() {}' > src/main.rs
+$ ank new task --title "One" --scope "src/**" --criteria "c" --no-verify
+created TASK-efd813eedb23 One
+$ ank new task --title "Two" --scope "src/**" --criteria "c" --no-verify
+created TASK-0e6148ab8b03 Two
+$ ANK_AGENT=tool/1.0 ank claim TASK-efd8
+claimed TASK-efd813eedb23 one -> HEAD
+-->
+
+    $ ANK_AGENT=tool/2.0 ank claim TASK-0e61 --json
     {"contract":1,"task":"TASK-0e6148ab8b03","holder":"tool/2.0","expires":"2026-09-20T18:15:44Z","warnings":["tool/1.0 holds TASK-efd813eedb23, overlapping on src/**"]}
 
 An intersecting claim is named and never refused (ADR-052accd6e3b2), so the fact
@@ -124,13 +156,28 @@ and empty when there is nothing to say, so a client reads it unconditionally.
 **The warnings about the refs are on stderr, in both modes**, because they are
 not the answer: a write whose ref did not reach the remote leaves the document
 and the exit code exactly as they would have been. `done`, `release` and `close`
-each owe one. `ank done --proof commit:8db4465 --json` against an unreachable
-remote put this on stdout:
+each owe one. Against an unreachable remote, with stderr sent to a file of its
+own, `done` put the document on stdout and exited 0:
 
+<!-- replay unreachable
+$ ank init && ank config default_branch main
+$ git add -A && git commit -q -m corpus && git remote add origin ../nowhere.git
+$ git rev-parse --short HEAD
+8db4465
+$ ank new task --title "t" --scope "**" --criteria "c" --no-verify
+created TASK-277368641a6e t
+$ ank claim TASK-2773
+-->
+
+    $ ank done --proof commit:8db4465 --json 2>stderr.txt; echo "exit $?"
     {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1}
+    exit 0
 
-and this on stderr, exiting 0:
+and the warning on stderr:
 
+<!-- replay unreachable -->
+
+    $ cat stderr.txt
     warning: claim not pushed: it holds in this clone only, and another clone can take the same task
 
 So read stderr, and do not assume it is empty on success -- but do not look
@@ -166,6 +213,8 @@ reported 3 signals; checked against a tree that does not, 4, the extra one being
 `.ank/` sits above several checkouts. A path that is not a directory is refused
 at exit 1, naming the confusion the refusal exists for:
 
+<!-- replay state -->
+
     $ ank status --worktree /nope/nope
     error[1]: --worktree /nope/nope is not a directory
       -> --worktree names the tree the corpus is anchored to, not its corpus
@@ -192,6 +241,11 @@ anything (ADR-64f32c74a0f9). It replaces `https://github.com/haksolot/ank` in
 the `git ls-remote --tags --refs` the check makes, so a mirror, an internal
 clone or a fixture all serve. Against a bare clone tagged `v0.9.0` and `v0.7.0`:
 
+<!-- replay mirror dir=/srv/ank-mirror.git
+$ git init -q --bare /srv/ank-mirror.git
+$ r=/srv/ank-mirror.git && c=$(git -C $r commit-tree -m release "$(git -C $r hash-object -t tree -w --stdin </dev/null)") && git -C $r tag v999.0.0 $c && git -C $r tag v0.0.1 $c
+-->
+
     $ ANK_UPDATE_REPOSITORY=/srv/ank-mirror.git ank update --check --json
     {"contract":1,"current":"0.8.0","latest":"0.9.0","newer":true}
 
@@ -213,6 +267,8 @@ are not in it:
 - the **log entities** whose `about` names the task, one file per entry, stored
   beside the entities and not inside them:
 
+  <!-- replay state -->
+
       $ cat .ank/entities/LOG-c0f96bc669ae.md
       ---
       id: LOG-c0f96bc669ae
@@ -223,15 +279,18 @@ are not in it:
       scope:
         - src/**
       about: TASK-6da126c832be
-      seq: 1
+      seq: 2
       schema: 4
       version: 1
       ---
 
   An entry carrying `records` is **machinery** rather than work: written by a
   verb that changed the entity's content, not by the agent holding it. This
-  task carries one, because the criterion in the file below was amended before
-  a claim froze it, and the entry's message is the whole of that accounting:
+  task carries two: the `create` record `new` wrote at its birth, and an `edit`,
+  because the criterion in the file below was amended before a claim froze it.
+  The edit's message is the whole of that accounting:
+
+  <!-- replay state -->
 
       $ cat .ank/entities/LOG-e6c24bc5f3e2.md
       ---
@@ -243,13 +302,15 @@ are not in it:
       scope:
         - src/**
       about: TASK-6da126c832be
-      seq: 0
+      seq: 1
       records: edit
       schema: 4
       version: 1
       ---
 
 Read the file alone and here is what you see:
+
+<!-- replay state -->
 
     $ cat .ank/entities/TASK-6da126c832be.md
     ---
@@ -274,8 +335,10 @@ Read the file alone and here is what you see:
 lease expires, what they have learned, or what the two versions before this one
 were. Ask the CLI instead and the same task answers whole:
 
+<!-- replay state -->
+
     $ ank show TASK-6da1 --json
-    {"contract":1,"id":"TASK-6da126c832be","coordination":"claimed by tool/1.0","blocked_by":[],"unblocks":[],"detached_proofs":[],"log_total":1,"log_shown":1,"log":[{"id":"LOG-c0f96bc669ae","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"the layout is not the contract","records":null}],"machinery":[{"id":"LOG-e6c24bc5f3e2","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"done_criteria (version 1 to 2, replaced b1f3aa97873c, produced 83947c872580)","records":"edit"}],"content":"---\nid: TASK-6da126c832be\ntype: task\nslug: the-parser-reads-a-corpus-without-opening-a-file\ntitle: The parser reads a corpus without opening a file\ncreated: 2026-08-26T00:22:04Z\nauthor: tool/1.0\nstatus: in_progress\nscope:\n  - src/**\nblocked_by: []\ndone_criteria: |\n  A caller reads every entity through the CLI.\ncriteria_by: creator\nschema: 4\nversion: 3\n---\n"}
+    {"contract":1,"id":"TASK-6da126c832be","coordination":"claimed by tool/1.0","blocked_by":[],"unblocks":[],"detached_proofs":[],"log_total":1,"log_shown":1,"log":[{"id":"LOG-c0f96bc669ae","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"the layout is not the contract","records":null}],"machinery":[{"id":"LOG-3a51d0c2b7e4","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"created (version 0 to 1, produced 5b0e7c93d1a2)","records":"create"},{"id":"LOG-e6c24bc5f3e2","timestamp":"2026-08-26T00:22:04Z","who":"tool/1.0","message":"done_criteria (version 1 to 2, replaced b1f3aa97873c, produced 83947c872580)","records":"edit"}],"content":"---\nid: TASK-6da126c832be\ntype: task\nslug: the-parser-reads-a-corpus-without-opening-a-file\ntitle: The parser reads a corpus without opening a file\ncreated: 2026-08-26T00:22:04Z\nauthor: tool/1.0\nstatus: in_progress\nscope:\n  - src/**\nblocked_by: []\ndone_criteria: |\n  A caller reads every entity through the CLI.\ncriteria_by: creator\nschema: 4\nversion: 3\n---\n"}
 
 `coordination` came from the ref. `log` and `machinery` came from the log
 entities, split on `records`: the work trace is what a holder wrote and is what
@@ -300,6 +363,8 @@ the loose ones finds almost none of them.
 It prunes the claim refs it finds stale: orphans, and completion refs whose task
 is `done` or `closed` on the default branch. The binary says so itself:
 
+<!-- replay help -->
+
     $ ank help check
     ank check [<path>]
       the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes
@@ -307,6 +372,7 @@ is `done` or `closed` on the default branch. The binary says so itself:
       note:     exit 8 means findings; a signal alone leaves it 0
                 the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch
       refuses:  the path names nothing inside this repository (1)
+                the corpus carries at least one fault; a signal alone leaves the code at 0 (8)
 
 A dashboard refreshing every thirty seconds must not call it. `ank status` and
 `ank find` are what a poll uses; `check` is the verb a human or a pipeline runs
@@ -350,8 +416,10 @@ timer. Only `check` prunes, so only `check` writes; but neither is a poll.
 Exit 8 is findings, meaning faults. Signals leave it 0, and that is deliberate:
 reddening a build over an observation teaches a team to stop reading `check`.
 
+<!-- replay state -->
+
     $ ank check --json
-    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":5,"plane_bytes":173,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
+    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":6,"plane_bytes":173,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
 
 ## The conformance suite is offered to you
 
@@ -408,12 +476,23 @@ is declared once, outside every repository, and the block above does not change
 by a character. The declaration is written through the CLI, keyed on the
 repository identity of the corpus and never on a path:
 
+<!-- replay corpora dir=/srv/back
+$ ank init
+$ cd /srv/back && git init -q && ank init && ank new task --title "The back answers a query" --scope "**" --criteria "c" --no-verify && git add -A && git commit -q -m back
+$ git -C /srv/back rev-list --max-parents=0 HEAD
+bccc32d77d8a9a329f772f789dc5fb1054259d70
+-->
+
     $ ank config --user corpora.bccc32d77d8a9a329f772f789dc5fb1054259d70 /srv/back
     corpora.bccc32d77d8a9a329f772f789dc5fb1054259d70 /srv/back
 
 What that writes is `corpora.yml` (ADR-96174f1ac2b7), beside the `watch.yml`
 further down and under the same directory rule -- `%APPDATA%\ank` on Windows,
 `$XDG_CONFIG_HOME/ank` elsewhere, falling back to `$HOME/.config/ank`:
+
+<!-- replay corpora
+$ cat "$XDG_CONFIG_HOME/ank/corpora.yml"
+-->
 
     schema: 1
     corpora:
@@ -447,6 +526,8 @@ what it saw before the argument existed. Every tool also carries an optional
 ADR-621a7fd96ce1 -- the root commit, never a path. One server, addressed at one
 corpus at startup, answering out of another the reader declared:
 
+<!-- replay corpora -->
+
     --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_find","arguments":{"arguments":["--status","open"],"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70"}}}
     <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false}]}"}],"isError":false,"exitCode":0}}
 
@@ -471,6 +552,11 @@ path, so there is no spelling of "every corpus on this machine"; and an identity
 nobody declared is refused by name, with nothing spawned and no falling back to
 the corpus the client did not ask for:
 
+<!-- replay corpora
+>> {"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"ank_find","arguments":{"corpus":"0000000000000000000000000000000000000000"}}}
+>> {"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"ank_find","arguments":{"corpus":"/srv/back"}}}
+-->
+
     <-- {"jsonrpc":"2.0","id":4,"result":{"content":[{"type":"text","text":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}],"isError":true,"exitCode":9,"stderr":"error[9]: no corpus is declared under 0000000000000000000000000000000000000000, and this server reaches no corpus nobody declared\n  -> ank config --user corpora.0000000000000000000000000000000000000000 <path>"}}
     <-- {"jsonrpc":"2.0","id":5,"result":{"content":[{"type":"text","text":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}],"isError":true,"exitCode":9,"stderr":"error[9]: '/srv/back' is not a repository identity\n  -> a corpus is named by its root commit, never a path, a remote or a slug: ank status --json prints it under \"corpus\""}}
 
@@ -481,6 +567,10 @@ The three flags the server keeps for itself stay refused. A call that passes
 `--repo`, `--json` or `--quiet` is turned away by name rather than being allowed
 to contradict the process it is talking to, and `--repo` is turned away naming
 the argument a caller reaches for instead:
+
+<!-- replay corpora
+>> {"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"ank_status","arguments":{"repo":"/srv/back"}}}
+-->
 
     <-- {"jsonrpc":"2.0","id":6,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
 
@@ -494,7 +584,11 @@ re-derived here, it is inherited, hint and all, and it comes back as a result
 rather than as a protocol error, because the request was well formed and the
 answer is no:
 
-    {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}],"isError":true,"exitCode":2,"stderr":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}}
+<!-- replay corpora
+>> {"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"ank_show","arguments":{"arguments":["TASK-9999"]}}}
+-->
+
+    <-- {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}],"isError":true,"exitCode":2,"stderr":"error[2]: entity not found: TASK-9999\n  -> ank find TASK-9999"}}
 
 `exitCode` is present on every call including a successful one, so a client that
 branches on it never has to tell absence from zero; `stderr` is carried
@@ -610,8 +704,8 @@ handed; each line says which corpus it is about.
 
 **What a line is.** One JSON object, one line, newline-terminated:
 
-    {"schema":1,"corpus":"4f0b8c2d1e6a39572c84ab0d6f31e75c9a2b48d0","change":"entities"}
-    {"schema":1,"corpus":"4f0b8c2d1e6a39572c84ab0d6f31e75c9a2b48d0","change":"refs"}
+    {"schema":1,"corpus":"<root commit>","change":"entities"}
+    {"schema":1,"corpus":"<root commit>","change":"refs"}
 
 - `schema` is the shape of the line, and it is **not** the contract version that
   `--json` documents carry: the two move for different reasons. Within a schema a

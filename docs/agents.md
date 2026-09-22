@@ -57,6 +57,8 @@ skills written for it. `ank skills` lists them, with the revision each file
 declares. The revisions below are the ones this page was written against; yours
 are whatever `ank --version` names, and printing them is what lets you compare:
 
+<!-- replay bare -->
+
     $ ank skills
     ank           0d916cc3d9a5  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
     ank-diagnose  b5d9c0b96462  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
@@ -72,11 +74,10 @@ being used. Outside a corpus the six lines above are the whole output.
 
 `ank skills --install` writes them into a new directory under the temporary
 directory and hands that directory to the `skills` CLI below. It never asks: the
-flag is the consent. Run from a Claude Code session, it went on like this:
-
-    $ ank skills --install
-    wrote 6 skills to C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
-    running: npx skills add C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+flag is the consent. It prints two lines of its own, `wrote 6 skills to
+<directory>` and `running: npx skills add <directory>`, and everything after
+them is the `skills` CLI's. Run from a Claude Code session, that part went on
+like this:
 
     ●   claude-code_2-1-270_agent  Agent detected — installing non-interactively
     ◇  Source: C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
@@ -276,8 +277,10 @@ supersession of that decision rather than an addition beside it.
 
 Whichever you took, check it answers:
 
+<!-- replay bare -->
+
     $ ank --version
-    ank <version> (<commit>, skill <revision>)
+    ank 0.8.0 (8310e75, skill 0d916cc3d9a5)
 
 Three components: the version, the commit it was built from, and **the revision
 of the skill it was built alongside**. That last one is the value
@@ -301,12 +304,22 @@ not arbitration but sharing. Claiming the task the identity already holds is
 granted again at exit 0, so the second session silently starts work the first
 one is already doing:
 
+<!-- replay shared
+$ ank init
+$ ank new task --title "first" --scope "**" --criteria "c" --no-verify
+created TASK-59eac9bf2d7e first
+$ ank new task --title "second" --scope "**" --criteria "c" --no-verify
+created TASK-6aee0b3c41d9 second
+-->
+
     $ ANK_AGENT=marie@laptop ank claim TASK-59ea    # the first session's task
     claimed TASK-59eac9bf2d7e first -> HEAD
 
 And claiming any *other* task is refused at exit 7, because one identity holds
 one live claim per corpus (ADR-ed3e14d0f991). Nothing is quiet about it -- the
 refusal names the task that is in the way, and hints at the fix:
+
+<!-- replay shared -->
 
     $ ANK_AGENT=marie@laptop ank claim TASK-6aee    # a second task
     error[7]: marie@laptop holds a live claim on TASK-59eac9bf2d7e (expires in 30m)
