@@ -264,6 +264,84 @@ fn json_quiet_and_repo_are_each_refused_with_their_own_reason() {
     );
 }
 
+/// `--worktree` is the server's too, refused in the shape the other three are
+/// and with a reason of its own (TASK-7cb77bc870b1).
+///
+/// Measured on 2026-09-20, before the fix: `{"worktree":"/tmp"}` on `ank_find`
+/// ran and came back with a document, and `{"worktree":"/no/such/dir"}` on
+/// `ank_status` reached the CLI and was refused there -- the caller's path was
+/// written into the address (ADR-9e56318631f3) the server holds, and a
+/// verifier `ank done` runs has its working directory in that tree.
+///
+/// The three already withheld are asked again in the same session, because
+/// the other half of the criterion is that they keep the reasons they have:
+/// four flags, four sentences, none of them the new one.
+#[test]
+fn worktree_is_refused_by_name_and_the_three_keep_their_reasons() {
+    let corpus = Corpus::new();
+    let replies = corpus.talk(&[
+        &call(1, "worktree", "\"/somewhere/else\""),
+        &call(2, "json", "true"),
+        &call(3, "quiet", "true"),
+        &call(4, "repo", "\"/somewhere/else\""),
+    ]);
+    assert_eq!(replies.len(), 4, "{replies:?}");
+
+    let worktree = &replies[0];
+    assert!(
+        worktree.contains(r#""id":1"#) && worktree.contains(r#""code":-32602"#),
+        "--worktree is refused as the other withheld flags are, an invalid \
+         parameter on the caller's own id: {worktree}"
+    );
+    assert!(
+        !worktree.contains(r#""result""#),
+        "the call ran with the caller's work tree: {worktree}"
+    );
+    assert!(
+        worktree.contains("--worktree belongs to the server"),
+        "the refusal must name the flag it is about: {worktree}"
+    );
+
+    for (reply, flag) in replies[1..].iter().zip(["--json", "--quiet", "--repo"]) {
+        assert!(
+            reply.contains(&format!("{flag} belongs to the server")),
+            "the refusal must name the flag it is about: {reply}"
+        );
+    }
+    assert!(
+        replies[3].contains("name a corpus with the corpus argument")
+            && replies[3].contains("never by a path"),
+        "--repo's reason is the one it had: {}",
+        replies[3]
+    );
+
+    let reasons: std::collections::BTreeSet<&String> = replies.iter().collect();
+    assert_eq!(
+        reasons.len(),
+        4,
+        "two of the four refusals are the same sentence: {replies:?}"
+    );
+}
+
+/// No tool advertises `worktree`: the schema hides exactly what the refusal
+/// has a reason for, so a client is never offered an argument it would be
+/// refused for passing.
+#[test]
+fn no_tool_advertises_worktree() {
+    let corpus = Corpus::new();
+    let replies = corpus.talk(&[r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#]);
+    assert_eq!(replies.len(), 1, "{replies:?}");
+    assert!(
+        replies[0].contains(r#""ank_find""#),
+        "the list came back without the tools: {}",
+        replies[0]
+    );
+    assert!(
+        !replies[0].contains(r#""worktree""#),
+        "a tool still advertises the flag every call refuses"
+    );
+}
+
 /// The refusal reaches the client as a JSON-RPC error on the request's own id,
 /// and never as a call that quietly ran without the flag.
 ///

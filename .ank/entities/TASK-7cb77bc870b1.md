@@ -5,7 +5,7 @@ slug: the-mcp-server-passes-worktree-through-and-a-cal
 title: The MCP server passes --worktree through, and a caller writes a path into the address
 created: 2026-09-20T17:55:46Z
 author: claude-code/opus-5+308c
-status: open
+status: done
 scope:
   - crates/ank-mcp/**
 blocked_by: [TASK-308ce062f427]
@@ -13,8 +13,21 @@ done_criteria: |
   Over MCP, a tools/call carrying "worktree" is refused with a reason that names the flag, in the same shape the other withheld globals are refused in; the three already withheld keep the reasons they have. A test drives ank mcp over stdio for it.
 criteria_by: creator
 verify: [cargo-test, fmt-check]
+proof:
+  - type: test
+    ref: local/17e3d8624833@12c606f
+    tree: scope/a96fed90c1a3
+    criteria: f8994afea5ad
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@12c606f
+    tree: scope/a96fed90c1a3
+    criteria: f8994afea5ad
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Measured 2026-09-20 during TASK-308ce062f427, which the task body asked to decide this during. Over 'ank mcp --repo .': {"worktree":"/tmp"} on ank_find is accepted and the call runs -- 618 results came back, no comment. {"worktree":"/no/such/dir"} on ank_status comes back exitCode 1, 'error[1]: --worktree /no/such/dir is not a directory', so the value reaches the CLI and is interpreted there.

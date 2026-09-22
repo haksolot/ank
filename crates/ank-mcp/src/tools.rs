@@ -14,11 +14,11 @@
 use ank_contract::json::Obj;
 use ank_contract::{CommandSpec, COMMANDS};
 
-/// The three global flags, which are the server's business and never the
+/// The four global flags, which are the server's business and never the
 /// client's.
 ///
 /// This is not a curated subset: no verb is hidden and every verb takes exactly
-/// the arguments the table gives it. What is withheld is the three flags that
+/// the arguments the table gives it. What is withheld is the four flags that
 /// would let a caller contradict the process it is talking to.
 ///
 /// `--repo` because a corpus is named by its identity here and never by a path
@@ -31,6 +31,11 @@ use ank_contract::{CommandSpec, COMMANDS};
 /// `--json` because the server always wants the machine document and a client
 /// asking for the human one would get a shape nothing describes. `--quiet` means
 /// nothing to a caller that reads a return value rather than a terminal.
+/// `--worktree` because it is the other half of the address `--repo` is the
+/// first half of (ADR-9e56318631f3): which tree the corpus is anchored to, the
+/// tree scopes are confronted with and every verifier `ank done` runs in. It
+/// passed through until TASK-7cb77bc870b1, so a caller wrote a path into the
+/// very address `--repo` is withheld to keep out of its hands.
 ///
 /// **Each with the reason it is withheld for, in the same row**
 /// (TASK-308ce062f427). The reason used to be one sentence for all three and
@@ -40,7 +45,7 @@ use ank_contract::{CommandSpec, COMMANDS};
 /// caller acts on it. A row rather than a `match` beside the list: a name added
 /// here cannot arrive without a reason, and a reason cannot be written for a
 /// name that is not withheld.
-pub const SERVER_FLAGS: [(&str, &str); 3] = [
+pub const SERVER_FLAGS: [(&str, &str); 4] = [
     (
         "--repo",
         // The one sentence this task did not change. `corpus` is spelled here
@@ -58,6 +63,11 @@ pub const SERVER_FLAGS: [(&str, &str); 3] = [
         "--quiet",
         "it silences a terminal, and a call reads the document it gets back \
          rather than watching one",
+    ),
+    (
+        "--worktree",
+        "the tree a corpus is anchored to is fixed with the corpus, and a call \
+         runs its verifiers in that tree rather than in one it names",
     ),
 ];
 
@@ -258,7 +268,7 @@ mod tests {
         }
     }
 
-    /// The three global flags stay the server's, `--repo` most of all: it is the
+    /// The four global flags stay the server's, `--repo` most of all: it is the
     /// one that takes a path, and a path is how a declared set becomes a merged
     /// one.
     #[test]
