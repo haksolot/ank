@@ -1827,6 +1827,18 @@ fn upsert(
     rids.extend(w.all("SELECT rid FROM entities WHERE id = ?1", params![id])?);
     unsearchable(w, &rids)?;
     w.run("DELETE FROM entities WHERE path = ?1", params![rel])?;
+    // **The path the id leaves loses its hash with its row**
+    // (TASK-ef4dac167955). Otherwise the `files` row stays, vouching for a
+    // file no entity row is read from: a read that does not walk the archive
+    // indexes the hot copy of an archived entity, the archived path keeps its
+    // hash, and the next asking open finds that file unchanged, never indexes
+    // it again, and removes the hot path's row -- the only one the entity had.
+    // Without the hash, that open reads the file as new.
+    w.run(
+        "DELETE FROM files WHERE path IN \
+           (SELECT path FROM entities WHERE id = ?1 AND path <> ?2)",
+        params![id, rel],
+    )?;
     // The row keeps its `rid` when the id was already there under another
     // path, and gets a fresh one otherwise; either way `RETURNING` names the
     // rowid its searchable twin is written under.
