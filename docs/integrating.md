@@ -68,20 +68,9 @@ leaves it untouched.
 ## The exit codes
 
 The semantics are in the code so a caller can route without parsing output. They
-are stable, and `ank help --json` publishes which verb returns which.
-
-| Code | Meaning |
-|---|---|
-| 0 | ok |
-| 1 | generic error |
-| 2 | entity not found, or an ambiguous prefix |
-| 3 | version conflict, re-read and retry |
-| 4 | the task is unavailable: held by another agent, or finished on another branch |
-| 5 | a proof is missing or invalid |
-| 6 | the act is illegal from the state the entity is in, or a frozen field diverged |
-| 7 | a prerequisite is missing |
-| 8 | `check` or `review` found something |
-| 9 | the environment, not the corpus |
+are stable, and `ank help --json` publishes which verb returns which. The table
+is [the exit-code reference](exit-codes.md), generated from the enum that
+declares them.
 
 Two of them are the ones a loop must handle. **3** means "somebody moved, read
 again". **4** means "take something else".
