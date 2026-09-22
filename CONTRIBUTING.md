@@ -6,12 +6,24 @@ and the rules that bind a change are ratified ADRs served by `ank context`. This
 file points at them; it deliberately does not restate them, because a second,
 looser copy of a rule is how the two drift apart.
 
-If you have never run the tool, read [Getting started](docs/getting-started.md)
-first. If you need the normative answer to anything below, it is in the
-specification, which is the source of truth: ten documents in `.ank/`, listed by
-`ank find --type spec` and printed whole by `ank show <id>`. Each one says in its
-own body which sections of the old monolith it carries, so a rule that reads
-`(§7)` is resolved by the document that claims §7.
+Everything a contributor needs beyond the two sections below is on the
+documentation site, under **Maintaining**:
+
+- [Project conventions](https://haksolot.github.io/ank/conventions.html): working
+  the loop here, changing the format, documentation, testing, English only, style
+- [CI jobs and required checks](https://haksolot.github.io/ank/ci-jobs.html): the
+  six checks `main` requires, and what every workflow does
+- [Ratifying and archiving](https://haksolot.github.io/ank/ratifying.html): the
+  recipe for `ank accept` and `ank archive` on a protected `main`, and why the
+  merge commit is the only allowed method
+- [Releasing](https://haksolot.github.io/ank/releasing.html),
+  [the MSRV](https://haksolot.github.io/ank/msrv.html),
+  [signing keys](https://haksolot.github.io/ank/signing.html) and
+  [re-recording the demo](https://haksolot.github.io/ank/demo.html)
+
+If you have never run the tool, start with [the
+quickstart](https://haksolot.github.io/ank/quickstart.html). The normative answer
+to anything is in [the specification](https://haksolot.github.io/ank/specification.html).
 
 ## The three gates
 
@@ -29,165 +41,9 @@ purpose: a CI that validated `.ank/` differently from `ank done` would let a
 corpus pass one and fail the other. Exit 8 means findings, and findings are a
 failure.
 
-They are not, however, the whole gate. The ruleset on the default branch
-requires six checks by name, and the three above account for three of them:
-
-```
-ubuntu-latest                  the three gates, on Linux
-macos-latest                   the three gates, on macOS
-windows-latest                 the three gates, on Windows
-version check / ubuntu-latest  release.yml's version check, against its fixtures
-msrv / ubuntu-latest           the workspace builds on the declared MSRV
-msrv is tight / ubuntu-latest  the minor below it does not
-```
-
-The last two are the MSRV section below. The version check is the one with no
-local equivalent, and it is worth running by hand:
-
-```
-bash .github/scripts/check-version-fixtures.sh
-```
-
-`release.yml` refuses to build when a tag and the manifests disagree on the
-version, and that refusal only ever ran on a tag, where a tag that refuses is
-already spent. This script exercises the same check against fixture trees on
-every pull request instead. Its first fixture reads the version out of the tree
-and holds every other literal to it, and seven files carry that literal -- two
-`Cargo.toml`, four `package.json` including the wrapper's three pins, and
-`.claude-plugin/plugin.json` -- so a bump that touched six of the seven is red
-on the branch that made it.
-
-`msrv` is a three-platform matrix and only its ubuntu leg is required, because
-the floor is one number for the workspace; the other two legs run and report,
-and they are what would catch a floor that differed per target. The ruleset
-allows the merge commit and nothing else, and it has no bypass actors: read
-**Ratifying a decision** before assuming a maintainer can merge around it.
-
-## Working the loop
-
-```
-ank context                   # what binds here, and what is free to take
-ank claim <id>                # takes the task, freezes its criterion by hash
-ank log "<what you learned>"  # renews the claim; working is what holds it
-ank done                      # runs the verifiers itself and writes the proof
-```
-
-Three things about this loop are not conventions but properties of the tool.
-
-**The criterion is frozen at claim.** Editing `done_criteria` to unblock
-yourself unblocks nothing: the hash is held in the claim record, and `ank check`
-reports the divergence (ADR-6b3f19e08a24). A subtask you discover is a new task
-with a `blocked_by`, never a softened criterion. If the criterion is wrong, say
-so with `ank release --reason "<why>"`.
-
-**Never edit `status:` by hand.** `ank done` runs the declared verifiers and
-writes the proof of what actually ran, hashed. Setting the field yourself
-produces a task that claims to be finished with nothing behind the claim, and an
-agent, or a human, that grades its own work can simply be wrong.
-
-**`.ank/` is reached through the CLI, not by opening the files**
-(ADR-e45e1a29fe91). `ank show <id>` gives an entity whole, `ank find` lists,
-`ank context` binds, and `scope`, `graph`, `status`, `review`, `check` and the
-read form of `log` answer the rest. That ADR enumerates every route on each
-side, because a short list gets read as the whole one. This constrains agents,
-not people: a human with an editor keeps every power they had, and `ank check`
-remains what notices.
-
-## Ratifying a decision
-
-`ank accept` is the one act ank commits for, and it runs on the default branch
-only, with no flag around it (ADR-6d8736c04cfa). A constraint ratified on a
-feature branch would bind on that branch alone, which is a constraint of variable
-geometry and a ratification hash that depends on where it is read.
-
-That rule is about where you stand when you sign. It is not a licence to push to
-`main`. `accept` writes a commit and stops; it never pushes. So the ratification
-commit reaches `main` through a pull request like every other change, and CI sees
-it before it lands:
-
-```
-git switch main && git pull
-ank accept <id>                  # the gate is satisfied here
-git branch ratify/<id>           # branch first, at the ratification commit
-git reset --hard origin/main     # local main back where it was
-git push -u origin ratify/<id>
-gh pr create --fill --base main --head ratify/<id>
-gh pr merge ratify/<id> --merge  # a merge commit, and nothing else
-git switch main && git pull
-```
-
-Branch before resetting. The commit is then held by a ref, and a botched ordering
-is a reflog recovery rather than a lost signature.
-
-**Both of the last two `gh` lines name the branch, and neither naming is
-decoration.** Nothing in this sequence ever switches to `ratify/<id>`: `git
-branch` creates it without moving, and `git push -u origin ratify/<id>` pushes a
-branch you are not standing on. So the shell is still on `main` when `gh` runs,
-and `gh` resolves a pull request from the current branch.
-
-A bare `gh pr create --fill` therefore reads `main` as the head, finds it is also
-the base, and refuses with "head branch is the same as base branch". A bare `gh
-pr merge --merge` looks for the pull request whose head is `main`, finds none,
-and exits 1 with `no pull requests found for branch "main"` -- with the
-ratification sitting unmerged on a branch, which is the worse of the two because
-it looks like the sequence ran. Naming the branch in both is what makes this work
-from where it leaves you.
-
-The archive recipe below does not need it: `git switch -c archive/<date>` puts
-you on the branch, so `gh` resolves it from there.
-
-**Merge with a merge commit, never a squash and never a rebase.** This is
-load-bearing and not a matter of taste. A ratification is located by the *subject*
-of its commit, `ratify <id>`, walked with `rev-list --full-history` and no path
-restriction, so any strategy that preserves the commit preserves the anchor:
-
-- a **merge commit** keeps the subject, the SHA and the signature, and `ank check`
-  verifies the ratification exactly as if it had been committed in place;
-- a **squash** rewrites the subject to the pull request title, so the anchor is
-  never found again. `check` reports the entity as unverifiable, which is a
-  signal and exit 0: the corpus quietly stops being verifiable while CI stays
-  green;
-- a **rebase** keeps the subject, so the anchor is still found, but it replays the
-  commit without its signature. In a corpus that signs, and this one does, `check`
-  reports that as a fault (ADR-964be4d940b2 makes signing a regime the corpus is
-  in, so an unsigned corpus survives a rebase and this one would not).
-
-If the repository ever requires branches to be up to date before merging, set the
-update method to merge for the same reason.
-
-`accept` refuses a supersession while any tracked file outside `.ank/` still cites
-the document it retires (ADR-3b6ba766a42e). Re-point those citations first, in
-their own change: the refusal names every site with its line, and there is no
-bypass.
-
-## Archiving what is cold
-
-`ank archive` moves what is cold into `.ank/archive/entities/`: superseded
-documents, and every entry whose subject is cold, meaning a superseded document
-or a task done on the default branch (ADR-467ce7e9cda1). `check` names the verb
-in one signal when the hot corpus holds any of it. Like `accept`, it decides what
-the corpus is, so a human runs it and the result lands by pull request. Unlike
-`accept`, it commits nothing: it renames files and stops, and the commit is
-yours.
-
-```
-git switch main && git pull
-git switch -c archive/<date>
-ank archive --dry-run            # read the list: this is what moves
-ank archive                      # the same list, moved
-ank check                        # green: references, blockers and scopes resolve into the archive
-git add -A .ank                  # git sees each file as a rename
-git commit -m "archive what is cold"
-git push -u origin archive/<date>
-gh pr create --fill --base main --head archive/<date>
-gh pr merge --merge
-```
-
-Run it from a branch cut from the default branch and level with it: an entry is
-cold when its task is done *on the default branch*, which is what the verb reads,
-so a local default branch that is behind leaves entries hot that could have moved. An archived file is
-never edited afterwards; `check` verifies it against the digest it arrived with
-and reports a changed one as a fault.
+They are three of the six checks `main` requires; the other three, and the one
+script worth running by hand before a version bump, are in [CI jobs and required
+checks](https://haksolot.github.io/ank/ci-jobs.html).
 
 ## Working from a fork
 
@@ -207,95 +63,11 @@ say it where a maintainer can read it. `ank claim` still does its job in your
 clone, freezing the criterion, which is the half that protects your work.
 It announces nothing.
 
-## Changing the format
-
-The format is the specification, and `ank-core` is its reference
-implementation. Every format change happens in this order, and it is ratified
-(ADR-63b59c5c26f7):
-
-1. **the specification**: the `spec` document that states the rule, which for a
-   format change is *The data model*, one of the ten `ank find --type spec`
-   lists. No field exists in the code without existing there first.
-2. **the goldens**: `crates/ank-core/tests/golden/`. `valid/` must round-trip
-   byte for byte once normalised, `invalid/` must be rejected with the expected
-   error.
-3. **the code**.
-
-The round-trip is byte-identical on canonical form; valid but non-canonical
-input is read correctly and normalised on first rewrite. CRLF is read, never
-written, and one golden is in CRLF on purpose and must come back in LF.
-
-## The MSRV is measured, never chosen
-
-`rust-version` is declared in every crate of the workspace, six manifests
-carrying the same number:
-
-```
-crates/ank-contract/Cargo.toml
-crates/ank-core/Cargo.toml
-crates/ank-cli/Cargo.toml
-crates/ank-mcp/Cargo.toml
-crates/ank-daemon/Cargo.toml
-crates/ank-tui/Cargo.toml
-```
-
-Two CI jobs enforce it: `msrv` builds on the declared toolchain, proving it is
-sufficient, and `msrv is tight` requires the minor below it to fail, proving it
-is not higher than the tree needs. Both read the number out of a manifest rather
-than carrying it, so neither job is edited when the floor moves.
-
-They read two of the six, `crates/ank-cli/Cargo.toml` and
-`crates/ank-core/Cargo.toml`, and `msrv` fails when those two disagree. Nothing
-compares the other four, so moving the floor means moving all six by hand, and
-the two directions fail differently. A manifest left *above* the new floor is
-caught, because `msrv` builds on the declared toolchain without
-`--ignore-rust-version` and cargo refuses the package outright, with "rustc
-<running> is not supported by the following package". One left *below* it is
-caught by nothing, and goes on declaring a floor the workspace no longer has.
-
-**Never edit that number to make a build pass.** The floor is a consequence of a
-dependency, not a target held on purpose; it was measured by walking toolchains
-upward against the tree, and re-measuring means re-running that walk:
-
-```
-cargo +<toolchain> build --workspace --locked --ignore-rust-version
-```
-
-An unexpectedly successful build names a number to lower. It does not lower it.
-If a job goes red here, read the diagnostic and open an issue or a task; the
-walk is what decides, and a human runs the walk.
-
-## English only
-
-English is the only language of the project (ADR-d3a8dcf38817): prose,
-identifiers, comments, CLI output, error messages, entity titles, bodies, slugs
-and log entries. Non-English text is a finding, not a matter of taste. The one
-exception is a string whose meaning is its literal value: an external proof
-reference, a quoted third-party message, a fixture asserting a byte sequence.
-
-## Style
-
-- **Self-correcting errors.** Every refusal prints the exact command to run
-  next, never generic help.
-- **Terse output**, in the shape of `git status`. `--json` everywhere, strictly
-  opt-in, and never colored.
-- **No emojis** in messages, documentation or comments.
-- **No new dependency without necessity.** A static binary is the goal.
-- **A criterion that talks about the binary is tested through the binary.** When
-  a `done_criteria` says "the binary does X", the test invokes the binary, not
-  only the function meant to produce X. Two real defects shipped past green unit
-  tests that way. The same rule applies to platforms: OS-dependent behaviour is
-  not verified until it has run on all three.
-
 ## Reporting
 
 A suspected vulnerability goes to [private advisory
 reporting](https://github.com/haksolot/ank/security/advisories/new), never to a
-public issue. [SECURITY.md](SECURITY.md) says what is in scope and what section
-1 already answers.
-
-Anything else is an issue. The forms ask for what the tool already produces: the
-exact command, its exit code, `ank --version` and `git --version`. Exit codes
-carry meaning and they are the fastest triage available.
-
-Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+public issue; [SECURITY.md](SECURITY.md) says what is in scope. Anything else is
+an issue, and the forms ask for the exact command, its exit code, `ank
+--version` and `git --version`. Participation is governed by the [Code of
+Conduct](CODE_OF_CONDUCT.md).

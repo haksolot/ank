@@ -27,8 +27,8 @@ npm install -g @haksolot/ank     # the binary for your platform
 ank skills --install             # the skills, for your agent
 ```
 
-Linux, macOS and Windows; needs git 2.34 or newer. The shell installers are in
-[Handing ank to an agent][agents]. The version is `0.x` on purpose: the loop and
+Linux, macOS and Windows; needs git 2.34 or newer. The shell installers and
+every other route are in [Install][install]. The version is `0.x` on purpose: the loop and
 the exit codes are specified, the storage format is not yet.
 
 ## The loop
@@ -42,7 +42,7 @@ ank done              # run the declared verifiers and record the proof
 ank release --reason "<why>"   # hand the task back
 ```
 
-[Getting started][start] walks it from `ank init` onward, with real output.
+[The quickstart][start] walks it from `ank init` onward, with real output.
 
 ## What it is not
 
@@ -55,16 +55,26 @@ ank release --reason "<why>"   # hand the task back
 The documentation is published at <https://haksolot.github.io/ank/>, built from
 [`docs/`](https://github.com/haksolot/ank/tree/main/docs) on every merge.
 
-- [Getting started][start]
-- [Handing ank to an agent][agents]
-- [Integrating with ank](https://haksolot.github.io/ank/integrating.html)
-- [The file format](https://haksolot.github.io/ank/format.html)
-- [How ank compares](https://haksolot.github.io/ank/alternatives.html)
+- **Using ank**: [Install][install], [the quickstart][start], [proof and
+  verifiers](https://haksolot.github.io/ank/proof.html), [claims and
+  identity](https://haksolot.github.io/ank/claims.html), [reading `ank
+  check`](https://haksolot.github.io/ank/check.html), [CI](https://haksolot.github.io/ank/ci.html),
+  [multi-agent work](https://haksolot.github.io/ank/multi-agent.html)
+- **Reference**: [exit codes](https://haksolot.github.io/ank/exit-codes.html),
+  [the file format](https://haksolot.github.io/ank/format.html),
+  [environment variables](https://haksolot.github.io/ank/environment.html),
+  [the specification](https://haksolot.github.io/ank/specification.html)
+- **Integrating**: [the machine surface](https://haksolot.github.io/ank/integrating.html),
+  [the MCP server](https://haksolot.github.io/ank/mcp.html),
+  [the watcher](https://haksolot.github.io/ank/watch.html)
+- **Maintaining**: [ratifying](https://haksolot.github.io/ank/ratifying.html),
+  [releasing](https://haksolot.github.io/ank/releasing.html),
+  [CI jobs](https://haksolot.github.io/ank/ci-jobs.html)
 - [Contributing](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md) · [Security](https://github.com/haksolot/ank/blob/main/SECURITY.md) · [Code of Conduct](https://github.com/haksolot/ank/blob/main/CODE_OF_CONDUCT.md)
 
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).
 
-[agents]: https://haksolot.github.io/ank/agents.html
-[start]: https://haksolot.github.io/ank/getting-started.html
+[install]: https://haksolot.github.io/ank/install.html
+[start]: https://haksolot.github.io/ank/quickstart.html

@@ -8,7 +8,7 @@ it rather than a gatekeeper. Nothing here needs `ank` to be installed or asks
 your tool to call it.
 
 **This document is not normative.** Section 3 of the specification is: *The data
-model*, one of the ten `spec` documents in `.ank/` that `ank find --type spec`
+model*, one of the `spec` documents [the specification](specification.md)
 lists. Where the two disagree the specification is right and this page is a bug. What you will find here instead
 is the mechanical half a writer has to reproduce exactly, the field order, the
 emission rules and the quoting predicate, which the specification states as
@@ -744,8 +744,9 @@ writes still looks fine until something else reads it.
 
 ## Where to go next
 
-- The specification's ten `spec` documents in `.ank/`, each declaring in its own
-  body which sections it carries: §3 for the data model and
-  canonical form, §6 for storage, §7 for the coordination plane, §8 for identity
-  and ratification. `ank show <id>` prints one whole.
-- [getting-started.md](getting-started.md): if you also want to use the tool.
+- [The specification](specification.md): each spec declares in its own body
+  which sections it carries -- §3 for the data model and canonical form, §6 for
+  storage, §7 for the coordination plane, §8 for identity and ratification.
+- [Entity fields](entity-fields.md) and [config.yml keys](config-keys.md): the
+  tables, generated from the registry the binary reads with.
+- [The quickstart](quickstart.md): if you also want to use the tool.
