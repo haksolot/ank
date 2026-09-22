@@ -5,7 +5,7 @@ slug: every-output-block-the-documentation-shows-is-re
 title: Every output block the documentation shows is replayed against the binary
 created: 2026-09-19T18:26:57Z
 author: claude-code/opus-5+docs-audit
-status: open
+status: done
 scope:
   - docs/**
   - README.md
@@ -16,8 +16,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/1b7b42d27200@50353b2
+    tree: scope/eea0222a3cf8
+    criteria: a00479365e9a
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@50353b2
+    tree: scope/eea0222a3cf8
+    criteria: a00479365e9a
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Rests on ADR-2b62b9a1fe67 and ADR-33970fcdb6e8, both proposed on 2026-09-19: do not claim before they are ratified, since the shape of this work is what they decide. Blocked by the page fixes, which have to land first or this test starts red.

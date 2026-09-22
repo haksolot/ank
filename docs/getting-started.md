@@ -23,6 +23,8 @@ trade-offs (a release binary and its checksum, npm, or building from source)
 and the shortest of them is one line of npm. Whichever you took, check it
 answers:
 
+<!-- replay bare -->
+
     $ ank --version
     ank 0.8.0 (8310e75, skill 0d916cc3d9a5)
 
@@ -100,10 +102,17 @@ it is a process quietly speaking for a corpus nobody meant, or for none. The
 configuration is also where it is named rather than something a call may
 override, and a call that tries to pass `--repo` itself is refused by name:
 
-    {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
+<!-- replay mcp
+$ ank init
+-->
+
+    --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_status","arguments":{"repo":"/tmp"}}}
+    <-- {"jsonrpc":"2.0","id":3,"error":{"code":-32602,"message":"--repo belongs to the server: name a corpus with the corpus argument, by the identity ank status --json prints, never by a path"}}
 
 A path with no corpus under it is refused before any client is listening, rather
 than after, so it reaches a person rather than a log:
+
+<!-- replay mcp dir=/tmp -->
 
     $ ank mcp --repo /tmp
     error[1]: no .ank/ found from /tmp
@@ -143,9 +152,16 @@ a schema newer than the binary reads is refused entity by entity, so every verb
 that lists would answer short of them without a word; instead each says so
 first:
 
+<!-- replay ahead
+$ ank init
+$ ank new task --title "Ordinary task" --scope "**" --no-verify
+$ ank new task --title "Written by a newer ank" --scope "**" --no-verify
+$ f=$(grep -l "^title: Written by" .ank/entities/*.md) && sed 's/^schema: 4$/schema: 5/' "$f" > x && mv x "$f"
+-->
+
     $ ank find --type task
     warning: corpus at schema 5, this binary reads 4: 1 entity left out of every listing
-      -> the binary is older than the corpus: ank --version names the build, npm install -g @haksolot/ank replaces it
+      -> no release is known to read schema 5: ank --version names the build, build from the tree or wait for a release
       TASK-c971  [open] Ordinary task
 
 It warns and still answers, because the entities this build does understand are worth
@@ -154,16 +170,16 @@ having, and a corpus mid-migration is a real state rather than a broken one.
 **The second line is one of two, and which one depends on whether a release can
 help.** The schema a published version reads is stamped into the binary at build
 time, from the newest tag's own source, so the message names the road that
-actually resolves the state rather than the one that sounds like it does. Where
+actually resolves the state rather than the one that sounds like it does. Above,
 no release reads the corpus -- a schema that landed on the default branch after
-the last tag, which is the ordinary case for a contributor -- it says so and
-sends you to the tree instead:
+the last tag, which is the ordinary case for a contributor -- so it sends you to
+the tree. Where a published release does read it, the binary in your hand is
+simply old, and the line names the install instead:
+`-> the binary is older than the corpus: ank --version names the build, npm install -g @haksolot/ank replaces it`.
 
-      -> no release is known to read schema 5: ank --version names the build, build from the tree or wait for a release
-
-Naming the install there would fetch the build that had just refused, and a
-reader who follows advice that visibly does nothing concludes the tool is broken
-rather than that their copy is old.
+Naming the install in the first case would fetch the build that had just
+refused, and a reader who follows advice that visibly does nothing concludes the
+tool is broken rather than that their copy is old.
 
 The other half, an old binary reading an old corpus, is not detectable: nothing
 in the files says a newer format exists. That one is `--version`, the update
@@ -174,6 +190,11 @@ below, and the paragraphs above.
 `ank update --check` reads the latest release from the repository releases are
 published from, with `git ls-remote --tags`, and installs nothing:
 
+<!-- replay update bin=/opt/ank dir=/srv/releases.git ANK_UPDATE_REPOSITORY=/srv/releases.git
+$ git init -q --bare /srv/releases.git
+$ r=/srv/releases.git && git -C $r tag "v$(ank --version | cut -d' ' -f2)" "$(git -C $r commit-tree -m release "$(git -C $r hash-object -t tree -w --stdin </dev/null)")"
+-->
+
     $ ank update --check
     running  0.8.0
     latest   0.8.0
@@ -182,6 +203,8 @@ published from, with `git ls-remote --tags`, and installs nothing:
 It exits 0 whether or not a newer release exists, because 8 belongs to `check`,
 and when one does its last line says `a newer release exists: ank update installs
 it`. A script branches on `newer`:
+
+<!-- replay update -->
 
     $ ank update --check --json
     {"contract":1,"current":"0.8.0","latest":"0.8.0","newer":false}
@@ -192,6 +215,8 @@ package, and otherwise the installer for your platform, told the directory the
 binary already sits in. It downloads and unpacks nothing itself, so the checksum
 is verified where it always was. At or above the latest release it installs
 nothing and says so:
+
+<!-- replay update -->
 
     $ ank update
     running  0.8.0
@@ -230,6 +255,13 @@ says anything until `ank done`, twenty commands later.
 
 From the root of that repository:
 
+<!-- replay walk ANK_AGENT=human:marie
+$ git init -q --bare ../origin.git && git remote add origin ../origin.git
+$ mkdir -p src/auth tests && echo 'export function createSession(id) { return store.put(id) }' > src/auth/session.ts
+$ echo 'exit 0' > tests/auth.sh && echo '# auth service' > README.md
+$ git add -A && git commit -q -m "the service"
+-->
+
     $ ank init
     created .ank/entities
     wrote .ank/config.yml
@@ -263,12 +295,20 @@ it runs where the reference branch is not known yet, and writing `main` there
 would be exactly the guess the tool refuses everywhere else. `.ank/config.yml`
 is written through the CLI rather than by hand:
 
+<!-- replay walk -->
+
     $ ank config default_branch main
     default_branch (unset) -> main
 
 Without it, Ank looks for `refs/remotes/origin/HEAD`, and a repository with no
 remote has none. It refuses rather than guessing, and here is what the verb two
 sections down would have said (`06d2` is the ADR you write there):
+
+<!-- replay unset ANK_AGENT=human:marie
+$ ank init
+$ ank new adr --title "Opaque sessions rather than stateless JWT" --scope "src/auth/**" --constraint "Do not introduce self-contained JWTs for user auth. Every session goes through the Redis store."
+created ADR-06d29e727d24 Opaque sessions rather than stateless JWT
+-->
 
     $ ank accept 06d2
     error[9]: default branch indeterminable (default_branch absent from .ank/config.yml, refs/remotes/origin/HEAD absent)
@@ -313,6 +353,8 @@ migration" is answered by `ank context src/auth/`. The full field list is in
 
 ## Write the first constraint
 
+<!-- replay walk -->
+
     $ ank new adr --title "Opaque sessions rather than stateless JWT" \
         --scope "src/auth/**" \
         --constraint "Do not introduce self-contained JWTs for user auth. Every session goes through the Redis store."
@@ -322,6 +364,8 @@ It is created `proposed`, which means visible but not binding. Promotion goes
 through one command, and that command is the only one in the tool that makes a
 git commit:
 
+<!-- replay walk -->
+
     $ git add -A && git commit -m "adr: opaque sessions"
     $ ank accept 06d2
     accepted ADR-06d29e727d24 -> 9c45c50
@@ -329,6 +373,10 @@ git commit:
 Short prefixes work everywhere an id is accepted; an ambiguous one is an error
 listing the candidates, never a guess. The commit it produced carries the hash
 of `constraint` and `scope` at acceptance:
+
+<!-- replay walk
+$ git log -1 --format=%B
+-->
 
     ratify ADR-06d29e727d24
 
@@ -350,12 +398,18 @@ in `.ank/config.yml`, under the repository's own review, and they go in through
 the same verb: writing a `run` for a name the file does not carry is how a
 verifier is declared:
 
+<!-- replay walk -->
+
     $ ank config verifiers.auth-tests.run "sh tests/auth.sh"
     verifiers.auth-tests.run (unset) -> sh tests/auth.sh
     $ ank config verifiers.no-jwt.run "! grep -rq jwt.verify src/auth/"
     verifiers.no-jwt.run (unset) -> ! grep -rq jwt.verify src/auth/
 
 which is what the file then carries:
+
+<!-- replay walk part
+$ cat .ank/config.yml
+-->
 
     verifiers:
       auth-tests:
@@ -365,6 +419,8 @@ which is what the file then carries:
 
 `ank config --unset verifiers.no-jwt` takes one back out. Reading a key says
 where the value comes from, this repository or a default the tool resolved:
+
+<!-- replay walk -->
 
     $ ank config verifiers.auth-tests.run
     sh tests/auth.sh
@@ -380,11 +436,17 @@ convert every one of the first kind into the second.
 Declare them first. A task that names a verifier `config.yml` does not know is
 refused at creation:
 
+<!-- replay undeclared
+$ ank init
+-->
+
     $ ank new task --title "Migrate auth" --scope "src/auth/**" --verify auth-tests
     error[7]: no verifier 'auth-tests' in .ank/config.yml
       -> ank config verifiers.auth-tests.run "<command>"
 
 With the definitions in place:
+
+<!-- replay walk -->
 
     $ ank new task --title "Migrate auth to opaque sessions" \
         --scope "src/auth/**" \
@@ -402,10 +464,16 @@ ceremony for a verifier that suits one perimeter and the wrong amount for the
 suite every task in the repository has to pass. A verifier marked `default`
 joins every task written afterwards:
 
+<!-- replay walk -->
+
     $ ank config verifiers.no-jwt.default true
     verifiers.no-jwt.default false (default) -> true
 
 which lands beside the `run` it belongs to, and nowhere else in the file:
+
+<!-- replay walk part
+$ cat .ank/config.yml
+-->
 
     verifiers:
       auth-tests:
@@ -417,6 +485,8 @@ which lands beside the `run` it belongs to, and nowhere else in the file:
 The read form is the same as any other key, and an unmarked verifier answers
 `false (default)` -- the tool's default for the `default` key, which is the one
 place the word does double duty:
+
+<!-- replay walk -->
 
     $ ank config verifiers.no-jwt.default
     true
@@ -430,6 +500,8 @@ those.
 
 **`--no-verify` is the third possibility, and it is a judgement, not a
 shortcut.** It writes a task with no `verify:` at all:
+
+<!-- replay walk -->
 
     $ ank new task --title "Say in the README what a session is now" \
         --scope "README.md" \
@@ -448,6 +520,8 @@ decided on closes on a proof nothing ran.
 
 `ank context` is the first call, and the only one you have to remember. With no
 argument it covers the whole repository; with a path it covers that perimeter.
+
+<!-- replay walk -->
 
     $ ank context src/auth/
 
@@ -473,6 +547,8 @@ truncated. The output ends with the next command, as every output here does.
 
 ## Claim
 
+<!-- replay walk -->
+
     $ ank claim 820d
     claimed TASK-820d259af6a7 migrate-auth-to-opaque-sessions -> HEAD
 
@@ -494,6 +570,8 @@ time, per person and per agent.
 
 Claiming a second task while you already hold one is refused:
 
+<!-- replay walk -->
+
     $ ank claim 51c2
     error[7]: human:marie holds a live claim on TASK-820d259af6a7 (expires in 30m)
       -> ank release --reason "<why>"   (a second session on this machine sets its own ANK_AGENT)
@@ -504,6 +582,8 @@ terminals: `$ANK_AGENT` unset resolves to `<user>@<hostname>`, so two sessions
 on one machine are the same agent as far as the refs can tell, so they would see
 each other's claims and renew them. Give every concurrent session an identity
 of its own:
+
+<!-- replay walk -->
 
     $ ANK_AGENT=human:marie-2 ank claim 51c2
     claimed TASK-51c2a0f6d418 say-in-the-readme-what-a-session-is-now -> HEAD
@@ -535,6 +615,8 @@ under "Parallel work and integration".
 Run `ank context` again and the output inverts: no other task, the full
 criterion, and the constraints matching this task's scope.
 
+<!-- replay walk -->
+
     $ ank context
 
     TASK-820d  Migrate auth to opaque sessions
@@ -549,6 +631,8 @@ criterion, and the constraints matching this task's scope.
 is where the reasoning behind a task lives.
 
 ## Work, and log what you learn
+
+<!-- replay walk -->
 
     $ ank log "jwt.verify removed from session.ts"
     logged LOG-6b0f39d7a4c1 on TASK-820d259af6a7
@@ -576,6 +660,8 @@ on the entry's own id prints it whole, and `--json` always carries it whole.
 
 ## Finish
 
+<!-- replay walk -->
+
     $ ank done
     running: auth-tests ... ok (0.0s)
     running: no-jwt ... ok (0.0s)
@@ -599,6 +685,8 @@ commit is the one your tree is on, so that one is yours.
 The other task takes the other branch. It was written `--no-verify`, so there
 is no verifier to produce anything and `--proof` becomes mandatory -- the
 session holding it is the second one, from the identity section above:
+
+<!-- replay walk -->
 
     $ ANK_AGENT=human:marie-2 ank done
     error[5]: proof required to move TASK-51c2a0f6d418 to done
@@ -632,6 +720,8 @@ like any other change.
 
 Before you commit, `check` has something to say:
 
+<!-- replay walk -->
+
     $ ank check
     signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: TASK-820d259af6a7: finished on another branch, main has not caught up
@@ -651,6 +741,8 @@ the task would look free to everyone else. The claim ref is not deleted at
 `done`: it becomes a completion ref, and anyone who tries to claim the task is
 refused with the commit and the branch named. Commit, and the ref is pruned:
 
+<!-- replay walk -->
+
     $ git add -A && git commit -m "the migration is done"
     $ ank check
     signal: ADR-06d29e727d24: ratified by its own author (human:marie)
@@ -665,10 +757,12 @@ three signals, no fault, exit 0. The new one is the corpus noticing that three
 log entries are cold -- an entry is cold with its subject, and their subject is
 a task that is done (ADR-467ce7e9cda1):
 
+<!-- replay walk unordered -->
+
     $ ank archive --dry-run
     LOG-3b92d9719950  created (version 0 to 1, produced 4cc65f12691c)
-    LOG-9cfb085b14b3  jwt.verify removed from session.ts
-    LOG-f234f9b08f06  done, proof test:local/e3b0c44298fc@c482be8 test:local/e3b0c44298fc@c482be8
+    LOG-6b0f39d7a4c1  jwt.verify removed from session.ts
+    LOG-f234f9b08f06  done, proof test:local/e3b0c44298fc@9c45c50 test:local/e3b0c44298fc@9c45c50
     3 cold, nothing moved (--dry-run): ank archive moves them
 
 It lists and moves nothing, which on a corpus this size is the right answer.
@@ -880,6 +974,8 @@ and what changes when more than one agent works the same repository.
 The shortest of them is the binary you just installed, which carries the skills
 its build read:
 
+<!-- replay bare -->
+
     $ ank skills
     ank           0d916cc3d9a5  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
     ank-diagnose  b5d9c0b96462  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
@@ -902,6 +998,14 @@ designating `tdd` whose holder loaded it, one designating `diagnose` whose
 holder never did, and one designating nothing where `tdd` was loaded anyway --
 the block reads:
 
+<!-- replay methods part
+$ ank init
+$ id=$(ank new task --title "Designates tdd" --scope "**" --criteria "c" --no-verify --method tdd | cut -d' ' -f2) && ANK_AGENT=a/1 ank claim $id && ANK_AGENT=a/1 ank log --method tdd
+$ id=$(ank new task --title "Designates diagnose" --scope "**" --criteria "c" --no-verify --method diagnose | cut -d' ' -f2) && ANK_AGENT=b/1 ank claim $id
+$ id=$(ank new task --title "Designates nothing" --scope "**" --criteria "c" --no-verify | cut -d' ' -f2) && ANK_AGENT=c/1 ank claim $id && ANK_AGENT=c/1 ank log --method tdd
+$ ank skills
+-->
+
     METHODS
     diagnose  designated 1  fired 0  undesignated 0
     drift     designated 0  fired 0  undesignated 0
@@ -919,18 +1023,11 @@ prints the catalogue alone.
 it to `npx skills add`, which detects what you run and installs them for it,
 without asking and without cloning anything:
 
-    $ ank skills --install
-    wrote 6 skills to C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
-    running: npx skills add C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
+    ank skills --install
 
-    ●   claude-code_2-1-270_agent  Agent detected — installing non-interactively
-    ◇  Source: C:\Users\you\AppData\Local\Temp\ank-skills-25808-138072400-0
-    ◇  Local path validated
-    ◇  Found 6 skills
-    ...
-    ◇  Installed 6 skills
-    ...
-    └  Done!  Review skills before use; they run with full agent permissions.
+It prints two lines of its own, the directory it wrote and the `npx` command it
+runs; everything after them is the `skills` CLI's, and
+[agents.md](agents.md) shows a whole run.
 
 On a machine that has node and no ank, the same skills come from the repository
 instead:

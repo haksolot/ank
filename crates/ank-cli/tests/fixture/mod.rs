@@ -94,6 +94,14 @@ fn redact(s: &str) -> String {
     out
 }
 
+/// The redaction alone, for a suite comparing against something other than a
+/// fixture of this directory: the output blocks of the documentation, replayed
+/// under the masks the goldens are written with (TASK-9e80c9a3a5ed).
+#[allow(dead_code)]
+pub fn redacted(s: &str) -> String {
+    redact(s)
+}
+
 /// `tests/golden-json/<name>.json`, compared against what the process printed,
 /// or written when `ANK_BLESS_GOLDEN` is set.
 ///
