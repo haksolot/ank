@@ -407,6 +407,10 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     // and is never asked to parse it again here.
     let mut archived_entries: Vec<ank_core::Log> = Vec::new();
     let mut archived_creations: Vec<(String, String)> = Vec::new();
+    // Every archived path the index holds, and those whose bytes left the
+    // digest it holds, judged below once it is known whether HEAD answers.
+    let mut archived_paths: Vec<String> = Vec::new();
+    let mut index_changed: BTreeSet<String> = BTreeSet::new();
     if repo.ank.join(Store::ARCHIVE_DIR).is_dir() {
         let index = Index::open_with_archive(&repo.ank)?;
         archived_entries = index.archived_entries()?;
@@ -416,6 +420,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             archived_creations = index.archived_creations()?;
         }
         for (rel, digest) in index.archived_digests()? {
+            archived_paths.push(rel.clone());
             let Ok(bytes) = std::fs::read(repo.ank.join(&rel)) else {
                 report
                     .findings
@@ -423,14 +428,7 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
                 continue;
             };
             if crate::index::hash_bytes(&bytes) != digest {
-                report.findings.push(Finding::fault(
-                    &rel,
-                    format!(
-                        "archived file changed: its bytes no longer match the digest the \
-                         index holds, and an archived entity is never edited \
-                         (git checkout -- .ank/{rel} restores it)"
-                    ),
-                ));
+                index_changed.insert(rel);
             }
         }
     }
@@ -686,6 +684,41 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
         ));
         (HashMap::new(), HashMap::new(), None)
     };
+
+    // **And against the commit, which the cache cannot stand in for**
+    // (TASK-77df1446260f). The digest above is the one the index took when the
+    // file arrived, and `index.db` is disposable: deleted, it is rebuilt from
+    // the bytes it was meant to verify, and an edited archived file then
+    // matches itself. Measured before this: the fault at exit 8, then exit 0 on
+    // every run after `rm .ank/index.db`. A committed move is anchored where
+    // the editor of the file does not reach, the tree HEAD records, so an
+    // archived file HEAD carries is judged by the blob it carries there and by
+    // that alone: an index rebuilt over edited bytes holds their digest, and
+    // judged by it the file restored with `git checkout` stayed a fault until
+    // the cache was deleted again. The index answers for a move not committed.
+    let (carried, head_changed) = if has_git && !archived_paths.is_empty() {
+        archived_against_head(repo, &archived_paths)
+    } else {
+        (BTreeSet::new(), BTreeSet::new())
+    };
+    for rel in &archived_paths {
+        let held_by = if carried.contains(rel) {
+            head_changed.contains(rel).then_some("the blob HEAD holds")
+        } else {
+            index_changed
+                .contains(rel)
+                .then_some("the digest the index holds")
+        };
+        if let Some(held_by) = held_by {
+            report.findings.push(Finding::fault(
+                rel,
+                format!(
+                    "archived file changed: its bytes no longer match {held_by}, and an \
+                     archived entity is never edited (git checkout -- .ank/{rel} restores it)"
+                ),
+            ));
+        }
+    }
 
     // The commit proofs this corpus rests on, asked of the clone rather than of
     // the entry (§4). Once for the whole corpus and before the loop below,
@@ -4540,6 +4573,73 @@ fn maintain_proofs(
 
 /// The `.ank/` directory relative to the repository root, `/`-separated, as git
 /// wants it. Usually `.ank`, but the tree need not be laid out that way.
+/// The archived files, among `paths` (relative to `.ank/`), that HEAD carries,
+/// and those of them whose bytes differ from the blob HEAD records for them
+/// (TASK-77df1446260f).
+///
+/// Two processes whatever the archive weighs (ADR-cc65f1388a71): HEAD's tree
+/// of the archive directory in one `cat-file`, which names the blob of every
+/// file in it, and `hash-object --stdin-paths` for the working copies, which
+/// applies the conversion the commit did, as [`blobs_here`] explains. A file
+/// HEAD does not carry is a move not yet committed, and only the index can
+/// answer for it. Any failure answers nothing: the index digest still stands.
+fn archived_against_head(repo: &Repo, paths: &[String]) -> (BTreeSet<String>, BTreeSet<String>) {
+    let none = (BTreeSet::new(), BTreeSet::new());
+    let rel = ank_relative(repo);
+    let dir = format!("{rel}/{}", Store::ARCHIVE_DIR);
+    let Ok(Some(listing)) = git::file_at(&repo.corpus, "HEAD", &dir) else {
+        return none;
+    };
+    // `<mode> SP <type> SP <object>TAB<name>`, as [`corpus_at`] reads it.
+    let mut at_head: HashMap<String, String> = HashMap::new();
+    for line in listing.lines() {
+        let Some((meta, name)) = line.split_once('\t') else {
+            continue;
+        };
+        let mut fields = meta.split_whitespace().skip(1);
+        if fields.next() != Some("blob") {
+            continue;
+        }
+        if let Some(object) = fields.next() {
+            at_head.insert(format!("{}/{name}", Store::ARCHIVE_DIR), object.to_string());
+        }
+    }
+    let asked: Vec<&String> = paths.iter().filter(|p| at_head.contains_key(*p)).collect();
+    let carried: BTreeSet<String> = asked.iter().map(|p| p.to_string()).collect();
+    if asked.is_empty() {
+        return (carried, BTreeSet::new());
+    }
+    let input: String = asked.iter().map(|p| format!("{rel}/{p}\n")).collect();
+    let Ok(out) = git::output_with_stdin(
+        &repo.corpus,
+        &["hash-object", "--stdin-paths"],
+        input.as_bytes(),
+    ) else {
+        return none;
+    };
+    if !out.status.success() {
+        return none;
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let here: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    // One object per path, in order; a disagreement is a framing error, and
+    // pairing on it would attribute one file's hash to another.
+    if here.len() != asked.len() {
+        return none;
+    }
+    let changed = asked
+        .into_iter()
+        .zip(here)
+        .filter(|(p, object)| at_head.get(*p).map(String::as_str) != Some(*object))
+        .map(|(p, _)| p.clone())
+        .collect();
+    (carried, changed)
+}
+
 fn ank_relative(repo: &Repo) -> String {
     repo.ank
         .strip_prefix(&repo.corpus)
