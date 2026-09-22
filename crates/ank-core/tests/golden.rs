@@ -29,7 +29,6 @@
 //! guards that decision is a positive assertion instead, below.
 
 use ank_core::log::MESSAGE_LINE_MAX;
-use ank_core::registry::{by_type_name, FieldValue};
 use ank_core::*;
 use std::fs;
 use std::path::PathBuf;
@@ -354,89 +353,6 @@ fn a_task_names_its_method_and_one_without_it_names_none() {
         let t = parse_task(&input).unwrap_or_else(|e| panic!("{older}: {e}"));
         assert_eq!(t.method, None, "{older}");
         assert!(!serialize_task(&t).contains("method:"), "{older}");
-    }
-}
-
-/// `docs/format.md` writes the registry out as four tables, and a reader porting
-/// the format reads the tables and not this crate. So the tables are compared
-/// against what the serializer actually does: each row's field, in order, is
-/// the registry's, and each row's emission is the form the serializer wrote
-/// that field in, over every valid fixture that carries it.
-#[test]
-fn the_tables_in_docs_format_md_match_the_serializer() {
-    let doc =
-        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/format.md"))
-            .unwrap()
-            .replace("\r\n", "\n");
-
-    // The rows under each `### <Kind>` heading, as (field, emission).
-    let table = |heading: &str| -> Vec<(String, String)> {
-        let start = doc
-            .find(&format!("\n### {heading}\n"))
-            .unwrap_or_else(|| panic!("docs/format.md has no ### {heading}"));
-        doc[start..]
-            .lines()
-            .skip(2)
-            .skip_while(|l| !l.starts_with("| # |"))
-            .skip(2)
-            .take_while(|l| l.starts_with('|'))
-            .map(|l| {
-                let cells: Vec<&str> = l.split('|').map(str::trim).collect();
-                (cells[2].trim_matches('`').to_string(), cells[3].to_string())
-            })
-            .collect()
-    };
-
-    let mut observed: Vec<(&str, String, String)> = Vec::new();
-    for path in entity_fixtures("valid") {
-        let input = fs::read_to_string(&path).unwrap();
-        let entity = parse_entity(&input).unwrap();
-        let spec = entity.kind_spec();
-        for field in spec.fields {
-            let Some(value) = entity.field_value(field.name) else {
-                continue;
-            };
-            let form = match value {
-                FieldValue::Bare(s) if s.parse::<u64>().is_ok() => "integer",
-                FieldValue::Bare(_) => "bare",
-                FieldValue::Scalar(_) => "scalar",
-                FieldValue::Block(_) => "literal block",
-                FieldValue::Flow(_) => "flow list",
-                FieldValue::Seq(_) => "block sequence",
-                FieldValue::Proofs(_) | FieldValue::Readings(_) => "block sequence of maps",
-            };
-            observed.push((spec.name, field.name.to_string(), form.to_string()));
-        }
-    }
-
-    for (kind, heading) in [
-        ("task", "Task"),
-        ("adr", "ADR"),
-        ("spec", "Spec"),
-        ("log", "Log entry"),
-    ] {
-        let rows = table(heading);
-        let names: Vec<&str> = rows.iter().map(|(n, _)| n.as_str()).collect();
-        let registry: Vec<&str> = by_type_name(kind)
-            .unwrap()
-            .fields
-            .iter()
-            .map(|f| f.name)
-            .collect();
-        assert_eq!(
-            names, registry,
-            "docs/format.md ### {heading} is not the registry"
-        );
-        for (k, name, form) in &observed {
-            if *k != kind {
-                continue;
-            }
-            let (_, documented) = rows.iter().find(|(n, _)| n == name).unwrap();
-            assert_eq!(
-                documented, form,
-                "docs/format.md ### {heading} writes {name} as {documented}, the serializer as {form}"
-            );
-        }
     }
 }
 

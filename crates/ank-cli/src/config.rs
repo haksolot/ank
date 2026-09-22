@@ -14,25 +14,19 @@ use std::ops::Range;
 use std::path::Path;
 use std::time::Duration;
 
-pub const SUPPORTED_SCHEMA: u32 = 1;
-pub const DEFAULT_CONTEXT_BUDGET: usize = 8000;
-pub const DEFAULT_CLAIM_TTL_MAX: &str = "2h";
+// The defaults are declared once, beside the table `docs/config-keys.md` is
+// rendered from, and read here under the names every call site already uses.
+pub const SUPPORTED_SCHEMA: u32 = ank_core::config::SCHEMA;
+pub const DEFAULT_CONTEXT_BUDGET: usize = ank_core::config::DEFAULT_CONTEXT_BUDGET;
+pub const DEFAULT_CLAIM_TTL_MAX: &str = ank_core::config::DEFAULT_CLAIM_TTL_MAX;
 /// What `claim` grants without `--ttl` (§3). The same thirty minutes
 /// [`crate::claim::DEFAULT_TTL`] has always been, spelled the way the file
 /// spells a duration; a unit test below pins the two to one value, because two
 /// spellings of one number is exactly how they start to disagree.
-pub const DEFAULT_CLAIM_TTL: &str = "30m";
-pub const DEFAULT_VERIFIER_TIMEOUT: &str = "10m";
-/// The hot corpus a reader pays per file for, as `init` declares it
-/// (ADR-467ce7e9cda1). Measured on 2026-09-14, this repository held 1979 files
-/// under `.ank/entities/`; 3000 leaves it half again, which at August's rate of
-/// 1645 entities a month is crossed within a month unless the cold half moves.
-pub const DEFAULT_WEIGHT_HOT_FILES: u64 = 3000;
-/// The bytes of claim and proof records `check` moves through its batch, as
-/// `init` declares it. The same day this repository's batch was 3 285 580
-/// bytes, nearly all proofs appended once per CI run; 4 MB is the next growth
-/// of that mechanism, not a size a corpus reaches by accumulating facts.
-pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = 4_000_000;
+pub const DEFAULT_CLAIM_TTL: &str = ank_core::config::DEFAULT_CLAIM_TTL;
+pub const DEFAULT_VERIFIER_TIMEOUT: &str = ank_core::config::DEFAULT_VERIFIER_TIMEOUT;
+pub const DEFAULT_WEIGHT_HOT_FILES: u64 = ank_core::config::DEFAULT_WEIGHT_HOT_FILES;
+pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = ank_core::config::DEFAULT_WEIGHT_PLANE_BYTES;
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
@@ -2822,5 +2816,154 @@ identities: {}
 
         assert!(resolve_key("weight.bytes").is_err());
         assert!(resolve_key("weight").is_err());
+    }
+}
+
+/// The parser held to the table `docs/config-keys.md` is rendered from
+/// (ADR-2b62b9a1fe67): every key serde accepts is a row, every row is a key
+/// serde accepts, and an absent key resolves to the default the row prints.
+#[cfg(test)]
+mod reference_table {
+    use super::*;
+    use ank_core::config::{Absent, KEYS};
+    use serde::de::{self, Visitor};
+    use std::collections::BTreeSet;
+
+    /// A deserializer that answers nothing and records the field names a
+    /// struct asks it for: what serde accepts, read off the parser itself.
+    struct FieldNames<'a>(&'a mut Vec<&'static str>);
+
+    impl<'de> de::Deserializer<'de> for FieldNames<'_> {
+        type Error = de::value::Error;
+
+        fn deserialize_any<V: Visitor<'de>>(
+            self,
+            _: V,
+        ) -> std::result::Result<V::Value, Self::Error> {
+            Err(de::Error::custom("field names only"))
+        }
+
+        fn deserialize_struct<V: Visitor<'de>>(
+            self,
+            _: &'static str,
+            fields: &'static [&'static str],
+            _: V,
+        ) -> std::result::Result<V::Value, Self::Error> {
+            self.0.extend(fields);
+            Err(de::Error::custom("field names only"))
+        }
+
+        serde::forward_to_deserialize_any! {
+            bool i8 i16 i32 i64 i128 u8 u16 u32 u64 u128 f32 f64 char str string
+            bytes byte_buf option unit unit_struct newtype_struct seq tuple
+            tuple_struct map enum identifier ignored_any
+        }
+    }
+
+    fn fields_of<'de, T: Deserialize<'de>>() -> Vec<&'static str> {
+        let mut names = Vec::new();
+        let _ = T::deserialize(FieldNames(&mut names));
+        names
+    }
+
+    #[test]
+    fn the_table_names_every_key_the_parser_accepts_and_no_other() {
+        let mut accepted = BTreeSet::new();
+        for top in fields_of::<ConfigFile>() {
+            match top {
+                "peers" => {
+                    accepted.insert("peers.<name>".to_string());
+                }
+                "identities" => {
+                    accepted.insert("identities.<identity>".to_string());
+                }
+                "verifiers" => accepted.extend(
+                    fields_of::<VerifierFile>()
+                        .into_iter()
+                        .map(|f| format!("verifiers.<name>.{f}")),
+                ),
+                "roles" => accepted.extend(
+                    fields_of::<Role>()
+                        .into_iter()
+                        .map(|f| format!("roles.<name>.{f}")),
+                ),
+                "weight" => accepted.extend(
+                    fields_of::<Weight>()
+                        .into_iter()
+                        .map(|f| format!("weight.{f}")),
+                ),
+                scalar => {
+                    accepted.insert(scalar.to_string());
+                }
+            }
+        }
+        let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
+        assert_eq!(accepted.len(), 14, "{accepted:?}");
+        assert_eq!(table, accepted);
+        // What `ank config` addresses is a subset of the table, never a key
+        // of its own.
+        for key in super::KEYS {
+            assert!(table.contains(*key), "ank config addresses '{key}'");
+        }
+    }
+
+    fn row(path: &str) -> Absent {
+        KEYS.iter()
+            .find(|k| k.path == path)
+            .unwrap_or_else(|| panic!("no row '{path}'"))
+            .default
+    }
+
+    fn dur(a: Absent) -> Duration {
+        match a {
+            Absent::Text(t) => parse_duration(t).unwrap(),
+            other => panic!("{other:?} is not a duration"),
+        }
+    }
+
+    #[test]
+    fn an_absent_key_resolves_to_the_default_the_table_prints() {
+        let p = Path::new("config.yml");
+        let cfg = parse("schema: 1\nverifiers:\n  t:\n    run: \"true\"\n", p).unwrap();
+        assert_eq!(row("schema"), Absent::Required);
+        assert!(parse("context_budget: 1\n", p).is_err());
+        assert_eq!(
+            row("context_budget"),
+            Absent::Number(cfg.context_budget as u64)
+        );
+        assert_eq!(dur(row("claim_ttl_max")), cfg.claim_ttl_max);
+        assert_eq!(dur(row("claim_ttl_default")), cfg.claim_ttl_default);
+        assert_eq!(row("default_branch"), Absent::None);
+        assert_eq!(cfg.default_branch, None);
+        assert_eq!(row("peers.<name>"), Absent::None);
+        assert!(cfg.peers.is_empty());
+        assert_eq!(row("verifiers.<name>.run"), Absent::Required);
+        assert!(parse("schema: 1\nverifiers:\n  t:\n    timeout: 1m\n", p).is_err());
+        assert_eq!(
+            dur(row("verifiers.<name>.timeout")),
+            cfg.verifiers["t"].timeout
+        );
+        assert_eq!(row("verifiers.<name>.default"), Absent::Text("false"));
+        assert!(cfg.default_verifiers.is_empty());
+        let roles = parse("schema: 1\nroles:\n  r: {}\n", p).unwrap().roles;
+        assert_eq!(row("roles.<name>.can"), Absent::Text("[]"));
+        assert_eq!(row("roles.<name>.cannot"), Absent::Text("[]"));
+        assert_eq!(
+            roles["r"],
+            Role {
+                can: vec![],
+                cannot: vec![]
+            }
+        );
+        assert_eq!(row("identities.<identity>"), Absent::None);
+        assert!(cfg.identities.is_empty());
+        assert_eq!(
+            row("weight.hot_files"),
+            Absent::Number(cfg.weight.hot_files)
+        );
+        assert_eq!(
+            row("weight.plane_bytes"),
+            Absent::Number(cfg.weight.plane_bytes)
+        );
     }
 }

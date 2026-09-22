@@ -18,12 +18,14 @@
 //! no permissions — the caller (CLI, `check`, third-party tool) composes
 //! these building blocks.
 
+pub mod config;
 pub mod error;
 pub mod freeze;
 pub mod id;
 pub mod log;
 pub mod model;
 pub mod parse;
+pub mod reference;
 pub mod registry;
 pub mod scope;
 

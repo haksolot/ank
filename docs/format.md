@@ -123,14 +123,17 @@ own now.
 
 Canonical form is a **fixed field order**, and a serializer that emits the right
 fields in the wrong order produces a non-canonical file. The order is not
-alphabetical and not negotiable; it is this.
+alphabetical and not negotiable; it is the one the registry declares.
 
 A kind is declared **once**, as a row of a registry: the name written in `type`,
 the id prefix, the status values, which fields are required and which optional,
-and the canonical order (§3). The two tables below are that registry written out.
-Reproduce them as data, a table your serializer walks, rather than as one
-emitter per kind; the order is the single thing most easily lost by rewriting two
-straight-line emitters as a generic loop, and it is what the round-trip rests on.
+and the canonical order (§3). [Entity fields](entity-fields.md) is that registry
+printed, generated from the table the binary reads and writes with: every kind,
+every field in order, its emission form, whether it is always emitted, and the
+values an enum field takes. Reproduce it as data, a table your serializer walks,
+rather than as one emitter per kind; the order is the single thing most easily
+lost by rewriting two straight-line emitters as a generic loop, and it is what
+the round-trip rests on.
 
 An **unknown kind is rejected naming the kind**, not naming the first field it
 happens to carry. Inside a known kind, an unknown field is still rejected. The two
@@ -139,78 +142,21 @@ refusals answer different questions: `priorty:` in a `task` is a typo, and
 
 ### Task
 
-| # | Field | Emission | Notes |
-|---|---|---|---|
-| 1 | `id` | bare | `TASK-<12 hex>` |
-| 2 | `type` | bare | always `task` |
-| 3 | `slug` | scalar | optional, omitted when absent; cosmetic, never resolved on |
-| 4 | `title` | scalar | |
-| 5 | `created` | scalar | ISO 8601, always UTC with the `Z` suffix |
-| 6 | `author` | scalar | optional; absent means the entity predates the field |
-| 7 | `status` | bare | `open` \| `in_progress` \| `done` \| `closed` |
-| 8 | `scope` | block sequence | mandatory, never empty; globs |
-| 9 | `blocked_by` | flow list | always emitted, `[]` when empty |
-| 10 | `done_criteria` | literal block | optional |
-| 11 | `criteria_by` | bare | `creator` \| `claimer`; invalid without `done_criteria` |
-| 12 | `verify` | flow list | omitted when empty |
-| 13 | `method` | scalar | optional, omitted when absent; one sibling skill the binary carries |
-| 14 | `proof` | block sequence of maps | omitted when empty |
-| 15 | `verified` | block sequence of maps | optional, omitted when empty |
-| 16 | `schema` | integer | |
-| 17 | `version` | integer | |
-
 A `proof` entry emits its own keys in order: `type`, `ref`, then `tree`,
-`criteria`, `verifier` and `via`, each omitted when absent. `type` is one of
-`test`, `commit`, `human-review`, `assertion`. `via` is one of `verifier`,
-`attested`, `submitted`, the route by which the entry arrived, and its absence
-means the entry was written before the field existed, never a fourth route.
+`criteria`, `verifier` and `via`, each omitted when absent. The values `type`
+and `via` take are listed [with the fields](entity-fields.md#proof-type). `via`
+is the route by which the entry arrived, and its absence means the entry was
+written before the field existed, never a fourth route.
 
 A `verified` entry emits `by`, then `at`. Both are required in an entry that
 exists at all, an entry missing either being rejected, while the list itself is
 optional on every kind.
-
-### ADR
-
-| # | Field | Emission | Notes |
-|---|---|---|---|
-| 1 | `id` | bare | `ADR-<12 hex>` |
-| 2 | `type` | bare | always `adr` |
-| 3 | `slug` | scalar | optional |
-| 4 | `title` | scalar | |
-| 5 | `created` | scalar | ISO 8601, UTC |
-| 6 | `author` | scalar | optional |
-| 7 | `status` | bare | `proposed` \| `accepted` \| `superseded` |
-| 8 | `scope` | block sequence | mandatory, never empty |
-| 9 | `constraint` | literal block | mandatory |
-| 10 | `see` | scalar | optional |
-| 11 | `supersedes` | bare | optional, an entity id |
-| 12 | `ratified` | scalar | optional; set by `accept` (see below) |
-| 13 | `verified` | block sequence of maps | optional, omitted when empty |
-| 14 | `schema` | integer | |
-| 15 | `version` | integer | |
 
 ### Spec
 
 An ADR without its `constraint`, and the absence is what makes it a kind of its
 own: a spec describes where an ADR binds, so nothing in it is ever injected into
 an agent's context (§3).
-
-| # | Field | Emission | Notes |
-|---|---|---|---|
-| 1 | `id` | bare | `SPEC-<12 hex>` |
-| 2 | `type` | bare | always `spec` |
-| 3 | `slug` | scalar | optional |
-| 4 | `title` | scalar | |
-| 5 | `created` | scalar | ISO 8601, UTC |
-| 6 | `author` | scalar | optional |
-| 7 | `status` | bare | `proposed` \| `accepted` \| `superseded` |
-| 8 | `scope` | block sequence | mandatory, never empty; what the document governs |
-| 9 | `references` | flow list | optional, omitted when empty; entity ids |
-| 10 | `supersedes` | bare | optional, an entity id |
-| 11 | `ratified` | scalar | optional; set by `accept`, over the body and `scope` |
-| 12 | `verified` | block sequence of maps | optional, omitted when empty |
-| 13 | `schema` | integer | |
-| 14 | `version` | integer | |
 
 The anchor differs from an ADR's in what it covers and in nothing else: a spec
 has no field carrying its authority, so `ratified` is taken over the body and
@@ -228,22 +174,6 @@ than a parse error here (§3).
 
 ### Log entry
 
-| # | Field | Emission | Notes |
-|---|---|---|---|
-| 1 | `id` | bare | `LOG-<12 hex>` |
-| 2 | `type` | bare | always `log` |
-| 3 | `slug` | scalar | optional |
-| 4 | `title` | scalar | the message, or its head (below) |
-| 5 | `created` | scalar | ISO 8601, UTC; the instant of the entry |
-| 6 | `author` | scalar | optional; who wrote the entry |
-| 7 | `scope` | block sequence | mandatory; the subject's scope as it stood |
-| 8 | `about` | bare | mandatory, an entity id of any kind |
-| 9 | `seq` | integer | mandatory; rank among that entity's entries, from 0 |
-| 10 | `records` | scalar | optional; what a machinery entry records (below) |
-| 11 | `verified` | block sequence of maps | optional, omitted when empty |
-| 12 | `schema` | integer | |
-| 13 | `version` | integer | |
-
 **No `status`, and that is not an omission**: an entry is written once and has
 nothing to transition to, so the registry declares the kind without one and your
 parser must not require it. `version` stays, and on this kind it is a detector
@@ -251,7 +181,8 @@ rather than a counter: an entry above 1 has been rewritten, which the format
 says should not happen.
 
 **`records` marks an entry a verb wrote, not a holder.** Absent, the entry is
-work. Three values are known: `edit`, `create` and `method`.
+work. The values known to this build are listed
+[with the fields](entity-fields.md#records).
 
 **`edit` and `create` share one grammar**, which carries the versions the write
 moved between and the hash of the content it produced. Both of these were
@@ -382,7 +313,8 @@ a genuinely non-canonical file is the fault whichever line endings it carries.
 `schema` is the format version, and a tool declares **a range of versions it
 reads**, not a single one.
 
-The current version is **4**, and the reference implementation reads **1 to 4**.
+The version the reference implementation writes, and the range it reads, are
+printed [with the fields](entity-fields.md).
 
 Version 3 carries the log leaving the entity body and the `verified` list with
 its typed actors. The flat layout arrived in the same revision and carries no
