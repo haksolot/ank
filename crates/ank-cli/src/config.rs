@@ -473,12 +473,12 @@ pub fn user_dir() -> Option<std::path::PathBuf> {
             .map(std::path::PathBuf::from)
     };
     if cfg!(windows) {
-        return var("APPDATA").map(|p| p.join("ank"));
+        return var(ank_contract::env::APPDATA).map(|p| p.join("ank"));
     }
-    if let Some(xdg) = var("XDG_CONFIG_HOME") {
+    if let Some(xdg) = var(ank_contract::env::XDG_CONFIG_HOME) {
         return Some(xdg.join("ank"));
     }
-    var("HOME").map(|p| p.join(".config").join("ank"))
+    var(ank_contract::env::HOME).map(|p| p.join(".config").join("ank"))
 }
 
 /// The declarations file, wherever this reader's home is.

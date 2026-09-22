@@ -424,9 +424,10 @@ fn npx_on_path() -> Option<PathBuf> {
 /// four a process can be started from. `update` finds `npm` and `powershell`
 /// the same way, for the same reason.
 pub fn on_path(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
+    let path = std::env::var_os(ank_contract::env::PATH)?;
     let names: Vec<String> = if cfg!(windows) {
-        let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        let pathext = std::env::var(ank_contract::env::PATHEXT)
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
         pathext
             .split(';')
             .map(str::to_ascii_lowercase)

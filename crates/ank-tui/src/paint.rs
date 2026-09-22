@@ -100,7 +100,7 @@ impl Ink {
     /// `windows` feature is what puts that console into virtual-terminal mode,
     /// and it is the same code path ratatui draws through.
     pub fn detect() -> Ink {
-        if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+        if std::env::var_os(ank_contract::env::NO_COLOR).is_some_and(|v| !v.is_empty()) {
             return PLAIN;
         }
         if declared_dumb() {
@@ -180,7 +180,7 @@ impl Ink {
 /// measured by drawing one corpus twice and finding the two frames identical
 /// character for character (`tests/colour.rs`).
 pub fn declared_dumb() -> bool {
-    std::env::var_os("TERM").is_some_and(|v| v == "dumb")
+    std::env::var_os(ank_contract::env::TERM).is_some_and(|v| v == "dumb")
 }
 
 /// The role an identifier carries, read out of the kind it names.

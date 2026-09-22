@@ -21,7 +21,7 @@ use std::process::{Command, Stdio};
 pub const REPOSITORY: &str = "https://github.com/haksolot/ank";
 
 /// The environment variable naming another repository to read releases from.
-pub const REPOSITORY_VAR: &str = "ANK_UPDATE_REPOSITORY";
+pub const REPOSITORY_VAR: &str = ank_contract::env::ANK_UPDATE_REPOSITORY;
 
 /// A release version, compared per component as numbers: 0.10.0 is above
 /// 0.9.0, which a comparison of strings gets backwards.
