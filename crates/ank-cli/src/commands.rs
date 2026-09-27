@@ -157,11 +157,16 @@ pub fn new(
             }
             let criteria = inv.value("--criteria").map(ensure_newline);
             let mut blocked_by = Vec::new();
+            let mut peer_blocked_by = Vec::new();
             for raw in inv.values("--blocked-by") {
                 // Resolved at creation rather than recorded raw: an unknown
                 // reference would otherwise surface much later, in `check`, as
-                // a corpus error nobody can attribute.
-                blocked_by.push(store.resolve(raw)?);
+                // a corpus error nobody can attribute. `<id>@<peer>` is
+                // resolved in that peer, read-only (ADR-c23bef1cc93e).
+                match crate::repo::blocker(repo, cfg, "new task --blocked-by", raw)? {
+                    crate::repo::Blocker::Here(id) => blocked_by.push(id),
+                    crate::repo::Blocker::Peer(b) => peer_blocked_by.push(b),
+                }
             }
             Entity::Task(Task {
                 id: id.clone(),
@@ -176,6 +181,7 @@ pub fn new(
                 status: TaskStatus::Open,
                 scope,
                 blocked_by,
+                peer_blocked_by,
                 criteria_by: criteria.as_ref().map(|_| CriteriaBy::Creator),
                 done_criteria: criteria,
                 verify: verifiers_of(inv, cfg)?,
@@ -517,6 +523,7 @@ fn skeleton(
             status: TaskStatus::Open,
             scope,
             blocked_by: Vec::new(),
+            peer_blocked_by: Vec::new(),
             done_criteria: inv.value("--criteria").map(ensure_newline),
             criteria_by: inv.value("--criteria").map(|_| CriteriaBy::Creator),
             verify: verifiers_of(inv, cfg)?,
@@ -713,6 +720,11 @@ fn create_filled(
                 .with_hint(hint));
             }
             resolve_blockers(store, &t.blocked_by, &hint)?;
+            // A peer's blocker typed into the template is resolved where the
+            // flag's is, in that peer.
+            for b in &t.peer_blocked_by {
+                crate::repo::blocker(repo, cfg, "new task --blocked-by", &b.to_string())?;
+            }
             check_verifiers(&t.verify, cfg)?;
             // A name typed into the template is checked where the flag is, and
             // for the same reason: the form is not a way around the refusal.

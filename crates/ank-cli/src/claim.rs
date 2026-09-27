@@ -2282,6 +2282,7 @@ fn run_with(
     sync_from_remote(&repo.corpus, &task.id)?;
 
     check_blockers(&repo.corpus, &tasks, &task, ready.as_deref())?;
+    check_peer_blockers(repo, cfg, &task)?;
     task.status
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| {
@@ -2553,6 +2554,68 @@ fn check_blockers(cwd: &Path, tasks: &[Row], task: &Task, other_ready: Option<&s
     Ok(())
 }
 
+/// A blocker in a declared peer that is not `done` there refuses the claim with
+/// code 7, as a local one does (ADR-c23bef1cc93e).
+///
+/// **An edge that cannot be read holds.** A peer undeclared, moved away or not a
+/// corpus is refused like any unmet blocker, naming the peer and the command
+/// that settles it: the degrade-and-answer-locally rule of ADR-a1de673043b4 is
+/// a reader's, and applied here it would answer "nothing blocks you", releasing
+/// exactly the work the edge exists to hold.
+///
+/// "Done" is the status the peer's corpus holds on disk, read in memory; the
+/// peer's claim plane is not read, since claims do not cross, and nothing is
+/// fetched.
+fn check_peer_blockers(repo: &Repo, cfg: &Config, task: &Task) -> Result<()> {
+    let mut read: HashMap<&str, HashMap<EntityId, String>> = HashMap::new();
+    for b in &task.peer_blocked_by {
+        let holds = |why: String, hint: Option<String>| {
+            let e = CliError::new(
+                ExitCode::Prerequisite,
+                format!(
+                    "{} is blocked by {b}: {why}, and an edge that cannot be read holds",
+                    task.id
+                ),
+            );
+            match hint {
+                Some(h) => e.with_hint(h),
+                None => e,
+            }
+        };
+        if !read.contains_key(b.peer.as_str()) {
+            let statuses = crate::repo::open_peer(repo, cfg, &b.peer)
+                .and_then(|peer| peer.statuses())
+                .map_err(|e| holds(e.message, e.hint))?;
+            read.insert(&b.peer, statuses);
+        }
+        match read[b.peer.as_str()]
+            .get(&b.id)
+            .and_then(|s| task_status(s))
+        {
+            Some(TaskStatus::Done) => {}
+            Some(status) => {
+                let why = if status == TaskStatus::Closed {
+                    " (closed)"
+                } else {
+                    ""
+                };
+                return Err(CliError::new(
+                    ExitCode::Prerequisite,
+                    format!("{} is blocked by {b}{why}", task.id),
+                )
+                .with_hint(format!("ank show {b}")));
+            }
+            None => {
+                return Err(holds(
+                    format!("peer '{}' holds no task {}", b.peer, b.id),
+                    Some(format!("ank find @{}", b.peer)),
+                ))
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Another task the agent could take instead, for the hint on a refusal (§4).
 /// Same scope first, since that is what the message claims; any ready task
 /// otherwise is not offered, because pointing somewhere else entirely would be
@@ -2591,10 +2654,14 @@ fn other_ready_task(cwd: &Path, tasks: &[Row], task: &Task) -> Option<EntityId> 
         let id = &row.id;
         // Every blocker `done`, and one the corpus does not hold is not ready:
         // the answer `Task::active_blockers` gives, over the row's list.
-        let ready = row
-            .blocked_by
-            .iter()
-            .all(|b| map.get(b) == Some(&TaskStatus::Done));
+        //
+        // A peer's blocker is not read for a hint, so a task carrying one is
+        // not offered: offering it would print a command that may refuse.
+        let ready = row.peer_blocked_by.is_empty()
+            && row
+                .blocked_by
+                .iter()
+                .all(|b| map.get(b) == Some(&TaskStatus::Done));
         if !ready {
             continue;
         }
@@ -2811,6 +2878,7 @@ mod tests {
             status: TaskStatus::Open,
             scope: vec!["src/**".into()],
             blocked_by: vec![],
+            peer_blocked_by: vec![],
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],

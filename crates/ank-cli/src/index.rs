@@ -353,6 +353,9 @@ pub struct Row {
     pub created: String,
     pub scope: Vec<String>,
     pub blocked_by: Vec<EntityId>,
+    /// The task's blockers in a declared peer, `<id>@<peer>`
+    /// (ADR-c23bef1cc93e): stored in the same column, told apart by form.
+    pub peer_blocked_by: Vec<ank_core::PeerBlocker>,
     /// The entity a log entry is about, and `None` on every other kind — which
     /// is what makes the entries of an entity a query rather than an address
     /// (ADR-25f977377fa0).
@@ -494,13 +497,24 @@ impl Index {
     /// one behind. Same schema, same refresh, same answers — which is itself
     /// worth having, since it is what the disposability tests compare against.
     pub fn in_memory(ank: &Path) -> Result<Index> {
+        Self::in_memory_as(ank, false)
+    }
+
+    /// [`Index::in_memory`] with the archive, for a reader of another corpus
+    /// that must not write there and must still find a task that finished and
+    /// was moved out (ADR-467ce7e9cda1, ADR-c23bef1cc93e).
+    pub fn in_memory_with_archive(ank: &Path) -> Result<Index> {
+        Self::in_memory_as(ank, true)
+    }
+
+    fn in_memory_as(ank: &Path, archive: bool) -> Result<Index> {
         let conn = Connection::open_in_memory().map_err(|e| db_error(e, ank))?;
         let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
             written_steps: 0,
             db: None,
-            archive: false,
+            archive,
         };
         index.install_schema()?;
         index.refresh()?;
@@ -1624,6 +1638,10 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
                 .iter()
                 .filter_map(|s| EntityId::parse(s).ok())
                 .collect(),
+            peer_blocked_by: split_list(&blocked)
+                .iter()
+                .filter_map(|s| ank_core::PeerBlocker::parse(s).ok())
+                .collect(),
             // Empty on every kind but a log entry, which is the column's whole
             // population. A value that will not parse is read as absent rather
             // than as a broken row: the files are the corpus, and `check` is
@@ -1760,7 +1778,14 @@ fn upsert(
     let (status, blocked_by, criteria, about, seq) = match entity {
         Entity::Task(t) => (
             t.status.as_str().to_string(),
-            join_list(t.blocked_by.iter().map(|b| b.to_string())),
+            // One column for both, as one list in the file: a peer's entry
+            // reads back by its form (ADR-c23bef1cc93e).
+            join_list(
+                t.blocked_by
+                    .iter()
+                    .map(|b| b.to_string())
+                    .chain(t.peer_blocked_by.iter().map(|b| b.to_string())),
+            ),
             t.done_criteria.clone().unwrap_or_default(),
             String::new(),
             0,
@@ -1950,6 +1975,7 @@ mod tests {
             status,
             scope: vec!["src/**".into(), "docs/**".into()],
             blocked_by: vec![],
+            peer_blocked_by: vec![],
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],

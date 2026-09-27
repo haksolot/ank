@@ -2343,6 +2343,7 @@ After a blank one."
             status,
             scope: scope.iter().map(|s| s.to_string()).collect(),
             blocked_by: blocked.iter().map(|b| EntityId::parse(b).unwrap()).collect(),
+            peer_blocked_by: vec![],
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],

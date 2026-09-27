@@ -332,11 +332,17 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
     if raw.criteria_by.is_some() && raw.done_criteria.is_none() {
         return Err(Error::CriteriaByWithoutCriteria);
     }
-    let blocked_by = raw
-        .blocked_by
-        .iter()
-        .map(|s| EntityId::parse(s))
-        .collect::<Result<Vec<_>>>()?;
+    // One list in the file, split by form: `<id>@<peer>` names a peer's task
+    // (ADR-c23bef1cc93e), anything else is a local identifier as it always was.
+    let mut blocked_by = Vec::new();
+    let mut peer_blocked_by = Vec::new();
+    for s in &raw.blocked_by {
+        if s.contains('@') {
+            peer_blocked_by.push(PeerBlocker::parse(s)?);
+        } else {
+            blocked_by.push(EntityId::parse(s)?);
+        }
+    }
 
     Ok(Task {
         id,
@@ -347,6 +353,7 @@ fn parse_task_fm(fm: &str, body: &str) -> Result<Task> {
         status: raw.status,
         scope: raw.scope,
         blocked_by,
+        peer_blocked_by,
         done_criteria: raw.done_criteria,
         criteria_by: raw.criteria_by,
         verify: raw.verify,

@@ -14,7 +14,7 @@ use crate::cli::CliError;
 use crate::config::Config;
 use crate::store::Store;
 use ank_contract::ExitCode;
-use ank_core::SCHEMA_VERSION;
+use ank_core::{EntityId, SCHEMA_VERSION};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -278,17 +278,9 @@ fn anchor(path: &Path) -> Result<PathBuf> {
 // **Claims do not cross**, and nothing here reads or writes `refs/ank/*` of a
 // peer: that is the one lock ADR-a1de673043b4 left standing.
 
-/// Whether `s` can be the name of a peer.
-///
-/// Two characters at least, so that a scope entry can never be confused with a
-/// Windows drive letter: `C:/Users` is a path on a machine, `front:src/**` is a
-/// glob under a declared corpus, and one character of difference between the
-/// two readings would be a corpus meaning something else on one platform.
-pub fn is_peer_name(s: &str) -> bool {
-    s.len() >= 2
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-}
+/// Whether `s` can be the name of a peer: the grammar lives in `ank-core`,
+/// where a stored `blocked_by` entry is parsed against it too.
+pub use ank_core::is_peer_name;
 
 /// A scope entry that names a peer and a glob under that peer's root, as
 /// `<peer>:<glob>` — the form §7 describes, and the only thing that crosses.
@@ -640,7 +632,49 @@ pub fn reach<'a>(from: &Repo, cfg: &Config, verb: &str, raw: &'a str) -> Result<
     Ok(Reach::Here(raw))
 }
 
+/// A `blocked_by` entry as it was typed: a local identifier, or `<id>@<peer>`
+/// resolved in that peer (ADR-c23bef1cc93e).
+pub enum Blocker {
+    Here(EntityId),
+    Peer(ank_core::PeerBlocker),
+}
+
+/// Resolves a blocker typed to `new` or `amend`, `verb` naming the command a
+/// refusal of the scope form points to.
+///
+/// **Resolved at creation**, in the peer as a local one is here: an edge naming
+/// a task the peer does not hold would otherwise surface much later, in
+/// `check`, as a fault nobody can attribute. The peer is read and never
+/// written: [`Store::resolve`] lists its files and opens no index.
+pub fn blocker(from: &Repo, cfg: &Config, verb: &str, raw: &str) -> Result<Blocker> {
+    match reach(from, cfg, verb, raw.trim())? {
+        Reach::Here(prefix) => Ok(Blocker::Here(Store::new(&from.ank).resolve(prefix)?)),
+        Reach::Peer(peer, prefix) => {
+            let id = Store::new(&peer.repo.ank)
+                .resolve(prefix)
+                .map_err(|e| peer.refusal(e))?;
+            Ok(Blocker::Peer(ank_core::PeerBlocker {
+                id,
+                peer: peer.name.clone(),
+            }))
+        }
+    }
+}
+
 impl Peer {
+    /// The status of every task this peer holds, archived ones included, as
+    /// its corpus holds them on disk: the read `context` already makes, and no
+    /// fetch (ADR-c23bef1cc93e). Built in memory, since opening the index on
+    /// disk writes `index.db` into the peer (ADR-a1de673043b4).
+    pub fn statuses(&self) -> Result<HashMap<EntityId, String>> {
+        Ok(crate::index::Index::in_memory_with_archive(&self.repo.ank)?
+            .all()?
+            .into_iter()
+            .filter(|r| r.kind == ank_core::EntityKind::Task)
+            .map(|r| (r.id, r.status))
+            .collect())
+    }
+
     /// A refusal of the store, read through this peer: the identifier it names
     /// and the command it hints carry `@<peer>`, or the reader would be sent to
     /// a local command about an entity it does not hold.
@@ -654,7 +688,7 @@ impl Peer {
         match e {
             StoreError::NotFound(id) => CliError::new(
                 ExitCode::NotFound,
-                format!("entity not found in peer '{name}': {id}"),
+                format!("entity not found in peer '{name}': {id}@{name}"),
             )
             .with_hint(format!("ank find @{name}")),
             StoreError::PrefixTooShort(p) => CliError::new(
