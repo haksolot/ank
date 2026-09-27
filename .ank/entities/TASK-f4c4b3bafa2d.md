@@ -5,7 +5,7 @@ slug: show-find-and-log-read-a-peer-s-entity-as-id-pee
 title: show, find and log read a peer's entity as <id>@<peer>, and a refused id names the form that works
 created: 2026-09-27T16:44:00Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/commands.rs
@@ -17,8 +17,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/2790018d587d@be8e80a
+    tree: scope/9dda61252268
+    criteria: 7c54b7e3d11d
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@be8e80a
+    tree: scope/9dda61252268
+    criteria: 7c54b7e3d11d
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Read half of issue #501, and the precondition of the blocked_by edge

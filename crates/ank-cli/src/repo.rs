@@ -491,6 +491,40 @@ fn walk_to_root(root: &Path) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Why a declared peer could not be opened: what to say about it, and the
+/// command that settles it. One answer for the reader that degrades
+/// ([`peers_of`]) and the one that refuses ([`open_peer`]), so the two can never
+/// name different cures for the same peer.
+struct Unopened {
+    what: String,
+    settle: String,
+}
+
+/// Opens the peer `name` that `from` declares as `declared`, for reading.
+fn open(from: &Repo, name: &str, declared: &str) -> std::result::Result<Peer, Unopened> {
+    let Some((root, declared)) = peer_root(from, name, declared) else {
+        return Err(Unopened {
+            what: format!("peer '{name}' declares no path"),
+            settle: format!("ank config peers.{name} <path>"),
+        });
+    };
+    // The layout differs here, which is the reader's to say and never
+    // `config.yml`'s (ADR-da2819aef598).
+    let repo = at(&root).map_err(|_| Unopened {
+        what: format!("peer '{name}' at {declared} is not a corpus"),
+        settle: settle(from, name),
+    })?;
+    let config = crate::config::load(&repo.config_path()).map_err(|_| Unopened {
+        what: format!("peer '{name}' at {declared} could not be read"),
+        settle: format!("ank --repo {declared} config schema"),
+    })?;
+    Ok(Peer {
+        name: name.to_string(),
+        repo,
+        config,
+    })
+}
+
 /// Every peer this repository declares, with one warning per peer that could
 /// not be opened.
 ///
@@ -503,46 +537,152 @@ pub fn peers_of(from: &Repo, cfg: &Config) -> (Vec<Peer>, Vec<String>) {
     let mut peers = Vec::new();
     let mut warnings = Vec::new();
     for (name, declared) in &cfg.peers {
-        let Some((root, declared)) = peer_root(from, name, declared) else {
-            warnings.push(format!(
-                "peer '{name}' declares no path, answered without it \
-                 (ank config peers.{name} <path>)"
-            ));
-            continue;
-        };
-        let repo = match at(&root) {
-            Ok(repo) => repo,
-            Err(_) => {
-                // The layout differs here, which is the reader's to say and
-                // never `config.yml`'s (ADR-da2819aef598).
-                warnings.push(format!(
-                    "peer '{name}' at {declared} is not a corpus, answered without it \
-                     ({})",
-                    settle(from, name)
-                ));
-                continue;
-            }
-        };
-        let config = match crate::config::load(&repo.config_path()) {
-            Ok(config) => config,
-            Err(_) => {
-                warnings.push(format!(
-                    "peer '{name}' at {declared} could not be read, answered without it \
-                     (ank --repo {declared} config schema)"
-                ));
-                continue;
-            }
-        };
-        peers.push(Peer {
-            name: name.clone(),
-            repo,
-            config,
-        });
+        match open(from, name, declared) {
+            Ok(peer) => peers.push(peer),
+            Err(u) => warnings.push(format!("{}, answered without it ({})", u.what, u.settle)),
+        }
     }
     (peers, warnings)
 }
 
+// ---------------------------------------------------------------------------
+// An entity of a peer, named as `<id>@<peer>` (ADR-c23bef1cc93e)
+// ---------------------------------------------------------------------------
+//
+// **The form the reader already prints.** `context` inside a peer names a
+// constraint whose home is elsewhere as `ADR-…@aa`; this is the same form read
+// back in. An identifier and a path keep different separators: `<peer>:<glob>`
+// is a scope, `<id>@<peer>` is an entity, and the one spelt in the place of the
+// other is refused naming the right one.
+//
+// **One place for every verb that reads an identifier**, `show`, `find` and
+// `log` first and `blocked_by` next (TASK-08615a199a6a): parsing here, opening
+// here, refusing here, so a verb cannot spell the form or its refusals its own
+// way.
+
+/// Whether `s` has the shape of an entity identifier or a prefix of one: a
+/// kind, a dash, hex. Asked before an `@` or a `:` is read as naming a peer, so
+/// that a log message such as `ask me@home` stays a message.
+fn looks_like_id(s: &str) -> bool {
+    let Some((kind, hex)) = s.split_once('-') else {
+        return false;
+    };
+    !kind.is_empty()
+        && kind.chars().all(|c| c.is_ascii_alphabetic())
+        && !hex.is_empty()
+        && hex.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// An identifier naming an entity of a peer, as `<id>@<peer>`: the id (or a
+/// prefix of one) and the peer's name. `None` for anything else, a local id
+/// included.
+pub fn peer_id(raw: &str) -> Option<(&str, &str)> {
+    let (id, name) = raw.rsplit_once('@')?;
+    (looks_like_id(id) && is_peer_name(name)).then_some((id, name))
+}
+
+/// An identifier spelt in the scope form, `<peer>:<id>`: the id and the peer,
+/// so the refusal can name `<id>@<peer>`.
+fn scope_spelt_id(raw: &str) -> Option<(&str, &str)> {
+    peer_ref(raw)
+        .filter(|(_, id)| looks_like_id(id))
+        .map(|(name, id)| (id, name))
+}
+
+/// Opens the peer `name` that `from` declares, or refuses naming the command
+/// that settles it.
+///
+/// **Refuse, never degrade** — the opposite of [`peers_of`], deliberately. A
+/// listing that cannot read a peer has a smaller answer to give; a verb asked
+/// for one entity of that peer has none, and answering from the local corpus
+/// would answer a different question.
+pub fn open_peer(from: &Repo, cfg: &Config, name: &str) -> Result<Peer> {
+    let Some(declared) = cfg.peers.get(name) else {
+        return Err(CliError::new(
+            ExitCode::NotFound,
+            format!("no peer '{name}' is declared in this corpus"),
+        )
+        .with_hint(format!("ank config peers.{name} <path>")));
+    };
+    open(from, name, declared).map_err(|u| {
+        CliError::new(
+            ExitCode::Environment,
+            format!("{}, nothing to read", u.what),
+        )
+        .with_hint(u.settle)
+    })
+}
+
+/// Where an identifier a verb was handed lives.
+pub enum Reach<'a> {
+    /// In this corpus, as given.
+    Here(&'a str),
+    /// In a declared peer, opened for reading: the peer, and the id there.
+    Peer(Box<Peer>, &'a str),
+}
+
+/// Resolves the corpus an identifier handed to `verb` names.
+///
+/// `<id>@<peer>` opens the peer, or refuses when it is not declared or cannot
+/// be read. `<peer>:<id>`, the scope form, is refused naming
+/// `ank <verb> <id>@<peer>`. Anything else is local, as it always was.
+pub fn reach<'a>(from: &Repo, cfg: &Config, verb: &str, raw: &'a str) -> Result<Reach<'a>> {
+    if let Some((id, name)) = peer_id(raw) {
+        return Ok(Reach::Peer(Box::new(open_peer(from, cfg, name)?), id));
+    }
+    if let Some((id, name)) = scope_spelt_id(raw) {
+        return Err(CliError::new(
+            ExitCode::NotFound,
+            format!("{raw} is a scope's form: an entity of peer '{name}' is named {id}@{name}"),
+        )
+        .with_hint(format!("ank {verb} {id}@{name}")));
+    }
+    Ok(Reach::Here(raw))
+}
+
 impl Peer {
+    /// A refusal of the store, read through this peer: the identifier it names
+    /// and the command it hints carry `@<peer>`, or the reader would be sent to
+    /// a local command about an entity it does not hold.
+    ///
+    /// **An identifier the peer does not hold** names the listing of what it
+    /// does, `ank find @<peer>`: `ank find <id>@<peer>` would answer an empty
+    /// page, a hint that fails the way its refusal did.
+    pub fn refusal(&self, e: crate::store::StoreError) -> CliError {
+        use crate::store::StoreError;
+        let name = &self.name;
+        match e {
+            StoreError::NotFound(id) => CliError::new(
+                ExitCode::NotFound,
+                format!("entity not found in peer '{name}': {id}"),
+            )
+            .with_hint(format!("ank find @{name}")),
+            StoreError::PrefixTooShort(p) => CliError::new(
+                ExitCode::NotFound,
+                format!("prefix too short '{p}@{name}' (minimum 4 characters)"),
+            )
+            .with_hint(format!("ank find @{name}")),
+            StoreError::AmbiguousPrefix { prefix, candidates } => CliError::new(
+                ExitCode::NotFound,
+                format!(
+                    "ambiguous prefix '{prefix}@{name}': {}",
+                    candidates
+                        .iter()
+                        .map(|c| format!("{c}@{name}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            )
+            .with_hint(
+                candidates
+                    .first()
+                    .map(|c| format!("ank show {c}@{name}"))
+                    .unwrap_or_else(|| format!("ank find @{name}")),
+            ),
+            other => other.into(),
+        }
+    }
+
     /// Whether a scope entry written in this peer's corpus binds `reader`.
     ///
     /// The name is resolved through **this peer's** declarations, never the

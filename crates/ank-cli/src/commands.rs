@@ -1289,11 +1289,20 @@ pub fn find(
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
-    let query = inv
-        .positionals
-        .first()
-        .map(|q| q.to_ascii_lowercase())
-        .unwrap_or_default();
+    // A peer's corpus, whole as `@<peer>` or one entity as `<id>@<peer>`
+    // (ADR-c23bef1cc93e).
+    let raw = inv.positionals.first().map(String::as_str).unwrap_or("");
+    if let Some(name) = raw
+        .strip_prefix('@')
+        .filter(|n| crate::repo::is_peer_name(n))
+    {
+        let peer = crate::repo::open_peer(repo, cfg, name)?;
+        return find_in_peer(inv, cfg, &peer, None, out);
+    }
+    if let crate::repo::Reach::Peer(peer, prefix) = crate::repo::reach(repo, cfg, "find", raw)? {
+        return find_in_peer(inv, cfg, &peer, Some(prefix), out);
+    }
+    let query = raw.to_ascii_lowercase();
     // `--all` is the one flag that reaches the archive (ADR-467ce7e9cda1): a
     // listing answers a program whole, and the archive is part of the whole
     // when asked for. Without it the archive is neither walked nor listed.
@@ -1307,18 +1316,7 @@ pub fn find(
     // a kind the registry declares and this match forgot is a kind `find`
     // refuses while `show` prints it, which is the surface disagreeing with
     // itself (ADR-c9f9d0d6f05d).
-    let kind_filter = match inv.value("--type") {
-        None => None,
-        Some(name) => match EntityKind::from_type_name(name) {
-            Some(kind) => Some(kind),
-            None => {
-                return Err(
-                    CliError::new(ExitCode::Generic, format!("unknown --type '{name}'"))
-                        .with_hint(format!("ank find <query> --type {}", kind_names())),
-                )
-            }
-        },
-    };
+    let kind_filter = kind_filter(inv)?;
     let status_filter = inv.value("--status").map(|s| s.to_ascii_lowercase());
     // A path filter, and therefore the same normalisation the positionals get:
     // an empty normal form is the repository root, which filters nothing.
@@ -1541,6 +1539,126 @@ pub fn find(
             out,
             "{spoken_for} spoken for (finished elsewhere or held), --free lists what is claimable"
         );
+    }
+    Ok(ExitCode::Ok)
+}
+
+/// The kind `--type` names, resolved through the registry rather than against
+/// a list written here: a kind the registry declares and this match forgot is a
+/// kind `find` refuses while `show` prints it, which is the surface disagreeing
+/// with itself (ADR-c9f9d0d6f05d).
+fn kind_filter(inv: &Invocation) -> Result<Option<EntityKind>> {
+    match inv.value("--type") {
+        None => Ok(None),
+        Some(name) => match EntityKind::from_type_name(name) {
+            Some(kind) => Ok(Some(kind)),
+            None => Err(
+                CliError::new(ExitCode::Generic, format!("unknown --type '{name}'"))
+                    .with_hint(format!("ank find <query> --type {}", kind_names())),
+            ),
+        },
+    }
+}
+
+/// `find` over a declared peer: the entity `prefix` names, or the whole corpus
+/// when there is none, every row named `<id>@<peer>` so it reaches back from
+/// here (ADR-c23bef1cc93e).
+///
+/// **Read and never written** (ADR-a1de673043b4): the index is built in memory,
+/// the peer's claim plane is not read, and so a row carries its stored status
+/// and nothing a claim would add to it. `--scope` is a path of this checkout and
+/// names nothing in the peer, so only `--type` and `--status` narrow.
+///
+/// An identifier the peer does not hold is an empty page, exactly as a local
+/// query that matches nothing is: the listing is a search, not a lookup.
+fn find_in_peer(
+    inv: &Invocation,
+    cfg: &Config,
+    peer: &crate::repo::Peer,
+    prefix: Option<&str>,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
+    let kind_filter = kind_filter(inv)?;
+    let status_filter = inv.value("--status").map(|s| s.to_ascii_lowercase());
+    let store = Store::new(&peer.repo.ank);
+    let all = Index::in_memory(&peer.repo.ank)?.all()?;
+    let wanted = prefix.and_then(|p| store.resolve(p).ok());
+    let hits: Vec<&Row> = all
+        .iter()
+        .filter(|r| prefix.is_none() || wanted.as_ref() == Some(&r.id))
+        .filter(|r| kind_filter.map(|k| k == r.kind).unwrap_or(true))
+        .filter(|r| {
+            status_filter
+                .as_ref()
+                .map(|w| &r.status == w)
+                .unwrap_or(true)
+        })
+        .collect();
+    let total = hits.len();
+    let shown = if inv.json() {
+        total
+    } else {
+        total.min(cap_from(cfg))
+    };
+    let name = &peer.name;
+    if inv.json() {
+        let items: Vec<String> = hits[..shown]
+            .iter()
+            .map(|r| {
+                Obj::new()
+                    .str("id", &r.id.to_string())
+                    .str("peer", name)
+                    .str("kind", r.kind.as_str())
+                    .str("status", &r.status.to_string())
+                    .str("title", &r.title)
+                    .str("created", &r.created)
+                    .finish()
+            })
+            .collect();
+        let doc = Obj::document()
+            .str("peer", name)
+            .num("total", total)
+            .num("shown", shown)
+            .num("hidden", 0)
+            .array("results", items)
+            .finish();
+        let _ = writeln!(out, "{doc}");
+        return Ok(ExitCode::Ok);
+    }
+    if inv.quiet() {
+        return Ok(ExitCode::Ok);
+    }
+    let shorts = context::shorts_of(&peer.repo)?;
+    let style = inv.style();
+    // The local listing's own marker, through an empty plane: the stored
+    // status, and nothing a claim over there would say.
+    let uncoordinated = HashMap::new();
+    for r in &hits[..shown] {
+        let short = shorts
+            .get(&r.id)
+            .cloned()
+            .unwrap_or_else(|| r.id.to_string());
+        let _ = writeln!(
+            out,
+            "  {}  {} {}",
+            style.id(&format!("{short}@{name}")),
+            style.status(&context::marker_for(
+                &r.status,
+                context::coordination_of(&uncoordinated, &r.id)
+            )),
+            r.title
+        );
+    }
+    if total > shown {
+        let _ = writeln!(
+            out,
+            "+{} more, narrow with --type {}",
+            total - shown,
+            kind_names()
+        );
+    }
+    if total == 0 {
+        let _ = writeln!(out, "no match in peer '{name}'");
     }
     Ok(ExitCode::Ok)
 }
@@ -2009,9 +2127,23 @@ pub fn log(
         // Resolved into the archive too: `log <id>` is one of the three readers
         // an archived entity answers to (ADR-467ce7e9cda1), and an id that
         // resolved nowhere would otherwise be written as a message.
-        [one] => match store.resolve_with_archive(one) {
-            Ok(id) => log_read(inv, repo, cfg, &store, &id, out),
-            Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
+        //
+        // `<id>@<peer>` is read in the peer, and decided before the fallback to
+        // a message: an identifier that resolves nowhere here was written as a
+        // message on the held task, which is the one reading it never has
+        // (ADR-c23bef1cc93e).
+        [one] => match crate::repo::reach(repo, cfg, "log", one)? {
+            crate::repo::Reach::Peer(peer, prefix) => {
+                let store = Store::new(&peer.repo.ank);
+                let id = store
+                    .resolve_with_archive(prefix)
+                    .map_err(|e| peer.refusal(e))?;
+                log_read(inv, &peer.repo, Some(&peer), cfg, &store, &id, out)
+            }
+            crate::repo::Reach::Here(_) => match store.resolve_with_archive(one) {
+                Ok(id) => log_read(inv, repo, None, cfg, &store, &id, out),
+                Err(_) => log_write(inv, repo, cfg, identity, &store, None, one, out),
+            },
         },
         [given, message] => {
             // The one invocation the rule above cannot decide: the message sits
@@ -2050,9 +2182,14 @@ pub fn log(
 /// it cut. This page is nothing but the log, so the whole budget less the title
 /// line goes to it — which is what makes `ank log <id>` the answer `show` names
 /// when its own, smaller share of the same budget runs out.
+///
+/// **A peer's log is read in memory** (ADR-a1de673043b4): the index on disk
+/// would be written into the peer's corpus to be opened, and every identifier
+/// the page prints carries `@<peer>`, the form that reaches it from here.
 fn log_read(
     inv: &Invocation,
     repo: &Repo,
+    peer: Option<&crate::repo::Peer>,
     cfg: &Config,
     store: &Store,
     id: &EntityId,
@@ -2060,9 +2197,14 @@ fn log_read(
 ) -> Result<ExitCode> {
     let loaded = store.load_with_archive(id)?;
     let title = loaded.entity.title().to_string();
+    let at = peer.map(|p| format!("@{}", p.name)).unwrap_or_default();
+    let index = match peer {
+        Some(_) => Index::in_memory(&repo.ank)?,
+        None => Index::open_with_archive(&repo.ank)?,
+    };
     // The entries of the corpus, archived ones included, and the previous log
     // directory only where a corpus has not been migrated yet (§3).
-    let all = entries::about(store, &Index::open_with_archive(&repo.ank)?, &loaded.entity)?;
+    let all = entries::about(store, &index, &loaded.entity)?;
     // This verb *is* the work trace: it is what an agent reads before repeating
     // what a previous holder already tried (ADR-52bb0da2023a). The machinery is
     // listed under it, addressable like every other row, and it is charged no
@@ -2126,7 +2268,7 @@ fn log_read(
         return Ok(ExitCode::Ok);
     }
 
-    let _ = writeln!(out, "{}  {}", inv.style().id(&id.to_string()), title);
+    let _ = writeln!(out, "{}  {}", inv.style().id(&format!("{id}{at}")), title);
     if entries.is_empty() && machinery.is_empty() {
         // Named rather than left blank: an empty answer and an answer about the
         // wrong entity look identical otherwise.
@@ -2144,10 +2286,13 @@ fn log_read(
         let addressed = match &e.id {
             Some(entry_id) => format!(
                 "{}  ",
-                inv.style().id(shorts
-                    .get(entry_id)
-                    .map(String::as_str)
-                    .unwrap_or(&entry_id.to_string()))
+                inv.style().id(&format!(
+                    "{}{at}",
+                    shorts
+                        .get(entry_id)
+                        .cloned()
+                        .unwrap_or_else(|| entry_id.to_string())
+                ))
             ),
             // A line out of the previous log directory, which had no id to
             // give. Nothing is printed rather than something unusable.
@@ -2189,10 +2334,13 @@ fn log_read(
             let addressed = match &e.id {
                 Some(entry_id) => format!(
                     "{}  ",
-                    inv.style().id(shorts
-                        .get(entry_id)
-                        .map(String::as_str)
-                        .unwrap_or(&entry_id.to_string()))
+                    inv.style().id(&format!(
+                        "{}{at}",
+                        shorts
+                            .get(entry_id)
+                            .cloned()
+                            .unwrap_or_else(|| entry_id.to_string())
+                    ))
                 ),
                 None => String::new(),
             };

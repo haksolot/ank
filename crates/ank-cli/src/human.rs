@@ -7378,36 +7378,81 @@ fn report_amend(inv: &Invocation, id: &EntityId, changes: &[String], out: &mut d
 /// `ank log <id>` — the same budget with no entity to pay for — is the command
 /// the cut names (TASK-6c0463fb4319).
 pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> Result<ExitCode> {
-    let prefix = inv.positionals.first().ok_or_else(|| {
+    let raw = inv.positionals.first().ok_or_else(|| {
         CliError::new(ExitCode::Generic, "show expects an id").with_hint("ank show <id>")
     })?;
+    // `<id>@<peer>` reads the peer's corpus, and the page is still the
+    // reader's: its budget is this corpus's (ADR-c23bef1cc93e).
+    match crate::repo::reach(repo, cfg, "show", raw)? {
+        crate::repo::Reach::Here(prefix) => show_in(inv, repo, None, cfg, prefix, out),
+        crate::repo::Reach::Peer(peer, prefix) => {
+            show_in(inv, &peer.repo, Some(&peer), cfg, prefix, out)
+        }
+    }
+}
+
+/// `show` over the corpus `repo`, which is a peer's when `peer` says so.
+///
+/// **A peer is read and never written** (ADR-a1de673043b4): its index is built
+/// in memory, since opening the one on disk writes `index.db` into it, and its
+/// claim plane is not read, since claims do not cross. What the page loses is
+/// the coordination of that corpus, and that was never this reader's to know.
+fn show_in(
+    inv: &Invocation,
+    repo: &Repo,
+    peer: Option<&crate::repo::Peer>,
+    cfg: &Config,
+    prefix: &str,
+    out: &mut dyn Write,
+) -> Result<ExitCode> {
     let store = Store::new(&repo.ank);
     // Into the archive too, and the index with it: `show` answers an archived
     // entity whole, and its entries wherever they are (ADR-467ce7e9cda1).
-    let loaded = store.load_prefix_with_archive(prefix)?;
+    let loaded = match (store.load_prefix_with_archive(prefix), peer) {
+        (Ok(loaded), _) => loaded,
+        (Err(e), Some(peer)) => return Err(peer.refusal(e)),
+        (Err(e), None) => return Err(e.into()),
+    };
     let text = serialize_entity(&loaded.entity);
     // One index for the verb: the edges of a task and the entries of any entity
     // are two questions to it, and opening it per question walked the corpus
     // twice (TASK-8654f0c81393).
-    let index = Index::open_with_archive(&repo.ank)?;
+    let index = match peer {
+        Some(_) => Index::in_memory(&repo.ank)?,
+        None => Index::open_with_archive(&repo.ank)?,
+    };
     // An ADR has no `blocked_by` to have two directions of, so it costs nothing.
     // Both directions of `amends`, over an ADR only (ADR-9ee76b578257).
-    let amendments = match &loaded.entity {
+    let mut amendments = match &loaded.entity {
         Entity::Adr(a) => Some(amends_of(repo, &index, &store, a)?),
         _ => None,
     };
-    let edges = match &loaded.entity {
-        Entity::Task(t) => Some(edges_of(repo, &index, t)?),
+    let mut edges = match &loaded.entity {
+        Entity::Task(t) => Some(edges_of(repo, &index, t, peer.is_none())?),
         // `blocked_by` is the only relation between tasks (§3), so no other
         // kind has two directions of it to show.
         _ => None,
     };
+    // Every related entity of a peer's page is the peer's, and named in the
+    // form that reaches it from here: a bare short id would send the reader to
+    // a local `show` about an entity this corpus does not hold.
+    if let Some(peer) = peer {
+        let lists = edges
+            .iter_mut()
+            .chain(amendments.iter_mut())
+            .flat_map(|(a, b)| [a, b]);
+        for list in lists {
+            for e in list.iter_mut() {
+                e.short = format!("{}@{}", e.short, peer.name);
+            }
+        }
+    }
     // The union of §3's proof list with what the proof ref carries
     // (ADR-493471d64ba0). Empty for an ADR, which is measured by nothing, and
     // empty for the great majority of tasks — one `rev-parse` that answers
     // "absent", which is what a task with no attestation costs.
     let detached = match &loaded.entity {
-        Entity::Task(t) => claim::detached_proofs(&repo.corpus, &t.id),
+        Entity::Task(t) if peer.is_none() => claim::detached_proofs(&repo.corpus, &t.id),
         // A proof anchors a completion, and only a task completes.
         _ => Vec::new(),
     };
@@ -7442,7 +7487,11 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     );
 
     if inv.json() {
-        let state = match claim::read(&repo.corpus, loaded.entity.id())?.map(|h| h.record) {
+        let held = match peer {
+            None => claim::read(&repo.corpus, loaded.entity.id())?,
+            Some(_) => None,
+        };
+        let state = match held.map(|h| h.record) {
             Some(Record::Claim(c)) => Some(format!("claimed by {}", c.holder)),
             Some(Record::Completed(c)) => Some(format!(
                 "finished at {}",
@@ -7744,9 +7793,19 @@ struct Edge {
 /// that is already `done` and a task that is already `done` both keep their
 /// line and carry their status. The §5 ordering counts something else — how
 /// many tasks are still *held up* — and a count is not a list.
-fn edges_of(repo: &Repo, index: &Index, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
+fn edges_of(
+    repo: &Repo,
+    index: &Index,
+    task: &Task,
+    coordinated: bool,
+) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let all = index.all()?;
-    let edges = Edges::new(repo, &all)?;
+    // A peer's claim plane is not read: claims do not cross (ADR-a1de673043b4).
+    let edges = if coordinated {
+        Edges::new(repo, &all)?
+    } else {
+        Edges::uncoordinated(repo, &all)?
+    };
 
     // Declared order for the blockers: the frontmatter printed just above says
     // the same thing in the same order, and two orders for one list is a
