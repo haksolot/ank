@@ -503,8 +503,28 @@ pub(crate) fn in_perimeter(scope: &[String], path: Option<&str>) -> bool {
     let Some(path) = path else {
         return true;
     };
-    match ScopeSet::new(scope) {
-        Ok(set) => set.overlaps_dir(path, scope),
+    // **A perimeter and a scope entry meet only on the same side of a peer
+    // boundary** (§7, TASK-c666eb306102). `bb:src/x.rs` names a file in the
+    // peer `bb`, and a local glob names files here: matched as one string, a
+    // bare `**` bound every peer, declared or not, and `b*:**` matched too.
+    // So the qualified perimeter meets the entries spelling that same peer,
+    // glob against path under the peer's root, and a local perimeter meets the
+    // local entries only.
+    let peer = crate::repo::peer_ref(path);
+    let path = peer.map_or(path, |(_, under)| under);
+    let scope: Vec<String> = scope
+        .iter()
+        .filter_map(|entry| match (crate::repo::peer_ref(entry), peer) {
+            (Some((name, glob)), Some((wanted, _))) if name == wanted => Some(glob.to_string()),
+            (None, None) => Some(entry.clone()),
+            _ => None,
+        })
+        .collect();
+    if scope.is_empty() {
+        return false;
+    }
+    match ScopeSet::new(&scope) {
+        Ok(set) => set.overlaps_dir(path, &scope),
         // An invalid glob is a corpus problem for `check` to report. Here it
         // simply matches nothing rather than taking the reader down.
         Err(_) => false,
