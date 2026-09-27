@@ -133,6 +133,17 @@ pub fn new(
                     "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
                 ));
             }
+            // Only a decision is amended, and only by a decision: a task
+            // changes code, not what binds it.
+            if !inv.values("--amends").is_empty() {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "--amends applies to an ADR: a task amends nothing, it is work under a decision",
+                )
+                .with_hint(
+                    "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\" --amends \"<adr>\"",
+                ));
+            }
             // A task has no `constraint` either: the rule is what an ADR is
             // for, and a task is the work done under it.
             if inv.value("--constraint").is_some() {
@@ -239,6 +250,7 @@ pub fn new(
             }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {
+                amends: amends_of(inv, &store)?,
                 supersedes: supersedes_of(inv, &store, kind)?,
                 id: id.clone(),
                 slug: Some(slugify(&title)),
@@ -378,6 +390,15 @@ fn reject_foreign_flags(inv: &Invocation, kind: EntityKind) -> Result<()> {
         )
         .with_hint(hint));
     }
+    // A spec is revised by supersession; what changes a decision in part is
+    // another decision (ADR-9ee76b578257).
+    if !inv.values("--amends").is_empty() {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--amends applies to an ADR: a spec describes, and only a decision amends a decision",
+        )
+        .with_hint(hint));
+    }
     Ok(())
 }
 
@@ -509,6 +530,9 @@ fn skeleton(
         }),
         EntityKind::Adr => Entity::Adr(Adr {
             id: id.clone(),
+            // The editor form writes what the template holds, and the template
+            // declares no relation: one is added with `new adr --amends`.
+            amends: Vec::new(),
             slug,
             title,
             created: created.to_string(),
@@ -1107,6 +1131,36 @@ fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
         }
     }
     Ok(out)
+}
+
+/// `--amends`, resolved at the point of the write, as `--reference` is.
+///
+/// An ADR and nothing else, refused here with the id that is not one: an
+/// amendment says that a decision no longer holds as written, and only a
+/// decision binds. Whether the target is accepted is left to `check`, as a
+/// reference's is: an amendment drafted beside the proposal it amends is
+/// ordinary, and what `check` reports is the corpus as it stands.
+fn amends_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
+    let mut out: Vec<EntityId> = Vec::new();
+    for raw in inv.values("--amends") {
+        let target = store.resolve(raw.trim())?;
+        if target.kind() != EntityKind::Adr {
+            return Err(CliError::new(ExitCode::Generic, not_amendable(&target))
+                .with_hint("ank find --type adr".to_string()));
+        }
+        if !out.contains(&target) {
+            out.push(target);
+        }
+    }
+    Ok(out)
+}
+
+/// Why that entity cannot be amended, in one sentence, for `new` and `check`.
+pub(crate) fn not_amendable(id: &EntityId) -> String {
+    format!(
+        "{id} is not an ADR but a {}: an amendment changes a decision, and only an ADR is one",
+        id.kind().as_str()
+    )
 }
 
 /// The prose that justifies the entity, in canonical shape.

@@ -47,11 +47,12 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 8 | `scope` | block sequence | always emitted |  | globs, never empty |
 | 9 | `constraint` | literal block | always emitted |  | binding on every scope it covers once accepted |
 | 10 | `see` | scalar | omitted when absent |  | reference code the constraint points at |
-| 11 | `supersedes` | bare | omitted when absent |  | an entity id |
-| 12 | `ratified` | scalar | omitted when absent |  | the signed commit `accept` wrote |
-| 13 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
-| 14 | `schema` | integer | always emitted |  |  |
-| 15 | `version` | integer | always emitted |  |  |
+| 11 | `amends` | flow list | omitted when absent |  | ADR ids this one changes in part |
+| 12 | `supersedes` | bare | omitted when absent |  | an entity id |
+| 13 | `ratified` | scalar | omitted when absent |  | the signed commit `accept` wrote |
+| 14 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
+| 15 | `schema` | integer | always emitted |  |  |
+| 16 | `version` | integer | always emitted |  |  |
 
 ## Spec
 

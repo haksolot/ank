@@ -2366,6 +2366,7 @@ After a blank one."
             scope: scope.iter().map(|s| s.to_string()).collect(),
             constraint: constraint.into(),
             see: None,
+            amends: Vec::new(),
             supersedes: None,
             ratified: None,
             verified: Vec::new(),

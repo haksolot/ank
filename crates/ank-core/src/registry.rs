@@ -203,6 +203,7 @@ static ADR_FIELDS: &[FieldSpec] = &[
         "binding on every scope it covers once accepted",
     ),
     opt("see", Scalar, "reference code the constraint points at"),
+    opt("amends", Flow, "ADR ids this one changes in part"),
     opt("supersedes", Bare, "an entity id"),
     opt("ratified", Scalar, "the signed commit `accept` wrote"),
     opt(
@@ -455,6 +456,14 @@ impl Fields for Adr {
             "scope" => Seq(&self.scope),
             "constraint" => Block(&self.constraint),
             "see" => Scalar(self.see.as_deref()?),
+            // Omitted when empty, never written `[]`: every ADR written before
+            // the field existed stays canonical, as a spec's `references` does.
+            "amends" => {
+                if self.amends.is_empty() {
+                    return None;
+                }
+                Flow(self.amends.iter().map(|r| r.to_string()).collect())
+            }
             "supersedes" => Bare(self.supersedes.as_ref()?.to_string()),
             "ratified" => Scalar(self.ratified.as_deref()?),
             "verified" => {

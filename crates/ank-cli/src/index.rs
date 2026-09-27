@@ -1973,6 +1973,7 @@ mod tests {
             scope: vec!["crates/**".into()],
             constraint: "A binding rule.\n".into(),
             see: None,
+            amends: Vec::new(),
             supersedes: None,
             ratified: None,
             verified: Vec::new(),

@@ -152,6 +152,17 @@ A `verified` entry emits `by`, then `at`. Both are required in an entry that
 exists at all, an entry missing either being rejected, while the list itself is
 optional on every kind.
 
+### ADR
+
+`amends` names the ADRs this one changes in part, between `see` and the
+succession. It is a flow list of entity ids, **omitted when empty** like a
+spec's `references`, and it retires nothing: each ADR it names stays accepted and
+binding for everything the amendment does not touch, where `supersedes` replaces
+the whole of one (ADR-9ee76b578257). A reader resolves each entry as it resolves a
+reference, following the succession to its end; an entry naming an absent
+entity, a kind other than `adr`, or an ADR that is not accepted is a finding
+there rather than a parse error here.
+
 ### Spec
 
 An ADR without its `constraint`, and the absence is what makes it a kind of its

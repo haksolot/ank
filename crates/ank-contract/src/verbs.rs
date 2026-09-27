@@ -651,6 +651,10 @@ const NEW_KINDS: &[Kind] = &[
             foreign("--supersedes", "a task supersedes nothing"),
             foreign("--reference", "what a task depends on is blocked_by"),
             foreign("--constraint", "a task is work, and an ADR binds"),
+            foreign(
+                "--amends",
+                "a task amends nothing, it is work under a decision",
+            ),
         ],
     },
     Kind {
@@ -661,6 +665,7 @@ const NEW_KINDS: &[Kind] = &[
             "--scope",
             "--constraint",
             "--supersedes",
+            "--amends",
             "--body",
         ],
         requires: &[
@@ -695,6 +700,10 @@ const NEW_KINDS: &[Kind] = &[
             foreign("--verify", NOT_WORK),
             foreign("--no-verify", NOT_WORK),
             foreign("--method", NOT_WORK),
+            foreign(
+                "--amends",
+                "a spec describes, and only a decision amends a decision",
+            ),
         ],
     },
 ];
@@ -1172,6 +1181,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--constraint"),
             flag("--supersedes"),
             multi("--reference"),
+            multi("--amends"),
             multi("--verify"),
             switch("--no-verify"),
             flag("--method"),
@@ -1186,6 +1196,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a scope is mandatory: an entity attached to nothing is invisible",
             "--body - reads the body from stdin, so a long one needs no shell quoting",
             "--reference declares what a spec rests on; it takes a spec or an adr, and check resolves it",
+            "--amends declares the ADRs an adr changes in part; each stays accepted and binding, and check resolves it",
             "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
             "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); context prints it after the claim, and done never reads it",
         ],

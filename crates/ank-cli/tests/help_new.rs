@@ -207,6 +207,8 @@ impl Repo {
             "--scope" => "src/**".into(),
             "--blocked-by" => self.task.clone(),
             "--reference" => self.spec.clone(),
+            // What an ADR amends is another ADR (ADR-9ee76b578257).
+            "--amends" => self.adr.clone(),
             "--supersedes" => match kind {
                 "adr" => self.adr.clone(),
                 "spec" => self.spec.clone(),
@@ -266,6 +268,20 @@ fn help_new_describes_each_kind_and_names_the_constraint_an_adr_requires() {
         assert!(
             !rules(kind_of(&verb, name), "refuses").is_empty(),
             "{name} states no refusal"
+        );
+    }
+    // `--amends` is adr-only (TASK-fe548f3dd587): taken by the adr, and
+    // refused by name on the two kinds that carry no such relation.
+    assert!(
+        strs(&kind_of(&verb, "adr")["flags"]).contains(&"--amends".to_string()),
+        "{verb:?}"
+    );
+    for name in ["task", "spec"] {
+        assert!(
+            rules(kind_of(&verb, name), "refuses")
+                .iter()
+                .any(|(f, c, _)| f == "--amends" && *c == 1),
+            "{name}: {verb:?}"
         );
     }
     let adr = rules(kind_of(&verb, "adr"), "requires");
