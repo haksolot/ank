@@ -859,6 +859,51 @@ fn peer_lines(
 ) -> (Vec<ConstraintLine>, Vec<ConstraintLine>) {
     let mut active = Vec::new();
     let mut proposed = Vec::new();
+    for bound in peer_adrs(repo, cfg, path, warnings) {
+        let adr = bound.adr;
+        let line = ConstraintLine {
+            short: bound.short,
+            id: adr.id.clone(),
+            title: adr.title.clone(),
+            overlap: words(&adr.constraint).intersection(vocabulary).count(),
+            text: adr.constraint.trim_end().to_string(),
+            specificity: specificity(&bound.globs),
+            home: Some(bound.peer),
+        };
+        if adr.status.as_str() == "accepted" {
+            active.push(line);
+        } else {
+            proposed.push(line);
+        }
+    }
+    (active, proposed)
+}
+
+/// An ADR of a declared peer whose scope binds this perimeter, with what
+/// [`peer_adrs`] resolved to find it.
+pub(crate) struct PeerAdr {
+    /// The declared name of the peer the ADR lives in.
+    pub peer: String,
+    /// `<id>@<peer>`: the full id, never a short form. A displayed prefix is
+    /// computed per corpus (§10), so the peer's four characters mean nothing
+    /// here and could name a different entity outright.
+    pub short: String,
+    /// Its globs pointing back at this repository, the peer prefix removed.
+    pub globs: Vec<String>,
+    pub adr: ank_core::Adr,
+}
+
+/// The ADRs, accepted or proposed, that a declared peer binds this perimeter
+/// with: the one resolution behind [`peer_lines`] and the `scope` verb, so
+/// that the two cannot answer differently about what binds one path
+/// (TASK-2f5d6af5de36).
+pub(crate) fn peer_adrs(
+    repo: &Repo,
+    cfg: &Config,
+    path: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> Vec<PeerAdr> {
+    let mut out = Vec::new();
 
     let (peers, peer_warnings) = crate::repo::peers_of(repo, cfg);
     warnings.extend(peer_warnings);
@@ -899,23 +944,12 @@ fn peer_lines(
             if globs.is_empty() || !in_perimeter(&globs, path) {
                 continue;
             }
-            let line = ConstraintLine {
-                // The full id, never a short form: a displayed prefix is
-                // computed per corpus (§10), so the peer's four characters mean
-                // nothing here and could name a different entity outright.
+            out.push(PeerAdr {
+                peer: peer.name.clone(),
                 short: format!("{}@{}", adr.id, peer.name),
-                id: adr.id.clone(),
-                title: adr.title.clone(),
-                overlap: words(&adr.constraint).intersection(vocabulary).count(),
-                text: adr.constraint.trim_end().to_string(),
-                specificity: specificity(&globs),
-                home: Some(peer.name.clone()),
-            };
-            if adr.status.as_str() == "accepted" {
-                active.push(line);
-            } else {
-                proposed.push(line);
-            }
+                globs,
+                adr,
+            });
         }
         if unreadable > 0 {
             warnings.push(format!(
@@ -926,7 +960,7 @@ fn peer_lines(
             ));
         }
     }
-    (active, proposed)
+    out
 }
 
 fn unreadable_peer(peer: &crate::repo::Peer) -> String {

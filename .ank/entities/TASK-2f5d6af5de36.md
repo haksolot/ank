@@ -5,7 +5,7 @@ slug: scope-inside-a-peer-names-the-constraints-bound
 title: scope inside a peer names the constraints bound to it from elsewhere, and help says which end declares
 created: 2026-09-27T16:44:23Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/context.rs
@@ -18,8 +18,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/b5595543ac2f@f34af43
+    tree: scope/e223b99e85f1
+    criteria: 5b1f48cacd51
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@f34af43
+    tree: scope/e223b99e85f1
+    criteria: 5b1f48cacd51
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Issue #500, the part that is a defect. Measured on 96c7fd7, and it

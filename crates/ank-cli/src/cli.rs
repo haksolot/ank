@@ -1484,7 +1484,7 @@ fn dispatch(
             out,
         ),
         "graph" => crate::graph::run(&inv, &s.repo, out),
-        "scope" => crate::commands::scope(&inv, &s.repo, &s.identity, out),
+        "scope" => crate::commands::scope(&inv, &s.repo, &s.config, &s.identity, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
         "check" => crate::human::check(&inv, &s.repo, &s.config, out),
