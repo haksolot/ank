@@ -5,15 +5,19 @@ slug: a-peer-is-declared-by-path-never-by-remote-url-a
 title: A peer is declared by path, never by remote URL, and the reader's override is what makes it portable
 created: 2026-09-27T17:05:30Z
 author: claude-code/opus-5.5+c6d1
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/src/config.rs
   - docs/**
 constraint: |
   peers.<name> in config.yml names a filesystem path, resolved against the declaring root, and never a remote URL: no verb clones, fetches or caches a peer, and a peer is read only from a checkout that already exists on the reader's disk. A layout that differs is answered by the reader's override of ADR-da2819aef598, never by a URL. ank config refuses a peer value shaped as a URL (a scheme followed by ://, or user@host:path) at the moment it is written, naming the override, because a URL on a peer's back-declaration otherwise makes a binding vanish with no warning.
+ratified: cfe8e130d9ad
+verified:
+  - by: haksolot@omarchy
+    at: 2026-09-27T19:03:10Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Raised by issue #500, studied under TASK-c6d184d238e1, whose log holds the four

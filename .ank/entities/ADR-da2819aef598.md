@@ -5,15 +5,19 @@ slug: a-peer-s-path-is-the-corpus-s-convention-and-a-r
 title: A peer's path is the corpus's convention, and a reader overrides it where they live
 created: 2026-09-27T16:42:25Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/src/config.rs
   - docs/**
 constraint: |
   config.yml declares a peer by name and by a path relative to the declaring root, the layout every clone is expected to follow. A reader whose layout differs overrides that path in their own corpora.yml, keyed by the declaring corpus's identity and the peer's name, and never by editing config.yml. The override is read wherever the declaration is read, including when a peer resolves one of its own declarations back to the reader, so a binding holds on a machine whose layout differs. An override is never committed, and it is written only by a verb that was asked for it.
+ratified: 37886faa0a2e
+verified:
+  - by: haksolot@omarchy
+    at: 2026-09-27T19:03:09Z
 schema: 4
-version: 2
+version: 3
 ---
 
 Raised by issue #500. `peers.<name>` takes a filesystem path, and `config.yml` is
