@@ -254,6 +254,28 @@ pub enum Failed {
 }
 
 impl Failed {
+    /// The failure as a screen shows it whole: the command line that was
+    /// refused, then what the CLI said, unaltered (TASK-45c440f998dc).
+    ///
+    /// The shape [`Ran`] has when a call answers -- the spelling first, then
+    /// the answer -- given to a call that did not. [`fmt::Display`] alone left
+    /// the spelling out wherever the CLI wrote something, so a note read
+    /// `error[1]: unknown command '--repo'` with nothing to say which call it
+    /// answered, and the call was the defect (GitHub #495).
+    ///
+    /// **Display is left as it is**, because a place that keeps one line of a
+    /// failure keeps its first: the config panel's row has to go on showing
+    /// the CLI's error there, not the command line. The other failures already
+    /// name their call in their one sentence, and this adds nothing to them.
+    pub fn named(&self) -> String {
+        match self {
+            Failed::Refused { shown, stderr, .. } if !stderr.trim().is_empty() => {
+                format!("{shown}\n{self}")
+            }
+            _ => self.to_string(),
+        }
+    }
+
     /// The code a caller exits with, when this failure is what ends a session.
     ///
     /// A refusal carries the CLI's own number through untouched where it is one
@@ -883,6 +905,24 @@ mod tests {
         };
         assert_eq!(f.code(), ExitCode::NotFound);
         assert!(f.to_string().starts_with("error[2]:"), "{f}");
+        // A screen that shows it whole puts the call first, and the bytes
+        // after it are the CLI's own (TASK-45c440f998dc); one that keeps a
+        // single line keeps the CLI's error, because Display is unchanged.
+        assert_eq!(
+            f.named(),
+            "ank show TASK-0001 --json\nerror[2]: no entity matches 'TASK-0001'\n> ank find TASK"
+        );
+        assert_eq!(
+            f.to_string().lines().next(),
+            Some("error[2]: no entity matches 'TASK-0001'")
+        );
+        // With nothing on stderr the one sentence already names the call.
+        let silent = Failed::Refused {
+            shown: "ank find --json".to_string(),
+            code: 1,
+            stderr: "\n".to_string(),
+        };
+        assert_eq!(silent.named(), silent.to_string());
         // A code outside the table is not invented into a variant.
         assert_eq!(
             Failed::Refused {

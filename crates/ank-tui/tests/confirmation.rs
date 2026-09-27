@@ -271,6 +271,40 @@ fn the_key_that_would_quit_declines_the_command_and_keeps_the_session() {
     assert_eq!(refs, repo.refs(), "a declined claim moved a ref");
 }
 
+/// **A confirmed act that is refused is shown under the command line that was
+/// refused** (TASK-45c440f998dc).
+///
+/// `release` is the refusal every corpus can give on demand: a press composes
+/// `ank release <id> --json` and no `--reason`, which the CLI turns down at 7
+/// with its way out on stderr. The confirmation already showed the line before
+/// the key; what is measured is the answer drawn after it, where a refusal
+/// used to be the CLI's bytes and nothing to say which call they answered.
+#[test]
+fn a_refused_act_is_shown_under_the_command_that_was_refused() {
+    let repo = Repo::seeded();
+    repo.warm();
+    let task = repo.only(&["--type", "task"]);
+    let line = expected("ank release {id} --json", &task);
+
+    let mut live = Live::open(&repo, WINDOW.0, WINDOW.1);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    open(&mut live, &task);
+    spell(&mut live, "release");
+    live.until("the confirmation", |t| flat(t).contains(&line));
+
+    live.send(&CONFIRM.to_string());
+    let frame = live.until("the refusal", |t| t.contains("error[7]:"));
+    let seen = flat(&frame);
+    let named = seen
+        .find(&line)
+        .unwrap_or_else(|| panic!("the answer names the refused call:\n{frame}"));
+    assert!(
+        named < seen.find("error[7]:").unwrap(),
+        "the command line is above the error it answered:\n{frame}"
+    );
+    live.quit();
+}
+
 /// A claim confirmed from the screen is the claim a shell takes
 /// (TASK-d4a882345837, ADR-8bd76e8d7c4e).
 ///

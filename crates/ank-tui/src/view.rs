@@ -937,7 +937,7 @@ impl App {
     }
 
     fn fail(&mut self, failed: Failed) {
-        self.note = Some(failed.to_string());
+        self.note = Some(failed.named());
     }
 
     // -----------------------------------------------------------------------
@@ -1933,8 +1933,10 @@ impl App {
             Ok(ran) => answered(&ran),
             // Whole and unaltered: `error[N]:` and the command the CLI named as
             // the way out are already in these bytes, and rewording them would
-            // be a second vocabulary for the same conditions.
-            Err(failed) => failed.to_string(),
+            // be a second vocabulary for the same conditions. Under the command
+            // line that was refused, as an answer is under the one that ran
+            // (TASK-45c440f998dc).
+            Err(failed) => failed.named(),
         };
         self.reload(ank);
         if self.detail.is_some() {
