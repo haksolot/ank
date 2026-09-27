@@ -27,7 +27,7 @@
 // code; it is code the other suite is using.
 #![allow(dead_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 // ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ const TASK_TITLE: &str =
 /// The reasoning is written out once, where the original lives. In short: a
 /// `Drop` cannot run on `SIGKILL`, so the run that cleans up is the next one,
 /// and a root's `.owner` lock is free exactly when its owner is gone.
-mod scratch {
+pub mod scratch {
     use std::fs::{self, File};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -963,8 +963,30 @@ impl Live {
         Live::opened(repo, columns, rows, false, TERM, env)
     }
 
+    /// A session started somewhere other than the repository, with the address
+    /// flags the caller names after `tui` (TASK-ad407ccdae3a).
+    ///
+    /// The cwd is the point: a reader started inside the repository finds its
+    /// corpus whatever it does with `--repo`, so only one started outside it
+    /// measures whether the flag reached the children it spawns.
+    pub fn addressed(cwd: &Path, args: &[&str], columns: u16, rows: u16) -> Live {
+        Live::spawned(cwd, args, columns, rows, false, TERM, &[])
+    }
+
     fn opened(
         repo: &Repo,
+        columns: u16,
+        rows: u16,
+        colour: bool,
+        term: &str,
+        env: &[(&str, &str)],
+    ) -> Live {
+        Live::spawned(&repo.0, &[], columns, rows, colour, term, env)
+    }
+
+    fn spawned(
+        cwd: &Path,
+        args: &[&str],
         columns: u16,
         rows: u16,
         colour: bool,
@@ -986,7 +1008,8 @@ impl Live {
         let mut command = Command::new(ank());
         command
             .arg("tui")
-            .current_dir(&repo.0)
+            .args(args)
+            .current_dir(cwd)
             .env("ANK_AGENT", AGENT)
             .env("TERM", term);
         in_this_runs_root(&mut command);

@@ -401,17 +401,20 @@ impl Ank {
     /// The argv one call is made with, and the only place one is composed.
     ///
     /// `--json` is appended here and never by a caller, so no call site can
-    /// forget it and read a human page by mistake. The address flags go in
-    /// front of the verb's own arguments, which is where a caller typed them.
+    /// forget it and read a human page by mistake. The address flags go after
+    /// the verb and its own arguments, because the CLI reads a global flag
+    /// only after the verb: `ank --repo <dir> find` is refused as an unknown
+    /// command, and every child of a reader given `--repo` was (GitHub #495,
+    /// TASK-ad407ccdae3a).
     ///
     /// Separate from [`Ank::spawn`] because [`Ank::spelling`] has to answer
     /// *before* a spawn: the confirmation TASK-d4a882345837 puts in front of
     /// every write shows a command line, and a command line composed twice is
     /// two command lines. This one is composed once and read by both.
     fn argv(&self, verb: &str, args: &[String]) -> Vec<String> {
-        let mut argv: Vec<String> = self.address.flags();
-        argv.push(verb.to_string());
+        let mut argv: Vec<String> = vec![verb.to_string()];
         argv.extend(args.iter().cloned());
+        argv.extend(self.address.flags());
         argv.push("--json".to_string());
         argv
     }
@@ -950,8 +953,9 @@ mod tests {
         );
     }
 
-    /// The caller's own address flags are in the line, in front of the verb,
-    /// because they are in the argv.
+    /// The caller's own address flags are in the line, after the verb, because
+    /// they are in the argv -- and after it because the CLI refuses a global
+    /// flag in front of the verb (TASK-ad407ccdae3a).
     #[test]
     fn the_spelling_carries_the_address_the_child_is_given() {
         let ank = Ank::new(Address {
@@ -962,7 +966,7 @@ mod tests {
         });
         assert_eq!(
             ank.spelling("claim", &["TASK-0001".to_string()]),
-            "ank --repo '/two words' claim TASK-0001 --json"
+            "ank claim TASK-0001 --repo '/two words' --json"
         );
     }
 }
