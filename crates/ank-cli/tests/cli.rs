@@ -6373,9 +6373,14 @@ fn status_says_a_checkout_level_with_origin_in_one_line() {
         "the level case does not say it is level:\n{said}"
     );
     // Enumerates nothing: no ref name reaches the output, and no count of them
-    // either.
+    // either. The one line that names the namespace is the fetch refspec this
+    // fixture's origin lacks (TASK-623d80886c2f), which is a refspec and not
+    // a ref.
     assert!(
-        !said.contains("refs/ank/"),
+        !said
+            .lines()
+            .filter(|l| !l.contains("remote.origin.fetch lacks"))
+            .any(|l| l.contains("refs/ank/")),
         "the level case enumerated the namespace:\n{said}"
     );
 

@@ -1886,7 +1886,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         group: "set up a repository",
         renews: Renews::Never,
         coordinates: true,
-        summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
+        summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec once origin exists; refuses --repo",
         subcommands: &[],
         kinds: &[],
         max_positionals: 1,
@@ -1901,6 +1901,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "a target elsewhere is ank init <path>; with no argument it initialises the current directory",
             "--at <path> puts the corpus outside this tree and declares it, so the tree gains no file",
+            // TASK-623d80886c2f: the refspec is skipped while origin has no
+            // URL, so that `git remote add origin` still works, and the gap is
+            // then reported rather than left silent.
+            "with no remote named origin the refspec is not added and init says so; once origin exists, status and check report it missing and ank init adds it",
             // It adds the refspec that will carry `refs/ank/*` and pushes
             // nothing over it: the summary naming a refspec is the strongest
             // reason a caller would guess otherwise.

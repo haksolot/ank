@@ -217,6 +217,21 @@ pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -
 /// `prune` is a parameter so `review` can reuse the inspection without touching
 /// the coordination plane: reporting is safe from anywhere, deleting is not.
 pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Result<Report> {
+    inspect_with(repo, cfg, path, prune, None)
+}
+
+/// [`inspect`], handed what origin fetches when the caller has already asked.
+///
+/// `status` reads it for a line of its own and for the key its cached verdict
+/// hangs on, and a verb asks git a question once (ADR-cc65f1388a71): `None`
+/// means nobody asked yet, and the inspection asks.
+pub fn inspect_with(
+    repo: &Repo,
+    cfg: &Config,
+    path: Option<&str>,
+    prune: bool,
+    origin: Option<crate::init::OriginFetch>,
+) -> Result<Report> {
     let store = Store::new(&repo.ank);
     let mut report = Report::default();
     let mut entities: Vec<(PathBuf, Entity)> = Vec::new();
@@ -674,6 +689,10 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             git::origin_head(&repo.corpus)?.as_deref(),
         );
         check_signers(repo, &mut report);
+        let origin = origin.unwrap_or_else(|| crate::init::origin_fetch(&repo.corpus));
+        if let Some(finding) = origin_refspec_finding(origin) {
+            report.findings.push(finding);
+        }
         (coord, detached, Some(branch))
     } else {
         report.findings.push(Finding::signal(
@@ -955,6 +974,32 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
             .then(a.message.cmp(&b.message))
     });
     Ok(report)
+}
+
+/// An origin that does not fetch `refs/ank/*` (TASK-623d80886c2f, issue #499).
+///
+/// **A signal, never a fault.** The corpus is not wrong, this clone just never
+/// sees another clone's claims or completion refs, and it is the state every
+/// fresh clone and every repository initialised before its remote arrives in.
+/// Nothing reported it: `init` skips the refspec while there is no origin, for
+/// the reason `init::ensure_refspec` gives, and `git remote add` writes its own
+/// refspec only. So it is said here, where the state is visible, and it names
+/// the command that repairs it -- the same one `init` and `status` name.
+///
+/// The line is `status`'s too, word for word, so the two surfaces read alike.
+pub fn origin_refspec_finding(origin: crate::init::OriginFetch) -> Option<Finding> {
+    (origin == crate::init::OriginFetch::Lacks)
+        .then(|| Finding::signal("origin", origin_refspec_gap()))
+}
+
+/// The sentence both surfaces print for [`crate::init::OriginFetch::Lacks`].
+pub fn origin_refspec_gap() -> String {
+    format!(
+        "remote.origin.fetch lacks {}, so claims and completion refs are never \
+         fetched ({})",
+        crate::init::REFSPEC,
+        crate::init::REFSPEC_REPAIR
+    )
 }
 
 type Plane = (
