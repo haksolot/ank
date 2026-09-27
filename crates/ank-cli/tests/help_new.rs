@@ -362,6 +362,40 @@ fn every_refusal_and_every_flag_the_help_states_holds_through_new() {
     }
 }
 
+/// Every flag of `new` is, for each kind, either taken or refused, and never
+/// both (TASK-1667febee0dd). A flag that is neither is one the help is silent
+/// about, which is where `--constraint` on a task, `--criteria` and
+/// `--blocked-by` on an ADR were hiding while `new` dropped them at exit 0; the
+/// replay above only confronts what the help states, so the silence itself has
+/// to be the red.
+#[test]
+fn every_flag_of_new_is_taken_or_refused_by_each_kind() {
+    let verb = new_verb(&[]);
+    let every_flag: Vec<String> = verb["flags"]
+        .as_sequence()
+        .unwrap()
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .filter(|f| !["--json", "--quiet", "--repo", "--worktree"].contains(&f.as_str()))
+        .collect();
+    assert!(every_flag.len() >= 11, "{every_flag:?}");
+    for name in KINDS {
+        let kind = kind_of(&verb, name);
+        let taken = strs(&kind["flags"]);
+        let refused: Vec<String> = rules(kind, "refuses")
+            .into_iter()
+            .map(|(f, _, _)| f)
+            .collect();
+        for flag in &every_flag {
+            let (t, r) = (taken.contains(flag), refused.contains(flag));
+            assert!(
+                t != r,
+                "new {name} {flag}: taken {t}, refused {r}; it must be exactly one"
+            );
+        }
+    }
+}
+
 /// `help new <kind>` exits 0 and speaks of that kind only: its flags, its
 /// requirements, its refusals, and nothing another kind owns.
 #[test]

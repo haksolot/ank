@@ -133,6 +133,17 @@ pub fn new(
                     "ank new task --title \"<t>\" --scope \"<glob>\" --blocked-by \"<id>\"",
                 ));
             }
+            // A task has no `constraint` either: the rule is what an ADR is
+            // for, and a task is the work done under it.
+            if inv.value("--constraint").is_some() {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    "--constraint applies to an ADR: a task is work, and an ADR binds",
+                )
+                .with_hint(
+                    "ank new task --title \"<t>\" --scope \"<glob>\" --criteria \"<criterion>\"",
+                ));
+            }
             let criteria = inv.value("--criteria").map(ensure_newline);
             let mut blocked_by = Vec::new();
             for raw in inv.values("--blocked-by") {
@@ -212,6 +223,19 @@ pub fn new(
                 .with_hint(
                     "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
                 ));
+            }
+            // A criterion and a dependency are fields of work, and an ADR has
+            // neither; refused for the reason `--method` is, a few lines above.
+            for flag in ["--criteria", "--blocked-by"] {
+                if !inv.values(flag).is_empty() {
+                    return Err(CliError::new(
+                        ExitCode::Generic,
+                        format!("{flag} applies to a task: an ADR is a decision, not work"),
+                    )
+                    .with_hint(
+                        "ank new adr --title \"<t>\" --scope \"<glob>\" --constraint \"<rule>\"",
+                    ));
+                }
             }
             let constraint = required(inv, "--constraint", "the binding rule, in one sentence")?;
             Entity::Adr(Adr {

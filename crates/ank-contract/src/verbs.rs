@@ -650,6 +650,7 @@ const NEW_KINDS: &[Kind] = &[
         refuses: &[
             foreign("--supersedes", "a task supersedes nothing"),
             foreign("--reference", "what a task depends on is blocked_by"),
+            foreign("--constraint", "a task is work, and an ADR binds"),
         ],
     },
     Kind {
@@ -672,6 +673,8 @@ const NEW_KINDS: &[Kind] = &[
             foreign("--no-verify", "an ADR declares no verifier"),
             foreign("--method", "an ADR is a decision, not work"),
             foreign("--reference", "an ADR binds rather than cites"),
+            foreign("--criteria", "an ADR is a decision, not work"),
+            foreign("--blocked-by", "an ADR is a decision, not work"),
         ],
     },
     Kind {
