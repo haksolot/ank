@@ -1878,7 +1878,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a resolved default prints marked as one; --json carries value and source as separate fields",
             "--unset verifiers.<name> removes a whole verifier, and the default mark with it, which is what makes declaring one reversible",
             "verifiers.<name>.default true marks a verifier for ank new task to write into every task it creates",
-            "--user reads and writes the reader's corpora.yml instead, whose only key is corpora.<identity>",
+            "--user reads and writes the reader's corpora.yml instead: corpora.<identity>, and peers.<identity>.<name>, which overrides for this reader the path the corpus <identity> declares for its peer <name>, and never touches config.yml",
             "a binding across corpora needs both declarations: the governing corpus names the governed one in its scope, <peer>:<glob> through its own peers.<peer>, and the governed corpus declares the governing one in peers.<name> to read it",
         ],
         refuses_globals: &[],

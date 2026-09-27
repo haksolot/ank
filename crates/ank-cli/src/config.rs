@@ -415,6 +415,13 @@ struct CorporaFile {
     schema: u32,
     #[serde(default)]
     corpora: BTreeMap<String, String>,
+    /// The reader's overrides of peer paths (ADR-da2819aef598), keyed
+    /// `<identity>.<name>`: the declaring corpus's identity and the name its
+    /// `config.yml` gives the peer. Flat rather than nested so that the key the
+    /// verb takes, `peers.<identity>.<name>`, is the path the file spells, and
+    /// one surgery writes both maps.
+    #[serde(default)]
+    peers: BTreeMap<String, String>,
 }
 
 /// The refusal a `corpora.yml` newer than this binary earns, or `None` where
@@ -511,12 +518,49 @@ fn is_identity(key: &str) -> bool {
 /// matched nothing would leave the corpus quietly not found, which is the one
 /// outcome worse than a refusal.
 pub fn declarations() -> Result<BTreeMap<String, String>> {
+    Ok(corpora_file()?.map(|f| f.corpora).unwrap_or_default())
+}
+
+/// The path this reader gave, in place of what `config.yml` declares, for the
+/// peer `name` of the corpus `identity` (ADR-da2819aef598), or `None` where
+/// there is no override.
+///
+/// **Silent on a file that cannot be read.** Every verb resolves its corpus
+/// through [`declarations`] before it reads a peer, so a file that does not
+/// parse has already been refused by the time this is asked.
+pub fn peer_override(identity: &str, name: &str) -> Option<String> {
+    corpora_file()
+        .ok()
+        .flatten()?
+        .peers
+        .remove(&format!("{identity}.{name}"))
+}
+
+/// Whether this reader overrides any peer path at all, which is what spares a
+/// reader who has overridden nothing the git process an identity costs.
+pub fn has_peer_overrides() -> bool {
+    corpora_file()
+        .ok()
+        .flatten()
+        .is_some_and(|f| !f.peers.is_empty())
+}
+
+/// A key under `peers` as ADR-da2819aef598 defines it: an identity, a dot, and
+/// a name a scope entry could spell.
+fn is_override_key(key: &str) -> bool {
+    key.split_once('.')
+        .is_some_and(|(id, name)| is_identity(id) && crate::repo::is_peer_name(name))
+}
+
+/// The reader's declarations file, parsed and checked, or `None` where there is
+/// none.
+fn corpora_file() -> Result<Option<CorporaFile>> {
     let Some(path) = corpora_path() else {
-        return Ok(BTreeMap::new());
+        return Ok(None);
     };
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) => {
             return Err(CliError::new(
                 ExitCode::Environment,
@@ -528,8 +572,10 @@ pub fn declarations() -> Result<BTreeMap<String, String>> {
         return Err(refusal);
     }
     let file: CorporaFile = serde_yaml::from_str(&text).map_err(|e| {
-        CliError::new(ExitCode::Environment, format!("{}: {e}", path.display()))
-            .with_hint("schema: 1 and a corpora: map of repository identity to path")
+        CliError::new(ExitCode::Environment, format!("{}: {e}", path.display())).with_hint(
+            "schema: 1, a corpora: map of repository identity to path, \
+                 and a peers: map of <identity>.<name> to path",
+        )
     })?;
     // Below the range rather than above it, exactly as `parse()` splits them:
     // no binary ever read schema 0, so there is no older tool to name.
@@ -555,7 +601,19 @@ pub fn declarations() -> Result<BTreeMap<String, String>> {
             ));
         }
     }
-    Ok(file.corpora)
+    for key in file.peers.keys() {
+        if !is_override_key(key) {
+            return Err(CliError::new(
+                ExitCode::Environment,
+                format!(
+                    "{}: '{key}' under peers is not <identity>.<name>",
+                    path.display()
+                ),
+            )
+            .with_hint("ank config --user peers.<identity>.<name> <path> writes one"));
+        }
+    }
+    Ok(Some(file))
 }
 
 // ---------------------------------------------------------------------------
@@ -1662,7 +1720,7 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
 /// of them, `check` included. A verb that exists to repair the file and is
 /// disabled by exactly the file it repairs is not a verb.
 /// The keys `ank config --user` knows, and the whole of them.
-pub const USER_KEYS: &[&str] = &["schema", "corpora.<identity>"];
+pub const USER_KEYS: &[&str] = &["schema", "corpora.<identity>", "peers.<identity>.<name>"];
 
 fn unknown_user_key(path: &str) -> CliError {
     CliError::new(ExitCode::Generic, format!("unknown key '{path}'"))
@@ -1710,6 +1768,37 @@ fn resolve_user_key(path: &str) -> Result<Key> {
             format!("'{path}': a declaration is one path, not a block"),
         )
         .with_hint("ank config --user corpora.<identity> <path>")),
+        // A peer's path, overridden for this reader (ADR-da2819aef598): the
+        // declaring corpus's identity and the name its `config.yml` gives the
+        // peer, written as one flat key under `peers`.
+        ["peers", identity, name] => {
+            if !is_identity(identity) {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!("'{identity}' is not a repository identity"),
+                )
+                .with_hint(
+                    "a key is the root commit of the corpus declaring the peer: \
+                     ank status --json prints it under \"corpus\"",
+                ));
+            }
+            if !crate::repo::is_peer_name(name) {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!(
+                        "peer name '{name}' cannot be named by a scope: \
+                         two or more of a-z, A-Z, 0-9, '-' and '_'"
+                    ),
+                )
+                .with_hint("ank config --user peers.<identity>.<name> <path>"));
+            }
+            Ok(Key::Under {
+                map: "peers",
+                name: format!("{identity}.{name}"),
+                verbatim: false,
+                default: None,
+            })
+        }
         _ => Err(unknown_user_key(path)),
     }
 }
