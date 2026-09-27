@@ -5,15 +5,19 @@ slug: a-blocked-by-may-name-a-task-in-a-declared-peer
 title: A blocked_by may name a task in a declared peer, and an edge that cannot be read holds
 created: 2026-09-27T16:41:33Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/**
   - crates/ank-core/**
   - docs/**
 constraint: |
   A blocked_by entry may name a task of a declared peer as <id>@<peer>, the form the reader already prints for an entity whose home is a peer. It is resolved read-only through that peer's corpus: graph draws the edge, claim treats the task as blocked while the peer task is not done, and check reports an edge naming a peer that is not declared or a task that peer does not hold. An edge whose peer cannot be read is not satisfied: claim refuses it as it refuses any unmet blocker, naming the peer and the command that settles it, because a missing sibling checkout must never unblock work. Every verb that reads an identifier accepts the same form. Nothing is written to the peer, and claims stay per repository, unchanged from ADR-a1de673043b4.
+ratified: 54f9c8f25cb0
+verified:
+  - by: haksolot@omarchy
+    at: 2026-09-27T19:03:10Z
 schema: 4
-version: 3
+version: 4
 ---
 
 Raised by issue #501. ADR-a1de673043b4 left this deliberately open: a
