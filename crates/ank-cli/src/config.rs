@@ -1719,6 +1719,54 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
 /// `config.yml` for every other verb, so a file that does not parse fails all
 /// of them, `check` included. A verb that exists to repair the file and is
 /// disabled by exactly the file it repairs is not a verb.
+/// Whether a peer value is shaped as a remote URL rather than a path
+/// (ADR-96fe1f9d619a): a scheme followed by `://`, or the scp form
+/// `user@host:path`.
+///
+/// **A single letter before the colon is a drive, never a scheme or a host**,
+/// for the reason [`crate::repo::is_peer_name`] gives: `C:/src/b` and
+/// `C:\src\b` are paths on Windows and stay accepted. The scp form needs an `@`
+/// before the first colon and no separator before it, so a relative path that
+/// happens to hold both, `./a@b:c`, is still a path.
+fn is_url(value: &str) -> bool {
+    if let Some((scheme, _)) = value.split_once("://") {
+        let mut chars = scheme.chars();
+        if scheme.len() >= 2
+            && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        {
+            return true;
+        }
+    }
+    value
+        .split_once(':')
+        .is_some_and(|(before, _)| before.contains('@') && !before.contains(['/', '\\']))
+}
+
+/// The refusal of a peer value shaped as a URL, naming the override that says
+/// "the peer lives elsewhere" without one (ADR-96fe1f9d619a). Taken before the
+/// file is read, so a refused value writes nothing on any path.
+///
+/// `identity` is the declaring corpus's, when it has one: the override is keyed
+/// on it, and a hint the caller can paste is worth one `git` call on a path
+/// that is already failing.
+fn refuse_peer_url(value: &str, identity: Option<&str>, name: &str) -> Result<()> {
+    if !is_url(value) {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ExitCode::Generic,
+        format!(
+            "'{value}' is a URL: a peer is a path to a checkout on this disk, \
+             and ank never clones or fetches one"
+        ),
+    )
+    .with_hint(format!(
+        "clone it where you want it, then ank config --user peers.{}.{name} <path>",
+        identity.unwrap_or("<identity>")
+    )))
+}
+
 /// The keys `ank config --user` knows, and the whole of them.
 pub const USER_KEYS: &[&str] = &["schema", "corpora.<identity>", "peers.<identity>.<name>"];
 
@@ -1835,6 +1883,16 @@ pub fn run_user(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     if unset && value.is_some() {
         return Err(CliError::new(ExitCode::Generic, "--unset takes no value")
             .with_hint(format!("ank config --user --unset {raw_key}")));
+    }
+    if let (
+        Key::Under {
+            map: "peers", name, ..
+        },
+        Some(v),
+    ) = (&key, value)
+    {
+        let (identity, peer) = name.split_once('.').unwrap_or(("", name));
+        refuse_peer_url(v, Some(identity), peer)?;
     }
 
     // A file that is not there reads as a file with nothing in it. A reader who
@@ -2070,6 +2128,17 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     if unset && value.is_some() {
         return Err(CliError::new(ExitCode::Generic, "--unset takes no value")
             .with_hint(format!("ank config --unset {raw_key}")));
+    }
+    if let (
+        Key::Under {
+            map: "peers", name, ..
+        },
+        Some(v),
+    ) = (&key, value)
+    {
+        if is_url(v) {
+            refuse_peer_url(v, crate::repo::identity(&repo.corpus).as_deref(), name)?;
+        }
     }
 
     let text = std::fs::read_to_string(&path).map_err(|e| {

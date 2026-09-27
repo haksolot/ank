@@ -5,7 +5,7 @@ slug: ank-config-refuses-a-peer-declared-by-url-and-na
 title: ank config refuses a peer declared by URL, and names the override
 created: 2026-09-27T19:03:45Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/config.rs
   - crates/ank-cli/tests/peer_url_refusal.rs
@@ -15,8 +15,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/a668cdbdd9cc@5cd10ac
+    tree: scope/ae4c07a99bc0
+    criteria: 8682581df259
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@5cd10ac
+    tree: scope/ae4c07a99bc0
+    criteria: 8682581df259
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Implements the write-time refusal of ADR-96fe1f9d619a.
