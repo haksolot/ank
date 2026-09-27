@@ -595,6 +595,15 @@ pub struct App {
     focus: Focus,
     pane: Pane,
     snapshot: Option<Snapshot>,
+    /// Whether a read was refused while no corpus had been read
+    /// (TASK-0e544fa90566).
+    ///
+    /// `snapshot` is `None` in two states a person has to be told apart: the
+    /// frame before the first read, and every frame after a read that was
+    /// refused. The first is a wait and the second is a fault, and a screen
+    /// that said the same of both said the wrong thing of one. A refused
+    /// reread over a corpus already read keeps its rows and leaves this false.
+    unreadable: bool,
     /// Who holds what, and the chrome `status` answers with it
     /// (TASK-fff0a98511b2). `None` until the claims panel is focused, on the
     /// road [`App::requeue`] takes for the queue and for the same reason: this
@@ -764,6 +773,7 @@ impl App {
             held: None,
             detail: None,
             note: None,
+            unreadable: false,
             cursors: [Cursor::default(); 4],
             kind: None,
             search: None,
@@ -825,6 +835,7 @@ impl App {
         match Snapshot::load(ank) {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
+                self.unreadable = false;
                 self.note = None;
                 self.rehold(ank);
                 self.requeue(ank);
@@ -835,7 +846,20 @@ impl App {
                 }
                 self.clamp_all();
             }
-            Err(failed) => self.fail(failed),
+            Err(failed) => {
+                self.unreadable = self.snapshot.is_none();
+                self.fail(failed);
+            }
+        }
+    }
+
+    /// What the screen says in place of a corpus it does not hold
+    /// (TASK-0e544fa90566): that it has not read one yet, or that the read was
+    /// refused -- in which case the refusal itself is in the note.
+    fn unread(&self) -> &'static str {
+        match self.unreadable {
+            true => UNREADABLE,
+            false => UNREAD,
         }
     }
 
@@ -2238,14 +2262,12 @@ impl App {
                     None => format!("identity (not asked)   {}", self.route()),
                 },
             ),
-            // Nothing has been read yet, or the first read refused. The panels
-            // below still draw -- empty, and saying so -- because a reader that
-            // showed a different screen on a failed first read would be two
-            // layouts to keep in step.
-            None => (
-                "ank tui".to_string(),
-                "the corpus has not been read".to_string(),
-            ),
+            // Nothing has been read yet, or the first read refused, and the
+            // line says which (TASK-0e544fa90566). The panels below still draw
+            // -- empty, and saying so -- because a reader that showed a
+            // different screen on a failed first read would be two layouts to
+            // keep in step.
+            None => ("ank tui".to_string(), self.unread().to_string()),
         };
         paragraph(&[
             self.help_line(&corpus, width),
@@ -2387,6 +2409,17 @@ impl App {
                 None => Composed::of(&format!("{name}   (not asked)")),
                 Some(_) => Composed::of(&format!("{name} ({})", onto.total)),
             },
+            // No count over a corpus nobody read, on the claims panel's pattern
+            // just above: `(0 in the corpus)` is an answer, and it was the
+            // wrong one both before the first read and after a refused one
+            // (TASK-0e544fa90566).
+            Focus::Entities if self.snapshot.is_none() => Composed::of(&format!(
+                "{name}   ({})",
+                match self.unreadable {
+                    true => "could not be read",
+                    false => "not read",
+                }
+            )),
             Focus::Entities => {
                 let total = self.snapshot.as_ref().map_or(0, |s| s.total);
                 let rows = onto.total;
@@ -2484,7 +2517,7 @@ impl App {
             return vec![Composed::of("  focus this panel to ask").fitted(width)];
         };
         let Some(snapshot) = &self.snapshot else {
-            return vec![Composed::of("  the corpus has not been read").fitted(width)];
+            return vec![Composed::of(&format!("  {}", self.unread())).fitted(width)];
         };
         if held.claims.is_empty() {
             return vec![Composed::of("  nothing is held").fitted(width)];
@@ -2529,6 +2562,12 @@ impl App {
 
     /// The entity rows the panel has room for.
     fn entity_lines(&self, onto: &Listing, width: usize, height: usize) -> Vec<Composed> {
+        // A listing with no corpus under it matches nothing because there is
+        // nothing, and blaming the filter would send a person to clear one
+        // they never set (TASK-0e544fa90566).
+        if self.snapshot.is_none() {
+            return vec![Composed::of(&format!("  {}", self.unread())).fitted(width)];
+        }
         let rows = &onto.rows;
         if rows.is_empty() {
             return vec![Composed::of("  no entity matches this filter").fitted(width)];
@@ -4728,6 +4767,14 @@ pub const CONFIRM_KEY: &str = "y runs it -- every other key dismisses it, and no
 /// The command and not only the verdict: "nothing ran" is reassuring only to
 /// somebody who can see what did not.
 pub const DISMISSED: &str = "dismissed, and nothing was run:";
+
+/// What the screen says of a corpus before its first read has answered.
+pub const UNREAD: &str = "the corpus has not been read";
+
+/// What it says instead once a read was refused and no corpus had been read
+/// (TASK-0e544fa90566). The refusal itself is in the note, under the command
+/// that was refused.
+pub const UNREADABLE: &str = "the corpus could not be read";
 /// What a verb that acts on an entity says where the screen names none.
 ///
 /// One sentence and one constant (TASK-e8da6a00564a). It is said in two places
