@@ -390,6 +390,32 @@ const HELP_OUT: &[Field] = &[f(
             "refuses",
             Type::Array(&[f("code", Type::Num), f("when", Type::Str)]),
         ),
+        // Empty on every verb whose subcommands are not kinds of entity.
+        f(
+            "kinds",
+            Type::Array(&[
+                f("name", Type::Str),
+                f("usage", Type::Str),
+                f("summary", Type::Str),
+                f("flags", Type::Strings),
+                f(
+                    "requires",
+                    Type::Array(&[
+                        f("flag", Type::Str),
+                        f("code", Type::Num),
+                        f("when", Type::Str),
+                    ]),
+                ),
+                f(
+                    "refuses",
+                    Type::Array(&[
+                        f("flag", Type::Str),
+                        f("code", Type::Num),
+                        f("when", Type::Str),
+                    ]),
+                ),
+            ]),
+        ),
         // Flat, with the path in the name: `tasks` is followed by `tasks.id`,
         // `tasks.title` and the rest. Nesting is how a shape is *written* here,
         // because that is what reads well beside the code; a dotted path is how
@@ -549,6 +575,127 @@ const NO_GIT: Refusal = refuses(
     "git is absent or older than 2.34: an environment to repair, not work that failed",
 );
 
+/// One kind a verb writes, and how its flags differ from its siblings' (§9).
+///
+/// Issue #504: `--constraint` sat in `ank help new` like any optional flag, and
+/// the rule that an ADR cannot be written without it was learnt from the exit 7.
+/// The requirement and the refusals are declared here so the per-verb page, the
+/// per-kind page and `--json` read one list; `tests/help_new.rs` replays every
+/// row against `ank new` through the binary, which is what keeps this list and
+/// the verb's refusals one fact rather than two.
+#[derive(Debug, Clone, Copy)]
+pub struct Kind {
+    pub name: &'static str,
+    /// What an entity of this kind is, in one line, under `ank help new <kind>`.
+    pub summary: &'static str,
+    /// The flags of the verb this kind takes, in the verb's order. A flag of the
+    /// verb absent here and from `refuses` is none of this kind's business.
+    pub flags: &'static [&'static str],
+    /// A flag whose absence is refused, and why.
+    pub requires: &'static [FlagRule],
+    /// A flag another kind owns, refused rather than dropped, and why.
+    pub refuses: &'static [FlagRule],
+}
+
+/// A flag, the code a caller gets back over it, and the reason the verb gives:
+/// the text after the colon of its message, so the help and the error say one
+/// sentence.
+#[derive(Debug, Clone, Copy)]
+pub struct FlagRule {
+    pub flag: &'static str,
+    pub code: ExitCode,
+    pub when: &'static str,
+}
+
+const fn required(flag: &'static str, when: &'static str) -> FlagRule {
+    FlagRule {
+        flag,
+        code: ExitCode::Prerequisite,
+        when,
+    }
+}
+
+const fn foreign(flag: &'static str, when: &'static str) -> FlagRule {
+    FlagRule {
+        flag,
+        code: ExitCode::Generic,
+        when,
+    }
+}
+
+const TITLE_REQUIRED: FlagRule = required("--title", "a one-line title");
+const SCOPE_REQUIRED: FlagRule = required(
+    "--scope",
+    "it is the only thing attaching an entity to code",
+);
+const NOT_WORK: &str = "a spec is a document, not work";
+
+/// The three kinds `ank new` writes. An adr-only flag is one more name in the
+/// adr's `flags` and one more `foreign` row on the other two.
+const NEW_KINDS: &[Kind] = &[
+    Kind {
+        name: "task",
+        summary: "work to claim, with a criterion that is frozen at claim and closed with proof",
+        flags: &[
+            "--title",
+            "--scope",
+            "--criteria",
+            "--blocked-by",
+            "--verify",
+            "--no-verify",
+            "--method",
+            "--body",
+        ],
+        requires: &[TITLE_REQUIRED, SCOPE_REQUIRED],
+        refuses: &[
+            foreign("--supersedes", "a task supersedes nothing"),
+            foreign("--reference", "what a task depends on is blocked_by"),
+        ],
+    },
+    Kind {
+        name: "adr",
+        summary: "a decision, born proposed and binding nobody until accept ratifies it",
+        flags: &[
+            "--title",
+            "--scope",
+            "--constraint",
+            "--supersedes",
+            "--body",
+        ],
+        requires: &[
+            TITLE_REQUIRED,
+            SCOPE_REQUIRED,
+            required("--constraint", "the binding rule, in one sentence"),
+        ],
+        refuses: &[
+            foreign("--verify", "an ADR declares no verifier"),
+            foreign("--no-verify", "an ADR declares no verifier"),
+            foreign("--method", "an ADR is a decision, not work"),
+            foreign("--reference", "an ADR binds rather than cites"),
+        ],
+    },
+    Kind {
+        name: "spec",
+        summary: "a document of the specification, born proposed and ratified on its own",
+        flags: &[
+            "--title",
+            "--scope",
+            "--supersedes",
+            "--reference",
+            "--body",
+        ],
+        requires: &[TITLE_REQUIRED, SCOPE_REQUIRED],
+        refuses: &[
+            foreign("--constraint", "a spec describes, and an ADR binds"),
+            foreign("--criteria", NOT_WORK),
+            foreign("--blocked-by", NOT_WORK),
+            foreign("--verify", NOT_WORK),
+            foreign("--no-verify", NOT_WORK),
+            foreign("--method", NOT_WORK),
+        ],
+    },
+];
+
 /// Global flags, deliberately limited to three (§4). `--json` is available on
 /// every command without exception: full scriptability is an invariant, not an
 /// option — hence adding them mechanically to each command's surface rather
@@ -627,6 +774,10 @@ pub struct CommandSpec {
     pub summary: &'static str,
     /// Mandatory subcommands, as in `new task` / `new adr`.
     pub subcommands: &'static [&'static str],
+    /// What each subcommand takes, requires and refuses, where the subcommand
+    /// is a kind of entity and those differ by kind. Empty for every verb but
+    /// `new`, and `ank help <verb> <kind>` answers only where it is not.
+    pub kinds: &'static [Kind],
     pub max_positionals: usize,
     pub positional_help: &'static str,
     pub flags: &'static [FlagSpec],
@@ -817,6 +968,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "what binds this perimeter and what is claimable; with a claim held, the criterion and the constraints in full",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--limit"), switch("--since")],
@@ -843,6 +995,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "takes the task and freezes its done_criteria by hash; refuses one held, blocked, or finished on another branch",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--criteria"), flag("--ttl")],
@@ -875,6 +1028,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "the entity whole, frontmatter and body, byte for byte",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
@@ -906,6 +1060,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // to prevent.
         summary: "an id alone reads the log; an id and a message appends one and renews the claim, needed where a claim arbitrates work and not on a done or closed task",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 2,
         // Both optional, and what is given decides which of the two things the
         // verb does: an id alone reads, a message writes (§4).
@@ -943,6 +1098,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // decides, so the page names it (TASK-ca784c5feda4).
         summary: "runs the verifiers the task's verify: list names, records what ran, and moves the task to done; needs the claim, and a proof when that list is empty",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--proof")],
@@ -972,6 +1128,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "hands the task back, with the reason recorded in its log",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<id>]",
         flags: &[flag("--reason")],
@@ -1001,6 +1158,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "writes a task, an ADR or a spec that needs no hand finishing",
         subcommands: &["task", "adr", "spec"],
+        kinds: NEW_KINDS,
         max_positionals: 0,
         positional_help: "",
         flags: &[
@@ -1039,6 +1197,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "searches titles, scopes and criteria; --type spec reaches the specification, --status open lists what remains",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[
@@ -1079,6 +1238,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "where am I: branch, claim, perimeter, queue, findings",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--remote")],
@@ -1109,6 +1269,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "the ratification queue and the health of the corpus: what is proposed, who may ratify it, and which scopes have gone dead",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
@@ -1135,6 +1296,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "promotes a proposed ADR or spec to accepted, through a signed ratification commit; on the default branch only",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
@@ -1190,6 +1352,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "records that a person read this entity and stands behind it",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[],
@@ -1216,6 +1379,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "closes a task that will never be done; --reason is mandatory",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--reason")],
@@ -1248,6 +1412,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "changes blocked_by, references, scope, and a done_criteria no live claim freezes",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[
@@ -1292,6 +1457,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "appends a proof to a finished task: the one write allowed after done",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--proof"), switch("--detached"), switch("--compact")],
@@ -1339,6 +1505,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "changes the content field named, or opens the entity in $EDITOR",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<id>",
         flags: &[flag("--title"), flag("--body"), flag("--constraint")],
@@ -1370,6 +1537,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "the blocked_by DAG in readable text, indented under what blocks it",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
@@ -1386,6 +1554,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "what covers a path: the constraints that bind it, the specifications that govern it, and the tasks that touch it",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "<path>",
         flags: &[],
@@ -1413,6 +1582,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "a full-screen reader over this corpus: every entity with its status, a body whole, what binds it, and who holds what",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -1482,6 +1652,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "every verb of this table as a tool, over MCP on stdio, for a client that has no shell",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -1536,6 +1707,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "keeps the corpora you declared warm, so the ank you run answers sooner; it answers no verb and nothing depends on it",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         // Exactly the four §4 lists, and the shape of that list is the
@@ -1607,6 +1779,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // where a caller finds out, before scripting around it.
         summary: "the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[],
@@ -1632,6 +1805,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "rewrites the previous log directory as entries, one entity per entry, and removes what it read",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[],
@@ -1657,6 +1831,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "moves what is cold into .ank/archive/entities/: superseded documents, and every entry whose subject is cold",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--dry-run")],
@@ -1684,6 +1859,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "reads and writes .ank/config.yml: the key alone reads, a value writes, --unset removes",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 2,
         positional_help: "<key> [<value>]",
         flags: &[switch("--unset"), switch("--user")],
@@ -1712,6 +1888,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: true,
         summary: "creates .ank/ here or at <path>, writes config.yml, adds the refs/ank/* refspec; refuses --repo",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
         flags: &[flag("--at")],
@@ -1746,6 +1923,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "the skills this binary carries, one line each, and in a corpus how often each sibling is designated and fires; --install writes them to a directory and hands it to npx skills add",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--install")],
@@ -1796,6 +1974,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "replaces this binary with a published release through the route that placed it; --check reports the running and the latest version and installs nothing",
         subcommands: &[],
+        kinds: &[],
         max_positionals: 0,
         positional_help: "",
         flags: &[switch("--check"), flag("--version")],
@@ -1847,14 +2026,17 @@ pub const COMMANDS: &[CommandSpec] = &[
         coordinates: false,
         summary: "every verb grouped by the moment it is used, or one verb in full",
         subcommands: &[],
-        max_positionals: 1,
-        positional_help: "[<verb>]",
+        kinds: &[],
+        max_positionals: 2,
+        positional_help: "[<verb> [<kind>]]",
         flags: &[],
         refuses: &[
             refuses(ExitCode::NotFound, "no such verb; never a fallback to the general listing"),
+            refuses(ExitCode::NotFound, "no such kind of that verb; never a fallback to the whole verb"),
+            refuses(ExitCode::Generic, "a kind after a verb that writes no kinds"),
             UNPARSEABLE_CALL,
         ],
-        notes: &[],
+        notes: &["a second word names one kind of a verb that writes several, as in ank help new adr: what that kind takes, requires and refuses"],
         refuses_globals: &[],
         output: &[one(HELP_OUT)],
         owner_task: None,
@@ -1863,6 +2045,11 @@ pub const COMMANDS: &[CommandSpec] = &[
 
 pub fn spec_of(name: &str) -> Option<&'static CommandSpec> {
     COMMANDS.iter().find(|c| c.name == name)
+}
+
+/// One kind of a verb, by the name a caller types after it.
+pub fn kind_of(spec: &CommandSpec, name: &str) -> Option<&'static Kind> {
+    spec.kinds.iter().find(|k| k.name == name)
 }
 
 pub fn known_flags(spec: &CommandSpec) -> Vec<&'static str> {

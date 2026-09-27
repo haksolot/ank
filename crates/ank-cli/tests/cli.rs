@@ -19357,7 +19357,7 @@ fn json_golden_reading_verbs() {
     let r = golden_repo();
     for (name, args) in [
         ("help", &["help", "--json"][..]),
-        ("help-verb", &["help", "claim", "--json"][..]),
+        ("help-verb", &["help", "new", "adr", "--json"][..]),
         ("find", &["find", "Example", "--json"][..]),
         ("show", &["show", ID, "--json"][..]),
         ("graph", &["graph", "src/**", "--json"][..]),

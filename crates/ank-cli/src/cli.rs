@@ -118,6 +118,7 @@ pub type Result<T> = std::result::Result<T, CliError>;
 // what the contract crate declares. Keeping the names where they were is what
 // makes this a move: had the call sites changed too, the goldens proving the
 // output identical would have been proving it of different code.
+use ank_contract::verbs::{kind_of, FlagRule, Kind};
 pub use ank_contract::{
     find_flag, known_flags, long_of, short_of, spec_of, usage, CommandSpec, FlagSpec, COMMANDS,
     GLOBAL_FLAGS, GROUPS,
@@ -542,73 +543,223 @@ fn fields_json(prefix: &str, fields: &[ank_contract::shape::Field]) -> Vec<Strin
     rows
 }
 
-fn json_of(specs: &[&CommandSpec]) -> String {
-    let verbs: Vec<String> = specs
+/// Whether a line of the verb's page speaks to this kind (issue #504).
+///
+/// A note or a refusal of `new` that names a flag of the verb this kind does
+/// not take is about another kind: `--method names no sibling skill` is a
+/// task's refusal and has nothing to say on `ank help new adr`. Decided from
+/// the flags the text names rather than from a list beside each note, so a note
+/// added later lands on the right pages without anybody sorting it.
+fn speaks_to(text: &str, spec: &CommandSpec, kind: &Kind) -> bool {
+    text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+        .filter(|w| w.starts_with("--"))
+        .all(|w| !spec.flags.iter().any(|f| f.name == w) || kind.flags.contains(&w))
+}
+
+/// `a task`, `an adr`: the article the derived refusals below need.
+fn with_article(kind: &Kind) -> String {
+    match kind.name.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        true => format!("an {}", kind.name),
+        false => format!("a {}", kind.name),
+    }
+}
+
+/// The refusals a page lists, as `(code, when)`, read by the text and the JSON
+/// alike so the two cannot say different things.
+///
+/// On a verb's own page, the declared refusals and then what its kinds make of
+/// them: a requirement every kind shares is stated once, one that only some
+/// kinds carry is stated for each of them -- which is where `an adr with no
+/// --constraint` comes from, the exit 7 issue #504 met with no warning -- and
+/// each kind's refused flags on one line. On a kind's page, the declared
+/// refusals that speak to it; its own rows are its `requires` and `refuses`.
+fn refusals_of(spec: &CommandSpec, kind: Option<&Kind>) -> Vec<(ExitCode, String)> {
+    let mut rows: Vec<(ExitCode, String)> = spec
+        .refuses
         .iter()
-        .map(|spec| {
-            let refusals: Vec<String> = spec
+        .filter(|r| kind.is_none_or(|k| speaks_to(r.when, spec, k)))
+        .map(|r| (r.code, r.when.to_string()))
+        .collect();
+    if kind.is_some() {
+        return rows;
+    }
+    let shared = |rule: &FlagRule| {
+        spec.kinds
+            .iter()
+            .all(|k| k.requires.iter().any(|r| r.flag == rule.flag))
+    };
+    if let Some(first) = spec.kinds.first() {
+        for rule in first.requires.iter().filter(|r| shared(r)) {
+            rows.push((
+                rule.code,
+                format!("{} is required: {}", rule.flag, rule.when),
+            ));
+        }
+    }
+    for k in spec.kinds {
+        for rule in k.requires.iter().filter(|r| !shared(r)) {
+            rows.push((
+                rule.code,
+                format!("{} with no {}: {}", with_article(k), rule.flag, rule.when),
+            ));
+        }
+    }
+    for k in spec.kinds {
+        let mut codes: Vec<ExitCode> = k.refuses.iter().map(|r| r.code).collect();
+        codes.dedup();
+        for code in codes {
+            let flags: Vec<&str> = k
                 .refuses
                 .iter()
-                .map(|r| Obj::new().num("code", r.code).str("when", r.when).finish())
+                .filter(|r| r.code == code)
+                .map(|r| r.flag)
                 .collect();
-            let flags: Vec<String> = listed_flags(spec)
-                .into_iter()
-                .chain(globals_of(spec))
-                .map(|f| {
-                    // The short form is here and not only in the human listing:
-                    // `--json` is how a script reads the surface, and a mapping
-                    // it cannot see is a mapping it cannot use.
-                    let short = short_of(f.name).map(|c| format!("-{c}"));
-                    Obj::new()
-                        .str("name", f.name)
-                        .opt_str("short", short.as_deref())
-                        .bool("takes_value", f.takes_value)
-                        .bool("repeatable", f.repeatable)
-                        .finish()
-                })
-                .collect();
-            // `group` is here and not only in the human listing: §4 emits the
-            // same structure to everyone and lets only colour depend on the
-            // reader, so giving a machine the grouping and withholding it from
-            // the caller who scripts against it would be the split this ADR
-            // rejected, the other way round (ADR-e4a5a8873fe3).
-            // What comes back, which is the half this document was missing
-            // (ADR-6fd69efb629c). A caller can discover a flag by being refused
-            // one; it cannot discover a field by being handed it, because it has
-            // to know the name before it can look.
-            //
-            // `contract` is prepended rather than declared on each verb: it is
-            // on every document by construction, and twenty-two copies of one
-            // row is twenty-two chances for one of them to be wrong.
-            let returns: Vec<String> = spec
-                .output
-                .iter()
-                .map(|shape| {
-                    let mut fields = vec![Obj::new()
-                        .str("name", "contract")
-                        .str("type", "number")
-                        .bool("nullable", false)
-                        .finish()];
-                    fields.extend(fields_json("", shape.fields));
-                    Obj::new()
-                        .opt_str("when", shape.when)
-                        .array("fields", fields)
-                        .finish()
-                })
-                .collect();
+            rows.push((
+                code,
+                format!(
+                    "{} given {}, which another kind owns (ank help {} {})",
+                    with_article(k),
+                    flags.join(" "),
+                    spec.name,
+                    k.name
+                ),
+            ));
+        }
+    }
+    rows
+}
+
+/// The flags a page offers: the verb's, narrowed to the kind's on a kind's
+/// page, in the verb's order.
+fn offered_flags(spec: &CommandSpec, kind: Option<&Kind>) -> Vec<&'static FlagSpec> {
+    listed_flags(spec)
+        .into_iter()
+        .filter(|f| kind.is_none_or(|k| k.flags.contains(&f.name)))
+        .collect()
+}
+
+fn kind_usage(spec: &CommandSpec, kind: &Kind) -> String {
+    format!("ank {} {}", spec.name, kind.name)
+}
+
+fn kind_json(spec: &CommandSpec, kind: &Kind) -> String {
+    let rules = |rows: &[FlagRule]| -> Vec<String> {
+        rows.iter()
+            .map(|r| {
+                Obj::new()
+                    .str("flag", r.flag)
+                    .num("code", r.code)
+                    .str("when", r.when)
+                    .finish()
+            })
+            .collect()
+    };
+    Obj::new()
+        .str("name", kind.name)
+        .str("usage", &kind_usage(spec, kind))
+        .str("summary", kind.summary)
+        .strings("flags", kind.flags)
+        .array("requires", rules(kind.requires))
+        .array("refuses", rules(kind.refuses))
+        .finish()
+}
+
+/// A kind's rows as the text pages print them: the flag, the reason, the code.
+fn rule_lines(label: &str, rows: &[FlagRule], indent: usize) -> Vec<String> {
+    let width = rows.iter().map(|r| r.flag.len()).max().unwrap_or(0);
+    rows.iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let label = if i == 0 { label } else { "" };
+            format!(
+                "{:indent$}{label:<9} {:width$}  {} ({})",
+                "", r.flag, r.when, r.code
+            )
+        })
+        .collect()
+}
+
+fn json_of(specs: &[&CommandSpec]) -> String {
+    let verbs: Vec<String> = specs.iter().map(|spec| verb_json(spec, None)).collect();
+    Obj::document().array("verbs", verbs).finish()
+}
+
+/// One verb as `help --json` describes it, or one kind of it.
+fn verb_json(spec: &CommandSpec, kind: Option<&Kind>) -> String {
+    let refusals: Vec<String> = refusals_of(spec, kind)
+        .into_iter()
+        .map(|(code, when)| Obj::new().num("code", code).str("when", &when).finish())
+        .collect();
+    let flags: Vec<String> = offered_flags(spec, kind)
+        .into_iter()
+        .chain(globals_of(spec))
+        .map(|f| {
+            // The short form is here and not only in the human listing:
+            // `--json` is how a script reads the surface, and a mapping
+            // it cannot see is a mapping it cannot use.
+            let short = short_of(f.name).map(|c| format!("-{c}"));
             Obj::new()
-                .str("name", spec.name)
-                .str("usage", &usage(spec))
-                .str("summary", spec.summary)
-                .str("group", spec.group)
-                .array("flags", flags)
-                .strings("notes", spec.notes)
-                .array("refuses", refusals)
-                .array("returns", returns)
+                .str("name", f.name)
+                .opt_str("short", short.as_deref())
+                .bool("takes_value", f.takes_value)
+                .bool("repeatable", f.repeatable)
                 .finish()
         })
         .collect();
-    Obj::document().array("verbs", verbs).finish()
+    // `group` is here and not only in the human listing: §4 emits the
+    // same structure to everyone and lets only colour depend on the
+    // reader, so giving a machine the grouping and withholding it from
+    // the caller who scripts against it would be the split this ADR
+    // rejected, the other way round (ADR-e4a5a8873fe3).
+    // What comes back, which is the half this document was missing
+    // (ADR-6fd69efb629c). A caller can discover a flag by being refused
+    // one; it cannot discover a field by being handed it, because it has
+    // to know the name before it can look.
+    //
+    // `contract` is prepended rather than declared on each verb: it is
+    // on every document by construction, and twenty-two copies of one
+    // row is twenty-two chances for one of them to be wrong.
+    let returns: Vec<String> = spec
+        .output
+        .iter()
+        .map(|shape| {
+            let mut fields = vec![Obj::new()
+                .str("name", "contract")
+                .str("type", "number")
+                .bool("nullable", false)
+                .finish()];
+            fields.extend(fields_json("", shape.fields));
+            Obj::new()
+                .opt_str("when", shape.when)
+                .array("fields", fields)
+                .finish()
+        })
+        .collect();
+    let kinds: Vec<String> = match kind {
+        Some(k) => vec![kind_json(spec, k)],
+        None => spec.kinds.iter().map(|k| kind_json(spec, k)).collect(),
+    };
+    let notes: Vec<&str> = spec
+        .notes
+        .iter()
+        .copied()
+        .filter(|n| kind.is_none_or(|k| speaks_to(n, spec, k)))
+        .collect();
+    let usage = match kind {
+        Some(k) => kind_usage(spec, k),
+        None => usage(spec),
+    };
+    Obj::new()
+        .str("name", spec.name)
+        .str("usage", &usage)
+        .str("summary", spec.summary)
+        .str("group", spec.group)
+        .array("flags", flags)
+        .strings("notes", notes)
+        .array("refuses", refusals)
+        .array("kinds", kinds)
+        .array("returns", returns)
+        .finish()
 }
 
 /// `ank help` and `ank help <verb>` (§9).
@@ -637,32 +788,96 @@ pub fn help(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
             CliError::new(ExitCode::NotFound, format!("no such verb '{name}'"))
                 .with_hint("ank help")
         })?;
+        // `ank help new adr` (issue #504). A second word is a kind, on a verb
+        // that writes several, and nothing else: on any other verb it is the
+        // extra argument it always was, and a kind the verb does not write is a
+        // 2 for the reason an unknown verb is, never the whole verb instead.
+        let kind = match inv.positionals.get(1) {
+            None => None,
+            Some(k) if spec.kinds.is_empty() => {
+                return Err(CliError::new(
+                    ExitCode::Generic,
+                    format!("extra argument '{k}': '{name}' writes no kinds"),
+                )
+                .with_hint(format!("ank help {name}")))
+            }
+            Some(k) => Some(kind_of(spec, k).ok_or_else(|| {
+                CliError::new(ExitCode::NotFound, format!("no kind '{k}' of '{name}'"))
+                    .with_hint(format!("ank help {}", &usage(spec)["ank ".len()..]))
+            })?),
+        };
         if inv.json() {
-            let _ = writeln!(out, "{}", json_of(&[spec]));
+            let doc = Obj::document()
+                .array("verbs", [verb_json(spec, kind)])
+                .finish();
+            let _ = writeln!(out, "{doc}");
             return Ok(ExitCode::Ok);
         }
         if inv.quiet() {
             return Ok(ExitCode::Ok);
         }
-        let _ = writeln!(out, "{}", usage(spec));
-        if !spec.summary.is_empty() {
-            let _ = writeln!(out, "  {}", spec.summary);
+        match kind {
+            Some(k) => {
+                let _ = writeln!(out, "{}", kind_usage(spec, k));
+                let _ = writeln!(out, "  {}", k.summary);
+            }
+            None => {
+                let _ = writeln!(out, "{}", usage(spec));
+                if !spec.summary.is_empty() {
+                    let _ = writeln!(out, "  {}", spec.summary);
+                }
+            }
         }
-        let listed = listed_flags(spec);
+        let listed = offered_flags(spec, kind);
         if !listed.is_empty() {
             let flags: Vec<String> = listed.iter().map(|f| flag_display(f, true)).collect();
             let _ = writeln!(out, "  flags:    {}", flags.join(" "));
         }
         let _ = writeln!(out, "  global:   {}", globals_line(&globals_of(spec), true));
-        for (i, note) in spec.notes.iter().enumerate() {
+        let notes = spec
+            .notes
+            .iter()
+            .filter(|n| kind.is_none_or(|k| speaks_to(n, spec, k)));
+        for (i, note) in notes.enumerate() {
             let label = if i == 0 { "note:" } else { "" };
             let _ = writeln!(out, "  {label:<9} {note}");
         }
+        if let Some(k) = kind {
+            for line in rule_lines("requires:", k.requires, 2)
+                .into_iter()
+                .chain(rule_lines("refuses:", k.refuses, 2))
+            {
+                let _ = writeln!(out, "{line}");
+            }
+        }
         // What the verb refuses, and the code it comes back with (§9). The
         // question is asked before the call; the error is only available after.
-        for (i, r) in spec.refuses.iter().enumerate() {
-            let label = if i == 0 { "refuses:" } else { "" };
-            let _ = writeln!(out, "  {label:<9} {} ({})", r.when, r.code);
+        // On a kind's page the kind's own refusals open the list above, so the
+        // verb's continue it without a second label.
+        let label = if kind.is_some_and(|k| !k.refuses.is_empty()) {
+            ""
+        } else {
+            "refuses:"
+        };
+        for (i, (code, when)) in refusals_of(spec, kind).iter().enumerate() {
+            let label = if i == 0 { label } else { "" };
+            let _ = writeln!(out, "  {label:<9} {when} ({code})");
+        }
+        if kind.is_none() {
+            for k in spec.kinds {
+                let _ = writeln!(out, "  {:<9} {}", format!("{}:", k.name), k.summary);
+                let flags: Vec<String> = offered_flags(spec, Some(k))
+                    .iter()
+                    .map(|f| flag_display(f, false))
+                    .collect();
+                let _ = writeln!(out, "            {:<9} {}", "takes:", flags.join(" "));
+                for line in rule_lines("requires:", k.requires, 12)
+                    .into_iter()
+                    .chain(rule_lines("refuses:", k.refuses, 12))
+                {
+                    let _ = writeln!(out, "{line}");
+                }
+            }
         }
         return Ok(ExitCode::Ok);
     }
