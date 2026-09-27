@@ -734,6 +734,46 @@ mod tests {
         );
     }
 
+    /// **Not read and could not be read are two states, and neither is an
+    /// empty list** (TASK-0e544fa90566).
+    ///
+    /// The same two frames as above, asked what they say about the corpus. The
+    /// first has read nothing and says so, in the listing as well as the
+    /// header; the second was refused and says that instead. Neither may count
+    /// a corpus nobody read or blame a filter nobody set -- which is what both
+    /// drew, measured by hand on a corpus whose config does not parse.
+    #[test]
+    fn a_corpus_not_yet_read_and_one_refused_are_told_apart() {
+        let (mut paper, mut wakes, _size) = driven((100, 30), Vec::new());
+        session(&nowhere(), &mut wakes, &mut paper, None).expect("a session");
+        let (first, refused) = (&paper.frames[0], &paper.frames[1]);
+        for (frame, what) in [(first, "the unread frame"), (refused, "the refused frame")] {
+            for never in ["in the corpus)", "no entity matches this filter"] {
+                assert!(!frame.contains(never), "{what} says '{never}':\n{frame}");
+            }
+        }
+        assert!(
+            first.contains("2 ENTITIES   (not read)"),
+            "the listing's title does not say it has not read:\n{first}"
+        );
+        assert!(
+            first.matches("the corpus has not been read").count() >= 2,
+            "the header and the listing both say it:\n{first}"
+        );
+        assert!(
+            !refused.contains("has not been read"),
+            "a refused read is not one that has not happened:\n{refused}"
+        );
+        assert!(
+            refused.contains("2 ENTITIES   (could not be read)"),
+            "the listing's title does not say the read was refused:\n{refused}"
+        );
+        assert!(
+            refused.matches("the corpus could not be read").count() >= 2,
+            "the header and the listing both say it:\n{refused}"
+        );
+    }
+
     /// A terminal that cannot be read from is an environment to repair, and it
     /// is the one way out of a session that is not a zero.
     #[test]

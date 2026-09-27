@@ -1659,15 +1659,38 @@ fn a_claim_held_elsewhere_is_named_with_its_holder() {
 
 /// A refusal the CLI gave is what the screen shows, in the CLI's own bytes, and
 /// the session survives it (ADR-8bd76e8d7c4e).
+///
+/// **The refusal is made, not hoped for** (TASK-0e544fa90566). This used to
+/// type `:LOG-000000000000`, a line the reader stopped reading when
+/// ADR-559eebf5c6f5 made input a keystroke, so no call was refused at all; it
+/// went on passing because the unread listing said `no entity matches this
+/// filter`, and `no entity` was what it looked for. A corpus whose config
+/// does not parse refuses every read, and the bytes it refuses with are the
+/// CLI's own -- measured first, by running `find` here, below.
 #[cfg(unix)]
 #[test]
 fn a_refusal_on_screen_is_the_one_the_cli_gave() {
     let repo = Repo::seeded("refusal");
-    // `LOG-000000000000` is not in this corpus, so `show` refuses with the
-    // sentence and the code it always gives.
-    let seen = drive(&repo, HOLDER, &[":LOG-000000000000", "q"]);
+    let config = repo.0.join(".ank/config.yml");
+    let mut text = std::fs::read_to_string(&config).expect("seeded writes a config");
+    text.push_str("verifiers: []\n");
+    std::fs::write(&config, text).unwrap();
+    let refused = Command::new(ANK)
+        .args(["find", "--json"])
+        .current_dir(&repo.0)
+        .env("ANK_AGENT", HOLDER)
+        .output()
+        .expect("the binary must have been built");
+    assert_eq!(
+        refused.status.code(),
+        Some(1),
+        "the corpus must refuse a read"
+    );
+
+    let seen = drive(&repo, HOLDER, &["q"]);
+    let words = seen.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
-        seen.contains("no entity") || seen.contains("LOG-000000000000"),
+        words.contains("error[1]:") && words.contains("duplicate field"),
         "the refusal reached the screen:\n{seen}"
     );
     assert!(
