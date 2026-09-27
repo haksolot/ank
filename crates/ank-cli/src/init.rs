@@ -40,6 +40,11 @@ pub const GITIGNORE_LINE: &str = ".ank/index.db*";
 /// so a repository is never left carrying both.
 const LEGACY_GITIGNORE_LINE: &str = ".ank/index.db";
 pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
+/// The command that adds [`REFSPEC`] once origin exists, and the one `init`,
+/// `status` and `check` all name (TASK-623d80886c2f). `init` itself, because it
+/// is idempotent and adds the refspec from exactly that state: a narrower verb
+/// would be a second place the rule lives.
+pub const REFSPEC_REPAIR: &str = "ank init";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
@@ -152,6 +157,11 @@ pub struct Report {
     pub wrote_gitignore: bool,
     pub wrote_agents_pointer: bool,
     pub added_refspec: bool,
+    /// The refspec is not there and could not be added, because no remote
+    /// named `origin` has a URL yet (TASK-623d80886c2f). Said rather than
+    /// skipped in silence: the usual order for a new repository -- `git init`,
+    /// `ank init`, then the remote -- lands here every time.
+    pub refspec_waits_for_origin: bool,
 }
 
 impl Report {
@@ -236,6 +246,14 @@ impl Report {
         if v.is_empty() {
             v.push("already initialised, nothing to do".to_string());
         }
+        // Not an effect, so it neither counts as a change nor displaces the
+        // line above: it is what this run could not do, and what will.
+        if self.refspec_waits_for_origin {
+            v.push(format!(
+                "refspec {REFSPEC} not added: no remote named origin yet, \
+                 run this once it exists ({REFSPEC_REPAIR})"
+            ));
+        }
         v
     }
 }
@@ -297,7 +315,11 @@ pub fn init_at(root: &Path) -> Result<Report> {
     let agents = root.join("AGENTS.md");
     report.wrote_agents_pointer = ensure_line(&agents, AGENTS_POINTER)?;
 
-    report.added_refspec = ensure_refspec(root)?;
+    match ensure_refspec(root)? {
+        OriginFetch::Lacks => report.added_refspec = true,
+        OriginFetch::NoOrigin => report.refspec_waits_for_origin = true,
+        OriginFetch::Fetches => {}
+    }
 
     Ok(report)
 }
@@ -434,20 +456,59 @@ fn ensure_gitignore(path: &Path) -> Result<bool> {
 /// which is the step the guide already describes and which the second branch
 /// below completes; what it buys is that the command `status` prints works from
 /// every state `init` can leave behind.
-fn ensure_refspec(root: &Path) -> Result<bool> {
-    let existing =
-        git::run(root, &["config", "--get-all", "remote.origin.fetch"]).unwrap_or_default();
-    if existing.lines().any(|l| l.trim() == REFSPEC) {
-        return Ok(false);
+///
+/// Answers with the state it found: `Lacks` is the one it repaired.
+fn ensure_refspec(root: &Path) -> Result<OriginFetch> {
+    let found = origin_fetch(root);
+    if found == OriginFetch::Lacks {
+        git::run(root, &["config", "--add", "remote.origin.fetch", REFSPEC])?;
     }
-    // One process for the only question that matters: whether `origin` has a
-    // URL. Exit 1 is "no such key", which is the empty answer.
-    let url = git::run(root, &["config", "--get", "remote.origin.url"]).unwrap_or_default();
-    if url.trim().is_empty() {
-        return Ok(false);
+    Ok(found)
+}
+
+/// What `origin` fetches, as far as `refs/ank/*` is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OriginFetch {
+    /// No remote named `origin` has a URL: nothing to fetch from, nothing
+    /// missing.
+    NoOrigin,
+    /// `origin` carries [`REFSPEC`].
+    Fetches,
+    /// `origin` has a URL and its fetch refspec does not carry [`REFSPEC`], so
+    /// claims and completion refs are never fetched. The state `init` repairs
+    /// and `status` and `check` report (TASK-623d80886c2f), and the state every
+    /// fresh clone is in, because the refspec lives in `.git/config`.
+    Lacks,
+}
+
+/// **One predicate, read by `init`, `status` and `check`**, so the verb that
+/// repairs and the verbs that report can never disagree about what is missing.
+///
+/// One process: `--get-regexp` answers the URL and every fetch line together.
+/// Exit 1 is "no such key", which is the empty answer, and a git that will not
+/// run is taken as no origin -- this is a reader's hint, never a refusal.
+pub fn origin_fetch(root: &Path) -> OriginFetch {
+    let said = git::output(
+        root,
+        &["config", "--get-regexp", r"^remote\.origin\.(url|fetch)$"],
+    )
+    .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    .unwrap_or_default();
+    let mut url = false;
+    let mut fetches = false;
+    for line in said.lines() {
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        match key {
+            "remote.origin.url" if !value.trim().is_empty() => url = true,
+            "remote.origin.fetch" if value.trim() == REFSPEC => fetches = true,
+            _ => {}
+        }
     }
-    git::run(root, &["config", "--add", "remote.origin.fetch", REFSPEC])?;
-    Ok(true)
+    match (fetches, url) {
+        (true, _) => OriginFetch::Fetches,
+        (false, true) => OriginFetch::Lacks,
+        (false, false) => OriginFetch::NoOrigin,
+    }
 }
 
 #[cfg(test)]
@@ -561,10 +622,26 @@ mod tests {
         let t = Temp::new_repo();
         init_at(&t.0).unwrap();
         let second = init_at(&t.0).unwrap();
-        assert_eq!(second, Report::default(), "nothing should be redone");
+        // Nothing is redone, and the refspec origin does not have yet is said
+        // again rather than dropped (TASK-623d80886c2f).
+        assert_eq!(
+            second,
+            Report {
+                refspec_waits_for_origin: true,
+                ..Report::default()
+            },
+            "nothing should be redone"
+        );
+        assert!(!second.changed());
         assert_eq!(
             second.lines_terse(),
-            vec!["already initialised, nothing to do"]
+            vec![
+                "already initialised, nothing to do".to_string(),
+                format!(
+                    "refspec {REFSPEC} not added: no remote named origin yet, \
+                     run this once it exists ({REFSPEC_REPAIR})"
+                ),
+            ]
         );
 
         // Once origin has a URL the refspec is written once, and a further

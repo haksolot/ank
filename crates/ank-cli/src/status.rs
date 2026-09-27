@@ -282,6 +282,14 @@ pub fn run(
     // commit to compare a corpus against.
     let default_branch = default.as_ref().and_then(|d| d.as_ref().ok()).cloned();
 
+    // **What origin fetches, asked once** (TASK-623d80886c2f). It is a line of
+    // its own below, it is a finding `check` counts, and so it is part of the
+    // key the cached verdict hangs on: `.git/config` is in no file the index
+    // digests, and a verdict keyed without it would go on counting a signal
+    // `ank init` has already repaired. One `git config` process, handed to the
+    // inspection rather than asked a second time (ADR-cc65f1388a71).
+    let origin = coordinated.then(|| crate::init::origin_fetch(&repo.corpus));
+
     // **The corpus verdict, and where it comes from is the whole of what
     // changed here** (ADR-f3d1dea65d84). It used to be `human::inspect`
     // unconditionally: a walk of both storage layouts and a parse of every
@@ -300,6 +308,7 @@ pub fn run(
         &plane,
         default_branch.as_deref(),
         here_refs.as_deref(),
+        origin,
     )?;
     let drift = verdict.drift_branch.as_ref().map(|branch| human::Drift {
         branch: branch.clone(),
@@ -537,6 +546,20 @@ pub fn run(
         let _ = writeln!(out, "{} {}", style.key("refs"), drift.line());
     }
 
+    // The fetch side of the same plane, and asked with no network: whether a
+    // plain `git fetch` would bring `refs/ank/*` at all. Said only when it
+    // would not, because the ordinary answer is that it does, and no origin is
+    // level 0 and nominal (§7). The sentence is `check`'s, from the one place
+    // both read it.
+    if origin == Some(crate::init::OriginFetch::Lacks) {
+        let _ = writeln!(
+            out,
+            "{} {}",
+            style.yellow("warning:"),
+            human::origin_refspec_gap()
+        );
+    }
+
     // Immediately above the claim, because it is the claim lines it explains.
     // An identity that fell back is the one fact nothing else on this path
     // names: `log` and `done` from the wrong one are refused on state — the
@@ -692,8 +715,9 @@ fn corpus_verdict(
     plane: &context::Plane,
     default_branch: Option<&str>,
     refs: Option<&[git::AnkRef]>,
+    origin: Option<crate::init::OriginFetch>,
 ) -> Result<Verdict> {
-    let key = verdict_key(repo, index, rows, plane, default_branch, refs)?;
+    let key = verdict_key(repo, index, rows, plane, default_branch, refs, origin)?;
     if let Some(key) = &key {
         if let Some(hit) = index.verdict(key) {
             return Ok(hit);
@@ -701,7 +725,7 @@ fn corpus_verdict(
     }
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
-    let report = human::inspect(repo, cfg, None, false)?;
+    let report = human::inspect_with(repo, cfg, None, false, origin)?;
     let verdict = Verdict {
         faults: report.faults(),
         signals: report.signals(),
@@ -737,8 +761,8 @@ fn corpus_verdict(
 /// The rest are the inputs that would otherwise be silent: the default branch,
 /// which the drift and the completion refs are judged against; `config.yml`,
 /// which declares the verifiers and the budget the findings are measured with;
-/// `allowed_signers`, which decides whether a ratification is checkable; and the
-/// build, because the checks are its and an upgrade asks a different question
+/// `allowed_signers`, which decides whether a ratification is checkable; what
+/// origin fetches, which lives in `.git/config`; and the build, because the checks are its and an upgrade asks a different question
 /// rather than reusing the old answer.
 fn verdict_key(
     repo: &Repo,
@@ -747,6 +771,7 @@ fn verdict_key(
     plane: &context::Plane,
     default_branch: Option<&str>,
     refs: Option<&[git::AnkRef]>,
+    origin: Option<crate::init::OriginFetch>,
 ) -> Result<Option<String>> {
     // `for-each-ref` would not run, so half the key is unknown. Nothing is read
     // from the cache and nothing is written to it.
@@ -819,6 +844,9 @@ fn verdict_key(
         }
         None => material.push_str("default none\n"),
     }
+    // What origin fetches, because `check` reports an origin that does not
+    // fetch `refs/ank/*` and `.git/config` is in no file digested above.
+    material.push_str(&format!("origin {origin:?}\n"));
     // Absent and empty are the same key on purpose: both are a corpus that
     // declares nothing, which is what the readers of these two files already
     // make of them.
