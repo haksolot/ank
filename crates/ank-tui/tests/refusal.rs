@@ -20,6 +20,12 @@ use terminal::{Live, Repo};
 /// Wide enough that the note is not cut before its error.
 const WINDOW: (u16, u16) = (120, 40);
 
+/// The screen as one line of words, so an assertion about the note survives
+/// wherever the window happened to wrap it.
+fn flat(frame: &str) -> String {
+    frame.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// **The note over a refused `find` carries the command line above the CLI's
 /// own error.**
 ///
@@ -41,8 +47,12 @@ fn a_refused_read_is_shown_under_the_command_that_was_refused() {
     );
 
     let live = Live::open(&repo, WINDOW.0, WINDOW.1);
-    let frame = live.until("the refusal", |t| t.contains("duplicate field"));
-    let flat = frame.split_whitespace().collect::<Vec<_>>().join(" ");
+    // Flattened before it is searched: the error carries the corpus's absolute
+    // path, and on macOS (`/private/var/folders/...`) that is long enough for
+    // the note to wrap between `duplicate` and `field`. Measured on
+    // macos-latest, where a raw `contains` timed out on a correct frame.
+    let frame = live.until("the refusal", |t| flat(t).contains("duplicate field"));
+    let flat = flat(&frame);
     let named = flat
         .find("ank find")
         .expect("the note names the refused call");
