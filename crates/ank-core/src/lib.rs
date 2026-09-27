@@ -36,8 +36,9 @@ pub use log::{
     body_remainder, message_fields, message_of, parse_log, parse_log_file, split_message, LogEntry,
 };
 pub use model::{
-    Adr, AdrStatus, CriteriaBy, Entity, Log, Proof, ProofType, ProofVia, Spec, SpecStatus, Task,
-    TaskStatus, Verified, MIN_SCHEMA, RECORDS_EDIT, RECORDS_KINDS, SCHEMA_VERSION,
+    is_peer_name, Adr, AdrStatus, CriteriaBy, Entity, Log, PeerBlocker, Proof, ProofType, ProofVia,
+    Spec, SpecStatus, Task, TaskStatus, Verified, MIN_SCHEMA, RECORDS_EDIT, RECORDS_KINDS,
+    SCHEMA_VERSION,
 };
 pub use parse::{
     has_crlf, normalise_line_endings, parse_adr, parse_entity, parse_log_entity, parse_spec,

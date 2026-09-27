@@ -402,7 +402,15 @@ impl Fields for Task {
             "scope" => Seq(&self.scope),
             // Required, and therefore written `[]` when empty: a task with no
             // blocker says so rather than staying silent about it.
-            "blocked_by" => Flow(self.blocked_by.iter().map(|b| b.to_string()).collect()),
+            // A peer's blocker in the same list, after the local ones
+            // (ADR-c23bef1cc93e).
+            "blocked_by" => Flow(
+                self.blocked_by
+                    .iter()
+                    .map(|b| b.to_string())
+                    .chain(self.peer_blocked_by.iter().map(|b| b.to_string()))
+                    .collect(),
+            ),
             "done_criteria" => Block(self.done_criteria.as_deref()?),
             "criteria_by" => Bare(self.criteria_by?.as_str().to_string()),
             "verify" => {

@@ -569,6 +569,7 @@ mod tests {
             status: TaskStatus::Open,
             scope: vec!["src/**".into()],
             blocked_by: vec![],
+            peer_blocked_by: vec![],
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],

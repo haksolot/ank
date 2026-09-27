@@ -1483,7 +1483,7 @@ fn dispatch(
             s.identity_source,
             out,
         ),
-        "graph" => crate::graph::run(&inv, &s.repo, out),
+        "graph" => crate::graph::run(&inv, &s.repo, &s.config, out),
         "scope" => crate::commands::scope(&inv, &s.repo, &s.config, &s.identity, out),
         "log" => crate::commands::log(&inv, &s.repo, &s.config, &s.identity, out),
         "release" => crate::commands::release(&inv, &s.repo, &s.identity, out),
@@ -1496,7 +1496,7 @@ fn dispatch(
         "close" => crate::human::close(&inv, &s.repo, &s.identity, out),
         "attest" => crate::human::attest(&inv, &s.repo, &s.identity, out),
         "edit" => crate::edit::run(&inv, &s.repo, &s.identity, out),
-        "amend" => crate::human::amend(&inv, &s.repo, &s.identity, out),
+        "amend" => crate::human::amend(&inv, &s.repo, &s.config, &s.identity, out),
         "show" => crate::human::show(&inv, &s.repo, &s.config, out),
         _ => Err(not_implemented(spec)),
     }?;

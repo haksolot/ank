@@ -2051,6 +2051,58 @@ fn check_task(
         }
     }
 
+    // A peer's blocker (ADR-c23bef1cc93e): a peer not declared, or a task the
+    // peer does not hold, is a fault, as a local blocker that does not exist
+    // is. A peer that cannot be read is a signal: the edge holds, `claim` says
+    // so, and whether a sibling checkout sits beside this one is a fact about
+    // the machine and not about the corpus.
+    let mut peers: HashMap<&str, std::result::Result<HashMap<EntityId, String>, String>> =
+        HashMap::new();
+    for b in &t.peer_blocked_by {
+        if !cfg.peers.contains_key(&b.peer) {
+            report.findings.push(Finding::fault(
+                &t.id,
+                format!(
+                    "blocked_by names {b}, an undeclared peer (ank config peers.{} <path>)",
+                    b.peer
+                ),
+            ));
+            continue;
+        }
+        let read = peers.entry(b.peer.as_str()).or_insert_with(|| {
+            crate::repo::open_peer(repo, cfg, &b.peer)
+                .and_then(|peer| peer.statuses())
+                .map_err(|e| match e.hint {
+                    Some(h) => format!("{} ({h})", e.message),
+                    None => e.message,
+                })
+        });
+        match read {
+            Err(why) => report.findings.push(Finding::signal(
+                &t.id,
+                format!("blocked_by names {b}, which cannot be read, so it holds: {why}"),
+            )),
+            Ok(statuses) => match statuses.get(&b.id).map(String::as_str) {
+                None => report.findings.push(Finding::fault(
+                    &t.id,
+                    format!(
+                        "blocked_by names {b}, a task peer '{}' does not hold",
+                        b.peer
+                    ),
+                )),
+                Some("closed") if t.status != TaskStatus::Closed => {
+                    report.findings.push(Finding::signal(
+                        &t.id,
+                        format!(
+                            "blocked by {b}, which is closed: close down the chain or rewrite it"
+                        ),
+                    ))
+                }
+                Some(_) => {}
+            },
+        }
+    }
+
     // The criterion set by whoever claimed the task rather than by whoever
     // created it. Not forbidden, and visible.
     if t.criteria_by == Some(CriteriaBy::Claimer) {
@@ -6701,6 +6753,7 @@ fn compact(inv: &Invocation, repo: &Repo, id: &EntityId, out: &mut dyn Write) ->
 pub fn amend(
     inv: &Invocation,
     repo: &Repo,
+    cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
@@ -6767,8 +6820,30 @@ pub fn amend(
         repo,
         &format!("ank amend {prefix} --drop-scope"),
     )?;
-    let add_blocked = resolve_all(&store, inv.values("--blocked-by"))?;
-    let drop_blocked = resolve_all(&store, inv.values("--drop-blocked-by"))?;
+    // `<id>@<peer>` on either side (ADR-c23bef1cc93e): one added is resolved in
+    // that peer, read-only, as a local one is here; one dropped is matched
+    // against what the task stores and never opened, since the edge worth
+    // dropping may be the one whose peer is gone.
+    let (add_peer, add_local): (Vec<&String>, Vec<&String>) = inv
+        .values("--blocked-by")
+        .iter()
+        .partition(|r| crate::repo::peer_id(r.trim()).is_some());
+    let (drop_peer, drop_local): (Vec<&String>, Vec<&String>) = inv
+        .values("--drop-blocked-by")
+        .iter()
+        .partition(|r| crate::repo::peer_id(r.trim()).is_some());
+    let add_blocked = resolve_all(&store, add_local)?;
+    let drop_blocked = resolve_all(&store, drop_local)?;
+    let mut add_peer_blocked: Vec<ank_core::PeerBlocker> = Vec::new();
+    for raw in &add_peer {
+        if let crate::repo::Blocker::Peer(b) =
+            crate::repo::blocker(repo, cfg, &format!("amend {prefix} --blocked-by"), raw)?
+        {
+            if !add_peer_blocked.contains(&b) {
+                add_peer_blocked.push(b);
+            }
+        }
+    }
     // A dropped reference is **not** resolved against the corpus, and that is
     // the whole point of the flag: the case it exists for is a citation naming
     // an entity this corpus no longer holds, which `check` reports as a fault
@@ -6781,6 +6856,8 @@ pub fn amend(
         && drop_scope.is_empty()
         && add_blocked.is_empty()
         && drop_blocked.is_empty()
+        && add_peer.is_empty()
+        && drop_peer.is_empty()
         && add_refs.is_empty()
         && drop_refs.is_empty()
         && criteria.is_none()
@@ -6824,7 +6901,11 @@ pub fn amend(
             // finished task as a fault no verb could clear, and a guard that
             // holds only the traceable path pushes toward the untraceable one.
             if matches!(task.status, TaskStatus::Done | TaskStatus::Closed)
-                && (criteria.is_some() || !add_blocked.is_empty() || !drop_blocked.is_empty())
+                && (criteria.is_some()
+                    || !add_blocked.is_empty()
+                    || !drop_blocked.is_empty()
+                    || !add_peer.is_empty()
+                    || !drop_peer.is_empty())
             {
                 return Err(CliError::new(
                     ExitCode::Prerequisite,
@@ -6864,6 +6945,36 @@ pub fn amend(
             }
             for b in &drop_blocked {
                 changes.push(format!("-blocked_by {b}"));
+            }
+            // A peer's edge, dropped by the form it is stored under, a prefix
+            // of the id included; added once resolved above.
+            for raw in &drop_peer {
+                let Some((prefix, name)) = crate::repo::peer_id(raw.trim()) else {
+                    continue;
+                };
+                let before = task.peer_blocked_by.len();
+                let mut gone = Vec::new();
+                task.peer_blocked_by.retain(|b| {
+                    let hit = b.peer == name && b.id.to_string().starts_with(prefix);
+                    if hit {
+                        gone.push(b.to_string());
+                    }
+                    !hit
+                });
+                if task.peer_blocked_by.len() == before {
+                    return Err(CliError::new(
+                        ExitCode::Prerequisite,
+                        format!("{} does not block {id}", raw.trim()),
+                    )
+                    .with_hint(format!("ank show {id}")));
+                }
+                changes.extend(gone.into_iter().map(|b| format!("-blocked_by {b}")));
+            }
+            for b in add_peer_blocked {
+                if !task.peer_blocked_by.contains(&b) {
+                    changes.push(format!("+blocked_by {b}"));
+                    task.peer_blocked_by.push(b);
+                }
             }
 
             amend_scope(&mut task.scope, &add_scope, &drop_scope, &id, &mut changes)?;
@@ -6970,7 +7081,11 @@ pub fn amend(
             }
         }
         Entity::Adr(mut adr) => {
-            if !add_blocked.is_empty() || !drop_blocked.is_empty() {
+            if !add_blocked.is_empty()
+                || !drop_blocked.is_empty()
+                || !add_peer.is_empty()
+                || !drop_peer.is_empty()
+            {
                 return Err(CliError::new(
                     ExitCode::Generic,
                     "blocked_by applies to a task: an ADR blocks nothing",
@@ -7046,7 +7161,11 @@ pub fn amend(
             // silently ignored teaches the caller it worked. A spec is a
             // document — it blocks nothing and is measured by nothing — so the
             // scope is the whole of what this verb has to offer it.
-            if !add_blocked.is_empty() || !drop_blocked.is_empty() {
+            if !add_blocked.is_empty()
+                || !drop_blocked.is_empty()
+                || !add_peer.is_empty()
+                || !drop_peer.is_empty()
+            {
                 return Err(CliError::new(
                     ExitCode::Generic,
                     "blocked_by applies to a task: a spec blocks nothing",
@@ -7326,10 +7445,13 @@ fn parse_all(raw: &[String], id: &EntityId) -> Result<Vec<EntityId>> {
 /// Every reference resolved at the point of the edit. An unknown one refused
 /// here rather than in `check`, where nobody can attribute it to the act that
 /// caused it — the same doctrine `new` applies to `--blocked-by`.
-fn resolve_all(store: &Store, raw: &[String]) -> Result<Vec<EntityId>> {
+fn resolve_all<S: AsRef<str>>(
+    store: &Store,
+    raw: impl IntoIterator<Item = S>,
+) -> Result<Vec<EntityId>> {
     let mut out = Vec::new();
     for r in raw {
-        let id = store.resolve(r.trim())?;
+        let id = store.resolve(r.as_ref().trim())?;
         if !out.contains(&id) {
             out.push(id);
         }
@@ -8156,7 +8278,7 @@ mod tests {
                 "review" => review(&inv, &repo, &cfg, &mut out)?,
                 "accept" => accept(&inv, &repo, &cfg, who, &mut out)?,
                 "close" => close(&inv, &repo, who, &mut out)?,
-                "amend" => amend(&inv, &repo, who, &mut out)?,
+                "amend" => amend(&inv, &repo, &cfg, who, &mut out)?,
                 "show" => show(&inv, &repo, &cfg, &mut out)?,
                 other => panic!("not a human verb: {other}"),
             };
@@ -8259,6 +8381,7 @@ mod tests {
                 .iter()
                 .map(|b| EntityId::parse(b).unwrap())
                 .collect(),
+            peer_blocked_by: vec![],
             done_criteria: Some("A verifiable criterion.\n".into()),
             criteria_by: Some(CriteriaBy::Creator),
             verify: vec![],

@@ -411,6 +411,12 @@ pub struct Task {
     pub status: TaskStatus,
     pub scope: Vec<String>,
     pub blocked_by: Vec<EntityId>,
+    /// The `blocked_by` entries that name a task of a declared peer, as
+    /// `<id>@<peer>` (ADR-c23bef1cc93e). One list in the file, two here: a
+    /// local blocker is resolved against this corpus and a peer's only through
+    /// that peer, read-only, so no caller of `blocked_by` can mistake one for
+    /// the other. Written after the local ones, in the same list.
+    pub peer_blocked_by: Vec<PeerBlocker>,
     pub done_criteria: Option<String>,
     pub criteria_by: Option<CriteriaBy>,
     pub verify: Vec<String>,
@@ -437,11 +443,63 @@ pub struct Task {
     pub body: String,
 }
 
+/// Whether `s` can be the name of a peer.
+///
+/// Two characters at least, so that a scope entry can never be confused with a
+/// Windows drive letter: `C:/Users` is a path on a machine, `front:src/**` is a
+/// glob under a declared corpus, and one character of difference between the
+/// two readings would be a corpus meaning something else on one platform.
+///
+/// Here rather than in the CLI because a stored `blocked_by` entry names a peer
+/// too, and the grammar of a peer's name has one definition.
+pub fn is_peer_name(s: &str) -> bool {
+    s.len() >= 2
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// A `blocked_by` entry naming a task of a declared peer, `<id>@<peer>`
+/// (ADR-c23bef1cc93e): the form the reader already prints for an entity whose
+/// home is a peer, read back in.
+///
+/// Stored whole, the full identifier and never a prefix: a prefix is resolved
+/// in the peer when the edge is written, as a local one is in this corpus.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct PeerBlocker {
+    pub id: EntityId,
+    pub peer: String,
+}
+
+impl PeerBlocker {
+    /// The stored form: a whole identifier, `@`, a peer's name. Anything else
+    /// is [`Error::InvalidId`], as a malformed local blocker is.
+    pub fn parse(s: &str) -> Result<Self> {
+        let invalid = || Error::InvalidId(s.to_string());
+        let (id, peer) = s.rsplit_once('@').ok_or_else(invalid)?;
+        if !is_peer_name(peer) {
+            return Err(invalid());
+        }
+        Ok(PeerBlocker {
+            id: EntityId::parse(id).map_err(|_| invalid())?,
+            peer: peer.to_string(),
+        })
+    }
+}
+
+impl std::fmt::Display for PeerBlocker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}@{}", self.id, self.peer)
+    }
+}
+
 impl Task {
     /// `blocked` is derived, never entered: blocked if and only if at least
     /// one `blocked_by` is not `done`. The resolver is supplied by the caller
     /// (the index, in practice). An unknown reference is an error, not a
     /// silent unblocking.
+    ///
+    /// The local list only: a peer's blocker is answered by that peer, and
+    /// the caller that can open it asks there ([`Task::peer_blocked_by`]).
     pub fn active_blockers<'a, F>(&'a self, status_of: F) -> Result<Vec<&'a EntityId>>
     where
         F: Fn(&EntityId) -> Option<TaskStatus>,
