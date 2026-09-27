@@ -325,6 +325,42 @@ fn declared_root(from: &Repo, declared: &str) -> PathBuf {
     }
 }
 
+/// Where the peer `name` of the corpus `from` is on this machine, and how to
+/// spell it in a warning: the reader's override when there is one
+/// (ADR-da2819aef598), the declaration in `config.yml` otherwise.
+///
+/// **The one resolution both ends of a binding go through.** A reader opens a
+/// peer through its own declaration, and the peer's `bb:**` is resolved through
+/// the peer's declaration back to the reader (`Peer::binds`); an override read
+/// at only one of the two leaves the other comparing against a path that does
+/// not exist here, and the binding still vanishes.
+///
+/// **An identity is asked only of a reader who has overridden something**, so a
+/// reader who has not pays no git process for a feature they do not use. A
+/// relative override resolves against the declaring root, as the declaration it
+/// replaces does.
+fn peer_root(from: &Repo, name: &str, declared: &str) -> Option<(PathBuf, String)> {
+    if crate::config::has_peer_overrides() {
+        if let Some(path) = identity(&from.corpus)
+            .and_then(|id| crate::config::peer_override(&id, name))
+            .filter(|p| !p.is_empty())
+        {
+            return Some((declared_root(from, &path), path));
+        }
+    }
+    (!declared.is_empty()).then(|| (declared_root(from, declared), declared.to_string()))
+}
+
+/// The command that points the peer `name` of `from` somewhere else for this
+/// reader alone, or the one that removes the declaration where the corpus has
+/// no identity to key an override on.
+fn settle(from: &Repo, name: &str) -> String {
+    match identity(&from.corpus) {
+        Some(id) => format!("ank config --user peers.{id}.{name} <path>"),
+        None => format!("ank config --unset peers.{name}"),
+    }
+}
+
 /// Whether two paths name the same corpus, asked of the filesystem rather than
 /// of the strings.
 ///
@@ -467,20 +503,22 @@ pub fn peers_of(from: &Repo, cfg: &Config) -> (Vec<Peer>, Vec<String>) {
     let mut peers = Vec::new();
     let mut warnings = Vec::new();
     for (name, declared) in &cfg.peers {
-        if declared.is_empty() {
+        let Some((root, declared)) = peer_root(from, name, declared) else {
             warnings.push(format!(
                 "peer '{name}' declares no path, answered without it \
                  (ank config peers.{name} <path>)"
             ));
             continue;
-        }
-        let root = declared_root(from, declared);
+        };
         let repo = match at(&root) {
             Ok(repo) => repo,
             Err(_) => {
+                // The layout differs here, which is the reader's to say and
+                // never `config.yml`'s (ADR-da2819aef598).
                 warnings.push(format!(
                     "peer '{name}' at {declared} is not a corpus, answered without it \
-                     (ank config --unset peers.{name})"
+                     ({})",
+                    settle(from, name)
                 ));
                 continue;
             }
@@ -511,12 +549,13 @@ impl Peer {
     /// reader's: that is what makes the entry mean the same thing wherever it is
     /// read, and mean nothing at all where the peer is not declared (§7).
     pub fn binds(&self, name: &str, reader: &Repo) -> bool {
-        match self.config.peers.get(name) {
-            Some(declared) if !declared.is_empty() => {
-                same_corpus(&declared_root(&self.repo, declared), &reader.corpus)
-            }
-            _ => false,
-        }
+        // Through the reader's override too, or a peer whose layout differs
+        // here would be opened and then bind nothing (ADR-da2819aef598).
+        self.config
+            .peers
+            .get(name)
+            .and_then(|declared| peer_root(&self.repo, name, declared))
+            .is_some_and(|(root, _)| same_corpus(&root, &reader.corpus))
     }
 }
 
