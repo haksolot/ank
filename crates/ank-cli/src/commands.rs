@@ -1561,6 +1561,7 @@ fn free_of_live_claims<'a>(
 pub fn scope(
     inv: &Invocation,
     repo: &Repo,
+    cfg: &Config,
     identity: &str,
     out: &mut dyn Write,
 ) -> Result<ExitCode> {
@@ -1605,6 +1606,21 @@ pub fn scope(
     let adrs = bucket(EntityKind::Adr);
     let specs = bucket(EntityKind::Spec);
     let tasks = bucket(EntityKind::Task);
+    // **What a declared peer binds here, resolved as `context` resolves it**
+    // (§7, TASK-2f5d6af5de36), and through the same function: an ADR of a
+    // corpus this one reads, whose scope names this corpus through the peer's
+    // own declarations. Listed among the ADRs as `<id>@<peer>`, the form
+    // `context` serves it in, because a rule binds or it does not and the verb
+    // that shows why a path is constrained cannot leave out one that does.
+    // Specifications and tasks do not cross: claims do not, and `context`
+    // serves neither.
+    let mut warnings = Vec::new();
+    let mut peer_adrs = context::peer_adrs(repo, cfg, perimeter.as_deref(), &mut warnings);
+    peer_adrs.sort_by(|a, b| a.short.cmp(&b.short));
+    for w in &warnings {
+        eprintln!("warning: {w}");
+    }
+    let total = hits.len() + peer_adrs.len();
 
     if inv.json() {
         let item = |r: &&Row| {
@@ -1615,12 +1631,23 @@ pub fn scope(
                 .str("title", &r.title)
                 .finish()
         };
-        let adr: Vec<String> = adrs.iter().map(item).collect();
+        let adr: Vec<String> = adrs
+            .iter()
+            .map(item)
+            .chain(peer_adrs.iter().map(|p| {
+                Obj::new()
+                    .str("id", &p.short)
+                    .str("kind", EntityKind::Adr.as_str())
+                    .str("status", p.adr.status.as_str())
+                    .str("title", &p.adr.title)
+                    .finish()
+            }))
+            .collect();
         let spec: Vec<String> = specs.iter().map(item).collect();
         let task: Vec<String> = tasks.iter().map(item).collect();
         let doc = Obj::document()
             .str("path", shown)
-            .num("total", hits.len())
+            .num("total", total)
             .array("adr", adr)
             .array("specs", spec)
             .array("tasks", task)
@@ -1636,7 +1663,7 @@ pub fn scope(
     // a path the caller mistyped is indistinguishable from an empty one unless
     // the path is echoed.
     let _ = writeln!(out, "{shown}");
-    if hits.is_empty() {
+    if total == 0 {
         // Explicit, never an empty answer. Silence here reads as "nothing
         // constrains this", which is the same sentence as "ank could not tell",
         // and only one of the two is safe to act on.
@@ -1653,13 +1680,14 @@ pub fn scope(
         ("SPECIFICATIONS", &specs),
         ("TASKS", &tasks),
     ] {
-        if group.is_empty() {
+        let crossing: &[context::PeerAdr] = if label == "ADR" { &peer_adrs } else { &[] };
+        if group.is_empty() && crossing.is_empty() {
             continue;
         }
         let _ = writeln!(
             out,
             "\n{}",
-            style.header(&format!("{label} ({})", group.len()))
+            style.header(&format!("{label} ({})", group.len() + crossing.len()))
         );
         for r in group.iter() {
             let short = shorts
@@ -1676,6 +1704,21 @@ pub fn scope(
                     crate::context::coordination_of(&coord, &r.id)
                 )),
                 r.title
+            );
+        }
+        // No claim crosses a corpus (§7), so a peer's ADR is never held here
+        // and carries no coordination: its status is the whole marker.
+        for p in crossing {
+            let _ = writeln!(
+                out,
+                "{}{}  {} {}",
+                crate::style::glyph::UNHELD,
+                style.id(&p.short),
+                style.status(&crate::context::marker_for(
+                    p.adr.status.as_str(),
+                    &crate::context::Coordination::Free
+                )),
+                p.adr.title
             );
         }
     }
