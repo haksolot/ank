@@ -119,6 +119,7 @@ fn each_kind_is_printed_with_its_fields_in_canonical_order() {
             "scope",
             "constraint",
             "see",
+            "amends",
             "supersedes",
             "ratified",
             "verified",

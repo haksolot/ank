@@ -73,6 +73,10 @@ struct AdrFm {
     scope: Vec<String>,
     constraint: String,
     see: Option<String>,
+    // `default` rather than `Option`, as `references` on a spec: an empty list
+    // and an absent one say the same thing, that this ADR amends nothing.
+    #[serde(default)]
+    amends: Vec<String>,
     supersedes: Option<String>,
     ratified: Option<String>,
     #[serde(default)]
@@ -365,6 +369,13 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         raw.schema,
     )?;
     let supersedes = raw.supersedes.as_deref().map(EntityId::parse).transpose()?;
+    // An identifier and nothing more, as a spec's `references` is: whether the
+    // target is an ADR, and an accepted one, is a `check` finding (§3).
+    let amends = raw
+        .amends
+        .iter()
+        .map(|s| EntityId::parse(s))
+        .collect::<Result<Vec<_>>>()?;
 
     Ok(Adr {
         id,
@@ -376,6 +387,7 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         scope: raw.scope,
         constraint: raw.constraint,
         see: raw.see,
+        amends,
         supersedes,
         ratified: raw.ratified,
         verified: raw.verified,

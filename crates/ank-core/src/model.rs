@@ -472,6 +472,14 @@ pub struct Adr {
     pub scope: Vec<String>,
     pub constraint: String,
     pub see: Option<String>,
+    /// The ADRs this one changes in part (ADR-9ee76b578257).
+    ///
+    /// A declared field and never a sentence, for the reason a spec's
+    /// `references` is one: `check` resolves what a parser can reach, and an
+    /// identifier in the body is prose. Each ADR named here stays accepted and
+    /// binding for everything the amendment does not touch, which is what
+    /// separates this from `supersedes`: an amendment retires nothing.
+    pub amends: Vec<EntityId>,
     pub supersedes: Option<EntityId>,
     /// Signed ratification commit (set by `accept`).
     pub ratified: Option<String>,

@@ -870,6 +870,10 @@ pub fn inspect_with(
                     Entity::Log(l) => Some(&l.about),
                     _ => None,
                 },
+                amends: match e {
+                    Entity::Adr(a) => &a.amends,
+                    _ => &[],
+                },
             })
             .collect();
         let branch = default_branch.as_ref().and_then(|b| b.as_deref().ok());
@@ -2651,6 +2655,16 @@ fn check_adr(
 ) {
     let view = Anchored::from(a);
     check_succession(&view, adr_ids, entities, unread, archived, report);
+    check_relation(
+        &AMENDS,
+        &a.id,
+        a.status == AdrStatus::Superseded,
+        &a.amends,
+        entities,
+        unread,
+        archived,
+        report,
+    );
     check_anchor(&view, repo, "its constraint is no longer injected", report);
     if a.constraint.trim().is_empty() {
         report
@@ -2677,7 +2691,16 @@ fn check_spec(
 ) {
     let view = Anchored::from(s);
     check_succession(&view, spec_ids, entities, unread, archived, report);
-    check_references(s, entities, unread, archived, report);
+    check_relation(
+        &REFERENCES,
+        &s.id,
+        s.status == SpecStatus::Superseded,
+        &s.references,
+        entities,
+        unread,
+        archived,
+        report,
+    );
     check_anchor(
         &view,
         repo,
@@ -2730,28 +2753,37 @@ fn check_spec(
 /// not a reference, and scanning bodies for citations would make the check
 /// depend on how somebody phrased a paragraph — which is the drift this exists
 /// to catch, moved into the detector.
-fn check_references(
-    s: &Spec,
+///
+/// **An ADR's `amends` is resolved by the same reader** (ADR-9ee76b578257):
+/// "check resolves it the way it resolves a reference", which is this function
+/// with the kind rule and the repair of the other relation, so the two cannot
+/// come to disagree on what following a succession means.
+#[allow(clippy::too_many_arguments)]
+fn check_relation(
+    rel: &Relation,
+    citer: &EntityId,
+    citer_superseded: bool,
+    targets: &[EntityId],
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
     archived: &BTreeSet<String>,
     report: &mut Report,
 ) {
-    if s.status == SpecStatus::Superseded {
+    if citer_superseded {
         return;
     }
     let find = |id: &EntityId| entities.iter().find(|(_, e)| e.id() == id).map(|(_, e)| e);
-    for target in &s.references {
+    for target in targets {
         // The kind rule, read from the id and before any lookup: an id states
         // its own kind, and a task that does not exist is refused for the same
         // reason the one that does is.
-        if !crate::commands::citable(target.kind()) {
+        if !(rel.allowed)(target.kind()) {
             report.findings.push(Finding::fault(
-                &s.id,
+                citer,
                 format!(
-                    "{} (ank amend {} --drop-reference {target})",
-                    crate::commands::not_citable(target),
-                    s.id
+                    "{} ({})",
+                    (rel.not_allowed)(target),
+                    (rel.repair)(citer, target)
                 ),
             ));
             continue;
@@ -2766,7 +2798,7 @@ fn check_references(
             if let Some((view, named)) = chain_head(target, entities)
                 .and_then(|head| find(&head).and_then(Anchored::of).map(|v| (v, head)))
             {
-                judge_reference(s, target, view, &named, unread, report);
+                judge_reference(rel, citer, target, view, &named, unread, report);
             }
             continue;
         }
@@ -2779,11 +2811,11 @@ fn check_references(
                 continue;
             }
             report.findings.push(Finding::fault(
-                &s.id,
+                citer,
                 format!(
-                    "references {target}, which does not exist \
-                     (ank amend {} --drop-reference {target})",
-                    s.id
+                    "{} {target}, which does not exist ({})",
+                    rel.field,
+                    (rel.repair)(citer, target)
                 ),
             ));
             continue;
@@ -2821,16 +2853,44 @@ fn check_references(
             }
         }
 
-        judge_reference(s, target, view, &named, unread, report);
+        judge_reference(rel, citer, target, view, &named, unread, report);
     }
 }
+
+/// One declared relation `check` resolves: the field, which kinds it may name,
+/// and the command a finding against it hands its reader.
+struct Relation {
+    field: &'static str,
+    allowed: fn(EntityKind) -> bool,
+    not_allowed: fn(&EntityId) -> String,
+    repair: fn(&EntityId, &EntityId) -> String,
+}
+
+/// A spec's `references` (ADR-c88f99e1c16e).
+const REFERENCES: Relation = Relation {
+    field: "references",
+    allowed: crate::commands::citable,
+    not_allowed: crate::commands::not_citable,
+    repair: |citer, target| format!("ank amend {citer} --drop-reference {target}"),
+};
+
+/// An ADR's `amends` (ADR-9ee76b578257). An ADR and nothing else, and the
+/// repair is to read the amendment: `amend` reaches no field of an ADR, so
+/// naming a flag here would name a command that refuses.
+const AMENDS: Relation = Relation {
+    field: "amends",
+    allowed: |kind| kind == EntityKind::Adr,
+    not_allowed: crate::commands::not_amendable,
+    repair: |citer, _| format!("ank show {citer}"),
+};
 
 /// What a citation owes once the document it ends on is in hand: nothing when
 /// that document is accepted, a signal when it is only proposed, and a signal
 /// when it is superseded with nowhere left to follow -- the last only when the
 /// whole corpus was read, since the next link may be a file that did not parse.
 fn judge_reference(
-    s: &Spec,
+    rel: &Relation,
+    citer: &EntityId,
     target: &EntityId,
     view: Anchored,
     named: &EntityId,
@@ -2842,13 +2902,17 @@ fn judge_reference(
         // reference resolves and nothing is owed.
         AdrStatus::Accepted => {}
         AdrStatus::Proposed => report.findings.push(Finding::signal(
-            &s.id,
+            citer,
             if named == target {
-                format!("references {target}, which is not accepted (ank accept {target})")
+                format!(
+                    "{} {target}, which is not accepted (ank accept {target})",
+                    rel.field
+                )
             } else {
                 format!(
-                    "references {target}, whose succession ends on {named}, which is \
-                     not accepted (ank accept {named})"
+                    "{} {target}, whose succession ends on {named}, which is \
+                     not accepted (ank accept {named})",
+                    rel.field
                 )
             },
         )),
@@ -2864,16 +2928,18 @@ fn judge_reference(
         // could not load, which is the same case one link further on.
         AdrStatus::Superseded if unread.is_empty() => {
             report.findings.push(Finding::signal(
-                &s.id,
+                citer,
                 if named == target {
                     format!(
-                        "references {target}, which is superseded and names no successor \
-                         (ank show {target})"
+                        "{} {target}, which is superseded and names no successor \
+                         (ank show {target})",
+                        rel.field
                     )
                 } else {
                     format!(
-                        "references {target}, whose succession ends on {named}, which is \
-                         superseded and names no successor (ank show {named})"
+                        "{} {target}, whose succession ends on {named}, which is \
+                         superseded and names no successor (ank show {named})",
+                        rel.field
                     )
                 },
             ));
@@ -7325,6 +7391,11 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
     // twice (TASK-8654f0c81393).
     let index = Index::open_with_archive(&repo.ank)?;
     // An ADR has no `blocked_by` to have two directions of, so it costs nothing.
+    // Both directions of `amends`, over an ADR only (ADR-9ee76b578257).
+    let amendments = match &loaded.entity {
+        Entity::Adr(a) => Some(amends_of(repo, &index, &store, a)?),
+        _ => None,
+    };
     let edges = match &loaded.entity {
         Entity::Task(t) => Some(edges_of(repo, &index, t)?),
         // `blocked_by` is the only relation between tasks (§3), so no other
@@ -7421,6 +7492,16 @@ pub fn show(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) ->
         }
         if let Entity::Task(t) = &loaded.entity {
             proof_section(out, t, &detached, inv.style());
+        }
+        // **Silent when there is none**, so `show` on an ADR that neither
+        // amends nor is amended is byte for byte what it was before the field.
+        if let Some((amends, amended_by)) = &amendments {
+            if !amends.is_empty() {
+                edge_section(out, "AMENDS", amends, inv.style());
+            }
+            if !amended_by.is_empty() {
+                edge_section(out, "AMENDED BY", amended_by, inv.style());
+            }
         }
     }
     Ok(ExitCode::Ok)
@@ -7665,32 +7746,12 @@ struct Edge {
 /// many tasks are still *held up* — and a count is not a list.
 fn edges_of(repo: &Repo, index: &Index, task: &Task) -> Result<(Vec<Edge>, Vec<Edge>)> {
     let all = index.all()?;
-    let shorts = crate::context::shorts_of(repo)?;
-    let row_of: HashMap<&EntityId, &crate::index::Row> = all.iter().map(|r| (&r.id, r)).collect();
-    // The same coordination every other listing reads, so a blocker that is
-    // claimed says so here too instead of reading `[in_progress]` at a reader
-    // who has just been told `[claimed:who]` by `context`.
-    let coord = crate::context::coordination(&repo.corpus, &mut Vec::new())?;
-
-    let edge = |id: &EntityId| -> Edge {
-        let row = row_of.get(id);
-        Edge {
-            id: id.clone(),
-            short: shorts.get(id).cloned().unwrap_or_else(|| id.to_string()),
-            status: row.map(|r| r.status.clone()),
-            // The whole marker, brackets included, because it is the marker
-            // that varies and not just the word inside it.
-            marker: row.map(|r| {
-                crate::context::marker_for(&r.status, crate::context::coordination_of(&coord, id))
-            }),
-            title: row.map(|r| r.title.clone()),
-        }
-    };
+    let edges = Edges::new(repo, &all)?;
 
     // Declared order for the blockers: the frontmatter printed just above says
     // the same thing in the same order, and two orders for one list is a
     // difference a reader has to account for before trusting either.
-    let blocked_by: Vec<Edge> = task.blocked_by.iter().map(&edge).collect();
+    let blocked_by: Vec<Edge> = task.blocked_by.iter().map(|id| edges.edge(id)).collect();
 
     // The reverse direction is derived and has no declared order, so it takes
     // the one every other listing uses.
@@ -7699,9 +7760,96 @@ fn edges_of(repo: &Repo, index: &Index, task: &Task) -> Result<(Vec<Edge>, Vec<E
         .filter(|r| r.kind == EntityKind::Task && r.blocked_by.contains(&task.id))
         .collect();
     waiting.sort_by_key(|r| r.id.to_string());
-    let unblocks: Vec<Edge> = waiting.iter().map(|r| edge(&r.id)).collect();
+    let unblocks: Vec<Edge> = waiting.iter().map(|r| edges.edge(&r.id)).collect();
 
     Ok((blocked_by, unblocks))
+}
+
+/// What an ADR amends, and the accepted ADRs that amend it (ADR-9ee76b578257).
+///
+/// **Only an accepted amendment is listed on the amended side.** The amended
+/// ADR stays accepted and binding, and what `show` adds beside it is where the
+/// partial invalidation becomes visible to its reader; a proposal has changed
+/// nothing yet, and listing it would tell that reader part of a rule no longer
+/// holds on the strength of a decision nobody ratified.
+///
+/// The reverse direction is not in the index, so it is read from the accepted
+/// ADRs themselves, hot and archived, and only when the entity shown is an ADR.
+fn amends_of(
+    repo: &Repo,
+    index: &Index,
+    store: &Store,
+    adr: &Adr,
+) -> Result<(Vec<Edge>, Vec<Edge>)> {
+    let all = index.all()?;
+    let edges = Edges::uncoordinated(repo, &all)?;
+    let amends: Vec<Edge> = adr.amends.iter().map(|id| edges.edge(id)).collect();
+    let mut by: Vec<&crate::index::Row> = all
+        .iter()
+        .filter(|r| r.kind == EntityKind::Adr && r.status == AdrStatus::Accepted.as_str())
+        .filter(|r| r.id != adr.id)
+        .filter(|r| {
+            matches!(
+                store.load_with_archive(&r.id).map(|l| l.entity),
+                Ok(Entity::Adr(a)) if a.amends.contains(&adr.id)
+            )
+        })
+        .collect();
+    by.sort_by_key(|r| r.id.to_string());
+    let amended_by: Vec<Edge> = by.iter().map(|r| edges.edge(&r.id)).collect();
+    Ok((amends, amended_by))
+}
+
+/// One line per related entity, read from the index rows a caller already
+/// holds: the short id, the status through the coordination plane, the title.
+struct Edges<'a> {
+    row_of: HashMap<&'a EntityId, &'a crate::index::Row>,
+    shorts: HashMap<EntityId, String>,
+    coord: HashMap<EntityId, crate::context::Coordination>,
+}
+
+impl<'a> Edges<'a> {
+    /// Between tasks: the same coordination every other listing reads, so a
+    /// blocker that is claimed says so here too instead of reading
+    /// `[in_progress]` at a reader who has just been told `[claimed:who]` by
+    /// `context`.
+    fn new(repo: &Repo, all: &'a [crate::index::Row]) -> Result<Self> {
+        let mut edges = Self::uncoordinated(repo, all)?;
+        edges.coord = crate::context::coordination(&repo.corpus, &mut Vec::new())?;
+        Ok(edges)
+    }
+
+    /// Between ADRs, which nobody claims: the claim plane is not read, so
+    /// `show` on an ADR starts no git process for a question with no answer.
+    fn uncoordinated(repo: &Repo, all: &'a [crate::index::Row]) -> Result<Self> {
+        Ok(Edges {
+            row_of: all.iter().map(|r| (&r.id, r)).collect(),
+            shorts: crate::context::shorts_of(repo)?,
+            coord: HashMap::new(),
+        })
+    }
+
+    fn edge(&self, id: &EntityId) -> Edge {
+        let row = self.row_of.get(id);
+        Edge {
+            id: id.clone(),
+            short: self
+                .shorts
+                .get(id)
+                .cloned()
+                .unwrap_or_else(|| id.to_string()),
+            status: row.map(|r| r.status.clone()),
+            // The whole marker, brackets included, because it is the marker
+            // that varies and not just the word inside it.
+            marker: row.map(|r| {
+                crate::context::marker_for(
+                    &r.status,
+                    crate::context::coordination_of(&self.coord, id),
+                )
+            }),
+            title: row.map(|r| r.title.clone()),
+        }
+    }
 }
 
 fn edge_section(out: &mut dyn Write, heading: &str, edges: &[Edge], style: crate::style::Style) {
@@ -8086,6 +8234,7 @@ mod tests {
             scope: scope.iter().map(|s| s.to_string()).collect(),
             constraint: "A binding rule.\n".into(),
             see: None,
+            amends: Vec::new(),
             supersedes: None,
             ratified: None,
             verified: Vec::new(),

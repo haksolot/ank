@@ -23,8 +23,8 @@ use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_contract::ExitCode;
-use ank_core::{EntityId, EntityKind};
-use std::collections::BTreeSet;
+use ank_core::{Entity, EntityId, EntityKind};
+use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
 /// What the cold rule reads of a hot entity, and nothing more: the rule needs no
@@ -35,12 +35,19 @@ pub struct Hot<'a> {
     /// The stored status, spelled as the file spells it; empty for an entry.
     pub status: &'a str,
     pub about: Option<&'a EntityId>,
+    /// What an ADR amends, read only of an accepted one: empty on every other
+    /// entity, and on an ADR whose amendment has not been ratified.
+    pub amends: &'a [EntityId],
 }
 
 /// **The cold set of a hot corpus, and the one place it is decided**
 /// (ADR-467ce7e9cda1), sorted by id.
 ///
-/// A document -- a spec or an ADR -- is cold when it is superseded. An entry is
+/// A document -- a spec or an ADR -- is cold when it is superseded, **unless an
+/// accepted amendment names it** (ADR-9ee76b578257): an amendment leaves the ADR
+/// it amends binding for everything it does not touch, and moving that ADR out
+/// of the hot corpus would leave the amendment naming a file nobody reads. An
+/// entry is
 /// cold when its subject is: a superseded document, a task done on the default
 /// branch, or an entity the archive already holds, since an entry never
 /// outlives its subject in the hot corpus. A task is never cold.
@@ -55,10 +62,16 @@ pub fn cold(
     archived: &BTreeSet<String>,
     done_on_default: &dyn Fn(&EntityId) -> bool,
 ) -> Vec<EntityId> {
+    let amended: BTreeSet<&EntityId> = hot
+        .iter()
+        .filter(|h| h.kind == EntityKind::Adr && h.status == "accepted")
+        .flat_map(|h| h.amends.iter())
+        .collect();
     let documents: BTreeSet<&EntityId> = hot
         .iter()
         .filter(|h| matches!(h.kind, EntityKind::Spec | EntityKind::Adr))
         .filter(|h| h.status == "superseded")
+        .filter(|h| !amended.contains(h.id))
         .map(|h| h.id)
         .collect();
     let done_here: BTreeSet<&EntityId> = hot
@@ -110,6 +123,16 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
     // set a move is chosen from.
     let index = Index::open(&repo.ank)?;
     let rows = index.all()?;
+    // The index carries no `amends`, so it is read from the accepted ADRs
+    // themselves: the only ones whose amendments the rule counts.
+    let amends: HashMap<&EntityId, Vec<EntityId>> = rows
+        .iter()
+        .filter(|r| r.kind == EntityKind::Adr && r.status == "accepted")
+        .filter_map(|r| match store.load(&r.id).map(|l| l.entity) {
+            Ok(Entity::Adr(a)) if !a.amends.is_empty() => Some((&r.id, a.amends)),
+            _ => None,
+        })
+        .collect();
     let hot: Vec<Hot> = rows
         .iter()
         .map(|r| Hot {
@@ -117,6 +140,7 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
             kind: r.kind,
             status: &r.status,
             about: r.about.as_ref(),
+            amends: amends.get(&r.id).map(Vec::as_slice).unwrap_or(&[]),
         })
         .collect();
     let archived: BTreeSet<String> = store
