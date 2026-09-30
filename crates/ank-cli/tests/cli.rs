@@ -16332,6 +16332,520 @@ fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
     );
 }
 
+/// **A file sitting under a directory git ignores does not make its scope
+/// alive.** `tracked_files` used to walk the filesystem itself, blind to
+/// `.gitignore`, so a build artifact or a downloaded cache living beside
+/// `.ank/` read as a match for any scope naming its path. It never is one: an
+/// ignored file names nothing the corpus reads, and the honest verdict is the
+/// one `check` gives a path nobody ever wrote at all.
+///
+/// An ADR rather than a task, so the status branching `scope_verdicts` does
+/// for an open or closed task never enters: a decision's scope matching
+/// nothing is unconditionally a dead scope.
+#[test]
+fn a_scope_under_a_gitignored_directory_is_dead() {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "ignore build/"]);
+    // Real bytes on disk, never added: exactly what `research/`, `.venv/` or
+    // any other directory a `.gitignore` names holds in a real checkout.
+    std::fs::create_dir_all(r.0.join("build")).unwrap();
+    std::fs::write(r.0.join("build/output.bin"), "not part of the corpus\n").unwrap();
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file git ignores",
+            "--scope",
+            "build/output.bin",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'build/output.bin'"),
+        "a file under a directory git ignores must not count as tracked, \
+         or the scope reads alive on a coincidence of a path: {text}"
+    );
+
+    // The positive control this test needs: a fallback broken in a way that
+    // returns no files at all (`ls-files` failing on some platform, or a
+    // regression that treats "matches nothing" as "matches everything") would
+    // also call `build/output.bin` dead, passing the assertion above for the
+    // wrong reason. A scope on a file `.gitignore` never names must stay
+    // alive right beside it, in the same run.
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file git tracks",
+            "--scope",
+            "docs/doc.md",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        !text.contains("dead scope 'docs/doc.md'"),
+        "a tracked file must still read alive next to the ignored one, or this \
+         test would pass on a fallback that reports every scope dead: {text}"
+    );
+}
+
+/// **A tracked file removed with a plain `rm`, never `git rm`, does not keep
+/// its scope alive on the index entry alone.** `git ls-files --cached` lists
+/// the index, not the disk; a scope reading this as tracked would be exactly
+/// the false "alive" ADR-3094538d831e's dead-scope promise exists to rule
+/// out for a deletion `git status` already sees.
+#[test]
+fn a_scope_on_a_file_removed_from_disk_without_git_rm_is_dead() {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file removed without git rm",
+            "--scope",
+            "src/lib.rs",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // Gone from the worktree, still in the index: exactly what a plain `rm`
+    // (or a build step that deletes generated-then-tracked-by-mistake output)
+    // leaves behind, `git status` already calling it deleted.
+    std::fs::remove_file(r.0.join("src/lib.rs")).unwrap();
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'src/lib.rs'"),
+        "a file gone from disk without `git rm` must not keep its scope alive \
+         on the cached index entry alone: {text}"
+    );
+}
+
+/// **A corpus placed under a directory this repository's own `.gitignore`
+/// excludes is not thereby unreadable.** `git ls-files -z --cached --others
+/// --exclude-standard`, run with its working directory inside such a
+/// directory, answers empty with exit 0 -- the same answer a tree with no
+/// files at all gives -- and reading that as "there is nothing here" instead
+/// of "git does not know" made a real file beside `.ank/` invisible to the
+/// corpus its own ADR scoped against.
+#[test]
+fn a_scope_under_a_corpus_the_repository_ignores_is_alive() {
+    let root = scratch::root().join(format!(
+        "ank-cli-it-ignored-corpus-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("workspace/.ank/entities")).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "core.autocrlf", "false"][..],
+        &["config", "commit.gpgsign", "false"][..],
+        &["config", "gc.auto", "0"][..],
+        &["config", "maintenance.auto", "false"][..],
+    ] {
+        let out = git_command(&root)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    // The corpus sits entirely under a directory this (parent) repository
+    // ignores whole -- a legitimate layout ADR-9e56318631f3 allows, anchor and
+    // location free to differ -- and `ank` is invoked with `--repo` pointed
+    // straight at it, so `git ls-files`'s working directory is inside the
+    // ignored directory itself.
+    std::fs::write(root.join(".gitignore"), "workspace/\n").unwrap();
+    let out = git_command(&root).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&root)
+        .args(["commit", "-qm", "ignore workspace/"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    std::fs::write(
+        root.join("workspace/.ank/config.yml"),
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("workspace/src")).unwrap();
+    std::fs::write(root.join("workspace/src/lib.rs"), "// x\n").unwrap();
+
+    let invoke = |args: &[&str]| -> Output {
+        ank_command()
+            .args(args)
+            .arg("--repo")
+            .arg(root.join("workspace"))
+            .env("ANK_AGENT", AGENT)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    };
+
+    let out = invoke(&[
+        "new",
+        "adr",
+        "--title",
+        "A rule scoped at a file under an ignored corpus",
+        "--scope",
+        "src/lib.rs",
+        "--constraint",
+        "A binding rule.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = invoke(&["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "check must actually run rather than refuse to start, or the \
+         assertion below would pass on a `--repo` git cannot resolve just as \
+         readily as on the fix: {}",
+        stderr(&out)
+    );
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !text.contains("dead scope 'src/lib.rs'"),
+        "a file that exists under a corpus the enclosing repository ignores \
+         must still be read: git answering empty from inside an ignored \
+         directory is not the same fact as an empty tree: {text}"
+    );
+}
+
+/// The other half of `a_scope_matching_only_another_checkout_is_dead`: a real
+/// `git worktree add`, not only a hand-built dangling gitfile. The boundary
+/// under test is the same `.git` entry either way, but only the dangling
+/// fixture had a regression test before this.
+#[test]
+fn a_scope_matching_only_a_real_nested_worktree_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    r.git(&["branch", "other"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "task",
+            "--title",
+            "Work over the vendored tree",
+            "--scope",
+            "vendor/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    std::fs::create_dir_all(r.0.join("vendor")).unwrap();
+    r.git(&["worktree", "add", "-q", "vendor/realwt", "other"]);
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!("{id}: scope 'vendor/**' matches no file yet")),
+        "a real `git worktree add` nested under the corpus must be excluded \
+         the same way a dangling gitfile is: {said}"
+    );
+}
+
+/// **A bare scope naming a submodule's own root reads dead, the same verdict
+/// main gives it.** A submodule's gitlink is one `ls-files` entry equal to
+/// the submodule's path itself, with no trailing segment beneath it for an
+/// ancestor check to catch; left unfiltered it makes a bare scope naming that
+/// path read alive on the gitlink entry alone, never on a real file.
+#[test]
+fn a_bare_scope_naming_a_submodule_root_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // A real submodule needs a repository to point at, seeded once here and
+    // never touched again by anything this test asserts.
+    let upstream = r.0.with_extension("submodule-origin");
+    let _ = std::fs::remove_dir_all(&upstream);
+    std::fs::create_dir_all(&upstream).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let out = git_command(&upstream)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    std::fs::write(upstream.join("lib.rs"), "// theirs\n").unwrap();
+    let out = git_command(&upstream).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&upstream)
+        .args(["commit", "-qm", "seed"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // `protocol.file.allow=always`: the local clone `submodule add` performs
+    // is otherwise refused by git's own default (CVE-2022-39253), on a path
+    // this test built itself and nowhere else.
+    let url = upstream.to_string_lossy().replace('\\', "/");
+    let out = git_command(&r.0)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            &url,
+            "vendor/sub",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git submodule add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    r.git(&["commit", "-qm", "add submodule"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "task",
+            "--title",
+            "Work inside the vendored submodule",
+            "--scope",
+            "vendor/sub",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!("{id}: scope 'vendor/sub' matches no file yet")),
+        "a bare scope naming a submodule's own root must read dead, the same \
+         verdict a non-glob directory scope gets everywhere else: {said}"
+    );
+}
+
+/// **Second review, point 20: the same submodule, a clone that never
+/// initialized it.** A plain `git clone` -- never `--recurse-submodules`,
+/// the state of an ordinary CI runner and of every clone `Repo::cloned`
+/// makes elsewhere in this suite -- leaves `vendor/sub/` an empty directory
+/// with no `.git` inside it at all: the gitlink is still the index entry
+/// `ls-files --cached` lists, `--deleted` does not list it (git never calls
+/// an uninitialized submodule deleted), and the `.git`-existence filter the
+/// test above relies on finds nothing to catch. Both the bare scope and the
+/// glob must read exactly as dead as `main` reads them.
+#[test]
+fn a_bare_scope_naming_an_uninitialized_submodule_root_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // A real submodule needs a repository to point at, seeded once here and
+    // never touched again by anything this test asserts.
+    let upstream = r.0.with_extension("submodule-origin-2");
+    let _ = std::fs::remove_dir_all(&upstream);
+    std::fs::create_dir_all(&upstream).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let out = git_command(&upstream)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    std::fs::write(upstream.join("lib.rs"), "// theirs\n").unwrap();
+    let out = git_command(&upstream).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&upstream)
+        .args(["commit", "-qm", "seed"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // `protocol.file.allow=always`: the local clone `submodule add` performs
+    // is otherwise refused by git's own default (CVE-2022-39253), on a path
+    // this test built itself and nowhere else.
+    let url = upstream.to_string_lossy().replace('\\', "/");
+    let out = git_command(&r.0)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            &url,
+            "vendor/sub",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git submodule add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    r.git(&["commit", "-qm", "add submodule"]);
+
+    // The clone this test is actually about: a plain `clone`, never told to
+    // recurse into submodules, of the repository above.
+    let clone = r.0.with_extension("uninitialized-clone");
+    let _ = std::fs::remove_dir_all(&clone);
+    let out = git_command(&r.0)
+        .args(["clone", "-q"])
+        .args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+        .arg(&r.0)
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "clone: {}", stderr(&out));
+    for args in [
+        ["config", "user.email", "test@ank.local"],
+        ["config", "user.name", "Test"],
+        ["config", "commit.gpgsign", "false"],
+    ] {
+        let out = git_command(&clone).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    std::fs::create_dir_all(clone.join(".ank/entities")).unwrap();
+
+    // The positive control this test needs: if the clone actually recursed,
+    // or the fixture's own assumption about what a plain clone leaves behind
+    // is wrong, the rest of the test would pass for a reason that has
+    // nothing to do with point 20.
+    assert!(
+        clone.join("vendor/sub").is_dir(),
+        "the clone must contain the empty submodule directory this test needs"
+    );
+    assert!(
+        !clone.join("vendor/sub/.git").exists(),
+        "an uninitialized submodule must have no `.git` at all, or this test \
+         is not exercising the case it names"
+    );
+
+    let invoke = |args: &[&str]| -> Output {
+        ank_command()
+            .args(args)
+            .arg("--repo")
+            .arg(&clone)
+            .env("ANK_AGENT", AGENT)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    };
+
+    let out = invoke(&[
+        "new",
+        "task",
+        "--title",
+        "Work inside the uninitialized submodule, bare scope",
+        "--scope",
+        "vendor/sub",
+        "--criteria",
+        "The prose says when.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let bare_id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = invoke(&[
+        "new",
+        "task",
+        "--title",
+        "Work inside the uninitialized submodule, glob scope",
+        "--scope",
+        "vendor/sub/**",
+        "--criteria",
+        "The prose says when.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let glob_id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = invoke(&["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!(
+            "{bare_id}: scope 'vendor/sub' matches no file yet"
+        )),
+        "a bare scope naming an uninitialized submodule's own root must read \
+         dead, the same verdict `main` gives it and the initialized case \
+         above gets: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "{glob_id}: scope 'vendor/sub/**' matches no file yet"
+        )),
+        "the glob scope over the same uninitialized submodule must stay \
+         dead too: {said}"
+    );
+}
+
 /// **An entity the branch and the tree agree on is read from the tree, and one
 /// they disagree on is read from the branch** (TASK-2ba2619b90e2).
 ///

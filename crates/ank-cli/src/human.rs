@@ -164,6 +164,11 @@ pub struct Report {
     /// The heaviest proof refs of that batch, heaviest first, for the note
     /// under a `plane_bytes` signal. Never rendered on its own.
     pub heaviest_proofs: Vec<(String, usize)>,
+    /// The one [`tracked_files`] walk this pass paid for, kept so a caller that
+    /// needs the list too -- `review`, matching live scopes against it a second
+    /// time -- reads it off this report instead of asking git again for an
+    /// answer that cannot have changed between the two calls.
+    pub files: Vec<String>,
 }
 
 /// The corpus of this checkout against the corpus of the default branch, once
@@ -906,6 +911,10 @@ pub fn inspect_with(
     // Over the file list already walked above for the scopes, so the tree is
     // read once for both questions (ADR-3b6ba766a42e).
     check_stale_citations(&entities, &in_scope, &repo.worktree, &files, &mut report);
+    // `files` moved rather than cloned: `review` is the only caller that
+    // reads `Report.files` (`:5006`), so every other caller paid to
+    // duplicate the whole list for nothing.
+    report.files = files;
 
     check_cycles(&entities, &mut report);
     check_authorship(
@@ -1509,36 +1518,47 @@ fn check_signers(repo: &Repo, report: &mut Report) {
     }
 }
 
-/// Every file this tree holds, relative and `/`-separated. `.git` and `target`
-/// are skipped: neither is ever in a scope, and both would dominate the walk.
+/// Every file this tree holds, relative and `/`-separated.
+///
+/// **Asked of git first**, with [`git::worktree_files`]: `.gitignore`,
+/// `.git/info/exclude` and the global excludes already name the paths a
+/// corpus reader has no business entering, and a directory carrying its own
+/// `.git` never contributes everything under it — git's own `ls-files`
+/// already collapses a real clone, worktree or submodule to one entry, and
+/// [`git::worktree_files`] filters out the one case it does not, a dangling
+/// gitfile whose `gitdir:` no longer resolves. A hand-rolled walk answering
+/// the same question had to reinvent both rules from a closed list of names
+/// (`.git`, `target`, `node_modules`) and a depth-limited recursion of its
+/// own, and every rule it did not reinvent it paid for instead: a build
+/// output directory, a virtual environment or a cache of downloaded media
+/// sitting beside `.ank/` and ignored by git is invisible to `git ls-files`
+/// and was not invisible to that walk, which read every byte under it,
+/// `.gitignore` or not, to decide whether each file named a live scope.
 ///
 /// **A directory carrying a `.git` entry of its own is another checkout, and
-/// this walk stops at it** (TASK-0e5a00f98cfe). Measured on this repository:
-/// `git ls-files` counts 1360 files, and the walk yielded 11852, of which 10490
-/// sat under `.claude/worktrees/` -- eight checkouts of this same repository,
-/// 88 percent of everything it read. `accept` naming six of them as stale
+/// the walk used to stop there by name, not by git's own knowledge of it**
+/// (TASK-0e5a00f98cfe). Measured on that repository: `git ls-files` counted
+/// 1360 files, and the old walk yielded 11852, of which 10490 sat under
+/// `.claude/worktrees/` -- eight checkouts of this same repository, 88
+/// percent of everything it read. `accept` naming six of them as stale
 /// citations of a document it had just superseded is what found it; but this
-/// walk is also what `scope_verdicts` confronts every glob in the corpus with,
-/// so the dead-scope half of `check` was asking its question against eight
-/// stale copies of the tree.
+/// walk is also what `scope_verdicts` confronts every glob in the corpus
+/// with, so the dead-scope half of `check` was asking its question against
+/// eight stale copies of the tree. Asking git keeps that guarantee -- a
+/// nested checkout is still one entry, not everything inside it -- without
+/// the directory needing to be named `.claude/worktrees` or anywhere else in
+/// particular.
 ///
-/// **The rule is the `.git` entry and never the directory's name.**
-/// `.claude/worktrees` is where these happen to sit, and skipping that path
-/// would fix the instance rather than the rule: a sibling clone, a vendored
-/// dependency with a history of its own, a `git worktree` placed anywhere else
-/// are the same fact. The entry is a file in a worktree and a directory in a
-/// clone, so what is asked is that it exists at all.
-///
-/// **Two verdicts in this corpus were wrong**, and narrowing the walk is what
-/// showed them: TASK-10b8a29fd853 and TASK-3109a736c255 both scope
-/// `.claude/**`, whose files were deleted in 264636c406b9, and the checkouts
-/// living under `.claude/worktrees/` made that glob match. Both now report as
-/// signals naming the deletion, which is what TASK-10b8a29fd853's own log entry
-/// predicted when it deleted those files. The hiding came later, when worktrees
-/// started being placed there, and nothing announced it: a scope reads alive on
-/// a file in a checkout nobody is working in, and a corpus loses a finding by
-/// where somebody happened to put a worktree.
+/// **A corpus read outside a git repository has no `.gitignore` to ask and no
+/// git to ask it with** (ADR-9307e5d214a7 makes that ordinary rather than a
+/// failure), so [`git::worktree_files`] returning `None` falls back to the
+/// same walk this function always ran: every file below `root`, `.git`,
+/// `target` and `node_modules` skipped by name, stopped at a directory
+/// carrying its own `.git`.
 fn tracked_files(root: &Path) -> Vec<String> {
+    if let Some(files) = git::worktree_files(root) {
+        return files;
+    }
     fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize) {
         if depth > 24 {
             return;
@@ -4983,7 +5003,10 @@ pub fn review(
     let path = crate::context::perimeter(inv, repo)?;
     let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
-    let files = tracked_files(&repo.worktree);
+    // Already walked once by `inspect`, above: a second `ls-files` for the same
+    // answer would be a process for nothing (ADR-cc65f1388a71's invariance is
+    // about the corpus's size, not about asking git the same question twice).
+    let files = &report.files;
     // Who may ratify, read here because nowhere else serves it: `.ank/` is
     // closed to a direct read (ADR-e45e1a29fe91) and `allowed_signers` is not
     // an entity, so before this the one file the format asks a human to edit by

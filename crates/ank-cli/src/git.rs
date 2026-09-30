@@ -12,7 +12,7 @@
 
 use crate::cli::CliError;
 use ank_contract::ExitCode;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{Mutex, OnceLock};
@@ -58,6 +58,12 @@ const PLUMBING: &[&str] = &[
     "push",
     "fetch",
     "ls-remote",
+    // `-z` prints one NUL-terminated relative path per record and has since
+    // `-z` existed; nothing about the format is the porcelain rendering the
+    // rule excludes. Admitted for [`worktree_files`], which asks it the
+    // question `.gitignore` already answers instead of re-deriving the
+    // answer with a directory walk of its own.
+    "ls-files",
 ];
 
 /// The verb an invocation actually runs, skipping the leading `-c <key>=<value>`
@@ -284,6 +290,146 @@ pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
         });
     }
     Ok(refs)
+}
+
+/// Every file this worktree's git considers relevant, tracked or not, as
+/// relative `/`-separated paths — `git ls-files -z --cached --others
+/// --exclude-standard`, minus what the index still names after a plain `rm`.
+///
+/// **`--exclude-standard` is the whole point.** `.gitignore`,
+/// `.git/info/exclude` and the global excludes name exactly the paths a
+/// corpus reader has no business entering — a build output directory, a
+/// virtual environment, a cache of downloaded media — and git already reads
+/// all three to answer this question. A caller re-deriving the same answer
+/// with its own directory walk either pays to read every byte of whatever
+/// those directories hold, or reinvents the three-file precedence one bug at
+/// a time.
+///
+/// **`--cached` lists the index, not the disk.** A tracked file removed with
+/// a plain `rm`, never `git rm`, is still a cached entry, and reading it
+/// back through this function alone would say it exists; a scope naming it
+/// would then read alive on a file that is gone, the opposite of what
+/// ADR-3094538d831e promises for a deletion `git status` already sees. A
+/// second call, `ls-files -z --deleted`, names exactly the cached entries
+/// gone from the worktree, and its answer is subtracted from the first —
+/// one more process, at the same `-z` contract, not one per file.
+///
+/// **A directory carrying its own `.git` is excluded, and the exclusion
+/// checks the path itself and not only its ancestors.** Measured directly
+/// against a real clone, a real `git worktree add` and a real submodule:
+/// `ls-files --others` already reduces every one of them to a single entry —
+/// the directory's own name for a clone or a worktree, the gitlink path
+/// itself for a submodule — the same collapse `git status` performs by
+/// default. What it does not collapse is a *dangling* gitfile, one whose
+/// `gitdir:` no longer resolves to a real git directory; that one entry (or,
+/// for a submodule's own gitlink, that one already-collapsed entry) is what
+/// [`exclude_nested_checkouts`] filters out, restored to the boundary the
+/// original `std::fs::read_dir` walk this replaces drew by skipping the
+/// directory outright rather than reporting it as one entry
+/// (TASK-0e5a00f98cfe): a worktree or a submodule placed anywhere under here
+/// costs nothing in the list, not one entry and not everything inside it.
+///
+/// **A directory neither tracked nor ignored is still skipped by name.** The
+/// walk this replaces never read `target/` or `node_modules/` regardless of
+/// `.gitignore`, and a repository that generated one of them before writing
+/// the rule that ignores it must not pay for a full read of it just because
+/// this now asks git instead of the filesystem. Kept here for parity, not
+/// because `.gitignore` is expected to be wrong.
+///
+/// **`None` when git cannot answer** — no repository here, the command
+/// failed, or git answered with nothing at all. The last case matters on its
+/// own: run from inside a directory a *different* repository ignores whole
+/// (a corpus nested under a path the enclosing tree's `.gitignore` names),
+/// `ls-files` answers empty with exit 0 — indistinguishable, by exit code
+/// alone, from a tree that truly holds nothing. Treating that answer as
+/// `Some(vec![])` was reading "git does not know" as "there is nothing here";
+/// treating it as `None` instead falls back to the same walk this function
+/// always ran when it cannot ask git at all, and a repository that really is
+/// empty gets the same empty answer from both paths.
+pub fn worktree_files(cwd: &Path) -> Option<Vec<String>> {
+    let args = [
+        "ls-files",
+        "-z",
+        "--cached",
+        "--others",
+        "--exclude-standard",
+    ];
+    let out = output(cwd, &args).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = paths_of(&out.stdout);
+    if raw.is_empty() {
+        return None;
+    }
+
+    let deleted = output(cwd, &["ls-files", "-z", "--deleted"]).ok()?;
+    if !deleted.status.success() {
+        return None;
+    }
+    let deleted: HashSet<String> = paths_of(&deleted.stdout).into_iter().collect();
+    let raw: Vec<String> = raw.into_iter().filter(|p| !deleted.contains(p)).collect();
+
+    Some(exclude_nested_checkouts(cwd, raw))
+}
+
+/// Splits a `-z` stream into relative paths, dropping the trailing empty
+/// record the final NUL leaves behind.
+fn paths_of(stdout: &[u8]) -> Vec<String> {
+    stdout
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
+}
+
+/// Drops every path that sits under a directory carrying its own `.git`
+/// entry, that is itself one, or that is itself a directory on disk with no
+/// `.git` at all. The first two catch a clone, a worktree or an initialized
+/// submodule; the third catches a submodule a plain `git clone` never
+/// initialized — the state of an ordinary CI checkout — where `vendor/sub/`
+/// is an empty directory with nothing inside it for a `.git`-existence check
+/// to find, yet `ls-files` still lists the gitlink as if it were a file. A
+/// path `ls-files` reports that resolves to a directory on disk is always one
+/// of these four cases, never a plain file.
+///
+/// Checked from the root down so the shallowest nested checkout is the one
+/// that decides, and every path a name in `target` or `node_modules` touches
+/// is dropped the same way the filesystem walk always skipped them.
+///
+/// One `is_dir()` call per file, plus one `exists()` call per distinct
+/// prefix, memoized: the full path is itself one of those prefixes, so a
+/// corpus with thousands of files pays for the files themselves as well as
+/// the directories above them, not only the directories.
+fn exclude_nested_checkouts(cwd: &Path, raw: Vec<String>) -> Vec<String> {
+    let mut has_git: HashMap<String, bool> = HashMap::new();
+    raw.into_iter()
+        .filter(|path| {
+            if path
+                .split('/')
+                .any(|segment| segment == "target" || segment == "node_modules")
+            {
+                return false;
+            }
+            if cwd.join(path).is_dir() {
+                return false;
+            }
+            let mut prefix = String::new();
+            for segment in path.split('/') {
+                if !prefix.is_empty() {
+                    prefix.push('/');
+                }
+                prefix.push_str(segment);
+                let nested = *has_git
+                    .entry(prefix.clone())
+                    .or_insert_with(|| cwd.join(&prefix).join(".git").exists());
+                if nested {
+                    return false;
+                }
+            }
+            true
+        })
+        .collect()
 }
 
 /// Every tag `repository` holds, by name, peeled tags excluded (`--refs`).
