@@ -5,7 +5,7 @@ slug: a-page-says-how-several-repositories-share-const
 title: "A page says how several repositories share constraints: peers at both ends, the override, id@peer, and what never crosses"
 created: 2026-09-27T21:37:42Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - docs/peers.md
   - docs/SUMMARY.md
@@ -17,7 +17,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 2
+version: 3
 ---
 
 Issues #500, #501 and #502 changed how several repositories share a corpus, and
