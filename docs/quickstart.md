@@ -43,12 +43,32 @@ $ git add -A && git commit -q -m "the service"
     pointer added to AGENTS.md
     refspec added: +refs/ank/*:refs/ank/*
 
-**The last line is the one a repository with no `origin` does not print**:
-there is no remote to add a refspec to, so `init` reports five effects instead
-of six and the other five are identical. Re-running changes nothing either way:
-`init` is idempotent and says `already initialised, nothing to do`. Whether you
-want an `origin` at all is a question about coordination, and [Claims and
-identity](claims.md#where-claims-travel) answers it.
+**The last line is the one a repository with no `origin` prints differently**:
+there is no remote to add a refspec to, so `init` says the refspec was not
+added and names itself as the command to run once there is one. The other five
+lines are identical, and a repository with an `origin` added later picks the
+refspec up from a second `init`:
+
+<!-- replay bare ANK_AGENT=human:marie
+$ echo '# auth service' > README.md && git add -A && git commit -q -m "the service"
+-->
+
+    $ ank init
+    created .ank/entities
+    wrote .ank/config.yml
+    wrote .gitattributes
+    wrote .gitignore
+    pointer added to AGENTS.md
+    refspec +refs/ank/*:refs/ank/* not added: no remote named origin yet, run this once it exists (ank init)
+    $ git init -q --bare ../origin.git && git remote add origin ../origin.git
+    $ ank init
+    refspec added: +refs/ank/*:refs/ank/*
+
+Re-running `init` otherwise writes nothing twice: it says `already
+initialised, nothing to do`, followed, while there is still no `origin`, by the
+same line about the refspec. Whether you want an `origin` at all is a question
+about coordination, and [Claims and identity](claims.md#where-claims-travel)
+answers it.
 
 One directory is created, not one per kind: entities live flat in
 `.ank/entities` whatever they are (ADR-c9f9d0d6f05d), and a task, an ADR, a
