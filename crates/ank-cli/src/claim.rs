@@ -1499,7 +1499,7 @@ pub fn constraints_among<'a>(
 /// state, and only for an ADR that is returned. Loading every entity to keep
 /// the handful bearing on one task made a claimed `context` pay for the whole
 /// corpus (TASK-8654f0c81393).
-fn bearing_on(store: &Store, index: &Index, task: &Task) -> Result<Vec<Adr>> {
+pub(crate) fn bearing_on(store: &Store, index: &Index, task: &Task) -> Result<Vec<Adr>> {
     let mut found = Vec::new();
     for row in index.by_status(ank_core::EntityKind::Adr, AdrStatus::Accepted.as_str())? {
         if !scopes_intersect(&task.scope, &row.scope)? {

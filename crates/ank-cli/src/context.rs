@@ -281,6 +281,20 @@ pub struct ConstraintLine {
     /// another corpus, and a reader who cannot tell would go looking for it in
     /// the wrong place.
     pub home: Option<String>,
+    /// The accepted ADRs that amend this one in part (ADR-9ee76b578257), by id
+    /// order. The rule above stays binding and is served whole; the mark is
+    /// what tells its reader part of it no longer holds as written, and which
+    /// ADR says so. Empty for a rule nothing amends and for a peer's rule,
+    /// whose amendments live in a corpus this one does not read.
+    pub amended_by: Vec<Amendment>,
+}
+
+/// An accepted ADR that amends a constraint, as the mark names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Amendment {
+    pub id: EntityId,
+    pub short: String,
+    pub title: String,
 }
 
 /// A specification governing the perimeter: **id and title, and nothing else**.
@@ -578,6 +592,49 @@ pub fn build(
     }
 }
 
+/// Marks every constraint an accepted amendment changes (TASK-1d8e9d7f853d),
+/// in both modes and before the budget prices anything.
+///
+/// **Only an accepted amendment marks**, for the reason `show` lists only those
+/// on the amended side: a proposal has changed nothing yet, and a mark on the
+/// strength of it would tell an agent to stop applying a clause nobody has
+/// ratified a replacement for.
+///
+/// **Read off the ADRs the verb has already loaded**, the ones binding the
+/// perimeter, and never off the corpus: the reverse direction is not in the
+/// index, and inverting it over every accepted ADR made a claimed `context`
+/// read files that bear on nothing it serves (ADR-f3d1dea65d84). So the mark
+/// names an amendment that binds the perimeter too, which is where the reader
+/// of the amended rule is about to work.
+fn mark_amendments<'a>(
+    adrs: impl IntoIterator<Item = &'a ank_core::Adr>,
+    shorts: &HashMap<EntityId, String>,
+    constraints: &mut [ConstraintLine],
+) {
+    let mut by: HashMap<&EntityId, Vec<Amendment>> = HashMap::new();
+    for adr in adrs
+        .into_iter()
+        .filter(|a| a.status == ank_core::AdrStatus::Accepted)
+    {
+        for amended in &adr.amends {
+            by.entry(amended).or_default().push(Amendment {
+                id: adr.id.clone(),
+                short: shorts
+                    .get(&adr.id)
+                    .cloned()
+                    .unwrap_or_else(|| adr.id.to_string()),
+                title: adr.title.clone(),
+            });
+        }
+    }
+    for c in constraints.iter_mut().filter(|c| c.home.is_none()) {
+        if let Some(found) = by.remove(&c.id) {
+            c.amended_by = found;
+            c.amended_by.sort_by_key(|a| a.id.to_string());
+        }
+    }
+}
+
 /// The default branch is resolved for the warning alone: `context` prunes
 /// nothing, so an unresolvable branch changes no output but that one line
 /// (§7). Read once, warned once, and by both documents, since `--since` names
@@ -732,6 +789,7 @@ fn adr_lines(
 ) -> Result<(Vec<ConstraintLine>, Vec<ConstraintLine>)> {
     let mut active = Vec::new();
     let mut proposed = Vec::new();
+    let mut loaded = Vec::new();
     for r in rows.iter().filter(|r| r.kind == EntityKind::Adr) {
         // `superseded` binds nobody and is not a proposal either: it is
         // history, and history is not context.
@@ -755,13 +813,16 @@ fn adr_lines(
             text: adr.constraint.trim_end().to_string(),
             specificity: specificity(&r.scope),
             home: None,
+            amended_by: Vec::new(),
         };
         if r.status == "accepted" {
             active.push(line);
         } else {
             proposed.push(line);
         }
+        loaded.push(adr);
     }
+    mark_amendments(&loaded, shorts, &mut active);
     active.sort_by(constraint_order);
     proposed.sort_by(constraint_order);
     Ok((active, proposed))
@@ -869,6 +930,7 @@ fn peer_lines(
             text: adr.constraint.trim_end().to_string(),
             specificity: specificity(&bound.globs),
             home: Some(bound.peer),
+            amended_by: Vec::new(),
         };
         if adr.status.as_str() == "accepted" {
             active.push(line);
@@ -1002,7 +1064,10 @@ fn build_execution(
     // command that explains it, because §3 suspends the injection and does not
     // hide the decision.
     // Both halves in one pass: what binds, and what is withheld from binding.
-    let bearing = claim::constraints_bearing(store, index, repo, &task)?;
+    // The ADRs loaded once and asked twice: what binds, and which of those an
+    // accepted amendment among them changes.
+    let adrs = claim::bearing_on(store, index, &task)?;
+    let bearing = claim::constraints_among(&adrs, repo, &task)?;
     for adr in &bearing.suspended {
         warnings.push(format!(
             "{adr} altered since ratification: its constraint is not injected (ank show {adr})"
@@ -1038,8 +1103,10 @@ fn build_execution(
             specificity: specificity(&scope),
             overlap: 0,
             home: None,
+            amended_by: Vec::new(),
         });
     }
+    mark_amendments(&adrs, shorts, &mut constraints);
 
     let specs = spec_lines(&rows, shorts, |scope| {
         claim::scopes_intersect(scope, &task.scope).unwrap_or(false)
@@ -1212,7 +1279,8 @@ fn constraint_block(c: &ConstraintLine, style: Style) -> Vec<String> {
         " ".repeat(width - crate::style::glyph::WRAP.chars().count()),
         crate::style::glyph::WRAP
     );
-    c.text
+    let mut out: Vec<String> = c
+        .text
         .lines()
         .enumerate()
         .map(|(i, line)| {
@@ -1222,7 +1290,19 @@ fn constraint_block(c: &ConstraintLine, style: Style) -> Vec<String> {
                 format!("{gutter}{}", line.trim())
             }
         })
-        .collect()
+        .collect();
+    // Beneath the rule and inside its block, so the budget that prices the
+    // block prices the mark with it, and a reader meets the amendment before
+    // the next rule begins.
+    for a in &c.amended_by {
+        out.push(format!(
+            "{gutter}amended by {}: {} (ank show {})",
+            style.id(&a.short),
+            a.title,
+            a.short
+        ));
+    }
+    out
 }
 
 /// The cost of a block, in characters a reader actually sees.
@@ -1636,7 +1716,12 @@ fn constraint_section(
     out.push(String::new());
     out.push(style.header(&format!("CONSTRAINTS ({} active)", constraints.len())));
     for c in constraints {
-        out.push(format!("  {}  {}", style.id(&c.short), c.title));
+        out.push(format!(
+            "  {}  {}{}",
+            style.id(&c.short),
+            c.title,
+            amended_mark(c, style)
+        ));
     }
     if cut_constraints > 0 {
         out.push(format!(
@@ -1644,6 +1729,18 @@ fn constraint_section(
         ));
     }
     out
+}
+
+/// The mark an orientation line carries for a rule an accepted ADR amends,
+/// empty for every other: `  (amended by ADR-xxxx)`. On the line rather than
+/// beneath it, so the section stays one line per rule and the share that
+/// prices it pays for the mark.
+fn amended_mark(c: &ConstraintLine, style: Style) -> String {
+    if c.amended_by.is_empty() {
+        return String::new();
+    }
+    let shorts: Vec<String> = c.amended_by.iter().map(|a| style.id(&a.short)).collect();
+    format!("  (amended by {})", shorts.join(", "))
 }
 
 /// The specifications governing the perimeter, one line each, in both modes.
@@ -1798,6 +1895,13 @@ pub fn render_json(view: &View, budget: usize) -> String {
                 .str("title", &c.title)
                 .str("constraint", &c.text)
                 .opt_str("home", c.home.as_deref())
+                .strings(
+                    "amended_by",
+                    &c.amended_by
+                        .iter()
+                        .map(|a| a.id.to_string())
+                        .collect::<Vec<_>>(),
+                )
                 .finish()
         })
         .collect();
@@ -2196,6 +2300,7 @@ After a blank one."
                 specificity: 0,
                 overlap: 0,
                 home: None,
+                amended_by: Vec::new(),
             };
             let expected = 2 + short.chars().count() + 2;
             for style in [crate::style::PLAIN, crate::style::COLOR] {
