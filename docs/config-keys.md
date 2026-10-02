@@ -14,7 +14,7 @@ The file declares `schema: 1`, the only version this build reads. A duration is 
 | `claim_ttl_max` | duration | `2h` | the longest lease a claim is granted, whatever `--ttl` asks |
 | `claim_ttl_default` | duration | `30m` | the lease `claim` grants without `--ttl`, capped by `claim_ttl_max` |
 | `default_branch` | string | none | the branch carrying the reference state; absent, `refs/remotes/origin/HEAD` names it |
-| `peers.<name>` | path | none | a peer corpus a scope entry reaches by name, relative to this root or absolute |
+| `peers.<name>` | path | none | a peer corpus a scope entry reaches by name: a path to a checkout on disk, relative to this root or absolute, and never a URL; a reader whose layout differs overrides it in their own corpora.yml with `ank config --user peers.<identity>.<name> <path>` |
 | `verifiers.<name>.run` | command | required | what `done` runs through `sh`; required in a declared verifier |
 | `verifiers.<name>.timeout` | duration | `10m` | how long `done` lets the command run |
 | `verifiers.<name>.default` | boolean | `false` | `true` writes the verifier into every task `ank new task` creates |

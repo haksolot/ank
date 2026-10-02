@@ -5,7 +5,7 @@ slug: the-quickstart-and-the-claims-page-say-what-init
 title: The quickstart and the claims page say what init does with no origin, and a replay holds them to it
 created: 2026-09-27T21:37:41Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - docs/quickstart.md
   - docs/claims.md
@@ -19,7 +19,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured on main after #510, with the binary built from the tree (the installed

@@ -1050,6 +1050,49 @@ fn an_altered_block_fails_the_replay() {
     );
 }
 
+/// The quickstart's `init` with no `origin` is a replayed block, not prose
+/// (TASK-eff5715bfd87): its session replays green as the page has it, and one
+/// word changed in either line about the refspec turns it red.
+#[test]
+fn the_no_origin_init_is_held_by_the_replay() {
+    let page = "docs/quickstart.md";
+    let text = std::fs::read_to_string(workspace().join(page))
+        .unwrap()
+        .replace("\r\n", "\n");
+    let at = text
+        .find("<!-- replay bare ")
+        .expect("the page replays `ank init` in a repository with no origin");
+    let block = text[at..]
+        .find("\n    $ ank init\n")
+        .map(|b| at + b)
+        .expect("the bare session shows `ank init`");
+    let end = text[block + 1..]
+        .find("\n\n")
+        .map(|e| block + 1 + e)
+        .unwrap();
+    let region = format!("{}\n", &text[at..end]);
+    assert_eq!(
+        replay(page, &region),
+        Vec::<String>::new(),
+        "the block as the page has it"
+    );
+
+    for (from, to) in [
+        ("no remote named origin yet", "no remote named origin now"),
+        ("refspec added:", "refspec kept:"),
+    ] {
+        let altered = region.replacen(from, to, 1);
+        assert_ne!(altered, region, "`{from}` is in the block");
+        let failures = replay(page, &altered);
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(
+            failures[0].contains(from) && failures[0].contains(to),
+            "the failure shows both sides: {}",
+            failures[0]
+        );
+    }
+}
+
 /// The masks hide what a replay mints and nothing else.
 #[test]
 fn the_masks_hide_what_a_replay_mints() {
