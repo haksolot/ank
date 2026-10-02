@@ -60,7 +60,8 @@ what would be watched without watching anything, and `ank watch --where` prints
 where the declaration is read from.
 
 **The only things it writes into a repository are that repository's own
-`index.db` and a mirror of `refs/ank/claims/*`.** The mirror lands in
+`.ank/index.db.<N>`, the index of the binary's own schema `N`, and a mirror of
+`refs/ank/claims/*`.** The mirror lands in
 `refs/ank/watch/origin/claims/*`, a tracking namespace of the watcher's own, and
 carries the remote's claims alone: a mirrored proof is read by nobody, so none
 is fetched (ADR-4b45f344344f). No branch, no tag, no working tree, no index of

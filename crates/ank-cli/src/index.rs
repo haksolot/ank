@@ -38,11 +38,31 @@ use std::path::{Path, PathBuf};
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
 /// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
 /// `files`, to 9 by `entities.archived` and to 10 by the three columns an
-/// archived entry is read back from, and to 11 by `amends`: nothing migrated
-/// any of those times, and nothing had to.
-pub const SCHEMA_VERSION: u32 = 11;
+/// archived entry is read back from, to 11 by `amends`, and to 12 by `carried`:
+/// nothing migrated any of those times, and nothing had to. Since 12 the number
+/// is also the file's name (ADR-3db9735a7036), so a bump leaves the previous
+/// build's index where it is instead of fighting it for one file.
+pub const SCHEMA_VERSION: u32 = 12;
 
-pub const DB_FILE: &str = "index.db";
+/// The index of this build's schema, and the only one it opens
+/// (ADR-3db9735a7036).
+///
+/// **One file per schema**, `index.db.<N>`. It was one `index.db` for every
+/// build, and two binaries of different schemas on one corpus -- the one on
+/// `PATH` and the one a worktree just built -- each found the other's version
+/// in it, dropped every table and rebuilt, in a loop that ended with one of
+/// them losing a write to the other's delete. Measured during the parallel run
+/// of 2026-10-02. A binary now never opens a file it cannot read: every other
+/// `index.db*`, the unsuffixed one a former release wrote included, is left
+/// exactly as it is, and only read, never opened for writing, by
+/// `carried_digests` when this one is created.
+pub fn db_file() -> String {
+    format!("{DB_PREFIX}.{SCHEMA_VERSION}")
+}
+
+/// What every index file's name starts with, of whatever schema, and what
+/// init's `.ank/index.db*` line ignores.
+const DB_PREFIX: &str = "index.db";
 
 /// How long a contended open or write waits before giving up
 /// (TASK-e9dfaf187a1b).
@@ -128,6 +148,11 @@ fn busy_timeout() -> std::time::Duration {
 // opposite reason: no default can say what an ADR amends, so a row that does
 // not name it is NULL, read back as unknown, and the reader parses that one
 // file rather than believe the row amends nothing (TASK-ea86d1cc4af4).
+//
+// `carried` holds the archived digests a new file took over from an older
+// schema's (ADR-3db9735a7036), for the archived files it has not indexed yet:
+// an archived file is indexed only once its bytes match the digest carried for
+// it, and until then that digest is the one `check` holds it to.
 const SCHEMA: &str = "\
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -176,6 +201,10 @@ CREATE TABLE signatures (
     fingerprint TEXT NOT NULL,
     PRIMARY KEY (commit_sha, signers)
 );
+CREATE TABLE carried (
+    path TEXT PRIMARY KEY,
+    hash TEXT NOT NULL
+);
 CREATE TABLE verdict (
     key            TEXT PRIMARY KEY,
     faults         INTEGER NOT NULL,
@@ -218,7 +247,7 @@ fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
     // The index is disposable, so the next step is always the same one and it
     // is always safe. Never generic help.
     CliError::new(ExitCode::Generic, format!("index: {e}"))
-        .with_hint(format!("rm {}", ank.join(DB_FILE).display()))
+        .with_hint(format!("rm {}", ank.join(db_file()).display()))
 }
 
 /// The schema questions and the schema writes, as free functions over a
@@ -231,11 +260,12 @@ fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
 fn tables_present_in(conn: &Connection) -> rusqlite::Result<bool> {
     let found: i64 = conn.query_row(
         "SELECT count(*) FROM sqlite_master \
-         WHERE type = 'table' AND name IN ('meta', 'files', 'entities', 'signatures', 'verdict')",
+         WHERE type = 'table' \
+         AND name IN ('meta', 'files', 'entities', 'signatures', 'verdict', 'carried')",
         [],
         |r| r.get(0),
     )?;
-    Ok(found == 5)
+    Ok(found == 6)
 }
 
 fn schema_version_of(conn: &Connection) -> rusqlite::Result<Option<u32>> {
@@ -285,6 +315,7 @@ fn wipe_in(conn: &Connection) -> rusqlite::Result<()> {
         "meta",
         "signatures",
         "verdict",
+        "carried",
     ] {
         conn.execute(&format!("DROP TABLE IF EXISTS {table}"), [])?;
     }
@@ -326,6 +357,95 @@ fn install_schema_in(conn: &Connection) -> rusqlite::Result<()> {
         params![SCHEMA_VERSION.to_string()],
     )?;
     Ok(())
+}
+
+/// The archived digests of the newest index of an older schema under `ank`,
+/// which a file this build creates takes over (ADR-3db9735a7036).
+///
+/// **The one state the index holds that the files cannot rebuild** is the
+/// digest an archived file arrived with (ADR-467ce7e9cda1): rebuilt from the
+/// bytes it is meant to verify, an edited archived file matches itself. A
+/// schema bump used to drop it with every table, so an archived file edited
+/// across an upgrade passed `check` silently.
+///
+/// The newest `index.db.<M>` with `M` below this build's schema answers, and
+/// the unsuffixed `index.db` every release before the split wrote answers when
+/// none does. A file that does not read is skipped for the next one down:
+/// these are another build's caches, and an unreadable one is only one less
+/// place to recover a digest from.
+///
+/// **Read without being opened for writing**, `immutable=1`: SQLite takes no
+/// lock, writes no journal and never touches the file, which is what leaves
+/// another schema's index byte for byte as its own binary left it. The cost is
+/// that a frame its writer has not checkpointed is not seen, and an archived
+/// digest is written once, when the file arrives, long before the next upgrade.
+fn carried_digests(ank: &Path) -> Vec<(String, String)> {
+    let Ok(entries) = std::fs::read_dir(ank) else {
+        return Vec::new();
+    };
+    let mut older: Vec<(u32, PathBuf)> = Vec::new();
+    let mut unsuffixed = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name == DB_PREFIX {
+            unsuffixed = Some(entry.path());
+        } else if let Some(m) = name
+            .strip_prefix(DB_PREFIX)
+            .and_then(|rest| rest.strip_prefix('.'))
+            .and_then(|m| m.parse::<u32>().ok())
+            .filter(|m| *m < SCHEMA_VERSION)
+        {
+            older.push((m, entry.path()));
+        }
+    }
+    older.sort();
+    let candidates = older.into_iter().rev().map(|(_, p)| p).chain(unsuffixed);
+    for path in candidates {
+        if let Some(digests) = archived_digests_of(&path) {
+            return digests;
+        }
+    }
+    Vec::new()
+}
+
+/// The archived rows of `files` in the index at `path`, or `None` where it
+/// does not read as one. `files.path` and `files.hash` are the two columns
+/// every schema has had, so no version is asked.
+fn archived_digests_of(path: &Path) -> Option<Vec<(String, String)>> {
+    use rusqlite::OpenFlags;
+    let conn = Connection::open_with_flags(
+        immutable_uri(path),
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_URI,
+    )
+    .ok()?;
+    let mut stmt = conn
+        .prepare("SELECT path, hash FROM files WHERE path LIKE ?1")
+        .ok()?;
+    let rows = stmt
+        .query_map(params![format!("{}/%", Store::ARCHIVE_DIR)], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })
+        .ok()?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().ok()
+}
+
+/// `path` as a SQLite URI opening it immutable. Forward slashes, a leading
+/// slash before a Windows drive letter, and the characters a URI reserves
+/// escaped, which is the form SQLite documents on all three platforms.
+fn immutable_uri(path: &Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut uri = String::from("file:");
+    if text.as_bytes().get(1) == Some(&b':') {
+        uri.push('/');
+    }
+    for c in text.chars() {
+        match c {
+            '%' | '?' | '#' | ' ' => uri.push_str(&format!("%{:02X}", c as u32)),
+            _ => uri.push(c),
+        }
+    }
+    uri.push_str("?immutable=1");
+    uri
 }
 
 /// SQLite reporting a lock rather than a defect.
@@ -515,7 +635,7 @@ impl Index {
         // same cure as everywhere else, and it is always safe; a second failure
         // is the environment's and is reported.
         drop(index);
-        let _ = std::fs::remove_file(ank.join(DB_FILE));
+        let _ = std::fs::remove_file(ank.join(db_file()));
         let mut index = Self::open_raw(ank)?;
         index.archive = archive;
         index.refresh()?;
@@ -555,7 +675,7 @@ impl Index {
     /// database at all are the same situation: the cache cannot be trusted, and
     /// the cure for an untrustworthy cache is to throw it away.
     fn open_raw(ank: &Path) -> Result<Index> {
-        let path = ank.join(DB_FILE);
+        let path = ank.join(db_file());
         match Self::try_open(ank, &path) {
             Ok(index) => Ok(index),
             // **A busy database is not an unusable one, and the cure for the
@@ -663,6 +783,15 @@ impl Index {
         if !healthy(&tx).map_err(|e| db_error(e, &self.ank))? {
             wipe_in(&tx).map_err(|e| db_error(e, &self.ank))?;
             install_schema_in(&tx).map_err(|e| db_error(e, &self.ank))?;
+            // The file is new, so the digests an older schema's index holds
+            // are taken over now or never (ADR-3db9735a7036).
+            for (rel, hash) in carried_digests(&self.ank) {
+                tx.execute(
+                    "INSERT OR IGNORE INTO carried (path, hash) VALUES (?1, ?2)",
+                    params![rel, hash],
+                )
+                .map_err(|e| db_error(e, &self.ank))?;
+            }
         }
         tx.commit().map_err(|e| db_error(e, &self.ank))
     }
@@ -724,6 +853,11 @@ impl Index {
         if !self.archive {
             known.retain(|rel, _| !is_archived(rel));
         }
+        let carried = if self.archive {
+            self.carried()?
+        } else {
+            BTreeMap::new()
+        };
         let last_write = self.last_write();
         let on_disk = self.scan(&known, last_write)?;
         let mut done = Refreshed {
@@ -758,6 +892,14 @@ impl Index {
             // the file is hashed again on every asking open until it is put
             // back.
             if row.is_some() && is_archived(rel) {
+                continue;
+            }
+            // **The same rule for a digest carried over from an older schema's
+            // index** (ADR-3db9735a7036): this file has no row yet, but it
+            // arrived before the upgrade, and bytes that no longer match the
+            // digest it arrived with are not indexed as if they were new.
+            // [`Index::archived_digests`] answers the carried digest instead.
+            if row.is_none() && carried.get(rel).is_some_and(|d| d != &file.hash) {
                 continue;
             }
             // The same predicate the scan applied, so the text is here by
@@ -849,6 +991,12 @@ impl Index {
             match write {
                 Write::Index(rel, hash, stat, entity) => {
                     upsert(&mut w, rel, hash, stat, entity).map_err(|e| db_error(e, &self.ank))?;
+                    // Indexed under the digest it was carried with, which is
+                    // now the row's: the carried one has nothing left to say.
+                    if carried.contains_key(rel) {
+                        w.run("DELETE FROM carried WHERE path = ?1", params![rel])
+                            .map_err(|e| db_error(e, &self.ank))?;
+                    }
                     done.indexed += 1;
                 }
                 Write::Unreadable(rel, hash, stat) => {
@@ -879,6 +1027,20 @@ impl Index {
 
     fn known_files(&self) -> Result<BTreeMap<String, Known>> {
         known_files_in(&self.conn).map_err(|e| self.err(e))
+    }
+
+    /// The digests carried over from an older schema's index for archived
+    /// files not indexed yet, by path (ADR-3db9735a7036).
+    fn carried(&self) -> Result<BTreeMap<String, String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, hash FROM carried")
+            .map_err(|e| self.err(e))?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| self.err(e))?;
+        rows.collect::<rusqlite::Result<BTreeMap<_, _>>>()
+            .map_err(|e| self.err(e))
     }
 
     /// The instant of the index's last write, as recorded, or `None` where
@@ -1412,7 +1574,13 @@ impl Index {
         }
         let mut stmt = self
             .conn
-            .prepare("SELECT path, hash FROM files WHERE path LIKE ?1 ORDER BY path")
+            // A digest carried over from an older schema's index answers for
+            // a file the refresh declined to index (ADR-3db9735a7036).
+            .prepare(
+                "SELECT path, hash FROM files WHERE path LIKE ?1 \
+                 UNION ALL SELECT path, hash FROM carried \
+                 WHERE path NOT IN (SELECT path FROM files) ORDER BY path",
+            )
             .map_err(|e| self.err(e))?;
         let rows = stmt
             .query_map(params![format!("{}/%", Store::ARCHIVE_DIR)], |r| {
@@ -1999,7 +2167,7 @@ mod tests {
         }
 
         fn db(&self) -> PathBuf {
-            self.0.join(DB_FILE)
+            self.0.join(db_file())
         }
     }
 
@@ -2089,7 +2257,7 @@ mod tests {
             1,
             "a status query is what `context` will ask"
         );
-        assert!(t.db().exists(), "the index lives at .ank/index.db");
+        assert!(t.db().exists(), "the index lives at .ank/index.db.<N>");
     }
 
     #[test]

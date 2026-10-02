@@ -14,6 +14,7 @@
 //! **Through the binary**, and each hint a refusal prints is run in its turn:
 //! a hint that fails the way its refusal did is the defect this task exists for.
 
+mod index_file;
 mod scratch;
 
 use std::collections::BTreeMap;
@@ -234,7 +235,7 @@ fn show_find_and_log_read_a_peer_entity_and_write_nothing_there() {
     assert!(json.contains(&format!("\"id\":\"{TASK}\"")), "{json}");
 
     assert_eq!(snapshot(&f.b), before, "nothing under the peer changed");
-    assert!(!f.b.join(".ank/index.db").exists());
+    assert!(!index_file::path(&f.b.join(".ank")).exists());
     // And `log <id>@<peer>` was read, never written as a message here.
     let (_, local, _) = f.read(&["find", "tried the obvious"]);
     assert!(!local.contains("LOG-"), "{local}");

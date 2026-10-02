@@ -87,7 +87,7 @@ impl Repo {
             "schema: 1\nclaim_ttl_max: 2h\n"
         };
         fs::write(r.dir.join(".ank/config.yml"), config).unwrap();
-        fs::write(r.dir.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(r.dir.join(".gitignore"), ".ank/index.db*\n").unwrap();
         r.commit("seed");
         let task = r
             .ok(&[

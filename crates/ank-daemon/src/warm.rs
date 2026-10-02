@@ -47,10 +47,13 @@ use std::process::{Command, Stdio};
 /// What a `.ank/` looks like right now: every file under it, with its length
 /// and the instant it was last written.
 ///
-/// **`index.db` is excluded, and that is load-bearing.** It is the file the
-/// warming writes, so counting it would make every refresh look like a change
-/// and the daemon would spin against its own output forever. Its journal and
-/// shared-memory siblings go with it for the same reason.
+/// **Every `index.db*` is excluded, and that is load-bearing.** The index is
+/// the file the warming writes, `index.db.<N>` for the schema `N` of whichever
+/// binary does the read (ADR-3db9735a7036), so counting it would make every
+/// refresh look like a change and the daemon would spin against its own output
+/// forever. Its journal and shared-memory siblings go with it for the same
+/// reason, and so do the files of other schemas, which no binary of this one
+/// ever writes.
 ///
 /// **A stat and not a hash.** The question this answers is "is it worth
 /// spawning a read", not "what is in these files": the CLI hashes them itself
@@ -140,6 +143,8 @@ mod tests {
         let before = fingerprint(&dir);
         std::fs::write(dir.join("index.db"), "not a database").unwrap();
         std::fs::write(dir.join("index.db-wal"), "nor this").unwrap();
+        std::fs::write(dir.join("index.db.12"), "nor one per schema").unwrap();
+        std::fs::write(dir.join("index.db.12-wal"), "nor its journal").unwrap();
         assert_eq!(before, fingerprint(&dir));
         std::fs::write(dir.join("entities/TASK-0000.md"), "---\n").unwrap();
         assert_ne!(before, fingerprint(&dir));

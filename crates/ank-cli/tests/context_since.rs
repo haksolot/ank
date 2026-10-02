@@ -108,7 +108,7 @@ impl Pair {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
-        fs::write(main.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(main.join(".gitignore"), ".ank/index.db*\n").unwrap();
         for (id, title) in [
             (T, "The task in hand"),
             (X, "Edited after the last work"),

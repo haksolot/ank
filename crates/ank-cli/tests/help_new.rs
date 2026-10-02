@@ -158,7 +158,7 @@ impl Repo {
              verifiers:\n  ok:\n    run: \"true\"\n    timeout: 1m\n",
         )
         .unwrap();
-        fs::write(dir.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(dir.join(".gitignore"), ".ank/index.db*\n").unwrap();
         git(&dir, &["add", "-A"]);
         git(&dir, &["commit", "-qm", "seed"]);
         let mut r = Repo {

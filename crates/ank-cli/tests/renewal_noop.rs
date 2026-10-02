@@ -155,7 +155,7 @@ impl Level1 {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
-        fs::write(repo.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(repo.join(".gitignore"), ".ank/index.db*\n").unwrap();
         fs::write(
             repo.join(".ank/entities").join(format!("{T}.md")),
             format!(

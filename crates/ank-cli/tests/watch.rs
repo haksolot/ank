@@ -30,6 +30,7 @@
 //! being trusted -- the moment a warm listing and a cold one differ, the daemon
 //! has become a source of truth nobody voted for.
 
+mod index_file;
 mod scratch;
 use ank_contract::events;
 use std::ffi::OsStr;
@@ -244,7 +245,7 @@ impl Corpus {
     }
 
     fn index(&self) -> PathBuf {
-        self.ank_dir().join("index.db")
+        index_file::path(&self.ank_dir())
     }
 
     fn identity(&self, home: &Home) -> String {
@@ -265,9 +266,7 @@ impl Corpus {
     }
 
     fn drop_index(&self) {
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(self.ank_dir().join(format!("index.db{suffix}")));
-        }
+        index_file::remove_all(&self.ank_dir());
     }
 }
 
