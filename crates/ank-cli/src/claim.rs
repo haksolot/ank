@@ -33,8 +33,8 @@ use crate::repo::Repo;
 use crate::store::Store;
 use ank_contract::ExitCode;
 use ank_core::{
-    freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, Proof, ScopeSet, Task,
-    TaskStatus,
+    freeze, freeze_hash_short, Adr, AdrStatus, CriteriaBy, Entity, EntityId, PeerBlocker, Proof,
+    ScopeSet, Task, TaskStatus,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
@@ -2228,7 +2228,8 @@ fn run_with(
     // statuses, the ready task offered, the constraints bearing on the scope.
     let index = Index::open(&repo.ank)?;
     let tasks = index.by_kind(ank_core::EntityKind::Task)?;
-    let ready = other_ready_task(&repo.corpus, &tasks, &task).map(|id| id.to_string());
+    let mut peers = PeerEdges::new(repo, cfg);
+    let ready = other_ready_task(&repo.corpus, &tasks, &task, &mut peers).map(|id| id.to_string());
 
     // Preconditions first, in the order of §3: no ref is touched by a claim
     // that was never going to be legal.
@@ -2282,7 +2283,7 @@ fn run_with(
     sync_from_remote(&repo.corpus, &task.id)?;
 
     check_blockers(&repo.corpus, &tasks, &task, ready.as_deref())?;
-    check_peer_blockers(repo, cfg, &task)?;
+    peers.hold(&task.id, &task.peer_blocked_by)?;
     task.status
         .check_transition(TaskStatus::InProgress)
         .map_err(|e| {
@@ -2554,8 +2555,9 @@ fn check_blockers(cwd: &Path, tasks: &[Row], task: &Task, other_ready: Option<&s
     Ok(())
 }
 
-/// A blocker in a declared peer that is not `done` there refuses the claim with
-/// code 7, as a local one does (ADR-c23bef1cc93e).
+/// The one resolution of a peer edge, read by `claim`, by the ready-task hint
+/// its refusals print, and by the claimable list of `context`: three readers of
+/// one fact, so they cannot disagree about one task (TASK-d28565b8ed63).
 ///
 /// **An edge that cannot be read holds.** A peer undeclared, moved away or not a
 /// corpus is refused like any unmet blocker, naming the peer and the command
@@ -2565,55 +2567,77 @@ fn check_blockers(cwd: &Path, tasks: &[Row], task: &Task, other_ready: Option<&s
 ///
 /// "Done" is the status the peer's corpus holds on disk, read in memory; the
 /// peer's claim plane is not read, since claims do not cross, and nothing is
-/// fetched.
-fn check_peer_blockers(repo: &Repo, cfg: &Config, task: &Task) -> Result<()> {
-    let mut read: HashMap<&str, HashMap<EntityId, String>> = HashMap::new();
-    for b in &task.peer_blocked_by {
-        let holds = |why: String, hint: Option<String>| {
-            let e = CliError::new(
-                ExitCode::Prerequisite,
-                format!(
-                    "{} is blocked by {b}: {why}, and an edge that cannot be read holds",
-                    task.id
-                ),
-            );
-            match hint {
-                Some(h) => e.with_hint(h),
-                None => e,
-            }
-        };
-        if !read.contains_key(b.peer.as_str()) {
-            let statuses = crate::repo::open_peer(repo, cfg, &b.peer)
-                .and_then(|peer| peer.statuses())
-                .map_err(|e| holds(e.message, e.hint))?;
-            read.insert(&b.peer, statuses);
-        }
-        match read[b.peer.as_str()]
-            .get(&b.id)
-            .and_then(|s| task_status(s))
-        {
-            Some(TaskStatus::Done) => {}
-            Some(status) => {
-                let why = if status == TaskStatus::Closed {
-                    " (closed)"
-                } else {
-                    ""
-                };
-                return Err(CliError::new(
-                    ExitCode::Prerequisite,
-                    format!("{} is blocked by {b}{why}", task.id),
-                )
-                .with_hint(format!("ank show {b}")));
-            }
-            None => {
-                return Err(holds(
-                    format!("peer '{}' holds no task {}", b.peer, b.id),
-                    Some(format!("ank find @{}", b.peer)),
-                ))
-            }
+/// fetched. Each peer is opened once per reader, whatever the number of edges
+/// naming it.
+pub(crate) struct PeerEdges<'a> {
+    repo: &'a Repo,
+    cfg: &'a Config,
+    read: HashMap<String, std::result::Result<HashMap<EntityId, String>, CliError>>,
+}
+
+impl<'a> PeerEdges<'a> {
+    pub(crate) fn new(repo: &'a Repo, cfg: &'a Config) -> Self {
+        PeerEdges {
+            repo,
+            cfg,
+            read: HashMap::new(),
         }
     }
-    Ok(())
+
+    /// True when every edge is to a task its peer holds `done`.
+    pub(crate) fn clear(&mut self, task: &EntityId, edges: &[PeerBlocker]) -> bool {
+        self.hold(task, edges).is_ok()
+    }
+
+    /// The refusal `claim` prints for the first edge that holds, if one does: a
+    /// blocker in a declared peer that is not `done` there refuses with code 7,
+    /// as a local one does (ADR-c23bef1cc93e).
+    pub(crate) fn hold(&mut self, task: &EntityId, edges: &[PeerBlocker]) -> Result<()> {
+        for b in edges {
+            let holds = |why: &str, hint: Option<String>| {
+                let e = CliError::new(
+                    ExitCode::Prerequisite,
+                    format!(
+                        "{task} is blocked by {b}: {why}, and an edge that cannot be read holds"
+                    ),
+                );
+                match hint {
+                    Some(h) => e.with_hint(h),
+                    None => e,
+                }
+            };
+            let (repo, cfg) = (self.repo, self.cfg);
+            let statuses = self.read.entry(b.peer.clone()).or_insert_with(|| {
+                crate::repo::open_peer(repo, cfg, &b.peer).and_then(|peer| peer.statuses())
+            });
+            let statuses = match statuses {
+                Ok(s) => s,
+                Err(e) => return Err(holds(&e.message, e.hint.clone())),
+            };
+            match statuses.get(&b.id).and_then(|s| task_status(s)) {
+                Some(TaskStatus::Done) => {}
+                Some(status) => {
+                    let why = if status == TaskStatus::Closed {
+                        " (closed)"
+                    } else {
+                        ""
+                    };
+                    return Err(CliError::new(
+                        ExitCode::Prerequisite,
+                        format!("{task} is blocked by {b}{why}"),
+                    )
+                    .with_hint(format!("ank show {b}")));
+                }
+                None => {
+                    return Err(holds(
+                        &format!("peer '{}' holds no task {}", b.peer, b.id),
+                        Some(format!("ank find @{}", b.peer)),
+                    ))
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Another task the agent could take instead, for the hint on a refusal (§4).
@@ -2642,7 +2666,12 @@ fn check_peer_blockers(repo: &Repo, cfg: &Config, task: &Task) -> Result<()> {
 ///
 /// Chosen on the index rows, which carry the status, the blockers and the scope
 /// the choice reads, so no file is opened to make it (TASK-8654f0c81393).
-fn other_ready_task(cwd: &Path, tasks: &[Row], task: &Task) -> Option<EntityId> {
+fn other_ready_task(
+    cwd: &Path,
+    tasks: &[Row],
+    task: &Task,
+    peers: &mut PeerEdges,
+) -> Option<EntityId> {
     let map = status_map(tasks);
     let now = now_secs();
     // The rows come ordered by id, which is the order the candidates are
@@ -2655,17 +2684,20 @@ fn other_ready_task(cwd: &Path, tasks: &[Row], task: &Task) -> Option<EntityId> 
         // Every blocker `done`, and one the corpus does not hold is not ready:
         // the answer `Task::active_blockers` gives, over the row's list.
         //
-        // A peer's blocker is not read for a hint, so a task carrying one is
-        // not offered: offering it would print a command that may refuse.
-        let ready = row.peer_blocked_by.is_empty()
-            && row
-                .blocked_by
-                .iter()
-                .all(|b| map.get(b) == Some(&TaskStatus::Done));
+        let ready = row
+            .blocked_by
+            .iter()
+            .all(|b| map.get(b) == Some(&TaskStatus::Done));
         if !ready {
             continue;
         }
         if !scopes_intersect(&task.scope, &row.scope).unwrap_or(false) {
+            continue;
+        }
+        // A peer's blocker is judged as `claim` judges it, last, since it may
+        // open a corpus: offered once its peer holds it done, and never while
+        // the edge cannot be read.
+        if !peers.clear(id, &row.peer_blocked_by) {
             continue;
         }
         match read(cwd, id) {

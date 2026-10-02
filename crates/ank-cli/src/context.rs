@@ -669,6 +669,7 @@ fn build_orientation(
     mut warnings: Vec<String>,
 ) -> Result<View> {
     let statuses = status_of(rows);
+    let mut peers = claim::PeerEdges::new(repo, cfg);
     let tasks: Vec<&Row> = rows
         .iter()
         .filter(|r| r.kind == EntityKind::Task && in_perimeter(&r.scope, path))
@@ -698,11 +699,20 @@ fn build_orientation(
             continue;
         }
         let state = coord.get(&r.id).cloned().unwrap_or(Coordination::Free);
-        let blockers_left = r
+        let local_left = r
             .blocked_by
             .iter()
             .filter(|b| statuses.get(*b).map(|s| s != "done").unwrap_or(true))
             .count();
+        // A peer edge is judged by the resolution `claim` refuses on, so the
+        // two verbs cannot disagree about one task (TASK-d28565b8ed63); an edge
+        // that cannot be read holds. Asked only of a task still open, since no
+        // other is listed as claimable, and only when nothing local blocks it.
+        let peer_held = r.status == "open"
+            && local_left == 0
+            && !r.peer_blocked_by.is_empty()
+            && !peers.clear(&r.id, &r.peer_blocked_by);
+        let blockers_left = local_left + usize::from(peer_held);
 
         if let Coordination::Finished { .. } = state {
             finished_elsewhere += 1;
