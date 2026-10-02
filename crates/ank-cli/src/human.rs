@@ -3109,13 +3109,13 @@ const REFERENCES: Relation = Relation {
 };
 
 /// An ADR's `amends` (ADR-9ee76b578257). An ADR and nothing else, and the
-/// repair is to read the amendment: `amend` reaches no field of an ADR, so
-/// naming a flag here would name a command that refuses.
+/// repair drops the entry, on an accepted amendment too: the anchor covers the
+/// constraint and the scope and not what the ADR amends (TASK-0e8f4ed12897).
 const AMENDS: Relation = Relation {
     field: "amends",
     allowed: |kind| kind == EntityKind::Adr,
     not_allowed: crate::commands::not_amendable,
-    repair: |citer, _| format!("ank show {citer}"),
+    repair: |citer, target| format!("ank amend {citer} --drop-amends {target}"),
 };
 
 /// What a citation owes once the document it ends on is in hand: nothing when
@@ -7035,7 +7035,13 @@ pub fn amend(
     // and `resolve` would refuse to look up. It is matched against what the
     // entity stores, exactly as `--drop-scope` is.
     let add_refs = resolve_all(&store, inv.values("--reference"))?;
-    let drop_refs = parse_all(inv.values("--drop-reference"), &id)?;
+    let drop_refs = parse_all(inv.values("--drop-reference"), "--drop-reference", &id)?;
+    // An ADR's `amends`, on the same terms (ADR-9ee76b578257): one added is
+    // resolved and must be an ADR, in the words `new` uses; one dropped is
+    // matched against what the ADR stores, since the amends worth dropping is
+    // the one `check` reports as naming nothing.
+    let add_amends = crate::commands::amends_of(inv, &store)?;
+    let drop_amends = parse_all(inv.values("--drop-amends"), "--drop-amends", &id)?;
 
     if add_scope.is_empty()
         && drop_scope.is_empty()
@@ -7045,6 +7051,8 @@ pub fn amend(
         && drop_peer.is_empty()
         && add_refs.is_empty()
         && drop_refs.is_empty()
+        && add_amends.is_empty()
+        && drop_amends.is_empty()
         && criteria.is_none()
         && method.is_none()
     {
@@ -7053,7 +7061,8 @@ pub fn amend(
                 format!(
                     "ank amend {id} --blocked-by <id> | --drop-blocked-by <id> | \
                  --scope <glob> | --drop-scope <glob> | --criteria \"<c>\" | \
-                 --method <name> | --reference <id> | --drop-reference <id>"
+                 --method <name> | --reference <id> | --drop-reference <id> | \
+                 --amends <id> | --drop-amends <id>"
                 ),
             ),
         );
@@ -7071,6 +7080,18 @@ pub fn amend(
         return Err(CliError::new(
             ExitCode::Generic,
             format!("references applies to a spec: a {kind} cites nothing"),
+        )
+        .with_hint(format!("ank show {id}")));
+    }
+    // The same refusal for the relation only a decision carries: what a task
+    // or a spec changes is not a decision, so it amends none.
+    if !matches!(loaded.entity, Entity::Adr(_))
+        && !(add_amends.is_empty() && drop_amends.is_empty())
+    {
+        let kind = ank_core::Fields::kind_spec(&loaded.entity).name;
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("amends applies to an ADR: a {kind} is not a decision, and amends none"),
         )
         .with_hint(format!("ank show {id}")));
     }
@@ -7300,7 +7321,14 @@ pub fn amend(
             // the anchor and `check` would call it altered — while suspending
             // its injection into `context`. The succession is the way to change
             // a ratified decision, and it has its own verb.
-            if adr.status != AdrStatus::Proposed {
+            //
+            // **The refusal is on the scope and not on the entity**, as it is
+            // on a spec: `amends` is neither the constraint nor the scope, so
+            // the anchor does not cover it, and the repair `check` names for
+            // an amends gone wrong fires on accepted amendments above all
+            // (TASK-0e8f4ed12897).
+            let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
+            if touches_anchor && adr.status != AdrStatus::Proposed {
                 return Err(CliError::new(
                     ExitCode::Transition,
                     format!(
@@ -7314,6 +7342,13 @@ pub fn amend(
                 ));
             }
 
+            amend_amends(
+                &mut adr.amends,
+                &add_amends,
+                &drop_amends,
+                &id,
+                &mut changes,
+            )?;
             amend_scope(&mut adr.scope, &add_scope, &drop_scope, &id, &mut changes)?;
             if changes.is_empty() {
                 return Err(CliError::new(
@@ -7501,6 +7536,44 @@ fn amend_references(
     Ok(())
 }
 
+/// The `amends` half, for the one kind that carries the field, and on the
+/// terms [`amend_references`] states: add and remove, an absent one refused
+/// rather than ignored, and an empty list an ordinary ADR that amends nothing.
+fn amend_amends(
+    amends: &mut Vec<EntityId>,
+    add: &[EntityId],
+    drop: &[EntityId],
+    id: &EntityId,
+    changes: &mut Vec<String>,
+) -> Result<()> {
+    for a in drop {
+        if !amends.contains(a) {
+            return Err(
+                CliError::new(ExitCode::Prerequisite, format!("{id} does not amend {a}"))
+                    .with_hint(format!("ank show {id}")),
+            );
+        }
+    }
+    amends.retain(|a| !drop.contains(a));
+    for a in add {
+        if a == id {
+            return Err(CliError::new(
+                ExitCode::Prerequisite,
+                format!("{id} cannot amend itself: changing a decision is a supersession"),
+            )
+            .with_hint(format!("ank amend {id} --amends <other-adr>")));
+        }
+        if !amends.contains(a) {
+            changes.push(format!("+amends {a}"));
+            amends.push(a.clone());
+        }
+    }
+    for a in drop {
+        changes.push(format!("-amends {a}"));
+    }
+    Ok(())
+}
+
 /// A `--scope` or `--drop-scope` value opening on `+` or `-`, which is a list
 /// marker and not a glob.
 ///
@@ -7607,18 +7680,19 @@ fn trimmed(values: &[String]) -> Vec<String> {
 
 /// The same list, read as identifiers and never looked up.
 ///
-/// For `--drop-reference` alone, and the asymmetry with [`resolve_all`] is the
-/// decision rather than an omission: the citation worth dropping is usually one
+/// For `--drop-reference` and `--drop-amends`, and the asymmetry with
+/// [`resolve_all`] is the decision rather than an omission: the citation worth
+/// dropping is usually one
 /// whose target the corpus has lost, and resolving it would refuse the very
 /// repair `check` names. A prefix is therefore not accepted here — there is
 /// nothing to disambiguate it against — so the id is typed whole, which is what
 /// the finding prints.
-fn parse_all(raw: &[String], id: &EntityId) -> Result<Vec<EntityId>> {
+fn parse_all(raw: &[String], flag: &str, id: &EntityId) -> Result<Vec<EntityId>> {
     let mut out = Vec::new();
     for r in raw {
         let target = EntityId::parse(r.trim()).map_err(|e| {
             CliError::new(ExitCode::Prerequisite, format!("{e}"))
-                .with_hint(format!("ank amend {id} --drop-reference <full-id>"))
+                .with_hint(format!("ank amend {id} {flag} <full-id>"))
         })?;
         if !out.contains(&target) {
             out.push(target);

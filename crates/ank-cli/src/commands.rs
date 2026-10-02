@@ -1152,7 +1152,7 @@ fn references_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
 /// decision binds. Whether the target is accepted is left to `check`, as a
 /// reference's is: an amendment drafted beside the proposal it amends is
 /// ordinary, and what `check` reports is the corpus as it stands.
-fn amends_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
+pub(crate) fn amends_of(inv: &Invocation, store: &Store) -> Result<Vec<EntityId>> {
     let mut out: Vec<EntityId> = Vec::new();
     for raw in inv.values("--amends") {
         let target = store.resolve(raw.trim())?;
