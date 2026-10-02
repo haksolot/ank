@@ -12764,7 +12764,9 @@ fn valid_value(flag: &str) -> &'static str {
         // entity stores rather than resolving against the corpus, which is what
         // makes dropping a citation to a deleted document possible at all.
         "--reference" | "--drop-reference" => "SPEC-000000000001",
-        "--amends" => "ADR-000000000001",
+        // Whole, for the same reason: `--drop-amends` matches what the ADR
+        // stores, so an amends naming a lost ADR can still be dropped.
+        "--amends" | "--drop-amends" => "ADR-000000000001",
         "--verify" => "cargo-test",
         // A sibling this binary carries: any other name is the verb correctly
         // refusing the value, which is not a refusal of the flag.
@@ -13836,7 +13838,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 37] = [
+const NOT_A_PATH: [&str; 38] = [
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -13865,8 +13867,9 @@ const NOT_A_PATH: [&str; 37] = [
     "--reference",
     "--drop-reference",
     // An entity id as well: what an ADR amends is another ADR
-    // (ADR-9ee76b578257).
+    // (ADR-9ee76b578257), added by `new` and `amend` and dropped by `amend`.
     "--amends",
+    "--drop-amends",
     "--limit",
     "--criteria",
     "--ttl",

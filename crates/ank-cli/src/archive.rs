@@ -23,7 +23,7 @@ use crate::json::Obj;
 use crate::repo::Repo;
 use crate::store::Store;
 use ank_contract::ExitCode;
-use ank_core::{Entity, EntityId, EntityKind};
+use ank_core::{EntityId, EntityKind};
 use std::collections::{BTreeSet, HashMap};
 use std::io::Write;
 
@@ -123,15 +123,13 @@ pub fn run(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -> 
     // set a move is chosen from.
     let index = Index::open(&repo.ank)?;
     let rows = index.all()?;
-    // The index carries no `amends`, so it is read from the accepted ADRs
-    // themselves: the only ones whose amendments the rule counts.
+    // Off the index rows, which carry `amends` (TASK-ea86d1cc4af4), and of
+    // the accepted ADRs only: the ones whose amendments the rule counts.
     let amends: HashMap<&EntityId, Vec<EntityId>> = rows
         .iter()
         .filter(|r| r.kind == EntityKind::Adr && r.status == "accepted")
-        .filter_map(|r| match store.load(&r.id).map(|l| l.entity) {
-            Ok(Entity::Adr(a)) if !a.amends.is_empty() => Some((&r.id, a.amends)),
-            _ => None,
-        })
+        .map(|r| (&r.id, r.amends_or_read(&store)))
+        .filter(|(_, amends)| !amends.is_empty())
         .collect();
     let hot: Vec<Hot> = rows
         .iter()

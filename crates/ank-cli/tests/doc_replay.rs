@@ -75,6 +75,7 @@ const PAGES: &[&str] = &[
     "docs/mcp.md",
     "docs/msrv.md",
     "docs/multi-agent.md",
+    "docs/peers.md",
     "docs/proof.md",
     "docs/quickstart.md",
     "docs/ratifying.md",
@@ -876,6 +877,11 @@ fn check_replays() {
 #[test]
 fn multi_agent_replays() {
     replay_page("docs/multi-agent.md");
+}
+
+#[test]
+fn peers_replays() {
+    replay_page("docs/peers.md");
 }
 
 #[test]
