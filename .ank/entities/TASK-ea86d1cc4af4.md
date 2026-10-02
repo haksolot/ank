@@ -5,7 +5,7 @@ slug: the-adrs-that-amend-another-are-found-through-th
 title: The ADRs that amend another are found through the index, and show stops parsing every accepted ADR
 created: 2026-09-27T20:46:02Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/src/human.rs
@@ -18,7 +18,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Follow-up of TASK-fe548f3dd587 (issue #503). Its log records the cost it chose to
