@@ -16534,7 +16534,7 @@ fn a_scope_only_ignored_files_match_is_a_signal_naming_check_ignore_and_an_absen
 /// (ADR-3abc4b33153f, ADR-cc65f1388a71).
 #[test]
 fn an_ignored_only_dead_scope_starts_as_many_git_processes_as_an_absent_one() {
-    fn starts_for(scope: &str) -> usize {
+    fn starts_for(scope: &str) -> (usize, i32, bool) {
         let r = repo_with_ignored_build_output();
         new_adr_scoped(&r, "A rule scoped at a dead path", scope);
         let trace = r.0.join("trace.json");
@@ -16550,11 +16550,26 @@ fn an_ignored_only_dead_scope_starts_as_many_git_processes_as_an_absent_one() {
         let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
         let starts = text.matches("\"event\":\"start\"").count();
         assert!(starts > 0, "the trace records no git process: {text:.400}");
-        starts
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        let named = said.contains("git check-ignore -v build/output.bin");
+        (starts, code(&out), named)
     }
-    let ignored = starts_for("build/output.bin");
-    let glob = starts_for("build/**");
-    let absent = starts_for("build/absent.bin");
+    let (ignored, ignored_code, ignored_named) = starts_for("build/output.bin");
+    let (glob, glob_code, glob_named) = starts_for("build/**");
+    let (absent, absent_code, absent_named) = starts_for("build/absent.bin");
+    // The counts compare a walk that ran with one that did not need to: without
+    // these, a build that stopped looking for the ignored file at all would
+    // count the same and pass.
+    assert_eq!(
+        (ignored_code, ignored_named, glob_code, glob_named),
+        (0, true, 0, true),
+        "the ignored path and the ignored glob are signals naming the file"
+    );
+    assert_eq!(
+        (absent_code, absent_named),
+        (8, false),
+        "the absent path is the fault"
+    );
     assert_eq!(
         (ignored, glob),
         (absent, absent),
