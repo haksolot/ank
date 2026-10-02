@@ -449,6 +449,21 @@ fn immutable_uri(path: &Path) -> String {
 }
 
 /// SQLite reporting a lock rather than a defect.
+/// How long a connection's first read waits for another reader to finish
+/// rebuilding the WAL's shared-memory index. A recovery reads the WAL once, so
+/// it is bounded by the WAL's size and not by anybody's work.
+const RECOVERY_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Whether SQLite refused because another connection is recovering the WAL
+/// index, which is a reader rebuilding shared memory and never a writer.
+fn is_recovering(e: &rusqlite::Error) -> bool {
+    matches!(
+        e,
+        rusqlite::Error::SqliteFailure(f, _)
+            if f.extended_code == rusqlite::ffi::SQLITE_BUSY_RECOVERY
+    )
+}
+
 fn is_busy(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -765,7 +780,25 @@ impl Index {
         let healthy = |c: &Connection| -> rusqlite::Result<bool> {
             Ok(schema_version_of(c)? == Some(SCHEMA_VERSION) && tables_present_in(c)?)
         };
-        if healthy(&self.conn).map_err(|e| db_error(e, &self.ank))? {
+        // **A recovery is waited out, and nothing else is** (TASK-f0dd3c98a6bf).
+        // This is the connection's first read, and a WAL whose `-shm` is gone
+        // (the last process to close it checkpointed and deleted both) has its
+        // shared-memory index rebuilt by whichever reader gets there first. The
+        // others are answered `SQLITE_BUSY_RECOVERY`: no writer is involved, so
+        // the busy wall, which can be zero, is the wrong rule for it. Measured
+        // pinned to one core: one burst of twelve warm readers in about a
+        // hundred and fifty had readers refused, every one with extended code
+        // 261 from this read.
+        let started = std::time::Instant::now();
+        let healthy_now = loop {
+            match healthy(&self.conn) {
+                Err(e) if is_recovering(&e) && started.elapsed() < RECOVERY_WAIT => {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                other => break other,
+            }
+        };
+        if healthy_now.map_err(|e| db_error(e, &self.ank))? {
             return Ok(());
         }
 
