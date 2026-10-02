@@ -5,7 +5,7 @@ slug: a-peer-id-given-without-its-kind-is-refused-nami
 title: A peer id given without its kind is refused naming the form that works
 created: 2026-10-02T18:08:29Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/src/commands.rs
@@ -16,8 +16,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: diagnose
+proof:
+  - type: test
+    ref: local/59cd47feea81@098a552
+    tree: scope/88cf95f2bea5
+    criteria: f85e149b8aa8
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@098a552
+    tree: scope/88cf95f2bea5
+    criteria: f85e149b8aa8
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Found by the worker of TASK-fbe6db79560a while writing docs/peers.md

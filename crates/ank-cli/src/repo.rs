@@ -617,8 +617,23 @@ pub enum Reach<'a> {
 ///
 /// `<id>@<peer>` opens the peer, or refuses when it is not declared or cannot
 /// be read. `<peer>:<id>`, the scope form, is refused naming
-/// `ank <verb> <id>@<peer>`. Anything else is local, as it always was.
+/// `ank <verb> <id>@<peer>`. `<hex>@<peer>`, a declared peer's id without its
+/// kind, is refused naming the form that works. Anything else is local, as it
+/// always was.
 pub fn reach<'a>(from: &Repo, cfg: &Config, verb: &str, raw: &'a str) -> Result<Reach<'a>> {
+    kindless(from, cfg, verb, raw)?;
+    reach_or_message(from, cfg, verb, raw)
+}
+
+/// [`reach`] for a verb whose argument may also be a message, `log`: a
+/// kindless `<hex>@<peer>` is not refused there but left local, so that the
+/// verb never has to guess which of the two it was handed.
+pub fn reach_or_message<'a>(
+    from: &Repo,
+    cfg: &Config,
+    verb: &str,
+    raw: &'a str,
+) -> Result<Reach<'a>> {
     if let Some((id, name)) = peer_id(raw) {
         return Ok(Reach::Peer(Box::new(open_peer(from, cfg, name)?), id));
     }
@@ -630,6 +645,56 @@ pub fn reach<'a>(from: &Repo, cfg: &Config, verb: &str, raw: &'a str) -> Result<
         .with_hint(format!("ank {verb} {id}@{name}")));
     }
     Ok(Reach::Here(raw))
+}
+
+/// Refuses `<hex>@<peer>`, a declared peer's identifier given without its
+/// kind (TASK-70c5bfe56e15).
+///
+/// **The kind stays mandatory**: it is what tells an identifier from a message
+/// such as `ask me@home`. What a near miss gets is the form that works rather
+/// than "not found": the peer's entities whose hex starts with the prefix are
+/// named with their kind, and when none does the refusal states the form.
+fn kindless(from: &Repo, cfg: &Config, verb: &str, raw: &str) -> Result<()> {
+    let Some((hex, name)) = raw.rsplit_once('@') else {
+        return Ok(());
+    };
+    if hex.is_empty()
+        || !hex.chars().all(|c| c.is_ascii_hexdigit())
+        || !cfg.peers.contains_key(name)
+    {
+        return Ok(());
+    }
+    let peer = open_peer(from, cfg, name)?;
+    let store = Store::new(&peer.repo.ank);
+    let mut ids = store.list_ids()?;
+    ids.extend(store.archived_ids()?);
+    let lower = hex.to_ascii_lowercase();
+    let mut kinds: Vec<&str> = ids
+        .iter()
+        .filter(|id| id.hex().starts_with(&lower))
+        .map(|id| id.kind().prefix())
+        .collect();
+    kinds.sort_unstable();
+    kinds.dedup();
+    let forms: Vec<String> = kinds.iter().map(|k| format!("{k}{hex}@{name}")).collect();
+    Err(match forms.first() {
+        Some(first) => CliError::new(
+            ExitCode::NotFound,
+            format!(
+                "{raw} has no kind: a peer id carries one, and peer '{name}' holds {}",
+                forms.join(", ")
+            ),
+        )
+        .with_hint(format!("ank {verb} {first}")),
+        None => CliError::new(
+            ExitCode::NotFound,
+            format!(
+                "{raw} has no kind: a peer id carries one, as <KIND>-<hex>@{name}, \
+                 and peer '{name}' holds nothing starting with {hex}"
+            ),
+        )
+        .with_hint(format!("ank find @{name}")),
+    })
 }
 
 /// A `blocked_by` entry as it was typed: a local identifier, or `<id>@<peer>`

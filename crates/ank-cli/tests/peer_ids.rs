@@ -301,3 +301,101 @@ fn an_identifier_the_peer_does_not_hold_names_a_command_that_answers() {
     let listed = f.ok(&refs);
     assert!(listed.contains("@bb"), "{named} lists the peer: {listed}");
 }
+
+/// The ADR the peer `api` holds, whose id a reader shortens to its hex.
+const ADR: &str = "ADR-3511aabbccdd";
+
+/// `fixture`, plus a peer named `api` holding exactly one entity whose id
+/// starts with `ADR-3511`.
+fn with_api(name: &str) -> Fixture {
+    let f = fixture(name);
+    let api = f.base.join("api");
+    corpus(&f, &api);
+    fs::write(
+        api.join(format!(".ank/entities/{ADR}.md")),
+        format!(
+            "---\nid: {ADR}\ntype: adr\nslug: s\ntitle: A rule of api\n\
+             created: 2026-08-01T00:00:00Z\nstatus: proposed\nscope:\n  - 'src/**'\n\
+             constraint: |\n  A rule.\nschema: 4\nversion: 1\n---\n\nWhy.\n"
+        ),
+    )
+    .unwrap();
+    commit(&api);
+    let out = f.run(&f.a, &["config", "peers.api", "../api"]);
+    assert!(out.status.success(), "{:?}", out);
+    commit(&f.a);
+    f
+}
+
+/// The exit code an id that resolves nowhere gets.
+fn unresolvable_code(f: &Fixture) -> Option<i32> {
+    f.run(&f.a, &["show", "TASK-ffffffffffff"]).status.code()
+}
+
+#[test]
+fn a_peer_id_without_its_kind_is_refused_naming_the_form_that_works() {
+    let f = with_api("peer-ids-kindless");
+    let code = unresolvable_code(&f);
+    let new_task = [
+        "new",
+        "task",
+        "--title",
+        "Waits on api",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "It holds.",
+        "--no-verify",
+        "--blocked-by",
+        "3511@api",
+    ];
+    for args in [&["show", "3511@api"][..], &new_task[..]] {
+        let out = f.run(&f.a, args);
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), code, "ank {args:?}: {err}");
+        assert!(
+            err.contains("ADR-3511@api"),
+            "ank {args:?} names the form: {err}"
+        );
+    }
+    // The form it names answers.
+    let shown = f.ok(&["show", "ADR-3511@api"]);
+    assert!(shown.contains(&format!("id: {ADR}")), "{shown}");
+}
+
+#[test]
+fn a_kindless_peer_id_matching_nothing_says_a_peer_id_carries_its_kind() {
+    let f = with_api("peer-ids-kindless-none");
+    let code = unresolvable_code(&f);
+    let out = f.run(&f.a, &["show", "9999@api"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), code, "{err}");
+    assert!(err.contains("<KIND>-<hex>@api"), "{err}");
+    assert!(!err.contains("ADR-"), "names no entity: {err}");
+}
+
+#[test]
+fn a_message_naming_a_kindless_peer_id_stays_a_message() {
+    let f = with_api("peer-ids-kindless-message");
+    let created = f.ok(&[
+        "new",
+        "task",
+        "--title",
+        "Local work",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "It holds.",
+        "--no-verify",
+    ]);
+    let id = created
+        .split_whitespace()
+        .find(|w| w.starts_with("TASK-"))
+        .unwrap_or_else(|| panic!("new names the task: {created}"))
+        .to_string();
+    commit(&f.a);
+    f.ok(&["claim", &id]);
+    f.ok(&["log", "ship 3511@api"]);
+    let log = f.ok(&["log", &id]);
+    assert!(log.contains("ship 3511@api"), "{log}");
+}

@@ -2144,7 +2144,7 @@ pub fn log(
         // a message: an identifier that resolves nowhere here was written as a
         // message on the held task, which is the one reading it never has
         // (ADR-c23bef1cc93e).
-        [one] => match crate::repo::reach(repo, cfg, "log", one)? {
+        [one] => match crate::repo::reach_or_message(repo, cfg, "log", one)? {
             crate::repo::Reach::Peer(peer, prefix) => {
                 let store = Store::new(&peer.repo.ank);
                 let id = store
