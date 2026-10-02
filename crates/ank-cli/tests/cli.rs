@@ -16641,6 +16641,94 @@ fn a_scope_living_only_in_a_nested_checkout_stays_a_fault() {
     );
 }
 
+/// **A symbolic link is not an ignored file, and neither is what lies beyond
+/// one.** A tracked link to a directory is a path git lists, which the tree it
+/// counts drops only because it resolves to a directory; and a file reached
+/// through a link is one git never looks at (`git check-ignore` refuses it as
+/// "beyond a symbolic link"). Both scopes are dead with nothing explaining
+/// them, so both stay faults, and no note claims an ignore rule that does not
+/// exist. Unix only: creating a link on Windows takes a privilege a runner
+/// may not hold.
+#[cfg(unix)]
+#[test]
+fn a_scope_on_a_symlink_or_beyond_one_is_not_reported_as_ignored() {
+    let r = repo_with_ignored_build_output();
+    std::fs::create_dir_all(r.0.join("real")).unwrap();
+    std::fs::write(r.0.join("real/a.rs"), "// real\n").unwrap();
+    std::os::unix::fs::symlink("real", r.0.join("link")).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a link to a directory"]);
+    let bare = new_adr_scoped(&r, "A rule scoped at a link", "link");
+    let through = new_adr_scoped(&r, "A rule scoped through a link", "link/**");
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    for (id, scope) in [(&bare, "link"), (&through, "link/**")] {
+        let line = said
+            .lines()
+            .find(|l| l.contains(&format!("dead scope '{scope}'")))
+            .unwrap_or_else(|| panic!("no finding names '{scope}':\n{said}"));
+        assert!(
+            line.starts_with(&format!("error: {id}:")),
+            "a link is no ignored file, so the death stays a fault: {said}"
+        );
+    }
+    assert!(
+        !said.contains("git check-ignore") && !said.contains("ignored by git"),
+        "nothing here is ignored, so no note may say so: {said}"
+    );
+}
+
+/// **`target/` and `node_modules/` are ignored like any other directory when
+/// `.gitignore` names them** (ADR-3abc4b33153f), and are not when it does not.
+/// The tree git counts sets both aside by name whatever the rules say, so the
+/// walk cannot tell the two apart by the name alone: a file git listed is never
+/// called ignored, and one it did not list is. Here `target/` is ignored and
+/// `node_modules/` is merely untracked.
+#[test]
+fn a_scope_under_an_ignored_target_is_a_signal_and_under_an_unignored_node_modules_a_fault() {
+    let r = repo_with_ignored_build_output();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\ntarget/\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "ignore target/"]);
+    std::fs::create_dir_all(r.0.join("target/doc")).unwrap();
+    std::fs::write(r.0.join("target/doc/index.html"), "generated\n").unwrap();
+    std::fs::create_dir_all(r.0.join("node_modules/pkg")).unwrap();
+    std::fs::write(r.0.join("node_modules/pkg/index.js"), "// untracked\n").unwrap();
+    let ignored = new_adr_scoped(&r, "A rule scoped under target", "target/doc/**");
+    let untracked = new_adr_scoped(
+        &r,
+        "A rule scoped under node_modules",
+        "node_modules/pkg/index.js",
+    );
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    let line = said
+        .lines()
+        .find(|l| l.contains("dead scope 'target/doc/**'"))
+        .unwrap_or_else(|| panic!("no finding names target/doc/**:\n{said}"));
+    assert!(
+        line.starts_with(&format!("signal: {ignored}:")),
+        "target/ is ignored by .gitignore here, so it is the signal: {said}"
+    );
+    assert!(
+        said.contains("git check-ignore -v target/doc/index.html"),
+        "{said}"
+    );
+    let line = said
+        .lines()
+        .find(|l| l.contains("dead scope 'node_modules/pkg/index.js'"))
+        .unwrap_or_else(|| panic!("no finding names node_modules:\n{said}"));
+    assert!(
+        line.starts_with(&format!("error: {untracked}:")),
+        "node_modules/ is ignored by no rule, so nothing explains it: {said}"
+    );
+    assert!(!said.contains("git check-ignore -v node_modules"), "{said}");
+}
+
 /// **A tracked file removed with a plain `rm`, never `git rm`, does not keep
 /// its scope alive on the index entry alone.** `git ls-files --cached` lists
 /// the index, not the disk; a scope reading this as tracked would be exactly

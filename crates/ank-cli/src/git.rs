@@ -347,12 +347,18 @@ pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
 /// always ran when it cannot ask git at all, and a repository that really is
 /// empty gets the same empty answer from both paths.
 ///
+/// **What the count sets aside is returned beside it**, in
+/// [`WorktreeFiles::set_aside`]: the paths git listed that the filters above
+/// dropped. A dead scope's walk of the disk (ADR-3abc4b33153f) needs exactly
+/// that to tell a file git ignores from one git listed and this count did not
+/// keep, and it is already in hand here, at no process of its own.
+///
 /// **This is the only caller of `git ls-files`, and it has to stay the only
 /// one.** The plumbing ADR-9307e5d214a7 admits lets `ls-files` through with any
 /// arguments, but ADR-db587ad54269 restricts it to the two invocations made
 /// here (the listing and `--deleted`); a second caller, or a different set of
 /// arguments, is a change to that decision and not to this file.
-pub fn worktree_files(cwd: &Path) -> Option<Vec<String>> {
+pub fn worktree_files(cwd: &Path) -> Option<WorktreeFiles> {
     let args = [
         "ls-files",
         "-z",
@@ -376,7 +382,23 @@ pub fn worktree_files(cwd: &Path) -> Option<Vec<String>> {
     let deleted: HashSet<String> = paths_of(&deleted.stdout).into_iter().collect();
     let raw: Vec<String> = raw.into_iter().filter(|p| !deleted.contains(p)).collect();
 
-    Some(exclude_nested_checkouts(cwd, raw))
+    let (counted, set_aside) = exclude_nested_checkouts(cwd, raw);
+    Some(WorktreeFiles {
+        counted,
+        set_aside: set_aside.into_iter().collect(),
+    })
+}
+
+/// The answer of [`worktree_files`].
+pub struct WorktreeFiles {
+    /// The files git counts as this work tree, which a scope is confronted
+    /// with.
+    pub counted: Vec<String>,
+    /// The paths git listed, tracked or untracked and not ignored, that
+    /// `counted` leaves out: a nested checkout, an entry that is a directory
+    /// on disk (a gitlink, a link to a directory), anything under `target` or
+    /// `node_modules`. None of them is a file git ignores.
+    pub set_aside: HashSet<String>,
 }
 
 /// Splits a `-z` stream into relative paths, dropping the trailing empty
@@ -407,35 +429,35 @@ fn paths_of(stdout: &[u8]) -> Vec<String> {
 /// prefix, memoized: the full path is itself one of those prefixes, so a
 /// corpus with thousands of files pays for the files themselves as well as
 /// the directories above them, not only the directories.
-fn exclude_nested_checkouts(cwd: &Path, raw: Vec<String>) -> Vec<String> {
+///
+/// Returns the paths kept, then the paths dropped.
+fn exclude_nested_checkouts(cwd: &Path, raw: Vec<String>) -> (Vec<String>, Vec<String>) {
     let mut has_git: HashMap<String, bool> = HashMap::new();
-    raw.into_iter()
-        .filter(|path| {
-            if path
-                .split('/')
-                .any(|segment| segment == "target" || segment == "node_modules")
-            {
+    raw.into_iter().partition(|path| {
+        if path
+            .split('/')
+            .any(|segment| segment == "target" || segment == "node_modules")
+        {
+            return false;
+        }
+        if cwd.join(path).is_dir() {
+            return false;
+        }
+        let mut prefix = String::new();
+        for segment in path.split('/') {
+            if !prefix.is_empty() {
+                prefix.push('/');
+            }
+            prefix.push_str(segment);
+            let nested = *has_git
+                .entry(prefix.clone())
+                .or_insert_with(|| cwd.join(&prefix).join(".git").exists());
+            if nested {
                 return false;
             }
-            if cwd.join(path).is_dir() {
-                return false;
-            }
-            let mut prefix = String::new();
-            for segment in path.split('/') {
-                if !prefix.is_empty() {
-                    prefix.push('/');
-                }
-                prefix.push_str(segment);
-                let nested = *has_git
-                    .entry(prefix.clone())
-                    .or_insert_with(|| cwd.join(&prefix).join(".git").exists());
-                if nested {
-                    return false;
-                }
-            }
-            true
-        })
-        .collect()
+        }
+        true
+    })
 }
 
 /// Every tag `repository` holds, by name, peeled tags excluded (`--refs`).
