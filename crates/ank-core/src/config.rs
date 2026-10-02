@@ -97,7 +97,7 @@ pub static KEYS: &[ConfigKey] = &[
         "peers.<name>",
         "path",
         Absent::None,
-        "a peer corpus a scope entry reaches by name, relative to this root or absolute",
+        "a peer corpus a scope entry reaches by name: a path to a checkout on disk, relative to this root or absolute, and never a URL; a reader whose layout differs overrides it in their own corpora.yml with `ank config --user peers.<identity>.<name> <path>`",
     ),
     key(
         "verifiers.<name>.run",
