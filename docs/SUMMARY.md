@@ -9,6 +9,7 @@
 - [Reading ank check](check.md)
 - [Running ank in CI](ci.md)
 - [Multi-agent work](multi-agent.md)
+- [Several repositories](peers.md)
 - [How ank compares](alternatives.md)
 
 # Reference
