@@ -224,12 +224,12 @@ build read, so no route holds a copy somebody keeps in step by hand.
 [`skill/SKILL.md`](https://github.com/haksolot/ank/blob/main/skill/SKILL.md) is
 the one an agent loads by default, and it is self-sufficient: why ank is shaped
 as it is, the verbs grouped by the moment each is used, and the rules that are
-not negotiable. It names the five activity policies so an agent reaching for an activity
-knows what to load, and never depends on them being installed. The five carry a
-policy each and are loaded when the activity calls for them (ADR-e4a5a8873fe3).
-The sixth sibling, `ank-herdr`, is for the agent that runs the others rather than
-for one doing the work: its description triggers only inside a herdr pane, and
-the contract does not list it (ADR-55449b7f4f8f).
+not negotiable. It names every sibling so an agent reaching for an activity
+knows what to load, and never depends on them being installed. The five activity
+policies carry one each and are loaded when the activity calls for them
+(ADR-e4a5a8873fe3). The sixth sibling, `ank-herdr`, is for the agent that runs
+the others rather than for one doing the work: the contract names it beside the
+five, and its description triggers only inside a herdr pane (ADR-55449b7f4f8f).
 What an agent does with them once installed is [Multi-agent
 work](multi-agent.md).
 

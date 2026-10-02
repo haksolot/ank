@@ -13,7 +13,8 @@ identity](claims.md).
 carry a policy each -- planning, drift audit, the autonomous loop, test-first
 implementation, diagnosis -- loaded when the activity calls for them. A sixth,
 `ank-herdr`, teaches the agent that runs the others from a herdr pane rather than
-one doing the work ([below](#running-agents-from-herdr)).
+one doing the work ([below](#running-agents-from-herdr)). The contract names all
+six, so an agent that loaded only it knows each one exists.
 
 One convention it carries is worth knowing before you watch an agent follow it:
 **`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
