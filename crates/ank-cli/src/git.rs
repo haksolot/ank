@@ -1111,6 +1111,22 @@ pub fn is_ancestor(cwd: &Path, ancestor: &str, descendant: &str) -> Result<bool>
     }
 }
 
+/// The commit `a` and `b` last shared, or `None` where they share none or
+/// either fails to resolve.
+///
+/// What a checkout is about to bring to the default branch is what it changed
+/// since this commit, and nothing the default branch did afterwards: a format
+/// migration that landed there after the branch was cut is not this branch's
+/// edit (ADR-4004eb9be5e9). One process, whatever the corpus holds.
+pub fn merge_base(cwd: &Path, a: &str, b: &str) -> Result<Option<String>> {
+    let out = output(cwd, &["merge-base", a, b])?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Ok((!sha.is_empty()).then_some(sha))
+}
+
 /// A file as it appears on `rev`, not as the working tree holds it. That
 /// distinction is the whole point: the pruning predicate asks what the default
 /// branch carries, and `done` writes only to the tree (§7, §12).

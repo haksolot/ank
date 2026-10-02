@@ -390,7 +390,7 @@ What a finding means, fault or signal, is [Reading ank check](check.md). Under
 <!-- replay state -->
 
     $ ank check --json
-    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":6,"plane_bytes":173,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged (ank config default_branch <name>)","note":[],"charge":[]}]}
+    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":6,"plane_bytes":173,"pruned":[],"findings":[{"level":"signal","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","subject":"allowed_signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]},{"level":"signal","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged and log entries not compared against it (ank config default_branch <name>)","note":[],"charge":[]}]}
 
 ## The conformance suite is offered to you
 

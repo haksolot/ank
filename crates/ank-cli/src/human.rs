@@ -965,13 +965,14 @@ pub fn inspect_with(
             // whether the corpus they are looking at is the one everybody else
             // reads (ADR-47e2ac102f58).
             corpus_drift(repo, branch, &here, &mut report);
+            rewritten_entries(repo, branch, &here, &entities, &mut report);
             maintain(repo, branch, &coord, &statuses, prune, &mut report)?;
             maintain_proofs(repo, branch, &detached, &statuses, prune, &mut report)?;
         }
         Some(Err(_)) => report.findings.push(Finding::signal(
             "coordination",
             "default branch indeterminable, completion refs neither pruned nor judged \
-             (ank config default_branch <name>)",
+             and log entries not compared against it (ank config default_branch <name>)",
         )),
         // The coordination half was skipped, and it has already said so once.
         // A second line here would report the consequence as if it were a
@@ -4503,6 +4504,72 @@ fn corpus_drift(repo: &Repo, branch: &str, here: &BTreeMap<String, PathBuf>, rep
             format!(
                 "{entities} entity file(s) differ from {branch}: this checkout does not \
                  carry the corpus the default branch does (git merge {branch})"
+            ),
+        ));
+    }
+}
+
+/// Each log entry the default branch holds that this checkout has changed
+/// (ADR-4004eb9be5e9), one signal per entry naming the correction
+/// ADR-25f977377fa0 prescribes.
+///
+/// **Against the merge base, never the tip.** What the default branch held when
+/// this branch was cut is what this branch can have changed; an entry a format
+/// migration rewrote there afterwards is the default branch's edit, not this
+/// one's, and an entry created on the branch is not in the base at all, so it
+/// can be corrected freely before it lands.
+///
+/// **The working tree answers for the commits too.** It holds every commit of
+/// the branch plus whatever is not committed yet, so one comparison of its
+/// object names against the base's covers both, and an edit committed and then
+/// restored is correctly nothing.
+///
+/// **A fixed number of processes** (ADR-cc65f1388a71): one `merge-base`, the
+/// base's tree read by [`corpus_at`] a directory at a time, and the working
+/// copies hashed by [`blobs_here`], which `corpus_drift` has already paid for.
+/// No step is per entry.
+///
+/// A signal, because a format migration rewrites entries on purpose. Silent
+/// where there is no base to compare against: an unresolvable default branch
+/// was already reported by `corpus_drift`, and a branch sharing no history
+/// with it has nothing it could have changed.
+fn rewritten_entries(
+    repo: &Repo,
+    branch: &str,
+    here: &BTreeMap<String, PathBuf>,
+    entities: &[(PathBuf, Entity)],
+    report: &mut Report,
+) {
+    let Ok(Some(base)) = git::merge_base(&repo.corpus, branch, "HEAD") else {
+        return;
+    };
+    let (Ok(there), Ok(mine)) = (corpus_at(repo, &base), blobs_here(repo, here)) else {
+        return;
+    };
+    let short = &base[..base.len().min(12)];
+    for (id, blob) in &there {
+        let Ok(parsed) = EntityId::parse(id) else {
+            continue;
+        };
+        if parsed.kind() != EntityKind::Log {
+            continue;
+        }
+        let Some(now) = mine.get(id) else { continue };
+        if now == blob {
+            continue;
+        }
+        let about = entities.iter().find_map(|(_, e)| match e {
+            Entity::Log(l) if l.id == parsed => Some(l.about.to_string()),
+            _ => None,
+        });
+        let about = about.as_deref().unwrap_or("<id>");
+        let path = entity_rel_paths(repo, &parsed).swap_remove(0);
+        report.findings.push(Finding::signal(
+            id,
+            format!(
+                "an entry the default branch holds was changed in this checkout, and an \
+                 entry is written once: restore it (git checkout {short} -- {path}) and \
+                 write a new entry naming it (ank log {about} \"corrects {id}: ...\")"
             ),
         ));
     }
