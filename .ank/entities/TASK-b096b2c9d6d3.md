@@ -5,7 +5,7 @@ slug: skill-herdr-teaches-orchestrating-ank-agents-fro
 title: skill/herdr teaches orchestrating ank agents from a herdr pane, and every channel carries it
 created: 2026-10-02T12:39:28Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - skill/herdr/**
   - crates/ank-cli/tests/skill.rs
@@ -21,8 +21,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/177b5994b024@e77434c
+    tree: scope/827e44a56137
+    criteria: b60520b7ec18
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@e77434c
+    tree: scope/827e44a56137
+    criteria: b60520b7ec18
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 2
+version: 3
 ---
 
 Under ADR-55449b7f4f8f, which amends ADR-e4a5a8873fe3.
