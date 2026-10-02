@@ -5,7 +5,7 @@ slug: the-adrs-that-amend-another-are-found-through-th
 title: The ADRs that amend another are found through the index, and show stops parsing every accepted ADR
 created: 2026-09-27T20:46:02Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/src/human.rs
@@ -17,8 +17,45 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/e35db8c6b560@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
+  - type: test
+    ref: local/6e746de4998c@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
+  - type: test
+    ref: local/1792e00aa44b@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@6721ffe
+    tree: scope/2db4f4501603
+    criteria: 9c53a25bdae9
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 2
+version: 5
 ---
 
 Follow-up of TASK-fe548f3dd587 (issue #503). Its log records the cost it chose to
