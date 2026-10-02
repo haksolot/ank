@@ -16729,6 +16729,26 @@ fn a_scope_under_an_ignored_target_is_a_signal_and_under_an_unignored_node_modul
     assert!(!said.contains("git check-ignore -v node_modules"), "{said}");
 }
 
+/// **The command handed over runs as printed.** A path holding a space is
+/// quoted, or the shell splits it into several paths and `git check-ignore`
+/// answers about none of them.
+#[test]
+fn the_check_ignore_command_quotes_a_path_holding_a_space() {
+    let r = repo_with_ignored_build_output();
+    std::fs::remove_file(r.0.join("build/output.bin")).unwrap();
+    std::fs::create_dir_all(r.0.join("build/my dir")).unwrap();
+    std::fs::write(r.0.join("build/my dir/out file.bin"), "generated\n").unwrap();
+    new_adr_scoped(&r, "A rule scoped at a spaced path", "build/my dir/**");
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{said}");
+    assert!(
+        said.contains("git check-ignore -v \"build/my dir/out file.bin\""),
+        "{said}"
+    );
+}
+
 /// **A tracked file removed with a plain `rm`, never `git rm`, does not keep
 /// its scope alive on the index entry alone.** `git ls-files --cached` lists
 /// the index, not the disk; a scope reading this as tracked would be exactly

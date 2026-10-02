@@ -1854,7 +1854,7 @@ fn check_scope_alive(
             note.push(format!(
                 "{path} is on disk and matches it, but it is ignored by git: no clean clone has it"
             ));
-            note.push(format!("git check-ignore -v {path}"));
+            note.push(format!("git check-ignore -v {}", shell_word(path)));
         }
         if unverifiable {
             note.push(
@@ -2002,6 +2002,18 @@ fn ignored_match(worktree: &Path, glob: &str, set_aside: &HashSet<String>) -> Op
         return None;
     }
     walk(worktree, start, &set, set_aside, 0)
+}
+
+/// A path as one shell word: as it is when nothing in it needs quoting, and in
+/// double quotes otherwise, which bash, PowerShell and `cmd` all read as one
+/// argument.
+fn shell_word(path: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._/-+@,:=".contains(c);
+    if !path.is_empty() && path.chars().all(plain) {
+        path.to_string()
+    } else {
+        format!("\"{path}\"")
+    }
 }
 
 /// The note under a dead scope: what git says happened to the path, and what
