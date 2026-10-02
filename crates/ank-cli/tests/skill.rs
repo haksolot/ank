@@ -781,6 +781,44 @@ fn the_named_sibling_skills_exist() {
     }
 }
 
+/// The `## The skills` section of the contract, up to the next heading.
+fn skills_section(text: &str) -> &str {
+    let start = text
+        .find("## The skills")
+        .expect("SKILL.md has a The skills section");
+    let rest = &text[start + "## The skills".len()..];
+    &rest[..rest.find("\n## ").unwrap_or(rest.len())]
+}
+
+/// **The contract names every sibling.** Every agent loads the contract, and a
+/// sibling it does not name is found only through its description -- the gap
+/// TASK-a93242aa89aa closed for `ank-herdr`. Discovered from the tree, so a
+/// seventh directory fails here until the contract names it, rather than
+/// being noticed by a reader.
+#[test]
+fn the_contract_names_every_sibling_skill() {
+    let text = skill();
+    let section = skills_section(&text);
+    for (name, _) in sibling_skills() {
+        let entry = format!("ank-{name}");
+        assert!(
+            section
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .any(|word| word == entry),
+            "skill/{name}/SKILL.md exists, but the skills section of \
+             skill/SKILL.md does not name {entry}: list it beside the other \
+             siblings, one line saying what activity it carries"
+        );
+    }
+    assert!(
+        section.lines().any(|line| line.contains("ank-herdr")
+            && line.contains("several agents")
+            && line.contains("herdr pane")),
+        "the skills section must say, on the ank-herdr line, that it \
+         orchestrates several agents from a herdr pane"
+    );
+}
+
 /// The body of `skill/herdr/SKILL.md`, frontmatter set aside.
 fn herdr_skill() -> (String, String) {
     let text = repo_file("skill/herdr/SKILL.md");
@@ -1072,12 +1110,10 @@ fn no_other_skill_records_a_load_and_plan_sets_the_method() {
 #[test]
 fn the_skill_says_a_claimed_task_may_name_its_method() {
     let text = skill();
-    let start = text
-        .find("## The skills")
-        .expect("SKILL.md has a The skills section");
-    let rest = &text[start + "## The skills".len()..];
-    let section = &rest[..rest.find("\n## ").unwrap_or(rest.len())];
-    let flat = section.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat = skills_section(&text)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let sentences: Vec<&str> = flat.split(". ").filter(|s| s.contains("method")).collect();
     assert_eq!(
         sentences.len(),

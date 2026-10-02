@@ -5,7 +5,7 @@ slug: the-contract-names-ank-herdr-among-the-siblings
 title: The contract names ank-herdr among the siblings
 created: 2026-10-02T18:08:29Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - skill/SKILL.md
   - crates/ank-cli/tests/skill.rs
@@ -18,7 +18,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Left open by TASK-b096b2c9d6d3, which added skill/herdr but had the contract
