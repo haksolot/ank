@@ -5,7 +5,7 @@ slug: storage-and-search
 title: Storage and search
 created: 2026-09-15T07:28:04Z
 author: claude-code/opus-5+plane-namespaces
-status: accepted
+status: superseded
 scope:
   - crates/ank-cli/src/store.rs
   - crates/ank-cli/src/index.rs
@@ -18,7 +18,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-09-18T10:31:24Z
 schema: 4
-version: 2
+version: 3
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
