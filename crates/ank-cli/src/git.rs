@@ -354,10 +354,11 @@ pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
 /// keep, and it is already in hand here, at no process of its own.
 ///
 /// **This is the only caller of `git ls-files`, and it has to stay the only
-/// one.** The plumbing ADR-9307e5d214a7 admits lets `ls-files` through with any
-/// arguments, but ADR-db587ad54269 restricts it to the two invocations made
-/// here (the listing and `--deleted`); a second caller, or a different set of
-/// arguments, is a change to that decision and not to this file.
+/// one.** [`PLUMBING`] lets `ls-files` through with any arguments, but
+/// ADR-db587ad54269 (proposed, amending ADR-9307e5d214a7) admits it restricted
+/// to the two invocations made here (the listing and `--deleted`); a second
+/// caller, or a different set of arguments, is a change to that decision and
+/// not to this file.
 pub fn worktree_files(cwd: &Path) -> Option<WorktreeFiles> {
     let args = [
         "ls-files",
