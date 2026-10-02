@@ -5,15 +5,19 @@ slug: a-scope-is-confronted-with-the-tree-git-counts-a
 title: A scope is confronted with the tree git counts, and one matching only ignored files is a signal
 created: 2026-10-01T09:37:48Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
 constraint: |
   A scope is confronted with the files git counts as this work tree: tracked and untracked, minus what .gitignore, .git/info/exclude and the global excludes name, minus what is gone from disk. Outside a repository it is confronted with a walk of the filesystem. A dead scope whose glob matches files that exist on disk only where git ignores them is a signal, never a fault: it names one such path and the command that shows the rule ignoring it, git check-ignore -v <path>. That answer is found by walking the glob's literal prefix on disk, reads no file content, starts no git process, and runs on a dead scope and on nothing else.
 amends: [ADR-3094538d831e]
+ratified: 7b171ee45f57
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-02T12:04:08Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Raised by issue #522 and PR #523. On a repository holding large git-ignored
