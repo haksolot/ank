@@ -12,7 +12,7 @@ On the web, each link below opens the file as the default branch has it.
 
 - [SPEC-1d5b44efd388](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-1d5b44efd388.md) Intent, principles, and what v1 leaves out
 - [SPEC-ac4aad6d1edb](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-ac4aad6d1edb.md) The data model
-- [SPEC-cf285efcdca4](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-cf285efcdca4.md) Storage and search
+- [SPEC-7edbdf871408](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-7edbdf871408.md) Storage and search
 - [SPEC-15a56aeedcfd](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-15a56aeedcfd.md) Synchronisation
 - [SPEC-77d99d8d1ef2](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-77d99d8d1ef2.md) Proof, anchoring and authority
 - [SPEC-219033e25653](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-219033e25653.md) The CLI surface
