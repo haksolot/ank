@@ -764,20 +764,132 @@ fn sibling_skills() -> Vec<(String, String)> {
 
 /// The five activities ADR-e4a5a8873fe3 names, all of them in the tree now that
 /// `tdd` has landed with TASK-135cde611e3f and `diagnose` with
-/// TASK-587a185bef49. A sibling beyond these is allowed and anchored like the
-/// rest; one of these missing is the skill system shipping a contract without
-/// its policies -- the tests below hold whatever exists, and this one is what
-/// makes a sibling's disappearance a failure rather than a silence.
+/// TASK-587a185bef49, and the sixth ADR-55449b7f4f8f adds, `herdr`. A sibling
+/// beyond these is allowed and anchored like the rest; one of these missing is
+/// the skill system shipping a contract without its policies -- the tests below
+/// hold whatever exists, and this one is what makes a sibling's disappearance a
+/// failure rather than a silence.
 #[test]
 fn the_named_sibling_skills_exist() {
     let names: Vec<String> = sibling_skills().into_iter().map(|(n, _)| n).collect();
-    for expected in ["diagnose", "drift", "loop", "plan", "tdd"] {
+    for expected in ["diagnose", "drift", "herdr", "loop", "plan", "tdd"] {
         assert!(
             names.contains(&expected.to_string()),
-            "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 names it as \
-             one of the policies beside the contract"
+            "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 and \
+             ADR-55449b7f4f8f name it as one of the policies beside the contract"
         );
     }
+}
+
+/// The body of `skill/herdr/SKILL.md`, frontmatter set aside.
+fn herdr_skill() -> (String, String) {
+    let text = repo_file("skill/herdr/SKILL.md");
+    split_skill(&text)
+}
+
+/// The one line of `body` carrying every token, or a failure naming the point
+/// the skill no longer teaches. A point is held to a line, not to the file:
+/// tokens scattered across paragraphs would pass on a body that teaches none
+/// of them.
+fn line_teaching<'a>(body: &'a str, point: &str, tokens: &[&str]) -> &'a str {
+    body.lines()
+        .find(|line| tokens.iter().all(|t| line.contains(t)))
+        .unwrap_or_else(|| {
+            panic!(
+                "skill/herdr/SKILL.md has no line teaching that {point}: no line \
+                 carries all of {tokens:?}"
+            )
+        })
+}
+
+/// **The sibling announces itself where it applies and nowhere else.** The
+/// description is the part every session pays for (ADR-e4a5a8873fe3), so it
+/// names the one place the policy is for, a herdr pane, and stays short.
+#[test]
+fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_pane() {
+    let (front, _) = herdr_skill();
+    assert!(
+        front.lines().any(|l| l.trim() == "name: ank-herdr"),
+        "skill/herdr/SKILL.md is not named ank-herdr:\n{front}"
+    );
+    let description = front
+        .lines()
+        .find_map(|l| l.strip_prefix("description:"))
+        .map(str::trim)
+        .expect("skill/herdr/SKILL.md declares a description");
+    assert!(
+        description.chars().count() < 300,
+        "the description is {} characters, and every session pays for it: {description}",
+        description.chars().count()
+    );
+    assert!(
+        description.contains("herdr pane"),
+        "the description does not name the herdr pane as its trigger: {description}"
+    );
+}
+
+/// **Each point ADR-55449b7f4f8f and TASK-b096b2c9d6d3 name is taught on a
+/// line of its own.** These are what running ank agents through herdr has
+/// measured, and the reason the sibling exists: each one, missed, cost a run.
+#[test]
+fn the_herdr_sibling_teaches_the_ank_layer_of_a_run() {
+    let (_, body) = herdr_skill();
+    line_teaching(
+        &body,
+        "it stops outside a herdr pane",
+        &["HERDR_ENV", "1", "stop"],
+    );
+    line_teaching(
+        &body,
+        "herdr's own syntax comes from herdr's own skill",
+        &["herdr --skill", "syntax"],
+    );
+    line_teaching(
+        &body,
+        "the orchestrator claims nothing and records no load",
+        &["claims nothing", "no load"],
+    );
+    line_teaching(
+        &body,
+        "only ready tasks with disjoint scopes run together",
+        &["ready", "disjoint"],
+    );
+    line_teaching(
+        &body,
+        "readiness and collisions are read from context, graph and status",
+        &["ank context", "ank graph", "ank status"],
+    );
+    line_teaching(&body, "colliding pairs are named", &["colliding pair"]);
+    line_teaching(
+        &body,
+        "each worker gets its own worktree, branch and identity",
+        &["worktree", "branch", "ANK_AGENT", "per worker"],
+    );
+    line_teaching(
+        &body,
+        "ANK_AGENT and TMPDIR are exported before the agent starts",
+        &["ANK_AGENT", "TMPDIR", "before", "starts"],
+    );
+    line_teaching(
+        &body,
+        "a worker told to wait stops, and needs a new prompt",
+        &["wait", "stops", "prompt"],
+    );
+    line_teaching(
+        &body,
+        "branches land one at a time",
+        &["land", "one at a time"],
+    );
+    line_teaching(
+        &body,
+        "a worker's worktree is removed once its branch has landed",
+        &["remove", "worktree", "landed"],
+    );
+    line_teaching(
+        &body,
+        "accept waits for a human and is never part of a run",
+        &["accept", "human"],
+    );
 }
 
 /// Each sibling is anchored exactly as the contract is: a declared revision the
@@ -1205,7 +1317,7 @@ fn ank_skills_prints_one_line_per_skill_it_carries() {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     let lines: Vec<&str> = stdout.lines().collect();
     let skills = manifest_skills();
-    assert_eq!(skills.len(), 6, "the tree holds {} skills", skills.len());
+    assert_eq!(skills.len(), 7, "the tree holds {} skills", skills.len());
     assert_eq!(
         lines.len(),
         skills.len(),

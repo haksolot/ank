@@ -11,7 +11,7 @@ bind a perimeter, in full, before you touch it; `ank find --type spec` reaches
 the specification; `ank show <id>` prints any entity whole. How to work is
 taught by the skills in `skill/`: the contract in `skill/SKILL.md`, and one
 policy per activity beside it (ank-plan, ank-drift, ank-loop, ank-tdd,
-ank-diagnose).
+ank-diagnose, and ank-herdr for orchestrating agents from a herdr pane).
 
 ## Commands
 

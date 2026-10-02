@@ -48,10 +48,11 @@ covering the whole cycle, interviewing the human until the spec is precise,
 cutting it into tickets, driving the implementation test-first, reviewing before
 merge. The skill is the method, and the agent is held to it while it works.
 
-Ank ships methods too, and holds the other end of them. Six skills travel
-inside the binary: the contract every agent loads, and five siblings teaching
-one activity each, plan, drift, loop, tdd and diagnose. A task may name any of
-the five. `ank new --method tdd` writes the designation into it, `ank context`
+Ank ships methods too, and holds the other end of them. Seven skills travel
+inside the binary: the contract every agent loads, five siblings teaching one
+activity of the work each, plan, drift, loop, tdd and diagnose, and `ank-herdr`,
+for the agent orchestrating the others from a herdr pane. A task may name any
+sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank context`
 names it and the sibling to load beneath the criterion once the task is
 claimed, `ank log --method tdd` records that it fired, and `ank skills` counts
 designations against firings per method. A name no sibling carries is refused
