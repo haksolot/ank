@@ -7894,6 +7894,14 @@ fn show_in(
                 .raw("blocked_by", &edges_json(blocked_by))
                 .raw("unblocks", &edges_json(unblocks));
         }
+        // Over an ADR, both directions of `amends`, empty rather than absent
+        // when there is none: the question is one every ADR answers
+        // (ADR-9ee76b578257). A spec and a log entry keep their shape.
+        if let Some((amends, amended_by)) = &amendments {
+            doc = doc
+                .raw("amends", &edges_json(amends))
+                .raw("amended_by", &edges_json(amended_by));
+        }
         let doc = doc
             .raw("detached_proofs", &detached_json(&detached))
             .num("log_total", log_total)

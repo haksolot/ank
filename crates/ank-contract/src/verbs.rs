@@ -186,6 +186,22 @@ const SHOW_TASK: &[Field] = &[
     f("content", Type::Str),
 ];
 
+/// `show` over an ADR: both directions of `amends` (ADR-9ee76b578257), present
+/// and empty on an ADR with neither, so a consumer never tests for the key.
+/// The amended side names every accepted ADR amending it (TASK-5bb91a4cec00).
+const SHOW_ADR: &[Field] = &[
+    f("id", Type::Str),
+    opt("coordination", Type::Str),
+    f("amends", Type::Array(EDGE)),
+    f("amended_by", Type::Array(EDGE)),
+    f("detached_proofs", Type::Array(DETACHED_PROOF)),
+    f("log_total", Type::Num),
+    f("log_shown", Type::Num),
+    f("log", Type::Array(LOG_ENTRY)),
+    f("machinery", Type::Array(LOG_ENTRY)),
+    f("content", Type::Str),
+];
+
 const SHOW_OTHER: &[Field] = &[
     f("id", Type::Str),
     opt("coordination", Type::Str),
@@ -1050,7 +1066,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         ],
         notes: &[],
         refuses_globals: &[],
-        output: &[when("over a task", SHOW_TASK), when("over an ADR, a spec or a log entry", SHOW_OTHER)],
+        output: &[
+            when("over a task", SHOW_TASK),
+            when("over an ADR", SHOW_ADR),
+            when("over a spec or a log entry", SHOW_OTHER),
+        ],
         owner_task: None,
     },
     CommandSpec {
