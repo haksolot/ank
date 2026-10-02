@@ -5,7 +5,7 @@ slug: context-marks-an-adr-that-an-accepted-amendment
 title: context marks an ADR that an accepted amendment changes, and names the amendment
 created: 2026-09-27T20:46:04Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/context.rs
   - crates/ank-cli/tests/amends_context.rs
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Follow-up of TASK-fe548f3dd587 (issue #503). There, `context` shows an amended

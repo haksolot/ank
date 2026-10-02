@@ -213,6 +213,9 @@ const CONTEXT_OUT: &[Field] = &[
             f("title", Type::Str),
             f("constraint", Type::Str),
             opt("home", Type::Str),
+            // Gained within contract 1: the accepted ADRs that amend this one
+            // in part, empty for a rule nothing amends (ADR-9ee76b578257).
+            f("amended_by", Type::Strings),
         ]),
     ),
     f(
