@@ -24,7 +24,7 @@ constrain, and serves them through one CLI.
 
 ```sh
 npm install -g @haksolot/ank     # the binary for your platform
-ank skills --install             # the skills, for your agent
+npx skills add haksolot/ank      # the skills, for your agent
 ```
 
 Linux, macOS and Windows; needs git 2.34 or newer. The shell installers and

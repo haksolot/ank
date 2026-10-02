@@ -7,7 +7,7 @@ not install the skills unless you ask it to.
 If you only want the short version, it is two lines:
 
     npm install -g @haksolot/ank     # the binary for your platform
-    ank skills --install             # the skills, for your agent
+    npx skills add haksolot/ank      # the skills, for your agent
 
 Everything below is for the cases those two do not fit.
 
