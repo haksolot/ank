@@ -38,9 +38,9 @@ use std::path::{Path, PathBuf};
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
 /// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
 /// `files`, to 9 by `entities.archived` and to 10 by the three columns an
-/// archived entry is read back from: nothing migrated any of those times, and
-/// nothing had to.
-pub const SCHEMA_VERSION: u32 = 10;
+/// archived entry is read back from, and to 11 by `amends`: nothing migrated
+/// any of those times, and nothing had to.
+pub const SCHEMA_VERSION: u32 = 11;
 
 pub const DB_FILE: &str = "index.db";
 
@@ -123,6 +123,11 @@ fn busy_timeout() -> std::time::Duration {
 // -- goes on inserting rows without the column, and with no default every one
 // of them failed with a NOT NULL constraint (TASK-da978b214eca, measured on its
 // own close). A row it writes is a hot row, which is what 0 says.
+//
+// `entities.amends` takes the other answer to the same writer, and for the
+// opposite reason: no default can say what an ADR amends, so a row that does
+// not name it is NULL, read back as unknown, and the reader parses that one
+// file rather than believe the row amends nothing (TASK-ea86d1cc4af4).
 const SCHEMA: &str = "\
 CREATE TABLE meta (
     key   TEXT PRIMARY KEY,
@@ -149,6 +154,7 @@ CREATE TABLE entities (
     seq        INTEGER NOT NULL,
     version    INTEGER NOT NULL,
     archived   INTEGER NOT NULL DEFAULT 0,
+    amends     TEXT,
     author     TEXT,
     records    TEXT,
     body       TEXT
@@ -368,6 +374,29 @@ pub struct Row {
     /// (ADR-467ce7e9cda1). Only an index opened with
     /// [`Index::open_with_archive`] ever returns one that is.
     pub archived: bool,
+    /// The ADRs an ADR amends (ADR-9ee76b578257), empty on every other kind,
+    /// and `None` on a row written by a build that did not record them: the
+    /// one case where the answer is the file's and not the row's.
+    pub amends: Option<Vec<EntityId>>,
+}
+
+impl Row {
+    /// What this row's ADR amends: the row's answer, or its file's when the
+    /// row was written by a build that did not record the relation. Empty on
+    /// every other kind, and on a file that no longer parses as an ADR --
+    /// `check` is what reports that one.
+    pub fn amends_or_read(&self, store: &Store) -> Vec<EntityId> {
+        if self.kind != EntityKind::Adr {
+            return Vec::new();
+        }
+        if let Some(amends) = &self.amends {
+            return amends.clone();
+        }
+        match store.load_with_archive(&self.id).map(|l| l.entity) {
+            Ok(Entity::Adr(a)) => a.amends,
+            _ => Vec::new(),
+        }
+    }
 }
 
 /// What a refresh actually did. Returned rather than logged: the numbers are
@@ -1599,7 +1628,7 @@ fn inode_of(_path: &Path, _md: &std::fs::Metadata) -> Option<i64> {
 }
 
 const SELECT_ROW: &str = "SELECT id, kind, path, title, status, created, scope, blocked_by, \
-                          about, seq, version, archived FROM entities";
+                          about, seq, version, archived, amends FROM entities";
 
 /// Whether a path the index records is in the archive.
 fn is_archived(rel: &str) -> bool {
@@ -1619,6 +1648,7 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
     let seq: i64 = r.get(9)?;
     let version: i64 = r.get(10)?;
     let archived: i64 = r.get(11)?;
+    let amends: Option<String> = r.get(12)?;
     let built = (|| -> Result<Row> {
         let bad = |what: &str, v: &str| {
             CliError::new(ExitCode::Generic, format!("index: bad {what} '{v}'"))
@@ -1650,6 +1680,12 @@ fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Result<Row>> {
             seq: seq.max(0) as u64,
             version: version.max(0) as u64,
             archived: archived != 0,
+            amends: amends.map(|text| {
+                split_list(&text)
+                    .iter()
+                    .filter_map(|s| EntityId::parse(s).ok())
+                    .collect()
+            }),
         })
     })();
     Ok(built)
@@ -1840,6 +1876,12 @@ fn upsert(
         Entity::Log(l) => (l.records.clone(), Some(l.body.clone())),
         _ => (None, None),
     };
+    // Named on every row this build writes, empty where nothing is amended,
+    // so that NULL means only "written by a build that did not know".
+    let amends = match entity {
+        Entity::Adr(a) => join_list(a.amends.iter().map(|id| id.to_string())),
+        _ => String::new(),
+    };
     // The path is not the key: an entity that moved file must not survive
     // twice, so the old row goes first. Same for its searchable twin, and by
     // the same reasoning as in `forget`: resolve it through `entities` before
@@ -1870,15 +1912,16 @@ fn upsert(
     let rid = w.one(
         "INSERT INTO entities \
            (id, kind, path, title, status, created, scope, blocked_by, about, seq, version, \
-            archived, author, records, body) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) \
+            archived, author, records, body, amends) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
          ON CONFLICT(id) DO UPDATE SET \
            kind = excluded.kind, path = excluded.path, title = excluded.title, \
            status = excluded.status, created = excluded.created, \
            scope = excluded.scope, blocked_by = excluded.blocked_by, \
            about = excluded.about, seq = excluded.seq, version = excluded.version, \
            archived = excluded.archived, author = excluded.author, \
-           records = excluded.records, body = excluded.body \
+           records = excluded.records, body = excluded.body, \
+           amends = excluded.amends \
          RETURNING rid",
         params![
             id,
@@ -1896,6 +1939,7 @@ fn upsert(
             author,
             records,
             body,
+            amends,
         ],
     )?;
     w.run(
