@@ -8213,8 +8213,9 @@ fn edges_of(
 /// nothing yet, and listing it would tell that reader part of a rule no longer
 /// holds on the strength of a decision nobody ratified.
 ///
-/// The reverse direction is not in the index, so it is read from the accepted
-/// ADRs themselves, hot and archived, and only when the entity shown is an ADR.
+/// The reverse direction is read off the index rows, which carry `amends`
+/// (TASK-ea86d1cc4af4): finding it parses no accepted ADR, where it used to
+/// parse every one, and a verb pays for the answer it gives (ADR-f3d1dea65d84).
 fn amends_of(
     repo: &Repo,
     index: &Index,
@@ -8228,12 +8229,7 @@ fn amends_of(
         .iter()
         .filter(|r| r.kind == EntityKind::Adr && r.status == AdrStatus::Accepted.as_str())
         .filter(|r| r.id != adr.id)
-        .filter(|r| {
-            matches!(
-                store.load_with_archive(&r.id).map(|l| l.entity),
-                Ok(Entity::Adr(a)) if a.amends.contains(&adr.id)
-            )
-        })
+        .filter(|r| r.amends_or_read(store).contains(&adr.id))
         .collect();
     by.sort_by_key(|r| r.id.to_string());
     let amended_by: Vec<Edge> = by.iter().map(|r| edges.edge(&r.id)).collect();
