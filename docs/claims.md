@@ -147,6 +147,30 @@ the holder named, and the push settles a race the read misses. `ank init` adds
 the refspec that makes `refs/ank/*` travel, since hosts do not fetch
 non-standard refs on their own.
 
+**An `origin` added after `init` has no refspec until `init` runs again.** In a
+repository with no `origin`, `init` adds nothing and says so: `refspec
++refs/ank/*:refs/ank/* not added: no remote named origin yet, run this once it
+exists (ank init)`, and it says the same on every re-run until there is one.
+Once `origin` exists without the refspec, `status` warns and `check` reports a
+signal, at exit 0, both naming `ank init`:
+
+<!-- replay travel ANK_AGENT=human:marie part
+$ echo '# auth service' > README.md && git add -A && git commit -q -m "the service"
+$ ank init && ank config default_branch main
+$ git init -q --bare ../origin.git && git remote add origin ../origin.git
+-->
+
+    $ ank status
+    warning: remote.origin.fetch lacks +refs/ank/*:refs/ank/*, so claims and completion refs are never fetched (ank init)
+
+<!-- replay travel part -->
+
+    $ ank check
+    signal: origin: remote.origin.fetch lacks +refs/ank/*:refs/ank/*, so claims and completion refs are never fetched (ank init)
+
+A second `ank init` adds the refspec, prints `refspec added:
++refs/ank/*:refs/ank/*`, and both go quiet.
+
 Without a remote, `git worktree`s of a single clone are still arbitrated,
 because they share `refs/ank/`. **Two clones with no common origin are not
 arbitrated: both claims of one task succeed, both agents work, and nothing
