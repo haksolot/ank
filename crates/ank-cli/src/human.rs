@@ -1820,7 +1820,32 @@ fn check_scope_alive(
         // Asked only here: a corpus with nothing dead never reaches this line,
         // and the answer is memoised so a corpus with eight dead scopes asks
         // once.
-        let unverifiable = !explained && git_root.is_some_and(git::is_shallow);
+        let mut unverifiable = !explained && git_root.is_some_and(git::is_shallow);
+        // The death git has no history for, and the one an ignored file
+        // explains (ADR-3abc4b33153f): the glob matches files that are on
+        // disk and that `.gitignore`, `.git/info/exclude` or the global
+        // excludes keep out of the tree git counts. Asked after the history
+        // and only of what it left unexplained, so a scope git can name as
+        // renamed or deleted keeps that note and this walk runs on a dead
+        // scope and on nothing else. Only where there is a repository: outside
+        // one the confrontation already walks the whole disk, and a scope
+        // dead there matches nothing at all.
+        //
+        // The shallow answer above is asked first, as it always was, and is
+        // overridden here: an ignored file the glob matches is an explanation
+        // the history has no say over, and the process count of a dead scope
+        // stays what it was whether or not its path is on disk.
+        let ignored = match (explained, git_root) {
+            (false, Some(root)) => ignored_match(root, glob),
+            _ => None,
+        };
+        if let Some(path) = &ignored {
+            unverifiable = false;
+            note.push(format!(
+                "{path} is on disk and matches it, but it is ignored by git: no clean clone has it"
+            ));
+            note.push(format!("git check-ignore -v {path}"));
+        }
         if unverifiable {
             note.push(
                 "the history here is shallow, so where it went cannot be verified \
@@ -1844,14 +1869,103 @@ fn check_scope_alive(
                 format!("scope '{glob}' matches no file, and the task is closed: nothing is owed"),
             )
         } else {
-            let message = format!("dead scope '{glob}': no file matches it");
-            match explained || unverifiable {
+            let message = match ignored {
+                Some(_) => format!("dead scope '{glob}': only files git ignores match it"),
+                None => format!("dead scope '{glob}': no file matches it"),
+            };
+            match explained || unverifiable || ignored.is_some() {
                 true => Finding::signal(entity.id(), message),
                 false => Finding::fault(entity.id(), message),
             }
         };
         report.findings.push(finding.with_note(note));
     }
+}
+
+/// The first file on disk that a glob matches and git does not count, named
+/// relative and `/`-separated, or `None`.
+///
+/// **Called on a dead scope only**, so every file the glob matches is one the
+/// tree git counts does not hold: that is what dead means here, and why nothing
+/// is confronted with git's list again. What is left to tell is why, and for a
+/// file on disk that git does not list the answer is an exclude rule, which the
+/// reader gets the command for (`git check-ignore -v <path>`) rather than a
+/// rule named by a process this walk would have to start (ADR-3abc4b33153f).
+///
+/// **The walk starts at the glob's literal prefix**, the same cut
+/// [`literal_prefix`] asks git about: `build/**` descends `build/` and nothing
+/// else, a glob with no wildcard is one entry looked at, and a glob with no
+/// literal directory before its wildcard starts at the root. Directory entries
+/// only: a file's type comes from its entry, never from opening it, so a FIFO
+/// or a file nobody may read is a match like any other and is never blocked on.
+/// A symlink to a directory is one entry and is not followed.
+///
+/// **What is not git's to ignore is not found.** A directory carrying its own
+/// `.git` is another checkout, and `.git`, `target` and `node_modules` are
+/// skipped by name, exactly the boundaries [`tracked_files`] draws: a scope
+/// living only there is dead and stays a fault, and no note may claim that this
+/// repository's rules ignore what they never see.
+///
+/// Sorted by name at every level, so the path a reader is handed does not
+/// depend on the order the filesystem lists, and the walk stops at the first
+/// match.
+fn ignored_match(worktree: &Path, glob: &str) -> Option<String> {
+    const WILDCARDS: [char; 6] = ['*', '?', '[', ']', '{', '}'];
+    const DEPTH: usize = 24;
+
+    fn foreign(root: &Path, rel: &str) -> bool {
+        let mut at = root.to_path_buf();
+        rel.split('/').filter(|c| !c.is_empty()).any(|c| {
+            at.push(c);
+            matches!(c, ".git" | "target" | "node_modules") || at.join(".git").exists()
+        })
+    }
+
+    fn walk(root: &Path, rel: &str, set: &ScopeSet, depth: usize) -> Option<String> {
+        if depth > DEPTH {
+            return None;
+        }
+        let dir = if rel.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(rel)
+        };
+        let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        let mut below: Vec<String> = Vec::new();
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            if entry.file_type().ok()?.is_dir() {
+                if !foreign(root, &path) {
+                    below.push(path);
+                }
+            } else if set.matches(&path) {
+                return Some(path);
+            }
+        }
+        below
+            .iter()
+            .find_map(|path| walk(root, path, set, depth + 1))
+    }
+
+    let set = ScopeSet::new(&[glob.to_string()]).ok()?;
+    let Some(first) = glob.find(WILDCARDS) else {
+        // A path: one entry, looked at and never opened.
+        let meta = std::fs::symlink_metadata(worktree.join(glob)).ok()?;
+        let parent = glob.rsplit_once('/').map_or("", |(parent, _)| parent);
+        return (!meta.is_dir() && !foreign(worktree, parent) && set.matches(glob))
+            .then(|| glob.to_string());
+    };
+    let start = glob[..first].rfind('/').map_or("", |cut| &glob[..cut]);
+    if foreign(worktree, start) {
+        return None;
+    }
+    walk(worktree, start, &set, 0)
 }
 
 /// The note under a dead scope: what git says happened to the path, and what

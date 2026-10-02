@@ -346,6 +346,12 @@ pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
 /// treating it as `None` instead falls back to the same walk this function
 /// always ran when it cannot ask git at all, and a repository that really is
 /// empty gets the same empty answer from both paths.
+///
+/// **This is the only caller of `git ls-files`, and it has to stay the only
+/// one.** The plumbing ADR-9307e5d214a7 admits lets `ls-files` through with any
+/// arguments, but ADR-db587ad54269 restricts it to the two invocations made
+/// here (the listing and `--deleted`); a second caller, or a different set of
+/// arguments, is a change to that decision and not to this file.
 pub fn worktree_files(cwd: &Path) -> Option<Vec<String>> {
     let args = [
         "ls-files",
