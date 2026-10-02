@@ -11,7 +11,9 @@ identity](claims.md).
 
 `skill/SKILL.md` is the contract an agent loads, and the five siblings beside it
 carry a policy each -- planning, drift audit, the autonomous loop, test-first
-implementation, diagnosis -- loaded when the activity calls for them.
+implementation, diagnosis -- loaded when the activity calls for them. A sixth,
+`ank-herdr`, teaches the agent that runs the others from a herdr pane rather than
+one doing the work ([below](#running-agents-from-herdr)).
 
 One convention it carries is worth knowing before you watch an agent follow it:
 **`.ank/` is opaque to an agent, the way `.git/` is.** Reading goes through
@@ -47,6 +49,7 @@ $ ank skills
     METHODS
     diagnose  designated 1  fired 0  undesignated 0
     drift     designated 0  fired 0  undesignated 0
+    herdr     designated 0  fired 0  undesignated 0
     loop      designated 0  fired 0  undesignated 0
     plan      designated 0  fired 0  undesignated 0
     tdd       designated 1  fired 1  undesignated 1
@@ -124,3 +127,16 @@ one. Tasks, claims, criteria, dependencies and proofs are ank's plane; branches,
 worktrees, merges and history are git's, and git is already good at them. The
 one place the planes touch is `accept`, which runs on the default branch and
 nowhere else.
+
+## Running agents from herdr
+
+`skill/herdr` (`ank-herdr`) is the policy for running this page from a single
+orchestrating agent inside a herdr pane
+(ADR-55449b7f4f8f). The orchestrator claims nothing: it reads `ank context`,
+`ank graph` and `ank status`, names the pairs of ready tasks whose scopes
+collide, gives every other ready task a worker of its own -- one worktree, one
+branch and one `ANK_AGENT`, exported in the pane before the agent starts -- and
+lands the finished branches one at a time. It teaches the ank layer only, and
+leaves herdr's own commands to `herdr --skill`. Nothing in it is a verb: ank
+still creates no worktree and merges nothing; the orchestrator does, with git
+and herdr.
