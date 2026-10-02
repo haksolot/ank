@@ -41,7 +41,10 @@ is the same document narrowed to that kind, flags, notes and refusals included.
 reads and `config <key> <value>` writes; `log <id>` reads and `log <id> <message>`
 appends; `show` over a task carries the `blocked_by` edges and over an ADR does
 not, since a document carrying them empty would be answering a question nobody
-asked. Each shape names the call that returns it in its `when`, which is `null`
+asked. Over an ADR it carries `amends`, the ids it amends in part, and
+`amended_by`, every accepted ADR amending it, both present and empty on an ADR
+with neither, since every ADR answers that question; a spec and a log entry
+carry neither. Each shape names the call that returns it in its `when`, which is `null`
 where the verb has only one.
 
 **`returns` is flat, with the path in the name.** A nested field appears as

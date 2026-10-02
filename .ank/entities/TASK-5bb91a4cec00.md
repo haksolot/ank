@@ -5,7 +5,7 @@ slug: show-json-carries-amends-and-amended-by-for-an-a
 title: show --json carries amends and amended_by for an ADR
 created: 2026-09-27T20:46:03Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/golden-json/**
@@ -17,8 +17,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/9c066620de9e@b97278c
+    tree: scope/9dcc6a1ce127
+    criteria: cf75192ff795
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@b97278c
+    tree: scope/9dcc6a1ce127
+    criteria: cf75192ff795
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Follow-up of TASK-fe548f3dd587 (issue #503), left out on purpose there: the
