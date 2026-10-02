@@ -75,8 +75,8 @@ One directory is created, not one per kind: entities live flat in
 spec and a log entry are told apart by a field rather than by a folder. The
 `.gitattributes` line keeps `.ank/` in LF on checkout: on Windows git would
 otherwise convert back to CRLF everything the tool has just written, on every
-clone. The `.gitignore` line is `.ank/index.db`, the derived SQLite index: it
-is rebuilt from the files whenever it is missing, so committing it would only
+clone. The `.gitignore` line is `.ank/index.db*`, which covers the derived
+SQLite index, `.ank/index.db.<N>`, one file per index schema `N`: it is rebuilt from the files whenever it is missing, so committing it would only
 track a binary that every command rewrites. The refspec is what makes claims
 travel, since hosts do not fetch non-standard refs on their own. Both git files
 are appended to, never replaced, so an existing `.gitignore` keeps everything

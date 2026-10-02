@@ -17,6 +17,7 @@
 //! spawn the binary even if we wanted one.
 
 mod fixture;
+mod index_file;
 mod scratch;
 
 use std::collections::BTreeMap;
@@ -177,7 +178,7 @@ impl Repo {
         // tracks it turns an ordinary `git merge` into a refusal about an
         // untracked file the tool owns. `init` has its own tests for the
         // appending behaviour; this is only the line those tests are about.
-        std::fs::write(r.0.join(".gitignore"), ".ank/index.db\n").unwrap();
+        std::fs::write(r.0.join(".gitignore"), ".ank/index.db*\n").unwrap();
         r
     }
 
@@ -4074,8 +4075,8 @@ fn concurrent_readers_of_a_cold_corpus_of_this_size_all_answer() {
     copy_tree(&workspace_root().join(".ank"), &r.0.join(".ank"));
     // Cold, which is the state CI starts every run in: the index is gitignored,
     // so nothing checks one out and the first readers build it together.
-    let db = r.0.join(".ank/index.db");
-    let _ = std::fs::remove_file(&db);
+    let db = index_file::path(&r.0.join(".ank"));
+    index_file::remove_all(&r.0.join(".ank"));
     assert!(!db.exists(), "the fixture must start without an index");
     assert!(
         std::fs::read_dir(r.0.join(".ank/entities"))
@@ -5600,7 +5601,7 @@ fn init_refuses_repo_and_writes_into_neither_repository() {
     // `.gitignore` it finds, and this one is exactly as the fixture left it.
     assert_eq!(
         std::fs::read_to_string(inside.0.join(".gitignore")).unwrap(),
-        ".ank/index.db\n",
+        ".ank/index.db*\n",
         "init appended to the .gitignore of the repository it was merely standing in"
     );
     let fetch = git_command(&inside.0)
@@ -7820,12 +7821,16 @@ fn an_initialised_repo_leaves_the_index_ignored_and_never_untracked() {
         .unwrap();
     assert_eq!(code(&out), 0, "{}", stderr(&out));
     assert!(
-        dir.join(".ank/index.db").exists(),
+        index_file::path(&dir.join(".ank")).exists(),
         "nothing built the index, so the assertion below would pass vacuously"
     );
 
     // Ignored, positively: `check-ignore` names a rule that matches.
-    let ci = git(&["check-ignore", "-v", ".ank/index.db"]);
+    let ci = git(&[
+        "check-ignore",
+        "-v",
+        &format!(".ank/{}", index_file::name()),
+    ]);
     assert!(
         ci.status.success(),
         "git does not consider the index ignored: {}{}",
@@ -16133,7 +16138,7 @@ fn the_index_rebuilds_from_either_layout_and_deleting_it_stays_safe() {
         let first = r.ank("claude-code@ank", &["find", "--status", "open"]);
         assert_eq!(code(&first), 0, "{}", stderr(&first));
 
-        let db = r.0.join(".ank/index.db");
+        let db = index_file::path(&r.0.join(".ank"));
         assert!(db.exists(), "the read builds one");
         std::fs::remove_file(&db).unwrap();
 
@@ -16352,7 +16357,7 @@ fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
 fn a_scope_under_a_gitignored_directory_is_dead() {
     let r = Repo::new();
     r.seed_docs();
-    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\n").unwrap();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db*\nbuild/\n").unwrap();
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "ignore build/"]);
     // Real bytes on disk, never added: exactly what `research/`, `.venv/` or
@@ -16419,7 +16424,7 @@ fn a_scope_under_a_gitignored_directory_is_dead() {
 fn repo_with_ignored_build_output() -> Repo {
     let r = Repo::new();
     r.seed_docs();
-    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\n").unwrap();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db*\nbuild/\n").unwrap();
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "ignore build/"]);
     std::fs::create_dir_all(r.0.join("build")).unwrap();
@@ -16707,7 +16712,7 @@ fn a_scope_on_a_symlink_or_beyond_one_is_not_reported_as_ignored() {
 #[test]
 fn a_scope_under_an_ignored_target_is_a_signal_and_under_an_unignored_node_modules_a_fault() {
     let r = repo_with_ignored_build_output();
-    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\ntarget/\n").unwrap();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db*\nbuild/\ntarget/\n").unwrap();
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "ignore target/"]);
     std::fs::create_dir_all(r.0.join("target/doc")).unwrap();
@@ -23088,7 +23093,7 @@ fn the_json_document_of_context_is_served_under_the_same_budget() {
 /// Every file of the tree with its bytes, so a refusal can be held to having
 /// written nothing at all.
 ///
-/// `.git` is the repository and not the tree, and `.ank/index.db` is derived,
+/// `.git` is the repository and not the tree, and `.ank/index.db*` is derived,
 /// disposable and gitignored (§6): any verb may open one, and a cache
 /// appearing is not what "wrote nothing" is about. Everything else is compared
 /// byte for byte, `version:` included.
@@ -23097,7 +23102,7 @@ fn worktree_bytes(root: &Path) -> BTreeMap<String, Vec<u8>> {
         for entry in std::fs::read_dir(dir).unwrap().flatten() {
             let p = entry.path();
             let name = entry.file_name().to_string_lossy().to_string();
-            if name == ".git" || name == "index.db" {
+            if name == ".git" || name.starts_with("index.db") {
                 continue;
             }
             if p.is_dir() {
@@ -24146,7 +24151,7 @@ fn a_cold_rebuild_through_the_binary_costs_twice_as_much_for_twice_the_corpus() 
                 Some("A verifiable criterion."),
             );
         }
-        let db = r.0.join(".ank/index.db");
+        let db = index_file::path(&r.0.join(".ank"));
         let counted = r.0.join("steps");
         (0..runs)
             .map(|_| {
@@ -24627,7 +24632,7 @@ fn a_same_size_rewrite_is_reindexed_after_the_last_write_and_check_still_reads_i
     let r = Repo::new();
     const ID: &str = "TASK-00000000a11a";
     let file = r.0.join(format!(".ank/entities/{ID}.md"));
-    let db = r.0.join(".ank/index.db");
+    let db = index_file::path(&r.0.join(".ank"));
     r.seed_task_titled(ID, "Alpha task");
     let past = two_hours_ago();
     set_mtime(&file, past);

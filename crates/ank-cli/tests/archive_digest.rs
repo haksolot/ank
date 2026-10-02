@@ -14,6 +14,7 @@
 //! Through the binary, because the criterion is about what `check` reports, and
 //! with a corpus `ank archive` itself moved and a commit carries.
 
+mod index_file;
 mod scratch;
 
 use std::fs;
@@ -89,7 +90,7 @@ fn drop_index(dir: &Path) {
             fs::remove_file(&path).unwrap();
         }
     }
-    assert!(!dir.join(".ank/index.db").exists());
+    assert!(!index_file::path(&dir.join(".ank")).exists());
 }
 
 #[test]

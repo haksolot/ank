@@ -5,7 +5,7 @@ slug: the-index-is-one-file-per-schema-and-the-archive
 title: The index is one file per schema, and the archived digests carry over
 created: 2026-10-02T18:08:29Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-daemon/src/warm.rs
@@ -19,8 +19,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/11a44fcf3846@06eb5ac
+    tree: scope/3f70f43586a7
+    criteria: f31c149e1333
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@06eb5ac
+    tree: scope/3f70f43586a7
+    criteria: f31c149e1333
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Under ADR-3db9735a7036, carried by SPEC-3252ad5a72e3. Measured during the

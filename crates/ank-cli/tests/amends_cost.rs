@@ -6,6 +6,7 @@
 //! by an older build; and what `show` on an ADR and `archive --dry-run` parse
 //! does not grow with the number of accepted ADRs.
 
+mod index_file;
 mod scratch;
 
 use std::fs;
@@ -71,7 +72,7 @@ impl Repo {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
-        fs::write(r.0.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(r.0.join(".gitignore"), ".ank/index.db*\n").unwrap();
         r.commit("seed");
         r
     }
@@ -164,7 +165,7 @@ fn section<'a>(text: &'a str, heading: &str) -> Vec<&'a str> {
 
 impl Repo {
     fn index(&self) -> PathBuf {
-        self.0.join(".ank/index.db")
+        index_file::path(&self.0.join(".ank"))
     }
 
     /// The entity files a verb parsed, read off `ANK_TRACE_READS`.

@@ -30,7 +30,8 @@ run against.
       entities/LOG-<hex>.md  one entry of the work trace, written once
       archive/entities/<ID>.md  the cold half, same format, read on demand, never rewritten
       log/<ID>.md            the previous shape of the trace, read and never written
-      index.db               derived cache, belongs in .gitignore, never a source of truth
+      index.db.<N>           derived cache, one per index schema N, belongs in .gitignore,
+                             never a source of truth
 
 Flat, deliberately: attachment happens through the `scope` field, not through
 location (§3). A file's name is its id; nothing resolves through the directory
@@ -69,8 +70,8 @@ scope pointing at `.ank/entities/<ID>.md` for an entity since archived is not
 dead; an id present in both roots is one entity, read hot. And **an archived file
 is never edited**: it is parsed once when it arrives, the content hash recorded
 then is its digest and is never updated, and a file whose bytes stop matching is
-a fault rather than a change to take in. That digest is recorded in `index.db`
-and in no file, which is the one place the cache is load-bearing; the section on
+a fault rather than a change to take in. That digest is recorded in
+`index.db.<N>` and in no file, which is the one place the cache is load-bearing; the section on
 what is derived says what deleting it costs.
 
 A writer moves files there with `ank archive` and never by hand; the move
@@ -529,18 +530,29 @@ read time and have no field:
   across the corpus. A stored reverse edge is a second copy that can disagree
   with the first.
 - **The claim.** Never in the file. See below.
-- **The index.** `index.db` is a cache rebuilt from the files, and every query
-  it answers is answered again once it has been rebuilt — with one exception,
-  which is the next paragraph.
+- **The index.** `index.db.<N>` is a cache rebuilt from the files, and every
+  query it answers is answered again once it has been rebuilt — with one
+  exception, which is the next paragraph.
 
-**Deleting `index.db` loses one thing, and it is the one thing in there that is
+**One file per index schema** (ADR-3db9735a7036). `N` is the index schema of
+the binary reading it, and a binary opens, rebuilds and writes only its own
+file: two binaries of different schemas on one corpus, the one on `PATH` and
+the one a worktree just built, each keep their own index warm instead of
+dropping each other's. Every other `index.db*`, the unsuffixed `.ank/index.db`
+a release before the split wrote included, is left byte for byte as it is,
+disposable like the rest and ignored by the same `.ank/index.db*` line. When a
+binary creates its file, it takes the archived digests from the newest file of
+an older schema present, or from `.ank/index.db` where there is none, so an
+upgrade does not reset what the next paragraph is about.
+
+**Deleting `index.db.<N>` loses one thing, and it is the one thing in there that is
 not derived from the files: the digest an archived file arrived with.** An
 archived entity is never edited, and that is enforced by comparing the file's
 bytes against the hash recorded when the index first read it. The corpus has
 nowhere to keep that hash — the archived file cannot carry a digest of itself —
 so it lives in the cache and nowhere else. Measured on a corpus of four archived
 entries: appending a line to one of them makes `ank check` exit 8 naming the
-file; `rm .ank/index.db` and the same `check` exits 0, on that run and on every
+file; `rm .ank/index.db*` and the same `check` exits 0, on that run and on every
 run after it, because the rebuild takes the changed bytes as the digest.
 
 So "deleting it is always safe" is true of everything a reader queries and false

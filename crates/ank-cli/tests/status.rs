@@ -162,7 +162,7 @@ impl Corpus {
         .unwrap();
         // The index is derived, disposable and gitignored (§6). A fixture that
         // tracked it would turn the commit below into a commit of a cache.
-        std::fs::write(c.0.join(".gitignore"), ".ank/index.db\n").unwrap();
+        std::fs::write(c.0.join(".gitignore"), ".ank/index.db*\n").unwrap();
         // A file the seeded scopes actually match. Without it every task in the
         // corpus is attached to nothing, which is a thousand dead-scope signals
         // and a thousand walks of git history to explain them — a fixture that

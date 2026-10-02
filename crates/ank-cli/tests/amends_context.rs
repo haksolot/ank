@@ -75,7 +75,7 @@ impl Repo {
             "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
         )
         .unwrap();
-        fs::write(r.0.join(".gitignore"), ".ank/index.db\n").unwrap();
+        fs::write(r.0.join(".gitignore"), ".ank/index.db*\n").unwrap();
         r.commit("seed");
         r
     }
