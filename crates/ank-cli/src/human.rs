@@ -164,6 +164,11 @@ pub struct Report {
     /// The heaviest proof refs of that batch, heaviest first, for the note
     /// under a `plane_bytes` signal. Never rendered on its own.
     pub heaviest_proofs: Vec<(String, usize)>,
+    /// The one [`tracked_files`] walk this pass paid for, kept so a caller that
+    /// needs the list too -- `review`, matching live scopes against it a second
+    /// time -- reads it off this report instead of asking git again for an
+    /// answer that cannot have changed between the two calls.
+    pub files: Vec<String>,
 }
 
 /// The corpus of this checkout against the corpus of the default branch, once
@@ -601,7 +606,7 @@ pub fn inspect_with(
     // One walk of the tree, reused by every dead-scope test: reading the
     // repository once and matching many globs against it beats walking it per
     // entity, and the corpus is small where the tree is not.
-    let files = tracked_files(&repo.worktree);
+    let (files, set_aside) = worktree_listing(&repo.worktree);
     // Every scope entry in the corpus confronted with every tracked file, in
     // one compiled set and one walk (TASK-097883a2c09f). It was one set per
     // glob and one walk each, which is the only phase of this inspection that
@@ -797,6 +802,7 @@ pub fn inspect_with(
                 entity,
                 &verdicts,
                 has_worktree_git.then_some(repo.worktree.as_path()),
+                set_aside.as_ref(),
                 &walked,
                 &asked,
                 &mut report,
@@ -906,6 +912,10 @@ pub fn inspect_with(
     // Over the file list already walked above for the scopes, so the tree is
     // read once for both questions (ADR-3b6ba766a42e).
     check_stale_citations(&entities, &in_scope, &repo.worktree, &files, &mut report);
+    // `files` moved rather than cloned: `review` is the only caller that
+    // reads `Report.files` (`:5006`), so every other caller paid to
+    // duplicate the whole list for nothing.
+    report.files = files;
 
     check_cycles(&entities, &mut report);
     check_authorship(
@@ -1509,36 +1519,54 @@ fn check_signers(repo: &Repo, report: &mut Report) {
     }
 }
 
-/// Every file this tree holds, relative and `/`-separated. `.git` and `target`
-/// are skipped: neither is ever in a scope, and both would dominate the walk.
+/// Every file this tree holds, relative and `/`-separated.
+///
+/// **Asked of git first**, with [`git::worktree_files`]: `.gitignore`,
+/// `.git/info/exclude` and the global excludes already name the paths a
+/// corpus reader has no business entering, and a directory carrying its own
+/// `.git` never contributes everything under it — git's own `ls-files`
+/// already collapses a real clone, worktree or submodule to one entry, and
+/// [`git::worktree_files`] filters out the one case it does not, a dangling
+/// gitfile whose `gitdir:` no longer resolves. A hand-rolled walk answering
+/// the same question had to reinvent both rules from a closed list of names
+/// (`.git`, `target`, `node_modules`) and a depth-limited recursion of its
+/// own, and every rule it did not reinvent it paid for instead: a build
+/// output directory, a virtual environment or a cache of downloaded media
+/// sitting beside `.ank/` and ignored by git is invisible to `git ls-files`
+/// and was not invisible to that walk, which read every byte under it,
+/// `.gitignore` or not, to decide whether each file named a live scope.
 ///
 /// **A directory carrying a `.git` entry of its own is another checkout, and
-/// this walk stops at it** (TASK-0e5a00f98cfe). Measured on this repository:
-/// `git ls-files` counts 1360 files, and the walk yielded 11852, of which 10490
-/// sat under `.claude/worktrees/` -- eight checkouts of this same repository,
-/// 88 percent of everything it read. `accept` naming six of them as stale
+/// the walk used to stop there by name, not by git's own knowledge of it**
+/// (TASK-0e5a00f98cfe). Measured on that repository: `git ls-files` counted
+/// 1360 files, and the old walk yielded 11852, of which 10490 sat under
+/// `.claude/worktrees/` -- eight checkouts of this same repository, 88
+/// percent of everything it read. `accept` naming six of them as stale
 /// citations of a document it had just superseded is what found it; but this
-/// walk is also what `scope_verdicts` confronts every glob in the corpus with,
-/// so the dead-scope half of `check` was asking its question against eight
-/// stale copies of the tree.
+/// walk is also what `scope_verdicts` confronts every glob in the corpus
+/// with, so the dead-scope half of `check` was asking its question against
+/// eight stale copies of the tree. Asking git keeps that guarantee -- a
+/// nested checkout is still one entry, not everything inside it -- without
+/// the directory needing to be named `.claude/worktrees` or anywhere else in
+/// particular.
 ///
-/// **The rule is the `.git` entry and never the directory's name.**
-/// `.claude/worktrees` is where these happen to sit, and skipping that path
-/// would fix the instance rather than the rule: a sibling clone, a vendored
-/// dependency with a history of its own, a `git worktree` placed anywhere else
-/// are the same fact. The entry is a file in a worktree and a directory in a
-/// clone, so what is asked is that it exists at all.
-///
-/// **Two verdicts in this corpus were wrong**, and narrowing the walk is what
-/// showed them: TASK-10b8a29fd853 and TASK-3109a736c255 both scope
-/// `.claude/**`, whose files were deleted in 264636c406b9, and the checkouts
-/// living under `.claude/worktrees/` made that glob match. Both now report as
-/// signals naming the deletion, which is what TASK-10b8a29fd853's own log entry
-/// predicted when it deleted those files. The hiding came later, when worktrees
-/// started being placed there, and nothing announced it: a scope reads alive on
-/// a file in a checkout nobody is working in, and a corpus loses a finding by
-/// where somebody happened to put a worktree.
+/// **A corpus read outside a git repository has no `.gitignore` to ask and no
+/// git to ask it with** (ADR-9307e5d214a7 makes that ordinary rather than a
+/// failure), so [`git::worktree_files`] returning `None` falls back to the
+/// same walk this function always ran: every file below `root`, `.git`,
+/// `target` and `node_modules` skipped by name, stopped at a directory
+/// carrying its own `.git`.
 fn tracked_files(root: &Path) -> Vec<String> {
+    worktree_listing(root).0
+}
+
+/// [`tracked_files`], with what git listed and the count set aside
+/// ([`git::WorktreeFiles::set_aside`]) beside it, `None` where git did not
+/// answer and the files come from the walk below.
+fn worktree_listing(root: &Path) -> (Vec<String>, Option<HashSet<String>>) {
+    if let Some(files) = git::worktree_files(root) {
+        return (files.counted, Some(files.set_aside));
+    }
     fn walk(root: &Path, dir: &Path, out: &mut Vec<String>, depth: usize) {
         if depth > 24 {
             return;
@@ -1566,7 +1594,7 @@ fn tracked_files(root: &Path) -> Vec<String> {
     }
     let mut out = Vec::new();
     walk(root, root, &mut out, 0);
-    out
+    (out, None)
 }
 
 /// One line of the workspace that names a document, with the file and the line
@@ -1694,6 +1722,7 @@ fn check_scope_alive(
     entity: &Entity,
     verdicts: &HashMap<String, bool>,
     git_root: Option<&Path>,
+    set_aside: Option<&HashSet<String>>,
     walked: &OnceCell<git::History>,
     asked: &[String],
     report: &mut Report,
@@ -1800,7 +1829,33 @@ fn check_scope_alive(
         // Asked only here: a corpus with nothing dead never reaches this line,
         // and the answer is memoised so a corpus with eight dead scopes asks
         // once.
-        let unverifiable = !explained && git_root.is_some_and(git::is_shallow);
+        let mut unverifiable = !explained && git_root.is_some_and(git::is_shallow);
+        // The death git has no history for, and the one an ignored file
+        // explains (ADR-3abc4b33153f): the glob matches files that are on
+        // disk and that `.gitignore`, `.git/info/exclude` or the global
+        // excludes keep out of the tree git counts. Asked after the history
+        // and only of what it left unexplained, so a scope git can name as
+        // renamed or deleted keeps that note and this walk runs on a dead
+        // scope and on nothing else. Only where git answered the question the
+        // scope was confronted with: elsewhere the confrontation already walked
+        // the disk, and there is no list of what git counts to stand apart
+        // from.
+        //
+        // The shallow answer above is asked first, as it always was, and is
+        // overridden here: an ignored file the glob matches is an explanation
+        // the history has no say over, and the process count of a dead scope
+        // stays what it was whether or not its path is on disk.
+        let ignored = match (explained, git_root, set_aside) {
+            (false, Some(root), Some(set_aside)) => ignored_match(root, glob, set_aside),
+            _ => None,
+        };
+        if let Some(path) = &ignored {
+            unverifiable = false;
+            note.push(format!(
+                "{path} is on disk and matches it, but it is ignored by git: no clean clone has it"
+            ));
+            note.push(format!("git check-ignore -v {}", shell_word(path)));
+        }
         if unverifiable {
             note.push(
                 "the history here is shallow, so where it went cannot be verified \
@@ -1824,13 +1879,140 @@ fn check_scope_alive(
                 format!("scope '{glob}' matches no file, and the task is closed: nothing is owed"),
             )
         } else {
-            let message = format!("dead scope '{glob}': no file matches it");
-            match explained || unverifiable {
+            let message = match ignored {
+                Some(_) => format!("dead scope '{glob}': only files git ignores match it"),
+                None => format!("dead scope '{glob}': no file matches it"),
+            };
+            match explained || unverifiable || ignored.is_some() {
                 true => Finding::signal(entity.id(), message),
                 false => Finding::fault(entity.id(), message),
             }
         };
         report.findings.push(finding.with_note(note));
+    }
+}
+
+/// The first file on disk that a glob matches and git ignores, named relative
+/// and `/`-separated, or `None`.
+///
+/// **Called on a dead scope only**, so no file the tree git counts holds
+/// matches the glob: that is what dead means here. A file on disk the glob
+/// matches is then one of two things, a path git listed and the count set
+/// aside (`set_aside`: under `target` or `node_modules`, a link to a
+/// directory, a gitlink), or one git did not list at all, which on disk and
+/// inside this tree means an exclude rule names it. Only the second is
+/// returned, and the reader gets the command that names the rule
+/// (`git check-ignore -v <path>`) rather than a rule found by a process this
+/// walk would have to start (ADR-3abc4b33153f).
+///
+/// **The walk starts at the glob's literal prefix**, the same cut
+/// [`literal_prefix`] asks git about: `build/**` descends `build/` and nothing
+/// else, a glob with no wildcard is one entry looked at, and a glob with no
+/// literal directory before its wildcard starts at the root. Directory entries
+/// only: a file's type comes from its entry, never from opening it, so a FIFO
+/// or a file nobody may read is a match like any other and is never blocked on.
+///
+/// **What git never looks at is not found.** A symbolic link is an entry and is
+/// never followed, whether the walk meets it or the literal prefix names it: a
+/// file reached through one is beyond it for git (`git check-ignore` refuses
+/// it), not ignored. A directory carrying its own `.git` is another checkout,
+/// whose files this repository's rules do not see either. A scope living only
+/// there is dead and stays a fault, and no note may claim that a rule ignores
+/// what it never sees.
+///
+/// Sorted by name at every level, so the path a reader is handed does not
+/// depend on the order the filesystem lists, and the walk stops at the first
+/// match.
+fn ignored_match(worktree: &Path, glob: &str, set_aside: &HashSet<String>) -> Option<String> {
+    const WILDCARDS: [char; 6] = ['*', '?', '[', ']', '{', '}'];
+    const DEPTH: usize = 24;
+
+    // A directory git would look into: a real one, never a link to one, and
+    // not another checkout.
+    fn enterable(dir: &Path) -> bool {
+        std::fs::symlink_metadata(dir).is_ok_and(|m| m.is_dir()) && !dir.join(".git").exists()
+    }
+
+    // Every directory a relative path passes through, from the root down.
+    fn reachable(root: &Path, rel: &str) -> bool {
+        let mut at = root.to_path_buf();
+        rel.split('/').filter(|c| !c.is_empty()).all(|c| {
+            at.push(c);
+            c != ".git" && enterable(&at)
+        })
+    }
+
+    fn walk(
+        root: &Path,
+        rel: &str,
+        set: &ScopeSet,
+        set_aside: &HashSet<String>,
+        depth: usize,
+    ) -> Option<String> {
+        if depth > DEPTH {
+            return None;
+        }
+        let dir = if rel.is_empty() {
+            root.to_path_buf()
+        } else {
+            root.join(rel)
+        };
+        let mut entries: Vec<_> = std::fs::read_dir(dir).ok()?.flatten().collect();
+        entries.sort_by_key(|e| e.file_name());
+        let mut below: Vec<String> = Vec::new();
+        for entry in entries {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == ".git" {
+                continue;
+            }
+            let path = if rel.is_empty() {
+                name.clone()
+            } else {
+                format!("{rel}/{name}")
+            };
+            let Ok(kind) = entry.file_type() else {
+                continue;
+            };
+            if kind.is_dir() {
+                if !entry.path().join(".git").exists() {
+                    below.push(path);
+                }
+            } else if set.matches(&path) && !set_aside.contains(&path) {
+                return Some(path);
+            }
+        }
+        below
+            .iter()
+            .find_map(|path| walk(root, path, set, set_aside, depth + 1))
+    }
+
+    let set = ScopeSet::new(&[glob.to_string()]).ok()?;
+    let Some(first) = glob.find(WILDCARDS) else {
+        // A path: one entry, looked at and never opened.
+        let meta = std::fs::symlink_metadata(worktree.join(glob)).ok()?;
+        let parent = glob.rsplit_once('/').map_or("", |(parent, _)| parent);
+        return (!meta.is_dir()
+            && reachable(worktree, parent)
+            && !set_aside.contains(glob)
+            && set.matches(glob))
+        .then(|| glob.to_string());
+    };
+    let start = glob[..first].rfind('/').map_or("", |cut| &glob[..cut]);
+    if !reachable(worktree, start) {
+        return None;
+    }
+    walk(worktree, start, &set, set_aside, 0)
+}
+
+/// A path as one shell word: as it is when nothing in it needs quoting, and in
+/// double quotes otherwise, which bash, PowerShell and `cmd` all read as one
+/// argument.
+fn shell_word(path: &str) -> String {
+    let plain = |c: char| c.is_ascii_alphanumeric() || "._/-+@,:=".contains(c);
+    if !path.is_empty() && path.chars().all(plain) {
+        path.to_string()
+    } else {
+        format!("\"{path}\"")
     }
 }
 
@@ -4983,7 +5165,10 @@ pub fn review(
     let path = crate::context::perimeter(inv, repo)?;
     let report = inspect(repo, cfg, path.as_deref(), false)?;
     let index = Index::open(&repo.ank)?;
-    let files = tracked_files(&repo.worktree);
+    // Already walked once by `inspect`, above: a second `ls-files` for the same
+    // answer would be a process for nothing (ADR-cc65f1388a71's invariance is
+    // about the corpus's size, not about asking git the same question twice).
+    let files = &report.files;
     // Who may ratify, read here because nowhere else serves it: `.ank/` is
     // closed to a direct read (ADR-e45e1a29fe91) and `allowed_signers` is not
     // an entity, so before this the one file the format asks a human to edit by

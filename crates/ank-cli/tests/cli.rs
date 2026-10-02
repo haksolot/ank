@@ -16332,6 +16332,877 @@ fn checks_git_cost_does_not_grow_with_the_number_of_dead_scopes() {
     );
 }
 
+/// **A file sitting under a directory git ignores does not make its scope
+/// alive.** `tracked_files` used to walk the filesystem itself, blind to
+/// `.gitignore`, so a build artifact or a downloaded cache living beside
+/// `.ank/` read as a match for any scope naming its path. It never is one: an
+/// ignored file is not in the tree git counts, and the scope is dead. What
+/// ADR-3abc4b33153f then makes of that death (a signal naming the ignored
+/// file, `a_scope_only_ignored_files_match_is_a_signal_...`) is asserted
+/// there; this test holds the half beneath it, that the scope is reported dead
+/// at all, with a tracked file beside it that stays alive.
+///
+/// An ADR rather than a task, so the status branching `scope_verdicts` does
+/// for an open or closed task never enters: a decision's scope matching
+/// nothing is unconditionally a dead scope.
+#[test]
+fn a_scope_under_a_gitignored_directory_is_dead() {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "ignore build/"]);
+    // Real bytes on disk, never added: exactly what `research/`, `.venv/` or
+    // any other directory a `.gitignore` names holds in a real checkout.
+    std::fs::create_dir_all(r.0.join("build")).unwrap();
+    std::fs::write(r.0.join("build/output.bin"), "not part of the corpus\n").unwrap();
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file git ignores",
+            "--scope",
+            "build/output.bin",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'build/output.bin'"),
+        "a file under a directory git ignores must not count as tracked, \
+         or the scope reads alive on a coincidence of a path: {text}"
+    );
+
+    // The positive control this test needs: a fallback broken in a way that
+    // returns no files at all (`ls-files` failing on some platform, or a
+    // regression that treats "matches nothing" as "matches everything") would
+    // also call `build/output.bin` dead, passing the assertion above for the
+    // wrong reason. A scope on a file `.gitignore` never names must stay
+    // alive right beside it, in the same run.
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file git tracks",
+            "--scope",
+            "docs/doc.md",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        !text.contains("dead scope 'docs/doc.md'"),
+        "a tracked file must still read alive next to the ignored one, or this \
+         test would pass on a fallback that reports every scope dead: {text}"
+    );
+}
+
+/// A repository whose `.gitignore` names `build/` and whose disk holds
+/// `build/output.bin`, with `.ank/index.db` ignored as well so that nothing but
+/// the scopes under test can make `check` report.
+fn repo_with_ignored_build_output() -> Repo {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "ignore build/"]);
+    std::fs::create_dir_all(r.0.join("build")).unwrap();
+    std::fs::write(r.0.join("build/output.bin"), "generated, never committed\n").unwrap();
+    r
+}
+
+/// An ADR with one scope, and its id.
+fn new_adr_scoped(r: &Repo, title: &str, scope: &str) -> String {
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            title,
+            "--scope",
+            scope,
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string()
+}
+
+/// **A dead scope that only git-ignored files match is a signal naming
+/// `git check-ignore -v`, never a fault** (TASK-5867eb1c06ba,
+/// ADR-3abc4b33153f).
+///
+/// Through the binary, as the criterion is about what `check` prints and
+/// exits with: a path and a glob each, a path absent from disk beside them in
+/// the same run (which has to stay the fault, or this would pass on a check
+/// that stopped reporting dead scopes), and `context` still naming both ADRs.
+#[test]
+fn a_scope_only_ignored_files_match_is_a_signal_naming_check_ignore_and_an_absent_one_a_fault() {
+    let r = repo_with_ignored_build_output();
+    let by_path = new_adr_scoped(
+        &r,
+        "A rule scoped at a file git ignores",
+        "build/output.bin",
+    );
+    let by_glob = new_adr_scoped(&r, "A rule scoped at a directory git ignores", "build/**");
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "a scope git has an explanation for is a signal, and exit 8 here is a \
+         fault the owner cannot see the reason for: {said}"
+    );
+    for (id, scope) in [(&by_path, "build/output.bin"), (&by_glob, "build/**")] {
+        let line = said
+            .lines()
+            .find(|l| l.contains(&format!("dead scope '{scope}'")))
+            .unwrap_or_else(|| panic!("no finding names '{scope}':\n{said}"));
+        assert!(
+            line.starts_with(&format!("signal: {id}:")),
+            "an ignored-only match is a signal, never a fault: {said}"
+        );
+    }
+    assert!(
+        said.contains("ignored by git"),
+        "the note says why the file does not count: {said}"
+    );
+    assert!(
+        said.contains("git check-ignore -v build/output.bin"),
+        "and hands the reader the command that names the rule: {said}"
+    );
+    // Both entries name the same file, the glob by walking down to it.
+    assert_eq!(
+        said.matches("git check-ignore -v build/output.bin").count(),
+        2,
+        "each of the two scopes names the ignored path it found: {said}"
+    );
+
+    // Scope and context keep answering what they answered: nothing about the
+    // verdict removed the ADRs from the file's perimeter.
+    let out = r.ank(AGENT, &["context", "build/output.bin"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains(&by_path[..8]) && text.contains(&by_glob[..8]),
+        "context still names both ADRs: {text}"
+    );
+
+    // The half that must not move: a path absent from disk is where the reader
+    // has nothing, and that is what the fault is for.
+    let absent = new_adr_scoped(
+        &r,
+        "A rule scoped at a file nobody wrote",
+        "build/absent.bin",
+    );
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    let line = said
+        .lines()
+        .find(|l| l.contains("dead scope 'build/absent.bin'"))
+        .unwrap_or_else(|| panic!("no finding names the absent path:\n{said}"));
+    assert!(
+        line.starts_with(&format!("error: {absent}:")),
+        "a path absent from disk stays a fault: {said}"
+    );
+}
+
+/// **The ignored match costs no git process of its own.** Counted with
+/// `GIT_TRACE2_EVENT` at an absolute path, one `start` per process, on two
+/// corpora that differ in nothing but whether the dead scope's path is on disk
+/// under an ignored directory or is absent altogether
+/// (ADR-3abc4b33153f, ADR-cc65f1388a71).
+#[test]
+fn an_ignored_only_dead_scope_starts_as_many_git_processes_as_an_absent_one() {
+    fn starts_for(scope: &str) -> (usize, i32, bool) {
+        let r = repo_with_ignored_build_output();
+        new_adr_scoped(&r, "A rule scoped at a dead path", scope);
+        let trace = r.0.join("trace.json");
+        let out = ank_command()
+            .args(["check", "--repo"])
+            .arg(&r.0)
+            .env("ANK_AGENT", AGENT)
+            .env("GIT_TRACE2_EVENT", &trace)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built");
+        assert!(code(&out) == 0 || code(&out) == 8, "{}", stderr(&out));
+        let text = std::fs::read_to_string(&trace).expect("git must have written the trace");
+        let starts = text.matches("\"event\":\"start\"").count();
+        assert!(starts > 0, "the trace records no git process: {text:.400}");
+        let said = format!("{}{}", stdout(&out), stderr(&out));
+        let named = said.contains("git check-ignore -v build/output.bin");
+        (starts, code(&out), named)
+    }
+    let (ignored, ignored_code, ignored_named) = starts_for("build/output.bin");
+    let (glob, glob_code, glob_named) = starts_for("build/**");
+    let (absent, absent_code, absent_named) = starts_for("build/absent.bin");
+    // The counts compare a walk that ran with one that did not need to: without
+    // these, a build that stopped looking for the ignored file at all would
+    // count the same and pass.
+    assert_eq!(
+        (ignored_code, ignored_named, glob_code, glob_named),
+        (0, true, 0, true),
+        "the ignored path and the ignored glob are signals naming the file"
+    );
+    assert_eq!(
+        (absent_code, absent_named),
+        (8, false),
+        "the absent path is the fault"
+    );
+    assert_eq!(
+        (ignored, glob),
+        (absent, absent),
+        "finding the ignored file is a walk of directory entries and starts no \
+         process: ignored path, ignored glob, absent path"
+    );
+}
+
+/// **Nothing is opened to answer it.** A FIFO under the ignored directory
+/// blocks any reader, so `check` returning at all proves no file's content was
+/// read, and the FIFO is still the path the note names. Unix only: a supplement
+/// to the criterion above, never a substitute for it.
+#[cfg(unix)]
+#[test]
+fn the_ignored_walk_never_opens_what_it_finds() {
+    let r = repo_with_ignored_build_output();
+    std::fs::remove_file(r.0.join("build/output.bin")).unwrap();
+    let made = spawn("mkfifo")
+        .arg(r.0.join("build/pipe"))
+        .status()
+        .expect("mkfifo ships with the platform");
+    assert!(made.success());
+    new_adr_scoped(
+        &r,
+        "A rule scoped at a directory holding a pipe",
+        "build/**",
+    );
+
+    let mut child = ank_command()
+        .args(["check", "--repo"])
+        .arg(&r.0)
+        .env("ANK_AGENT", AGENT)
+        .current_dir(std::env::temp_dir())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the binary must have been built");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("check is blocked on the FIFO: something opened it");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
+    let out = child.wait_with_output().unwrap();
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(status.code(), Some(0), "{said}");
+    assert!(
+        said.contains("git check-ignore -v build/pipe"),
+        "the pipe is the file the note names: {said}"
+    );
+}
+
+/// **A file that is not git's to ignore is not found by that walk.** A
+/// directory carrying its own `.git` is another checkout, and what it holds
+/// is not ignored by this repository's rules: a scope living only there is as
+/// dead as one living nowhere, and keeps the fault.
+#[test]
+fn a_scope_living_only_in_a_nested_checkout_stays_a_fault() {
+    let r = repo_with_ignored_build_output();
+    std::fs::create_dir_all(r.0.join("vendor/other/src")).unwrap();
+    std::fs::create_dir_all(r.0.join("vendor/other/.git")).unwrap();
+    std::fs::write(r.0.join("vendor/other/src/lib.rs"), "// theirs\n").unwrap();
+    new_adr_scoped(
+        &r,
+        "A rule scoped inside somebody else's checkout",
+        "vendor/other/src/lib.rs",
+    );
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    assert!(
+        said.contains("error:") && !said.contains("git check-ignore"),
+        "a nested checkout is not ignored by git, so no note claims it: {said}"
+    );
+}
+
+/// **A symbolic link is not an ignored file, and neither is what lies beyond
+/// one.** A tracked link to a directory is a path git lists, which the tree it
+/// counts drops only because it resolves to a directory; and a file reached
+/// through a link is one git never looks at (`git check-ignore` refuses it as
+/// "beyond a symbolic link"). Both scopes are dead with nothing explaining
+/// them, so both stay faults, and no note claims an ignore rule that does not
+/// exist. Unix only: creating a link on Windows takes a privilege a runner
+/// may not hold.
+#[cfg(unix)]
+#[test]
+fn a_scope_on_a_symlink_or_beyond_one_is_not_reported_as_ignored() {
+    let r = repo_with_ignored_build_output();
+    std::fs::create_dir_all(r.0.join("real")).unwrap();
+    std::fs::write(r.0.join("real/a.rs"), "// real\n").unwrap();
+    std::os::unix::fs::symlink("real", r.0.join("link")).unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "a link to a directory"]);
+    let bare = new_adr_scoped(&r, "A rule scoped at a link", "link");
+    let through = new_adr_scoped(&r, "A rule scoped through a link", "link/**");
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    for (id, scope) in [(&bare, "link"), (&through, "link/**")] {
+        let line = said
+            .lines()
+            .find(|l| l.contains(&format!("dead scope '{scope}'")))
+            .unwrap_or_else(|| panic!("no finding names '{scope}':\n{said}"));
+        assert!(
+            line.starts_with(&format!("error: {id}:")),
+            "a link is no ignored file, so the death stays a fault: {said}"
+        );
+    }
+    assert!(
+        !said.contains("git check-ignore") && !said.contains("ignored by git"),
+        "nothing here is ignored, so no note may say so: {said}"
+    );
+}
+
+/// **`target/` and `node_modules/` are ignored like any other directory when
+/// `.gitignore` names them** (ADR-3abc4b33153f), and are not when it does not.
+/// The tree git counts sets both aside by name whatever the rules say, so the
+/// walk cannot tell the two apart by the name alone: a file git listed is never
+/// called ignored, and one it did not list is. Here `target/` is ignored and
+/// `node_modules/` is merely untracked.
+#[test]
+fn a_scope_under_an_ignored_target_is_a_signal_and_under_an_unignored_node_modules_a_fault() {
+    let r = repo_with_ignored_build_output();
+    std::fs::write(r.0.join(".gitignore"), ".ank/index.db\nbuild/\ntarget/\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "ignore target/"]);
+    std::fs::create_dir_all(r.0.join("target/doc")).unwrap();
+    std::fs::write(r.0.join("target/doc/index.html"), "generated\n").unwrap();
+    std::fs::create_dir_all(r.0.join("node_modules/pkg")).unwrap();
+    std::fs::write(r.0.join("node_modules/pkg/index.js"), "// untracked\n").unwrap();
+    let ignored = new_adr_scoped(&r, "A rule scoped under target", "target/doc/**");
+    let untracked = new_adr_scoped(
+        &r,
+        "A rule scoped under node_modules",
+        "node_modules/pkg/index.js",
+    );
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 8, "{said}");
+    let line = said
+        .lines()
+        .find(|l| l.contains("dead scope 'target/doc/**'"))
+        .unwrap_or_else(|| panic!("no finding names target/doc/**:\n{said}"));
+    assert!(
+        line.starts_with(&format!("signal: {ignored}:")),
+        "target/ is ignored by .gitignore here, so it is the signal: {said}"
+    );
+    assert!(
+        said.contains("git check-ignore -v target/doc/index.html"),
+        "{said}"
+    );
+    let line = said
+        .lines()
+        .find(|l| l.contains("dead scope 'node_modules/pkg/index.js'"))
+        .unwrap_or_else(|| panic!("no finding names node_modules:\n{said}"));
+    assert!(
+        line.starts_with(&format!("error: {untracked}:")),
+        "node_modules/ is ignored by no rule, so nothing explains it: {said}"
+    );
+    assert!(!said.contains("git check-ignore -v node_modules"), "{said}");
+}
+
+/// **The command handed over runs as printed.** A path holding a space is
+/// quoted, or the shell splits it into several paths and `git check-ignore`
+/// answers about none of them.
+#[test]
+fn the_check_ignore_command_quotes_a_path_holding_a_space() {
+    let r = repo_with_ignored_build_output();
+    std::fs::remove_file(r.0.join("build/output.bin")).unwrap();
+    std::fs::create_dir_all(r.0.join("build/my dir")).unwrap();
+    std::fs::write(r.0.join("build/my dir/out file.bin"), "generated\n").unwrap();
+    new_adr_scoped(&r, "A rule scoped at a spaced path", "build/my dir/**");
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(code(&out), 0, "{said}");
+    assert!(
+        said.contains("git check-ignore -v \"build/my dir/out file.bin\""),
+        "{said}"
+    );
+}
+
+/// **A tracked file removed with a plain `rm`, never `git rm`, does not keep
+/// its scope alive on the index entry alone.** `git ls-files --cached` lists
+/// the index, not the disk; a scope reading this as tracked would be exactly
+/// the false "alive" ADR-3094538d831e's dead-scope promise exists to rule
+/// out for a deletion `git status` already sees.
+#[test]
+fn a_scope_on_a_file_removed_from_disk_without_git_rm_is_dead() {
+    let r = Repo::new();
+    r.seed_docs();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "adr",
+            "--title",
+            "A rule scoped at a file removed without git rm",
+            "--scope",
+            "src/lib.rs",
+            "--constraint",
+            "A binding rule.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    // Gone from the worktree, still in the index: exactly what a plain `rm`
+    // (or a build step that deletes generated-then-tracked-by-mistake output)
+    // leaves behind, `git status` already calling it deleted.
+    std::fs::remove_file(r.0.join("src/lib.rs")).unwrap();
+
+    let out = r.ank(AGENT, &["check"]);
+    let text = stdout(&out);
+    assert!(
+        text.contains("dead scope 'src/lib.rs'"),
+        "a file gone from disk without `git rm` must not keep its scope alive \
+         on the cached index entry alone: {text}"
+    );
+}
+
+/// **A corpus placed under a directory this repository's own `.gitignore`
+/// excludes is not thereby unreadable.** `git ls-files -z --cached --others
+/// --exclude-standard`, run with its working directory inside such a
+/// directory, answers empty with exit 0 -- the same answer a tree with no
+/// files at all gives -- and reading that as "there is nothing here" instead
+/// of "git does not know" made a real file beside `.ank/` invisible to the
+/// corpus its own ADR scoped against.
+#[test]
+fn a_scope_under_a_corpus_the_repository_ignores_is_alive() {
+    let root = scratch::root().join(format!(
+        "ank-cli-it-ignored-corpus-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(root.join("workspace/.ank/entities")).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "core.autocrlf", "false"][..],
+        &["config", "commit.gpgsign", "false"][..],
+        &["config", "gc.auto", "0"][..],
+        &["config", "maintenance.auto", "false"][..],
+    ] {
+        let out = git_command(&root)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    // The corpus sits entirely under a directory this (parent) repository
+    // ignores whole -- a legitimate layout ADR-9e56318631f3 allows, anchor and
+    // location free to differ -- and `ank` is invoked with `--repo` pointed
+    // straight at it, so `git ls-files`'s working directory is inside the
+    // ignored directory itself.
+    std::fs::write(root.join(".gitignore"), "workspace/\n").unwrap();
+    let out = git_command(&root).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&root)
+        .args(["commit", "-qm", "ignore workspace/"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    std::fs::write(
+        root.join("workspace/.ank/config.yml"),
+        "schema: 1\nclaim_ttl_max: 2h\ndefault_branch: main\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.join("workspace/src")).unwrap();
+    std::fs::write(root.join("workspace/src/lib.rs"), "// x\n").unwrap();
+
+    let invoke = |args: &[&str]| -> Output {
+        ank_command()
+            .args(args)
+            .arg("--repo")
+            .arg(root.join("workspace"))
+            .env("ANK_AGENT", AGENT)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    };
+
+    let out = invoke(&[
+        "new",
+        "adr",
+        "--title",
+        "A rule scoped at a file under an ignored corpus",
+        "--scope",
+        "src/lib.rs",
+        "--constraint",
+        "A binding rule.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+
+    let out = invoke(&["check"]);
+    assert_eq!(
+        code(&out),
+        0,
+        "check must actually run rather than refuse to start, or the \
+         assertion below would pass on a `--repo` git cannot resolve just as \
+         readily as on the fix: {}",
+        stderr(&out)
+    );
+    let text = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        !text.contains("dead scope 'src/lib.rs'"),
+        "a file that exists under a corpus the enclosing repository ignores \
+         must still be read: git answering empty from inside an ignored \
+         directory is not the same fact as an empty tree: {text}"
+    );
+}
+
+/// The other half of `a_scope_matching_only_another_checkout_is_dead`: a real
+/// `git worktree add`, not only a hand-built dangling gitfile. The boundary
+/// under test is the same `.git` entry either way, but only the dangling
+/// fixture had a regression test before this.
+#[test]
+fn a_scope_matching_only_a_real_nested_worktree_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+    r.git(&["branch", "other"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "task",
+            "--title",
+            "Work over the vendored tree",
+            "--scope",
+            "vendor/**",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    std::fs::create_dir_all(r.0.join("vendor")).unwrap();
+    r.git(&["worktree", "add", "-q", "vendor/realwt", "other"]);
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!("{id}: scope 'vendor/**' matches no file yet")),
+        "a real `git worktree add` nested under the corpus must be excluded \
+         the same way a dangling gitfile is: {said}"
+    );
+}
+
+/// **A bare scope naming a submodule's own root reads dead, the same verdict
+/// main gives it.** A submodule's gitlink is one `ls-files` entry equal to
+/// the submodule's path itself, with no trailing segment beneath it for an
+/// ancestor check to catch; left unfiltered it makes a bare scope naming that
+/// path read alive on the gitlink entry alone, never on a real file.
+#[test]
+fn a_bare_scope_naming_a_submodule_root_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // A real submodule needs a repository to point at, seeded once here and
+    // never touched again by anything this test asserts.
+    let upstream = r.0.with_extension("submodule-origin");
+    let _ = std::fs::remove_dir_all(&upstream);
+    std::fs::create_dir_all(&upstream).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let out = git_command(&upstream)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    std::fs::write(upstream.join("lib.rs"), "// theirs\n").unwrap();
+    let out = git_command(&upstream).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&upstream)
+        .args(["commit", "-qm", "seed"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // `protocol.file.allow=always`: the local clone `submodule add` performs
+    // is otherwise refused by git's own default (CVE-2022-39253), on a path
+    // this test built itself and nowhere else.
+    let url = upstream.to_string_lossy().replace('\\', "/");
+    let out = git_command(&r.0)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            &url,
+            "vendor/sub",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git submodule add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    r.git(&["commit", "-qm", "add submodule"]);
+
+    let out = r.ank(
+        AGENT,
+        &[
+            "new",
+            "task",
+            "--title",
+            "Work inside the vendored submodule",
+            "--scope",
+            "vendor/sub",
+            "--criteria",
+            "The prose says when.",
+        ],
+    );
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = r.ank(AGENT, &["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!("{id}: scope 'vendor/sub' matches no file yet")),
+        "a bare scope naming a submodule's own root must read dead, the same \
+         verdict a non-glob directory scope gets everywhere else: {said}"
+    );
+}
+
+/// **Second review, point 20: the same submodule, a clone that never
+/// initialized it.** A plain `git clone` -- never `--recurse-submodules`,
+/// the state of an ordinary CI runner and of every clone `Repo::cloned`
+/// makes elsewhere in this suite -- leaves `vendor/sub/` an empty directory
+/// with no `.git` inside it at all: the gitlink is still the index entry
+/// `ls-files --cached` lists, `--deleted` does not list it (git never calls
+/// an uninitialized submodule deleted), and the `.git`-existence filter the
+/// test above relies on finds nothing to catch. Both the bare scope and the
+/// glob must read exactly as dead as `main` reads them.
+#[test]
+fn a_bare_scope_naming_an_uninitialized_submodule_root_is_dead() {
+    let r = Repo::new();
+    std::fs::create_dir_all(r.0.join("src")).unwrap();
+    std::fs::write(r.0.join("src/lib.rs"), "// x\n").unwrap();
+    r.git(&["add", "-A"]);
+    r.git(&["commit", "-qm", "seed"]);
+
+    // A real submodule needs a repository to point at, seeded once here and
+    // never touched again by anything this test asserts.
+    let upstream = r.0.with_extension("submodule-origin-2");
+    let _ = std::fs::remove_dir_all(&upstream);
+    std::fs::create_dir_all(&upstream).unwrap();
+    for args in [
+        &["init", "-q", "-b", "main"][..],
+        &["config", "user.email", "test@ank.local"][..],
+        &["config", "user.name", "Test"][..],
+        &["config", "commit.gpgsign", "false"][..],
+    ] {
+        let out = git_command(&upstream)
+            .args(args)
+            .output()
+            .expect("git must be installed");
+        assert!(out.status.success(), "git {args:?}");
+    }
+    std::fs::write(upstream.join("lib.rs"), "// theirs\n").unwrap();
+    let out = git_command(&upstream).args(["add", "-A"]).output().unwrap();
+    assert!(out.status.success());
+    let out = git_command(&upstream)
+        .args(["commit", "-qm", "seed"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+
+    // `protocol.file.allow=always`: the local clone `submodule add` performs
+    // is otherwise refused by git's own default (CVE-2022-39253), on a path
+    // this test built itself and nowhere else.
+    let url = upstream.to_string_lossy().replace('\\', "/");
+    let out = git_command(&r.0)
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "--quiet",
+            &url,
+            "vendor/sub",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "git submodule add: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    r.git(&["commit", "-qm", "add submodule"]);
+
+    // The clone this test is actually about: a plain `clone`, never told to
+    // recurse into submodules, of the repository above.
+    let clone = r.0.with_extension("uninitialized-clone");
+    let _ = std::fs::remove_dir_all(&clone);
+    let out = git_command(&r.0)
+        .args(["clone", "-q"])
+        .args(["-c", "gc.auto=0", "-c", "maintenance.auto=false"])
+        .arg(&r.0)
+        .arg(&clone)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "clone: {}", stderr(&out));
+    for args in [
+        ["config", "user.email", "test@ank.local"],
+        ["config", "user.name", "Test"],
+        ["config", "commit.gpgsign", "false"],
+    ] {
+        let out = git_command(&clone).args(args).output().unwrap();
+        assert!(out.status.success(), "{args:?}: {}", stderr(&out));
+    }
+    std::fs::create_dir_all(clone.join(".ank/entities")).unwrap();
+
+    // The positive control this test needs: if the clone actually recursed,
+    // or the fixture's own assumption about what a plain clone leaves behind
+    // is wrong, the rest of the test would pass for a reason that has
+    // nothing to do with point 20.
+    assert!(
+        clone.join("vendor/sub").is_dir(),
+        "the clone must contain the empty submodule directory this test needs"
+    );
+    assert!(
+        !clone.join("vendor/sub/.git").exists(),
+        "an uninitialized submodule must have no `.git` at all, or this test \
+         is not exercising the case it names"
+    );
+
+    let invoke = |args: &[&str]| -> Output {
+        ank_command()
+            .args(args)
+            .arg("--repo")
+            .arg(&clone)
+            .env("ANK_AGENT", AGENT)
+            .current_dir(std::env::temp_dir())
+            .output()
+            .expect("the binary must have been built")
+    };
+
+    let out = invoke(&[
+        "new",
+        "task",
+        "--title",
+        "Work inside the uninitialized submodule, bare scope",
+        "--scope",
+        "vendor/sub",
+        "--criteria",
+        "The prose says when.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let bare_id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = invoke(&[
+        "new",
+        "task",
+        "--title",
+        "Work inside the uninitialized submodule, glob scope",
+        "--scope",
+        "vendor/sub/**",
+        "--criteria",
+        "The prose says when.",
+    ]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let glob_id = stdout(&out)
+        .split_whitespace()
+        .nth(1)
+        .expect("created <id> <slug>")
+        .to_string();
+
+    let out = invoke(&["check"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert!(
+        said.contains(&format!(
+            "{bare_id}: scope 'vendor/sub' matches no file yet"
+        )),
+        "a bare scope naming an uninitialized submodule's own root must read \
+         dead, the same verdict `main` gives it and the initialized case \
+         above gets: {said}"
+    );
+    assert!(
+        said.contains(&format!(
+            "{glob_id}: scope 'vendor/sub/**' matches no file yet"
+        )),
+        "the glob scope over the same uninitialized submodule must stay \
+         dead too: {said}"
+    );
+}
+
 /// **An entity the branch and the tree agree on is read from the tree, and one
 /// they disagree on is read from the branch** (TASK-2ba2619b90e2).
 ///

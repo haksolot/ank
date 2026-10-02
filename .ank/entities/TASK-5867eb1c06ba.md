@@ -5,7 +5,7 @@ slug: a-dead-scope-only-git-ignored-files-match-is-a-s
 title: A dead scope only git-ignored files match is a signal naming git check-ignore, not a fault
 created: 2026-10-01T09:38:46Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/git.rs
@@ -16,8 +16,21 @@ done_criteria: |
 criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
+proof:
+  - type: test
+    ref: local/0fd9b3c6a4bd@d659095
+    tree: scope/ec1cbd2798c2
+    criteria: cf7869fdf990
+    verifier: cargo-test@f14aeab36e1b
+    via: verifier
+  - type: test
+    ref: local/e3b0c44298fc@d659095
+    tree: scope/ec1cbd2798c2
+    criteria: cf7869fdf990
+    verifier: fmt-check@5ca6d10bcd55
+    via: verifier
 schema: 4
-version: 1
+version: 2
 ---
 
 Under ADR-3abc4b33153f, carried by SPEC-7edbdf871408. Meant to land inside PR
