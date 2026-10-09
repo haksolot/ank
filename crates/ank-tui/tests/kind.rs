@@ -49,7 +49,12 @@ use terminal::{Live, Repo};
 /// longest thing on the header and forty columns cannot hold it, so a reader
 /// that had written the kind into that sentence rather than beside it would
 /// pass at eighty and lose the cell to a `~` here.
-const WINDOWS: [(u16, u16); 3] = [(40, 30), (80, 24), (120, 40)];
+///
+/// One column under the dashboard's width (ADR-ac6be1ebe9aa), so the region is
+/// the whole window and the rows read here are the only rows on it: what this
+/// suite measures is the content of a listing, and `tests/dashboard.rs` is
+/// where the panels beside it are measured.
+const WINDOWS: [(u16, u16); 3] = [(40, 30), (80, 24), (99, 40)];
 
 /// The key the kind filter is cycled with, out of the reader's own table.
 ///

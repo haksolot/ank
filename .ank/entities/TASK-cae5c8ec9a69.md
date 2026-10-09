@@ -5,7 +5,7 @@ slug: the-reader-draws-its-listings-beside-the-detail
 title: The reader draws its listings beside the detail on a wide terminal
 created: 2026-10-09T12:31:37Z
 author: clausse@macbook-air-de-clausse
-status: open
+status: in_progress
 scope:
   - crates/ank-tui/**
   - crates/ank-cli/tests/tui.rs
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [cargo-test, fmt-check]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Step two of the dashboard ADR-ac6be1ebe9aa proposes. The panels already render one at a time through App::panel(focus, listing, area); this draws several of them, decides the rectangles in App::arrange, and reads status and review during the opening so the panels are not empty.

@@ -86,12 +86,15 @@ fn regions(frame: &str) -> usize {
 /// The widths this suite drives, which are the two the criterion names and
 /// three between them.
 ///
-/// Forty and a hundred and fifty are the ends it states; the three inside are
-/// where the old arrangement changed its mind -- just under and just over the
-/// width it reflowed at, and the eighty columns every earlier criterion was
-/// written for. Each is a spawned process on a pseudo-terminal, which is why
-/// this is a sample: `src/view.rs` walks all hundred and eleven.
-const WIDTHS: [u16; 5] = [40, 46, 48, 80, 150];
+/// Forty is the end it states; the inside two are where the old arrangement
+/// changed its mind -- just under and just over the width it reflowed at --
+/// and eighty is the width every earlier criterion was written for. The last
+/// is one column under [`ank_tui::view::DASHBOARD`]: from that width on the
+/// panels are drawn beside each other (ADR-ac6be1ebe9aa), which is
+/// `tests/dashboard.rs`, so what this suite states about one region it states
+/// up to there. Each is a spawned process on a pseudo-terminal, which is why
+/// this is a sample: `src/view.rs` walks every width.
+const WIDTHS: [u16; 5] = [40, 46, 48, 80, ank_tui::view::DASHBOARD - 1];
 
 /// The two windows the older criteria were written at, kept for the assertions
 /// that are about a window rather than about a width.
@@ -162,8 +165,9 @@ fn no_frame_overflows_the_window_at_eighty_columns_or_at_forty() {
     }
 }
 
-/// **The frame carries exactly one bordered region, and nothing on it is a rule
-/// drawn around nothing** (TASK-252bf02de218).
+/// **Under the dashboard's width the frame carries exactly one bordered region,
+/// and nothing on it is a rule drawn around nothing** (TASK-252bf02de218,
+/// ADR-ac6be1ebe9aa).
 ///
 /// Two clauses of the criterion on one frame, because each alone is half of it:
 /// a reader that drew no region at all would pass the second, and one that drew
@@ -213,8 +217,9 @@ fn the_frame_carries_one_bordered_region_with_something_inside_it() {
     }
 }
 
-/// **Neither the claims nor the ratification queue is a panel any more, and
-/// each stays reachable by the key it already had** (TASK-252bf02de218).
+/// **Under the dashboard's width neither the claims nor the ratification queue
+/// is drawn beside the listing, and each stays reachable by the key it already
+/// had** (TASK-252bf02de218, ADR-ac6be1ebe9aa).
 ///
 /// Both halves, because either alone is the wrong reader: a session still
 /// drawing four panels would pass the second, and one that had simply deleted

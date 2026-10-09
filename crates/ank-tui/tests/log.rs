@@ -48,7 +48,12 @@ use terminal::{Live, Repo};
 /// the whole of a short document -- field block, prose and the entries under it
 /// -- is on one screen. A sequence read through a page boundary is a sequence
 /// half read.
-const WINDOW: (u16, u16) = (120, 44);
+///
+/// One column under the dashboard's width (ADR-ac6be1ebe9aa), so the region is
+/// the whole window and the rows read here are the only rows on it: what this
+/// suite measures is the content of a listing, and `tests/dashboard.rs` is
+/// where the panels beside it are measured.
+const WINDOW: (u16, u16) = (99, 44);
 
 /// What is logged against the task, in the order it is written.
 ///
