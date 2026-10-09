@@ -327,6 +327,9 @@ const STATUS_OUT: &[Field] = &[
             f("id", Type::Str),
             f("expires", Type::Str),
             f("lapsed", Type::Bool),
+            // When the claim was taken, as its record stores it: gained under
+            // the contract, like `corpus` above (TASK-3c1622d65f0d).
+            f("claimed", Type::Str),
         ]),
     ),
     opt(
@@ -335,7 +338,11 @@ const STATUS_OUT: &[Field] = &[
     ),
     f(
         "also_held",
-        Type::Array(&[f("id", Type::Str), f("expires", Type::Str)]),
+        Type::Array(&[
+            f("id", Type::Str),
+            f("expires", Type::Str),
+            f("claimed", Type::Str),
+        ]),
     ),
     f("remote", Type::Bool),
     // Null when `--remote` was not given, which is not zero: zero would say
@@ -355,6 +362,7 @@ const STATUS_OUT: &[Field] = &[
             opt("holder", Type::Str),
             opt("expires", Type::Str),
             opt("seen", Type::Str),
+            opt("claimed", Type::Str),
         ]),
     ),
     f("constraints", Type::Num),

@@ -52,6 +52,9 @@ pub enum Coordination {
     /// A claim still in force.
     Claimed {
         holder: String,
+        /// When the claim was taken, as the record stores it
+        /// (TASK-3c1622d65f0d).
+        claimed: String,
         expires: String,
     },
     /// A claim past its expiry: the task is claimable again, and the file
@@ -224,6 +227,7 @@ pub(crate) fn plane(
                 Ok(true) => Coordination::Lapsed { holder: c.holder },
                 Ok(false) => Coordination::Claimed {
                     holder: c.holder,
+                    claimed: c.claimed,
                     expires: c.expires,
                 },
                 Err(e) => {

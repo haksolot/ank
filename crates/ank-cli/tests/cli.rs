@@ -6221,7 +6221,7 @@ fn status_remote_names_the_claims_origin_holds_and_which_are_only_there() {
     assert!(
         json.contains(&format!(
             "{{\"id\":\"{THEIRS}\",\"title\":\"Held in the other clone\",\
-             \"holder\":null,\"expires\":null,\"seen\":\"origin\"}}"
+             \"holder\":null,\"expires\":null,\"seen\":\"origin\",\"claimed\":null}}"
         )),
         "{json}"
     );
@@ -26546,4 +26546,56 @@ fn find_lists_the_union_of_every_type_it_is_given() {
     // And the help says the flag repeats, the way it says it of `--scope`.
     let help = stdout(&r.ank("a@host", &["help", "find"]));
     assert!(help.contains("--type <v>..."), "{help}");
+}
+
+/// `status --json` says when each claim was taken, on the reader's own claim
+/// and on another agent's (TASK-3c1622d65f0d).
+///
+/// Compared against the claim ref, read with git and not through the module:
+/// the instant is the record's, and a value computed anywhere else would be a
+/// second clock.
+#[test]
+fn status_json_says_when_each_claim_was_taken() {
+    const MINE: &str = "TASK-00003c1622d6";
+    const THEIRS: &str = "TASK-00003c1622d7";
+    let r = Repo::new();
+    r.seed_task(MINE, Some("A verifiable criterion."));
+    r.seed_task(THEIRS, Some("Another verifiable criterion."));
+    for (agent, id) in [("a@host", MINE), ("b@host", THEIRS)] {
+        let out = r.ank(agent, &["claim", id]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+    }
+    let line = |id: &str, key: &str| -> String {
+        let record = r.claim_ref(id).expect("the claim ref must exist");
+        record
+            .lines()
+            .find_map(|l| l.strip_prefix(&format!("{key}: ")))
+            .unwrap_or_else(|| panic!("no {key} in the record: {record}"))
+            .to_string()
+    };
+
+    let out = r.ank("a@host", &["status", "--json"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let said = stdout(&out);
+    let own = format!(
+        "\"claim\":{{\"id\":\"{MINE}\",\"expires\":\"{}\",\"lapsed\":false,\"claimed\":\"{}\"}}",
+        line(MINE, "expires"),
+        line(MINE, "claimed")
+    );
+    assert!(
+        said.contains(&own),
+        "the own claim lacks claimed:\n{own}\n{said}"
+    );
+    let other = format!("\"claimed\":\"{}\"", line(THEIRS, "claimed"));
+    let elsewhere = &said[said.find("\"elsewhere\"").expect("elsewhere")..];
+    assert!(
+        elsewhere.contains(&other),
+        "the other agent's row lacks claimed:\n{other}\n{said}"
+    );
+    for id in [MINE, THEIRS] {
+        assert!(
+            line(id, "claimed") <= line(id, "expires"),
+            "a claim taken after it expires"
+        );
+    }
 }

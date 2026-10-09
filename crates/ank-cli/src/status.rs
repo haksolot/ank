@@ -106,10 +106,10 @@ pub fn run(
             raw.to_string()
         }
     };
-    let claimed: Option<(&Row, String)> = held.as_ref().and_then(|(id, _, record)| {
+    let claimed: Option<(&Row, String, String)> = held.as_ref().and_then(|(id, _, record)| {
         rows.iter()
             .find(|r| &r.id == id)
-            .map(|r| (r, record.expires.clone()))
+            .map(|r| (r, record.expires.clone(), record.claimed.clone()))
     });
 
     // **Every live claim of this identity, not only the one binding the
@@ -155,15 +155,18 @@ pub fn run(
             // already loaded, so it costs nothing; without it the reader holds
             // an id and has to run `show` once per claim to learn what anybody
             // is doing, which is the question the section exists to answer.
-            context::Coordination::Claimed { holder, expires } if holder != identity => {
-                Some(Held {
-                    id: id.clone(),
-                    title: title_of(&rows, id),
-                    holder: Some(holder.clone()),
-                    expires: Some(expires.clone()),
-                    seen: None,
-                })
-            }
+            context::Coordination::Claimed {
+                holder,
+                claimed,
+                expires,
+            } if holder != identity => Some(Held {
+                id: id.clone(),
+                title: title_of(&rows, id),
+                holder: Some(holder.clone()),
+                claimed: Some(claimed.clone()),
+                expires: Some(expires.clone()),
+                seen: None,
+            }),
             _ => None,
         })
         .collect();
@@ -187,7 +190,12 @@ pub fn run(
     // record. A mirrored claim carries a holder and an expiry like any other,
     // because the record itself is here to be read.
     for (id, state) in &plane.mirrored {
-        let context::Coordination::Claimed { holder, expires } = state else {
+        let context::Coordination::Claimed {
+            holder,
+            claimed,
+            expires,
+        } = state
+        else {
             continue;
         };
         if holder == identity || plane.claims.contains_key(id) {
@@ -197,6 +205,7 @@ pub fn run(
             id: id.clone(),
             title: title_of(&rows, id),
             holder: Some(holder.clone()),
+            claimed: Some(claimed.clone()),
             expires: Some(expires.clone()),
             seen: None,
         });
@@ -261,6 +270,7 @@ pub fn run(
                 id: id.clone(),
                 title: title_of(&rows, id),
                 holder: None,
+                claimed: None,
                 expires: None,
                 seen: Some(Seen::Origin),
             });
@@ -323,7 +333,7 @@ pub fn run(
             // is a set of globs rather than a path — so the question is whether
             // the two sets can meet, asked at the directory each glob is
             // anchored at.
-            Some((task, _)) => task
+            Some((task, _, _)) => task
                 .scope
                 .iter()
                 .any(|g| context::in_perimeter(&r.scope, Some(&anchor_of(g)))),
@@ -353,10 +363,11 @@ pub fn run(
         // clock: the human surface says it in words, and a rendering that knows
         // something the other two do not is the defect, not the economy.
         let claim_json = match &claimed {
-            Some((task, expires)) => Obj::new()
+            Some((task, expires, claimed)) => Obj::new()
                 .str("id", &task.id.to_string())
                 .str("expires", expires)
                 .bool("lapsed", lapsed)
+                .str("claimed", claimed)
                 .finish(),
             None => "null".into(),
         };
@@ -370,6 +381,7 @@ pub fn run(
                 Obj::new()
                     .str("id", &id.to_string())
                     .str("expires", &c.expires)
+                    .str("claimed", &c.claimed)
                     .finish()
             })
             .collect();
@@ -393,6 +405,7 @@ pub fn run(
                     .opt_str("holder", h.holder.as_deref())
                     .opt_str("expires", h.expires.as_deref())
                     .opt_str("seen", h.seen.map(Seen::word))
+                    .opt_str("claimed", h.claimed.as_deref())
                     .finish()
             })
             .collect();
@@ -579,7 +592,7 @@ pub fn run(
     );
 
     match &claimed {
-        Some((task, expires)) => {
+        Some((task, expires, _)) => {
             let _ = writeln!(
                 out,
                 "{} {} {}",
@@ -662,7 +675,7 @@ pub fn run(
     }
 
     let perimeter = match &claimed {
-        Some((task, _)) => format!("the scope of {}", task.id),
+        Some((task, _, _)) => format!("the scope of {}", task.id),
         None => "the whole repository".to_string(),
     };
     let _ = writeln!(
@@ -901,6 +914,9 @@ struct Held {
     /// and objects, never contents, and the fetch that would carry the record
     /// is the one a reader must not perform (ADR-47e2ac102f58).
     holder: Option<String>,
+    /// When the claim was taken, `None` exactly where `holder` is
+    /// (TASK-3c1622d65f0d).
+    claimed: Option<String>,
     expires: Option<String>,
     /// `None` when the remote was not consulted, which is not the same answer
     /// as "here only".
