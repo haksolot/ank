@@ -26481,3 +26481,69 @@ fn the_states_a_sweep_found_are_states_the_pages_now_publish() {
         );
     }
 }
+
+/// `--type` named twice lists both kinds, whichever comes first (TASK-b3883bc3f533).
+///
+/// Through the binary, because the defect was the parser's and not the
+/// filter's: `--type` was declared non-repeatable, so the second value replaced
+/// the first before `find` ever read it, and `--type adr --type task` listed
+/// only tasks without a word about the adr it had been asked for.
+#[test]
+fn find_lists_the_union_of_every_type_it_is_given() {
+    const TASK: &str = "TASK-0000000b3883";
+    const ADR: &str = "ADR-00000000b388";
+    const LOG: &str = "LOG-0000000b3883";
+    let r = Repo::new();
+    r.seed_task(TASK, None);
+    r.seed_adr(ADR, "A rule.", "src/**");
+    r.seed_log_saying(LOG, TASK, 0, "an entry about the task");
+
+    for args in [
+        ["find", "", "--type", "task", "--type", "adr"],
+        ["find", "", "--type", "adr", "--type", "task"],
+        ["find", "", "-t", "adr", "--type", "task"],
+    ] {
+        let out = r.ank("a@host", &args);
+        let said = stdout(&out);
+        assert_eq!(code(&out), 0, "ank {}: {}", args.join(" "), stderr(&out));
+        assert!(
+            said.contains("TASK-0000"),
+            "ank {} lost the task: {said}",
+            args.join(" ")
+        );
+        assert!(
+            said.contains("ADR-0000"),
+            "ank {} lost the adr: {said}",
+            args.join(" ")
+        );
+        assert!(
+            !said.contains("LOG-0000"),
+            "ank {} listed a kind it was not given: {said}",
+            args.join(" ")
+        );
+    }
+
+    let out = r.ank(
+        "a@host",
+        &["find", "", "--type", "adr", "--type", "task", "--json"],
+    );
+    let said = stdout(&out);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    assert!(
+        said.contains(TASK) && said.contains(ADR),
+        "--json lost a kind: {said}"
+    );
+    assert!(
+        !said.contains(LOG),
+        "--json listed a kind it was not given: {said}"
+    );
+
+    // One unknown name among good ones refuses the call, and says which.
+    let out = r.ank("a@host", &["find", "", "--type", "task", "--type", "nope"]);
+    assert_eq!(code(&out), 1, "{}", stdout(&out));
+    assert!(stderr(&out).contains("'nope'"), "{}", stderr(&out));
+
+    // And the help says the flag repeats, the way it says it of `--scope`.
+    let help = stdout(&r.ank("a@host", &["help", "find"]));
+    assert!(help.contains("--type <v>..."), "{help}");
+}

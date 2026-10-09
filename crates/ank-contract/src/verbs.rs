@@ -1238,7 +1238,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "<query>",
         flags: &[
-            flag("--type"),
+            multi("--type"),
             flag("--status"),
             flag("--scope"),
             switch("--free"),

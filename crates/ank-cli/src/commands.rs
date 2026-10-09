@@ -1368,7 +1368,7 @@ pub fn find(
     // Ranking is the search's answer, and a filter has no opinion about it.
     let hits: Vec<&Row> = ranked
         .iter()
-        .filter(|r| kind_filter.map(|k| k == r.kind).unwrap_or(true))
+        .filter(|r| kind_filter.is_empty() || kind_filter.contains(&r.kind))
         .filter(|r| {
             status_filter
                 .as_ref()
@@ -1559,17 +1559,20 @@ pub fn find(
 /// a list written here: a kind the registry declares and this match forgot is a
 /// kind `find` refuses while `show` prints it, which is the surface disagreeing
 /// with itself (ADR-c9f9d0d6f05d).
-fn kind_filter(inv: &Invocation) -> Result<Option<EntityKind>> {
-    match inv.value("--type") {
-        None => Ok(None),
-        Some(name) => match EntityKind::from_type_name(name) {
-            Some(kind) => Ok(Some(kind)),
-            None => Err(
+/// Every kind `--type` names, and an empty list when it names none: `--type`
+/// repeats, and a row is kept when its kind is any of them (TASK-b3883bc3f533).
+/// One name the registry does not declare refuses the whole call, rather than
+/// narrowing to the names that did resolve.
+fn kind_filter(inv: &Invocation) -> Result<Vec<EntityKind>> {
+    inv.values("--type")
+        .iter()
+        .map(|name| {
+            EntityKind::from_type_name(name).ok_or_else(|| {
                 CliError::new(ExitCode::Generic, format!("unknown --type '{name}'"))
-                    .with_hint(format!("ank find <query> --type {}", kind_names())),
-            ),
-        },
-    }
+                    .with_hint(format!("ank find <query> --type {}", kind_names()))
+            })
+        })
+        .collect()
 }
 
 /// `find` over a declared peer: the entity `prefix` names, or the whole corpus
@@ -1598,7 +1601,7 @@ fn find_in_peer(
     let hits: Vec<&Row> = all
         .iter()
         .filter(|r| prefix.is_none() || wanted.as_ref() == Some(&r.id))
-        .filter(|r| kind_filter.map(|k| k == r.kind).unwrap_or(true))
+        .filter(|r| kind_filter.is_empty() || kind_filter.contains(&r.kind))
         .filter(|r| {
             status_filter
                 .as_ref()
