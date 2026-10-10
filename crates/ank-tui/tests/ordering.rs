@@ -48,7 +48,12 @@ use terminal::{Live, Repo};
 /// Wide enough that a title is not what runs out first, and tall enough for the
 /// fourteen rows of the fixture: what is being read is a sequence, and a
 /// sequence cut off at the tenth row is a sequence half read.
-const WINDOW: (u16, u16) = (120, 40);
+///
+/// One column under the dashboard's width (ADR-ac6be1ebe9aa), so the region is
+/// the whole window and the rows read here are the only rows on it: what this
+/// suite measures is the content of a listing, and `tests/dashboard.rs` is
+/// where the panels beside it are measured.
+const WINDOW: (u16, u16) = (99, 40);
 
 /// The identifiers the fixture stamps, in twelve hex like every other.
 ///

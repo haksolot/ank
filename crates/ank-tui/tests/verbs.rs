@@ -44,8 +44,10 @@ use terminal::{short_of, Live, Repo};
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 /// Wide enough that a composed command line fits one row, so an assertion about
-/// an argv is an assertion about a line and not about a reflow.
-const WINDOW: (u16, u16) = (110, 34);
+/// an argv is an assertion about a line and not about a reflow -- and one
+/// column under the dashboard's width (ADR-ac6be1ebe9aa), so the frame a letter
+/// must leave alone is not also the one the claims and the queue arrive in.
+const WINDOW: (u16, u16) = (ank_tui::view::DASHBOARD - 1, 34);
 
 /// The six verbs, in the order the table declares them.
 const SIX: [&str; 6] = ["claim", "log", "done", "release", "amend", "accept"];

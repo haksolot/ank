@@ -831,26 +831,47 @@ impl App {
     /// kept: a reload that jumped to the top would lose the reader's place
     /// every time an entity was written next door.
     pub fn reload(&mut self, ank: &Ank) {
+        if self.reload_rows(ank) {
+            self.reload_rest(ank);
+        }
+    }
+
+    /// The first half of [`App::reload`]: `find`, and nothing a panel beside
+    /// the listing needs. `true` when the corpus was read.
+    ///
+    /// **Split so the opening can draw between the two halves**
+    /// (TASK-cae5c8ec9a69, ADR-ac6be1ebe9aa). A wide frame reads the claims and
+    /// the queue as well, and a session that waited for all three before
+    /// drawing the rows would have spent `status` and `review` on the frame a
+    /// person was already looking at.
+    pub fn reload_rows(&mut self, ank: &Ank) -> bool {
         let held = self.selected_id(Focus::Entities);
         match Snapshot::load(ank) {
             Ok(snapshot) => {
                 self.snapshot = Some(snapshot);
                 self.unreadable = false;
                 self.note = None;
-                self.rehold(ank);
-                self.requeue(ank);
                 if let Some(id) = held {
                     if let Some(at) = self.entity_rows().iter().position(|r| r.id == id) {
                         self.cursors[Focus::Entities.number() - 1].at = at;
                     }
                 }
                 self.clamp_all();
+                true
             }
             Err(failed) => {
                 self.unreadable = self.snapshot.is_none();
                 self.fail(failed);
+                false
             }
         }
+    }
+
+    /// The second half: the claims and the queue, where the frame draws them.
+    pub fn reload_rest(&mut self, ank: &Ank) {
+        self.rehold(ank);
+        self.requeue(ank);
+        self.clamp_all();
     }
 
     /// What the screen says in place of a corpus it does not hold
@@ -878,7 +899,7 @@ impl App {
     /// has not asked until then, in the words the queue already uses. Nothing
     /// is hidden and nothing is guessed: what is drawn is what was read.
     fn rehold(&mut self, ank: &Ank) {
-        if self.focus != Focus::Claims {
+        if self.focus != Focus::Claims && !self.wide() {
             return;
         }
         match Held::load(ank) {
@@ -921,7 +942,7 @@ impl App {
     /// queue is not drawn saying it has not been asked, it is simply not drawn,
     /// and the digit that reaches it is what charges it.
     fn requeue(&mut self, ank: &Ank) {
-        if self.focus != Focus::Queue {
+        if self.focus != Focus::Queue && !self.wide() {
             return;
         }
         match Queue::load(ank) {
@@ -1550,6 +1571,13 @@ impl App {
 
     /// [`App::tapped`] with the clock handed to it.
     fn pressed(&mut self, first: Option<Chosen>, at: Position, ank: &Ank, now: Instant) -> bool {
+        // On a wide frame a press lands in a panel, and that panel takes the
+        // focus before the row is chosen (ADR-ac6be1ebe9aa).
+        if let Some(panel) = self.panel_at(at) {
+            if panel != self.focus {
+                self.focus_on(panel, ank);
+            }
+        }
         let focus = self.focus;
         let Some(row) = self.row_at(focus, at) else {
             return false;
@@ -1584,7 +1612,7 @@ impl App {
         if !focus.holds_rows() {
             return None;
         }
-        let inside = inside(self.region(self.area()));
+        let inside = inside(self.rect_of(focus));
         if !inside.contains(at) {
             return None;
         }
@@ -2157,18 +2185,84 @@ impl App {
             y += rows;
             rect
         };
+        let header = band(header);
+        let whole = band(region);
         Panels {
-            header: band(header),
-            region: band(region),
+            header,
+            region: whole,
+            rects: self.divide(whole),
             note: band(note),
             actions: band(offered),
         }
     }
 
-    /// The one bordered region, which is where whichever screen has been asked
-    /// for is drawn (TASK-252bf02de218).
+    /// The region, divided between the panels (TASK-cae5c8ec9a69,
+    /// ADR-ac6be1ebe9aa).
+    ///
+    /// Indexed by [`Focus::number`] less one. On a wide frame the listings are
+    /// a column on the left -- the claims, the entities, the queue, top to
+    /// bottom -- and the detail takes what is left of the width. The column is
+    /// two fifths of the window and never narrower than [`COLUMN`]; the claims
+    /// and the queue take a quarter of its height each and never fewer than
+    /// [`REGION`] rows, and the entities take the rest, because they are the
+    /// listing with the most rows to show.
+    ///
+    /// Under [`DASHBOARD`] every panel is the whole region, which is where
+    /// whichever of them has been asked for is drawn.
+    fn divide(&self, whole: Rect) -> [Rect; 4] {
+        if !self.wide() {
+            return [whole; 4];
+        }
+        let left = (whole.width * 2 / 5).max(COLUMN).min(whole.width);
+        let right = Rect::new(whole.x + left, whole.y, whole.width - left, whole.height);
+        let quarter = (whole.height / 4).max(REGION);
+        let claims = quarter.min(whole.height);
+        let queue = quarter.min(whole.height - claims);
+        let entities = whole.height - claims - queue;
+        let claims_rect = Rect::new(whole.x, whole.y, left, claims);
+        let entities_rect = Rect::new(whole.x, whole.y + claims, left, entities);
+        let queue_rect = Rect::new(whole.x, whole.y + claims + entities, left, queue);
+        let mut rects = [Rect::default(); 4];
+        rects[Focus::Claims.number() - 1] = claims_rect;
+        rects[Focus::Entities.number() - 1] = entities_rect;
+        rects[Focus::Body.number() - 1] = right;
+        rects[Focus::Queue.number() - 1] = queue_rect;
+        rects
+    }
+
+    /// The rectangle the focused panel is drawn in, which under [`DASHBOARD`]
+    /// is the one region (TASK-252bf02de218). The suite measures rows and taps
+    /// against it.
+    #[cfg(test)]
     fn region(&self, area: Rect) -> Rect {
-        self.arrange(area).region
+        self.arrange(area).rects[self.focus.number() - 1]
+    }
+
+    /// The rectangle `focus` is drawn in (TASK-cae5c8ec9a69).
+    ///
+    /// On a wide frame every panel has one of its own. Under [`DASHBOARD`]
+    /// every panel answers with the one region, because whichever of them is
+    /// asked for is drawn there: a page measured off an empty rectangle would
+    /// be a page of one row the moment the panel was reached.
+    fn rect_of(&self, focus: Focus) -> Rect {
+        self.arrange(self.area()).rects[focus.number() - 1]
+    }
+
+    /// The panel a position falls in, on a wide frame.
+    fn panel_at(&self, at: Position) -> Option<Focus> {
+        if !self.wide() {
+            return None;
+        }
+        let panels = self.arrange(self.area());
+        Focus::ALL
+            .into_iter()
+            .find(|f| panels.rects[f.number() - 1].contains(at))
+    }
+
+    /// Whether this window is wide enough to draw the dashboard
+    /// (ADR-ac6be1ebe9aa).
+    fn wide(&self) -> bool {
+        self.size.0 >= DASHBOARD as usize
     }
 
     /// The rows a panel has room for, which is what a page is worth.
@@ -2178,7 +2272,7 @@ impl App {
     /// its heading was covering, and the rows nobody saw would be the ones
     /// between two presses of `n`.
     fn page(&self, focus: Focus) -> usize {
-        let inside = inside(self.region(self.area()));
+        let inside = inside(self.rect_of(focus));
         let taken = match focus {
             // The regime line sits on the panel's last row: which regime a
             // corpus is in is a fact about every proposal above it.
@@ -2280,7 +2374,21 @@ impl App {
         // asked for (TASK-252bf02de218). The other three are not drawn closed,
         // squeezed or greyed: they are not on this frame at all, and the digit
         // that names one is how a person gets to it.
-        self.panel(self.focus, &self.listing(self.focus), panels.region, buf);
+        // Every panel on a wide frame, each in its own rectangle
+        // (TASK-cae5c8ec9a69, ADR-ac6be1ebe9aa); under [`DASHBOARD`] the one
+        // that has been asked for, in the whole region, as it always was.
+        if self.wide() {
+            for focus in Focus::ALL {
+                self.panel(
+                    focus,
+                    &self.listing(focus),
+                    panels.rects[focus.number() - 1],
+                    buf,
+                );
+            }
+        } else {
+            self.panel(self.focus, &self.listing(self.focus), panels.region, buf);
+        }
 
         paragraph(&self.note_lines()).render(panels.note, buf);
         paragraph(&self.action_lines()).render(panels.actions, buf);
@@ -2317,12 +2425,21 @@ impl App {
         }
         let inside = inside(area);
         let width = inside.width as usize;
+        // Which panel has the focus, said by a character on its title and by
+        // the weight of its border, and only where there is more than one panel
+        // to tell it from (ADR-ac6be1ebe9aa).
+        let focused = focus == self.focus;
+        let mark = match (self.wide(), focused) {
+            (true, true) => self.glyphs.focus(),
+            (true, false) => "  ",
+            (false, _) => "",
+        };
         let title = Composed::new()
-            .plain(&format!("{} ", focus.number()))
+            .plain(&format!("{mark}{} ", focus.number()))
             .then(self.title_of(focus, onto, width))
             .fitted(area.width as usize - 2);
         let block = Block::bordered()
-            .border_set(self.glyphs.border(true))
+            .border_set(self.glyphs.border(focused || !self.wide()))
             .title(title.line(self.ink));
         block.render(area, buf);
         if inside.is_empty() {
@@ -2406,7 +2523,7 @@ impl App {
             // to give, and `(0)` over an unasked panel reads as "nothing is
             // held" -- which is an answer, and the wrong one.
             Focus::Claims => match &self.held {
-                None => Composed::of(&format!("{name}   (not asked)")),
+                None => Composed::of(&format!("{name}   ({})", self.unasked())),
                 Some(_) => Composed::of(&format!("{name} ({})", onto.total)),
             },
             // No count over a corpus nobody read, on the claims panel's pattern
@@ -2432,7 +2549,7 @@ impl App {
                 ))
             }
             Focus::Queue => match &self.queue {
-                None => Composed::of(&format!("{name}   (not asked)")),
+                None => Composed::of(&format!("{name}   ({})", self.unasked())),
                 Some(_) => {
                     let rows = onto.total;
                     let c = self.cursors[Focus::Queue.number() - 1];
@@ -2492,6 +2609,16 @@ impl App {
     ///
     /// Rows and not lines: a body line wider than the panel is several rows,
     /// and calling them lines would be a count that disagrees with the file.
+    /// What a panel says before its verb has answered: on a wide frame the
+    /// opening asks it, so it is being read; under [`DASHBOARD`] it waits to be
+    /// focused, so it has not been asked (ADR-ac6be1ebe9aa).
+    fn unasked(&self) -> &'static str {
+        match self.wide() {
+            true => "reading",
+            false => "not asked",
+        }
+    }
+
     fn counted(&self, width: usize) -> String {
         let lines = self.pane_rows(width);
         let page = self.page(Focus::Body);
@@ -2514,7 +2641,11 @@ impl App {
             // queue's own pattern (TASK-fff0a98511b2). What is left for the
             // body is the way in, which is what the queue's body says too:
             // nothing here is hidden, it is unasked, and focusing asks.
-            return vec![Composed::of("  focus this panel to ask").fitted(width)];
+            return vec![Composed::of(match self.wide() {
+                true => "  reading",
+                false => "  focus this panel to ask",
+            })
+            .fitted(width)];
         };
         let Some(snapshot) = &self.snapshot else {
             return vec![Composed::of(&format!("  {}", self.unread())).fitted(width)];
@@ -2683,6 +2814,9 @@ impl App {
         // The config pane is not about a document, so "nothing is open here"
         // is not what it has to say (TASK-b08d090f699c).
         if self.detail.is_none() && self.pane != Pane::Config {
+            if let Some(anchor) = anchor_lines(width, height, self.glyphs.thumb()) {
+                return anchor;
+            }
             return [
                 "  nothing is open here",
                 "  Enter opens the row a listing's cursor is on, and hands this panel the",
@@ -3002,7 +3136,7 @@ impl App {
 
     /// The width the body panel's rows are composed at.
     fn body_width(&self) -> usize {
-        inside(self.region(self.area())).width as usize
+        inside(self.rect_of(Focus::Body)).width as usize
     }
 
     /// The cursor inside the rows the body panel holds, and the window
@@ -3864,6 +3998,14 @@ impl Glyphs {
     /// colour is told where it is standing in ASCII rather than told nothing:
     /// U+2588 FULL BLOCK where the reader draws glyphs, `#` where it does
     /// not.
+    /// The mark on the focused panel's title (ADR-ac6be1ebe9aa).
+    pub const fn focus(self) -> &'static str {
+        match self.rich {
+            true => "\u{25b6} ",
+            false => "> ",
+        }
+    }
+
     pub const fn thumb(self) -> &'static str {
         match self.rich {
             true => "\u{2588}",
@@ -3944,8 +4086,12 @@ struct Listing<'a> {
 /// answer.
 struct Panels {
     header: Rect,
-    /// The one bordered region on the frame, whatever is being shown in it.
+    /// The area under the header the panels share, whatever is being shown in
+    /// it.
     region: Rect,
+    /// Where each panel is drawn, indexed by [`Focus::number`] less one
+    /// (TASK-cae5c8ec9a69). See [`App::divide`].
+    rects: [Rect; 4],
     note: Rect,
     /// The band the offer is drawn in, and the one band on this screen a finger
     /// is aimed at rather than an eye (TASK-dd9747e5e305).
@@ -3961,6 +4107,37 @@ struct Panels {
 
 /// The corpus line, the identity line, and the rule under them.
 const HEADER: u16 = 3;
+
+/// The anchor the detail panel shows while nothing is open in it
+/// (ADR-ac6be1ebe9aa): ank's logo, the final frame `install.sh` and
+/// `install.ps1` draw from `assets/ank.svg`, row for row. `#` is a cell of the
+/// logo and is drawn in the set's block (`Glyphs::thumb`), so the terminal that
+/// declares it can render no box glyph draws the installer's own fallback.
+const ANCHOR: &[&str] = &[
+    "          ####       ",
+    "        ##    ##     ",
+    "        ##    ##     ",
+    "          ####       ",
+    "           ##        ",
+    "   ####    ##    ####",
+    "   ##      ##      ##",
+    "   ##      ##      ##",
+    "   ##      ##      ##",
+    "     ##############  ",
+    "                     ",
+    "          ank        ",
+];
+
+/// What the anchor says under it: the one key that puts something in the
+/// panel it is standing in for.
+const ANCHOR_HINT: &str = "Enter opens the selected row";
+
+/// The narrowest window the dashboard is drawn at (ADR-ac6be1ebe9aa). Under it
+/// the panels are reached one at a time with the same keys.
+pub const DASHBOARD: u16 = 100;
+
+/// The narrowest the column of listings is drawn on a wide frame.
+const COLUMN: u16 = 40;
 
 /// The fewest rows the one region is ever drawn in: its two borders, and a row
 /// of content between them.
@@ -4072,6 +4249,26 @@ fn widest_kind() -> usize {
 
 /// The rectangle inside a panel's borders, which is what `Block` calls its
 /// inner area.
+/// The anchor, centred in a panel `width` by `height`, with its hint two rows
+/// under it; `None` where the panel cannot hold all of it, so a short window
+/// draws the sentence instead of half a drawing.
+fn anchor_lines(width: usize, height: usize, cell: &str) -> Option<Vec<Composed>> {
+    let art = ANCHOR.iter().map(|l| l.chars().count()).max().unwrap_or(0);
+    let tall = ANCHOR.len() + 2;
+    if width < art.max(ANCHOR_HINT.len()) || height < tall {
+        return None;
+    }
+    let centred = |line: &str| {
+        let pad = (width - line.chars().count()) / 2;
+        Composed::of(&format!("{}{line}", " ".repeat(pad))).fitted(width)
+    };
+    let mut out = vec![Composed::of("").fitted(width); (height - tall) / 2];
+    out.extend(ANCHOR.iter().map(|l| centred(&l.replace('#', cell))));
+    out.push(Composed::of("").fitted(width));
+    out.push(centred(ANCHOR_HINT));
+    Some(out)
+}
+
 fn inside(rect: Rect) -> Rect {
     Rect {
         x: rect.x.saturating_add(1),
@@ -4913,8 +5110,12 @@ mod tests {
     /// `NO_COLOR` and a developer who has it exported would otherwise be
     /// running a different suite from one who has not. The two tests that are
     /// about the painting say which ink they mean.
+    ///
+    /// One column under [`DASHBOARD`], so the region is the whole window as it
+    /// was for every test written before the dashboard (ADR-ac6be1ebe9aa); the
+    /// tests about the panels beside each other say the width they mean.
     fn app() -> App {
-        let mut a = App::new((120, 40), None)
+        let mut a = App::new((DASHBOARD as usize - 1, 40), None)
             .inked(paint::PLAIN)
             .drawn_with(SCREEN);
         has_read(&mut a);
@@ -5028,8 +5229,8 @@ mod tests {
     // The panels, and the focus (TASK-bb43cfe2192b)
     // -----------------------------------------------------------------------
 
-    /// One bordered region on the frame, at every width from forty to a
-    /// hundred and fifty (TASK-252bf02de218).
+    /// One bordered region on the frame, at every width from forty to the
+    /// dashboard's (TASK-252bf02de218, ADR-ac6be1ebe9aa).
     ///
     /// Counted off the corners rather than described: a top-left corner is a
     /// character only a border draws, so one of them is one region and two of
@@ -5040,7 +5241,7 @@ mod tests {
     #[test]
     fn the_frame_carries_exactly_one_bordered_region_at_every_width() {
         let mut a = app();
-        for width in 40..=150u16 {
+        for width in 40..DASHBOARD {
             a.resize(width, 24);
             let f = a.frame();
             let corners = f.matches(SCREEN.border(true).top_left).count();
@@ -5061,7 +5262,7 @@ mod tests {
     #[test]
     fn nothing_on_the_frame_collapses_to_a_border_with_nothing_inside_it() {
         let mut a = app();
-        for width in 40..=150u16 {
+        for width in 40..DASHBOARD {
             a.resize(width, 24);
             let region = a.region(a.area());
             let inside = inside(region);
@@ -5169,7 +5370,7 @@ mod tests {
     fn structure_is_box_drawing_and_ascii_where_the_terminal_says_it_is_dumb() {
         /// [`app`], drawn with a stated set: the one thing this test varies.
         fn screen(glyphs: Glyphs) -> App {
-            let mut a = App::new((120, 40), None)
+            let mut a = App::new((DASHBOARD as usize - 1, 40), None)
                 .inked(paint::PLAIN)
                 .drawn_with(glyphs);
             has_read(&mut a);
@@ -7631,11 +7832,11 @@ mod tests {
                     &format!("TASK-{n:04}0000000f"),
                     "task",
                     "open",
-                    "A row with a title long enough that a narrow window has to cut it",
+                    "A row whose title a narrow window has to cut it",
                 )
             })
             .collect();
-        let mut a = App::new((160, 50), None);
+        let mut a = App::new((DASHBOARD as usize - 1, 50), None);
         a.snapshot = Some(Snapshot {
             entities: many,
             ..snapshot()
@@ -7666,7 +7867,7 @@ mod tests {
             "a title too wide for the window is cut, and the cut is announced:\n{narrow}"
         );
         // Wide again, and the title is whole: nothing was lost, only fitted.
-        a.resize(160, 50);
+        a.resize(DASHBOARD - 1, 50);
         assert!(a.frame().contains("has to cut it"), "{}", a.frame());
     }
 
@@ -7732,8 +7933,63 @@ mod tests {
         Position::new(band.x + target.at as u16, band.y + target.row as u16)
     }
 
-    /// **A phone gets the same one region every other window gets, and every
-    /// screen stays one digit away** (TASK-252bf02de218, ADR-559eebf5c6f5).
+    /// **From the dashboard's width on, every panel is on the frame and the
+    /// digit moves the focus between them** (TASK-cae5c8ec9a69,
+    /// ADR-ac6be1ebe9aa).
+    ///
+    /// Counted off the corners, as the one-region test counts them: the
+    /// focused panel is the one drawn in the heavy set, so one heavy corner is
+    /// one focused panel and four light ones are the rest. The rectangles are
+    /// asked of the layout as well, because a panel can be drawn and still
+    /// overlap another.
+    #[test]
+    fn a_wide_window_draws_every_panel_and_the_digit_moves_the_focus() {
+        let ank = nowhere();
+        for width in [DASHBOARD, 160, 200] {
+            for arrived in Focus::ALL {
+                let mut a = app();
+                a.resize(width, 40);
+                let digit = char::from_digit(arrived.number() as u32, 10).expect("a digit");
+                tap(&mut a, &ank, KeyCode::Char(digit));
+                assert_eq!(a.focus(), arrived, "'{digit}' did not reach {arrived:?}");
+                let frame = a.frame();
+                for focus in Focus::ALL {
+                    assert!(
+                        frame.contains(&format!("{} {}", focus.number(), focus.name())),
+                        "{focus:?} is not on a {width} column frame:\n{frame}"
+                    );
+                }
+                assert_eq!(
+                    frame.matches(SCREEN.border(true).top_left).count(),
+                    1,
+                    "one panel is drawn focused at {width}:\n{frame}"
+                );
+                assert_eq!(
+                    frame.matches(SCREEN.border(false).top_left).count(),
+                    3,
+                    "the three others are drawn at rest at {width}:\n{frame}"
+                );
+                let rects = a.arrange(a.area()).rects;
+                for (i, r) in rects.iter().enumerate() {
+                    assert!(
+                        inside(*r).height >= 1,
+                        "panel {} has no room at {width}",
+                        i + 1
+                    );
+                    for other in &rects[i + 1..] {
+                        assert!(
+                            r.intersection(*other).is_empty(),
+                            "two panels overlap at {width}: {r:?} {other:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// **A phone gets the same one region every window under the dashboard's
+    /// width gets, and every screen stays one digit away** (TASK-252bf02de218,
+    /// ADR-ac6be1ebe9aa).
     ///
     /// This is what the reflow became. There used to be two arrangements and a
     /// width between them, and the narrow one drew four stacked panels of which
@@ -7744,7 +8000,7 @@ mod tests {
     #[test]
     fn a_phone_gets_one_region_and_every_screen_stays_one_digit_away() {
         let ank = nowhere();
-        for width in [PHONE.0 as u16, 150] {
+        for width in [PHONE.0 as u16, DASHBOARD - 1] {
             for arrived in Focus::ALL {
                 let mut a = phone();
                 a.resize(width, 30);
@@ -8627,8 +8883,11 @@ mod tests {
         for width in 40..=150u16 {
             let mut short = app();
             short.resize(width, 24);
+            // Asked of the column the bar is drawn in and not of the frame:
+            // the logo the detail panel shows while nothing is open is drawn in
+            // the same block (ADR-ac6be1ebe9aa).
             assert!(
-                !short.frame().contains(thumb),
+                !bar_column(&short).iter().any(|c| c == thumb),
                 "a listing that fits its region carries a bar at {width}:\n{}",
                 short.frame()
             );
@@ -8643,7 +8902,7 @@ mod tests {
             // And it goes when the filter takes the overrun away.
             long.search = Some("the 7th".to_string());
             assert!(
-                !long.frame().contains(thumb),
+                !bar_column(&long).iter().any(|c| c == thumb),
                 "the bar survived the filter that made the list fit at \
                  {width}:\n{}",
                 long.frame()

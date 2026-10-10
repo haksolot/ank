@@ -831,8 +831,13 @@ impl std::fmt::Display for Seen {
 }
 
 /// The window every session in this suite opens in.
+///
+/// One column under the dashboard's width (ADR-ac6be1ebe9aa): what this suite
+/// asserts is what a screen says -- holders, titles, errors, the queue -- and a
+/// single panel says it whole where a left column would cut it. The panels drawn
+/// side by side are `crates/ank-tui/tests/dashboard.rs`'s to assert.
 #[cfg(unix)]
-const WINDOW: (u16, u16) = (120, 40);
+const WINDOW: (u16, u16) = (ank_tui::view::DASHBOARD - 1, 40);
 
 /// Runs `ank tui` on a real terminal and answers every screen it drew.
 #[cfg(unix)]
@@ -1453,7 +1458,8 @@ fn a_terminal_resized_redraws_to_its_new_size_with_nothing_typed() {
     );
 
     // Wider again, and nothing was lost: the title is whole.
-    live.resize(140, 44);
+    // Still under the dashboard's width, so the title has the whole row.
+    live.resize(ank_tui::view::DASHBOARD - 1, 44);
     live.until_screen("the wide frame again", |s| s.contains(LONG));
     let again = live.frame();
     assert_eq!(again.split('\n').count(), 44, "{again}");

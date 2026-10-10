@@ -459,6 +459,7 @@ pub fn session(
     let opened = screen.size().unwrap_or((80, 24));
     let mut app = view::App::new((opened.0 as usize, opened.1 as usize), None);
     let mut opening = Some(news);
+    let mut rest = false;
     let code = loop {
         if let Ok((columns, rows)) = screen.size() {
             app.resize(columns, rows);
@@ -472,7 +473,11 @@ pub fn session(
         // The opening reads, taken once and after the frame above rather than
         // in front of it.
         if let Some(news) = opening.take() {
-            app.reload(ank);
+            // The rows first, then a frame, then whatever else the frame draws
+            // (TASK-cae5c8ec9a69): on a wide frame that is the claims and the
+            // queue, and `status` and `review` are not the rows a person
+            // opened the reader to see.
+            rest = app.reload_rows(ank);
             // And the follower, now that there is a corpus to name its lines
             // by. It starts from the file's current length, so the window in
             // which an event could be written and not delivered is the `find`
@@ -482,6 +487,10 @@ pub fn session(
                 let following = stream::follow(app.corpus(), news);
                 app.follow(following);
             }
+            continue;
+        }
+        if std::mem::take(&mut rest) {
+            app.reload_rest(ank);
             continue;
         }
         // Exhausted means every sender is gone, which is the same end of input

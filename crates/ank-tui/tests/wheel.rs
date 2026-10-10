@@ -45,7 +45,12 @@ use terminal::{Live, Repo};
 /// Wide enough that a row keeps its identifier and its title, and twenty-four
 /// rows because that is the window every criterion of this reader has been
 /// written for.
-const WINDOW: (u16, u16) = (100, 24);
+///
+/// One column under the dashboard's width (ADR-ac6be1ebe9aa), so the region is
+/// the whole window and the rows read here are the only rows on it: what this
+/// suite measures is the content of a listing, and `tests/dashboard.rs` is
+/// where the panels beside it are measured.
+const WINDOW: (u16, u16) = (99, 24);
 
 /// Tasks stamped beside the two the corpus is seeded with, which puts
 /// forty-two rows against the eighteen the region of that window holds.
