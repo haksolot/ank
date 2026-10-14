@@ -10,7 +10,7 @@ carries, so a rule that reads `(§7)` is resolved by the spec that claims §7. I
 checkout, `ank find --type spec` lists them and `ank show <id>` prints one whole.
 On the web, each link below opens the file as the default branch has it.
 
-- [SPEC-1d5b44efd388](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-1d5b44efd388.md) Intent, principles, and what v1 leaves out
+- [SPEC-99e23aead815](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-99e23aead815.md) Intent, principles, and what v1 leaves out
 - [SPEC-ac4aad6d1edb](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-ac4aad6d1edb.md) The data model
 - [SPEC-3252ad5a72e3](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3252ad5a72e3.md) Storage and search
 - [SPEC-15a56aeedcfd](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-15a56aeedcfd.md) Synchronisation
