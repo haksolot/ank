@@ -274,6 +274,12 @@ fn invalid_files_are_rejected_with_the_right_error() {
             "log-without-seq" => {
                 matches!(&err, Error::Yaml(_)) && err.to_string().contains("missing field `seq`")
             }
+            // `anchor` holds a git object name, the tag object's, and never
+            // the ref that reaches it: a ref can be moved under the file, an
+            // object name cannot be made to name other bytes.
+            "bad-anchor" => {
+                matches!(&err, Error::InvalidAnchor(v) if v == "refs/ank/ratify/ADR-c2e4a6b8d0f1")
+            }
             other => panic!("invalid file not covered: {other}"),
         };
         assert!(ok, "{name}: wrong error: {err:?}");
@@ -322,6 +328,50 @@ fn an_adr_carries_a_reading_too() {
     // `verified` sits between `ratified` and `schema`, and the round-trip test
     // is what proves the position rather than this one.
     assert_eq!(a.ratified.as_deref(), Some("9f2b41c70de8"));
+}
+
+/// `anchor` names the tag object at `refs/ank/ratify/<id>` (§3,
+/// ADR-5e47007a75be). It is optional and earns no bump: an older reader
+/// ignores nothing it would drop, since an entity ratified by a commit carries
+/// none, and such an entity reads as `None` and is written without the line.
+/// The round-trip test proves the position byte for byte; this one proves the
+/// value is read on both kinds that are ratified, and absent on the older ones.
+#[test]
+fn an_adr_and_a_spec_carry_the_anchor_and_older_ones_carry_none() {
+    let input = fs::read_to_string(golden_dir("valid").join("ADR-a0c4e6f8b2d1.md")).unwrap();
+    let a = parse_adr(&input).unwrap();
+    assert_eq!(
+        a.anchor.as_deref(),
+        Some("6f1d2c9e0b7a48d35e2f91c0a4b8d7e6f3c2a1b0")
+    );
+    assert_eq!(a.ratified.as_deref(), Some("3b8e51f0a2c4"));
+    assert_eq!(a.schema, 4);
+    let written = serialize_adr(&a);
+    let ratified = written.find("\nratified: ").expect("ratified is written");
+    let anchor = written
+        .find("\nanchor: 6f1d2c9e0b7a48d35e2f91c0a4b8d7e6f3c2a1b0\n")
+        .expect("anchor is written");
+    let verified = written.find("\nverified:").expect("verified is written");
+    assert!(ratified < anchor && anchor < verified, "{written}");
+
+    let input = fs::read_to_string(golden_dir("valid").join("SPEC-b1d3f5a7c9e2.md")).unwrap();
+    let s = parse_spec(&input).unwrap();
+    assert_eq!(
+        s.anchor.as_deref(),
+        Some("9a4e7b2c1d0f38e65a9b4c7d2e1f0a3b8c5d6e7f")
+    );
+    assert_eq!(s.ratified.as_deref(), Some("0d7c4a19e3f2"));
+
+    for older in ["ADR-5e1a9d7c30b4.md", "ADR-2e6b9d41c8f7.md"] {
+        let input = fs::read_to_string(golden_dir("valid").join(older)).unwrap();
+        let a = parse_adr(&input).unwrap_or_else(|e| panic!("{older}: {e}"));
+        assert_eq!(a.anchor, None, "{older}");
+        assert_eq!(serialize_adr(&a), input, "{older}");
+    }
+    let input = fs::read_to_string(golden_dir("valid").join("SPEC-19c4f0a83b2e.md")).unwrap();
+    let s = parse_spec(&input).unwrap();
+    assert_eq!(s.anchor, None);
+    assert_eq!(serialize_spec(&s), input);
 }
 
 /// `method` is optional, earns no bump, and sits between `verify` and `proof`

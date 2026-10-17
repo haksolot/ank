@@ -83,6 +83,7 @@ struct AdrFm {
     amends: Vec<String>,
     supersedes: Option<String>,
     ratified: Option<String>,
+    anchor: Option<String>,
     #[serde(default)]
     verified: Vec<Verified>,
     schema: u32,
@@ -113,6 +114,7 @@ struct SpecFm {
     references: Vec<String>,
     supersedes: Option<String>,
     ratified: Option<String>,
+    anchor: Option<String>,
     #[serde(default)]
     verified: Vec<Verified>,
     schema: u32,
@@ -285,6 +287,23 @@ pub fn parse_log_entity(input: &str) -> Result<Log> {
     }
 }
 
+/// `anchor` holds a git object name, the tag object's (§3, ADR-5e47007a75be):
+/// lowercase hex, at least the four digits git abbreviates to and at most a
+/// SHA-256 name. Whether the object exists and a ref points at it is a `check`
+/// finding about the repository; that the value is shaped as a name at all is
+/// the file's, and a ref name written there is refused naming the value.
+fn anchor_of(raw: Option<String>) -> Result<Option<String>> {
+    match raw {
+        Some(v)
+            if !(4..=64).contains(&v.len())
+                || !v.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) =>
+        {
+            Err(Error::InvalidAnchor(v))
+        }
+        other => Ok(other),
+    }
+}
+
 /// What every kind owes, checked once rather than once per kind: the id parses
 /// and agrees with `type`, the scope is present and its globs are valid, and
 /// the schema is inside the range this crate reads. Returns the parsed id,
@@ -404,6 +423,7 @@ fn parse_adr_fm(fm: &str, body: &str) -> Result<Adr> {
         amends,
         supersedes,
         ratified: raw.ratified,
+        anchor: anchor_of(raw.anchor)?,
         verified: raw.verified,
         schema: raw.schema,
         version: raw.version,
@@ -442,6 +462,7 @@ fn parse_spec_fm(fm: &str, body: &str) -> Result<Spec> {
         references,
         supersedes,
         ratified: raw.ratified,
+        anchor: anchor_of(raw.anchor)?,
         verified: raw.verified,
         schema: raw.schema,
         version: raw.version,

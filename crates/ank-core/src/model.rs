@@ -587,6 +587,10 @@ pub struct Adr {
     pub supersedes: Option<EntityId>,
     /// Signed ratification commit (set by `accept`).
     pub ratified: Option<String>,
+    /// The tag object at `refs/ank/ratify/<id>` that carries the ratification
+    /// (set by `accept`, ADR-5e47007a75be). `None` on an entity ratified by a
+    /// `ratify <id>` commit, or never ratified.
+    pub anchor: Option<String>,
     /// Readings, optional and empty by default (§3).
     pub verified: Vec<Verified>,
     pub schema: u32,
@@ -630,6 +634,8 @@ pub struct Spec {
     pub supersedes: Option<EntityId>,
     /// Hash of the document and scope at acceptance (set by `accept`).
     pub ratified: Option<String>,
+    /// The tag object at `refs/ank/ratify/<id>`, as on an ADR.
+    pub anchor: Option<String>,
     /// Readings, optional and empty by default (§3).
     pub verified: Vec<Verified>,
     pub schema: u32,

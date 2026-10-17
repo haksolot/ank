@@ -50,10 +50,11 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 11 | `enforced_by` | block sequence | omitted when absent |  | `<path>#<symbol>` entries naming what holds the rule mechanically |
 | 12 | `amends` | flow list | omitted when absent |  | ADR ids this one changes in part |
 | 13 | `supersedes` | bare | omitted when absent |  | an entity id |
-| 14 | `ratified` | scalar | omitted when absent |  | the signed commit `accept` wrote |
-| 15 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
-| 16 | `schema` | integer | always emitted |  |  |
-| 17 | `version` | integer | always emitted |  |  |
+| 14 | `ratified` | scalar | omitted when absent |  | the hash of `constraint` and `scope` `accept` made binding |
+| 15 | `anchor` | scalar | omitted when absent |  | the tag object at `refs/ank/ratify/<id>`; absent on a commit anchor |
+| 16 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
+| 17 | `schema` | integer | always emitted |  |  |
+| 18 | `version` | integer | always emitted |  |  |
 
 ## Spec
 
@@ -71,10 +72,11 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 8 | `scope` | block sequence | always emitted |  | globs, never empty; what the document governs |
 | 9 | `references` | flow list | omitted when absent |  | entity ids |
 | 10 | `supersedes` | bare | omitted when absent |  | an entity id |
-| 11 | `ratified` | scalar | omitted when absent |  | the signed commit `accept` wrote, over the body and `scope` |
-| 12 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
-| 13 | `schema` | integer | always emitted |  |  |
-| 14 | `version` | integer | always emitted |  |  |
+| 11 | `ratified` | scalar | omitted when absent |  | the hash of the body and `scope` `accept` made binding |
+| 12 | `anchor` | scalar | omitted when absent |  | the tag object at `refs/ank/ratify/<id>`; absent on a commit anchor |
+| 13 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
+| 14 | `schema` | integer | always emitted |  |  |
+| 15 | `version` | integer | always emitted |  |  |
 
 ## Log entry
 

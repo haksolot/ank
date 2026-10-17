@@ -123,6 +123,7 @@ fn each_kind_is_printed_with_its_fields_in_canonical_order() {
             "amends",
             "supersedes",
             "ratified",
+            "anchor",
             "verified",
             "schema",
             "version"
@@ -142,6 +143,7 @@ fn each_kind_is_printed_with_its_fields_in_canonical_order() {
             "references",
             "supersedes",
             "ratified",
+            "anchor",
             "verified",
             "schema",
             "version"

@@ -283,6 +283,7 @@ pub fn new(
                 see: None,
                 enforced_by: enforced_by_of(inv, repo, "ank new adr --enforced-by")?,
                 ratified: None,
+                anchor: None,
                 // A reading is recorded by whoever reads, never by `new` (§3).
                 verified: Vec::new(),
                 schema: SCHEMA_VERSION,
@@ -307,6 +308,7 @@ pub fn new(
                 status: SpecStatus::Proposed,
                 scope,
                 ratified: None,
+                anchor: None,
                 // A reading is recorded by whoever reads, never by `new` (§3).
                 verified: Vec::new(),
                 schema: SCHEMA_VERSION,
@@ -573,6 +575,7 @@ fn skeleton(
             enforced_by: Vec::new(),
             supersedes: None,
             ratified: None,
+            anchor: None,
             // A reading is recorded by whoever reads, never by `new` (§3).
             verified: Vec::new(),
             schema: SCHEMA_VERSION,
@@ -593,6 +596,7 @@ fn skeleton(
             references: Vec::new(),
             supersedes: None,
             ratified: None,
+            anchor: None,
             // A reading is recorded by whoever reads, never by `new` (§3).
             verified: Vec::new(),
             schema: SCHEMA_VERSION,

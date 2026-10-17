@@ -35,6 +35,11 @@ pub enum Error {
     #[error("invalid identifier: {0}")]
     InvalidId(String),
 
+    /// `anchor` names the tag object of a ratification, so it is a git object
+    /// name: lowercase hex, 4 to 64 digits (ADR-5e47007a75be).
+    #[error("invalid anchor: {0} (a git object name, the tag object at refs/ank/ratify/<id>)")]
+    InvalidAnchor(String),
+
     #[error("the 'type' field ({field_type}) does not match the id prefix ({id})")]
     TypeMismatch { id: String, field_type: String },
 

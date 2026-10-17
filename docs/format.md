@@ -591,12 +591,56 @@ expiry, the frozen criterion hash, the hash of applicable constraints) or a
 task that is `in_progress` in the file with no ref behind it is simply one whose
 claim expired: legal, and re-claimable (§7).
 
-**The ratification anchor is a commit message.** `accept` writes `ratified:` into
-the entity *and* produces a commit whose subject is `ratify <id>` and whose body
-carries the anchor. The copy in the commit is the one that counts, because the
-copy in the file is written by whoever writes the file. `ratified` cannot name
-the commit, since a commit cannot contain its own identifier, so the subject is
-the only pointer there is (§3).
+**A ratification is a tag object, at a ref** (ADR-5e47007a75be). `accept` writes
+`ratified:` into the entity, and the copy that counts is in an annotated tag
+object that `refs/ank/ratify/<id>` points at, because the copy in the file is
+written by whoever writes the file. The tag object holds:
+
+- `object`: the blob of `.ank/entities/<id>.md` as `accept` wrote it, so the
+  exact bytes made binding are readable with `git cat-file -p` and nothing
+  else;
+- `tag`: `ratify/<id>`, and `tagger`: git's identity and the instant;
+- a message whose subject is `ratify <id>`, then the lines a ratification
+  carries: `constraint+scope: <hash>` or `body+scope: <hash>` (below),
+  `by: <actor>`, and `supersedes: <id>` where one applies;
+- a signature, git's own under whatever `gpg.format` the repository uses, where
+  the repository signs (§8), and none where it does not.
+
+**`anchor:` names the tag object**, beside `ratified:`. A commit could not be
+named by the file it ratified, since a commit cannot contain its own
+identifier; a tag written before the file can. The order is what follows from
+that: the blob is the file with every field `accept` writes except `anchor`,
+which cannot be among the bytes the tag it names was made from, and the file
+`accept` leaves is that blob plus the one `anchor:` line. The field holds a git
+object name, lowercase hex; whether the object exists and a ref points at it is
+a question for the repository, not for the parser. An entity whose anchor is a
+commit carries no `anchor:` at all, and it reads and rewrites unchanged.
+
+**The recipe reproduces one without ank**, which is what makes it a standard and
+not an implementation detail. Four plumbing commands, run on the file `accept`
+writes before it adds `anchor:`:
+
+    git hash-object -w .ank/entities/<id>.md          # the blob
+    git tag -s -m 'ratify <id>' -m '<lines>' ratify/<id> <blob>
+    git update-ref refs/ank/ratify/<id> <tag>          # <tag>: rev-parse ratify/<id>
+    git tag -d ratify/<id>                             # the object stays, the tag name goes
+
+`tag -s` is the one command that signs; in a repository that does not sign it is
+`tag -a`, and the object carries no signature. The temporary
+name under `refs/tags/` exists for the instant between the second and the
+fourth command, because a ratification is not a release and must not look like
+one to a forge. The ref travels with `refs/ank/*` (§7), pushed with
+compare-and-swap. A verifier judges the signature with `git verify-tag` against
+the keys declared under `signers:` (§8), and reads every ratification of a
+corpus in one `git for-each-ref refs/ank/ratify` and one `git cat-file --batch`.
+A worked vector follows [the two hashes](#the-two-hashes).
+
+**An anchor made before that decision is a commit message**, and it stays one: it
+is never rewritten, and `accept --reanchor` is the one act that moves it into a
+ref, under the same hash and a new signature. Such a commit has the subject
+`ratify <id>` and a body carrying the same lines a tag message carries. The file
+cannot name the commit, so the subject is the only pointer there is (§3), and a
+verifier asks the history only for an anchor the refs do not carry.
 
 **A verifier finds it by subject, over the whole history, with no path
 restriction:**
@@ -622,7 +666,7 @@ question is asked once per decision and again for every task a decision bears
 on, so a search per entity is a process count that grows with the corpus.
 
 **`accept` also records who ran it**, as a `verified` entry naming the typed
-actor and the instant. The signature on the ratification commit says that a key
+actor and the instant. The signature on the ratification tag says that a key
 authorised the act, which is true of an agent typing under a cached passphrase as
 much as of a human at a keyboard, so the entity carries the actor as well. It is
 a record and not a defence: an actor value is declared and never proved, exactly
@@ -634,7 +678,7 @@ legitimately.
 **The key names what was hashed**, and there are two because there are two kinds
 that carry an anchor: `constraint+scope: <hash>` on an ADR, `body+scope: <hash>`
 on a spec. A spec declares no `constraint`, that absence being what justifies the
-kind, so the authority is carried by the whole document, and a commit claiming
+kind, so the authority is carried by the whole document, and a message claiming
 `constraint+scope` over one would name a field the file does not have. A reader
 accepts either key; a writer writes the one its kind carries.
 
@@ -653,7 +697,7 @@ from each line, trailing blank lines are removed.
   and then **the whole buffer normalised a second time** before it is hashed,
   which removes the newline the last glob was just given. The anchored text is
   an ADR's `constraint` and a spec's body, which is the one place the two
-  anchors differ and what the commit key above says.
+  anchors differ and what the message key above says.
 
 That second normalisation is the entire difference between a tool that agrees
 with `ank accept` and one that does not, so the recipe is worth writing out. The
@@ -686,6 +730,51 @@ hashes to `b88d9f81eb08`, which no ratification anywhere carries: an
 implementation off by that one byte reports every ADR in the corpus as diverged.
 Several globs join the same way — `Rule two.` over `src/**` and `docs/**`
 recorded `16a85fda1d17`, which is `printf 'Rule two.\nsrc/**\ndocs/**'`.
+
+**The same anchor as a tag, built from the recipe.** That vector is the commit
+body the binary writes today. The tag `accept` writes under ADR-5e47007a75be
+carries the same line, and until the binary writes it the vector is the
+[recipe](#what-lives-outside-the-files) run by hand, with the identity and the
+instant fixed so that every object name below is reproducible. The file is the
+ADR above as `accept` writes it, before `anchor:`:
+
+<!-- replay tag GIT_COMMITTER_NAME=marie GIT_COMMITTER_EMAIL=marie@example.com GIT_COMMITTER_DATE=2026-10-17T15:00:00Z
+$ mkdir -p .ank/entities && printf -- '---\nid: ADR-a0c4e6f8b2d1\ntype: adr\ntitle: Y\ncreated: 2026-10-17T14:58:00Z\nstatus: accepted\nscope:\n  - src/**\nconstraint: |\n  Never Y\nratified: 33045e58af8d\nverified:\n  - by: human:marie\n    at: 2026-10-17T15:00:00Z\nschema: 4\nversion: 2\n---\n' > .ank/entities/ADR-a0c4e6f8b2d1.md
+-->
+
+    $ git hash-object -w .ank/entities/ADR-a0c4e6f8b2d1.md
+    6e79bc4532a163811397b05d537027350cc0e8e0
+    $ git tag -a -m 'ratify ADR-a0c4e6f8b2d1' -m "$(printf 'constraint+scope: 33045e58af8d\nby: human:marie')" ratify/ADR-a0c4e6f8b2d1 6e79bc4532a163811397b05d537027350cc0e8e0
+    $ git rev-parse ratify/ADR-a0c4e6f8b2d1
+    ad7ac6bdac0374ad4148e7c2d0330b90a94e96df
+    $ git update-ref refs/ank/ratify/ADR-a0c4e6f8b2d1 ad7ac6bdac0374ad4148e7c2d0330b90a94e96df && git tag -d ratify/ADR-a0c4e6f8b2d1
+    Deleted tag 'ratify/ADR-a0c4e6f8b2d1' (was ad7ac6b)
+    $ git cat-file -p refs/ank/ratify/ADR-a0c4e6f8b2d1
+    object 6e79bc4532a163811397b05d537027350cc0e8e0
+    type blob
+    tag ratify/ADR-a0c4e6f8b2d1
+    tagger marie <marie@example.com> 1792249200 +0000
+
+    ratify ADR-a0c4e6f8b2d1
+
+    constraint+scope: 33045e58af8d
+    by: human:marie
+
+and the file `accept` leaves carries the object name the ref holds as its anchor:
+
+<!-- replay tag
+$ test "$(git rev-parse refs/ank/ratify/ADR-a0c4e6f8b2d1)" = ad7ac6bdac0374ad4148e7c2d0330b90a94e96df
+$ test "$(git rev-parse 'refs/ank/ratify/ADR-a0c4e6f8b2d1^{}')" = 6e79bc4532a163811397b05d537027350cc0e8e0
+-->
+
+    $ echo "anchor: $(git rev-parse refs/ank/ratify/ADR-a0c4e6f8b2d1)"
+    anchor: ad7ac6bdac0374ad4148e7c2d0330b90a94e96df
+
+on the line between `ratified:` and `verified:`. The tag is unsigned here
+because the recipe ran with `-a`; with `-s` the message gains the signature
+block and the object gains another name, which is the point of naming it. A
+reader compares the `constraint+scope` line of the object the ref points at, and
+never the copy in the file.
 
 Freezing is verifiable, not defended (§2). Your tool can rewrite any field in
 any file; what it cannot do is make the recorded hash agree afterwards.

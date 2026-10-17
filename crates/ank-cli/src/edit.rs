@@ -503,6 +503,7 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
             note("amends", a.amends != b.amends);
             note("supersedes", a.supersedes != b.supersedes);
             note("ratified", a.ratified != b.ratified);
+            note("anchor", a.anchor != b.anchor);
             note("verified", a.verified != b.verified);
             note("schema", a.schema != b.schema);
             note("body", a.body != b.body);
@@ -522,6 +523,7 @@ fn changed_fields(before: &Entity, after: &Entity) -> Vec<&'static str> {
             note("references", a.references != b.references);
             note("supersedes", a.supersedes != b.supersedes);
             note("ratified", a.ratified != b.ratified);
+            note("anchor", a.anchor != b.anchor);
             note("verified", a.verified != b.verified);
             note("schema", a.schema != b.schema);
             note("body", a.body != b.body);
@@ -598,6 +600,7 @@ mod tests {
             amends: Vec::new(),
             supersedes: None,
             ratified: None,
+            anchor: None,
             verified: Vec::new(),
             schema: 2,
             version: 1,

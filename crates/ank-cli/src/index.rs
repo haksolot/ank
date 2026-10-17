@@ -2279,6 +2279,7 @@ mod tests {
             amends: Vec::new(),
             supersedes: None,
             ratified: None,
+            anchor: None,
             verified: Vec::new(),
             schema: 1,
             version: 1,

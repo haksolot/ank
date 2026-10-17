@@ -210,7 +210,16 @@ static ADR_FIELDS: &[FieldSpec] = &[
     ),
     opt("amends", Flow, "ADR ids this one changes in part"),
     opt("supersedes", Bare, "an entity id"),
-    opt("ratified", Scalar, "the signed commit `accept` wrote"),
+    opt(
+        "ratified",
+        Scalar,
+        "the hash of `constraint` and `scope` `accept` made binding",
+    ),
+    opt(
+        "anchor",
+        Scalar,
+        "the tag object at `refs/ank/ratify/<id>`; absent on a commit anchor",
+    ),
     opt(
         "verified",
         Maps,
@@ -259,7 +268,12 @@ static SPEC_FIELDS: &[FieldSpec] = &[
     opt(
         "ratified",
         Scalar,
-        "the signed commit `accept` wrote, over the body and `scope`",
+        "the hash of the body and `scope` `accept` made binding",
+    ),
+    opt(
+        "anchor",
+        Scalar,
+        "the tag object at `refs/ank/ratify/<id>`; absent on a commit anchor",
     ),
     opt(
         "verified",
@@ -487,6 +501,7 @@ impl Fields for Adr {
             }
             "supersedes" => Bare(self.supersedes.as_ref()?.to_string()),
             "ratified" => Scalar(self.ratified.as_deref()?),
+            "anchor" => Scalar(self.anchor.as_deref()?),
             "verified" => {
                 if self.verified.is_empty() {
                     return None;
@@ -530,6 +545,7 @@ impl Fields for Spec {
             }
             "supersedes" => Bare(self.supersedes.as_ref()?.to_string()),
             "ratified" => Scalar(self.ratified.as_deref()?),
+            "anchor" => Scalar(self.anchor.as_deref()?),
             "verified" => {
                 if self.verified.is_empty() {
                     return None;

@@ -5,7 +5,7 @@ slug: the-file-format-carries-anchor-and-the-goldens-a
 title: The file format carries anchor, and the goldens and the format page agree on it
 created: 2026-10-17T14:35:03Z
 author: haksolot@omarchy
-status: open
+status: done
 scope:
   - docs/format.md
   - docs/entity-fields.md
@@ -17,8 +17,53 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/c31d47e21fb1@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-core@11c0192e3520
+    via: verifier
+  - type: test
+    ref: local/7b0aa0adc7f4@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-contract@60b1ecdf7b92
+    via: verifier
+  - type: test
+    ref: local/de5e5c48a8b9@75f0570
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-daemon@c8f40b42bd7b
+    via: verifier
+    reused: local
+    by: claude-code/fable-5.1+fe25
+  - type: test
+    ref: local/b62e4015827f@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-mcp@23a803416bc4
+    via: verifier
+  - type: test
+    ref: local/f6ec1e852467@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-tui@06060d7e7df5
+    via: verifier
+  - type: test
+    ref: local/fc78fe7fff4e@a3d1855
+    tree: scope/3b81a9e8f09b
+    criteria: 9d2cfb921ded
+    verifier: test-ank-cli@b817bb082d2d
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 The field is optional and no schema bump is needed: an older reader ignores
