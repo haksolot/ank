@@ -9493,8 +9493,22 @@ mod tests {
         /// SSH rather than GPG: `ssh-keygen` ships beside git on all three
         /// platforms and needs no agent, no keyring and no passphrase prompt,
         /// where a gpg fixture needs a home directory and a daemon.
+        ///
+        /// A key already at the path is removed first: ssh-keygen would ask on
+        /// stdout whether to overwrite it, read no on the closed stdin and exit
+        /// 1 with stderr empty, which is how a fixture directory left behind
+        /// under a reused process id failed on windows-latest
+        /// (TASK-78ef9b4f7cb2).
         fn enable_signing(&self) {
             let key = self.0.join("signing-key");
+            for stale in [key.clone(), key.with_extension("pub")] {
+                match std::fs::remove_file(&stale) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                        panic!("removing {}: {e}", stale.display())
+                    }
+                    _ => {}
+                }
+            }
             let out = Command::new("ssh-keygen")
                 .args(["-t", "ed25519", "-N", "", "-C", "ank test", "-q", "-f"])
                 .arg(&key)
@@ -9502,7 +9516,9 @@ mod tests {
                 .expect("ssh-keygen ships with git on all three platforms");
             assert!(
                 out.status.success(),
-                "ssh-keygen: {}",
+                "ssh-keygen: {}\nstdout: {}\nstderr: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stdout),
                 String::from_utf8_lossy(&out.stderr)
             );
             for args in [
@@ -10939,6 +10955,17 @@ mod tests {
             "{:?}",
             r.findings
         );
+    }
+
+    /// The fixture directory is keyed on the process id, which Windows reuses
+    /// quickly, so a test can land on a leftover that already holds a key.
+    /// ssh-keygen then asks on stdout whether to overwrite, reads no on the
+    /// closed stdin and exits 1 with stderr empty (TASK-78ef9b4f7cb2).
+    #[test]
+    fn signing_is_enabled_over_a_key_already_in_the_fixture() {
+        let t = Temp::new();
+        t.enable_signing();
+        t.enable_signing();
     }
 
     /// The half doing the work. `accept` over an existing anchor is how a
