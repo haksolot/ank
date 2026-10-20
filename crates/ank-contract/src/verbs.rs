@@ -2214,10 +2214,14 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "update",
         group: "set up a repository",
         renews: Renews::Never,
-        writes: Writes::Nothing,
-        // It reads no corpus and coordinates nothing: the one git it runs asks
-        // a repository somewhere else which releases exist, and that needs no
-        // repository here, let alone a signing-capable git.
+        // `refs`, and only inside a corpus: before anything about releases it
+        // restores the ratification refs whose tag the entity file's anchor
+        // still names (ADR-5e47007a75be, TASK-6e3f8f0049e9). Local, and it
+        // installs nothing, which is what ADR-64f32c74a0f9 asks of it.
+        writes: Writes::Refs,
+        // It coordinates nothing: the one git it runs for releases asks a
+        // repository somewhere else which exist, and that needs no repository
+        // here, let alone a signing-capable git.
         coordinates: false,
         summary: "replaces this binary with a published release through the route that placed it; --check reports the running and the latest version and installs nothing",
         subcommands: &[],
@@ -2256,6 +2260,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             ),
         ],
         notes: &[
+            "inside a corpus, first and with or without --check: restores each refs/ank/ratify/<id> whose entity file's anchor names a tag this repository holds, no ref points at, and whose subject is ratify <id>; local, one line per ref restored",
             "the latest release is the highest tag of the exact form vMAJOR.MINOR.PATCH that git ls-remote --tags --refs lists, compared per component as numbers; any other tag is ignored",
             "the repository asked is https://github.com/haksolot/ank, or the one ANK_UPDATE_REPOSITORY names, a mirror included",
             "--check exits 0 whether or not a newer release exists, since 8 is check's: the answer is what it prints, and newer under --json",
