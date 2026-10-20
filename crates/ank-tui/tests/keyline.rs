@@ -340,17 +340,22 @@ fn on_the_graph_f_is_named_by_the_fold_it_walks() {
             true => crate::terminal::focused("3 GRAPH"),
             false => "3 GRAPH".to_string(),
         };
-        let frame = live.until("the graph to be drawn with the focus on it", |t| {
-            t.contains(&title)
-                && t.contains("tasks in the corpus)")
-                && !t.contains("(reading)")
-                && last_row(t).ends_with(QUIT)
-        });
-        let line = last_row(&frame);
-        assert!(
-            entries(&line).iter().any(|e| e == "[f fold]"),
-            "{columns}x{rows}: on GRAPH f is named by the fold it walks: {line}\n{frame}"
+        // The key line is named in the wait, not only the panel
+        // (TASK-aeea26cac0f9): the title and the count are rewritten before the
+        // last row, so a frame with GRAPH focused can still carry the tasks
+        // listing's line, `[f kind]` and `[q quit]` included. A reader that
+        // never says fold here times out on the frame it drew instead.
+        let frame = live.until(
+            "the graph and its key line to be drawn with the focus on it",
+            |t| {
+                t.contains(&title)
+                    && t.contains("tasks in the corpus)")
+                    && !t.contains("(reading)")
+                    && entries(&last_row(t)).iter().any(|e| e == "[f fold]")
+                    && last_row(t).ends_with(QUIT)
+            },
         );
+        let line = last_row(&frame);
         assert!(
             !frame.contains("[f kind]"),
             "{columns}x{rows}: nothing on GRAPH calls f kind: {line}\n{frame}"
