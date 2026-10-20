@@ -94,6 +94,39 @@ are still disabled on the repository and in its ruleset, which has no bypass
 actors, for as long as a commit anchor lives in the history. Which key signs,
 and how `check` judges the signature, is [Signing keys](signing.md).
 
+**A commit anchor moves into a ref with one command:**
+
+    ank accept <id> --reanchor
+
+It writes the tag and the ref that `accept` writes today, over the same anchor:
+the message carries the `constraint+scope:` (or `body+scope:`) hash the commit
+recorded, any `supersedes:`, and a `reanchors:` line naming the commit it moves.
+The tag is signed by whoever runs it, and the `by:` line and the `verified`
+entry it adds to the file name that person, not the author of the first
+ratification: re-anchoring is a new reading, and it says so. It pushes the ref
+like `accept` does, and fails at exit 9 with nothing kept when the push does
+not land. **Nothing in history is rewritten**: the `ratify <id>` commit stays
+where it is, and nothing is committed; the file, now naming the tag under
+`anchor:`, lands with the next change. From then on `check` judges the ref, so
+the decision verifies in a shallow clone that never held the commit, and `ank
+show <id>` says the tag was re-anchored from that commit.
+
+It refuses, writing nothing:
+
+- at exit 6, a document a ref already carries: `<id> is already carried by
+  refs/ank/ratify/<id> (tag <sha>): there is no commit anchor left to move`;
+- at exit 6, a document whose file has moved from the anchor its commit
+  records: `<id> has moved from the anchor its commit <sha> records (ratified
+  <hash>, now <hash>): re-anchoring would sign the edit`. The commit ratified
+  the old text, and a new reading of it does not ratify the new one: the way
+  forward it names is `ank new adr --supersedes <id>`;
+- at exit 6, a document no commit ratified: `<id> is proposed, and no
+  ratification of it has an anchor to move`, and the command it names is a
+  plain `ank accept <id>`;
+- at exit 7, a document whose `ratify <id>` commit this clone does not hold:
+  `no ratify <id> commit is reachable from this clone, so there is nothing to
+  re-anchor from`, which a shallow clone answers with `git fetch --unshallow`.
+
 ## Archiving what is cold
 
 `ank archive` moves what is cold into `.ank/archive/entities/`: superseded
