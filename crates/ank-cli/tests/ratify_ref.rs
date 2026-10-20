@@ -840,3 +840,183 @@ fn a_shallow_clone_verifies_a_ref_ratification_and_cannot_verify_a_commit_one() 
         "a shallow clone is not a broken freeze: {report}"
     );
 }
+
+/// Who runs `accept --reanchor` here: not the author, so the reading it
+/// leaves is told apart from the one the first ratification left.
+const PAUL: &str = "human:paul";
+
+/// `C`, superseding `B`, ratified the way `accept` did before
+/// ADR-5e47007a75be: a signed `ratify <id>` commit and no ref, pushed. Returns
+/// the commit.
+fn legacy(c: &Corpus) -> String {
+    c.accept(C);
+    crate::legacy_anchor::commit(&|a| git(&c.repo, a), C, true);
+    git(&c.repo, &["push", "-q", "origin", "main"]);
+    let commit = git(&c.repo, &["rev-parse", "HEAD"]);
+    assert!(rev(&c.repo, &ratify_ref(C)).is_none(), "no ref carries {C}");
+    commit
+}
+
+fn reanchor(dir: &Path, id: &str) -> Output {
+    ank_env(
+        dir,
+        &["accept", id, "--reanchor"],
+        &[("ANK_AGENT", Path::new(PAUL))],
+    )
+}
+
+/// The one act on an anchor made before ADR-5e47007a75be
+/// (TASK-4b25843e6151): the tag and the ref `accept` writes, over the same
+/// anchor, naming the commit it re-anchors, signed and read by whoever ran it.
+/// After it the ref is what `check` judges, a shallow clone holding no history
+/// included, and `show` says where the anchor came from.
+#[test]
+fn accept_reanchor_moves_a_commit_anchor_into_a_signed_ref() {
+    let c = Corpus::new("ratify-ref-reanchor");
+    let commit = legacy(&c);
+    let message = git(&c.repo, &["log", "-1", "--format=%B", &commit]);
+    let anchor = message
+        .lines()
+        .find_map(|l| l.strip_prefix("constraint+scope: "))
+        .expect(&message)
+        .trim()
+        .to_string();
+
+    let out = reanchor(&c.repo, C);
+    assert_eq!(out.status.code(), Some(0), "{}", both(&out));
+    assert!(
+        text(&out.stdout).contains(&format!("reanchored {C}")),
+        "{}",
+        both(&out)
+    );
+
+    // The tag, as `accept` writes it: on the file's blob, signed, the same
+    // anchor, the succession it records, the actor, and the commit it moves.
+    let tag = rev(&c.repo, &ratify_ref(C)).expect("the ref is written");
+    let object = git(&c.repo, &["cat-file", "tag", &tag]);
+    let body = object.split_once("\n\n").unwrap().1;
+    assert!(body.starts_with(&format!("ratify {C}\n")), "{object}");
+    assert!(
+        body.contains(&format!("\nconstraint+scope: {anchor}\n")),
+        "{object}"
+    );
+    assert!(body.contains(&format!("\nsupersedes: {B}\n")), "{object}");
+    assert!(body.contains(&format!("\nby: {PAUL}\n")), "{object}");
+    assert!(
+        body.contains(&format!("\nreanchors: {commit}\n")),
+        "{object}"
+    );
+    assert!(body.contains("-----BEGIN SSH SIGNATURE"), "{object}");
+    assert_eq!(
+        git(&c.origin, &["rev-parse", &ratify_ref(C)]),
+        tag,
+        "the ref reached the remote"
+    );
+
+    // The file: the tag named, the anchor unchanged, a reading by the actor,
+    // and nothing committed.
+    assert_eq!(git(&c.repo, &["rev-parse", "HEAD"]), commit, "no commit");
+    let file = c.file(C);
+    assert!(file.contains(&format!("\nanchor: {tag}\n")), "{file}");
+    assert!(file.contains(&format!("\nratified: {anchor}\n")), "{file}");
+    assert!(file.contains(&format!("- by: {PAUL}\n")), "{file}");
+    assert!(file.contains("status: accepted"), "{file}");
+
+    let out = ank(&c.repo, &["show", C]);
+    let page = text(&out.stdout);
+    assert!(
+        page.contains(&format!(
+            "RATIFIED BY {}  tag {}, re-anchored from commit {}",
+            ratify_ref(C),
+            &tag[..12],
+            &commit[..12]
+        )),
+        "{}",
+        both(&out)
+    );
+    let out = ank(&c.repo, &["show", C, "--json"]);
+    let doc: serde_yaml::Value = serde_yaml::from_slice(&out.stdout).expect(&both(&out));
+    assert_eq!(doc["ratification"]["via"].as_str(), Some("ref"), "{doc:?}");
+    assert_eq!(doc["ratification"]["object"].as_str(), Some(tag.as_str()));
+    assert_eq!(
+        doc["ratification"]["reanchored"].as_str(),
+        Some(commit.as_str()),
+        "{doc:?}"
+    );
+
+    // The file lands with the next change, and a clone holding one commit
+    // and the refs verifies by the ref what it could not reach by the walk.
+    git(&c.repo, &["add", "-A", ".ank"]);
+    git(&c.repo, &["commit", "-qm", "the re-anchored file"]);
+    git(&c.repo, &["push", "-q", "origin", "main"]);
+    let out = ank(&c.repo, &["check"]);
+    let report = both(&out);
+    assert!(faults(&report).is_empty(), "{report}");
+    let clone = c.base.join("shallow");
+    git(
+        &c.base,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &file_url(&c.origin),
+            clone.to_str().unwrap(),
+        ],
+    );
+    git(&clone, &["fetch", "-q", "origin", "+refs/ank/*:refs/ank/*"]);
+    let trace = scratch::dir("ratify-ref-reanchor-trace").join("trace");
+    let out = ank_env(&clone, &["check"], &[("GIT_TRACE", trace.as_path())]);
+    let report = both(&out);
+    assert_eq!(out.status.code(), Some(0), "{report}");
+    assert!(faults(&report).is_empty(), "{report}");
+    let lines = about(&report, C);
+    assert!(
+        !lines.iter().any(|l| l.contains("no ratification commit")
+            || l.contains("altered")
+            || l.contains("not verified")
+            || l.contains("no ratification names its supersession")),
+        "{C} is verified by its ref: {report}"
+    );
+    let judged = fs::read_to_string(&trace)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(MARK).map(|(_, a)| a.to_string()))
+        .filter(|g| g.contains("verify-tag") && g.contains(&tag))
+        .count();
+    assert_eq!(judged, 1, "the tag of {C} is judged: {report}");
+}
+
+/// The refusals, at exit 6 and writing nothing: an entity a ref already
+/// carries, a commit whose anchor is not the file's, and a document that is
+/// not ratified at all.
+#[test]
+fn accept_reanchor_refuses_a_ref_anchor_and_a_commit_the_file_has_moved_from() {
+    let c = Corpus::new("ratify-ref-reanchor-refusals");
+    c.accept(A);
+    let tag = rev(&c.repo, &ratify_ref(A)).unwrap();
+    let file = c.file(A);
+    let out = reanchor(&c.repo, A);
+    assert_eq!(out.status.code(), Some(6), "{}", both(&out));
+    assert!(both(&out).contains(&ratify_ref(A)), "{}", both(&out));
+    assert_eq!(rev(&c.repo, &ratify_ref(A)), Some(tag));
+    assert_eq!(c.file(A), file);
+
+    let commit = legacy(&c);
+    let edited = c.file(C).replace(
+        &format!("The rule {C} binds."),
+        &format!("The rule {C} binds, and more."),
+    );
+    c.put(C, &edited);
+    let out = reanchor(&c.repo, C);
+    assert_eq!(out.status.code(), Some(6), "{}", both(&out));
+    assert!(both(&out).contains(&commit[..12]), "{}", both(&out));
+    assert!(rev(&c.repo, &ratify_ref(C)).is_none(), "{}", both(&out));
+    assert_eq!(c.file(C), edited);
+
+    let id = "ADR-0000000006ee";
+    c.put(id, &adr(id, "proposed", ""));
+    let out = reanchor(&c.repo, id);
+    assert_eq!(out.status.code(), Some(6), "{}", both(&out));
+    assert!(rev(&c.repo, &ratify_ref(id)).is_none());
+}

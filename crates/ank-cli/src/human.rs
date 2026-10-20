@@ -6082,9 +6082,14 @@ pub fn accept(
     // now refuse a second `accept`. Preparing reads and writes nothing, so the
     // whole list is judged first.
     let store = Store::new(&repo.ank);
+    let reanchor = inv.has("--reanchor");
     let mut prepared: Vec<Ratification> = Vec::new();
     for prefix in &inv.positionals {
-        let r = prepare_ratification(&store, repo, prefix, identity)?;
+        let r = if reanchor {
+            prepare_reanchor(&store, repo, prefix, identity)?
+        } else {
+            prepare_ratification(&store, repo, prefix, identity)?
+        };
         // Two prefixes naming one document are one ratification, not a
         // second one refused for being already ratified by the first.
         if !prepared.iter().any(|p| p.id == r.id) {
@@ -6115,6 +6120,7 @@ pub fn accept(
                 .opt_str("superseded", superseded.as_deref())
                 .str("tag", tag)
                 .str("anchor", &r.anchor)
+                .opt_str("reanchored", r.reanchors.as_deref())
         };
         let doc = if several {
             Obj::document()
@@ -6136,14 +6142,21 @@ pub fn accept(
             // Two words for two acts. Reporting "accepted" over an ADR that was
             // already accepted would describe the wrong half of what just
             // happened: what the caller obtained is the anchor.
-            let verb = if r.ratifying_in_place {
+            let verb = if r.reanchors.is_some() {
+                "reanchored"
+            } else if r.ratifying_in_place {
                 "ratified"
             } else {
                 "accepted"
             };
+            let from = r
+                .reanchors
+                .as_deref()
+                .map(|c| format!(" (from commit {})", &c[..c.len().min(7)]))
+                .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "{} {} -> {}",
+                "{} {} -> {}{from}",
                 style.advanced(verb),
                 style.id(&r.id.to_string()),
                 &tag[..tag.len().min(7)]
@@ -6173,6 +6186,9 @@ struct Ratification {
     message: String,
     anchor: String,
     ratifying_in_place: bool,
+    /// The `ratify <id>` commit `--reanchor` moves the anchor from, and
+    /// `None` for every other ratification.
+    reanchors: Option<String>,
 }
 
 /// Judges one id for `accept`: resolves it, refuses on its state, and names
@@ -6271,6 +6287,126 @@ fn prepare_ratification(
         message,
         anchor,
         ratifying_in_place,
+        reanchors: None,
+    })
+}
+
+/// Judges one id for `accept --reanchor` (TASK-4b25843e6151): an accepted
+/// document whose anchor is a `ratify <id>` commit and that no ref carries,
+/// moved into a tag over the same anchor. Writes nothing.
+///
+/// **It re-signs, so it says who.** The tag is a new signature by whoever runs
+/// it, and the reading it leaves on the file is that actor's, beside the one
+/// the commit's ratifier left. The message names the commit, which stays where
+/// it is: nothing in history is rewritten (ADR-5e47007a75be).
+///
+/// **The anchor moves only as it was ratified.** A file that has moved from
+/// the hash its commit records is the divergence `check` reports as altered,
+/// and re-signing it would launder exactly that edit, so it is refused at the
+/// code a diverged freeze carries, with the succession as the way out.
+fn prepare_reanchor(
+    store: &Store,
+    repo: &Repo,
+    prefix: &str,
+    identity: &str,
+) -> Result<Ratification> {
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let mut entity = loaded.entity;
+    let Some(view) = Anchored::of(&entity) else {
+        let kind = ank_core::Fields::kind_spec(&entity).name;
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is a {kind}, and only an ADR or a spec carries a ratification"),
+        )
+        .with_hint(format!("ank show {prefix}")));
+    };
+    let id = view.id.clone();
+    if view.status != AdrStatus::Accepted || view.ratified.is_none() {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id} is {}, and no ratification of it has an anchor to move",
+                view.status.as_str()
+            ),
+        )
+        .with_hint(format!("ank accept {id}")));
+    }
+    if let Some(tag) = git::ratify_tags(&repo.corpus).get(&id.to_string()) {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id} is already carried by {} (tag {}): there is no commit anchor left to move",
+                claim::ratify_ref(&id),
+                &tag.tag[..tag.tag.len().min(12)]
+            ),
+        )
+        .with_hint(format!("ank show {id}")));
+    }
+    let paths = entity_rel_paths(repo, &id);
+    let Some(commit) = git::ratification_at(&repo.corpus, &id.to_string(), &paths)
+        .ok()
+        .flatten()
+    else {
+        return Err(CliError::new(
+            ExitCode::Prerequisite,
+            format!(
+                "no ratify {id} commit is reachable from this clone, so there is nothing to                  re-anchor from"
+            ),
+        )
+        .with_hint("git fetch --unshallow"));
+    };
+    let anchor = view.anchor();
+    if commit.anchor != anchor {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id} has moved from the anchor its commit {} records (ratified {}, now {anchor}):                  re-anchoring would sign the edit",
+                &commit.sha[..commit.sha.len().min(12)],
+                commit.anchor
+            ),
+        )
+        .with_hint(succession_command(&id)));
+    }
+    let anchor_key = view.key;
+    let supersedes = match view.supersedes {
+        Some(t) => format!(
+            "supersedes: {t}
+"
+        ),
+        None => String::new(),
+    };
+    let message = format!(
+        "ratify {id}
+
+{anchor_key}: {anchor}
+{supersedes}by: {identity}
+reanchors: {}
+",
+        commit.sha
+    );
+
+    let reading = Verified {
+        by: identity.to_string(),
+        at: claim::now_utc(),
+    };
+    match &mut entity {
+        Entity::Adr(a) => a.verified.push(reading),
+        Entity::Spec(s) => s.verified.push(reading),
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!("accept resolves an ADR or a spec, and reached {id}")
+        }
+    }
+
+    Ok(Ratification {
+        id,
+        entity,
+        base_version,
+        replaced: Succession::None,
+        message,
+        anchor,
+        ratifying_in_place: false,
+        reanchors: Some(commit.sha),
     })
 }
 
@@ -8725,6 +8861,17 @@ fn show_in(
         Some(view) if peer.is_none() => anchored_by(repo, view),
         _ => None,
     };
+    // The commit a ref's tag says it re-anchored (TASK-4b25843e6151), read off
+    // the batch that found the tag.
+    let reanchored = ratification
+        .as_ref()
+        .filter(|r| r.via == git::Via::Ref)
+        .and_then(|r| {
+            git::ratify_tags(&repo.corpus)
+                .remove(&loaded.entity.id().to_string())
+                .filter(|t| t.tag == r.sha)
+        })
+        .and_then(|t| t.reanchors);
     // The entries about this entity, of whatever kind it is: an ADR carries
     // them too (ADR-25f977377fa0).
     let mut log = crate::entries::about(&store, &index, &loaded.entity)?;
@@ -8796,7 +8943,10 @@ fn show_in(
             doc = match &ratification {
                 Some(r) => doc.obj(
                     "ratification",
-                    Obj::new().str("via", r.via.as_str()).str("object", &r.sha),
+                    Obj::new()
+                        .str("via", r.via.as_str())
+                        .str("object", &r.sha)
+                        .opt_str("reanchored", reanchored.as_deref()),
                 ),
                 None => doc.null("ratification"),
             };
@@ -8834,9 +8984,13 @@ fn show_in(
             let style = inv.style();
             let by = match r.via {
                 git::Via::Ref => format!(
-                    "{}  tag {}",
+                    "{}  tag {}{}",
                     claim::ratify_ref(loaded.entity.id()),
-                    &r.sha[..12.min(r.sha.len())]
+                    &r.sha[..12.min(r.sha.len())],
+                    reanchored
+                        .as_deref()
+                        .map(|c| format!(", re-anchored from commit {}", &c[..12.min(c.len())]))
+                        .unwrap_or_default()
                 ),
                 git::Via::Commit => format!("commit {}", &r.sha[..12.min(r.sha.len())]),
             };
@@ -10660,13 +10814,11 @@ mod tests {
         // within two weeks, and the only way the constraint survives its own
         // convenience is for this to fail when somebody adds one.
         let spec = crate::cli::spec_of("accept").unwrap();
-        // No flag at all: `--pr` went with the commit it carried
-        // (ADR-5e47007a75be). A flag is a decision, not an edit to this list.
-        assert!(
-            spec.flags.is_empty(),
-            "accept takes no flag: {:?}",
-            spec.flags
-        );
+        // `--pr` went with the commit it carried, and the one flag left is the
+        // one ADR-5e47007a75be decides: `--reanchor`, which moves an anchor and
+        // bypasses no refusal. A flag is a decision, not an edit to this list.
+        let names: Vec<&str> = spec.flags.iter().map(|f| f.name).collect();
+        assert_eq!(names, ["--reanchor"], "accept takes no other flag");
     }
 
     /// A superseder naming nothing: the path that existed before, unchanged,
