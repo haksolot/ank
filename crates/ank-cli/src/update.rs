@@ -79,6 +79,7 @@ pub fn repository() -> String {
 }
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
+    restore_ratifications(inv, cwd, out);
     if !inv.has("--check") {
         return install(inv, cwd, out);
     }
@@ -105,6 +106,37 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     }
     let _ = writeln!(out, "{}", report(running, latest, newer, &repository));
     Ok(ExitCode::Ok)
+}
+
+/// Restores the ratification refs the corpus around `cwd` names and has lost,
+/// before anything about releases (ADR-5e47007a75be, TASK-6e3f8f0049e9).
+///
+/// **Local, and it installs nothing**, which is what keeps ADR-64f32c74a0f9
+/// whole: the objects are read from this repository and no network is asked.
+/// It runs with or without `--check`, and before the release half, so a
+/// release half that then refuses -- a binary under a cargo target directory
+/// -- has already restored what it could. Outside a corpus there is nothing to
+/// restore and nothing is said.
+///
+/// One line per ref, on its own: on standard output, or on standard error
+/// under `--json`, whose standard output is the release document alone. A
+/// failure to restore is not this verb's refusal: `check` goes on naming the
+/// command that does it.
+fn restore_ratifications(inv: &Invocation, cwd: &Path, out: &mut dyn Write) {
+    let Ok(repo) = crate::repo::discover(cwd) else {
+        return;
+    };
+    let Ok(restored) = crate::human::restore_ratify_refs(&repo) else {
+        return;
+    };
+    for (name, tag) in restored {
+        let line = format!("restored {name} at {tag}, the anchor its entity file names");
+        if inv.json() {
+            eprintln!("{line}");
+        } else {
+            let _ = writeln!(out, "{line}");
+        }
+    }
 }
 
 /// Where each installer is fetched from: the raw file on the default branch,

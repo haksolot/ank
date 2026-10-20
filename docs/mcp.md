@@ -135,7 +135,7 @@ corpus at startup, answering out of another the reader declared:
 <!-- replay corpora -->
 
     --> {"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"ank_find","arguments":{"arguments":["--status","open"],"corpus":"bccc32d77d8a9a329f772f789dc5fb1054259d70"}}}
-    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false}]}"}],"isError":false,"exitCode":0}}
+    <-- {"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"{\"contract\":1,\"corpus\":\"bccc32d77d8a9a329f772f789dc5fb1054259d70\",\"total\":1,\"shown\":1,\"hidden\":0,\"results\":[{\"id\":\"TASK-6a3615347674\",\"kind\":\"task\",\"status\":\"open\",\"state\":\"open\",\"title\":\"The back answers a query\",\"created\":\"2026-08-26T00:22:04Z\",\"archived\":false,\"anchored_by\":null}]}"}],"isError":false,"exitCode":0}}
 
 That permits multiplexing. It still forbids merging, and **telling those two
 apart is the whole of the decision**, so it is worth being exact about which one

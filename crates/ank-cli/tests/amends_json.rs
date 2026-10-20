@@ -220,6 +220,8 @@ fn show_json_on_an_adr_with_neither_carries_both_empty() {
             "coordination",
             "amends",
             "amended_by",
+            // Which form carried the anchor (TASK-6e3f8f0049e9), additive.
+            "ratification",
             "detached_proofs",
             "log_total",
             "log_shown",
@@ -247,6 +249,21 @@ const SHOW_OTHER_KEYS: [&str; 9] = [
     "content",
 ];
 
+/// A spec's page, which also says which form carried its anchor since
+/// TASK-6e3f8f0049e9: the one key every anchored kind answers, additive.
+const SHOW_SPEC_KEYS: [&str; 10] = [
+    "contract",
+    "id",
+    "coordination",
+    "ratification",
+    "detached_proofs",
+    "log_total",
+    "log_shown",
+    "log",
+    "machinery",
+    "content",
+];
+
 #[test]
 fn show_json_on_a_spec_and_a_log_entry_keeps_its_shape() {
     let r = Repo::new("amends-json-other");
@@ -262,7 +279,7 @@ fn show_json_on_a_spec_and_a_log_entry_keeps_its_shape() {
         .expect("created <id> <slug>")
         .to_string();
     let doc = show_json(&r, &spec);
-    assert_eq!(keys(&doc), SHOW_OTHER_KEYS, "{doc:?}");
+    assert_eq!(keys(&doc), SHOW_SPEC_KEYS, "{doc:?}");
 
     let logged = r.ok(&["log", &a, "a reading of the decision"]);
     let entry = logged

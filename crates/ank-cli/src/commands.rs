@@ -43,7 +43,7 @@ use ank_core::{
     parse_entity, serialize_entity, Adr, AdrStatus, CriteriaBy, Entity, EntityId, EntityKind,
     LogEntry, Spec, SpecStatus, Task, TaskStatus, SCHEMA_VERSION,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{IsTerminal, Read, Write};
 use std::path::Path;
 
@@ -1467,6 +1467,16 @@ pub fn find(
     } else {
         total.min(cap_from(cfg))
     };
+    // Which of the two forms carried each listed decision's anchor
+    // (ADR-5e47007a75be), for the kinds `accept` ratifies. Two batches for the
+    // whole listing, read only when it lists one of those kinds.
+    let anchors = |r: &Row| matches!(r.kind, EntityKind::Adr | EntityKind::Spec);
+    let anchored = |r: &Row| -> Option<crate::git::Via> {
+        if !anchors(r) || r.status == "superseded" {
+            return None;
+        }
+        crate::git::anchor_form(&repo.corpus, &r.id.to_string())
+    };
 
     if inv.json() {
         // `state` beside `status`, from the plane already read above and in the
@@ -1484,7 +1494,7 @@ pub fn find(
                     &r.status,
                     crate::context::coordination_of(&coord, &r.id),
                 );
-                Obj::new()
+                let row = Obj::new()
                     .str("id", &r.id.to_string())
                     .str("kind", r.kind.as_str())
                     .str("status", &r.status.to_string())
@@ -1501,7 +1511,11 @@ pub fn find(
                     // Additive, like `state` and `created` before it: false on
                     // every row a listing without `--all` can return, and true
                     // on a row `--all` read from the archive (ADR-467ce7e9cda1).
-                    .bool("archived", r.archived)
+                    .bool("archived", r.archived);
+                // Additive, and on every row so that a row's keys never depend
+                // on its kind: `ref`, `commit`, or null where no anchor is
+                // reachable, which is every task and every log entry.
+                row.opt_str("anchored_by", anchored(r).map(|v| v.as_str()))
                     .finish()
             })
             .collect();
@@ -1571,9 +1585,12 @@ pub fn find(
             .get(&r.id)
             .cloned()
             .unwrap_or_else(|| r.id.to_string());
+        let anchor = anchored(r)
+            .map(|v| format!("  {}", style.key(&format!("(anchor: {})", v.as_str()))))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
-            "{}{}  {} {}{}",
+            "{}{}  {} {}{}{anchor}",
             marker_of(&held, &r.id),
             style.id(&short),
             style.status(&crate::context::marker_for(
@@ -1895,12 +1912,34 @@ pub fn scope(
     }
     let total = hits.len() + peer_adrs.len();
 
+    // **What binds is listed as binding** (ADR-5e47007a75be): a proposed ADR a
+    // verified ref ratifies reads `accepted` here, because it binds this path
+    // whatever its file says, and this verb is the one that answers why a path
+    // is constrained. Only the proposals a ref names are loaded.
+    let refs = crate::git::ratify_tags(&repo.corpus);
+    let store = Store::new(&repo.ank);
+    let ratified: HashSet<EntityId> = adrs
+        .iter()
+        .filter(|r| r.status == "proposed" && refs.contains_key(&r.id.to_string()))
+        .filter(|r| match store.load(&r.id).map(|l| l.entity) {
+            Ok(Entity::Adr(a)) => crate::human::ratified_by_ref(repo, &a),
+            _ => false,
+        })
+        .map(|r| r.id.clone())
+        .collect();
+    let status_of = |r: &Row| -> String {
+        match ratified.contains(&r.id) {
+            true => ank_core::AdrStatus::Accepted.as_str().to_string(),
+            false => r.status.to_string(),
+        }
+    };
+
     if inv.json() {
         let item = |r: &&Row| {
             Obj::new()
                 .str("id", &r.id.to_string())
                 .str("kind", r.kind.as_str())
-                .str("status", &r.status.to_string())
+                .str("status", &status_of(r))
                 .str("title", &r.title)
                 .finish()
         };
@@ -1973,7 +2012,7 @@ pub fn scope(
                 marker_of(&held, &r.id),
                 style.id(&short),
                 style.status(&crate::context::marker_for(
-                    &r.status,
+                    &status_of(r),
                     crate::context::coordination_of(&coord, &r.id)
                 )),
                 r.title

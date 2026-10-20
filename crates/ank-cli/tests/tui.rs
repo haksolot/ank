@@ -2734,26 +2734,33 @@ fn ratification(repo: &Repo, id: &str) -> String {
     )))
 }
 
-/// The tag object `anchor:` names, masked: forty hex characters after the key.
+/// The tag object a ratification names, masked: forty hex characters after
+/// `anchor: ` in the file, and after `"object":"` in the `ratification` that
+/// `show --json` carries (TASK-6e3f8f0049e9). Two ratifications differ in it as
+/// they differ in the file; `via` beside it is left as it reads.
 #[cfg(unix)]
 fn masked_tags(text: &str) -> String {
+    masked_hex_after(&masked_hex_after(text, "anchor: "), "\"object\":\"")
+}
+
+/// Every forty-hex run right after `key`, replaced by `<tag>`.
+#[cfg(unix)]
+fn masked_hex_after(text: &str, key: &str) -> String {
     let mut masked = String::new();
     let mut rest = text;
-    while let Some(at) = rest.find("anchor: ") {
-        let after = &rest[at + "anchor: ".len()..];
+    while let Some(at) = rest.find(key) {
+        let after = &rest[at + key.len()..];
         let hex = after
             .get(..40)
             .filter(|h| h.chars().all(|c| c.is_ascii_hexdigit()));
         masked.push_str(&rest[..at]);
+        masked.push_str(key);
         match hex {
             Some(_) => {
-                masked.push_str("anchor: <tag>");
+                masked.push_str("<tag>");
                 rest = &after[40..];
             }
-            None => {
-                masked.push_str("anchor: ");
-                rest = after;
-            }
+            None => rest = after,
         }
     }
     masked.push_str(rest);

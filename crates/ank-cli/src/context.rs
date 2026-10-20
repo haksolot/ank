@@ -780,7 +780,7 @@ fn build_orientation(
         .collect::<Vec<_>>()
         .join(" ");
     let vocabulary = words(&titles);
-    let (mut constraints, mut proposals) = adr_lines(store, rows, shorts, path, &vocabulary)?;
+    let (mut constraints, mut proposals) = adr_lines(repo, store, rows, shorts, path, &vocabulary)?;
 
     // What a declared peer says about this perimeter, merged into the local
     // sections rather than given one of its own: a rule binds or it does not,
@@ -811,6 +811,7 @@ fn build_orientation(
 /// so that truncation is nothing more than dropping the tail: most specific
 /// first, then the vocabulary tiebreak, then the id.
 fn adr_lines(
+    repo: &Repo,
     store: &Store,
     rows: &[Row],
     shorts: &HashMap<EntityId, String>,
@@ -846,7 +847,12 @@ fn adr_lines(
             amended_by: Vec::new(),
             enforced_by: adr.enforced_by.clone(),
         };
-        if r.status == "accepted" {
+        // **A verified ref binds whatever the file says** (ADR-5e47007a75be):
+        // the file `accept` wrote may not have reached this clone yet, and the
+        // ref that did is what makes the decision binding. A reader without
+        // the refs falls back to the file and sees a proposal, which is less
+        // and never wrong.
+        if r.status == "accepted" || crate::human::ratified_by_ref(repo, &adr) {
             active.push(line);
         } else {
             proposed.push(line);
@@ -1098,7 +1104,7 @@ fn build_execution(
     // Both halves in one pass: what binds, and what is withheld from binding.
     // The ADRs loaded once and asked twice: what binds, and which of those an
     // accepted amendment among them changes.
-    let adrs = claim::bearing_on(store, index, &task)?;
+    let adrs = claim::binding_on(store, index, repo, &task)?;
     let bearing = claim::constraints_among(&adrs, repo, &task)?;
     for adr in &bearing.suspended {
         warnings.push(format!(

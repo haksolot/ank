@@ -1462,7 +1462,7 @@ pub fn constraints_bearing(
     repo: &Repo,
     task: &Task,
 ) -> Result<Bearing> {
-    constraints_among(&bearing_on(store, index, task)?, repo, task)
+    constraints_among(&binding_on(store, index, repo, task)?, repo, task)
 }
 
 /// The same answer over ADRs the caller has already parsed, for `check`, which
@@ -1475,7 +1475,8 @@ pub fn constraints_among<'a>(
 ) -> Result<Bearing> {
     let mut found = Bearing::default();
     for adr in adrs {
-        if adr.status != AdrStatus::Accepted || !scopes_intersect(&task.scope, &adr.scope)? {
+        let binds = adr.status == AdrStatus::Accepted || crate::human::ratified_by_ref(repo, adr);
+        if !binds || !scopes_intersect(&task.scope, &adr.scope)? {
             continue;
         }
         // Suspended, not merely reported. Injecting a constraint that no longer
@@ -1519,6 +1520,36 @@ pub(crate) fn bearing_on(store: &Store, index: &Index, task: &Task) -> Result<Ve
         // The file is what binds and the row is a cache of it: a row that
         // disagrees with its file is a corpus mid-edit, and the file decides.
         if adr.status == AdrStatus::Accepted && scopes_intersect(&task.scope, &adr.scope)? {
+            found.push(adr);
+        }
+    }
+    Ok(found)
+}
+
+/// [`bearing_on`], and the proposed ADRs a verified ref ratifies although
+/// their file has not caught up (ADR-5e47007a75be): those bind wherever the
+/// file is read, so they bear on a task as an accepted one does. Only the
+/// proposals a ref names are loaded, so a corpus without ratification refs
+/// reads exactly what it read before.
+pub(crate) fn binding_on(
+    store: &Store,
+    index: &Index,
+    repo: &Repo,
+    task: &Task,
+) -> Result<Vec<Adr>> {
+    let mut found = bearing_on(store, index, task)?;
+    let refs = crate::git::ratify_tags(&repo.corpus);
+    if refs.is_empty() {
+        return Ok(found);
+    }
+    for row in index.by_status(ank_core::EntityKind::Adr, AdrStatus::Proposed.as_str())? {
+        if !refs.contains_key(&row.id.to_string()) || !scopes_intersect(&task.scope, &row.scope)? {
+            continue;
+        }
+        let Entity::Adr(adr) = store.load(&row.id)?.entity else {
+            continue;
+        };
+        if crate::human::ratified_by_ref(repo, &adr) && scopes_intersect(&task.scope, &adr.scope)? {
             found.push(adr);
         }
     }
