@@ -5,7 +5,7 @@ slug: a-shallow-clone-verifies-a-ratification-carried
 title: A shallow clone verifies a ratification carried by a ref
 created: 2026-10-17T14:35:05Z
 author: haksolot@omarchy
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/tests/**
 blocked_by: [TASK-6e3f8f0049e9]
@@ -15,7 +15,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 This is the property a hub of corpora consumes: files at a commit plus

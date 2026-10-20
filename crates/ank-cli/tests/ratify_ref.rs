@@ -759,3 +759,84 @@ fn check_reads_every_ref_in_one_listing_and_one_batch_and_caches_verdicts() {
     let again = run("ratify-ref-trace-4-again");
     assert_eq!(verified(&again), 0, "{again:#?}");
 }
+
+/// What a hub of corpora consumes: the files at one commit and `refs/ank/*`,
+/// no history. A ratification carried by a ref travels whole and is judged
+/// there; one carried by a commit the clone does not hold cannot be, and says
+/// so as a signal rather than calling the freeze broken (TASK-8afa3d0a6e25).
+#[test]
+fn a_shallow_clone_verifies_a_ref_ratification_and_cannot_verify_a_commit_one() {
+    let c = Corpus::new("ratify-ref-shallow");
+    c.accept(A);
+    // `C` the way `accept` ratified before ADR-5e47007a75be: a signed commit
+    // and no ref. One commit after it, so depth 1 leaves it out.
+    c.accept(C);
+    crate::legacy_anchor::commit(&|a| git(&c.repo, a), C, true);
+    fs::write(c.repo.join("src/lib.rs"), "pub fn f() {}\npub fn g() {}\n").unwrap();
+    git(&c.repo, &["commit", "-qam", "after the ratification"]);
+    git(&c.repo, &["push", "-q", "origin", "main"]);
+    git(&c.repo, &["push", "-q", "origin", "refs/ank/*:refs/ank/*"]);
+
+    let clone = c.base.join("shallow");
+    git(
+        &c.base,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &file_url(&c.origin),
+            clone.to_str().unwrap(),
+        ],
+    );
+    git(&clone, &["fetch", "-q", "origin", "+refs/ank/*:refs/ank/*"]);
+    assert_eq!(
+        git(&clone, &["rev-parse", "--is-shallow-repository"]),
+        "true",
+        "fetching the refs must not have deepened the clone"
+    );
+    assert_eq!(git(&clone, &["rev-list", "--count", "HEAD"]), "1");
+    assert!(rev(&clone, &ratify_ref(A)).is_some(), "the ref travelled");
+    assert!(rev(&clone, &ratify_ref(C)).is_none(), "C has no ref");
+
+    let trace = scratch::dir("ratify-ref-shallow-trace").join("trace");
+    let out = ank_env(&clone, &["check"], &[("GIT_TRACE", trace.as_path())]);
+    let report = both(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "signals, never a fault: {report}"
+    );
+    assert!(faults(&report).is_empty(), "{report}");
+
+    // The ref: its tag's signature judged against `signers:`, and nothing
+    // said about its anchor or its signature, which is what a trusted
+    // ratification looks like. The one line left is about who ratified,
+    // which the fixture makes the author on purpose.
+    let judged = fs::read_to_string(&trace)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(MARK).map(|(_, a)| a.to_string()))
+        .filter(|g| g.contains("verify-tag"))
+        .count();
+    assert_eq!(judged, 1, "the tag of {A} is judged, once: {report}");
+    assert_eq!(
+        about(&report, A),
+        [format!("signal: {A}: ratified by its own author ({HUMAN})")],
+        "{report}"
+    );
+    assert!(!report.contains("not verified"), "{report}");
+
+    // The commit: out of reach, so unverifiable, and never altered.
+    let lines = about(&report, C);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.starts_with("signal:") && l.contains("no ratification commit is reachable")),
+        "{report}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("altered")),
+        "a shallow clone is not a broken freeze: {report}"
+    );
+}
