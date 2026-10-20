@@ -1,0 +1,59 @@
+name: aeea-loop
+
+# Scratch measurement for TASK-aeea26cac0f9, never merged: the keyline test on
+# GRAPH looped on Linux under CPU load, and every red's output kept.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  loop:
+    name: loop ${{ matrix.variant }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        variant: [old-until, current]
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      RUNS: 400
+      TEST: keyline::on_the_graph_f_is_named_by_the_fold_it_walks
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: the harness before 25bb27b6 (single-sample until)
+        if: matrix.variant == 'old-until'
+        run: |
+          git show 25bb27b6 -- crates/ank-tui/tests/terminal/mod.rs | git apply -R
+          git diff --stat
+          grep -n "if done(&seen)" crates/ank-tui/tests/terminal/mod.rs
+      - name: build
+        run: |
+          cargo build --workspace
+          cargo test -p ank-tui --test integration --no-run 2>&1 | tee build.txt
+      - name: loop under load
+        shell: bash
+        run: |
+          bin=$(ls -t target/debug/deps/integration-* | grep -v '\.d$' | head -1)
+          echo "binary $bin, cores $(nproc)"
+          for i in $(seq "$(nproc)"); do (while :; do :; done) & done
+          red=0
+          mkdir -p reds
+          start=$(date +%s)
+          for i in $(seq "$RUNS"); do
+            if ! "$bin" --exact "$TEST" > "out.txt" 2>&1; then
+              red=$((red+1))
+              cp out.txt "reds/run-$i.txt"
+              echo "RED at run $i"
+            fi
+          done
+          end=$(date +%s)
+          kill $(jobs -p) || true
+          echo "SUMMARY variant=${{ matrix.variant }} runs=$RUNS red=$red seconds=$((end-start))"
+          for f in $(ls reds | head -3); do echo "==== $f"; cat "reds/$f"; done
