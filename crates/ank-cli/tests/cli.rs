@@ -4216,7 +4216,7 @@ fn cold_rounds() -> u32 {
 #[test]
 fn cold_readers_wait_for_a_writer_that_outlasts_the_busy_wall() {
     // DIAGNOSTIC (TASK-5f45090a418b), not for merge: rounds, probe shown.
-    let rounds = cold_rounds();
+    let rounds = cold_rounds() * 3;
     let mut refused = Vec::new();
     for round in 1..=rounds {
         let r = cold_readers_refused(Some("50"));
