@@ -207,7 +207,13 @@ const SHOW_ADR: &[Field] = &[
 /// Which form carried an ADR's or a spec's anchor (ADR-5e47007a75be): `via`
 /// is `ref` or `commit`, and `object` names the tag or the commit. `null`
 /// where neither is reachable.
-const RATIFICATION: &[Field] = &[f("via", Type::Str), f("object", Type::Str)];
+const RATIFICATION: &[Field] = &[
+    f("via", Type::Str),
+    f("object", Type::Str),
+    // The commit a ref's tag names as the anchor it re-anchored, and null
+    // for every other ratification.
+    opt("reanchored", Type::Str),
+];
 
 /// `show` over a spec: a log entry's page and which form carried its anchor.
 const SHOW_SPEC: &[Field] = &[
@@ -1033,6 +1039,8 @@ const ACCEPTED: &[Field] = &[
     opt("superseded", Type::Str),
     f("tag", Type::Str),
     f("anchor", Type::Str),
+    // The commit `--reanchor` moved the anchor from, and null otherwise.
+    opt("reanchored", Type::Str),
 ];
 
 /// The verb wrote to disk as well, so the ref is not the whole product and the
@@ -1460,7 +1468,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // `refs/ank/ratify/<id>`, so two ratifications never share one.
         max_positionals: usize::MAX,
         positional_help: "<id>...",
-        flags: &[],
+        // The one act on an anchor made before ADR-5e47007a75be: the tag and
+        // the ref for a `ratify <id>` commit, signed by whoever runs it.
+        flags: &[switch("--reanchor")],
         refuses: &[
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
             // The one refusal on the workspace, and it carries the code a
@@ -1482,9 +1492,18 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Transition,
                 "the document is already ratified: the promotion has happened, and the anchor names where",
             ),
+            refuses(
+                ExitCode::Transition,
+                "--reanchor over a document a ref already carries, one no commit ratified, or one whose file has moved from the anchor its commit records",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "--reanchor over a document whose ratify <id> commit this clone does not hold",
+            ),
         ],
         notes: &[
             "it is a human act, signed where the repository signs; it commits nothing, and the file lands with whoever's next change",
+            "--reanchor moves an anchor made by a ratify <id> commit into a ref: the same anchor, a message naming that commit, a reading by whoever runs it; nothing in history is rewritten",
             "the citations of the retired document are re-pointed first: the refusal names every site with its line, is not suppressed by --quiet, and there is no flag around it",
             // The ref is the ratification, so a push that does not land is a
             // failure and the file is not written (ADR-af533e7a3e03).

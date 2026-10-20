@@ -14154,7 +14154,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 44] = [
+const NOT_A_PATH: [&str; 45] = [
     // Who may ratify, what a reviewer should know of the key, and the date it
     // stops ratifying: an email, prose and a day (ADR-5c6db7a161b8).
     "--principal",
@@ -14168,6 +14168,9 @@ const NOT_A_PATH: [&str; 44] = [
     // Carries no value at all: `accept --pr` names nothing, it carries the
     // ratifications to a pull request.
     "--pr",
+    // Carries no value at all: `accept --reanchor` names nothing, the commit
+    // it moves the anchor from is found by the walk (TASK-4b25843e6151).
+    "--reanchor",
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).

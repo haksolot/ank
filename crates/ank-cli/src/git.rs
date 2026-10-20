@@ -2541,6 +2541,9 @@ pub struct RatifyTag {
     pub anchor: String,
     /// The `supersedes: <id>` line, where the ratification retired one.
     pub supersedes: Option<String>,
+    /// The `reanchors: <commit>` line: the `ratify <id>` commit whose anchor
+    /// `accept --reanchor` moved into this tag (TASK-4b25843e6151).
+    pub reanchors: Option<String>,
     /// The tagger date, in seconds since the epoch: what a key's
     /// `valid_before` is compared against, as a commit's committer date is.
     pub tagged: Option<i64>,
@@ -2587,6 +2590,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
     let id = lines.next()?.trim().strip_prefix("ratify ")?.to_string();
     let mut anchor = None;
     let mut supersedes = None;
+    let mut reanchors = None;
     for l in lines {
         let Some((key, value)) = l.trim().split_once(": ") else {
             continue;
@@ -2596,6 +2600,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
                 anchor = Some((key.to_string(), value.trim().to_string()));
             }
             "supersedes" => supersedes = Some(value.trim().to_string()),
+            "reanchors" => reanchors = Some(value.trim().to_string()),
             _ => {}
         }
     }
@@ -2606,6 +2611,7 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
         key,
         anchor,
         supersedes,
+        reanchors,
         tagged,
         signed,
     })
