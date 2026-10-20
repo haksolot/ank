@@ -484,6 +484,50 @@ fn immutable_uri(path: &Path) -> String {
     uri
 }
 
+/// Puts a WAL database at `path` if there is none, **switched before anybody
+/// can open it** (TASK-5f45090a418b).
+///
+/// `PRAGMA journal_mode = WAL` on a new file is not free: SQLite writes the
+/// mode into the header as a rollback-journal transaction, under an exclusive
+/// lock on the database, with a journal created, flushed and deleted beside it.
+/// Done in place, every reader that opened the file meanwhile met that lock at
+/// its first read and waited the busy wall, and no longer. Measured with a
+/// probe on `windows-latest`, sixty rounds of eight cold readers at a 50ms
+/// wall: the creator's switch lasted 327ms to 3222ms, and 15 readers were
+/// refused with `database is locked` at their first read, every one inside
+/// it, while the creator answered alone.
+///
+/// So the switch happens on a file of this process's own, which nobody else
+/// knows the name of, and the result is published whole: `hard_link` creates
+/// the name or fails because it exists, atomically on all three platforms,
+/// so the first creator wins, a second keeps the first's file, and a reader
+/// never sees the index before it is in WAL. Whatever fails here -- a
+/// filesystem without hard links, a directory that cannot be written -- leaves
+/// `path` absent, and the open after it creates the file in place exactly as
+/// it always has.
+fn create_in_wal(path: &Path) {
+    if path.exists() {
+        return;
+    }
+    let Some(name) = path.file_name() else {
+        return;
+    };
+    let staged = path.with_file_name(format!(
+        "{}.new-{}",
+        name.to_string_lossy(),
+        std::process::id()
+    ));
+    let switched = Connection::open(&staged).and_then(|conn| {
+        conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get::<_, String>(0))
+    });
+    // Closed above, the only connection there ever was, so SQLite has removed
+    // the WAL and the shared memory it made beside the staged file.
+    if switched.is_ok_and(|mode| mode.eq_ignore_ascii_case("wal")) {
+        let _ = std::fs::hard_link(&staged, path);
+    }
+    let _ = std::fs::remove_file(&staged);
+}
+
 /// SQLite reporting a lock rather than a defect.
 /// How long a connection's first read waits for another reader to finish
 /// rebuilding the WAL's shared-memory index. A recovery reads the WAL once, so
@@ -770,6 +814,7 @@ impl Index {
 
     fn try_open(ank: &Path, path: &Path) -> Result<Index> {
         crate::store::trace_read("index", path);
+        create_in_wal(path);
         let conn = Connection::open(path).map_err(|e| db_error(e, ank))?;
         // **A reader closes without checkpointing** (TASK-ccce7b24350c). The
         // last connection out of a WAL database checkpoints it on close, and
