@@ -4215,7 +4215,14 @@ fn cold_rounds() -> u32 {
 /// milliseconds of nobody's rebuild, which the wall exists to cover.
 #[test]
 fn cold_readers_wait_for_a_writer_that_outlasts_the_busy_wall() {
-    let refused = cold_readers_refused(Some("50"));
+    // DIAGNOSTIC (TASK-5f45090a418b), not for merge: rounds, probe shown.
+    let rounds = cold_rounds();
+    let mut refused = Vec::new();
+    for round in 1..=rounds {
+        let r = cold_readers_refused(Some("50"));
+        println!("wall-50 round {round}/{rounds}: {} refused of 8", r.len());
+        refused.extend(r);
+    }
     assert!(
         refused.is_empty(),
         "readers of a cold corpus were refused behind a writer that held the \
@@ -4268,6 +4275,7 @@ fn cold_readers_refused(busy_ms: Option<&'static str>) -> Vec<String> {
                 if let Some(ms) = busy_ms {
                     cmd.env("ANK_INDEX_BUSY_MS", ms);
                 }
+                cmd.env("ANK_PROBE_DB_ERROR", corpus.join(format!("probe-{i}.txt")));
                 let out = cmd.output().expect("the binary must have been built");
                 (args.join(" "), code(&out), stderr(&out))
             })
@@ -4283,6 +4291,30 @@ fn cold_readers_refused(busy_ms: Option<&'static str>) -> Vec<String> {
         if code != 0 || err.contains("index:") {
             refused.push(format!("#{i} `ank {verb}` exited {code}: {}", err.trim()));
         }
+    }
+    if !refused.is_empty() {
+        let mut lines = Vec::new();
+        for i in 0..8 {
+            let text =
+                std::fs::read_to_string(r.0.join(format!("probe-{i}.txt"))).unwrap_or_default();
+            for l in text.lines() {
+                lines.push(format!("#{i} {l}"));
+            }
+        }
+        lines.sort_by_key(|l| l.split_whitespace().nth(1).map(str::to_string));
+        println!("PROBE timeline of a refusing round:\n{}", lines.join("\n"));
+        let header = std::fs::read(&db)
+            .ok()
+            .and_then(|b| b.get(18..20).map(<[u8]>::to_vec));
+        let files: Vec<_> = std::fs::read_dir(r.0.join(".ank"))
+            .unwrap()
+            .flatten()
+            .map(|e| {
+                let len = e.metadata().map(|m| m.len()).unwrap_or(0);
+                format!("{} {len}", e.file_name().to_string_lossy())
+            })
+            .collect();
+        println!("PROBE header bytes 18-19 {header:?}, .ank holds {files:?}");
     }
     refused
 }

@@ -270,7 +270,39 @@ const FTS_WEIGHTS: [f64; 4] = [8.0, 4.0, 2.0, 1.0];
 /// the two functions that write and read it, is what keeps that honest.
 const CONTENDED: &str = "another process is writing the index";
 
+/// DIAGNOSTIC PROBE (TASK-5f45090a418b), not for merge.
+fn probe(what: &str) {
+    if let Some(p) = std::env::var_os("ANK_PROBE_DB_ERROR") {
+        use std::io::Write as _;
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+        {
+            let _ = writeln!(f, "t={t} pid={} {what}", std::process::id());
+        }
+    }
+}
+
 fn db_error(e: rusqlite::Error, ank: &Path) -> CliError {
+    if std::env::var_os("ANK_PROBE_DB_ERROR").is_some() {
+        let ext = match &e {
+            rusqlite::Error::SqliteFailure(f, _) => f.extended_code,
+            _ => -1,
+        };
+        let bt = std::backtrace::Backtrace::force_capture().to_string();
+        let frames: Vec<&str> = bt
+            .lines()
+            .filter(|l| l.contains("ank_cli::") && !l.contains("db_error") && !l.contains("probe"))
+            .take(6)
+            .map(str::trim)
+            .collect();
+        probe(&format!("ERROR ext={ext} err={e} | {}", frames.join(" < ")));
+    }
     // **Contention earns a different sentence and a different next step.** The
     // hint below is right for a cache that cannot be read and actively wrong
     // here: deleting a database another process is writing is how one loser of
@@ -657,6 +689,9 @@ pub struct Index {
 /// archived digests (ADR-3db9735a7036), would not see.
 impl Drop for Index {
     fn drop(&mut self) {
+        if self.db.is_some() {
+            probe(&format!("drop changes={}", self.conn.total_changes()));
+        }
         if self.db.is_some() && self.conn.total_changes() > 0 {
             let _ = self
                 .conn
@@ -806,8 +841,10 @@ impl Index {
         // SQLite answers with the mode it actually kept. Declined, the index
         // works exactly as it did before, so there is nothing to report and
         // nothing to fail.
-        let _: std::result::Result<String, _> =
+        probe("open");
+        let mode: std::result::Result<String, _> =
             conn.query_row("PRAGMA journal_mode = WAL", [], |r| r.get(0));
+        probe(&format!("journal_mode {mode:?}"));
         let mut index = Index {
             conn,
             ank: ank.to_path_buf(),
@@ -864,6 +901,10 @@ impl Index {
                 other => break other,
             }
         };
+        probe(&format!(
+            "healthy {:?}",
+            healthy_now.as_ref().map_err(|e| e.to_string())
+        ));
         if healthy_now.map_err(|e| db_error(e, &self.ank))? {
             return Ok(());
         }
@@ -883,6 +924,7 @@ impl Index {
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
+        probe("schema lock held");
         // **Asked again under the lock**, because the read above is a snapshot
         // and twelve processes opening a fresh corpus all take it before any of
         // them installs anything. The check and the installation are one
@@ -904,6 +946,7 @@ impl Index {
             }
         }
         tx.commit().map_err(|e| db_error(e, &self.ank))?;
+        probe("schema committed");
         self.conn
             .busy_timeout(busy_timeout())
             .map_err(|e| db_error(e, &self.ank))
@@ -1088,10 +1131,15 @@ impl Index {
         self.conn
             .busy_timeout(write_wait(rows))
             .map_err(|e| db_error(e, &self.ank))?;
+        probe(&format!(
+            "refresh begin rows={rows} writes={}",
+            writes.len()
+        ));
         let tx = self
             .conn
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| db_error(e, &self.ank))?;
+        probe("refresh lock held");
         tx.busy_timeout(busy_timeout())
             .map_err(|e| db_error(e, &self.ank))?;
 
@@ -1147,9 +1195,12 @@ impl Index {
                 }
             }
         }
+        probe(&format!("refresh writing {}", writes.len()));
         let steps = w.commit().map_err(|e| db_error(e, &self.ank))?;
+        probe("refresh committed");
         self.written_steps += steps;
         self.record_last_write();
+        probe("last_write recorded");
         if let Some(path) = std::env::var_os(STEPS_ENV) {
             // A knob for a test, like the busy wall above: what it reports is
             // not an answer of any verb, and a file it cannot write costs the

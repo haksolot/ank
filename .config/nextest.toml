@@ -64,3 +64,8 @@ slow-timeout = { period = "60s", terminate-after = 10 }
 [[profile.ci.overrides]]
 filter = 'package(ank-cli) & binary(integration) & test(=cli::concurrent_readers_of_a_cold_corpus_of_this_size_all_answer)'
 success-output = "final"
+
+# DIAGNOSTIC (TASK-5f45090a418b), not for merge.
+[[profile.ci.overrides]]
+filter = 'package(ank-cli) & binary(integration) & test(=cli::cold_readers_wait_for_a_writer_that_outlasts_the_busy_wall)'
+success-output = "final"
