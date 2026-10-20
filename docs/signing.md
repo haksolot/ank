@@ -1,10 +1,11 @@
 # Signing keys
 
-A ratification is a commit, and a signature is what makes it answerable to
+A ratification is a tag object at `refs/ank/ratify/<id>` (a commit, for one
+made before ADR-5e47007a75be), and a signature is what makes it answerable to
 somebody. Signing is a regime the corpus is in, not a precondition of ratifying
-(ADR-964be4d940b2): `ank accept` produces a signed ratification commit where the
-repository is configured to sign, and an unsigned one where it is not, and it
-never refuses for want of a key. What changes is what `ank check` can say about
+(ADR-964be4d940b2): `ank accept` writes a signed tag where the repository is
+configured to sign, and an unsigned one where it is not, and it never refuses
+for want of a key. What changes is what `ank check` can say about
 the result. The rules it applies, and the four outcomes it keeps apart, are
 section 8 of the specification, in [Proof, anchoring and
 authority](specification.md); this page is how to set a repository up so they
@@ -30,7 +31,7 @@ key id. `accept` signs whenever the repository can: when `user.signingkey` is
 set, or `commit.gpgsign` is `true`. It does not wait for `commit.gpgsign`,
 because a maintainer who signs selectively still means a ratification to be
 signed, so whether your ordinary commits are signed is yours to decide; `check`
-only ever judges the ratification commits.
+only ever judges the ratifications.
 
 ## Declare the key under signers:
 
@@ -134,12 +135,15 @@ diff and land it by pull request like any other change to `config.yml`.
 
 ## What check says afterwards
 
-Once a key is declared, `check` judges every ratification commit against
-`signers:` and keeps four outcomes apart, which section 8 of the specification lists
-with the reason for each. The one to expect on a machine that is not yours is
+Once a key is declared, `check` judges every ratification against `signers:`,
+a tag through `git verify-tag` and an older commit through its own signature,
+and keeps four outcomes apart, which section 8 of the specification lists with
+the reason for each. The one to expect on a machine that is not yours is
 the signal and not the fault: a CI runner without your public key is a correct
 repository on an incomplete machine, and `check` says it could not verify rather
 than either failing or passing it.
 
-A ratification merged by squash or rebase loses what this page set up; the merge
-method that keeps it is [Ratifying and archiving](ratifying.md#ratifying-a-decision).
+A ratification made before ADR-5e47007a75be is a commit, and merged by squash or
+rebase it loses what this page set up; the merge method that keeps it is
+[Ratifying and archiving](ratifying.md#anchors-made-before-the-ref). A tag
+travels as a ref and no merge method touches it.

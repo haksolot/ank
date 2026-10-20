@@ -135,12 +135,13 @@ verifiable, not defended.
 
 ## What check reads beyond the files
 
-`check` walks git history. It finds the ratification commit that anchors each
-accepted decision by its subject, and it asks where a scope that matches nothing
-went, a rename or a deletion. A checkout that carries one commit does not make
-`check` fail: it makes it report every frozen decision unverifiable, at exit 0,
-which is why a pipeline has to fetch the whole history ([Running ank in
-CI](ci.md)).
+`check` reads `refs/ank/*` and walks git history. It finds the ratification
+that anchors each accepted decision at `refs/ank/ratify/<id>`, or, for one
+ratified before ADR-5e47007a75be, as the commit whose subject is `ratify <id>`,
+and it asks where a scope that matches nothing went, a rename or a deletion. A
+checkout that lacks either does not make `check` fail: it makes it report the
+decisions anchored there unverifiable, at exit 0, which is why a pipeline has to
+fetch the refs and the whole history ([Running ank in CI](ci.md)).
 
 `ank check <path>` narrows the report to the entities whose scope covers that
 path. `--json` carries every finding with its level, subject and message, and

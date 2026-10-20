@@ -69,18 +69,20 @@ it rests on are in `docs/ci.md`.
 
 `main` is protected and takes no direct push. Work reaches it through a pull
 request: commit on your branch, `gh pr create --fill --base main --head
-<branch>`, then `gh pr merge --merge`. Ratifying has its own recipe, in
-`CONTRIBUTING.md`, because `ank accept` runs on the default branch and its
-commit still has to arrive through a PR.
+<branch>`, then `gh pr merge --merge`. Ratifying is a human's act and has its
+own page, `docs/ratifying.md`, linked from `CONTRIBUTING.md`: `ank accept` writes
+a signed ref, `refs/ank/ratify/<id>`, on whatever branch it runs, commits
+nothing, and the entity file it rewrites lands with the next change.
 
-**A merge commit is the only allowed method, and that is load-bearing.** A
-ratification is located by the subject of its commit, `ratify <id>`, walked with
-`rev-list --full-history` and no path restriction. A merge preserves that commit
-whole. A squash rewrites the subject to the pull request title and the anchor is
-never found again, which `check` reports as a signal at exit 0: the corpus
-quietly stops being verifiable while CI stays green. A rebase keeps the subject
-and drops the signature, which is a fault. Both are disabled on the repository
-and in its ruleset. Do not re-enable them.
+**A merge commit is the only allowed method, and it still protects something.**
+A ratification made before ADR-5e47007a75be is a commit, located by its
+subject, `ratify <id>`, walked with `rev-list --full-history` and no path
+restriction. A merge preserves that commit whole. A squash rewrites the subject
+to the pull request title and the anchor is never found again, which `check`
+reports as a signal at exit 0: the corpus quietly stops being verifiable while
+CI stays green. A rebase keeps the subject and drops the signature, which is a
+fault. Both are disabled on the repository and in its ruleset for as long as
+such commits live in the history. Do not re-enable them.
 
 ## Testing
 

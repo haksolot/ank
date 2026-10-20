@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "919db455de90"
+  revision: "1325142ded61"
 ---
 
 # ank
@@ -93,9 +93,9 @@ Shape:
                           nothing; --dry-run first, and the move lands by pull request
 
 **accept is not yours to run.** It turns a proposed decision into a binding
-one, and it is a human act: signed, on the default branch, with no way around
-it. Propose, then say it is waiting. Knowing where your authority ends is part
-of planning well.
+one, and it is a human act: a signed ref, on any branch, binding the moment it
+reaches the remote, with no way around it. Propose, then say it is waiting.
+Knowing where your authority ends is part of planning well.
 
 ## Rules that are not negotiable
 
@@ -115,8 +115,7 @@ of planning well.
   `ANK_AGENT` per session; it falls back to `<user>@<hostname>`, so two
   sessions in one tree are one agent to the refs, sharing a claim instead of
   arbitrating over it, a degraded mode rather than the design. ank commits
-  nothing but accept: one branch per task, and the default branch is where
-  work arrives.
+  nothing: one branch per task, and the default branch is where work arrives.
 - **Take the task that cannot collide, or take none.** `status` says what
   another agent holds; `claim` names a live claim whose scope intersects yours
   and takes the task anyway, a fact to read and not an error to refuse;

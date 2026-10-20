@@ -214,7 +214,8 @@ names one, so a deployment that already names its agents keeps naming them.
 
 `accept` is a tool here like every other verb, because a generated surface
 curates nothing out. Being reachable over a protocol changes nothing about it:
-it still refuses off the default branch, with no way around it.
+it is still the human act it is on the command line, a signed ref with the same
+refusals and no way around them.
 
 What a document, an exit code and a warning mean is the same here as on the
 command line, and [the machine surface](integrating.md) is where it is said.
