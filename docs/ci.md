@@ -20,8 +20,8 @@ That is the contract. Everything below is the CI system's own syntax around it.
 ## Check out the whole history
 
 On GitHub that is one line. `ank check` walks history: it reads the ratification
-commit that anchors a frozen constraint, and it asks where a scope that matches
-nothing went, a rename or a deletion. `actions/checkout` fetches one commit by
+commit that anchors a constraint frozen before ADR-5e47007a75be, and it asks
+where a scope that matches nothing went, a rename or a deletion. `actions/checkout` fetches one commit by
 default, and a corpus read from one commit does not report itself unreadable --
 it reports itself unverified, at exit 0. Measured on this repository at
 8310e75: a `--depth 1` clone answers
@@ -40,6 +40,25 @@ Every host spells the depth its own way, and the thing to carry across is the
 property rather than the key: `check` needs the history that reaches the
 ratification commits, and a shallow checkout is silent about what it could not
 read.
+
+## Fetch refs/ank/* before check
+
+A ratification made since ADR-5e47007a75be is not a commit but a tag object at
+`refs/ank/ratify/<id>`, and no host's checkout fetches `refs/ank/*`. Read
+without the ref, such a decision falls back to its file: `check` cannot verify
+it, which is a signal at exit 0, and the same green-and-unchecked failure as a
+shallow clone. `check` adds the refspec and fetches once in a clone that lacks
+it, but a fetch that fails there is not an error, so a pipeline fetches the refs
+itself and lets a failure fail the step:
+
+    - name: the refs ank reads
+      run: git fetch origin '+refs/ank/*:refs/ank/*'
+
+One direction and read-only, so it runs on every event: a pull request from a
+fork fetches from `origin`, the repository the pull request targets, and
+verifies its ratifications the same way as one from a branch there. A refspec
+matching nothing is not an error, so a corpus with no refs yet passes through
+untouched.
 
 ## The recipes
 

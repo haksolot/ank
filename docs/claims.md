@@ -86,7 +86,8 @@ Identity is declared, never proved, and it is deliberately not bound to the
 session: a PID or a TTY in it would mean losing your claim to a restarted
 terminal. `$ANK_AGENT` records who was working rather than restricting who may.
 Nothing in ank refuses on identity; the refusals are on state, and the one hard
-authority line is the signed ratification commit `ank accept` produces.
+authority line is the signed ratification `ank accept` writes at
+`refs/ank/ratify/<id>`.
 
 ## The lease, and what renews it
 

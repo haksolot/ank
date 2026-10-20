@@ -18,8 +18,8 @@ merge until each of them is green:
 The three gates are the ones CONTRIBUTING.md asks you to run locally: `cargo fmt
 --check`, `cargo test --workspace`, and `ank check` on the repository's own
 corpus. The ruleset also allows the merge commit and nothing else, and has no
-bypass actors; [Ratifying and archiving](ratifying.md#ratifying-a-decision) says
-why the merge method is load-bearing.
+bypass actors; [Ratifying and archiving](ratifying.md#anchors-made-before-the-ref)
+says which anchors that still protects.
 
 ## ci.yml
 
@@ -29,7 +29,11 @@ why the merge method is load-bearing.
 - **`test`**, a matrix over `ubuntu-latest`, `macos-latest` and
   `windows-latest`, and the three required checks named after them. It checks
   out the whole history, because `ank check` walks it, and runs the three gates.
-  The Linux leg keeps the binary it built for `attest`.
+  Before `ank check`, on every event, it fetches `+refs/ank/*:refs/ank/*` from
+  `origin`, read-only: a ratification made since ADR-5e47007a75be is a ref
+  there, `actions/checkout` does not fetch it, and a pull request from a fork
+  verifies it the same way as one from a branch here. The Linux leg keeps the
+  binary it built for `attest`.
 
   The suite runs under the `ci` profile of `.config/nextest.toml`, which runs
   every test to the end and bounds each one at 600 seconds, about twice the

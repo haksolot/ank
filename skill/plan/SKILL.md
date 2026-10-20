@@ -2,7 +2,7 @@
 name: ank-plan
 description: Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
 metadata:
-  revision: "5a5fe2d96230"
+  revision: "e4416b678b18"
 ---
 
 # ank-plan
@@ -75,6 +75,7 @@ left for later is a task nobody can start, and the plan is short one decision.
 ## Where planning ends
 
 Proposed ADRs and specs bind nobody until a human ratifies them: a signed
-accept, on the default branch. Say what is waiting and stop. Then ank graph
+accept, a ref that binds wherever the file is read once it reaches the
+remote. Say what is waiting and stop. Then ank graph
 and ank check on the result: a cycle, an orphan or a finding is a plan not
 finished.

@@ -86,9 +86,10 @@ Two of them are the ones a loop must handle. **3** means "somebody moved, read
 again". **4** means "take something else".
 
 **6 and 7 are two codes on purpose.** In 6 the state forbids what you asked; in 7
-the thing you asked for is legal and something it depends on is absent. `accept`
-off the default branch is a 7, because the promotion is legal and the place is
-not. A client that conflates them reacts wrongly to one of the two.
+the thing you asked for is legal and something it depends on is absent. `claim`
+on a task with no `done_criteria` is a 7, because taking the task is legal and
+the criterion it would freeze is not there. A client that conflates them reacts
+wrongly to one of the two.
 
 **9 is not a failure of the work.** git absent or too old, `sh` missing,
 `$EDITOR` unset, a default branch that cannot be determined. Collapsing it into
@@ -130,9 +131,8 @@ $ grep -l "^records: edit" .ank/entities/*.md
 Under `--json` a refusal writes **nothing at all** to stdout. Not an error
 document, not an empty object: zero bytes. The message and its hint go to
 stderr, the code goes to the exit status, and that is the whole answer.
-Measured across four codes -- `show TASK-9999` (2), `done` with no claim held
-(6), `close` with no `--reason` (7), `accept` off a default branch (9) -- stdout
-was 0 bytes every time. So parse stdout only once the code says 0; a parse error
+Measured across three codes -- `show TASK-9999` (2), `done` with no claim held
+(6), `close` with no `--reason` (7) -- stdout was 0 bytes every time. So parse stdout only once the code says 0; a parse error
 on a refusal is a client reading the wrong stream.
 
 **A warning is the other case, and it does not all go to one stream.** There are

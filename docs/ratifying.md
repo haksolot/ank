@@ -2,77 +2,80 @@
 
 Two acts decide what the corpus is, and both are a human's: `ank accept` makes a
 proposed decision binding, and `ank archive` moves what is cold out of the hot
-corpus. Both land on the default branch by pull request, like every other
-change. This page is the recipe for each on this repository, where `main` is
+corpus. This page is the recipe for each on this repository, where `main` is
 protected and takes no direct push.
 
 ## Ratifying a decision
 
-`ank accept` is the one act ank commits for, and it runs on the default branch
-only, with no flag around it (ADR-6d8736c04cfa). A constraint ratified on a
-feature branch would bind on that branch alone, which is a constraint of variable
-geometry and a ratification hash that depends on where it is read.
+Ratifying is one command, on whatever branch you are on:
 
-That rule is about where you stand when you sign. It is not a licence to push to
-`main`. The ratification commit reaches `main` through a pull request like every
-other change, and CI sees it before it lands. `ank accept --pr` carries it there.
-This is the recipe the tree runs today: ADR-5e47007a75be, proposed, makes the
-ratification a signed ref under `refs/ank/ratify/` and retires `--pr`, and this
-page follows once it is ratified.
+    ank accept <id>...
 
-    git switch main && git pull
-    ank accept <id>... --pr          # one commit per id, then the pull request
-    gh pr merge ratify/<id> --merge  # printed by accept, never run by it
-    git switch main && git pull
+For each id, `accept` writes an annotated tag object at `refs/ank/ratify/<id>`,
+signed where the repository signs ([Signing keys](signing.md)), and rewrites the
+entity file: `status: accepted`, `ratified:` with the hash, `anchor:` naming the
+tag object, and a `verified` entry. It then pushes the ref to `origin` with
+compare-and-swap. **It commits nothing**, and it carries no branch precondition
+(ADR-5e47007a75be): the ref is a fact about the repository, not about a branch.
 
-`accept` takes one or more ids, and each still gets its own commit whose subject
-is `ratify <id>`: that subject is the anchor. With `--pr` it then creates
-`ratify/<first id>` at the last ratification, puts the local `main` back at its
-upstream, pushes the branch, opens the pull request with `gh`, and prints the
-merge command. **It never merges.** The merge commit, and the look at the
-ratification before it, stay yours.
+When the push does not land, `accept` exits 9 and keeps nothing: no ref, no
+change to the file. A ratification readable by nobody else did not happen, and
+the verb says so rather than warning (ADR-af533e7a3e03).
 
-Before the first commit, `--pr` checks what it is about to need, and refuses with
-nothing written when any of it is missing: an upstream for `main` (exit 9), `main`
-level with that upstream and no tracked file outside `.ank/` modified (exit 7),
-and `gh` on `PATH` and authenticated (exit 9, `gh auth login`). A failure after
-the commits -- a push the remote refuses, `gh pr create` failing -- leaves them on
-`ratify/<id>` and names the command that finishes the job.
+**The ref binds as soon as it reaches the remote.** `context` and `scope` serve
+a decision as binding wherever a verified ref matches the constraint and scope
+of the file they read, whatever its `status:` says, so a branch that still
+carries the file as `proposed` is bound by it too. `check` names a file that
+has not caught up, as a signal: `ratified by refs/ank/ratify/<id>, but
+.ank/entities/<id>.md still reads proposed: the file has not caught up`.
 
-Without `--pr`, `accept` writes the commits and stops; it pushes nothing. This is
-the recipe `--pr` runs, step by step, for a repository without `gh`:
+**The file lands with the next change, by any merge method.** Commit it on the
+branch you are working on, or on one of its own, and let it reach `main`
+through a pull request like anything else. It does not need a pull request of
+its own, a merge commit, or anybody to come back for it: the authority is the
+ref, and the file only declares what the ref already makes true.
 
-    git switch main && git pull
-    ank accept <id>                  # the gate is satisfied here
-    git branch ratify/<id>           # branch first, at the ratification commit
-    git reset --hard origin/main     # local main back where it was
-    git push -u origin ratify/<id>
-    gh pr create --fill --base main --head ratify/<id>
-    gh pr merge ratify/<id> --merge  # a merge commit, and nothing else
-    git switch main && git pull
+A clone reads the refs only once it has fetched them. `git clone` does not
+fetch `refs/ank/*`, and the first `ank check` or `ank status` in a clone adds
+the refspec and fetches them once; the line below does it by hand. A clone
+without them falls back to the file and sees `proposed`: less, never wrong. CI fetches them before `check` ([CI jobs](ci-jobs.md)).
 
-Branch before resetting. The commit is then held by a ref, and a botched ordering
-is a reflog recovery rather than a lost signature.
+    git fetch origin '+refs/ank/*:refs/ank/*'
 
-**Both of the last two `gh` lines name the branch, and neither naming is
-decoration.** Nothing in this sequence ever switches to `ratify/<id>`: `git
-branch` creates it without moving, and `git push -u origin ratify/<id>` pushes a
-branch you are not standing on. So the shell is still on `main` when `gh` runs,
-and `gh` resolves a pull request from the current branch.
+`accept` refuses a supersession while any tracked file outside `.ank/` still cites
+the document it retires (ADR-3b6ba766a42e). Re-point those citations first, in
+their own change: the refusal names every site with its line, and there is no
+bypass.
 
-A bare `gh pr create --fill` therefore reads `main` as the head, finds it is also
-the base, and refuses with "head branch is the same as base branch". A bare `gh
-pr merge --merge` looks for the pull request whose head is `main`, finds none,
-and exits 1 with `no pull requests found for branch "main"` -- with the
-ratification sitting unmerged on a branch, which is the worse of the two because
-it looks like the sequence ran. Naming the branch in both is what makes this work
-from where it leaves you.
+### Without ank
 
-**Merge with a merge commit, never a squash and never a rebase.** This is
-load-bearing and not a matter of taste. A ratification is located by the *subject*
-of its commit, `ratify <id>`, walked with `rev-list --full-history` and no path
-restriction ([the file format](format.md#what-lives-outside-the-files) has the
-walk), so any strategy that preserves the commit preserves the anchor:
+The ratification is git plumbing, so a repository without the binary can make
+one. Bring the file to the form `accept` writes, every field but `anchor:`
+([the file format](format.md#what-lives-outside-the-files) has the fields, and
+[the two hashes](format.md#the-two-hashes) how `ratified:` is computed), then:
+
+    git hash-object -w .ank/entities/<id>.md          # the blob
+    git tag -s -m 'ratify <id>' -m '<lines>' ratify/<id> <blob>
+    git update-ref refs/ank/ratify/<id> "$(git rev-parse ratify/<id>)"
+    git tag -d ratify/<id>                            # the object stays, the tag name goes
+    git push --force-with-lease=refs/ank/ratify/<id>: origin refs/ank/ratify/<id>
+
+and add `anchor: <tag>` to the file, the object name `git rev-parse` printed.
+`<lines>` are `constraint+scope: <hash>` (or `body+scope: <hash>` for a spec)
+and `by: <actor>`, and `supersedes: <id>` where one applies. In a repository
+that does not sign, `tag -s` is `tag -a`. The temporary name under `refs/tags/`
+lives between the second and the fourth command only, because a ratification is
+not a release and must not look like one to a forge. The empty lease is the
+compare-and-swap: the push is refused, `! [rejected] ... (stale info)`, when
+the remote already holds a different ratification under that name.
+
+### Anchors made before the ref
+
+Before ADR-5e47007a75be, a ratification was a commit whose subject is
+`ratify <id>`, and those anchors are never rewritten. `check` reaches a decision
+by its ref first, and by walking `rev-list --full-history` for that subject only
+when no ref carries it. **The merge-commit rule now protects these anchors and
+nothing else**, and it stays because keeping it costs nothing:
 
 - a **merge commit** keeps the subject, the SHA and the signature, and `ank check`
   verifies the ratification exactly as if it had been committed in place;
@@ -85,16 +88,11 @@ walk), so any strategy that preserves the commit preserves the anchor:
   reports that as a fault (ADR-964be4d940b2 makes signing a regime the corpus is
   in, so an unsigned corpus survives a rebase and this one would not).
 
-Both are disabled on the repository and in its ruleset, and the ruleset has no
-bypass actors: a maintainer cannot merge around it either. If the repository ever
-requires branches to be up to date before merging, set the update method to merge
-for the same reason. Which key signs, and how `check` judges the signature, is
-[Signing keys](signing.md).
-
-`accept` refuses a supersession while any tracked file outside `.ank/` still cites
-the document it retires (ADR-3b6ba766a42e). Re-point those citations first, in
-their own change: the refusal names every site with its line, and there is no
-bypass.
+A squash or a rebase of a branch carrying no `ratify <id>` commit loses
+nothing, and every ratification made by `accept` today is such a branch. Both
+are still disabled on the repository and in its ruleset, which has no bypass
+actors, for as long as a commit anchor lives in the history. Which key signs,
+and how `check` judges the signature, is [Signing keys](signing.md).
 
 ## Archiving what is cold
 
@@ -102,9 +100,9 @@ bypass.
 documents, and every entry whose subject is cold, meaning a superseded document
 or a task done on the default branch (ADR-467ce7e9cda1). `check` names the verb
 in one signal when the hot corpus holds any of it. Like `accept`, it decides what
-the corpus is, so a human runs it and the result lands by pull request. Unlike
-`accept`, it commits nothing: it renames files and stops, and the commit is
-yours.
+the corpus is, so a human runs it, and like `accept` it commits nothing: it
+renames files and stops. Unlike `accept`, it writes no ref, so the move exists
+once it lands, and the commit and its pull request are yours.
 
     git switch main && git pull
     git switch -c archive/<date>

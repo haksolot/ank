@@ -14,8 +14,8 @@ documentation site, under **Maintaining**:
 - [CI jobs and required checks](https://haksolot.github.io/ank/ci-jobs.html): the
   six checks `main` requires, and what every workflow does
 - [Ratifying and archiving](https://haksolot.github.io/ank/ratifying.html): the
-  recipe for `ank accept` and `ank archive` on a protected `main`, and why the
-  merge commit is the only allowed method
+  one command that ratifies, the recipe for `ank archive` on a protected `main`,
+  and the older anchors the merge-commit rule still protects
 - [Releasing](https://haksolot.github.io/ank/releasing.html),
   [the MSRV](https://haksolot.github.io/ank/msrv.html),
   [signing keys](https://haksolot.github.io/ank/signing.html) and
