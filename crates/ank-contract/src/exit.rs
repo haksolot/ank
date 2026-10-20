@@ -23,9 +23,10 @@ use std::fmt;
 ///
 /// The variants are named for what the *caller* is being told, which is why
 /// [`Self::Prerequisite`] and [`Self::Transition`] are two codes and not one.
-/// §4 draws that line explicitly — `accept` off the default branch is a missing
-/// prerequisite and "not illegal transition: the promotion is legal, the place
-/// is not" — and a caller that conflates them reacts wrongly to one of the two.
+/// §4 draws that line explicitly: claiming a blocked task is a missing
+/// prerequisite and not an illegal transition, since the claim is legal and the
+/// work it waits on is not there yet. A caller that conflates them reacts
+/// wrongly to one of the two.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(i32)]
 pub enum ExitCode {
@@ -60,8 +61,8 @@ pub enum ExitCode {
     /// thing asked for is legal and something it depends on is absent.
     Transition = 6,
     /// A prerequisite is missing: the task is blocked, it has no
-    /// `done_criteria`, a mandatory flag was not given, `accept` was run off
-    /// the default branch, or the calling identity already holds a live claim.
+    /// `done_criteria`, a mandatory flag was not given, or the calling identity
+    /// already holds a live claim.
     ///
     /// §4 chose this code over [`Self::Unavailable`] for that last case on
     /// purpose: "the task asked for is available; it is the caller that is not",
@@ -125,7 +126,7 @@ impl ExitCode {
                 "the act is illegal from the state the entity is in: a frozen field diverged, a transition the state machine does not allow, or a write without the claim it needs"
             }
             ExitCode::Prerequisite => {
-                "a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, `accept` ran off the default branch, or the caller already holds a live claim"
+                "a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, or the caller already holds a live claim"
             }
             ExitCode::Findings => {
                 "`check` or `review` found a fault; a signal alone leaves the code at 0"

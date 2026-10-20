@@ -16,7 +16,7 @@ A refusal writes `error[<code>]: <message>` on stderr, followed by the exact com
 | 4 | `Unavailable` | the task is unavailable: held by another agent, or finished on another branch; take something else |
 | 5 | `Proof` | a proof is missing, malformed, or of a type this act does not accept |
 | 6 | `Transition` | the act is illegal from the state the entity is in: a frozen field diverged, a transition the state machine does not allow, or a write without the claim it needs |
-| 7 | `Prerequisite` | a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, `accept` ran off the default branch, or the caller already holds a live claim |
+| 7 | `Prerequisite` | a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, or the caller already holds a live claim |
 | 8 | `Findings` | `check` or `review` found a fault; a signal alone leaves the code at 0 |
 | 9 | `Environment` | the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a directory that refuses the lock |
 
