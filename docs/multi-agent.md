@@ -126,8 +126,8 @@ Where the branches meet is git's business, and both shapes are legitimate:
 **What ank will not do.** No verb creates a worktree, names a branch, or merges
 one. Tasks, claims, criteria, dependencies and proofs are ank's plane; branches,
 worktrees, merges and history are git's, and git is already good at them. The
-one place the planes touch is `accept`, which runs on the default branch and
-nowhere else.
+one place the planes touch is `accept`, and it touches them by writing a ref,
+`refs/ank/ratify/<id>`, never a branch or a commit.
 
 ## Running agents from herdr
 

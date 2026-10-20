@@ -231,6 +231,22 @@ jobs:
       # let a corpus pass one and fail the other.
       #
       # Exit 8 means findings, and that is a failure here. Signals exit 0.
+      #
+      # The refs first. A ratification made since ADR-5e47007a75be is a tag
+      # object at refs/ank/ratify/<id>, and `actions/checkout` fetches history
+      # and not `refs/ank/*`. `check` adds the refspec and fetches once in a
+      # clone that lacks it, but a fetch that fails there is not an error, so
+      # that repair is a convenience and not something this job can rest on:
+      # without the refs, every such decision reads as unverifiable, a signal
+      # at exit 0, green with the freeze unchecked. Here a failed fetch fails
+      # the step. On every event, a pull request from a fork included: `origin`
+      # is this repository there too, and the fetch only reads. After the suite
+      # and not before, because fourteen test files read the live repository
+      # and were written against a checkout that carries no refs.
+      - name: the refs ank reads
+        if: env.RUN == 'true'
+        run: git fetch origin '+refs/ank/*:refs/ank/*'
+
       - run: cargo run -q --bin ank -- check
         if: env.RUN == 'true'
 
