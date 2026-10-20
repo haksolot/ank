@@ -195,6 +195,25 @@ const SHOW_ADR: &[Field] = &[
     opt("coordination", Type::Str),
     f("amends", Type::Array(EDGE)),
     f("amended_by", Type::Array(EDGE)),
+    opt("ratification", Type::Object(RATIFICATION)),
+    f("detached_proofs", Type::Array(DETACHED_PROOF)),
+    f("log_total", Type::Num),
+    f("log_shown", Type::Num),
+    f("log", Type::Array(LOG_ENTRY)),
+    f("machinery", Type::Array(LOG_ENTRY)),
+    f("content", Type::Str),
+];
+
+/// Which form carried an ADR's or a spec's anchor (ADR-5e47007a75be): `via`
+/// is `ref` or `commit`, and `object` names the tag or the commit. `null`
+/// where neither is reachable.
+const RATIFICATION: &[Field] = &[f("via", Type::Str), f("object", Type::Str)];
+
+/// `show` over a spec: a log entry's page and which form carried its anchor.
+const SHOW_SPEC: &[Field] = &[
+    f("id", Type::Str),
+    opt("coordination", Type::Str),
+    opt("ratification", Type::Object(RATIFICATION)),
     f("detached_proofs", Type::Array(DETACHED_PROOF)),
     f("log_total", Type::Num),
     f("log_shown", Type::Num),
@@ -1130,7 +1149,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         output: &[
             when("over a task", SHOW_TASK),
             when("over an ADR", SHOW_ADR),
-            when("over a spec or a log entry", SHOW_OTHER),
+            when("over a spec", SHOW_SPEC),
+            when("over a log entry", SHOW_OTHER),
         ],
         owner_task: None,
     },
@@ -1361,7 +1381,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         // reason it is optional on `status` -- a tree with no history is the one
         // corpus that cannot be named, and `null` says so; `created` is not,
         // because every entity the index holds has one.
-        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool)]))])],
+        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))])],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
@@ -1424,7 +1444,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the signers are what signers: in .ank/config.yml declares, one row per key",
         ],
         refuses_globals: &[],
-        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
+        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num), opt("anchored_by", Type::Str)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {

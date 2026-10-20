@@ -1512,13 +1512,11 @@ pub fn find(
                     // every row a listing without `--all` can return, and true
                     // on a row `--all` read from the archive (ADR-467ce7e9cda1).
                     .bool("archived", r.archived);
-                // Additive, and only on the kinds that carry an anchor: `ref`,
-                // `commit`, or null where neither is reachable.
-                match anchors(r) {
-                    true => row.opt_str("anchored_by", anchored(r).map(|v| v.as_str())),
-                    false => row,
-                }
-                .finish()
+                // Additive, and on every row so that a row's keys never depend
+                // on its kind: `ref`, `commit`, or null where no anchor is
+                // reachable, which is every task and every log entry.
+                row.opt_str("anchored_by", anchored(r).map(|v| v.as_str()))
+                    .finish()
             })
             .collect();
         // The corpus this listing is about, in the spelling and the position
