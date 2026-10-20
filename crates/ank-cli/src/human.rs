@@ -6351,7 +6351,8 @@ fn prepare_reanchor(
         return Err(CliError::new(
             ExitCode::Prerequisite,
             format!(
-                "no ratify {id} commit is reachable from this clone, so there is nothing to                  re-anchor from"
+                "no ratify {id} commit is reachable from this clone, so there is nothing to \
+                 re-anchor from"
             ),
         )
         .with_hint("git fetch --unshallow"));
@@ -6361,7 +6362,8 @@ fn prepare_reanchor(
         return Err(CliError::new(
             ExitCode::Transition,
             format!(
-                "{id} has moved from the anchor its commit {} records (ratified {}, now {anchor}):                  re-anchoring would sign the edit",
+                "{id} has moved from the anchor its commit {} records (ratified {}, now {anchor}): \
+                 re-anchoring would sign the edit",
                 &commit.sha[..commit.sha.len().min(12)],
                 commit.anchor
             ),
@@ -6370,19 +6372,11 @@ fn prepare_reanchor(
     }
     let anchor_key = view.key;
     let supersedes = match view.supersedes {
-        Some(t) => format!(
-            "supersedes: {t}
-"
-        ),
+        Some(t) => format!("supersedes: {t}\n"),
         None => String::new(),
     };
     let message = format!(
-        "ratify {id}
-
-{anchor_key}: {anchor}
-{supersedes}by: {identity}
-reanchors: {}
-",
+        "ratify {id}\n\n{anchor_key}: {anchor}\n{supersedes}by: {identity}\nreanchors: {}\n",
         commit.sha
     );
 

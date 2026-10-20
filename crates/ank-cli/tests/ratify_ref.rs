@@ -987,9 +987,21 @@ fn accept_reanchor_moves_a_commit_anchor_into_a_signed_ref() {
     assert_eq!(judged, 1, "the tag of {C} is judged: {report}");
 }
 
-/// The refusals, at exit 6 and writing nothing: an entity a ref already
-/// carries, a commit whose anchor is not the file's, and a document that is
-/// not ratified at all.
+/// The sentence a refusal opens with, asserted to read as one: no run of
+/// spaces left inside it by a line continuation gone wrong.
+fn refusal(out: &Output) -> String {
+    let line = text(&out.stderr)
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    assert!(!line.contains("  "), "a run of spaces in: {line:?}");
+    line
+}
+
+/// The refusals, writing nothing: at exit 6 an entity a ref already carries,
+/// a commit whose anchor is not the file's, and a document that is not
+/// ratified at all; at exit 7 a commit the clone does not hold.
 #[test]
 fn accept_reanchor_refuses_a_ref_anchor_and_a_commit_the_file_has_moved_from() {
     let c = Corpus::new("ratify-ref-reanchor-refusals");
@@ -998,11 +1010,38 @@ fn accept_reanchor_refuses_a_ref_anchor_and_a_commit_the_file_has_moved_from() {
     let file = c.file(A);
     let out = reanchor(&c.repo, A);
     assert_eq!(out.status.code(), Some(6), "{}", both(&out));
-    assert!(both(&out).contains(&ratify_ref(A)), "{}", both(&out));
+    assert!(refusal(&out).contains(&ratify_ref(A)), "{}", both(&out));
     assert_eq!(rev(&c.repo, &ratify_ref(A)), Some(tag));
     assert_eq!(c.file(A), file);
 
     let commit = legacy(&c);
+
+    // A clone holding one commit after the ratification: nothing to move.
+    fs::write(c.repo.join("src/lib.rs"), "pub fn f() {}\npub fn g() {}\n").unwrap();
+    git(&c.repo, &["commit", "-qam", "after the ratification"]);
+    git(&c.repo, &["push", "-q", "origin", "main"]);
+    let clone = c.base.join("shallow");
+    git(
+        &c.base,
+        &[
+            "clone",
+            "-q",
+            "--depth",
+            "1",
+            &file_url(&c.origin),
+            clone.to_str().unwrap(),
+        ],
+    );
+    let out = reanchor(&clone, C);
+    assert_eq!(out.status.code(), Some(7), "{}", both(&out));
+    assert!(refusal(&out).contains("re-anchor from"), "{}", both(&out));
+    assert!(
+        both(&out).contains("git fetch --unshallow"),
+        "{}",
+        both(&out)
+    );
+    assert!(rev(&clone, &ratify_ref(C)).is_none(), "{}", both(&out));
+
     let edited = c.file(C).replace(
         &format!("The rule {C} binds."),
         &format!("The rule {C} binds, and more."),
@@ -1010,7 +1049,7 @@ fn accept_reanchor_refuses_a_ref_anchor_and_a_commit_the_file_has_moved_from() {
     c.put(C, &edited);
     let out = reanchor(&c.repo, C);
     assert_eq!(out.status.code(), Some(6), "{}", both(&out));
-    assert!(both(&out).contains(&commit[..12]), "{}", both(&out));
+    assert!(refusal(&out).contains(&commit[..12]), "{}", both(&out));
     assert!(rev(&c.repo, &ratify_ref(C)).is_none(), "{}", both(&out));
     assert_eq!(c.file(C), edited);
 
@@ -1018,5 +1057,6 @@ fn accept_reanchor_refuses_a_ref_anchor_and_a_commit_the_file_has_moved_from() {
     c.put(id, &adr(id, "proposed", ""));
     let out = reanchor(&c.repo, id);
     assert_eq!(out.status.code(), Some(6), "{}", both(&out));
+    refusal(&out);
     assert!(rev(&c.repo, &ratify_ref(id)).is_none());
 }
