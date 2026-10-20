@@ -38,6 +38,13 @@ const PLUMBING: &[&str] = &[
     "symbolic-ref",
     "merge-base",
     "verify-commit",
+    // `verify-commit`'s twin for a tag object, which is what a ratification
+    // has been since ADR-5e47007a75be, and that decision names it as the
+    // verifier. What is read is its `--raw` standard error, which is gpg's
+    // `[GNUPG:]` status protocol or ssh-keygen's verdict line: the same text
+    // git itself parses for `%G?`, and stable by the verifier's contract rather
+    // than by a rendering git chose for a reader.
+    "verify-tag",
     "hash-object",
     "cat-file",
     "for-each-ref",
@@ -2213,6 +2220,40 @@ pub struct Ratification {
     /// key's `valid-before` against, and what `check` compares a `gpg` key's
     /// `valid_before` against itself (ADR-5c6db7a161b8).
     pub committed: Option<i64>,
+    /// Which of the two forms carried the anchor (ADR-5e47007a75be): `sha`
+    /// names a tag object for a ref and a commit for the walk, and the
+    /// signature on each is read by a different git command.
+    pub via: Via,
+}
+
+/// Where a ratification was found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Via {
+    /// A tag object at `refs/ank/ratify/<id>`, which `accept` writes since
+    /// ADR-5e47007a75be.
+    Ref,
+    /// A `ratify <id>` commit reached by the walk: an anchor made before that
+    /// decision, never rewritten.
+    Commit,
+}
+
+impl Via {
+    /// The word `show`, `find` and `review` print, and the value `--json`
+    /// carries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Via::Ref => "ref",
+            Via::Commit => "commit",
+        }
+    }
+
+    /// The object a finding names: a ratification commit, or its tag.
+    pub fn object(self) -> &'static str {
+        match self {
+            Via::Ref => "tag",
+            Via::Commit => "commit",
+        }
+    }
 }
 
 /// `paths` are the candidate paths of the entity, canonical first. There is
@@ -2351,6 +2392,7 @@ fn all_ratifications(cwd: &Path) -> Result<HashMap<String, Ratification>> {
                         anchor,
                         authored,
                         committed,
+                        via: Via::Commit,
                     },
                 );
             }
@@ -2479,9 +2521,275 @@ fn ratification_uncached(cwd: &Path, id: &str, path: &str) -> Result<Option<Rati
                 anchor,
                 authored,
                 committed,
+                via: Via::Commit,
             }));
     }
     Ok(None)
+}
+
+/// A ratification tag, read out of the object `refs/ank/ratify/<id>` points
+/// at (ADR-5e47007a75be).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RatifyTag {
+    /// The tag object's name, which the entity file's `anchor:` names.
+    pub tag: String,
+    /// The id the message's subject names, `ratify <id>`.
+    pub id: String,
+    /// The anchor line: its key, `constraint+scope` or `body+scope`, and the
+    /// hash.
+    pub key: String,
+    pub anchor: String,
+    /// The `supersedes: <id>` line, where the ratification retired one.
+    pub supersedes: Option<String>,
+    /// The tagger date, in seconds since the epoch: what a key's
+    /// `valid_before` is compared against, as a commit's committer date is.
+    pub tagged: Option<i64>,
+    /// Whether the object carries a signature block at all, the fact git's
+    /// answer cannot be trusted to give when it could not run the verifier.
+    pub signed: bool,
+}
+
+impl RatifyTag {
+    /// The same ratification in the shape every reader of the commit walk
+    /// already takes.
+    pub fn ratification(&self) -> Ratification {
+        Ratification {
+            sha: self.tag.clone(),
+            anchor: self.anchor.clone(),
+            authored: self.tagged,
+            committed: self.tagged,
+            via: Via::Ref,
+        }
+    }
+}
+
+/// Reads a tag object's text as a ratification, or `None` for an object that
+/// is not one: another type, no `ratify <id>` subject, no anchor line.
+fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
+    if kind != "tag" {
+        return None;
+    }
+    let text = String::from_utf8_lossy(body);
+    let (headers, message) = text.split_once("\n\n")?;
+    // `tagger <name> <email> <epoch> <zone>`: the epoch is the second field
+    // from the right whatever the name holds.
+    let tagged = headers
+        .lines()
+        .find_map(|l| l.strip_prefix("tagger "))
+        .and_then(|l| l.rsplit(' ').nth(1))
+        .and_then(|epoch| epoch.parse::<i64>().ok());
+    // The signature is the tail of a tag's message, where git appends it.
+    let (message, signed) = match message.find("-----BEGIN ") {
+        Some(at) => (&message[..at], true),
+        None => (message, false),
+    };
+    let mut lines = message.lines();
+    let id = lines.next()?.trim().strip_prefix("ratify ")?.to_string();
+    let mut anchor = None;
+    let mut supersedes = None;
+    for l in lines {
+        let Some((key, value)) = l.trim().split_once(": ") else {
+            continue;
+        };
+        match key {
+            ANCHOR_CONSTRAINT | ANCHOR_BODY if anchor.is_none() => {
+                anchor = Some((key.to_string(), value.trim().to_string()));
+            }
+            "supersedes" => supersedes = Some(value.trim().to_string()),
+            _ => {}
+        }
+    }
+    let (key, anchor) = anchor?;
+    Some(RatifyTag {
+        tag: name.to_string(),
+        id,
+        key,
+        anchor,
+        supersedes,
+        tagged,
+        signed,
+    })
+}
+
+/// The tag objects read so far, by object name: `Some` for a ratification,
+/// `None` for an object that is not one. Kept for the process and never
+/// dropped, because an object never changes under its name; what moves is
+/// which object a ref names, and that is [`ank_refs`]' to know.
+type RatifyMemo = OnceLock<Mutex<HashMap<PathBuf, HashMap<String, Option<RatifyTag>>>>>;
+static RATIFY_TAGS: RatifyMemo = OnceLock::new();
+
+/// Every ratification ref, keyed by the id its name carries.
+///
+/// **No process of its own to list them**: the refs come from [`ank_refs`],
+/// the one enumeration of `refs/ank/*` every verb reading the coordination
+/// plane already makes, and whose memo is dropped by any command that moves a
+/// ref, so a ref `accept` or `update` wrote in this process is read as it now
+/// stands. The objects are read in one `cat-file --batch`, and only those not
+/// read before (TASK-1b3d7b61dc8f's shape: the readers ask per entity, and a
+/// `cat-file tag` per entity would grow with every ratification).
+///
+/// A ref whose object is not a ratification of the id it is named for is left
+/// out: a tag naming another entity in its subject anchors nothing here, and
+/// reading it as this one's would let one ratification stand for two.
+pub fn ratify_tags(cwd: &Path) -> HashMap<String, RatifyTag> {
+    let prefix = crate::claim::RATIFY_PREFIX;
+    let named: Vec<(String, String)> = ank_refs(cwd)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|r| {
+            let id = r.name.strip_prefix(prefix)?.to_string();
+            Some((id, r.object))
+        })
+        .collect();
+    if named.is_empty() {
+        return HashMap::new();
+    }
+    let memo = RATIFY_TAGS.get_or_init(|| Mutex::new(HashMap::new()));
+    let unread: Vec<String> = match memo.lock() {
+        Ok(seen) => {
+            let known = seen.get(cwd);
+            named
+                .iter()
+                .map(|(_, o)| o.clone())
+                .filter(|o| !known.is_some_and(|k| k.contains_key(o)))
+                .collect()
+        }
+        Err(_) => named.iter().map(|(_, o)| o.clone()).collect(),
+    };
+    let mut read: HashMap<String, Option<RatifyTag>> = HashMap::new();
+    if !unread.is_empty() {
+        let answers = cat_file_batch_raw(cwd, &unread).unwrap_or_default();
+        for (object, answer) in unread.iter().zip(answers) {
+            let parsed =
+                answer.and_then(|(name, kind, body)| parse_ratify_tag(&name, &kind, &body));
+            read.insert(object.clone(), parsed);
+        }
+    }
+    let mut found = HashMap::new();
+    if let Ok(mut seen) = memo.lock() {
+        let known = seen.entry(cwd.to_path_buf()).or_default();
+        known.extend(read);
+        for (id, object) in &named {
+            if let Some(Some(tag)) = known.get(object) {
+                if &tag.id == id {
+                    found.insert(id.clone(), tag.clone());
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Which form carries the ratification of `id`, read off the two batches and
+/// never per entity: a ref first, then the commit walk (ADR-5e47007a75be).
+/// For the listings that say so; the readers that judge a ratification go
+/// through the entity, which knows which anchor key its kind carries.
+pub fn anchor_form(cwd: &Path, id: &str) -> Option<Via> {
+    if ratify_tags(cwd).contains_key(id) {
+        return Some(Via::Ref);
+    }
+    all_ratifications(cwd)
+        .ok()?
+        .contains_key(id)
+        .then_some(Via::Commit)
+}
+
+/// The ratification tags among `objects`, read in one `cat-file --batch`:
+/// what an entity file's `anchor:` names when no ref points at it, so that
+/// `check` can name the command restoring the ref and `update` can run it. An
+/// object the repository does not hold, or one that is not a ratification tag,
+/// is absent from the answer.
+pub fn held_ratify_tags(cwd: &Path, objects: &[String]) -> HashMap<String, RatifyTag> {
+    let mut found = HashMap::new();
+    for (name, kind, body) in cat_file_batch_raw(cwd, objects)
+        .unwrap_or_default()
+        .into_iter()
+        .flatten()
+    {
+        if let Some(tag) = parse_ratify_tag(&name, &kind, &body) {
+            found.insert(name, tag);
+        }
+    }
+    found
+}
+
+/// Reads the signature of a ratification tag through `git verify-tag`, as the
+/// facts [`signature_of`] gives for a commit, so one classifier judges both
+/// (§8).
+///
+/// `verify-tag` has no `%G?`: what git decided is on its standard error, as
+/// gpg's status lines under `--raw` for OpenPGP and as ssh-keygen's sentence
+/// for SSH, and it is read here into the same letters. Anything else is `N`,
+/// and the caller's own reading of the object decides whether a signature was
+/// there to check, exactly as for a commit.
+pub fn tag_signature_of(
+    cwd: &Path,
+    tag: &str,
+    allowed_signers: Option<&Path>,
+) -> Result<SignatureFacts> {
+    let signers = signers_config(allowed_signers);
+    let mut args: Vec<&str> = Vec::new();
+    if let Some(cfg) = signers.as_deref() {
+        args.push("-c");
+        args.push(cfg);
+    }
+    args.extend_from_slice(&["verify-tag", "--raw", tag]);
+    let out = output(cwd, &args)?;
+    let said =
+        String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
+    Ok(read_verify_tag(&said))
+}
+
+/// git's answer to `verify-tag --raw`, as `%G?` and `%GF` would have said it.
+fn read_verify_tag(said: &str) -> SignatureFacts {
+    let facts = |status: char, fingerprint: &str| SignatureFacts {
+        status,
+        fingerprint: fingerprint.to_string(),
+    };
+    // OpenPGP: gpg's status lines, the ones git itself parses for `%G?`.
+    let status_line = |word: &str| {
+        said.lines()
+            .find_map(|l| l.trim().strip_prefix("[GNUPG:] ")?.strip_prefix(word))
+            .map(str::trim)
+    };
+    if said.contains("[GNUPG:] ") {
+        let fingerprint = status_line("VALIDSIG ")
+            .and_then(|rest| rest.split_whitespace().next())
+            .unwrap_or_default();
+        for (word, status) in [
+            ("BADSIG ", 'B'),
+            ("REVKEYSIG ", 'R'),
+            ("EXPKEYSIG ", 'Y'),
+            ("EXPSIG ", 'X'),
+            ("ERRSIG ", 'E'),
+        ] {
+            if status_line(word).is_some() {
+                return facts(status, fingerprint);
+            }
+        }
+        if status_line("GOODSIG ").is_some() {
+            return facts('G', fingerprint);
+        }
+        return facts('E', fingerprint);
+    }
+    // SSH: `Good "git" signature for <principal> with <type> key <fp>` when
+    // the allowed-signers file matched, the same without `for <principal>`
+    // when it did not, which is git's `G` and `U`.
+    for line in said.lines() {
+        let Some(rest) = line.trim().strip_prefix("Good \"git\" signature ") else {
+            continue;
+        };
+        let fingerprint = rest
+            .split_whitespace()
+            .find(|w| w.starts_with("SHA256:"))
+            .unwrap_or_default();
+        let status = if rest.starts_with("for ") { 'G' } else { 'U' };
+        return facts(status, fingerprint);
+    }
+    if said.contains("incorrect signature") || said.contains("Signature verification failed") {
+        return facts('B', "");
+    }
+    facts('N', "")
 }
 
 /// What git says about the signature on a commit, before anyone decides what it

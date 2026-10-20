@@ -176,6 +176,9 @@ kinds! {
     Unratified => "unratified",
     RatificationAltered => "ratification-altered",
     RatificationUnverifiable => "ratification-unverifiable",
+    RatificationBehind => "ratification-behind",
+    RatificationRefMissing => "ratification-ref-missing",
+    SupersessionUnratified => "supersession-unratified",
     Signature => "signature",
     SelfRatified => "self-ratified",
     EditedOutside => "edited-outside",
@@ -1166,6 +1169,11 @@ pub fn inspect_with(
         }
     }
     check_entries(&entities, &in_scope, &unread, &archived, &mut report);
+    // A claim about the whole repository, made only when the whole corpus read
+    // and no perimeter narrowed it.
+    if path.is_none() && unread.is_empty() {
+        check_ratify_orphans(repo, &entities, &archived, &mut report);
+    }
     check_prose_identifiers(&entities, &in_scope, &unread, &archived, &mut report);
     // **A hot entity that is cold is a signal naming the verb that moves it**
     // (ADR-467ce7e9cda1): once for the corpus, never once per entity, and a
@@ -3286,7 +3294,7 @@ fn check_adr(
     report: &mut Report,
 ) {
     let view = Anchored::from(a);
-    check_succession(&view, adr_ids, entities, unread, archived, report);
+    check_succession(&view, repo, adr_ids, entities, unread, archived, report);
     check_relation(
         &AMENDS,
         &a.id,
@@ -3384,7 +3392,7 @@ fn check_spec(
     report: &mut Report,
 ) {
     let view = Anchored::from(s);
-    check_succession(&view, spec_ids, entities, unread, archived, report);
+    check_succession(&view, repo, spec_ids, entities, unread, archived, report);
     check_relation(
         &REFERENCES,
         &s.id,
@@ -3781,6 +3789,7 @@ fn check_stale_citations(
 /// spec is a broken reference and not a chain.
 fn check_succession(
     view: &Anchored,
+    repo: &Repo,
     peers: &HashSet<EntityId>,
     entities: &[(PathBuf, Entity)],
     unread: &BTreeSet<String>,
@@ -3837,16 +3846,78 @@ fn check_succession(
             }
         }
     }
-    if whole_corpus_read
-        && view.status == AdrStatus::Superseded
-        && !entities
+    if whole_corpus_read && view.status == AdrStatus::Superseded {
+        let successors: Vec<Anchored> = entities
             .iter()
-            .any(|(_, e)| Anchored::of_kind(e, kind).is_some_and(|v| v.supersedes == Some(view.id)))
-    {
-        report.findings.push(Finding::fault(
-            Kind::Supersession,
-            view.id,
-            format!("marked superseded but no {} supersedes it", kind_word(kind)),
+            .filter_map(|(_, e)| Anchored::of_kind(e, kind))
+            .filter(|v| v.supersedes == Some(view.id))
+            .collect();
+        if successors.is_empty() {
+            report.findings.push(Finding::fault(
+                Kind::Supersession,
+                view.id,
+                format!("marked superseded but no {} supersedes it", kind_word(kind)),
+            ));
+        } else if !supersession_ratified(repo, view.id, &successors) {
+            // **The file says it was retired; nothing ratified says so**
+            // (ADR-5e47007a75be). A signal: the successor may simply not be
+            // ratified yet, or its ref not fetched, and the file may be the
+            // half of a supersession that travelled first.
+            report.findings.push(Finding::signal(
+                Kind::SupersessionUnratified,
+                view.id,
+                format!(
+                    "marked superseded, but no ratification names its supersession: \
+                     no {}* tag carries supersedes: {}",
+                    claim::RATIFY_PREFIX,
+                    view.id
+                ),
+            ));
+        }
+    }
+}
+
+/// Whether a ratification records that `retired` was superseded: a ref's tag
+/// carrying `supersedes: <id>`, or, for an anchor made before
+/// ADR-5e47007a75be, a successor ratified by a `ratify <id>` commit, the form
+/// whose message carried the same line and is never rewritten.
+fn supersession_ratified(repo: &Repo, retired: &EntityId, successors: &[Anchored]) -> bool {
+    let retired = retired.to_string();
+    git::ratify_tags(&repo.corpus)
+        .values()
+        .any(|t| t.supersedes.as_deref() == Some(retired.as_str()))
+        || successors.iter().any(|v| {
+            // Accepted with no anchor at all is the bootstrap state, which the
+            // successor's own `unratified` signal already names: a second line
+            // here would say the same thing about the same succession.
+            (v.status == AdrStatus::Accepted && v.ratified.is_none())
+                || ratification_of(repo, v).is_some_and(|r| r.via == git::Via::Commit)
+        })
+}
+
+/// The ratification refs no entity file answers to (ADR-5e47007a75be): a ref
+/// is a fact about the repository, and one naming a document this corpus does
+/// not hold, here or in the archive, binds nothing anyone can read.
+fn check_ratify_orphans(
+    repo: &Repo,
+    entities: &[(PathBuf, Entity)],
+    archived: &BTreeSet<String>,
+    report: &mut Report,
+) {
+    let held: HashSet<String> = entities.iter().map(|(_, e)| e.id().to_string()).collect();
+    let mut orphans: Vec<String> = git::ratify_tags(&repo.corpus)
+        .into_keys()
+        .filter(|id| !held.contains(id) && !archived.contains(id))
+        .collect();
+    orphans.sort();
+    for id in orphans {
+        report.findings.push(Finding::signal(
+            Kind::OrphanRef,
+            id.as_str(),
+            format!(
+                "{}{id} names no entity file: a ratification of nothing this corpus holds",
+                claim::RATIFY_PREFIX
+            ),
         ));
     }
 }
@@ -3874,6 +3945,23 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
             format!("altered since ratification (ratified {ratified}, now {now}): {consequence}"),
         )),
 
+        // **A lost ref is not a mute "unverifiable"** (ADR-5e47007a75be): the
+        // file names the tag, and where the repository still holds it the
+        // finding is the command that puts the ref back, which `update` also
+        // runs. Only a tag whose subject ratifies this entity is offered.
+        Freeze::Unverifiable if held_anchor(repo, view).is_some() => {
+            let tag = view.anchor.unwrap_or_default();
+            report.findings.push(Finding::signal(
+                Kind::RatificationRefMissing,
+                view.id,
+                format!(
+                    "its anchor {tag} is held, but no ref points at it: git update-ref {} {tag} \
+                     (or ank update)",
+                    claim::ratify_ref(view.id)
+                ),
+            ));
+        }
+
         // Not a fault, and the distinction is the point. An unreachable
         // ratification commit is a shallow clone or a rewritten history, not a
         // broken freeze — and a check that cries divergence over a shallow clone
@@ -3887,17 +3975,37 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
         Freeze::Unanchored | Freeze::Intact => {}
     }
 
-    // The anchor is worth exactly what the signature on the commit carrying it
-    // is worth (§8). An anchor read from a commit nobody signed anchors nothing
-    // against the one case the whole mechanism exists for.
-    match signature_state(repo, *view) {
+    // **A verified ref binds wherever the file is read, whatever its status
+    // says** (ADR-5e47007a75be), so `context` and `scope` already serve it;
+    // what is left to say is that the file has not caught up, which is the
+    // file `accept` wrote on another machine and nobody has committed yet.
+    if ratified_by_ref(repo, *view) {
+        let file = entity_rel_paths(repo, view.id).remove(0);
+        report.findings.push(Finding::signal(
+            Kind::RatificationBehind,
+            view.id,
+            format!(
+                "ratified by {}, but {file} still reads proposed: the file has not caught up",
+                claim::ratify_ref(view.id)
+            ),
+        ));
+    }
+
+    // The anchor is worth exactly what the signature on the object carrying it
+    // is worth (§8). An anchor read from a commit or a tag nobody signed
+    // anchors nothing against the one case the whole mechanism exists for.
+    let Some(ratification) = anchored_by(repo, *view) else {
+        return;
+    };
+    let object = ratification.via.object();
+    match judge_signature(repo, &ratification) {
         Some(Signature::Absent) => report.findings.push(Finding::fault(Kind::Signature,
             view.id,
-            "its ratification commit is not signed: the anchor proves nothing (§8)",
+            format!("its ratification {object} is not signed: the anchor proves nothing (§8)"),
         )),
         Some(Signature::Invalid { status }) => report.findings.push(Finding::fault(Kind::Signature,
             view.id,
-            format!("its ratification commit carries a signature git refuses ({status}): not a ratification"),
+            format!("its ratification {object} carries a signature git refuses ({status}): not a ratification"),
         )),
         Some(Signature::Undeclared { fingerprint }) => report.findings.push(Finding::fault(Kind::Signature,
             view.id,
@@ -5742,6 +5850,20 @@ pub fn review(
 
     let mut live = Vec::new();
     let mut proposed = Vec::new();
+    // A proposed ADR a verified ref ratifies is not waiting for anybody: it
+    // binds (ADR-5e47007a75be), so it is reviewed among the live constraints,
+    // and `check` names its file as not caught up. Only proposals a ref names
+    // are loaded.
+    let refs = git::ratify_tags(&repo.corpus);
+    let store = Store::new(&repo.ank);
+    let ratified_by_ref = |row: &crate::index::Row| {
+        row.kind == EntityKind::Adr
+            && refs.contains_key(&row.id.to_string())
+            && matches!(
+                store.load(&row.id).map(|l| l.entity),
+                Ok(Entity::Adr(a)) if ratified_by_ref(repo, &a)
+            )
+    };
     for row in index.all()? {
         // **Both kinds `accept` promotes, because the queue is the set of
         // documents waiting for a signature** (TASK-73e81a8a804d). A spec goes
@@ -5770,8 +5892,8 @@ pub fn review(
             // proposal whose scope has died is still waiting for a human, and
             // dropping it from the queue would hide the one entry most in need
             // of the answer. Its dead scope is reported in its own section.
-            "proposed" => proposed.push(row),
-            "accepted" if row.kind == EntityKind::Adr => {
+            "proposed" if !ratified_by_ref(&row) => proposed.push(row),
+            "accepted" | "proposed" if row.kind == EntityKind::Adr => {
                 if dead.contains(&row.id.to_string()) {
                     continue;
                 }
@@ -5787,6 +5909,9 @@ pub fn review(
     }
     live.sort_by_key(|(r, _)| r.id.to_string());
     proposed.sort_by_key(|r| r.id.to_string());
+    // Which of the two forms carried each live constraint's anchor, read off
+    // the two batches already held.
+    let anchored = |r: &crate::index::Row| git::anchor_form(&repo.corpus, &r.id.to_string());
 
     let mut dead: Vec<String> = dead.into_iter().collect();
     dead.sort();
@@ -5803,6 +5928,9 @@ pub fn review(
                     .str("id", &r.id.to_string())
                     .str("title", &r.title)
                     .num("files", n)
+                    // Additive: `ref`, `commit`, or null where neither is
+                    // reachable (ADR-5e47007a75be).
+                    .opt_str("anchored_by", anchored(r).map(|v| v.as_str()))
                     .finish()
             })
             .collect();
@@ -5886,9 +6014,12 @@ pub fn review(
             style.header(&format!("LIVE CONSTRAINTS ({})", live.len()))
         );
         for (r, n) in &live {
+            let anchor = anchored(r)
+                .map(|v| format!(", anchor: {}", v.as_str()))
+                .unwrap_or_default();
             let _ = writeln!(
                 out,
-                "  {}  {} ({n} files)",
+                "  {}  {} ({n} files{anchor})",
                 style.id(&r.id.to_string()),
                 r.title
             );
@@ -6518,6 +6649,9 @@ pub struct Anchored<'a> {
     /// What the file claims, which is what sends `check` looking for the
     /// commit. Never what the comparison is made against.
     ratified: Option<&'a str>,
+    /// The tag object the file names as its ratification (ADR-5e47007a75be):
+    /// where a lost ref is restored from, and never what is compared.
+    anchor: Option<&'a str>,
     supersedes: Option<&'a EntityId>,
     /// The text the anchor covers, beside the scope.
     text: &'a str,
@@ -6564,6 +6698,7 @@ impl<'a> From<&'a Adr> for Anchored<'a> {
             id: &a.id,
             status: a.status,
             ratified: a.ratified.as_deref(),
+            anchor: a.anchor.as_deref(),
             supersedes: a.supersedes.as_ref(),
             text: &a.constraint,
             scope: &a.scope,
@@ -6578,6 +6713,7 @@ impl<'a> From<&'a Spec> for Anchored<'a> {
             id: &s.id,
             status: s.status,
             ratified: s.ratified.as_deref(),
+            anchor: s.anchor.as_deref(),
             supersedes: s.supersedes.as_ref(),
             text: &s.body,
             scope: &s.scope,
@@ -6617,12 +6753,9 @@ pub fn freeze_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Freeze {
     }
     let recorded = match ratification_of(repo, &view).map(|r| r.anchor) {
         Some(anchor) => anchor,
-        None => match ref_anchor(repo, &view) {
-            Some(anchor) => anchor,
-            // A git that cannot answer is not a divergence either. Reporting
-            // one over a broken environment is how a finding becomes noise.
-            None => return Freeze::Unverifiable,
-        },
+        // A git that cannot answer is not a divergence either. Reporting one
+        // over a broken environment is how a finding becomes noise.
+        None => return Freeze::Unverifiable,
     };
     let now = view.anchor();
     if now == recorded {
@@ -6635,35 +6768,20 @@ pub fn freeze_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Freeze {
     }
 }
 
-/// The anchor the tag at `refs/ank/ratify/<id>` carries in its message, for a
-/// ratification `accept` wrote after ADR-5e47007a75be and never committed.
+/// The ratification an accepted, anchored entity rests on: its ref first, and
+/// the `ratify <id>` commit walk for an anchor made before ADR-5e47007a75be.
 ///
-/// **The freeze alone, and after the walk.** Without it a decision ratified by
-/// the new `accept` reads `Unverifiable`, so `edit` let its constraint move and
-/// `check` stopped faulting the change. Asked only when the commit walk found
-/// nothing, so a corpus of commit anchors starts no process more than it did.
-/// Reading the ref first, in one batch, with its signature judged by
-/// `verify-tag`, is TASK-6e3f8f2ff6c9's, and so is every other reader.
-fn ref_anchor(repo: &Repo, view: &Anchored) -> Option<String> {
-    let name = claim::ratify_ref(view.id);
-    let out = git::output(&repo.corpus, &["cat-file", "tag", &name]).ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let object = String::from_utf8_lossy(&out.stdout);
-    let (_, message) = object.split_once("\n\n")?;
-    let mut lines = message.lines();
-    if lines.next()? != format!("ratify {}", view.id) {
-        return None;
-    }
-    let key = format!("{}: ", view.key);
-    lines.find_map(|l| l.strip_prefix(key.as_str()).map(|h| h.trim().to_string()))
-}
-
-/// The ratification commit for an accepted, anchored entity.
+/// **The ref first, and the walk only when no ref carries the anchor**: the
+/// ref is what `accept` writes now, and a decision ratified by a commit and
+/// later re-anchored by `accept --reanchor` is answered by its newer form. The
+/// two reads are each one batch for the whole corpus, so asking per entity
+/// starts no process per entity.
 fn ratification_of(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
     if view.status != AdrStatus::Accepted || view.ratified.is_none() {
         return None;
+    }
+    if let Some(r) = ref_ratification(repo, view) {
+        return Some(r);
     }
     // Whichever layout the entity sits in, and its own history is what carries
     // the ratification: one ratified before the move has its commit on the path
@@ -6671,6 +6789,112 @@ fn ratification_of(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
     // because the memo is keyed on the entity and a first miss would be cached.
     let paths = entity_rel_paths(repo, view.id);
     git::ratification_at(&repo.corpus, &view.id.to_string(), &paths).unwrap_or(None)
+}
+
+/// The tag the file's `anchor:` names, where no ref carries this entity's
+/// ratification and the repository still holds that object as a ratification
+/// of this very entity: what `check` names the restoring command for, and
+/// what `update` restores.
+fn held_anchor(repo: &Repo, view: &Anchored) -> Option<git::RatifyTag> {
+    let tag = view.anchor?;
+    if git::ratify_tags(&repo.corpus).contains_key(&view.id.to_string()) {
+        return None;
+    }
+    git::held_ratify_tags(&repo.corpus, &[tag.to_string()])
+        .remove(tag)
+        .filter(|t| t.id == view.id.to_string() && t.key == view.key)
+}
+
+/// Puts back every ratification ref whose entity file names, as its
+/// `anchor:`, a tag this repository still holds and no ref points at
+/// (ADR-5e47007a75be), and returns each ref with the tag it now names.
+///
+/// **Local, and only what is provably this entity's**: no network, nothing
+/// installed, and an object written only when it is a tag whose subject is
+/// `ratify <id>` for that very entity under its kind's anchor key -- a file
+/// naming any other object it happens to hold gets no ref. Compare-and-swap on
+/// an absent ref, so a ref that appeared meanwhile is never overwritten.
+pub fn restore_ratify_refs(repo: &Repo) -> Result<Vec<(String, String)>> {
+    let store = Store::new(&repo.ank);
+    let present = git::ratify_tags(&repo.corpus);
+    let mut wanted: Vec<(EntityId, String, &'static str)> = Vec::new();
+    for id in store.list_ids()? {
+        if !matches!(id.kind(), EntityKind::Adr | EntityKind::Spec)
+            || present.contains_key(&id.to_string())
+        {
+            continue;
+        }
+        let Ok(loaded) = store.load(&id) else {
+            continue;
+        };
+        if let Some(view) = Anchored::of(&loaded.entity) {
+            if let Some(tag) = view.anchor {
+                wanted.push((id.clone(), tag.to_string(), view.key));
+            }
+        }
+    }
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let objects: Vec<String> = wanted.iter().map(|(_, t, _)| t.clone()).collect();
+    let held = git::held_ratify_tags(&repo.corpus, &objects);
+    let mut restored = Vec::new();
+    for (id, tag, key) in wanted {
+        let Some(t) = held.get(&tag) else {
+            continue;
+        };
+        if t.id != id.to_string() || t.key != key {
+            continue;
+        }
+        let name = claim::ratify_ref(&id);
+        if git::run(&repo.corpus, &["update-ref", &name, &tag, ""]).is_ok() {
+            restored.push((name, tag));
+        }
+    }
+    Ok(restored)
+}
+
+/// The ratification `refs/ank/ratify/<id>` carries for this entity, whatever
+/// its file says: under the key its kind anchors, or not at all.
+fn ref_ratification(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
+    git::ratify_tags(&repo.corpus)
+        .get(&view.id.to_string())
+        .filter(|t| t.key == view.key)
+        .map(git::RatifyTag::ratification)
+}
+
+/// Whether a ref ratifies this entity although its file still reads
+/// `proposed` (ADR-5e47007a75be): the ref's anchor is the file's constraint
+/// (or body) and scope as they stand, and its signature is one `check` passes.
+///
+/// **Verified means a verdict that is not a finding**: a declared key, or no
+/// key declared at all, which is the advisory regime ADR-964be4d940b2 lets a
+/// corpus ratify in. A signature this machine cannot check, an undeclared or
+/// retired key, an unsigned tag under a declared allowlist: none of them binds,
+/// because a verification that degrades to success is not a verification (§8).
+pub fn ratified_by_ref<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> bool {
+    let view = of.into();
+    if view.status != AdrStatus::Proposed {
+        return false;
+    }
+    let Some(r) = ref_ratification(repo, &view) else {
+        return false;
+    };
+    r.anchor == view.anchor()
+        && matches!(judge_signature(repo, &r), None | Some(Signature::Trusted))
+}
+
+/// Which of the two forms carries this entity's ratification, for the readers
+/// that say so (`show`, `find`, `review`): the ref, then the commit walk, read
+/// off the two batches and never per entity. `None` where neither does, or
+/// for a document that is not accepted and that no ref ratifies.
+pub fn anchored_by<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<git::Ratification> {
+    let view = of.into();
+    match view.status {
+        AdrStatus::Accepted => ratification_of(repo, &view),
+        AdrStatus::Proposed => ref_ratification(repo, &view),
+        AdrStatus::Superseded => None,
+    }
 }
 
 /// The signature on the commit the anchor was read from, or `None` when there
@@ -6681,8 +6905,17 @@ fn ratification_of(repo: &Repo, view: &Anchored) -> Option<git::Ratification> {
 /// anchor was compared against the file without anyone asking who wrote it, so
 /// an ordinary unsigned commit whose subject read `ratify <id>` was accepted as
 /// a ratification.
+///
+/// A proposed document is asked too when a ref ratifies it: the ref binds
+/// wherever the file is read once its signature passes, so a forged one has to
+/// be named before anything serves it (ADR-5e47007a75be).
 pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<Signature> {
-    let view = of.into();
+    judge_signature(repo, &anchored_by(repo, of)?)
+}
+
+/// The verdict on the object one ratification was read from, a commit or a
+/// tag, by the one classifier §8's outcomes are written against.
+fn judge_signature(repo: &Repo, ratification: &git::Ratification) -> Option<Signature> {
     let declared = declared_signers(repo);
 
     // Nothing declared is not "signed by nobody": it is the advisory mode §8
@@ -6695,9 +6928,21 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
         return None;
     }
 
-    let ratification = ratification_of(repo, &view)?;
-    let sha = ratification.sha;
+    let sha = ratification.sha.clone();
     let committed = ratification.committed;
+    let via = ratification.via;
+    // Whether the object carries a signature at all, which `N` cannot say on
+    // its own: a commit's `gpgsig` header, or a tag's signature block, already
+    // read in the batch that found the tag.
+    let carries = |facts: &git::SignatureFacts| {
+        facts.status == 'N'
+            && match via {
+                git::Via::Commit => commit_carries_signature(&repo.corpus, &sha),
+                git::Via::Ref => git::ratify_tags(&repo.corpus)
+                    .values()
+                    .any(|t| t.tag == sha && t.signed),
+            }
+    };
 
     // **The verdict already reached for this commit, under this allowlist**
     // (TASK-dbef284a166c). gpg is 4.0 of the 7.1 seconds `check` costs on this
@@ -6716,7 +6961,7 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
             status,
             fingerprint,
         };
-        let carries = facts.status == 'N' && commit_carries_signature(&repo.corpus, &sha);
+        let carries = carries(&facts);
         return Some(classify_signature(&facts, &declared, carries, committed));
     }
 
@@ -6732,14 +6977,21 @@ pub fn signature_state<'a>(repo: &Repo, of: impl Into<Anchored<'a>>) -> Option<S
     // all (TASK-c92b7cc10f13). Failing to ask has to survive as an answer.
     let for_git = signers_for_git(&allowed_signers_for_git(&declared));
     let handed = for_git.as_ref().map(SignersForGit::path);
-    match git::signature_of(&repo.corpus, &sha, handed) {
+    // A tag through `verify-tag`, a commit through the batched `rev-list`; the
+    // verdict is cached under the object's name either way, and object names
+    // do not collide across types.
+    let asked = match via {
+        git::Via::Commit => git::signature_of(&repo.corpus, &sha, handed),
+        git::Via::Ref => git::tag_signature_of(&repo.corpus, &sha, handed),
+    };
+    match asked {
         Ok(facts) => {
             signature_cache(repo, |index, key| {
                 index.remember_signature(&sha, key, facts.status, &facts.fingerprint);
             });
             // Asked only where the answer can change the verdict: every other
             // status already says whether a signature was there.
-            let carries = facts.status == 'N' && commit_carries_signature(&repo.corpus, &sha);
+            let carries = carries(&facts);
             Some(classify_signature(&facts, &declared, carries, committed))
         }
         Err(e) => Some(Signature::Unreadable {
@@ -8465,6 +8717,14 @@ fn show_in(
         // A proof anchors a completion, and only a task completes.
         _ => Vec::new(),
     };
+    // Which of the two forms carries the anchor, as ADR-493471d64ba0 asks of a
+    // proof (ADR-5e47007a75be): the ref, or the `ratify <id>` commit an anchor
+    // made before that decision lives in. A peer's refs are its own and are
+    // not fetched here, so its page says nothing rather than something wrong.
+    let ratification = match Anchored::of(&loaded.entity) {
+        Some(view) if peer.is_none() => anchored_by(repo, view),
+        _ => None,
+    };
     // The entries about this entity, of whatever kind it is: an ADR carries
     // them too (ADR-25f977377fa0).
     let mut log = crate::entries::about(&store, &index, &loaded.entity)?;
@@ -8530,6 +8790,17 @@ fn show_in(
                 .raw("amends", &edges_json(amends))
                 .raw("amended_by", &edges_json(amended_by));
         }
+        // Over an ADR or a spec only, and `null` where neither form is
+        // reachable: the question is one every anchored kind answers.
+        if Anchored::of(&loaded.entity).is_some() {
+            doc = match &ratification {
+                Some(r) => doc.obj(
+                    "ratification",
+                    Obj::new().str("via", r.via.as_str()).str("object", &r.sha),
+                ),
+                None => doc.null("ratification"),
+            };
+        }
         let doc = doc
             .raw("detached_proofs", &detached_json(&detached))
             .num("log_total", log_total)
@@ -8558,6 +8829,23 @@ fn show_in(
         }
         if let Entity::Task(t) = &loaded.entity {
             proof_section(out, t, &detached, inv.style());
+        }
+        if let Some(r) = &ratification {
+            let style = inv.style();
+            let by = match r.via {
+                git::Via::Ref => format!(
+                    "{}  tag {}",
+                    claim::ratify_ref(loaded.entity.id()),
+                    &r.sha[..12.min(r.sha.len())]
+                ),
+                git::Via::Commit => format!("commit {}", &r.sha[..12.min(r.sha.len())]),
+            };
+            let _ = writeln!(
+                out,
+                "
+{}",
+                style.header(&format!("RATIFIED BY {by}"))
+            );
         }
         // **Silent when there is none**, so `show` on an ADR that neither
         // amends nor is amended is byte for byte what it was before the field.
@@ -9080,6 +9368,16 @@ mod tests {
                 .next()
                 .unwrap()
                 .to_string();
+            // The corpus that `accept` left before the decision: no ref, and
+            // no `anchor:` line, so the readers fall back to the walk.
+            self.git_ok(&["update-ref", "-d", &format!("refs/ank/ratify/{id}")]);
+            let file = self.0.join(".ank/entities").join(format!("{id}.md"));
+            let text = std::fs::read_to_string(&file).unwrap();
+            let kept: String = text
+                .split_inclusive('\n')
+                .filter(|l| !l.starts_with("anchor: "))
+                .collect();
+            std::fs::write(&file, kept).unwrap();
             let mut commit = vec!["commit", "-q", "-m", message.as_str()];
             if can_sign(&self.0) {
                 commit.insert(1, "-S");
