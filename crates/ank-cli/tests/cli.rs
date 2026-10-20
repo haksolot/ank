@@ -4209,10 +4209,12 @@ fn cold_rounds() -> u32 {
 /// 550ms. What a reader waits for now is bounded by the rebuild it is itself
 /// about to write, so the base wall no longer decides whether it answers.
 ///
-/// Not zero, and the reason is measured: at zero, one reader in 120 is refused
-/// on its very first read of a file whose creator is committing the schema
-/// while the file is still in the rollback journal. That commit is a few
-/// milliseconds of nobody's rebuild, which the wall exists to cover.
+/// Not zero, and the reason was measured: at zero, one reader in 120 was
+/// refused on its very first read of a file still in the rollback journal.
+/// That was taken for a few milliseconds the wall covers, and it was the
+/// creator's switch to WAL, which `windows-latest` then held for 327ms to
+/// 3222ms and refused seven readers of eight behind (TASK-5f45090a418b). The
+/// file is switched before anybody can open it now, which the test below pins.
 #[test]
 fn cold_readers_wait_for_a_writer_that_outlasts_the_busy_wall() {
     let refused = cold_readers_refused(Some("50"));
@@ -4285,6 +4287,101 @@ fn cold_readers_refused(busy_ms: Option<&'static str>) -> Vec<String> {
         }
     }
     refused
+}
+
+/// **The index appears already in WAL, and no reader ever meets its creation**
+/// (TASK-5f45090a418b).
+///
+/// The test above went red again on `windows-latest`, three times in 38 jobs,
+/// with seven readers of eight refused and the eighth answering. Reproduced
+/// on Windows under flush load (twelve processes writing and `fsync`ing beside
+/// it): 15 readers in 80 refused, every one at its connection's first read,
+/// behind the reader that had created the file. That reader's `PRAGMA
+/// journal_mode = WAL` took 2038ms, because on a new file SQLite performs the
+/// switch as a rollback-journal transaction, under an exclusive lock on the
+/// database, with a journal created, flushed and deleted. A reader arriving
+/// meanwhile waits the base wall and no longer, so the length of one flush on
+/// a loaded disk decided whether seven processes answered.
+///
+/// So the condition is stated where it cannot depend on the disk: from the
+/// moment the live index exists, it is a WAL database, and no rollback journal
+/// ever stands beside it. A watcher reads the path in a tight loop while cold
+/// readers create the file, and any sighting of it empty, with its header
+/// bytes 18-19 other than `2, 2`, or with a `-journal` beside it, is a moment
+/// in which a reader could have met the lock.
+#[test]
+fn the_index_is_never_visible_before_it_is_in_wal() {
+    use std::io::Read as _;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let ank = r.0.join(".ank");
+    let db = index_file::path(&ank);
+    let journal = ank.join(format!("{}-journal", index_file::name()));
+
+    let mut sightings = Vec::new();
+    for round in 1..=20 {
+        index_file::remove_all(&ank);
+        assert!(!db.exists(), "every round must start without an index");
+        let stop = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (stop, db, journal) = (stop.clone(), db.clone(), journal.clone());
+            std::thread::spawn(move || {
+                let mut seen = Vec::new();
+                while !stop.load(Ordering::Relaxed) {
+                    if journal.exists() {
+                        seen.push("a rollback journal beside the index".to_string());
+                    }
+                    let Ok(mut f) = std::fs::File::open(&db) else {
+                        continue;
+                    };
+                    let mut header = [0u8; 20];
+                    match f.read_exact(&mut header) {
+                        Ok(()) if header[18..20] == [2, 2] => {}
+                        Ok(()) => seen.push(format!("header bytes 18-19 {:?}", &header[18..20])),
+                        Err(_) => seen.push("the index present and shorter than a header".into()),
+                    }
+                }
+                seen
+            })
+        };
+        let readers: Vec<_> = (0..4)
+            .map(|i| {
+                let corpus = r.0.clone();
+                std::thread::spawn(move || {
+                    ank_command()
+                        .args(["find", "--json", "--repo"])
+                        .arg(&corpus)
+                        .env("ANK_AGENT", format!("agent-{i}@host"))
+                        .current_dir(std::env::temp_dir())
+                        .output()
+                        .expect("the binary must have been built")
+                })
+            })
+            .collect();
+        for reader in readers {
+            let out = reader.join().expect("a reader thread must finish");
+            assert_eq!(code(&out), 0, "{}", stderr(&out));
+        }
+        stop.store(true, Ordering::Relaxed);
+        let mut seen = watcher.join().expect("the watcher must finish");
+        seen.sort();
+        seen.dedup();
+        if !seen.is_empty() {
+            sightings.push(format!("round {round}: {}", seen.join("; ")));
+        }
+    }
+    assert!(
+        sightings.is_empty(),
+        "the live index was visible before it was a WAL database, which is the \
+         window in which a reader's first read waits behind the creator's \
+         rollback-journal switch and is refused once the wall is out, in {} \
+         rounds of 20:\n{}",
+        sightings.len(),
+        sightings.join("\n")
+    );
 }
 
 /// A corpus is keyed on its root commit, so a path cannot change what it is
