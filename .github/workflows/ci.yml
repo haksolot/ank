@@ -152,13 +152,20 @@ jobs:
 
       # The Rust toolchain preinstalled on the runners is enough, rustfmt
       # included. A third-party toolchain action would be one more dependency
-      # in the supply chain, for a need the image already covers.
+      # in the supply chain, for a need the image already covers. Where it is
+      # installed is not fixed by the image name, so it is printed too: the
+      # next step depends on it (TASK-4095e3143f18).
       - name: versions
         if: env.RUN == 'true'
+        shell: bash
         run: |
           rustc --version
           cargo --version
           git --version
+          echo "rustc: $(command -v rustc)"
+          echo "cargo: $(command -v cargo)"
+          echo "CARGO_HOME=${CARGO_HOME-<unset>} RUSTUP_HOME=${RUSTUP_HOME-<unset>}"
+          ls -la "$HOME/.cargo" || true
 
       # The checkout applies .gitattributes: on windows-latest, .ank/ must come
       # out in LF. This is the step that would have caught the CRLF bug, and
@@ -191,6 +198,12 @@ jobs:
       # another, and on windows-latest that sequence was the whole length of a
       # run. Installed from its published binary at a pinned version, for the
       # reason the cache and the toolchain above give: no third-party action.
+      #
+      # Into ~/.cargo/bin, which is not there on every image: macos-26-arm64
+      # 20261021.0445.8 ships it absent, and tar cannot extract into a missing
+      # directory (TASK-4095e3143f18). So it is created, and put on PATH for
+      # this step and the ones after it when the image did not already put it
+      # there, since cargo finds `cargo-nextest` on PATH.
       - name: cargo-nextest
         if: env.RUN == 'true'
         shell: bash
@@ -202,7 +215,17 @@ jobs:
             macOS) platform=mac ;;
             Windows) platform=windows-tar ;;
           esac
-          curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/$platform" | tar zxf - -C "$HOME/.cargo/bin"
+          bin="$HOME/.cargo/bin"
+          mkdir -p "$bin"
+          curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/$platform" | tar zxf - -C "$bin"
+          case ":$PATH:" in
+            *":$bin:"*) ;;
+            *)
+              echo "$bin was not on PATH"
+              echo "$bin" >> "$GITHUB_PATH"
+              export PATH="$bin:$PATH"
+              ;;
+          esac
           cargo nextest --version
 
       - run: cargo fmt --check
