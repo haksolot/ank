@@ -5,15 +5,20 @@ slug: a-push-the-remote-rejects-is-classified-by-the-r
 title: A push the remote rejects is classified by the ref's state, and the remote's reason is reported verbatim
 created: 2026-10-23T13:27:44Z
 author: claude-code/opus-5.5+plan571-552
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/git.rs
   - crates/ank-cli/src/claim.rs
 constraint: |
   git push --porcelain joins the invocations ADR-9307e5d214a7 admits, and of it only the stdout status line of the pushed ref is read: its flag, `rejected` or `remote rejected`, and the parenthesised reason; stderr and `remote:` text are never read. Classification stays by state: after a failed push one ls-remote of the ref decides, and no answer is an unreachable remote as before; a remote ref differing from the expected witness is a lost race; a `remote rejected` whose ref still equals the witness is a refusal by the remote. A refusal reports the reason verbatim, gives no reason a meaning, names nobody as holder and never becomes a local win: claim exits 9 and leaves no local claim; log, done, release and close keep their local write and exit 0 with a warning naming the reason; attest --detached and accept exit 9 as for an unreachable remote. The retry without a witness is taken only on a client-side `rejected (stale info)` against an absent ref. A push whose stdout carries no status line for the ref keeps the ls-remote reading alone.
 amends: [ADR-9307e5d214a7, ADR-af533e7a3e03]
+ratified: 0d3172a2143e
+anchor: 516c1500b0aa8d80f6c976b0ae28936e32086bac
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-23T14:05:58Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Raised by issue #571, and narrowed by the drift audit of 2026-10-23, which measured the present behaviour against a bare remote whose `update` hook refuses `refs/ank/*` (git 2.47.3, ank 0.9.2, push path unchanged at 9035be27).
