@@ -52,6 +52,7 @@ mod schema;
 mod signers;
 mod skill;
 mod spec_page;
+mod stale_lease_release;
 mod status;
 mod tui;
 mod update;
