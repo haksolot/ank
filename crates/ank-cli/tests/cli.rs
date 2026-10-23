@@ -6353,6 +6353,249 @@ fn release_and_close_warn_when_the_claim_deletion_does_not_reach_the_remote() {
     }
 }
 
+/// Installs `script` as the bare remote's `pre-receive` hook.
+///
+/// A hook is the one refusal every git server shares: GitHub's rulesets, a
+/// Gitea hook and a coordination hub all answer through the report-status a
+/// stock `pre-receive` produces, so a test against it is a test against all of
+/// them (ADR-aaee5307b34c). Its reason is always `pre-receive hook declined`;
+/// what the hook writes on its own stderr reaches the client only as `remote:`
+/// text, which ank must never read.
+///
+/// Run once by the test before git ever does: a script written moments before
+/// it is executed can meet `ETXTBSY` on Linux while another test thread's fork
+/// still holds the write descriptor, and git would then report a hook it could
+/// not start as a hook that declined -- the very outcome under test.
+fn install_pre_receive(origin: &Path, script: &str) {
+    let hook = origin.join("hooks").join("pre-receive");
+    std::fs::create_dir_all(hook.parent().unwrap()).unwrap();
+    std::fs::write(&hook, script).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        for attempt in 0.. {
+            match spawn(&hook)
+                .current_dir(origin)
+                .stdin(std::process::Stdio::null())
+                .output()
+            {
+                Ok(_) => break,
+                Err(e) if e.raw_os_error() == Some(26) && attempt < 50 => {
+                    std::thread::sleep(std::time::Duration::from_millis(20))
+                }
+                Err(e) => panic!("the hook could not be started: {e}"),
+            }
+        }
+    }
+}
+
+/// A `pre-receive` that refuses every `refs/ank/*` update, and says something
+/// on its stderr that ank would repeat if it read the sideband: a holder's name.
+const REFUSING_HOOK: &str = "#!/bin/sh\n\
+while read old new ref; do\n\
+  case \"$ref\" in refs/ank/*) echo \"held by mallory@elsewhere\" >&2; exit 1;; esac\n\
+done\n\
+exit 0\n";
+
+/// How many `git push` processes ran under `trace`, a `GIT_TRACE2_EVENT` file:
+/// one `start` record per process, which git writes itself.
+fn pushes_in(trace: &Path) -> usize {
+    let text = std::fs::read_to_string(trace).expect("git must have written the trace");
+    text.lines()
+        .filter(|l| l.contains("\"event\":\"start\"") && l.contains("\",\"push\","))
+        .count()
+}
+
+/// **A remote that refuses a claim is not a holder and not a lost race**
+/// (TASK-b896bfbc9c8b, ADR-aaee5307b34c).
+///
+/// Measured before the fix against exactly this hook: `claim` exited 4 naming
+/// the caller as the holder blocking it, and kept its local ref, so `status`
+/// then showed a claim the remote had refused. The remote is reachable, so the
+/// `ls-remote` that follows the failed push answered, and an answer used to
+/// mean a lost swap. It is a refusal: the ref there is still what the push
+/// expected, and the porcelain status line says `remote rejected`.
+#[test]
+fn a_claim_the_remote_refuses_exits_9_with_its_reason_and_leaves_no_claim() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let (origin, _other) = r.cloned();
+    install_pre_receive(&origin, REFUSING_HOOK);
+
+    let trace = r.0.with_extension("refused-claim.trace");
+    let out = r.ank_env(
+        "claude-code@ank",
+        &["claim", ID],
+        &[("GIT_TRACE2_EVENT", Some(trace.to_str().unwrap()))],
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        9,
+        "a refusal by the remote is an environment to repair, not a task taken:\n{said}"
+    );
+    assert!(
+        stderr(&out).contains("pre-receive hook declined"),
+        "the remote's reason, as push --porcelain printed it, is not reported: {said}"
+    );
+    assert!(
+        !said.contains("held by"),
+        "a refusal names nobody as holder, least of all the caller: {said}"
+    );
+    assert!(
+        !said.contains("mallory"),
+        "the hook's own stderr reached the output, so the sideband is being read: {said}"
+    );
+    assert!(
+        r.claim_ref(ID).is_none(),
+        "the clone kept a claim the remote refused:\n{:?}",
+        r.claim_ref(ID)
+    );
+    assert_eq!(
+        pushes_in(&trace),
+        1,
+        "a refused claim with nothing to lease against is pushed once, never retried"
+    );
+
+    let out = r.ank("claude-code@ank", &["status"]);
+    assert!(
+        stdout(&out).contains("no claim"),
+        "status reports a claim the remote refused:\n{}",
+        stdout(&out)
+    );
+}
+
+/// **Renewing or handing back a claim the remote now refuses degrades, with the
+/// remote's reason** (TASK-b896bfbc9c8b, ADR-aaee5307b34c).
+///
+/// The claim reached the remote first, then the remote began refusing. Before
+/// the fix `log` announced the claim "taken over while logging" -- the remote
+/// still held the caller's own record -- and `release` said `released` with no
+/// warning while the remote ref survived. Both wrote to disk something that
+/// stands, so both stay on the degrading side of ADR-af533e7a3e03: exit 0, and
+/// a warning that names what the remote said.
+#[test]
+fn log_and_release_refused_by_the_remote_warn_with_its_reason() {
+    const LOGGED: &str = "TASK-000000000e01";
+    const RELEASED: &str = "TASK-000000000e02";
+    let r = Repo::new();
+    r.seed_task(LOGGED, Some("A verifiable criterion."));
+    r.seed_task(RELEASED, Some("A verifiable criterion."));
+    let (origin, _other) = r.cloned();
+    // Two holders, one claim each, both pushed before the remote starts
+    // refusing: an identity holds one claim at a time, and the release must
+    // lease on the record the remote really holds, which a refused renewal in
+    // the same clone would no longer be.
+    for (agent, id) in [("claude-code@ank", LOGGED), ("codex@host-9", RELEASED)] {
+        let out = r.ank(agent, &["claim", id]);
+        assert_eq!(code(&out), 0, "claim {id}: {}", stderr(&out));
+    }
+    install_pre_receive(&origin, REFUSING_HOOK);
+    // A renewal inside the second of the claim computes the record already on
+    // the ref and writes nothing (TASK-43c2e64d1d30), so it would push nothing
+    // for the remote to refuse. The next second is the first one where `log`
+    // has something to say.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+
+    let trace = r.0.with_extension("refused-log.trace");
+    let out = r.ank_env(
+        "claude-code@ank",
+        &["log", "the remote starts refusing"],
+        &[("GIT_TRACE2_EVENT", Some(trace.to_str().unwrap()))],
+    );
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "log wrote its entry and must exit 0:\n{said}"
+    );
+    assert!(
+        !said.contains("taken over"),
+        "the remote still holds this clone's own record, nobody took it over: {said}"
+    );
+    assert!(
+        stderr(&out).contains("pre-receive hook declined"),
+        "log degraded without naming the remote's reason: {said}"
+    );
+    assert_eq!(
+        pushes_in(&trace),
+        1,
+        "the remote holds the witness, so there is no stale lease to retry: {said}"
+    );
+
+    let out = r.ank("codex@host-9", &["release", "--reason", "refused"]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        0,
+        "release handed the task back and must exit 0:\n{said}"
+    );
+    assert!(
+        stderr(&out).contains("pre-receive hook declined"),
+        "release degraded in silence while the remote kept the claim: {said}"
+    );
+    assert!(!said.contains("mallory"), "the sideband was read: {said}");
+}
+
+/// **A swap lost on the server is still a lost race** (TASK-b896bfbc9c8b).
+///
+/// The ref moves between the advertisement this clone's push read and the
+/// update the remote performs, which git reports as `remote rejected`, the same
+/// summary a refusal carries. What tells them apart is the state, asked of the
+/// remote afterwards: the ref no longer holds what the push expected, so
+/// somebody else won, and `claim` exits 4 naming them, exactly as when another
+/// clone simply got there first.
+///
+/// Arranged rather than raced: the other clone's claim is taken and its record
+/// kept on the remote as an object, the ref is removed, and a `pre-receive`
+/// puts it back the moment this clone's push arrives.
+#[test]
+fn a_swap_lost_on_the_server_still_exits_4_naming_the_holder() {
+    let r = Repo::new();
+    r.seed_task(ID, Some("A verifiable criterion."));
+    let (origin, other) = r.cloned();
+    let out = r.ank_at("codex@host-9", &["claim", ID], &other);
+    assert_eq!(code(&out), 0, "the other clone's claim: {}", stderr(&out));
+    let refname = format!("refs/ank/claims/{ID}");
+    let held = git_command(&origin)
+        .args(["rev-parse", &refname])
+        .output()
+        .unwrap();
+    assert!(
+        held.status.success(),
+        "the other clone's claim never reached origin"
+    );
+    let held = stdout(&held).trim().to_string();
+    let out = git_command(&origin)
+        .args(["update-ref", "-d", &refname])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+
+    install_pre_receive(
+        &origin,
+        &format!(
+            "#!/bin/sh\n\
+             unset GIT_QUARANTINE_PATH\n\
+             git update-ref {refname} {held} \"\" 2>/dev/null\n\
+             exit 0\n"
+        ),
+    );
+
+    let out = r.ank("claude-code@ank", &["claim", ID]);
+    let said = format!("{}{}", stdout(&out), stderr(&out));
+    assert_eq!(
+        code(&out),
+        4,
+        "a swap lost on the server is a lost race:\n{said}"
+    );
+    assert!(
+        stderr(&out).contains("codex@host-9"),
+        "the winner is not named: {said}"
+    );
+}
+
 /// What a holder of a claim sees of the coordination plane (TASK-dacbcae6134c).
 ///
 /// The agent best placed to notice a collision is the one currently working,

@@ -185,8 +185,14 @@ because they share `refs/ank/`. **Two clones with no common origin are not
 arbitrated: both claims of one task succeed, both agents work, and nothing
 reports it**, not `status`, not `check`, not later.
 
-A push the remote refuses leaves the claim standing in your clone and says so on
-stderr: the claim holds there only, and another clone can take the same task. A
-contributor working from a fork is in exactly that position, and
+A push that cannot reach the remote leaves the claim standing in your clone and
+says so on stderr: the claim holds there only, and another clone can take the
+same task. A remote that is reached and refuses the write for a reason of its
+own (a hook, a ruleset, a credential) is reported with that reason, exactly as
+`git push --porcelain` printed it: `claim` exits 9 and keeps nothing, since a
+claim the remote refused is not one your clone may believe in, while `log`,
+`done`, `release` and `close` keep what they wrote and warn with the reason.
+Neither is ever reported as a task held by somebody else. A contributor working
+from a fork is in the first position, and
 [CONTRIBUTING.md](https://github.com/haksolot/ank/blob/main/CONTRIBUTING.md#working-from-a-fork)
 says how coordination happens instead.
