@@ -1142,7 +1142,18 @@ fn watch(inv: &Invocation, out: &mut dyn std::io::Write) -> Result<ExitCode> {
         )
         .with_hint("a warming is a run of ank: start the watcher by the binary's path on disk")
     })?;
-    let address = ank_daemon::Address { exe };
+    // The resolver every verb routes its claims through, so the watcher mirrors
+    // from the remote that carries them and has no second answer of its own
+    // (ADR-b6fe84504ff2). A repository git cannot answer about is one with no
+    // remote, which the watcher already treats as nothing to report.
+    let address = ank_daemon::Address {
+        exe,
+        claims_remote: |root| {
+            crate::git::remote_for(root, crate::claim::CLAIMS_PREFIX)
+                .ok()
+                .flatten()
+        },
+    };
     let options = ank_daemon::Options {
         list: inv.has("--list"),
         once: inv.has("--once"),

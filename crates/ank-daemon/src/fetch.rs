@@ -7,7 +7,7 @@
 //! synchronise. A background process doing the same thing would be rewriting
 //! the coordination plane underneath whoever is working in the tree, and
 //! `refs/ank/claims/<id>` is the ref a live claim of theirs sits on. So the
-//! destination is [`TRACKING`]: a mirror the CLI reads and nobody claims
+//! destination is [`tracking`]: a mirror the CLI reads and nobody claims
 //! against, in a namespace no verb writes.
 //!
 //! **Narrow on purpose.** `refs/ank/claims/*` is the one namespace a reader of
@@ -35,8 +35,8 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// The mirror's root in a repository this daemon watches: the remote's claims
-/// land under its `claims/`, and nothing lands beside them.
+/// Where every mirror lives: `refs/ank/watch/<remote>/`, one directory per
+/// remote, and the remote's claims under its `claims/`.
 ///
 /// Under `refs/ank/` rather than beside it, because ADR-85e6ff5b8b7c gives this
 /// project one ref namespace and a second one would be a second answer to
@@ -45,24 +45,38 @@ use std::process::{Command, Stdio};
 /// build of the CLI that knows nothing about this mirror behaves exactly as it
 /// did before one existed.
 ///
-/// The remote is named in the path even though `origin` is the only one ank
-/// arbitrates through, for the reason the CLI names it rather than discovering
-/// it: a mirror whose refs do not say where they came from is a mirror that
-/// cannot gain a second source without renaming the first.
-pub const TRACKING: &str = "refs/ank/watch/origin/";
+/// The remote is named in the path for the reason the CLI names it rather than
+/// discovering it: a mirror whose refs do not say where they came from could
+/// not gain a second source without renaming the first, and it has -- `origin`,
+/// or the `ank` remote that carries claims when there is one (ADR-b6fe84504ff2).
+pub const WATCH: &str = "refs/ank/watch/";
+
+/// The remote a checkout's claims are mirrored from when nothing says
+/// otherwise: the one a checkout with no coordination remote arbitrates
+/// through, and the one every watcher mirrored before ADR-b6fe84504ff2.
+pub const ORIGIN: &str = "origin";
+
+/// The mirror of `remote`: [`WATCH`]`<remote>/`.
+pub fn tracking(remote: &str) -> String {
+    format!("{WATCH}{remote}/")
+}
 
 /// The one namespace of the remote the mirror carries.
 const CLAIMS: &str = "refs/ank/claims/";
 
-/// Whether this repository has the remote ank arbitrates through.
+/// Whether this repository has `remote`, the one its claims travel on.
 ///
 /// **Absence is not a failure**, exactly as it is for the CLI: a repository
 /// with no remote is the mode every solo checkout is in, and a watcher that
 /// complained once a minute about it would be reporting a configuration nobody
 /// got wrong.
-fn has_origin(root: &Path) -> bool {
+///
+/// Asked every cycle, of the remote resolved at startup: a remote added or
+/// removed while the watcher runs is seen at the next cycle, as `origin` always
+/// was. Which remote that is was settled once, and is not asked again here.
+fn has_remote(root: &Path, remote: &str) -> bool {
     Command::new("git")
-        .args(["config", "--get", "remote.origin.url"])
+        .args(["config", "--get", &format!("remote.{remote}.url")])
         .current_dir(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -82,8 +96,8 @@ pub enum Fetched {
     NoRemote,
 }
 
-/// Mirrors `refs/ank/claims/*` of `origin` into [`TRACKING`]`claims/`, and
-/// touches nothing else.
+/// Mirrors `refs/ank/claims/*` of `remote` into [`tracking`]`(remote)claims/`,
+/// and touches nothing else.
 ///
 /// `--prune` reaches only the destination of the refspec, so a ref an older
 /// build mirrored beside the claims stays where it is: removing it is a
@@ -99,11 +113,11 @@ pub enum Fetched {
 /// `Err` carries the first line of git's own complaint, which is what a person
 /// reading the log needs and is never parsed by anything here: the exit code is
 /// what decided, as ADR-9307e5d214a7 requires.
-pub fn mirror(root: &Path) -> Result<Fetched, String> {
-    if !has_origin(root) {
+pub fn mirror(root: &Path, remote: &str) -> Result<Fetched, String> {
+    if !has_remote(root, remote) {
         return Ok(Fetched::NoRemote);
     }
-    let spec = format!("+{CLAIMS}*:{TRACKING}claims/*");
+    let spec = format!("+{CLAIMS}*:{}claims/*", tracking(remote));
     let out = Command::new("git")
         .args([
             "fetch",
@@ -113,7 +127,7 @@ pub fn mirror(root: &Path) -> Result<Fetched, String> {
             "--no-write-fetch-head",
             "--no-recurse-submodules",
             "--refmap=",
-            "origin",
+            remote,
             spec.as_str(),
         ])
         .current_dir(root)
@@ -134,8 +148,8 @@ pub fn mirror(root: &Path) -> Result<Fetched, String> {
         .to_string())
 }
 
-/// What the mirror holds right now: every tracking ref with the object it
-/// points at, one per line, sorted as git sorts them.
+/// What the mirror of `remote` holds right now: every tracking ref with the
+/// object it points at, one per line, sorted as git sorts them.
 ///
 /// This is how a change to somebody else's claims becomes news. The fetch above
 /// says whether git succeeded, never whether anything moved -- `--quiet` and a
@@ -147,12 +161,12 @@ pub fn mirror(root: &Path) -> Result<Fetched, String> {
 /// a repository with no tracking refs is. The caller compares two readings and
 /// nothing else, so a failure costs a comparison that says "unchanged" and never
 /// a wrong event.
-pub fn mirrored(root: &Path) -> Vec<String> {
+pub fn mirrored(root: &Path, remote: &str) -> Vec<String> {
     Command::new("git")
         .args([
             "for-each-ref",
             "--format=%(refname)%09%(objectname)",
-            TRACKING,
+            &tracking(remote),
         ])
         .current_dir(root)
         .stdin(Stdio::null())
@@ -179,9 +193,12 @@ mod tests {
         // `context::plane` strips these two prefixes and skips whatever matches
         // neither. If this ever started with one of them, a mirrored claim
         // would read as a claim taken in this clone.
-        assert!(!TRACKING.starts_with("refs/ank/claims/"));
-        assert!(!TRACKING.starts_with("refs/ank/proof/"));
-        assert!(TRACKING.starts_with("refs/ank/"));
-        assert!(TRACKING.ends_with('/'));
+        for remote in [ORIGIN, "ank"] {
+            let tracking = tracking(remote);
+            assert!(!tracking.starts_with("refs/ank/claims/"));
+            assert!(!tracking.starts_with("refs/ank/proof/"));
+            assert!(tracking.starts_with("refs/ank/"));
+            assert!(tracking.ends_with('/'));
+        }
     }
 }
