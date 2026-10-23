@@ -7337,10 +7337,12 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     git::run(cwd, &["update-ref", &name, &tag, ""])?;
 
     // With compare-and-swap, as `attest --detached` pushes: the remote must
-    // not hold the ref either. A repository with no remote has nowhere to
-    // carry it, and the ref in this clone is the whole of the repository.
+    // not hold the ref either. A repository with no origin has nowhere to
+    // carry it, and the ref in this clone is the whole of the repository: a
+    // ratification travels with the code it anchors, on origin, and never on a
+    // coordination remote named `ank` (ADR-b6fe84504ff2).
     if git::remote(cwd)?.is_some() {
-        let refused = match git::push_ref(cwd, &name, Some(&tag), None)? {
+        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(&tag), None)? {
             git::Pushed::Ok => None,
             git::Pushed::Refused { holds: Some(other) } => {
                 Some(format!("the remote already holds {other} there"))

@@ -178,6 +178,54 @@ pub fn remote(cwd: &Path) -> Result<Option<String>> {
     Ok((!url.is_empty()).then_some(url))
 }
 
+/// The remote every ref but the claims travels on, and the one code state is
+/// read from (ADR-b6fe84504ff2).
+pub const ORIGIN: &str = "origin";
+
+/// The remote that carries `refs/ank/claims/*` when the repository has one by
+/// that name (ADR-b6fe84504ff2). A name and not a key: `git remote add ank
+/// <url>` is the whole setup, and `status` says when it is in force.
+pub const COORDINATION: &str = "ank";
+
+/// The remote `refname` is read from and written to, or `None` when the
+/// repository has nowhere to carry it and the ref in this clone is the whole of
+/// it (level 0).
+///
+/// **Keyed on the ref's namespace** (ADR-b6fe84504ff2). A claim goes to `ank`
+/// when that remote has a URL and to origin otherwise; every other ref --
+/// ratifications, proofs, anything else under `refs/ank/` -- goes to origin
+/// only, so with `ank` and no origin it stays local. Those keep asking exactly
+/// what [`remote`] asked before a coordination remote existed, one process.
+///
+/// A claim costs one process too: the question that was `--get
+/// remote.origin.url` names both remotes in one `--get-regexp`, so a clone with
+/// origin alone starts what it always started and reaches the network with
+/// the same arguments. Exit 1 is "no such key", the empty answer.
+pub fn remote_for(cwd: &Path, refname: &str) -> Result<Option<&'static str>> {
+    // Claim records and completion records alike: both live under it.
+    if !refname.starts_with(crate::claim::CLAIMS_PREFIX) {
+        return Ok(remote(cwd)?.map(|_| ORIGIN));
+    }
+    let out = output(
+        cwd,
+        &["config", "--get-regexp", r"^remote\.(origin|ank)\.url$"],
+    )?;
+    let said = String::from_utf8_lossy(&out.stdout);
+    let has = |name: &str| {
+        said.lines().any(|line| {
+            let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+            key == format!("remote.{name}.url") && !value.trim().is_empty()
+        })
+    };
+    Ok(if has(COORDINATION) {
+        Some(COORDINATION)
+    } else if has(ORIGIN) {
+        Some(ORIGIN)
+    } else {
+        None
+    })
+}
+
 /// What a push of a claim ref did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Pushed {
@@ -228,6 +276,7 @@ pub enum Pushed {
 /// trip on the failing path only.
 pub fn push_ref(
     cwd: &Path,
+    remote: &str,
     refname: &str,
     new: Option<&str>,
     expect: Option<&str>,
@@ -237,18 +286,12 @@ pub fn push_ref(
         Some(object) => format!("{object}:{refname}"),
         None => format!(":{refname}"),
     };
-    let args = [
-        "push",
-        "--porcelain",
-        lease.as_str(),
-        "origin",
-        spec.as_str(),
-    ];
+    let args = ["push", "--porcelain", lease.as_str(), remote, spec.as_str()];
     let out = output(cwd, &args)?;
     if out.status.success() {
         return Ok(Pushed::Ok);
     }
-    match ls_remote(cwd, refname) {
+    match ls_remote(cwd, remote, refname) {
         Ok(holds) if holds.as_deref() == expect => {
             match remote_rejection(&String::from_utf8_lossy(&out.stdout), refname) {
                 Some(reason) => Ok(Pushed::Rejected { reason }),
@@ -297,8 +340,8 @@ fn remote_rejection(porcelain: &str, refname: &str) -> Option<String> {
 ///
 /// One line per ref, `<oid>\t<refname>`, which is what makes `ls-remote`
 /// admissible under ADR-9307e5d214a7.
-pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
-    let args = ["ls-remote", "origin", refname];
+pub fn ls_remote(cwd: &Path, remote: &str, refname: &str) -> Result<Option<String>> {
+    let args = ["ls-remote", remote, refname];
     let out = output(cwd, &args)?;
     if !out.status.success() {
         return Err(failed(&args, &out));
@@ -327,8 +370,8 @@ pub fn ls_remote(cwd: &Path, refname: &str) -> Result<Option<String>> {
 /// "origin holds no claim" and "origin was not read" are different answers, and
 /// a caller that cannot tell them apart would print the first when it means the
 /// second.
-pub fn ls_remote_refs(cwd: &Path, pattern: &str) -> Result<Vec<AnkRef>> {
-    let args = ["ls-remote", "origin", pattern];
+pub fn ls_remote_refs(cwd: &Path, remote: &str, pattern: &str) -> Result<Vec<AnkRef>> {
+    let args = ["ls-remote", remote, pattern];
     let out = output(cwd, &args)?;
     if !out.status.success() {
         return Err(failed(&args, &out));
@@ -665,9 +708,9 @@ pub fn tags_of(cwd: &Path, repository: &str) -> Result<Vec<String>> {
 /// Failure is not an error to the caller: an unreachable remote means the
 /// answer is the local one, and the push that follows is where that gets said.
 /// Read for its exit code alone, never parsed.
-pub fn fetch_ref(cwd: &Path, refname: &str) -> Result<bool> {
+pub fn fetch_ref(cwd: &Path, remote: &str, refname: &str) -> Result<bool> {
     let spec = format!("+{refname}:{refname}");
-    let out = output(cwd, &["fetch", "--quiet", "origin", spec.as_str()])?;
+    let out = output(cwd, &["fetch", "--quiet", remote, spec.as_str()])?;
     Ok(out.status.success())
 }
 
