@@ -375,6 +375,9 @@ const STATUS_OUT: &[Field] = &[
         ]),
     ),
     f("remote", Type::Bool),
+    // The remote claims travel on when it is not origin: `ank` when the
+    // repository has a remote by that name, null otherwise (ADR-b6fe84504ff2).
+    opt("coordination_remote", Type::Str),
     // Null when `--remote` was not given, which is not zero: zero would say
     // this checkout's `refs/ank/*` match origin's, and without the flag nothing
     // was compared (TASK-6596aae0713c). `stale` is a ref both planes carry

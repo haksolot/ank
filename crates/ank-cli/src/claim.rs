@@ -777,14 +777,18 @@ pub fn put_at(cwd: &Path, name: &str, record: &Record, witness: Option<&str>) ->
 }
 
 /// The remote half of a write, shared by [`put_at`] and [`delete_at`].
+///
+/// To the remote the ref's namespace names (ADR-b6fe84504ff2): a claim to `ank`
+/// when there is one, a proof to origin, and nothing to push when neither is
+/// there for it.
 fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Result<Written> {
-    if git::remote(cwd)?.is_none() {
+    let Some(remote) = git::remote_for(cwd, name)? else {
         return Ok(Written {
             cas: Cas::Won,
             sync: Sync::Local,
         });
-    }
-    let mut pushed = git::push_ref(cwd, name, new, witness)?;
+    };
+    let mut pushed = git::push_ref(cwd, remote, name, new, witness)?;
     // **A remote with no copy of the ref holds nothing to compare against**
     // (TASK-2d779142ca70). The lease names the object this clone read, and a
     // remote that never had the ref -- a claim taken before the remote was
@@ -796,7 +800,7 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
     // still learns it lost. A deletion has nothing left to do there.
     if matches!(pushed, git::Pushed::Refused { holds: None }) && witness.is_some() {
         pushed = match new {
-            Some(_) => git::push_ref(cwd, name, new, None)?,
+            Some(_) => git::push_ref(cwd, remote, name, new, None)?,
             None => git::Pushed::Ok,
         };
     }
@@ -810,7 +814,7 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
             // the truth rather than this clone's rejected guess. If even that
             // fails, the local ref keeps what we wrote and the caller still
             // learns it lost — a wrong holder named is worse than none.
-            let _ = git::fetch_ref(cwd, name);
+            let _ = git::fetch_ref(cwd, remote, name);
             Ok(Written {
                 cas: Cas::Lost,
                 sync: Sync::Pushed,
@@ -851,16 +855,16 @@ pub fn sync_from_remote(cwd: &Path, id: &EntityId) -> Result<()> {
 /// fetched would report a task as unanchored while its attestation sits on the
 /// remote (ADR-493471d64ba0).
 pub fn sync_ref_from_remote(cwd: &Path, name: &str) -> Result<()> {
-    if git::remote(cwd)?.is_none() {
+    let Some(remote) = git::remote_for(cwd, name)? else {
         return Ok(());
-    }
-    let Ok(Some(theirs)) = git::ls_remote(cwd, name) else {
+    };
+    let Ok(Some(theirs)) = git::ls_remote(cwd, remote, name) else {
         return Ok(());
     };
     if current_object(cwd, name)?.as_deref() == Some(theirs.as_str()) {
         return Ok(());
     }
-    let _ = git::fetch_ref(cwd, name);
+    let _ = git::fetch_ref(cwd, remote, name);
     Ok(())
 }
 

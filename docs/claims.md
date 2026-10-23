@@ -148,6 +148,18 @@ the holder named, and the push settles a race the read misses. `ank init` adds
 the refspec that makes `refs/ank/*` travel, since hosts do not fetch
 non-standard refs on their own.
 
+**A remote named `ank` takes the claims, and only the claims.** `git remote add
+ank <url>` is the whole setup, and there is no key to set: from then on every
+read and write of `refs/ank/claims/*` (claim records and completion records
+alike) goes to `ank`, while ratifications, proofs, the default branch and
+everything else stay on `origin`, where CI and every fork read them
+(ADR-b6fe84504ff2). Losing that remote costs leases and nothing else. `status`
+names it on a line of its own, `coordination ank carries refs/ank/claims/*,
+everything else stays on origin`, and as `coordination_remote` in `--json`, so a
+remote given that name for another reason is seen at once; `status --remote`
+reads the claims off it. With `ank` and no `origin`, claims are arbitrated
+through `ank` and every other ref stays local, as with no remote at all.
+
 **An `origin` without the refspec is repaired by the first verb that asks.**
 In a repository with no `origin`, `init` adds nothing and says so: `refspec
 +refs/ank/*:refs/ank/* not added: no remote named origin yet, run this once it

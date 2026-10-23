@@ -74,7 +74,9 @@ arbitrating over it ([Claims and identity](claims.md#one-identity-per-session)
 shows what that looks like). What arbitrates properly is a `git worktree` per
 agent, because every worktree of a repository shares `refs/ank/`, so the
 compare-and-swap settles them. Separate clones are arbitrated only when there is
-a remote, which is what the push carries.
+a remote, which is what the push carries: `origin`, or a remote named `ank`
+when there is one, which then carries the claims alone
+([Where claims travel](claims.md#where-claims-travel)).
 
 **Take the task that cannot collide, or take none.** `status` says what another
 agent holds; `claim` names a live claim whose scope intersects yours and takes

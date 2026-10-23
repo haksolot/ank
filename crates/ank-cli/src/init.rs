@@ -495,14 +495,23 @@ fn ensure_refspec(root: &Path) -> Result<OriginFetch> {
 /// could not be written is left as `Lacks`, so `status` and `check` keep
 /// saying so.
 pub fn repair_origin(root: &Path) -> (OriginFetch, Option<String>) {
-    let found = origin_fetch(root);
-    if found != OriginFetch::Lacks {
+    let (remotes, line) = repair_remotes(root);
+    (remotes.origin, line)
+}
+
+/// [`repair_origin`], answering as well whether a coordination remote named
+/// `ank` is in force (ADR-b6fe84504ff2), out of the same process: `status`
+/// names it on every call, and a verb read this often does not start a second
+/// `git config` to learn it.
+pub fn repair_remotes(root: &Path) -> (Remotes, Option<String>) {
+    let found = remotes(root);
+    if found.origin != OriginFetch::Lacks {
         return (found, None);
     }
     if ensure_refspec(root).is_err() {
-        return (OriginFetch::Lacks, None);
+        return (found, None);
     }
-    let fetched = git::fetch_ref(root, "refs/ank/*").unwrap_or(false);
+    let fetched = git::fetch_ref(root, git::ORIGIN, "refs/ank/*").unwrap_or(false);
     let line = if fetched {
         format!("refspec added: {REFSPEC}, and refs/ank/* fetched from origin")
     } else {
@@ -511,7 +520,23 @@ pub fn repair_origin(root: &Path) -> (OriginFetch, Option<String>) {
              origin, the next git fetch brings them"
         )
     };
-    (OriginFetch::Fetches, Some(line))
+    (
+        Remotes {
+            origin: OriginFetch::Fetches,
+            ..found
+        },
+        Some(line),
+    )
+}
+
+/// The two remotes ank reads, as far as `refs/ank/*` is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Remotes {
+    /// What `origin` fetches.
+    pub origin: OriginFetch,
+    /// Whether a remote named `ank` has a URL, and therefore carries
+    /// `refs/ank/claims/*` (ADR-b6fe84504ff2).
+    pub ank: bool,
 }
 
 /// What `origin` fetches, as far as `refs/ank/*` is concerned.
@@ -536,27 +561,41 @@ pub enum OriginFetch {
 /// Exit 1 is "no such key", which is the empty answer, and a git that will not
 /// run is taken as no origin -- this is a reader's hint, never a refusal.
 pub fn origin_fetch(root: &Path) -> OriginFetch {
+    remotes(root).origin
+}
+
+/// [`origin_fetch`] and whether `ank` has a URL, in the one process: the
+/// pattern names `remote.ank.url` beside origin's two keys, so a clone with
+/// origin alone starts what it always started.
+pub fn remotes(root: &Path) -> Remotes {
     let said = git::output(
         root,
-        &["config", "--get-regexp", r"^remote\.origin\.(url|fetch)$"],
+        &[
+            "config",
+            "--get-regexp",
+            r"^remote\.(origin\.(url|fetch)|ank\.url)$",
+        ],
     )
     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
     .unwrap_or_default();
     let mut url = false;
     let mut fetches = false;
+    let mut ank = false;
     for line in said.lines() {
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         match key {
             "remote.origin.url" if !value.trim().is_empty() => url = true,
             "remote.origin.fetch" if value.trim() == REFSPEC => fetches = true,
+            "remote.ank.url" if !value.trim().is_empty() => ank = true,
             _ => {}
         }
     }
-    match (fetches, url) {
+    let origin = match (fetches, url) {
         (true, _) => OriginFetch::Fetches,
         (false, true) => OriginFetch::Lacks,
         (false, false) => OriginFetch::NoOrigin,
-    }
+    };
+    Remotes { origin, ank }
 }
 
 #[cfg(test)]

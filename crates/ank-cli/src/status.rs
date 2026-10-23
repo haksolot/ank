@@ -64,13 +64,26 @@ pub fn run(
     // hangs on: `.git/config` is in no file the index digests. One `git
     // config` process in a clone that has the refspec, handed to the
     // inspection rather than asked a second time (ADR-cc65f1388a71).
-    let origin = coordinated.then(|| {
-        let (origin, repaired) = crate::init::repair_origin(&repo.corpus);
+    //
+    // The same process says whether a remote named `ank` carries the claims
+    // (ADR-b6fe84504ff2), which `status` names on every call: its pattern
+    // names `remote.ank.url` beside origin's keys rather than a second
+    // `git config` asking it.
+    let remotes = coordinated.then(|| {
+        let (remotes, repaired) = crate::init::repair_remotes(&repo.corpus);
         if let Some(line) = repaired.filter(|_| !inv.quiet()) {
             eprintln!("{line}");
         }
-        origin
+        remotes
     });
+    let origin = remotes.map(|r| r.origin);
+    let coordination = remotes.filter(|r| r.ank).map(|_| git::COORDINATION);
+    // Where everything but the claims goes once `ank` takes them: origin, or
+    // nowhere at all, as at level 0.
+    let rest = match origin {
+        Some(crate::init::OriginFetch::NoOrigin) | None => "stays local",
+        Some(_) => "stays on origin",
+    };
 
     let index = Index::open(&repo.ank)?;
     let rows = index.all()?;
@@ -239,7 +252,7 @@ pub fn run(
     // underneath everybody else, which is the rule the whole module already
     // follows with `prune: false`.
     let remote = if inv.has("--remote") {
-        remote_refs(&repo.corpus, coordinated)
+        remote_refs(&repo.corpus, coordinated, remotes)
     } else {
         Remote::NotAsked
     };
@@ -476,6 +489,10 @@ pub fn run(
             // prints. False is both "not asked" and "asked, no remote to read",
             // which `seen` then separates — null everywhere, or a word.
             .bool("remote", matches!(remote, Remote::Read(_)))
+            // The remote claims travel on when it is not origin, and null
+            // when it is: a remote called `ank` for another reason is seen
+            // at once (ADR-b6fe84504ff2).
+            .opt_str("coordination_remote", coordination)
             .raw("refs", &refs_json)
             .array("elsewhere", elsewhere_json)
             .num("constraints", constraints)
@@ -565,6 +582,18 @@ pub fn run(
     // becomes legible, not that the dishonest case becomes impossible.
     if let Some(drift) = &refs_drift {
         let _ = writeln!(out, "{} {}", style.key("refs"), drift.line());
+    }
+
+    // Where claims travel, said only when it is not origin: a repository with
+    // a remote named `ank` arbitrates its claims there and keeps everything
+    // else on origin (ADR-b6fe84504ff2), and a remote given that name for
+    // another reason has to be visible the first time anybody looks.
+    if let Some(name) = coordination {
+        let _ = writeln!(
+            out,
+            "{} {name} carries refs/ank/claims/*, everything else {rest}",
+            style.key("coordination")
+        );
     }
 
     // The fetch side of the same plane, and asked with no network: whether a
@@ -1024,11 +1053,28 @@ impl Remote {
 /// situation `status` exists for, and the two reasons are separated because the
 /// way out of each is a different command. No remote at all is level 0 and
 /// nominal (§7); a remote that cannot be reached is a laptop off the network.
-fn remote_refs(root: &std::path::Path, coordinated: bool) -> Remote {
+///
+/// **With a remote named `ank`, the claims are read there** (ADR-b6fe84504ff2)
+/// and the rest of the namespace off origin, which is two round trips where
+/// there are two remotes to ask: origin's answer is kept for everything but
+/// the claims it no longer carries, so the drift below compares each ref
+/// against the remote that holds it. A clone with origin alone asks what it
+/// always asked.
+fn remote_refs(
+    root: &std::path::Path,
+    coordinated: bool,
+    remotes: Option<crate::init::Remotes>,
+) -> Remote {
     if !coordinated {
         return Remote::Missing(
             "no git repository here, so --remote has no plane to read (git init to coordinate)"
                 .to_string(),
+        );
+    }
+    if remotes.is_some_and(|r| r.ank) {
+        return coordination_refs(
+            root,
+            remotes.is_some_and(|r| r.origin != crate::init::OriginFetch::NoOrigin),
         );
     }
     if !matches!(git::remote(root), Ok(Some(_))) {
@@ -1038,7 +1084,7 @@ fn remote_refs(root: &std::path::Path, coordinated: bool) -> Remote {
                 .to_string(),
         );
     }
-    match git::ls_remote_refs(root, git::ANK_NAMESPACE_PATTERN) {
+    match git::ls_remote_refs(root, git::ORIGIN, git::ANK_NAMESPACE_PATTERN) {
         Ok(refs) => Remote::Read(refs),
         Err(_) => Remote::Missing(
             "origin could not be read, so --remote answered on the local plane \
@@ -1046,6 +1092,36 @@ fn remote_refs(root: &std::path::Path, coordinated: bool) -> Remote {
                 .to_string(),
         ),
     }
+}
+
+/// The plane `--remote` reads when a remote named `ank` carries the claims:
+/// `refs/ank/claims/*` off it, and every other `refs/ank/*` off origin when
+/// there is one.
+fn coordination_refs(root: &std::path::Path, origin: bool) -> Remote {
+    let ank = git::COORDINATION;
+    let claims = format!("{}*", crate::claim::CLAIMS_PREFIX);
+    let Ok(mut refs) = git::ls_remote_refs(root, ank, &claims) else {
+        return Remote::Missing(format!(
+            "{ank} could not be read, so --remote answered on the local plane \
+             (git ls-remote {ank})"
+        ));
+    };
+    if origin {
+        match git::ls_remote_refs(root, git::ORIGIN, git::ANK_NAMESPACE_PATTERN) {
+            Ok(rest) => refs.extend(
+                rest.into_iter()
+                    .filter(|r| !r.name.starts_with(crate::claim::CLAIMS_PREFIX)),
+            ),
+            Err(_) => {
+                return Remote::Missing(
+                    "origin could not be read, so --remote answered on the local plane \
+                     (git ls-remote origin)"
+                        .to_string(),
+                )
+            }
+        }
+    }
+    Remote::Read(refs)
 }
 
 /// How far this checkout's `refs/ank/*` have drifted from origin's
