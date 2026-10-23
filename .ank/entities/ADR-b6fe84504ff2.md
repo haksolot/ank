@@ -5,7 +5,7 @@ slug: a-remote-named-ank-carries-refs-ank-claims-and-r
 title: A remote named ank carries refs/ank/claims/*, and ratifications, proofs and code state stay on origin
 created: 2026-10-23T13:27:45Z
 author: claude-code/opus-5.5+plan571-552
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/git.rs
   - crates/ank-cli/src/claim.rs
@@ -15,8 +15,13 @@ scope:
 constraint: |
   When the repository has a remote named `ank`, every read and write of refs/ank/claims/* goes to it, and otherwise to origin; no configuration key chooses it. refs/ank/ratify/*, refs/ank/proof/* and every other refs/ank/* namespace are read and written on origin only, and the default branch, merge-base, completion judging and drift are read from origin only; with `ank` and no origin, claims are arbitrated through `ank` and every other ref stays local, as at level 0. init and the refspec repair of ADR-1b030fe70442 give `ank` a fetch refspec for refs/ank/claims/* and arrange origin's so that a fetch or prune from one remote never writes or deletes the namespace the other carries; status and check name the remote whose refspec is missing. The watcher mirrors claims from the remote that carries them. status names the coordination remote, in text and in --json, when it is `ank`.
 amends: [ADR-1b030fe70442]
+ratified: "682948602470"
+anchor: 6388dff8f86bdcfa0ba7c3b41563961b1ce760d3
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-23T14:06:13Z
 schema: 4
-version: 1
+version: 2
 ---
 
 Raised by issue #552, and narrowed by the drift audit of 2026-10-23. Ank lives alone; a coordination remote is an addition any git server can be, AnkHub or another, and losing it must cost claims only.

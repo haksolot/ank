@@ -263,7 +263,7 @@ fn help_order() -> Vec<String> {
 /// was edited, in the same commit.
 ///
 /// `skills` was declared here ahead of the ratification of the §4 document
-/// that lists it, now SPEC-a81795811fa5, and left in the commit of
+/// that lists it, now SPEC-df280b5ea243, and left in the commit of
 /// TASK-544ec9655570 that ships it.
 ///
 /// `update` was declared here ahead of the ratification of the §4 document
@@ -274,7 +274,7 @@ fn help_order() -> Vec<String> {
 /// that lists it (ADR-467ce7e9cda1, TASK-2ffdb4cd7806), and left in the commit
 /// of TASK-97fd1992567a that ships it.
 ///
-/// `signers` was declared here because SPEC-a81795811fa5, the §4 document that
+/// `signers` was declared here because SPEC-df280b5ea243, the §4 document that
 /// lists it, declared it ahead of its dispatch (ADR-5c6db7a161b8), and it left
 /// in the commit of TASK-3a7a73ccf2b7 that ships it.
 const NOT_YET_DISPATCHED: [&str; 0] = [];
