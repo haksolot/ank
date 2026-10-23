@@ -514,16 +514,19 @@ pub fn read_at(cwd: &Path, name: &str) -> Result<Option<Held>> {
     if object.is_empty() {
         return Ok(None);
     }
-    let args = ["cat-file", "-p", object.as_str()];
+    let record = record_of(cwd, &object, name)?;
+    Ok(Some(Held { object, record }))
+}
+
+/// The record a blob carries, read by object rather than through a ref; `name`
+/// is the ref it is reported against if it is damaged.
+fn record_of(cwd: &Path, object: &str, name: &str) -> Result<Record> {
+    let args = ["cat-file", "-p", object];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
     }
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(Some(Held {
-        object,
-        record: parse_record(&text, name)?,
-    }))
+    parse_record(&String::from_utf8_lossy(&out.stdout), name)
 }
 
 /// Writes the record as a blob and returns its object name. A ref may point at
@@ -903,16 +906,6 @@ pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
             sync: Sync::Local,
         });
     };
-    // Read before the ref goes: if the remote turns out to hold an older record
-    // of this same claim, this is what recognises it. Unreadable is simply not
-    // a claim, and a deletion of anything else is decided as before.
-    let ours = match read_at(cwd, name) {
-        Ok(Some(Held {
-            record: Record::Claim(c),
-            ..
-        })) => Some(c),
-        _ => None,
-    };
     let args = ["-c", REF_LOCK_TIMEOUT_MS, "update-ref", "-d", name];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
@@ -931,9 +924,14 @@ pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
         // remote can still hold this clone's own earlier record of the claim
         // being given back. That is nobody else's write, and reading it as one
         // left origin holding the claim while the verb said nothing.
-        Ok(Written { cas: Cas::Lost, .. }) => match ours {
-            Some(ours) => delete_earlier_record(cwd, name, &ours)?,
-            None => Sync::Pushed,
+        //
+        // What this clone held is read from the blob the ref pointed at, which
+        // outlives the ref, and only here: the deletion that travels pays for
+        // nothing it does not need (ADR-cc65f1388a71). Unreadable is simply not
+        // a claim, and a deletion of anything else is decided as before.
+        Ok(Written { cas: Cas::Lost, .. }) => match record_of(cwd, &witness, name) {
+            Ok(Record::Claim(ours)) => delete_earlier_record(cwd, name, &ours)?,
+            _ => Sync::Pushed,
         },
         Ok(written) => written.sync,
         // The push helper itself could not run git at all. The deletion took
