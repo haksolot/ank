@@ -514,16 +514,19 @@ pub fn read_at(cwd: &Path, name: &str) -> Result<Option<Held>> {
     if object.is_empty() {
         return Ok(None);
     }
-    let args = ["cat-file", "-p", object.as_str()];
+    let record = record_of(cwd, &object, name)?;
+    Ok(Some(Held { object, record }))
+}
+
+/// The record a blob carries, read by object rather than through a ref; `name`
+/// is the ref it is reported against if it is damaged.
+fn record_of(cwd: &Path, object: &str, name: &str) -> Result<Record> {
+    let args = ["cat-file", "-p", object];
     let out = git::output(cwd, &args)?;
     if !out.status.success() {
         return Err(git::failed(&args, &out));
     }
-    let text = String::from_utf8_lossy(&out.stdout).to_string();
-    Ok(Some(Held {
-        object,
-        record: parse_record(&text, name)?,
-    }))
+    parse_record(&String::from_utf8_lossy(&out.stdout), name)
 }
 
 /// Writes the record as a blob and returns its object name. A ref may point at
@@ -916,6 +919,20 @@ pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
     // already on disk — so it leaves as a value the caller reports rather than
     // as an error.
     let sync = match push(cwd, name, None, Some(&witness)) {
+        // **A lost lease is not yet a lost race** (TASK-34fe87319194). A
+        // renewal that never reached the remote keeps its local write, so the
+        // remote can still hold this clone's own earlier record of the claim
+        // being given back. That is nobody else's write, and reading it as one
+        // left origin holding the claim while the verb said nothing.
+        //
+        // What this clone held is read from the blob the ref pointed at, which
+        // outlives the ref, and only here: the deletion that travels pays for
+        // nothing it does not need (ADR-cc65f1388a71). Unreadable is simply not
+        // a claim, and a deletion of anything else is decided as before.
+        Ok(Written { cas: Cas::Lost, .. }) => match record_of(cwd, &witness, name) {
+            Ok(Record::Claim(ours)) => delete_earlier_record(cwd, name, &ours)?,
+            _ => Sync::Pushed,
+        },
         Ok(written) => written.sync,
         // The push helper itself could not run git at all. The deletion took
         // locally, so this is the same degradation with a coarser reason.
@@ -925,6 +942,72 @@ pub fn delete_at(cwd: &Path, name: &str) -> Result<Deleted> {
         existed: true,
         sync,
     })
+}
+
+/// The deletion retried against the object the remote holds, when that object
+/// is the caller's own earlier record of the claim it is giving back.
+///
+/// [`push`] has just fetched the remote's record onto the local ref, so it is
+/// read here and not over the network. **Its own earlier record means the same
+/// claim instance**: the same task, the same holder and the same `claimed`, which
+/// a renewal never moves. A record differing in any of the three is another
+/// claim -- another identity's, or this name's taken again elsewhere -- and it
+/// stays where it is, on the remote and on the local ref, exactly as a lost race
+/// always has (§3): nothing here ever deletes a claim it did not write.
+///
+/// The retry is still a compare-and-swap, leasing on the object just read, so a
+/// clone that writes in between wins and this one learns it lost. Whatever the
+/// remote does with it, the local ref goes: the hand-back is already on disk,
+/// and a clone reading itself as the holder of a task it released is the state
+/// this exists to avoid.
+fn delete_earlier_record(cwd: &Path, name: &str, ours: &ClaimRecord) -> Result<Sync> {
+    let earlier = match read_at(cwd, name) {
+        Ok(Some(Held {
+            object,
+            record: Record::Claim(c),
+        })) if c.task == ours.task && c.holder == ours.holder && c.claimed == ours.claimed => {
+            object
+        }
+        Ok(Some(_)) => return Ok(Sync::Pushed),
+        // The remote answered with an object the fetch could not bring here, so
+        // whose record it is cannot be told. It is not deleted, and the caller
+        // is not left silent either: origin may well still hold this claim.
+        _ => {
+            return Ok(Sync::Unsynchronised(
+                "the record the remote holds could not be read".to_string(),
+            ))
+        }
+    };
+    let Some(remote) = git::remote_for(cwd, name)? else {
+        return Ok(Sync::Local);
+    };
+    let sync = match git::push_ref(cwd, remote, name, None, Some(&earlier))? {
+        git::Pushed::Ok | git::Pushed::Refused { holds: None } => Sync::Pushed,
+        git::Pushed::Refused { .. } => {
+            // Moved again in between: somebody else's now, and theirs to keep.
+            let _ = git::fetch_ref(cwd, remote, name);
+            return Ok(Sync::Pushed);
+        }
+        git::Pushed::Unreachable { reason } => Sync::Unsynchronised(reason),
+        git::Pushed::Rejected { reason } => Sync::Refused(reason),
+    };
+    // A push that took has usually removed it already: the fetch refspec maps
+    // `refs/ank/*` onto itself, so git updates it as the remote-tracking ref.
+    if current_object(cwd, name)?.as_deref() == Some(earlier.as_str()) {
+        let args = [
+            "-c",
+            REF_LOCK_TIMEOUT_MS,
+            "update-ref",
+            "-d",
+            name,
+            &earlier,
+        ];
+        let out = git::output(cwd, &args)?;
+        if !out.status.success() {
+            return Err(git::failed(&args, &out));
+        }
+    }
+    Ok(sync)
 }
 
 /// What a deletion of a coordination ref did: whether there was one to delete,
