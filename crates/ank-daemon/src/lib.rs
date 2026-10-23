@@ -54,7 +54,7 @@
 //! filesystem looking for a corpus, in any direction, under any flag.
 //!
 //! **It mirrors `refs/ank/claims/*` and nothing else.** The one thing it writes into
-//! somebody else's repository is a fetch into [`fetch::TRACKING`], a namespace
+//! somebody else's repository is a fetch into [`fetch::WATCH`], a namespace
 //! no verb writes and every reader of the plane skips. No branch, no tag, no
 //! working tree, no index of git's, and no local `refs/ank/claims`: a
 //! background process that moved any of those in a repository where somebody is
@@ -113,6 +113,21 @@ pub struct Address {
     /// The binary a warming runs. `std::env::current_exe()` of the process
     /// serving the verb -- see the note on [`warm`].
     pub exe: PathBuf,
+    /// The remote a checkout's `refs/ank/claims/*` travel on, or `None` where
+    /// it has none (ADR-b6fe84504ff2).
+    ///
+    /// **The CLI's own resolver, handed in rather than written twice.** Every
+    /// verb routes its claims through it, and this crate may not link the CLI
+    /// (`tests/dependencies.rs`), so the dispatch passes the function and the
+    /// watcher mirrors from whatever it answers: a second resolver here would
+    /// be a second answer to "where do claims live", free to drift from the
+    /// first.
+    ///
+    /// Asked once per checkout when the watcher starts, and never per cycle: a
+    /// cycle in a repository with no remote named `ank` runs exactly what it
+    /// ran before that remote could exist, and a watcher started before
+    /// `git remote add ank` mirrors origin until it is restarted.
+    pub claims_remote: fn(&Path) -> Option<&'static str>,
 }
 
 /// The four flags §4 gives this verb, as the dispatch parsed them.
@@ -204,11 +219,11 @@ pub fn run(
     let declared = declare::resolve(&text, &path, &identity_of)?;
 
     if opts.list {
-        report(&declared, out);
+        report(&declared, address.claims_remote, out);
         return Ok(ExitCode::Ok);
     }
 
-    watch(&declared, &address.exe, opts.once, interval, err);
+    watch(&declared, address, opts.once, interval, err);
     Ok(ExitCode::Ok)
 }
 
@@ -217,15 +232,28 @@ pub fn run(
 /// No colour here at all, under ADR-1f70ce2c3eac's split: the structure layer
 /// is emitted identically to every reader, and this process has no half that
 /// depends on who is reading -- its ordinary destination is a log file.
-fn report(declared: &Declaration, out: &mut dyn Write) {
+fn report(
+    declared: &Declaration,
+    claims_remote: fn(&Path) -> Option<&'static str>,
+    out: &mut dyn Write,
+) {
     let watched = &declared.watch;
     let mut roots = 0;
+    // Each remote a mirror is read from, once, in the order first met.
+    let mut remotes: Vec<&'static str> = Vec::new();
     for corpus in watched {
         let _ = writeln!(out, "corpus {}", corpus.identity);
         for root in &corpus.roots {
             let _ = writeln!(out, "  {}", root.display());
             roots += 1;
+            let remote = mirrored_from(claims_remote, root);
+            if !remotes.contains(&remote) {
+                remotes.push(remote);
+            }
         }
+    }
+    if remotes.is_empty() {
+        remotes.push(fetch::ORIGIN);
     }
     let _ = writeln!(
         out,
@@ -242,12 +270,27 @@ fn report(declared: &Declaration, out: &mut dyn Write) {
     // The number the reader stated, or the one they took by not stating it,
     // printed either way: an interval a listing leaves out is one a reader
     // discovers from their forge's rate limit.
+    let mirrors: Vec<String> = remotes
+        .iter()
+        .map(|r| format!("{}claims/*", fetch::tracking(r)))
+        .collect();
     let _ = writeln!(
         out,
-        "mirroring {}claims/* every {}s",
-        fetch::TRACKING,
+        "mirroring {} every {}s",
+        mirrors.join(" and "),
         declared.fetch.as_secs()
     );
+}
+
+/// The remote `root`'s claims are mirrored from: the one they travel on, and
+/// `origin` where they travel on none yet.
+///
+/// `origin` and not "nothing" for a checkout with no remote, because that is
+/// what every watcher did before ADR-b6fe84504ff2: ask each cycle whether
+/// origin exists, so a solo checkout that gains one is mirrored from the next
+/// cycle on without a restart.
+fn mirrored_from(claims_remote: fn(&Path) -> Option<&'static str>, root: &Path) -> &'static str {
+    claims_remote(root).unwrap_or(fetch::ORIGIN)
 }
 
 /// The identity a corpus is keyed on: the oldest root commit of `HEAD`
@@ -292,7 +335,14 @@ fn identity_of(root: &Path) -> Option<String> {
 /// this checkout, the second is a claim taken or released somewhere the reader
 /// cannot see. Both go onto the stream under their own word, and neither says
 /// what to do about it.
-fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err: &mut dyn Write) {
+fn watch(
+    declared: &Declaration,
+    address: &Address,
+    once: bool,
+    interval: Duration,
+    err: &mut dyn Write,
+) {
+    let ank = address.exe.as_path();
     // Resolved once, and never per event: the directory a reader declared their
     // watch in is the directory their stream belongs in, and asking the
     // environment again every half-second would let the two answer differently.
@@ -319,6 +369,7 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
         for root in &corpus.roots {
             posts.push(Post {
                 identity: corpus.identity.clone(),
+                remote: mirrored_from(address.claims_remote, root),
                 root: root.clone(),
                 seen: None,
                 mirrored: None,
@@ -342,7 +393,7 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
                 .mirrored
                 .is_none_or(|at| at.elapsed() >= declared.fetch)
             {
-                if let Err(reason) = fetch::mirror(&post.root) {
+                if let Err(reason) = fetch::mirror(&post.root, post.remote) {
                     // Reported and never fatal: a dead network is a normal
                     // Tuesday, and nothing depends on this process.
                     let _ = writeln!(
@@ -361,7 +412,7 @@ fn watch(declared: &Declaration, ank: &Path, once: bool, interval: Duration, err
                 // so "did anything move" is a question only the refs themselves
                 // answer. The first reading is a sighting and not a change, for
                 // the reason the first warming is not one.
-                let now = fetch::mirrored(&post.root);
+                let now = fetch::mirrored(&post.root, post.remote);
                 if post.refs.as_ref().is_some_and(|before| before != &now) {
                     report_change(&stream, post, events::Change::Refs, err);
                 }
@@ -425,6 +476,9 @@ fn report_change(
 /// One checkout being watched, and what its `.ank/` looked like last time.
 struct Post {
     identity: String,
+    /// The remote this checkout's claims are mirrored from, settled when the
+    /// watcher started.
+    remote: &'static str,
     root: std::path::PathBuf,
     seen: Option<Vec<(String, u64, u128)>>,
     /// When `refs/ank/*` was last mirrored, or `None` for a checkout this
@@ -489,7 +543,7 @@ mod tests {
             }],
         };
         let mut out = Vec::new();
-        report(&declared, &mut out);
+        report(&declared, |_| None, &mut out);
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("watching 1 corpus, 2 checkouts"), "{text}");
         assert!(
