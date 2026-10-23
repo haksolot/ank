@@ -1,0 +1,249 @@
+---
+id: SPEC-43a2bcb939e3
+type: spec
+slug: synchronisation
+title: Synchronisation
+created: 2026-10-23T13:28:30Z
+author: claude-code/opus-5.5+plan571-552
+status: proposed
+scope:
+  - crates/ank-cli/src/claim.rs
+  - crates/ank-cli/src/git.rs
+references: [SPEC-3252ad5a72e3, SPEC-9796c1a07c1b, SPEC-a459b70c97a7, ADR-4b45f344344f, ADR-aaee5307b34c, ADR-b6fe84504ff2]
+supersedes: SPEC-1a344e05197d
+schema: 4
+version: 1
+---
+
+One of the ten documents that carry the Ank specification (ADR-5a690829388d).
+This one carries **§7 entire**: the nominal execution model, the separation of
+durable state from ephemeral coordination and the third category beside them, the
+ref lifecycle, what `refs/ank/` holds and what it may not, the default branch, what
+ships at levels 0 and 1, the watcher's mirror, merging durable state, and how
+corpora federate by reading.
+
+## Why this is one document, and why it is not folded into the data model
+
+The monolith's own example of entanglement is that **§7 means nothing without
+§3**, and it would be a fair reading of that sentence to merge them. The test
+says otherwise, and the direction matters: synchronisation cites the data model
+for what a claim record *contains* — the frozen criteria hash, the constraints
+hash — and states everything about what the record *is for* on its own. It can be
+read without holding the data model open; what it cannot do is be understood
+without knowing that a task has a criterion, and that is a reference, not a seam.
+
+Merging them would have produced a document of six hundred lines whose two halves
+are read by different people at different moments: one by whoever implements the
+format, one by whoever implements coordination. The test asks whether a document
+stands alone, not whether it is self-contained in the sense of citing nothing —
+nothing here cites nothing.
+
+**What holds this one together** is a single claim: durable state and coordination
+are two planes, and every rule below is a consequence of keeping them apart. The
+claim lives in a ref so that picking up a task produces no diff. The completion
+ref exists because `done` lives on a branch until the merge. Pruning is
+conditioned on durable state rather than on a clock. The third category —
+attestation — is named here precisely because it is neither of the two, and
+splitting the section would have left it homeless. Federation is the same
+argument at the repository scale: reading crosses, writing never does, and claims
+never cross because `refs/ank/*` cannot reach.
+
+## What it rests on
+
+- **The data model** — the criterion and the constraints whose hashes a claim
+  record carries, and the task lifecycle this plane enforces.
+- **Storage and search** — the paths the pruning predicate reads on the default
+  branch.
+- **Proof, anchoring and authority** — what a detached proof is worth once it is
+  on a ref.
+- **ADR-4b45f344344f** — a proof ref grows with facts and never with runs, the
+  mirror carries claims, and a namespace no reader serves is a finding.
+
+---
+
+## 7. Synchronisation
+
+A git-like model: fully functional locally, deployable progressively, never dependent on a service.
+
+### Nominal execution model
+
+The nominal case is **one working tree per agent**, each on its own branch. That is what local proofs already assume (a `verify` run in a tree other agents are modifying in parallel would prove nothing clean) and it is the effective practice of agent harnesses. Several agents sharing one tree works but is a degraded mode, not a design mode.
+
+**Without a remote, use `git worktree` and not clones.** The two are not interchangeable there: worktrees of one repository share `refs/ank/`, so claims arbitrate between them; separate clones do not share it, and two agents will hold the same task without either being told. With a remote, level 1 arbitrates the clones too and the choice becomes one of convenience. The reasons are below, under what ships.
+
+### Separation of the two planes
+
+- **Durable state** (tasks, ADRs, log) — replicated, versioned, offline-first. Pure git.
+- **Ephemeral coordination** (claims) — short TTL, never historised, disposable. The only thing requiring an arbiter.
+- **External attestation** (detached proofs) — durable, and authored by an actor with no branch. Neither of the above, and named here rather than forced into one of them.
+- **Ratification** (`refs/ank/ratify/*`) — durable, signed, and the authority itself: the file declares, the ref holds what binds (§3, §8).
+
+**The third category is not a softening of the split, it is what the split did not anticipate** (ADR-493471d64ba0). Durable state is authored by whoever is doing the work, travels with their code and is arbitrated at merge like any file. Coordination is disposable and belongs to nobody. An attestation is neither: a green pipeline is a statement about a tree, produced by an environment that controls no branch, and §12 forbids ank from committing — so it must survive, and it has no tree to travel in. Refs are the right home for exactly that, and the machinery is the one already described below: `refs/ank/proof/<task-id>`, one ref per task, the record written as a blob, the push a `--force-with-lease` compare-and-swap. The refspec `ank init` installs covers `refs/ank/*` and therefore covers this namespace without any repository being reconfigured.
+
+`ank attest <id> --proof <type>:<ref> --detached` writes that record and **writes no file**: no frontmatter moves, no `version` is bumped, and `git status` after it reads exactly as it did before. There is no log entry either, and that is not an omission — an entry is durable state and a file in the tree like any other entity, which is exactly what this verb writes none of, and what a log line would have carried is in the record, which names the actor and the instant.
+
+**A proof ref grows with facts and never with runs** (ADR-4b45f344344f). A fact is three things: the proof type, the criteria hash it was attested against, and the identity that attested it. The run reference is deliberately not one of them: a second run of one pipeline over one criterion says the same thing again. So a proof ref holds **one attestation per (type, criteria hash, identity)**, and a second attestation of the same fact **replaces the first rather than appending beside it** — in the place the fact was first attested, carrying the latest run, latest by the order the writes happened in and never by a timestamp, which is whichever clock the attesting machine kept. Another identity or another type is another fact and another entry. The record appended without this rule grew with every run of a pipeline; measured on this repository before the rule, one task carried 171 entries for one fact.
+
+**Every reader answers the same whether a fact was attested once or a hundred times.** A ref written before the rule is folded to one entry per fact as it is read, so `show` lists the latest run of each fact and no signal counts one fact twice. `check` reports such a ref once, as a signal naming how many attestations it carries for how many facts and the command that rewrites it: `ank attest <id> --compact --detached`. That command rewrites the one ref it names to one entry per fact, **adds nothing** — every entry kept is one the ref already carried, under the identity and the instant that attested it, never one under the caller's — and pushes that one ref. It takes no `--proof`, and it refuses without `--detached`, because what it rewrites is the ref: the `proof` list in the task file is append-only and anchored by the commits that carry it, and compacting it would be the one rewrite §3 forbids. A ref already holding one entry per fact is not rewritten, since a write that changes nothing would still be a push. It is run one ref by name and never over a wildcard, for the reason given below under what `refs/ank/` holds.
+
+**Every reader unions the two sources and prefers neither.** `show` and `check` read the task's `proof` list and its proof ref together, and say which source each entry came from; a signal that counts proofs counts both, or it fires on work that is already anchored. Preferring the file would be wrong in the direction that matters: between a `done` landing on a branch and its merge, the ref is the only place the reference exists at all, and that window is most of a branch's life.
+
+**A proof ref carries no TTL and is never pruned on time.** It is pruned once an equivalent proof appears in the task file **on the default branch** — the same predicate that governs a completion ref just below, and for the same reason: the ref lives exactly as long as the information it carries is not yet where everyone reads it. Pruning it on a clock would delete the record precisely during the window it exists to cover.
+
+**A ratification is the third family, and it is a ref for the reason a claim and a proof are** (ADR-5e47007a75be). Every act that binds the whole repository has a ref: `claims` says who holds, `proof` says what ran, and `refs/ank/ratify/<id>` says what binds. The ref points at an annotated tag object on the blob of the entity file as `accept` wrote it, signed where the repository signs (§8), and `accept` pushes it with the same compare-and-swap `attest --detached` uses — an empty expectation for a first ratification, the object read for a re-anchoring — and fails at code 9 with nothing kept when the ref does not reach the remote, because the ref is the whole of what makes the ratification binding anywhere but here. The refspec `ank init` installs covers it as it covers the proofs, and a pipeline fetches `refs/ank/*` before `check`, read-only, so a pull request from a fork verifies them.
+
+**A ratification ref carries no TTL, is never pruned on time, and is not pruned when the file catches up either.** A proof ref lives as long as the information it carries is not yet where everyone reads it; a ratification ref *is* the authority and not a copy of it on the way somewhere, so the file catching up changes nothing about it, and a corpus is files at a commit plus these refs, verifiable without history. `check` prunes none of them: a ref with no file is a signal naming it, as is a file whose `anchor` names an object no ref points at, with the command that restores the ref from the object the repository still holds. The namespace is outside every ruleset a forge can express, so anyone with push can delete one; the file names the object, a forged ref under an undeclared key is a fault (§8), and a mirror is a second copy.
+
+Claims live in dedicated git refs, **one ref per task**: `refs/ank/claims/<task-id>`. A single ref for all claims would put unrelated claims in contention — two agents taking two different tasks would fight over the same non-fast-forward push. Per task, git's CAS arbitrates exactly the conflict that matters and no other. These refs are never merged into the working branch: no noise in diffs, no conflicts on files.
+
+A claim record carries: identity, the timestamp of the claim itself, expiry timestamp, the granted TTL in seconds, hash of the frozen `done_criteria` (§3), and a hash of the set of constraints applicable to the task's scope at claim time. The claim timestamp is what `check` compares a blocker's creation against, to report blockers the holder created after taking the task (§4); the granted TTL is what a renewal recomputes the expiry from (§3), and it is recorded because a renewal moves the expiry and leaves the claim timestamp alone, so the interval between the two is not the lease after the first renewal. A record written before the TTL was recorded carries none, and is read as the default — the same promise the entity format makes about fields introduced later. That last one closes the long-work window: a constraint accepted while the agent works changes that hash, and `done` **warns** — never blocks, since a new constraint does not necessarily concern work already done — inviting a re-read of `ank context`; `check` reports the same case. The full lifecycle of the ref is described just below. `ank init` adds the fetch refspec `refs/ank/*` to the repository config: hosts do not fetch non-standard refs on their own.
+
+Expiry is evaluated on the timestamp the claim carries, with a 2-minute clock-drift tolerance: at the scale of a 30-minute TTL, NTP is more than enough.
+
+### Ref lifecycle: pickup, completion, pruning
+
+A task's ref has **two states**, and the record it points to says which: `claim` (a holder, an expiry) or `completed` (a commit, a branch, an identity, the `done` timestamp). One ref per task in both cases, at the same address `refs/ank/claims/<task-id>`: two distinct namespaces would let a stale claim and a completion coexist for the same task — exactly the ambiguity the ref exists to settle — and would split git's compare-and-swap across two addresses where there is only one conflict.
+
+**A detached proof is a third address and not a third state**, and the two rules do not conflict because they answer different questions. `claim` and `completed` are mutually exclusive answers to *who holds this task*, which is why one address settles them. An attestation answers *what anchors this work*, and a task legitimately carries a completion record and a detached proof at the same time — a `done` waiting for its merge, with the run that proved it already recorded. Collapsing them onto one address would make each erase the other, which is the ambiguity the separation exists to prevent, read from the other side. A record whose state contradicts its namespace is reported by `check` and never coerced into the other reading.
+
+- **`claim`** writes a `claim` record. The primitive is the atomic ref update: two concurrent agents, one winner, code 4 for the other.
+- **`release`, `close`, pickup after expiry** replace or delete the `claim` record, unchanged.
+- **`done` does not delete the ref, it transforms it** into a `completed` record, **with no TTL**.
+
+That last point closes a real window. `status: done` lives in durable state, therefore on the agent's branch alone until the merge: between the end of the work and the integration of the PR — that is, most of a branch's life — the task would look free everywhere else, and another agent would run `context`, read `open`, and redo work already done. The fix stays inside the ephemeral coordination plane, touching nothing in durable state.
+
+`claim` on a task carrying a `completed` record **refuses with code 4**, naming the commit and the branch:
+
+```
+$ ank claim 8f3a
+error[4]: TASK-8f3a finished on another branch (commit abc1234, branch feat/opaque-sessions), not merged here yet
+  -> ank claim 51c2   (another ready task in this scope)
+```
+
+**A blocker carrying a `completed` record gets the same answer, with code 7.** The refusal itself is unchanged — `blocked_by` names work whose result this branch does not have, and claiming on top of it is the risk the ref exists to make visible — but the bare message hides the one fact that decides what to do next. `claim` therefore consults the ref of every active blocker, and a blocker finished elsewhere is named ahead of the first one in the list, wherever it sits there: the order of `blocked_by` says nothing about which blocker matters, and being told about the merged-nowhere one is the point.
+
+```
+$ ank claim 51c2
+error[7]: TASK-51c2 is blocked by TASK-8f3a, finished on feat/opaque-sessions (commit abc1234), not merged here yet
+  -> ank context
+```
+
+The hint follows the same rule as everywhere else and never names a command that would refuse on the spot: the task offered as another thing to take is one whose ref is free, not one whose file reads `open` on this branch only because a completion has not landed yet.
+
+**Pruning is conditioned on durable state, not on a TTL.** A completion ref is pruned once the task appears `done` or `closed` **on the default branch**: the information the ref carried is then present where everyone reads it, and the ref has no further use. That is what makes "ephemeral" accurate rather than decorative — the ref lives exactly as long as it is useful, three minutes or three weeks depending on how long review takes.
+
+The predicate is about the task file as it appears on the default branch (`git cat-file -p <default_branch>:.ank/entities/TASK-<id>.md`, falling back to the previous layout for as long as it is read, §6), **and not about the reachability of the recorded commit**. The difference is not theoretical: `done` writes only to the working tree (§12), so the commit it records is the current HEAD, which is frequently already an ancestor of the default branch — an agent that branches and then runs `done` before its first commit would see its ref pruned immediately, which would reopen the very window the mechanism exists to close. The recorded commit serves the diagnostic above, never the pruning decision.
+
+`check` prunes, at the same time as orphan refs — "never historised" is a maintenance operation, not a free property. `claim` and `context` never prune: a reader does not sanitise the coordination plane underneath everyone else.
+
+### What `refs/ank/` holds, and a namespace no reader serves
+
+`refs/ank/` is the one ref namespace this project owns (ADR-f8f1ea7fd2bb), and a reader serves four places in it: `refs/ank/claims/<id>`, where a task is held or finished; `refs/ank/proof/<id>`, where it is attested; `refs/ank/ratify/<id>`, where a decision or a document is ratified (above); and `refs/ank/watch/<remote>/claims/<id>`, the watcher's mirror of another clone's claims, described below. Every verb that reads the plane reads those four and skips the rest.
+
+**A ref anywhere else under `refs/ank/` is a `check` signal, never a fault and never a prune** (ADR-4b45f344344f). Such a namespace is a former feature, a session's namespace left behind, or a mirror an older watcher wrote beside its claims; nothing reads it, so every verb still answers, which is why it cannot be a fault. And ank did not write it, so ank does not delete it. The signal is one finding per namespace — the first segment below `refs/ank/`, or `watch/<remote>/<segment>/` under the mirror, so three hundred refs of one former feature are one namespace to the reader and not three hundred findings — and it names every ref in it with its deletion, **one ref by name**:
+
+```
+signal: refs/ank/remote-check/: 311 ref(s) in a namespace no reader serves: no verb reads them, so ank deletes none; delete each by name, never with a wildcard
+└── git push origin :refs/ank/remote-check/<id>; git update-ref -d refs/ank/remote-check/<id>
+```
+
+The remote and the local deletion ride on one line because a ref deleted only on the remote comes back with the next wildcard push from this clone. **Never a wildcard**, and that is the rule this whole subsection exists to state: a push of `refs/ank/*` from a worktree carries whatever that worktree's refs hold, and a pipeline's attestations written since that worktree last fetched are force-reverted by it. The signal reads the enumeration `check` already makes, so a foreign namespace costs `check` no git process (ADR-cc65f1388a71).
+
+### Default branch
+
+`default_branch` in `config.yml` names the branch that carries the reference durable state. Failing that, it is detected from `refs/remotes/origin/HEAD`. If neither answers, there is no answer to invent — assuming `main` would be exactly the guess the tool refuses everywhere else:
+
+```
+$ ank check
+signal: coordination: default branch indeterminable, completion refs neither pruned nor judged and log entries not compared against it (ank config default_branch <name>)
+```
+
+The fix names a command rather than a line to add to a file (§4, ADR-e64dfaafd578). It is one of the sites that ask for this key, and all of them say the same thing: telling an agent to open `.ank/config.yml` is the tool instructing it to do what ADR-01b6dd05f0db forbids.
+
+Nothing fails on it any more, and the verb that did is why. `accept` **failed** with code 9 while a ratification was a commit: without a reference branch its branch precondition (§4) could not be evaluated, and running anyway would have produced a ratification of variable geometry. A ratification is a ref (ADR-5e47007a75be), a fact about the repository and not about a branch, so `accept` consults no default branch at all. `claim` and `context` **degrade**: they keep completion refs, display them, and warn once. That is "degrade, do not fail" (§2) to the letter — reading does not stop because maintenance is impossible, and `claim`'s refusal on a task finished elsewhere is still delivered, which is the safe behaviour.
+
+### Why `version` coexists with git's CAS
+
+The two cover disjoint ranges. Git's CAS protects **between working trees sharing a `refs/ank/`**, and between clones at push time wherever there is a remote. The `version` field protects **inside a single working tree**. With one tree per agent that case becomes rare — but not nil: a human and an agent often share the same tree, and the field costs one integer. We keep it for the residual case, without presenting it as the main defence any more.
+
+### What ships, and what a second clone can therefore do
+
+**Levels 0 and 1 are implemented; level 2 is not.** Which one a repository is in is not configured and cannot be chosen: it is whether the repository has a remote named `origin`, or, for claims alone, a remote named `ank` (ADR-b6fe84504ff2). Without either, claims are local refs and nothing is pushed — that is level 0, and it stays silent, because a warning about a network nobody asked for would fire on every claim of every solo repository. With one, every write of the coordination plane is pushed, and the arbitration is repository-wide.
+
+The consequence is exact, and it is stated here rather than left to be discovered:
+
+- **Two working trees of one clone are arbitrated**, remote or no remote. Every `git worktree` of a repository shares `refs/ank/`, so the local compare-and-swap settles them. One agent wins, the other gets code 4.
+- **Two separate clones are arbitrated when there is a remote, and only then.** Each holds its own `refs/ank/claims/<id>`; what makes them agree is the push, which the second clone loses. Without a remote, neither clone ever learns of the other: both agents claim the same task, both succeed, both work, and nothing detects it later either — `check` prunes on the default branch, where two agents having done the same work looks like two agents having done their work.
+
+So "one piece of work, one holder" holds **per repository with a remote, and per clone without one.** An operator running several agents against a bare repository gets the property from the push; one running them on a single machine with no remote gets it from `git worktree` and does not get it from clones.
+
+### Level 0 — local
+
+No remote. Claims use the **same `refs/ank/claims/<id>` refs, locally**: a local git ref update is already atomic, and level 1 is literally "the same ref, pushed" — no migration, no state to convert, and a repository that gains a remote is at level 1 from its next claim. There is **no fallback without git**: git is the only claim mechanism, and a coordinating verb run in an uninitialised repository exits with code 9 and the exact command (§13). Reading the corpus is not coordinating and needs none of it. Functional without configuration, like a `git init` without a push. Default mode, and the only mode.
+
+### Level 1 — git remote only
+
+Any existing remote, GitHub included. Zero infrastructure, and no configuration: a repository with an `origin` is at level 1.
+
+**Claims may travel on a second remote, named `ank`, and nothing else does** (ADR-b6fe84504ff2). When the repository has one, every read and write of `refs/ank/claims/*` -- claims and completion records -- goes to it, and otherwise to origin; no key chooses it, the name is the declaration. Ratifications, proofs and every other namespace under `refs/ank/` stay on origin, beside the code they anchor and where CI and every fork read them, and the default branch, merge-base, completion judging and drift are read from origin alone. A coordination remote that disappears therefore loses leases and nothing durable. Each remote's fetch refspec covers its own namespace, so a fetch or a prune from one never writes or deletes what the other carries. With `ank` and no origin, claims are arbitrated through `ank` and every other ref stays local, as at level 0. Wherever this section says "the remote" of a claim, it means that remote.
+
+The central insight: **a git ref update is already an atomic compare-and-swap**. The push carries the swap explicitly, as `--force-with-lease=<ref>:<expected>`, where the expected value is the object the caller read before writing — the very same witness the local `update-ref` swaps on, so the two checks are one rule rather than two that agree today. An empty expectation means "this ref must not exist", which is what taking a free task is. The check runs server-side and atomically, on every host, so two clones racing produce one winner without either trusting the other.
+
+Every write of the plane goes through it, and that is what makes it one mechanism rather than four: acquisition, the TTL renewal the holder's work performs, the retake of a lapsed claim, and the completion record `done` writes. The completion matters most: one that stayed local would tell the other clones nothing, which is exactly the window it exists to close. **`release` and `close` push the deletion** on the same terms — a claim handed back but left standing on the remote would make the task unclaimable everywhere else until its TTL ran out.
+
+`claim` reads the remote before deciding, so a task held in another clone is refused with its holder named rather than taken locally and unwound by a rejected push. The push is still what arbitrates; the read only makes the ordinary case answer politely. **No other verb pays for the network unless it is asked to.** `context`, `find`, `check` and `status` describe the plane they have; `status --remote` is the single opt-in (§4), an `ls-remote` of the claims namespace that fetches nothing, marks what was seen only on origin, and degrades to the local answer with one warning when there is no remote to read.
+
+A lost race, a refusal and an unreachable remote are told apart **by asking, never by reading stderr** (ADR-aaee5307b34c): push's stderr is prose written for people, and parsing it would be exactly the fragility the plumbing rule exists to prevent (§12). A failed push is followed by one `ls-remote` of the same ref. No answer at all means the remote is what failed. An answer differing from the witness the push carried means the swap genuinely lost. An answer still equal to the witness, on a push whose `--porcelain` status line says `remote rejected`, means the remote refused the write for a reason of its own -- a hook, a ruleset, a credential, a coordination hub -- and that line's parenthesised reason is the one thing read from the push: it is reported verbatim and given no meaning, so every remote that refuses is treated alike. A push with no status line for the ref keeps the reading by `ls-remote` alone. That costs a round trip on the failing path only.
+
+**A refusal is neither a lost race nor a local win.** It names nobody as holder. `claim` exits 9, an environment to repair, and leaves no local claim behind; 4 would send a loop to the next task, which the same remote would refuse in turn. `log`, `done`, `release` and `close` keep their local write and degrade as below, with a warning naming the remote's reason. The retry without a witness that follows a lost swap against an absent ref is taken only on git's client-side `rejected (stale info)`.
+
+**Offline at level 1, what the verb does next depends on what survives the failed push** (ADR-af533e7a3e03). The write always stands locally; the question is whether that is worth anything to anybody, and the answer decides the exit code:
+
+- **Something survives, so degrade and exit 0 with a warning naming what is at risk** (§2). `claim`, the TTL renewal the holder's work performs, the completion record `done` writes and the deletion `release` and `close` push are all on this side. The claim is taken locally and marked unsynchronised: it holds in this clone, another clone can take the same task, and that is displayed rather than hidden. A completion or a deletion that stayed local is stale on the remote, and a stale claim ref expires on its own.
+- **Nothing survives, so fail with code 9 and the command that finishes the job.** `ank attest <id> --proof <type>:<ref> --detached` is on this side, with `ank attest <id> --compact --detached` beside it: the ref is the whole of what each produces — no file moves, no `version` is bumped — so a proof no other clone can read is not an attestation, and reporting success would hand a pipeline a green run that lost exactly what the run was for. `ank accept <id>` is on this side too (ADR-5e47007a75be): it writes a file as well and keeps none of it, because a ratification whose ref reached no remote binds this clone alone, which is the variable geometry the branch precondition used to forbid. Code 9 because an unreachable remote is an environment to repair and not a failure of the work (§4). `--json` still reports `"pushed":false`, so the flag and the exit code say the same thing rather than two different ones.
+
+**Which of the two a verb is, its help says**, and a caller never infers it from what the verb happens to touch. The line is not "writes a ref" against "writes a file": `claim` writes a ref and degrades, because the claim it recorded still governs this clone. The distinguishing question is what is left over, and that is not visible from outside the verb.
+
+**The cost on the hot path, measured rather than inherited.** `log` renews the TTL and an agent logs often, so every renewal is a round trip. On Windows, twenty `ank log` runs against a local bare origin averaged 668 ms each against 639 ms with no remote at all — about **30 ms** of local overhead, lost in the process spawning that dominates a run there. What is not local is the network: ten `ls-remote` calls against a GitHub origin averaged **515 ms**. So a `log` in the field costs roughly half a second more than it did, which is the "on the order of a second" this section always claimed and now has a number for. At one log every few minutes it is under a percent of the time an agent spends working, and it buys the property the whole level exists for. Renewal following the holder's work rather than `log` alone (§3) widens which verbs pay it — a `show` of the held task and a `context` in execution mode now carry the same round trip — and does not change the number: it is the same write, on the same terms, and a verb that is not about the held task still pays nothing.
+
+The trade-off: latency on the order of a second, no notifications. Comfortable up to two or three agents, saturates beyond.
+
+### The watcher's mirror
+
+Level 1 leaves one thing stale on purpose: `refs/ank/claims/*` in a clone is whatever somebody last fetched, because no verb but `claim` pays for the network. `ank watch`, the watcher, closes that for whoever runs one, and nothing depends on it running (ADR-4b45f344344f keeps that clause of the watcher's decision whole): every verb behaves the same with it stopped.
+
+**The mirror fetches `refs/ank/claims/*` and nothing else, into `refs/ank/watch/<remote>/claims/*`.** One fetch per cycle, whose refspec is `+refs/ank/claims/*:refs/ank/watch/<remote>/claims/*`, `<remote>` being the remote that carries claims -- `ank` when the repository has one, origin otherwise (ADR-b6fe84504ff2) -- named in the path so a change of source never renames what an older mirror wrote. It lands beside the plane and never on it: `refs/ank/claims/<id>` is where a live claim of this clone sits, and a background process writing there would rewrite the coordination plane under whoever is working in the tree. The fetch takes no tags, writes no `FETCH_HEAD` and moves no branch, and it prunes, so a claim released on the remote disappears from the mirror; the prune reaches only the refspec's destination, so a ref an older watcher mirrored beside the claims is left where it is, for the signal above.
+
+**A mirror carries only what a reader serves.** `status` reads it beside its own plane and reports both as one list of what other agents hold, the local record winning wherever both carry the same task: the mirror is news about other clones, and a background process may not overrule this clone's arbitration. No other verb reads it. A mirrored proof would be read by nobody — an attestation reaches this clone with the branch that carries it, and on `refs/ank/proof/*` with the next fetch of `refs/ank/*` that somebody runs — so none is fetched.
+
+### Level 2 — `ank serve` (not implemented)
+
+A single binary, one port, one SQLite. It stores **only claims**, and broadcasts changes over SSE. Durable state keeps going through git; the daemon never owns it.
+
+Consequence: if the daemon goes down, automatic fallback to level 1, with no possible loss.
+
+Moving from one level to another changes neither the format nor the commands.
+
+### Merging durable state
+
+Two branches that modified the same task meet like any other git conflict: v1 ships **no dedicated merge driver**, resolution is human, and `check` detects leftover conflict markers in `.ank/` (code 8) so that a sloppy merge does not pass CI. One resolution rule guides the human and prepares a future driver: resolved `version` = max of the two + 1.
+
+There were two. The second — the log unioned by timestamp — existed only because the log shared a file with fields that cannot be unioned, and it went when the log left the entity body (§3). **The reason recorded for dropping it was wrong, and the correction matters more than the rule did.** It said that a file only ever appended to is a case git's own union already resolves. Git resolves nothing of the sort on its own: a three-way merge of two branches that each appended to the end of one file is the textbook adjacent-change conflict, and union is a merge strategy a repository has to ask for, per path, in its own attributes. A corpus that relies on the property configures `merge=union` for the path and can then say so; one that does not gets a conflict marker in a trace file, which is a defect and not a curiosity — a marker in an entity is a corpus fault, and there is no reading under which the same marker in a work trace is worth less.
+
+**The property that has actually been protecting this format is one file per entity**, and it comes from the addressing rather than from git: two agents working two tasks write two files, and no merge has anything to reconcile. It holds whatever the merge behaviour is, which is why nothing ever went wrong to expose the claim. Entries as entities (§3) extend it to the trace itself — two concurrent entries are two new files — so what remains for a driver is the rule on `version`, and automating that is a v1.1 candidate (§13).
+
+### Corpora federate by reading
+
+**One `.ank/` per repository stays authoritative** (ADR-a1de673043b4). A corpus belongs to the code it constrains, and a single corpus hoisted above several repositories breaks exactly that; aggregation happens **above** the repositories and never instead of them. That was the shape §10 retained while the row was deferred, and it is unchanged — what changed is that the row's absence acquired a case it cannot answer.
+
+**The case is the shared constraint**, and it is a hole rather than an inconvenience. A decision binding a backend and a frontend at once has no legal expression: the scope cannot reach, since an absolute path and a climb above the root are both refused, and a glob that named a sibling checkout would be confronted with a path that exists on one laptop and in no CI — which turns scope back into the label it was chosen over, and degrades into a dead scope, a corpus fault. The copy is already forbidden, and generally: a second copy has no anchor, it drifts, nothing turns red, and one day an agent is taught the opposite of a ratified decision (ADR-e3cb36646d77). Neither scope nor copy. The row's own trigger does not describe this, being written for dependencies between tasks, and a record whose trigger has fired on a case it does not name is a record about to be worked around.
+
+**A peer is declared, never discovered.** A repository names the corpora it reads in `config.yml`, under a key per peer (§4), whose value is the path to the peer's root. Nothing is inferred from the filesystem and nothing from a git remote: inference is how a corpus starts depending on where somebody happened to check something out, which is the absolute scope wearing a different hat. The declaration is the thing that is reviewed, and it is in the repository that wants to read.
+
+**Reading crosses, writing never does.** A verb may read a declared peer's corpus and may not write a byte into it, and that is the whole of the federation. What crosses is a **name the repository declared, never a path**: a constraint states that it binds a peer through its own `scope`, as the peer's name and a glob under that peer's root, and the name is resolved through the declaration in the corpus that wrote the scope — so the entry means the same thing wherever it is read, and means nothing at all where the peer is not declared. The ADR therefore keeps **exactly one home** and is never copied; what the peer's `context` serves is a constraint whose file lives elsewhere, named as such.
+
+**Claims do not cross.** `refs/ank/*` is per repository, and that is the one lock nothing here unlocks: arbitration across a boundary the refs cannot reach would be a promise the mechanism cannot keep. A cross-repository claim has no home, and pretending otherwise is worse than not offering it.
+
+**A peer that cannot be read warns once and answers locally** (§2). Absent from disk, or a corpus this build cannot read: the reader does not fail because something it was told about is missing, which is the rule `status --remote` already follows for an unreachable remote.
+
+Two things are **deliberately left open** rather than inherited by accident, both found by measuring. The one-claim-per-identity rule is silently per repository, since the refusal reads the refs of the resolved root, so one identity holds a claim in every repository at once and nothing notices — doubtful by the rule's own reasoning, which is that a caller already holding one is not available. And a `blocked_by` naming an entity in a peer is refused today by eager resolution at creation, chosen so that an unknown reference cannot surface later as a corpus error nobody can attribute; that property survives a reference resolved through a declared peer, or reported as unresolvable *here* rather than as nonexistent. Each needs its own decision, and neither is settled by this one.
