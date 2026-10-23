@@ -160,6 +160,20 @@ remote given that name for another reason is seen at once; `status --remote`
 reads the claims off it. With `ank` and no `origin`, claims are arbitrated
 through `ank` and every other ref stays local, as with no remote at all.
 
+**A fetch from origin never touches the claims `ank` carries.** origin's
+`+refs/ank/*:refs/ank/*` matches `refs/ank/claims/*` too, so left alone a `git
+fetch origin` would write whatever claims origin still holds and `git fetch
+--prune origin` would delete every live claim it does not. `init` therefore
+gives `ank` the fetch refspec `+refs/ank/claims/*:refs/ank/claims/*` and origin
+the negative refspec `^refs/ank/claims/*`, which keeps the claims out of its
+fetch and its prune while ratifications and proofs still come; where `ank` was
+added after `init`, the first `status` or `check` writes both and says so on
+standard error, one line per refspec (ADR-b6fe84504ff2). Removing `ank` gives
+origin the claims back, and the same repair takes the negative refspec away, so
+a clone with origin alone ends with exactly the two refspecs above. Where a
+refspec could not be written, `status` warns and `check` reports a signal of
+kind `claims-refspec`, each naming the remote whose fetch lacks it.
+
 **An `origin` without the refspec is repaired by the first verb that asks.**
 In a repository with no `origin`, `init` adds nothing and says so: `refspec
 +refs/ank/*:refs/ank/* not added: no remote named origin yet, run this once it

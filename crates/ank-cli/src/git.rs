@@ -710,7 +710,17 @@ pub fn tags_of(cwd: &Path, repository: &str) -> Result<Vec<String>> {
 /// Read for its exit code alone, never parsed.
 pub fn fetch_ref(cwd: &Path, remote: &str, refname: &str) -> Result<bool> {
     let spec = format!("+{refname}:{refname}");
-    let out = output(cwd, &["fetch", "--quiet", remote, spec.as_str()])?;
+    fetch_refs(cwd, remote, &[spec.as_str()])
+}
+
+/// [`fetch_ref`] with the refspecs given whole, so a negative one can stand
+/// beside them: refspecs on the command line replace the configured ones, and
+/// with them the `^refs/ank/claims/*` origin carries once `ank` takes the
+/// claims (ADR-b6fe84504ff2). Read for its exit code alone.
+pub fn fetch_refs(cwd: &Path, remote: &str, specs: &[&str]) -> Result<bool> {
+    let mut args = vec!["fetch", "--quiet", remote];
+    args.extend_from_slice(specs);
+    let out = output(cwd, &args)?;
     Ok(out.status.success())
 }
 

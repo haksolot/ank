@@ -339,7 +339,7 @@ pub fn run(
         &plane,
         default_branch.as_deref(),
         here_refs.as_deref(),
-        origin,
+        remotes,
     )?;
     let drift = verdict.drift_branch.as_ref().map(|branch| human::Drift {
         branch: branch.clone(),
@@ -609,6 +609,9 @@ pub fn run(
             human::origin_refspec_gap()
         );
     }
+    for (_, gap) in remotes.map(human::claims_refspec_gaps).unwrap_or_default() {
+        let _ = writeln!(out, "{} {gap}", style.yellow("warning:"));
+    }
 
     // Immediately above the claim, because it is the claim lines it explains.
     // An identity that fell back is the one fact nothing else on this path
@@ -765,9 +768,9 @@ fn corpus_verdict(
     plane: &context::Plane,
     default_branch: Option<&str>,
     refs: Option<&[git::AnkRef]>,
-    origin: Option<crate::init::OriginFetch>,
+    remotes: Option<crate::init::Remotes>,
 ) -> Result<Verdict> {
-    let key = verdict_key(repo, index, rows, plane, default_branch, refs, origin)?;
+    let key = verdict_key(repo, index, rows, plane, default_branch, refs, remotes)?;
     if let Some(key) = &key {
         if let Some(hit) = index.verdict(key) {
             return Ok(hit);
@@ -775,7 +778,7 @@ fn corpus_verdict(
     }
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
-    let report = human::inspect_with(repo, cfg, None, false, origin)?;
+    let report = human::inspect_with(repo, cfg, None, false, remotes)?;
     let verdict = Verdict {
         faults: report.faults(),
         // A folded kind is one signal, as `check` prints it (ADR-df1035934387).
@@ -822,7 +825,7 @@ fn verdict_key(
     plane: &context::Plane,
     default_branch: Option<&str>,
     refs: Option<&[git::AnkRef]>,
-    origin: Option<crate::init::OriginFetch>,
+    remotes: Option<crate::init::Remotes>,
 ) -> Result<Option<String>> {
     // `for-each-ref` would not run, so half the key is unknown. Nothing is read
     // from the cache and nothing is written to it.
@@ -895,9 +898,9 @@ fn verdict_key(
         }
         None => material.push_str("default none\n"),
     }
-    // What origin fetches, because `check` reports an origin that does not
-    // fetch `refs/ank/*` and `.git/config` is in no file digested above.
-    material.push_str(&format!("origin {origin:?}\n"));
+    // What origin and `ank` fetch, because `check` reports a refspec either
+    // lacks and `.git/config` is in no file digested above.
+    material.push_str(&format!("remotes {remotes:?}\n"));
     // Absent and empty are the same key on purpose: both are a corpus that
     // declares nothing, which is what the readers of these two files already
     // make of them.
