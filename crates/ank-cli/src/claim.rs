@@ -647,6 +647,12 @@ pub enum Sync {
     /// The value is the same either way; the two sentences below are what
     /// separate the readings.
     Unsynchronised(String),
+    /// The remote is there and refused the write for a reason of its own
+    /// (ADR-aaee5307b34c), carried verbatim. The write stands locally exactly
+    /// as for an unreachable remote, and the verbs degrade on the same terms,
+    /// except `claim`, which unwinds it: a claim the remote refused is not one
+    /// this clone may believe in.
+    Refused(String),
 }
 
 impl Sync {
@@ -663,6 +669,10 @@ impl Sync {
                  can take the same task"
                     .to_string(),
             ),
+            Sync::Refused(reason) => Some(format!(
+                "claim not pushed: the remote refused it ({reason}); it holds in this \
+                 clone only, and another clone can take the same task"
+            )),
         }
     }
 
@@ -700,6 +710,11 @@ impl Sync {
                  another clone still reads the task as held until the claim expires"
                     .to_string(),
             ),
+            Sync::Refused(reason) => Some(format!(
+                "claim deletion not pushed: the remote refused it ({reason}); the claim \
+                 is gone in this clone only, and another clone still reads the task as \
+                 held until the claim expires"
+            )),
         }
     }
 
@@ -711,6 +726,10 @@ impl Sync {
                  clone can read it"
                     .to_string(),
             ),
+            Sync::Refused(reason) => Some(format!(
+                "proof not pushed: the remote refused it ({reason}); it is recorded in \
+                 this clone only, and no other clone can read it"
+            )),
         }
     }
 }
@@ -800,6 +819,12 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
         git::Pushed::Unreachable { reason } => Ok(Written {
             cas: Cas::Won,
             sync: Sync::Unsynchronised(reason),
+        }),
+        // Nobody else won: the local write stands, and whether that is worth
+        // anything is the verb's call, as it is for an unreachable remote.
+        git::Pushed::Rejected { reason } => Ok(Written {
+            cas: Cas::Won,
+            sync: Sync::Refused(reason),
         }),
     }
 }
@@ -2017,6 +2042,31 @@ pub fn acquire(
         // the winner is the one whose message the agent needs, and `put` has
         // already brought a remote winner's record here for that.
         Cas::Lost => return Err(lost_the_race(cwd, id, now, other_ready)?),
+    }
+    // **A claim the remote refused is unwound, never kept** (ADR-aaee5307b34c).
+    // Kept, it would govern this clone while the remote that arbitrates says
+    // no, which is a claim nobody granted; reported as code 4, it would send a
+    // loop to the next task, which the same remote refuses in turn. The ref goes
+    // back to what was read, and the refusal is an environment to repair.
+    if let Sync::Refused(reason) = &written.sync {
+        let name = claim_ref(id);
+        let current = current_object(cwd, &name)?;
+        let args: Vec<&str> = match (witness, current.as_deref()) {
+            (Some(old), Some(now)) => vec!["update-ref", &name, old, now],
+            (None, Some(now)) => vec!["update-ref", "-d", &name, now],
+            (_, None) => Vec::new(),
+        };
+        if !args.is_empty() {
+            let out = git::output(cwd, &args)?;
+            if !out.status.success() {
+                return Err(git::failed(&args, &out));
+            }
+        }
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!("the remote refused the claim of {id} ({reason}); nothing was claimed"),
+        )
+        .with_hint(format!("ank claim {id}")));
     }
 
     let Record::Claim(taken) = record else {

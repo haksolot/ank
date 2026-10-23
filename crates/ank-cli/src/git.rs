@@ -189,6 +189,12 @@ pub enum Pushed {
     /// The remote exists and could not be reached. Degrade, do not fail (§2):
     /// the write stands locally and the caller says so out loud.
     Unreachable { reason: String },
+    /// The remote refused the write for a reason of its own -- a hook, a
+    /// ruleset, a credential -- while still holding exactly what the push
+    /// expected (ADR-aaee5307b34c). Nobody won anything: it is neither a lost
+    /// race nor an unreachable remote. `reason` is what `push --porcelain`
+    /// printed in parentheses, carried verbatim and given no meaning.
+    Rejected { reason: String },
 }
 
 /// Pushes a ref under `refs/ank/*` with a lease, which is the compare-and-swap
@@ -209,12 +215,17 @@ pub enum Pushed {
 /// behind on the remote makes a handed-back task unclaimable everywhere else
 /// until its TTL runs out — a state this change would otherwise create.
 ///
-/// **A refused push is distinguished from an unreachable remote by asking, not
-/// by reading stderr.** Push says "rejected" in prose written for people, and
-/// parsing it would be the fragility ADR-9307e5d214a7 exists to prevent. So a
-/// failure is followed by one `ls-remote` of the same ref: an answer means the
-/// remote is there and the swap genuinely lost, and no answer at all means the
-/// remote is what failed. It costs a round trip on the failing path only.
+/// **A lost race, a refusal and an unreachable remote are told apart by asking,
+/// never by reading stderr** (ADR-aaee5307b34c). Push's stderr is prose written
+/// for people, and parsing it would be the fragility ADR-9307e5d214a7 exists to
+/// prevent. So a failure is followed by one `ls-remote` of the same ref: no
+/// answer means the remote is what failed; an answer other than `expect` means
+/// the swap genuinely lost; an answer still equal to `expect`, on a push whose
+/// porcelain status line says `remote rejected`, means the remote refused the
+/// write. That line, on stdout, is the one thing read from the push, and only
+/// for its reason: the state decides, so a swap lost on the server -- which git
+/// also reports as `remote rejected` -- still reads as a loss. It costs a round
+/// trip on the failing path only.
 pub fn push_ref(
     cwd: &Path,
     refname: &str,
@@ -226,12 +237,24 @@ pub fn push_ref(
         Some(object) => format!("{object}:{refname}"),
         None => format!(":{refname}"),
     };
-    let args = ["push", lease.as_str(), "origin", spec.as_str()];
+    let args = [
+        "push",
+        "--porcelain",
+        lease.as_str(),
+        "origin",
+        spec.as_str(),
+    ];
     let out = output(cwd, &args)?;
     if out.status.success() {
         return Ok(Pushed::Ok);
     }
     match ls_remote(cwd, refname) {
+        Ok(holds) if holds.as_deref() == expect => {
+            match remote_rejection(&String::from_utf8_lossy(&out.stdout), refname) {
+                Some(reason) => Ok(Pushed::Rejected { reason }),
+                None => Ok(Pushed::Refused { holds }),
+            }
+        }
         Ok(holds) => Ok(Pushed::Refused { holds }),
         // The remote could not be interrogated either, so the push failure was
         // never about contention.
@@ -239,6 +262,33 @@ pub fn push_ref(
             reason: String::from_utf8_lossy(&out.stderr).trim().to_string(),
         }),
     }
+}
+
+/// The reason the remote gave for refusing `refname`, read from the stdout of
+/// `push --porcelain`, or `None` when that output carries no `remote rejected`
+/// line for the ref.
+///
+/// One line per ref, `<flag>\t<from>:<to>\t<summary> (<reason>)`, tab-separated
+/// and documented as machine-readable by git-push(1), which is what makes it
+/// admissible beside `ls-remote`'s `<oid>\t<refname>` (ADR-aaee5307b34c). Only a
+/// `!` line whose summary is `[remote rejected]` counts: a client-side
+/// `[rejected] (stale info)` is a lease that did not hold, which the state
+/// already answers, and nothing on stderr -- `remote:` text included -- is ever
+/// consulted.
+fn remote_rejection(porcelain: &str, refname: &str) -> Option<String> {
+    porcelain.lines().find_map(|line| {
+        let mut fields = line.split('\t');
+        let (flag, refs, summary) = (fields.next()?, fields.next()?, fields.next()?);
+        if flag != "!" || refs.rsplit_once(':')?.1 != refname {
+            return None;
+        }
+        let reason = summary.strip_prefix("[remote rejected]")?.trim();
+        let reason = reason
+            .strip_prefix('(')
+            .and_then(|r| r.strip_suffix(')'))
+            .unwrap_or(reason);
+        Some(reason.to_string())
+    })
 }
 
 /// The object the remote holds at `refname`, or `None` when the ref is absent

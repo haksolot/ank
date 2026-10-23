@@ -132,7 +132,7 @@ impl ExitCode {
                 "`check` or `review` found a fault; a signal alone leaves the code at 0"
             }
             ExitCode::Environment => {
-                "the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a directory that refuses the lock"
+                "the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a claim the remote refused, a directory that refuses the lock"
             }
         }
     }

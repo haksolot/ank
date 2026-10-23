@@ -18,6 +18,6 @@ A refusal writes `error[<code>]: <message>` on stderr, followed by the exact com
 | 6 | `Transition` | the act is illegal from the state the entity is in: a frozen field diverged, a transition the state machine does not allow, or a write without the claim it needs |
 | 7 | `Prerequisite` | a prerequisite is missing: the task is blocked, it has no `done_criteria`, a mandatory flag was not given, or the caller already holds a live claim |
 | 8 | `Findings` | `check` or `review` found a fault; a signal alone leaves the code at 0 |
-| 9 | `Environment` | the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a directory that refuses the lock |
+| 9 | `Environment` | the environment, not the work: `sh` or `git` absent, git older than 2.34, `$EDITOR` unset, a default branch that cannot be determined, a detached proof that never reached the remote, a claim the remote refused, a directory that refuses the lock |
 
 Two of them are the ones an agentic loop must handle: **3** means somebody moved, read again, and **4** means take something else. **6 and 7 are two codes on purpose**: in 6 the state forbids what was asked; in 7 the thing asked for is legal and something it depends on is absent. **9 is not a failure of the work**, and a pipeline that collapses it into "the command failed" sends somebody to fix sound code.

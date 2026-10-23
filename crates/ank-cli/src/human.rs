@@ -7347,6 +7347,7 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
             }
             git::Pushed::Refused { holds: None } => Some("the remote refused it".to_string()),
             git::Pushed::Unreachable { reason } => Some(reason),
+            git::Pushed::Rejected { reason } => Some(format!("the remote refused it ({reason})")),
         };
         if let Some(why) = refused {
             // Best-effort, as every rollback on an error path: a failure here

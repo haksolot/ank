@@ -1044,10 +1044,14 @@ const ACCEPTED: &[Field] = &[
 ];
 
 /// The verb wrote to disk as well, so the ref is not the whole product and the
-/// exit code does not depend on the push (§2).
+/// exit code does not depend on the push (§2). A remote that refuses the write
+/// for a reason of its own is named with that reason (ADR-aaee5307b34c); the
+/// one verb for which a refusal is not a degradation, `claim`, says so in its
+/// refusals.
 pub const PUSH_DEGRADES: &str =
-    "the ref is not the whole product: a push the remote refuses leaves the write standing in \
-     this clone, and the verb exits 0";
+    "the ref is not the whole product: a push that does not reach the remote leaves the write \
+     standing in this clone, and the verb exits 0; a remote that refuses the write is named \
+     with its reason";
 
 /// The ref is the whole product on at least one path, so a refused push is a
 /// failure. Which path is the verb's own business to name, and the verb that
@@ -1120,6 +1124,12 @@ pub const COMMANDS: &[CommandSpec] = &[
             UNPARSEABLE_CALL,
             ENTITY_MOVED,
             NO_GIT,
+            // ADR-aaee5307b34c: a refusal names no holder, and 4 would send a
+            // loop to the next task, which the same remote refuses in turn.
+            refuses(
+                ExitCode::Environment,
+                "the remote refused the claim for a reason of its own, named verbatim: nothing is claimed",
+            ),
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
             refuses(
                 ExitCode::Transition,
