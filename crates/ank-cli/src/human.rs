@@ -133,6 +133,7 @@ kinds! {
     DefaultBranchUnknown => "default-branch-unknown",
     DefaultBranchEmpty => "default-branch-empty",
     OriginRefspec => "origin-refspec",
+    ClaimsRefspec => "claims-refspec",
     RefName => "ref-name",
     RefRecord => "ref-record",
     ProofRefGrowth => "proof-ref-growth",
@@ -453,11 +454,11 @@ pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -
     // fetch brings are the ones it counts (ADR-1b030fe70442). Only where git
     // runs here: a check outside a repository starts no process for it.
     let origin = git::usable_here(&repo.corpus).then(|| {
-        let (origin, repaired) = crate::init::repair_origin(&repo.corpus);
+        let (remotes, repaired) = crate::init::repair_remotes(&repo.corpus);
         if let Some(line) = repaired.filter(|_| !inv.quiet()) {
             eprintln!("{line}");
         }
-        origin
+        remotes
     });
     let report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
     // The code is the whole corpus's whatever is shown: narrowing the listing
@@ -503,7 +504,8 @@ pub fn inspect(repo: &Repo, cfg: &Config, path: Option<&str>, prune: bool) -> Re
     inspect_with(repo, cfg, path, prune, None)
 }
 
-/// [`inspect`], handed what origin fetches when the caller has already asked.
+/// [`inspect`], handed what origin and `ank` fetch when the caller has already
+/// asked.
 ///
 /// `status` reads it for a line of its own and for the key its cached verdict
 /// hangs on, and a verb asks git a question once (ADR-cc65f1388a71): `None`
@@ -513,7 +515,7 @@ pub fn inspect_with(
     cfg: &Config,
     path: Option<&str>,
     prune: bool,
-    origin: Option<crate::init::OriginFetch>,
+    remotes: Option<crate::init::Remotes>,
 ) -> Result<Report> {
     let store = Store::new(&repo.ank);
     let mut report = Report::default();
@@ -992,10 +994,11 @@ pub fn inspect_with(
             git::origin_head(&repo.corpus)?.as_deref(),
         );
         check_signers(repo, &mut report);
-        let origin = origin.unwrap_or_else(|| crate::init::origin_fetch(&repo.corpus));
-        if let Some(finding) = origin_refspec_finding(origin) {
+        let remotes = remotes.unwrap_or_else(|| crate::init::remotes(&repo.corpus));
+        if let Some(finding) = origin_refspec_finding(remotes.origin) {
             report.findings.push(finding);
         }
+        report.findings.extend(claims_refspec_findings(remotes));
         (coord, detached, Some(branch))
     } else {
         report.findings.push(Finding::signal(
@@ -1340,6 +1343,48 @@ pub fn origin_refspec_gap() -> String {
         crate::init::REFSPEC,
         crate::init::REFSPEC_REPAIR
     )
+}
+
+/// The fetch refspecs a remote named `ank` asks for and does not have
+/// (ADR-b6fe84504ff2), one signal per remote, its subject that remote.
+///
+/// A signal for the reason [`origin_refspec_finding`] gives, and in practice
+/// never seen: the first `status` or `check` writes them. What is left is the
+/// clone where the write itself failed.
+pub fn claims_refspec_findings(remotes: crate::init::Remotes) -> Vec<Finding> {
+    claims_refspec_gaps(remotes)
+        .into_iter()
+        .map(|(remote, gap)| Finding::signal(Kind::ClaimsRefspec, remote, gap))
+        .collect()
+}
+
+/// The sentences both surfaces print for the refspecs `ank` asks for, each
+/// with the remote it is about.
+pub fn claims_refspec_gaps(remotes: crate::init::Remotes) -> Vec<(&'static str, String)> {
+    let mut v = Vec::new();
+    if remotes.ank_lacks_claims() {
+        v.push((
+            crate::git::COORDINATION,
+            format!(
+                "remote.ank.fetch lacks {}, so the claims ank carries are never \
+                 fetched ({})",
+                crate::init::CLAIMS_REFSPEC,
+                crate::init::REFSPEC_REPAIR
+            ),
+        ));
+    }
+    if remotes.origin_lets_claims_in() {
+        v.push((
+            crate::git::ORIGIN,
+            format!(
+                "remote.origin.fetch lacks {}, so a fetch from origin writes and \
+                 prunes the claims ank carries ({})",
+                crate::init::NOT_CLAIMS,
+                crate::init::REFSPEC_REPAIR
+            ),
+        ));
+    }
+    v
 }
 
 type Plane = (

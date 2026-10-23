@@ -45,6 +45,21 @@ pub const REFSPEC: &str = "+refs/ank/*:refs/ank/*";
 /// is idempotent and adds the refspec from exactly that state: a narrower verb
 /// would be a second place the rule lives.
 pub const REFSPEC_REPAIR: &str = "ank init";
+/// What a remote named `ank` fetches, since it carries the claims and nothing
+/// else (ADR-b6fe84504ff2).
+pub const CLAIMS_REFSPEC: &str = "+refs/ank/claims/*:refs/ank/claims/*";
+/// What origin's fetch carries beside [`REFSPEC`] once `ank` takes the claims:
+/// a negative refspec, so that neither `git fetch origin` writes a claim origin
+/// still holds nor `git fetch --prune origin` deletes a live claim origin does
+/// not (ADR-b6fe84504ff2).
+///
+/// Measured on git 2.47.3 before relying on it (TASK-df475a664d21): without it
+/// a `fetch --prune origin` deleted a claim held locally and on `ank`, and
+/// wrote one origin held; with it, neither, while `refs/ank/ratify/*` and
+/// `refs/ank/proof/*` came all the same. Negative refspecs are git 2.29 and
+/// later, prune included (git's own t5582 carries `fetch --prune with negative
+/// refspec`), below the 2.34 floor.
+pub const NOT_CLAIMS: &str = "^refs/ank/claims/*";
 const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
@@ -162,6 +177,9 @@ pub struct Report {
     /// skipped in silence: the usual order for a new repository -- `git init`,
     /// `ank init`, then the remote -- lands here every time.
     pub refspec_waits_for_origin: bool,
+    /// The lines [`arrange_claims`] wrote, one per refspec it added to or
+    /// removed from a remote's fetch.
+    pub claims_refspecs: Vec<ClaimsRefspec>,
 }
 
 impl Report {
@@ -198,6 +216,11 @@ impl Report {
         if self.added_refspec {
             added.push("remote.origin.fetch");
         }
+        for c in &self.claims_refspecs {
+            if !added.contains(&c.key()) {
+                added.push(c.key());
+            }
+        }
         crate::json::Obj::document()
             .strings("created", &self.created_dirs)
             .strings("wrote", &wrote)
@@ -214,6 +237,7 @@ impl Report {
             || self.wrote_gitignore
             || self.wrote_agents_pointer
             || self.added_refspec
+            || !self.claims_refspecs.is_empty()
     }
 
     /// Terse output, `git status` style: one line per real effect, nothing for
@@ -238,6 +262,7 @@ impl Report {
         if self.added_refspec {
             v.push(format!("refspec added: {REFSPEC}"));
         }
+        v.extend(self.claims_refspecs.iter().map(ClaimsRefspec::line));
         // Last, and never silent: it is the one thing this verb wrote outside
         // the directory the caller pointed at.
         if let Some(file) = &self.declared {
@@ -325,11 +350,17 @@ pub fn init_at(root: &Path) -> Result<Report> {
         report.wrote_agents_pointer = ensure_line(&agents, AGENTS_POINTER)?;
     }
 
-    match ensure_refspec(root)? {
+    let found = remotes(root);
+    match ensure_refspec(root, found.origin)? {
         OriginFetch::Lacks => report.added_refspec = true,
         OriginFetch::NoOrigin => report.refspec_waits_for_origin = true,
         OriginFetch::Fetches => {}
     }
+    let origin = match found.origin {
+        OriginFetch::Lacks => OriginFetch::Fetches,
+        other => other,
+    };
+    report.claims_refspecs = arrange_claims(root, Remotes { origin, ..found })?;
 
     Ok(report)
 }
@@ -468,8 +499,7 @@ fn ensure_gitignore(path: &Path) -> Result<bool> {
 /// every state `init` can leave behind.
 ///
 /// Answers with the state it found: `Lacks` is the one it repaired.
-fn ensure_refspec(root: &Path) -> Result<OriginFetch> {
-    let found = origin_fetch(root);
+fn ensure_refspec(root: &Path, found: OriginFetch) -> Result<OriginFetch> {
     if found == OriginFetch::Lacks {
         git::run(root, &["config", "--add", "remote.origin.fetch", REFSPEC])?;
     }
@@ -503,30 +533,145 @@ pub fn repair_origin(root: &Path) -> (OriginFetch, Option<String>) {
 /// `ank` is in force (ADR-b6fe84504ff2), out of the same process: `status`
 /// names it on every call, and a verb read this often does not start a second
 /// `git config` to learn it.
+///
+/// **The claims refspecs are repaired by the same question** (ADR-b6fe84504ff2,
+/// TASK-df475a664d21): a clone where `ank` was added after `init` gets what
+/// `init` would have written, [`arrange_claims`], and says so on the same
+/// stream, one line per refspec. Nothing is fetched for them: claims are read
+/// off `ank` by `ls-remote` whatever this clone holds, and the next `git fetch`
+/// brings them. A clone with origin alone answers exactly as before.
 pub fn repair_remotes(root: &Path) -> (Remotes, Option<String>) {
     let found = remotes(root);
-    if found.origin != OriginFetch::Lacks {
+    if found.origin != OriginFetch::Lacks && found.claims_settled() {
         return (found, None);
     }
-    if ensure_refspec(root).is_err() {
-        return (found, None);
+    let mut now = found;
+    let mut lines = Vec::new();
+    let mut fetch = false;
+    if found.origin == OriginFetch::Lacks && ensure_refspec(root, found.origin).is_ok() {
+        now.origin = OriginFetch::Fetches;
+        fetch = true;
     }
-    let fetched = git::fetch_ref(root, git::ORIGIN, "refs/ank/*").unwrap_or(false);
-    let line = if fetched {
-        format!("refspec added: {REFSPEC}, and refs/ank/* fetched from origin")
-    } else {
-        format!(
-            "refspec added: {REFSPEC}; refs/ank/* could not be fetched from \
-             origin, the next git fetch brings them"
-        )
-    };
-    (
-        Remotes {
-            origin: OriginFetch::Fetches,
-            ..found
-        },
-        Some(line),
-    )
+    match arrange_claims(root, now) {
+        Ok(done) => {
+            now = remotes_after(now, &done);
+            lines.extend(done.iter().map(ClaimsRefspec::line));
+        }
+        // Left as found, so `status` and `check` keep saying what is missing.
+        Err(_) => now = remotes(root),
+    }
+    if fetch {
+        // The refspecs as configured, given on the command line, so a fetch
+        // from origin with `ank` in force brings no claim either.
+        let mut specs = vec![REFSPEC];
+        if now.origin_skips_claims {
+            specs.push(NOT_CLAIMS);
+        }
+        let fetched = git::fetch_refs(root, git::ORIGIN, &specs).unwrap_or(false);
+        lines.insert(
+            0,
+            if fetched {
+                format!("refspec added: {REFSPEC}, and refs/ank/* fetched from origin")
+            } else {
+                format!(
+                    "refspec added: {REFSPEC}; refs/ank/* could not be fetched from \
+                     origin, the next git fetch brings them"
+                )
+            },
+        );
+    }
+    let line = (!lines.is_empty()).then(|| lines.join("\n"));
+    (now, line)
+}
+
+/// One refspec [`arrange_claims`] added to or removed from a remote's fetch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClaimsRefspec {
+    /// [`CLAIMS_REFSPEC`] added to `remote.ank.fetch`.
+    AnkFetchesClaims,
+    /// [`NOT_CLAIMS`] added to `remote.origin.fetch`.
+    OriginSkipsClaims,
+    /// [`NOT_CLAIMS`] removed from `remote.origin.fetch`, because no remote
+    /// named `ank` carries the claims any more and origin does again.
+    OriginFetchesClaims,
+}
+
+impl ClaimsRefspec {
+    /// The git config key it wrote.
+    pub fn key(self) -> &'static str {
+        match self {
+            ClaimsRefspec::AnkFetchesClaims => "remote.ank.fetch",
+            _ => "remote.origin.fetch",
+        }
+    }
+
+    /// What `init` prints for it, and what the repair says on stderr.
+    pub fn line(&self) -> String {
+        match self {
+            ClaimsRefspec::AnkFetchesClaims => {
+                format!("refspec added to remote.ank.fetch: {CLAIMS_REFSPEC}")
+            }
+            ClaimsRefspec::OriginSkipsClaims => {
+                format!("refspec added to remote.origin.fetch: {NOT_CLAIMS}")
+            }
+            ClaimsRefspec::OriginFetchesClaims => format!(
+                "refspec removed from remote.origin.fetch: {NOT_CLAIMS}, \
+                 no remote named ank carries the claims"
+            ),
+        }
+    }
+}
+
+/// Gives `ank` a fetch refspec for the claims and origin the negative one that
+/// keeps them out of its fetch and its prune, or takes the negative one back
+/// once `ank` is gone (ADR-b6fe84504ff2). Answers what it wrote.
+///
+/// With origin alone and no negative refspec, the state of every clone that
+/// never had `ank`, it writes nothing and starts nothing.
+fn arrange_claims(root: &Path, found: Remotes) -> Result<Vec<ClaimsRefspec>> {
+    let mut done = Vec::new();
+    if found.ank && !found.ank_fetches_claims {
+        git::run(
+            root,
+            &["config", "--add", "remote.ank.fetch", CLAIMS_REFSPEC],
+        )?;
+        done.push(ClaimsRefspec::AnkFetchesClaims);
+    }
+    if found.origin_lets_claims_in() {
+        git::run(
+            root,
+            &["config", "--add", "remote.origin.fetch", NOT_CLAIMS],
+        )?;
+        done.push(ClaimsRefspec::OriginSkipsClaims);
+    }
+    if !found.ank && found.origin_skips_claims {
+        git::run(
+            root,
+            &[
+                "config",
+                "--fixed-value",
+                "--unset-all",
+                "remote.origin.fetch",
+                NOT_CLAIMS,
+            ],
+        )?;
+        done.push(ClaimsRefspec::OriginFetchesClaims);
+    }
+    Ok(done)
+}
+
+/// `found` once `done` was written, read from what was written rather than by
+/// a second `git config`.
+fn remotes_after(found: Remotes, done: &[ClaimsRefspec]) -> Remotes {
+    let mut now = found;
+    for d in done {
+        match d {
+            ClaimsRefspec::AnkFetchesClaims => now.ank_fetches_claims = true,
+            ClaimsRefspec::OriginSkipsClaims => now.origin_skips_claims = true,
+            ClaimsRefspec::OriginFetchesClaims => now.origin_skips_claims = false,
+        }
+    }
+    now
 }
 
 /// The two remotes ank reads, as far as `refs/ank/*` is concerned.
@@ -537,6 +682,30 @@ pub struct Remotes {
     /// Whether a remote named `ank` has a URL, and therefore carries
     /// `refs/ank/claims/*` (ADR-b6fe84504ff2).
     pub ank: bool,
+    /// Whether `remote.ank.fetch` carries [`CLAIMS_REFSPEC`].
+    pub ank_fetches_claims: bool,
+    /// Whether `remote.origin.fetch` carries [`NOT_CLAIMS`].
+    pub origin_skips_claims: bool,
+}
+
+impl Remotes {
+    /// `ank` carries the claims and its fetch does not bring them.
+    pub fn ank_lacks_claims(&self) -> bool {
+        self.ank && !self.ank_fetches_claims
+    }
+
+    /// `ank` carries the claims and a fetch from origin would still write
+    /// them, or prune them.
+    pub fn origin_lets_claims_in(&self) -> bool {
+        self.ank && self.origin != OriginFetch::NoOrigin && !self.origin_skips_claims
+    }
+
+    /// Nothing for [`arrange_claims`] to write.
+    fn claims_settled(&self) -> bool {
+        !self.ank_lacks_claims()
+            && !self.origin_lets_claims_in()
+            && (self.ank || !self.origin_skips_claims)
+    }
 }
 
 /// What `origin` fetches, as far as `refs/ank/*` is concerned.
@@ -573,7 +742,7 @@ pub fn remotes(root: &Path) -> Remotes {
         &[
             "config",
             "--get-regexp",
-            r"^remote\.(origin\.(url|fetch)|ank\.url)$",
+            r"^remote\.(origin|ank)\.(url|fetch)$",
         ],
     )
     .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
@@ -581,12 +750,16 @@ pub fn remotes(root: &Path) -> Remotes {
     let mut url = false;
     let mut fetches = false;
     let mut ank = false;
+    let mut ank_fetches_claims = false;
+    let mut origin_skips_claims = false;
     for line in said.lines() {
         let (key, value) = line.split_once(' ').unwrap_or((line, ""));
         match key {
             "remote.origin.url" if !value.trim().is_empty() => url = true,
             "remote.origin.fetch" if value.trim() == REFSPEC => fetches = true,
+            "remote.origin.fetch" if value.trim() == NOT_CLAIMS => origin_skips_claims = true,
             "remote.ank.url" if !value.trim().is_empty() => ank = true,
+            "remote.ank.fetch" if value.trim() == CLAIMS_REFSPEC => ank_fetches_claims = true,
             _ => {}
         }
     }
@@ -595,7 +768,12 @@ pub fn remotes(root: &Path) -> Remotes {
         (false, true) => OriginFetch::Lacks,
         (false, false) => OriginFetch::NoOrigin,
     };
-    Remotes { origin, ank }
+    Remotes {
+        origin,
+        ank,
+        ank_fetches_claims,
+        origin_skips_claims,
+    }
 }
 
 #[cfg(test)]
