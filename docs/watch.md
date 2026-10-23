@@ -62,9 +62,14 @@ where the declaration is read from.
 **The only things it writes into a repository are that repository's own
 `.ank/index.db.<N>`, the index of the binary's own schema `N`, and a mirror of
 `refs/ank/claims/*`.** The mirror lands in
-`refs/ank/watch/origin/claims/*`, a tracking namespace of the watcher's own, and
+`refs/ank/watch/<remote>/claims/*`, a tracking namespace of the watcher's own, and
 carries the remote's claims alone: a mirrored proof is read by nobody, so none
-is fetched (ADR-4b45f344344f). No branch, no tag, no working tree, no index of
+is fetched (ADR-4b45f344344f). `<remote>` is the remote that carries the claims
+(ADR-b6fe84504ff2): `ank` when the repository has a remote by that name, and
+`origin` otherwise, so with both a cycle fetches from `ank` and runs nothing
+against origin. The watcher asks which one when it starts, once per checkout,
+and not on every cycle: after `git remote add ank` in a watched checkout,
+restart the watcher, and `ank watch --list` names the mirror it reads. No branch, no tag, no working tree, no index of
 git's, and no `refs/ank/claims`. It takes no claim, holds none on anybody's
 behalf, and renews none -- a claim is renewed by working, not by reporting
 (ADR-0bb7ea8991bc). A fetch that fails is a line on stderr and never an exit
