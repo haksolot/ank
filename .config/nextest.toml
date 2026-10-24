@@ -1,5 +1,5 @@
-# cargo-nextest runs the suite for the `cargo-test` verifier and the CI `test`
-# job (ADR-8c12a38531e3): one pool for every test of every binary, so the
+# cargo-nextest runs the suite for the test verifiers and the CI `test` job
+# (ADR-9c69bd47ce23): one pool for every test of every binary, so the
 # binaries no longer wait for each other.
 
 # Eight suites of ank-tui open pseudo-terminals, and they run one at a time:
