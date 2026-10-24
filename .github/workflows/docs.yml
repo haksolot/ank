@@ -40,10 +40,13 @@ jobs:
       # binary, pinned by version and by the sha256 below for each runner, read
       # from stdin and checked before it is run, without a third-party action.
       # The digests are the release's SHASUMS256.txt. A runner outside the
-      # three is an environment to repair, exit 9. Only mdBook is installed:
-      # nextest and node are locked beside it for the other workflows. The
-      # token lets mise read the release's attestation under the authenticated
-      # rate limit instead of the runner's shared one.
+      # three is an environment to repair, exit 9. mdBook and python are
+      # installed by name; the first mise x then installs nextest and node too,
+      # since it resolves every tool mise.toml declares, each from the lockfile.
+      # The link check runs mise's python, never the runner's own, and the step
+      # prints which interpreter that is. The token lets mise read the
+      # release's attestation under the authenticated rate limit instead of the
+      # runner's shared one.
       - name: mise
         shell: bash
         env:
@@ -97,8 +100,9 @@ jobs:
           export PATH="$bin:$PATH"
           mise --version
           mise trust
-          mise install --locked github:rust-lang/mdBook
+          mise install --locked github:rust-lang/mdBook python
           mise x -- mdbook --version
+          mise x -- python3 -c 'import sys; print(sys.executable, sys.version)'
 
       # book.toml sets create-missing = false, so a page SUMMARY.md lists and
       # docs/ lacks fails here instead of being written as an empty chapter.
@@ -112,7 +116,7 @@ jobs:
       # and fails too: it is written as an absolute GitHub URL instead.
       - name: Check internal links
         run: |
-          python3 - target/book "$SITE_PREFIX" <<'EOF'
+          mise x -- python3 - target/book "$SITE_PREFIX" <<'EOF'
           import html.parser, pathlib, sys, urllib.parse
 
           root, prefix = pathlib.Path(sys.argv[1]).resolve(), sys.argv[2]

@@ -13,6 +13,7 @@
 # x86_64 archive, which needs Rosetta.
 "github:rust-lang/mdBook" = { version = "0.5.4", version_prefix = "v" }
 node = "22.23.4"
+python = "3.14.9"
 
 # The suite's temporary files go to ${XDG_CACHE_HOME:-$HOME/.cache}/ank-test:
 # outside the repository, outside any cargo target directory, and on disk where
