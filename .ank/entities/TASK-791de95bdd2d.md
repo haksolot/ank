@@ -5,7 +5,7 @@ slug: the-test-verifiers-run-cargo-nextest-through-mis
 title: The test verifiers run cargo nextest through mise x, and a missing mise is exit 9
 created: 2026-10-24T07:36:47Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - .ank/config.yml
 blocked_by: [TASK-d7253853996c]
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 Applies ADR-9c69bd47ce23 once it is ratified; do not claim before. The definition hashes change, and check reporting earlier proofs against older definitions is expected, not a finding to fix.
