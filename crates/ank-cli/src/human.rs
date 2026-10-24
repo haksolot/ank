@@ -2587,11 +2587,15 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
         // open task gets no longer refuses on the spot, and it is named.
         Entity::Task(_) => Some(amend),
         Entity::Adr(a) if a.status == AdrStatus::Proposed => Some(amend),
-        // Accepted or superseded: `constraint` and `scope` are hashed into the
-        // ratification commit, so `amend` refuses with code 6 and the change is
-        // a succession. Worded as that refusal words it, and deliberately not
-        // shortened — a supersession is a decision, and a one-flag command
-        // would read as a formality.
+        // Accepted: the decision stays and the perimeter follows the file
+        // (ADR-bb9ccdba9be7), in the words its anchor allows.
+        Entity::Adr(a) if a.status == AdrStatus::Accepted => {
+            Some(follow(&amend, id, a.ratified.is_some(), a.anchor.is_some()))
+        }
+        // Superseded: `amend` refuses the scope with code 6 and there is no
+        // rescope, so the change is a succession. Worded as that refusal words
+        // it, and deliberately not shortened — a supersession is a decision,
+        // and a one-flag command would read as a formality.
         Entity::Adr(_) => Some(format!(
             "ank new adr --supersedes {id} --title \"<t>\" --scope \"{to}\" \
              --constraint \"<rule>\""
@@ -2601,6 +2605,9 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
         // nothing, and once it is ratified the anchor covers the body *and* the
         // scope (§3), so `amend` exits 6 and the change is a supersession.
         Entity::Spec(s) if s.status == AdrStatus::Proposed => Some(amend),
+        Entity::Spec(s) if s.status == AdrStatus::Accepted => {
+            Some(follow(&amend, id, s.ratified.is_some(), s.anchor.is_some()))
+        }
         Entity::Spec(_) => Some(format!(
             "ank new spec --supersedes {id} --title \"<t>\" --scope \"{to}\""
         )),
@@ -2609,6 +2616,42 @@ fn repair(entity: &Entity, from: &str, to: &str) -> Option<String> {
         // exits 7 is worse than naming none. The rename is reported either way.
         // TASK-df9c6d46e8ef is the log entry's.
         Entity::Log(_) => None,
+    }
+}
+
+/// The one ratified scope `amend` still refuses: one whose anchor is a
+/// `ratify <id>` commit, which the file says by naming no tag. `--rescope`
+/// replaces a ref and there is none, so the amend would leave an alteration
+/// nothing could sign; `--reanchor` moves the anchor into a ref first, while
+/// the file still reads as that commit ratified it.
+fn refuse_scope_without_ref(id: &EntityId, ratified: bool, tagged: bool) -> Result<()> {
+    if !ratified || tagged {
+        return Ok(());
+    }
+    Err(CliError::new(
+        ExitCode::Transition,
+        format!(
+            "{id} is ratified by a ratify {id} commit and no ref, and only a ref's scope is \
+             rescoped"
+        ),
+    )
+    .with_hint(format!("ank accept {id} --reanchor")))
+}
+
+/// The commands that move an accepted document's scope after its file, and
+/// none that would refuse. Never ratified: the scope is anchored by nothing,
+/// and the amend is the whole of it. Ratified by a tag: the amend leaves the
+/// file behind its ratification, and `accept --rescope` signs the new scope.
+/// Ratified by a `ratify <id>` commit: `--rescope` replaces a ref and there
+/// is none, so `--reanchor` comes first, while the file still reads as that
+/// commit ratified it.
+fn follow(amend: &str, id: &EntityId, ratified: bool, tagged: bool) -> String {
+    match (ratified, tagged) {
+        (false, _) => amend.to_string(),
+        (true, true) => format!("{amend}, then ank accept {id} --rescope"),
+        (true, false) => {
+            format!("ank accept {id} --reanchor, then {amend}, then ank accept {id} --rescope")
+        }
     }
 }
 
@@ -4038,6 +4081,22 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
         ));
     }
     match freeze_state(repo, *view) {
+        // **A scope amended and nothing else is a file behind, not an
+        // alteration** (ADR-bb9ccdba9be7): the text hashed with the scope the
+        // ratified blob carries still gives the anchor, so the decision is the
+        // one signed and only the perimeter waits for its signature.
+        Freeze::Altered { ratified, .. } if only_scope_moved(repo, view, &ratified) => {
+            let file = entity_rel_paths(repo, view.id).remove(0);
+            report.findings.push(Finding::signal(
+                Kind::RatificationBehind,
+                view.id,
+                format!(
+                    "its scope was amended after its ratification, and {file} has not caught up \
+                     with it: ank accept {} --rescope",
+                    view.id
+                ),
+            ));
+        }
         Freeze::Altered { ratified, now } => report.findings.push(Finding::fault(
             Kind::RatificationAltered,
             view.id,
@@ -4072,6 +4131,34 @@ fn check_anchor(view: &Anchored, repo: &Repo, consequence: &str, report: &mut Re
         )),
 
         Freeze::Unanchored | Freeze::Intact => {}
+    }
+
+    // **A rescope proves its decision unchanged, and check holds it to that**
+    // (ADR-bb9ccdba9be7): the previous anchor the tag names is recomputed from
+    // the current text and the previous scope beside it. The new anchor is
+    // the freeze above's to compare, and the signature is the one below's.
+    if view.status == AdrStatus::Accepted {
+        if let Some(tag) = git::ratify_tags(&repo.corpus)
+            .remove(&view.id.to_string())
+            .filter(|t| t.key == view.key)
+        {
+            if let Some(previous) = &tag.previous {
+                let recomputed = ratification_anchor(view.text, &tag.previous_scope);
+                if &recomputed != previous {
+                    report.findings.push(Finding::fault(
+                        Kind::RatificationAltered,
+                        view.id,
+                        format!(
+                            "its rescope {} names the previous anchor {previous}, but its {} with \
+                             the previous scope hashes to {recomputed}: the decision changed under \
+                             a rescope",
+                            &tag.tag[..tag.tag.len().min(12)],
+                            anchored_text(view.key)
+                        ),
+                    ));
+                }
+            }
+        }
     }
 
     // **A verified ref binds wherever the file is read, whatever its status
@@ -6182,10 +6269,21 @@ pub fn accept(
     // whole list is judged first.
     let store = Store::new(&repo.ank);
     let reanchor = inv.has("--reanchor");
+    let rescope = inv.has("--rescope");
+    if reanchor && rescope {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            "--reanchor and --rescope are two acts: one moves a commit anchor into a ref, the \
+             other replaces a ref",
+        )
+        .with_hint("ank accept <id> --rescope"));
+    }
     let mut prepared: Vec<Ratification> = Vec::new();
     for prefix in &inv.positionals {
         let r = if reanchor {
             prepare_reanchor(&store, repo, prefix, identity)?
+        } else if rescope {
+            prepare_rescope(&store, repo, prefix, identity)?
         } else {
             prepare_ratification(&store, repo, prefix, identity)?
         };
@@ -6200,7 +6298,29 @@ pub fn accept(
     // ratifications never share one.
     let mut tags: Vec<String> = Vec::new();
     for r in &prepared {
+        let resigned = match (&r.reanchors, &r.replaces) {
+            (Some(_), _) => Some("reanchored"),
+            (None, Some(_)) => Some("rescoped"),
+            (None, None) => None,
+        };
+        let before = resigned.map(|_| store.load(&r.id)).transpose()?;
         tags.push(write_ratification(&store, repo, r)?);
+        // **A re-signature is a second write on a ratified file, and it leaves
+        // an entry** (ADR-52bb0da2023a): the first ratification is evidenced by
+        // `ratified` itself, and nothing in the file counts the ones after it.
+        if let (Some(before), Some(act)) = (before, resigned) {
+            let after = store.load(&r.id)?.entity;
+            record_edit_entry(
+                &store,
+                repo,
+                &before.entity,
+                &after,
+                identity,
+                &[format!("{act} at {}", r.anchor)],
+                r.base_version,
+                r.base_version + 1,
+            )?;
+        }
     }
 
     let several = prepared.len() > 1;
@@ -6243,16 +6363,18 @@ pub fn accept(
             // happened: what the caller obtained is the anchor.
             let verb = if r.reanchors.is_some() {
                 "reanchored"
+            } else if r.replaces.is_some() {
+                "rescoped"
             } else if r.ratifying_in_place {
                 "ratified"
             } else {
                 "accepted"
             };
-            let from = r
-                .reanchors
-                .as_deref()
-                .map(|c| format!(" (from commit {})", &c[..c.len().min(7)]))
-                .unwrap_or_default();
+            let from = match (&r.reanchors, &r.replaces) {
+                (Some(c), _) => format!(" (from commit {})", &c[..c.len().min(7)]),
+                (None, Some(t)) => format!(" (from {})", &t[..t.len().min(7)]),
+                (None, None) => String::new(),
+            };
             let _ = writeln!(
                 out,
                 "{} {} -> {}{from}",
@@ -6288,6 +6410,10 @@ struct Ratification {
     /// The `ratify <id>` commit `--reanchor` moves the anchor from, and
     /// `None` for every other ratification.
     reanchors: Option<String>,
+    /// The tag `--rescope` replaces at `refs/ank/ratify/<id>`, which the ref
+    /// must still name, here and on the remote, for the new one to land; `None`
+    /// for every other ratification, whose ref must not exist.
+    replaces: Option<String>,
 }
 
 /// Judges one id for `accept`: resolves it, refuses on its state, and names
@@ -6387,6 +6513,7 @@ fn prepare_ratification(
         anchor,
         ratifying_in_place,
         reanchors: None,
+        replaces: None,
     })
 }
 
@@ -6500,7 +6627,178 @@ fn prepare_reanchor(
         anchor,
         ratifying_in_place: false,
         reanchors: Some(commit.sha),
+        replaces: None,
     })
+}
+
+/// Judges one id for `accept --rescope` (ADR-bb9ccdba9be7): an accepted
+/// document carried by a ratification ref, whose scope was amended since and
+/// whose constraint, or body, was not. Writes nothing.
+///
+/// **The decision provably did not move.** The previous scope is read off the
+/// blob the current tag points at, which is the file as that ratification
+/// wrote it, and the current text hashed with it must give the previous
+/// anchor back: anything else changed what was decided, and that is a
+/// succession. The new tag carries the previous anchor and scope, so `check`
+/// recomputes the same equality without keeping the old tag anywhere.
+///
+/// **It re-signs, so it says who**, as `--reanchor` does: the reading goes
+/// into `verified`. The supersession the replaced tag named is carried over,
+/// since the ref is still the one a retired document is checked against.
+fn prepare_rescope(
+    store: &Store,
+    repo: &Repo,
+    prefix: &str,
+    identity: &str,
+) -> Result<Ratification> {
+    let loaded = store.load_prefix(prefix)?;
+    let base_version = version_of(&loaded.entity);
+    let mut entity = loaded.entity;
+    let Some(view) = Anchored::of(&entity) else {
+        let kind = ank_core::Fields::kind_spec(&entity).name;
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!("{prefix} is a {kind}, and only an ADR or a spec carries a ratification"),
+        )
+        .with_hint(format!("ank show {prefix}")));
+    };
+    let id = view.id.clone();
+    if view.status != AdrStatus::Accepted || view.ratified.is_none() {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id} is {}, and only an accepted document has a scope to rescope",
+                view.status.as_str()
+            ),
+        )
+        .with_hint(format!("ank accept {id}")));
+    }
+    let Some(tag) = git::ratify_tags(&repo.corpus)
+        .remove(&id.to_string())
+        .filter(|t| t.key == view.key)
+    else {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!("{id} is carried by no ratification ref, so there is no tag to rescope"),
+        )
+        .with_hint(format!("ank accept {id} --reanchor")));
+    };
+    let Some(previous_scope) = ratified_scope(repo, &tag) else {
+        return Err(CliError::new(
+            ExitCode::Environment,
+            format!(
+                "the blob {} its ratification points at does not read as {id}",
+                tag.object
+            ),
+        )
+        .with_hint(format!("git cat-file -p {}", tag.object)));
+    };
+    if ratification_anchor(view.text, &previous_scope) != tag.anchor {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id}'s {} changed since its ratification: a rescope only moves the perimeter",
+                anchored_text(view.key)
+            ),
+        )
+        .with_hint(succession_command(&id)));
+    }
+    let anchor = view.anchor();
+    if anchor == tag.anchor {
+        return Err(CliError::new(
+            ExitCode::Transition,
+            format!(
+                "{id} declares the scope its ratification carries: there is nothing to rescope"
+            ),
+        )
+        .with_hint(format!("ank amend {id} --scope \"<glob>\"")));
+    }
+
+    let anchor_key = view.key;
+    let previous: String = previous_scope
+        .iter()
+        .map(|g| format!("previous-scope: {g}\n"))
+        .collect();
+    let supersedes = match &tag.supersedes {
+        Some(t) => format!("supersedes: {t}\n"),
+        None => String::new(),
+    };
+    let message = format!(
+        "ratify {id}\n\n{anchor_key}: {anchor}\nprevious: {}\n{previous}{supersedes}by: {identity}\n",
+        tag.anchor
+    );
+
+    let reading = Verified {
+        by: identity.to_string(),
+        at: claim::now_utc(),
+    };
+    // The blob is the file minus the anchor, as for every ratification: the
+    // tag it would name does not exist yet.
+    match &mut entity {
+        Entity::Adr(a) => {
+            a.ratified = Some(anchor.clone());
+            a.anchor = None;
+            a.verified.push(reading);
+        }
+        Entity::Spec(s) => {
+            s.ratified = Some(anchor.clone());
+            s.anchor = None;
+            s.verified.push(reading);
+        }
+        Entity::Task(_) | Entity::Log(_) => {
+            unreachable!("accept resolves an ADR or a spec, and reached {id}")
+        }
+    }
+
+    Ok(Ratification {
+        id,
+        entity,
+        base_version,
+        replaced: Succession::None,
+        message,
+        anchor,
+        ratifying_in_place: false,
+        reanchors: None,
+        replaces: Some(tag.tag),
+    })
+}
+
+/// Whether an accepted document that diverged from `ratified` differs from it
+/// by its scope alone: a ref carries that anchor, and the current text hashed
+/// with the scope of the blob the ref's tag points at gives it back. A commit
+/// anchor has no blob to read the scope from, and stays an alteration.
+fn only_scope_moved(repo: &Repo, view: &Anchored, ratified: &str) -> bool {
+    let Some(tag) = git::ratify_tags(&repo.corpus)
+        .remove(&view.id.to_string())
+        .filter(|t| t.key == view.key && t.anchor == ratified)
+    else {
+        return false;
+    };
+    ratified_scope(repo, &tag).is_some_and(|scope| {
+        scope != view.scope && ratification_anchor(view.text, &scope) == ratified
+    })
+}
+
+/// What a kind's anchor covers beside its scope, in a sentence's words.
+fn anchored_text(key: &str) -> &'static str {
+    if key == git::ANCHOR_CONSTRAINT {
+        "constraint"
+    } else {
+        "body"
+    }
+}
+
+/// The scope a ratification tag was taken over: the `scope` of the blob it
+/// points at, which is the entity file as that ratification wrote it. `None`
+/// where the blob is missing or does not read as the entity the tag names.
+fn ratified_scope(repo: &Repo, tag: &git::RatifyTag) -> Option<Vec<String>> {
+    let out = git::output(&repo.corpus, &["cat-file", "blob", &tag.object]).ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let entity = ank_core::parse_entity(&String::from_utf8_lossy(&out.stdout)).ok()?;
+    let view = Anchored::of(&entity)?;
+    (view.id.to_string() == tag.id).then(|| view.scope.to_vec())
 }
 
 /// The refusal that keeps a supersession from landing while the workspace still
@@ -7432,8 +7730,10 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     let tag = tag_blob(cwd, &r.id, &blob, &r.message)?;
 
     // An empty old value: the ref must not exist, and a ratification already
-    // recorded there is the one thing this verb never overwrites.
-    git::run(cwd, &["update-ref", &name, &tag, ""])?;
+    // recorded there is the one thing this verb never overwrites -- except
+    // the tag a rescope replaces, which the ref must still name.
+    let expect = r.replaces.as_deref();
+    git::run(cwd, &["update-ref", &name, &tag, expect.unwrap_or("")])?;
 
     // With compare-and-swap, as `attest --detached` pushes: the remote must
     // not hold the ref either. A repository with no origin has nowhere to
@@ -7441,7 +7741,7 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
     // ratification travels with the code it anchors, on origin, and never on a
     // coordination remote named `ank` (ADR-b6fe84504ff2).
     if git::remote(cwd)?.is_some() {
-        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(&tag), None)? {
+        let refused = match git::push_ref(cwd, git::ORIGIN, &name, Some(&tag), expect)? {
             git::Pushed::Ok => None,
             git::Pushed::Refused { holds: Some(other) } => {
                 Some(format!("the remote already holds {other} there"))
@@ -7453,7 +7753,10 @@ fn write_ratification(store: &Store, repo: &Repo, r: &Ratification) -> Result<St
         if let Some(why) = refused {
             // Best-effort, as every rollback on an error path: a failure here
             // cannot replace the one the caller is about to read.
-            let _ = git::run(cwd, &["update-ref", "-d", &name, &tag]);
+            let _ = match expect {
+                Some(previous) => git::run(cwd, &["update-ref", &name, previous, &tag]),
+                None => git::run(cwd, &["update-ref", "-d", &name, &tag]),
+            };
             return Err(CliError::new(
                 ExitCode::Environment,
                 format!(
@@ -8387,11 +8690,12 @@ pub fn amend(
                 )
                 .with_hint(format!("ank amend {id} --scope <glob>")));
             }
-            // `constraint` and `scope` are hashed into the ratification commit
-            // (§8), so amending the scope of an accepted ADR would diverge from
-            // the anchor and `check` would call it altered — while suspending
-            // its injection into `context`. The succession is the way to change
-            // a ratified decision, and it has its own verb.
+            // `constraint` and `scope` are hashed into the ratification (§8),
+            // and an accepted ADR's scope is amended all the same since
+            // ADR-bb9ccdba9be7: the file then has not caught up with its
+            // ratification, which `check` says, until `accept --rescope` signs
+            // the perimeter it now declares. A superseded ADR binds nothing and
+            // has no rescope, so its scope stays where it was.
             //
             // **The refusal is on the scope and not on the entity**, as it is
             // on a spec: `amends` is neither the constraint nor the scope, so
@@ -8401,7 +8705,7 @@ pub fn amend(
             // terms, and that is what lets a settled rule declare what already
             // holds it without a supersession (ADR-25584c56c1a7).
             let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
-            if touches_anchor && adr.status != AdrStatus::Proposed {
+            if touches_anchor && adr.status == AdrStatus::Superseded {
                 return Err(CliError::new(
                     ExitCode::Transition,
                     format!(
@@ -8413,6 +8717,9 @@ pub fn amend(
                     "ank new adr --supersedes <id> --title \"<t>\" --scope \"<glob>\" \
                      --constraint \"<rule>\"",
                 ));
+            }
+            if touches_anchor {
+                refuse_scope_without_ref(&id, adr.ratified.is_some(), adr.anchor.is_some())?;
             }
 
             amend_amends(
@@ -8488,10 +8795,11 @@ pub fn amend(
             }
             // The one place a spec's freeze bites wider than an ADR's, and it
             // is the doctrine applied rather than an exception to it: the
-            // ratification commit anchors the body *and* the scope (§3),
-            // because no narrower field carries the authority. So an accepted
-            // spec's scope is refused here on the same terms an accepted ADR's
-            // is, and revising an accepted specification is a supersession.
+            // ratification anchors the body *and* the scope (§3), because no
+            // narrower field carries the authority. So an accepted spec's scope
+            // moves on the same terms an accepted ADR's does: amended here, not
+            // caught up until `accept --rescope` (ADR-bb9ccdba9be7), and refused
+            // once superseded. Revising its body is a supersession.
             //
             // **The refusal is on the scope and not on the entity**, which is
             // what makes the repair `check` names reachable. A citation is not
@@ -8502,7 +8810,7 @@ pub fn amend(
             // the whole verb here would name a repair the verb turns down
             // (ADR-c88f99e1c16e).
             let touches_anchor = !add_scope.is_empty() || !drop_scope.is_empty();
-            if touches_anchor && spec.status != SpecStatus::Proposed {
+            if touches_anchor && spec.status == SpecStatus::Superseded {
                 return Err(CliError::new(
                     ExitCode::Transition,
                     format!(
@@ -8511,6 +8819,9 @@ pub fn amend(
                     ),
                 )
                 .with_hint("ank new spec --supersedes <id> --title \"<t>\" --scope \"<glob>\""));
+            }
+            if touches_anchor {
+                refuse_scope_without_ref(&id, spec.ratified.is_some(), spec.anchor.is_some())?;
             }
 
             amend_references(
@@ -10910,11 +11221,17 @@ mod tests {
         // within two weeks, and the only way the constraint survives its own
         // convenience is for this to fail when somebody adds one.
         let spec = crate::cli::spec_of("accept").unwrap();
-        // `--pr` went with the commit it carried, and the one flag left is the
-        // one ADR-5e47007a75be decides: `--reanchor`, which moves an anchor and
-        // bypasses no refusal. A flag is a decision, not an edit to this list.
+        // `--pr` went with the commit it carried, and the flags left are the
+        // ones a decision names: `--reanchor` (ADR-5e47007a75be), which moves
+        // an anchor, and `--rescope` (ADR-bb9ccdba9be7), which re-signs a
+        // scope; neither bypasses a refusal. A flag is a decision, not an edit
+        // to this list.
         let names: Vec<&str> = spec.flags.iter().map(|f| f.name).collect();
-        assert_eq!(names, ["--reanchor"], "accept takes no other flag");
+        assert_eq!(
+            names,
+            ["--reanchor", "--rescope"],
+            "accept takes no other flag"
+        );
     }
 
     /// A superseder naming nothing: the path that existed before, unchanged,
@@ -12060,9 +12377,10 @@ mod tests {
     /// §3's post-completion regime (ADR-b9156403c3d5): a finished task's
     /// `scope` amends — no proof anchors it — while `done_criteria` and
     /// `blocked_by` stay settled, and the refusal names the settled fields
-    /// rather than the whole plan.
+    /// rather than the whole plan. A ratified scope amends too, until the
+    /// document is superseded (ADR-bb9ccdba9be7).
     #[test]
-    fn amend_refuses_a_finished_task_and_a_ratified_scope() {
+    fn amend_refuses_a_finished_task_and_a_superseded_scope() {
         let t = Temp::new();
         t.write(&task("000000000001", TaskStatus::Done, &[]));
         let (code, out) = t
@@ -12079,13 +12397,23 @@ mod tests {
         assert!(err.message.contains("done_criteria"), "{}", err.message);
         assert!(err.message.contains("settled"), "{}", err.message);
 
-        // An accepted ADR's scope is hashed into the ratification commit, so
-        // amending it would diverge from the anchor and suspend its injection
-        // into context. Changing a ratified decision is a succession.
+        // An accepted ADR's scope amends, and the file is then behind its
+        // ratification until `accept --rescope` signs it.
         t.write(&adr("00000000aaaa", AdrStatus::Accepted, &["src/**"]));
-        let err = t
+        let (code, out) = t
             .call(
                 &["amend", "ADR-00000000aaaa", "--scope", "docs/**"],
+                "marie@laptop",
+            )
+            .unwrap();
+        assert_eq!(code, ExitCode::Ok, "{out}");
+
+        // A superseded one binds nothing and has no rescope: changing what it
+        // said is the succession that already happened.
+        t.write(&adr("00000000cccc", AdrStatus::Superseded, &["src/**"]));
+        let err = t
+            .call(
+                &["amend", "ADR-00000000cccc", "--scope", "docs/**"],
                 "marie@laptop",
             )
             .unwrap_err();

@@ -3268,19 +3268,13 @@ fn the_repair_a_reference_finding_names_is_one_amend_accepts() {
     );
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
-    // And an accepted document's citations are reachable, where its scope is
-    // not: the anchor covers the body and the scope, and a reference is
-    // neither.
+    // And an accepted document's citations are reachable: the anchor covers
+    // the body and the scope, and a reference is neither.
     let out = r.ank(
         "claude-code@ank",
         &["amend", SUCCESSOR, "--reference", DRAFT],
     );
     assert_eq!(code(&out), 0, "{}", stderr(&out));
-    let out = r.ank(
-        "claude-code@ank",
-        &["amend", SUCCESSOR, "--scope", "src/**"],
-    );
-    assert_eq!(code(&out), 6, "{}", stdout(&out));
 
     // What is left is the draft, which was a signal before and still is.
     let said = stdout(&r.ank("claude-code@ank", &["check"]));
@@ -12898,19 +12892,18 @@ fn a_spec_is_ratified_amended_and_checked_like_an_adr() {
     let out = r.ank("claude-code@ank", &["check"]);
     assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
 
-    // And the scope stops being amendable, in the accepted ADR's words and with
-    // its code.
-    let out = r.ank("marie@laptop", &["amend", &id, "--scope", "docs/**"]);
-    assert_eq!(code(&out), 6, "{}", stderr(&out));
+    // And the scope amends as an accepted ADR's does, leaving the file behind
+    // its ratification until the rescope (ADR-bb9ccdba9be7).
+    let out = r.ank("marie@laptop", &["amend", &id, "--scope", "src/**"]);
+    assert_eq!(code(&out), 0, "{}", stderr(&out));
+    let out = r.ank("claude-code@ank", &["check"]);
+    assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
     assert!(
-        stderr(&out).contains("anchored in the ratification commit"),
+        stdout(&out).contains(&format!(
+            "{id}: its scope was amended after its ratification"
+        )),
         "{}",
-        stderr(&out)
-    );
-    assert!(
-        stderr(&out).contains("ank new spec --supersedes"),
-        "the succession is named in the kind's own words: {}",
-        stderr(&out)
+        stdout(&out)
     );
 
     // `edit` is the paved road for everything else, and §4 says a change to a
@@ -13044,15 +13037,18 @@ fn a_spec_carries_the_bootstrap_signal_and_names_the_repair_for_a_dead_scope() {
         )),
         "the draft is amendable, and the repair says so:\n{said}"
     );
+    // Accepted and never anchored, the scope is anchored by nothing: the
+    // amend is the whole repair, and no rescope follows a ratification that
+    // never happened (ADR-bb9ccdba9be7).
     assert!(
         said.contains(&format!(
-            "ank new spec --supersedes {BOOTSTRAP} --title \"<t>\" \
-             --scope \"src/session/store.rs\""
+            "ank amend {BOOTSTRAP} --drop-scope \"src/auth/session.rs\" \
+             --scope \"src/session/store.rs\"\n"
         )),
-        "the accepted one is a supersession, and naming an amend would refuse:\n{said}"
+        "the bootstrap one is amended, and nothing more:\n{said}"
     );
     assert!(
-        !said.contains(&format!("ank amend {BOOTSTRAP}")),
+        !said.contains("--supersedes") && !said.contains("--rescope"),
         "the finding names a command that would refuse:\n{said}"
     );
 }
@@ -14494,7 +14490,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 45] = [
+const NOT_A_PATH: [&str; 46] = [
     // Who may ratify, what a reviewer should know of the key, and the date it
     // stops ratifying: an email, prose and a day (ADR-5c6db7a161b8).
     "--principal",
@@ -14511,6 +14507,9 @@ const NOT_A_PATH: [&str; 45] = [
     // Carries no value at all: `accept --reanchor` names nothing, the commit
     // it moves the anchor from is found by the walk (TASK-4b25843e6151).
     "--reanchor",
+    // Carries no value at all: `accept --rescope` names nothing, the scope it
+    // signs is the one the file declares (ADR-bb9ccdba9be7).
+    "--rescope",
     // Carries no value at all: the directory it writes is made under the
     // temporary directory by the verb, and nothing about it comes off the
     // command line (ADR-e1d750884b82).
@@ -16171,7 +16170,7 @@ fn a_deleted_file_names_the_commit_that_removed_it_and_proposes_nothing() {
 /// there would name a command that fails on the spot. The proposal is a
 /// supersession, and the refusal it avoids is asserted rather than assumed.
 #[test]
-fn an_accepted_adr_is_offered_a_supersession_and_never_an_amend() {
+fn an_accepted_adr_is_offered_a_rescope_and_never_a_supersession() {
     let r = Repo::new();
     r.enable_signing();
     std::fs::create_dir_all(r.0.join("src")).unwrap();
@@ -16186,18 +16185,20 @@ fn an_accepted_adr_is_offered_a_supersession_and_never_an_amend() {
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "move it"]);
 
+    // The decision did not move, the file did: the perimeter follows it by an
+    // amend and a rescope (ADR-bb9ccdba9be7), and no supersession is named.
     let text = stdout(&r.ank("claude-code@ank", &["check"]));
     let note = proposal(&text).unwrap_or_else(|| panic!("the rename is named: {text}"));
-    assert!(
-        note[1].starts_with("ank new adr --supersedes ") && note[1].contains("src/new.rs"),
-        "an accepted ADR is changed by a succession: {note:?}"
-    );
-    assert!(
-        !note[1].contains("ank amend"),
-        "amend refuses this with code 6, and naming it would be the defect: {note:?}"
+    assert_eq!(
+        note[1],
+        format!(
+            "ank amend {DEAD_ADR} --drop-scope \"src/old.rs\" --scope \"src/new.rs\", \
+             then ank accept {DEAD_ADR} --rescope"
+        ),
+        "{note:?}"
     );
 
-    let refused = r.ank(
+    let amended = r.ank(
         "claude-code@ank",
         &[
             "amend",
@@ -16208,12 +16209,7 @@ fn an_accepted_adr_is_offered_a_supersession_and_never_an_amend() {
             "src/new.rs",
         ],
     );
-    assert_eq!(
-        code(&refused),
-        6,
-        "the branch exists because amend refuses here: {}",
-        stderr(&refused)
-    );
+    assert_eq!(code(&amended), 0, "{}", stderr(&amended));
 }
 
 /// The two task states, which `amend` no longer treats as opposites.

@@ -1483,8 +1483,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: usize::MAX,
         positional_help: "<id>...",
         // The one act on an anchor made before ADR-5e47007a75be: the tag and
-        // the ref for a `ratify <id>` commit, signed by whoever runs it.
-        flags: &[switch("--reanchor")],
+        // the ref for a `ratify <id>` commit, signed by whoever runs it. And
+        // the one act on a ref that already exists: a new tag over the scope
+        // an accepted document now declares (ADR-bb9ccdba9be7).
+        flags: &[switch("--reanchor"), switch("--rescope")],
         refuses: &[
             refuses(ExitCode::NotFound, "no such entity, or the prefix matches more than one"),
             // The one refusal on the workspace, and it carries the code a
@@ -1514,10 +1516,15 @@ pub const COMMANDS: &[CommandSpec] = &[
                 ExitCode::Prerequisite,
                 "--reanchor over a document whose ratify <id> commit this clone does not hold",
             ),
+            refuses(
+                ExitCode::Transition,
+                "--rescope over a document that is not accepted, one no ref carries, one whose scope is the one ratified, or one whose constraint or body changed since its ratification; nothing is written",
+            ),
         ],
         notes: &[
             "it is a human act, signed where the repository signs; it commits nothing, and the file lands with whoever's next change",
             "--reanchor moves an anchor made by a ratify <id> commit into a ref: the same anchor, a message naming that commit, a reading by whoever runs it; nothing in history is rewritten",
+            "--rescope ratifies the scope an accepted ADR or spec now declares, after amend --scope/--drop-scope: a new tag replaces refs/ank/ratify/<id> with compare-and-swap, carrying the new anchor, the previous anchor and the previous scope; the identifier, the status and every citation stay",
             "the citations of the retired document are re-pointed first: the refusal names every site with its line, is not suppressed by --quiet, and there is no flag around it",
             // The ref is the ratification, so a push that does not land is a
             // failure and the file is not written (ADR-af533e7a3e03).

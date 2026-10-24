@@ -288,9 +288,16 @@ fn an_accepted_adr_is_amended_and_its_anchor_still_holds() {
     r.commit("drop");
     assert_eq!(about(&r.check(), &b), before);
 
-    // The scope stays anchored, and stays refused.
+    // The scope stays anchored by the commit, and stays refused: a rescope
+    // replaces a ref, and this anchor has none until `accept --reanchor`
+    // (ADR-bb9ccdba9be7).
     let out = r.ank(&["amend", &b, "--scope", "docs/**"]);
     assert_eq!(code(&out), 6, "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains(&format!("ank accept {b} --reanchor")),
+        "{}",
+        stderr(&out)
+    );
 }
 
 #[test]

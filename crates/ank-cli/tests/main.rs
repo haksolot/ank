@@ -11,6 +11,7 @@ mod index_file;
 mod legacy_anchor;
 mod scratch;
 
+mod accept_rescope;
 mod accept_tag;
 mod adopt;
 mod adr_amends;

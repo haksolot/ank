@@ -4,9 +4,11 @@
 //! Every case through the binary, on an accepted ADR and an accepted spec that
 //! each scope two paths: one that stays, and one an act of git kills. The kill
 //! is what each case varies -- one path deleted, every path deleted, one path
-//! renamed -- and only the first changes what `check` says. The two others are
+//! renamed -- and only the first stops owing anything. The two others are
 //! pinned to the words `check` printed before the decision, so a rule that
-//! silenced more than it was given would turn them red.
+//! silenced more than it was given would turn them red; the rename's repair is
+//! the one later change, a rescope where it was a supersession
+//! (ADR-bb9ccdba9be7).
 //!
 //! None of it writes: the decision changes what `check` says, never what the
 //! corpus holds, so every case compares `git status` and the refs under
@@ -295,16 +297,15 @@ fn a_renamed_scope_beside_a_live_one_is_reported_as_it_was() {
     r.commit("move the notes");
     let sha = r.head();
 
-    for (id, kind) in ids.iter().zip(["adr", "spec"]) {
+    for id in &ids {
         let (exit, findings) = r.check(id);
         assert_eq!(exit, 0, "{id}: a rename git records is no fault");
-        let succession = match kind {
-            "adr" => format!(
-                "ank new adr --supersedes {id} --title \"<t>\" --scope \"docs/new.md\" \
-                 --constraint \"<rule>\""
-            ),
-            _ => format!("ank new spec --supersedes {id} --title \"<t>\" --scope \"docs/new.md\""),
-        };
+        // The perimeter follows the file by a rescope, and no longer by a
+        // supersession (ADR-bb9ccdba9be7), for either kind.
+        let rescope = format!(
+            "ank amend {id} --drop-scope \"docs/old.md\" --scope \"docs/new.md\", \
+             then ank accept {id} --rescope"
+        );
         assert_eq!(
             findings,
             vec![Finding {
@@ -312,7 +313,7 @@ fn a_renamed_scope_beside_a_live_one_is_reported_as_it_was() {
                 message: "dead scope 'docs/old.md': no file matches it".into(),
                 note: vec![
                     format!("git records docs/old.md renamed to docs/new.md in {sha}"),
-                    succession,
+                    rescope,
                 ],
             }],
             "{id}: the perimeter ought to follow the file, so the finding stays"
