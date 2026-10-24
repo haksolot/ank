@@ -127,6 +127,63 @@ It refuses, writing nothing:
   `no ratify <id> commit is reachable from this clone, so there is nothing to
   re-anchor from`, which a shallow clone answers with `git fetch --unshallow`.
 
+### Moving the scope of a ratified decision
+
+When the code moves and the decision does not, the perimeter follows the file
+without a new identifier (ADR-bb9ccdba9be7). Two commands, the second a human's:
+
+    ank amend <id> --drop-scope "<old>" --scope "<new>"
+    ank accept <id> --rescope
+
+`amend` edits the scope of an accepted ADR or spec, and only its scope. The
+file then no longer matches the anchor its ref carries, and until the rescope
+`check` says so as a signal, `its scope was amended after its ratification,
+and .ank/entities/<id>.md has not caught up with it: ank accept <id>
+--rescope`. While it waits, `context` does not inject the constraint: the
+scope it would bind is one nobody has signed yet. When `check` reports a scope
+git records as renamed on an accepted document, the repair it names is these
+two commands.
+
+`accept --rescope` signs that scope, like `accept`, where the repository signs.
+It writes a new tag in place of the one at `refs/ank/ratify/<id>`, with
+compare-and-swap here and on `origin`, and rewrites `ratified:`, `anchor:` and
+`verified` in the file. The message carries the new anchor, the previous one,
+and the previous scope, one line per glob:
+
+    ratify <id>
+
+    constraint+scope: <new hash>
+    previous: <previous hash>
+    previous-scope: <glob>
+    by: <actor>
+
+`check` holds the chain to what it claims: the signature, the new anchor
+against the file, and the previous anchor recomputed from the current
+constraint (or body) with the previous scope. A tag whose previous anchor does
+not recompute is a fault, `its rescope <tag> names the previous anchor <hash>,
+but its constraint with the previous scope hashes to <hash>: the decision
+changed under a rescope`. The identifier, the status and every citation stay.
+Like `accept`, it commits nothing and fails at exit 9 with nothing kept when
+the push does not land, including when `origin` holds another tag than the one
+this clone replaced.
+
+It refuses at exit 6, writing nothing:
+
+- a document that is not accepted: `<id> is proposed, and only an accepted
+  document has a scope to rescope`;
+- a scope that did not change: `<id> declares the scope its ratification
+  carries: there is nothing to rescope`;
+- a constraint, or a spec's body, that changed since the ratification: `<id>'s
+  constraint changed since its ratification: a rescope only moves the
+  perimeter`. Changing the decision is `ank new adr --supersedes <id>`;
+- a document no ref carries. An anchor that is still a `ratify <id>` commit is
+  moved into a ref first, before the scope is amended, which `amend` asks for
+  at exit 6 and `check`'s repair names in that order:
+
+      ank accept <id> --reanchor
+      ank amend <id> --drop-scope "<old>" --scope "<new>"
+      ank accept <id> --rescope
+
 ## Archiving what is cold
 
 `ank archive` moves what is cold into `.ank/archive/entities/`: superseded

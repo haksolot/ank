@@ -2647,6 +2647,16 @@ pub struct RatifyTag {
     /// The `reanchors: <commit>` line: the `ratify <id>` commit whose anchor
     /// `accept --reanchor` moved into this tag (TASK-4b25843e6151).
     pub reanchors: Option<String>,
+    /// The `previous: <hash>` line `accept --rescope` writes: the anchor this
+    /// tag replaced (ADR-bb9ccdba9be7).
+    pub previous: Option<String>,
+    /// The `previous-scope: <glob>` lines beside it, in order: the scope the
+    /// previous anchor was taken over, which is what lets `check` recompute
+    /// it from the current constraint or body.
+    pub previous_scope: Vec<String>,
+    /// The blob the tag points at: the entity file as the ratification wrote
+    /// it.
+    pub object: String,
     /// The tagger date, in seconds since the epoch: what a key's
     /// `valid_before` is compared against, as a commit's committer date is.
     pub tagged: Option<i64>,
@@ -2684,6 +2694,12 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
         .find_map(|l| l.strip_prefix("tagger "))
         .and_then(|l| l.rsplit(' ').nth(1))
         .and_then(|epoch| epoch.parse::<i64>().ok());
+    let object = headers
+        .lines()
+        .find_map(|l| l.strip_prefix("object "))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     // The signature is the tail of a tag's message, where git appends it.
     let (message, signed) = match message.find("-----BEGIN ") {
         Some(at) => (&message[..at], true),
@@ -2694,6 +2710,8 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
     let mut anchor = None;
     let mut supersedes = None;
     let mut reanchors = None;
+    let mut previous = None;
+    let mut previous_scope = Vec::new();
     for l in lines {
         let Some((key, value)) = l.trim().split_once(": ") else {
             continue;
@@ -2704,6 +2722,8 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
             }
             "supersedes" => supersedes = Some(value.trim().to_string()),
             "reanchors" => reanchors = Some(value.trim().to_string()),
+            "previous" => previous = Some(value.trim().to_string()),
+            "previous-scope" => previous_scope.push(value.trim().to_string()),
             _ => {}
         }
     }
@@ -2715,6 +2735,9 @@ fn parse_ratify_tag(name: &str, kind: &str, body: &[u8]) -> Option<RatifyTag> {
         anchor,
         supersedes,
         reanchors,
+        previous,
+        previous_scope,
+        object,
         tagged,
         signed,
     })
