@@ -5,7 +5,7 @@ slug: accept-rescope-re-signs-the-scope-of-a-ratified
 title: accept --rescope re-signs the scope of a ratified entity whose constraint did not change
 created: 2026-10-24T17:39:48Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/src/commands.rs
@@ -13,8 +13,13 @@ scope:
 constraint: |
   ank accept <id> --rescope is a human act, signed where the repository signs, that ratifies the scope an accepted ADR or spec now declares: amend may edit an accepted entity's scope, which check reports as not caught up until the rescope; the new tag replaces refs/ank/ratify/<id> with compare-and-swap and carries the new anchor, the previous anchor and the previous scope list; accept refuses unless the current constraint (or body) hashed with the previous scope equals the previous anchor, and check verifies the same and faults on a mismatch; the identifier, the status and every citation stay.
 amends: [ADR-3094538d831e, ADR-5e47007a75be]
+ratified: e62f00ff988a
+anchor: a589269f1cb1d182423314e95e9cd787ea2d69d8
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-24T18:01:10Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
