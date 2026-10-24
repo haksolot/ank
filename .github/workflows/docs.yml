@@ -40,12 +40,13 @@ jobs:
       # binary, pinned by version and by the sha256 below for each runner, read
       # from stdin and checked before it is run, without a third-party action.
       # The digests are the release's SHASUMS256.txt. A runner outside the
-      # three is an environment to repair, exit 9. Only mdBook and python are
-      # installed: nextest and node are locked beside them for the other
-      # workflows. The link check runs mise's python, never the runner's own,
-      # and the step prints which interpreter that is. The token lets mise read
-      # the release's attestation under the authenticated rate limit instead of
-      # the runner's shared one.
+      # three is an environment to repair, exit 9. mdBook and python are
+      # installed by name; the first mise x then installs nextest and node too,
+      # since it resolves every tool mise.toml declares, each from the lockfile.
+      # The link check runs mise's python, never the runner's own, and the step
+      # prints which interpreter that is. The token lets mise read the
+      # release's attestation under the authenticated rate limit instead of the
+      # runner's shared one.
       - name: mise
         shell: bash
         env:
