@@ -248,10 +248,12 @@ jobs:
           mkdir -p "$dir/bin"
           curl -LsSf -o "$file" \
             "https://github.com/jdx/mise/releases/download/v$MISE_VERSION/mise-v$MISE_VERSION-$asset"
+          # Read from stdin: given a name, sha256sum on windows-latest prefixes
+          # its line with a backslash, because $RUNNER_TEMP is D:\a\_temp.
           if command -v sha256sum >/dev/null; then
-            got=$(sha256sum "$file" | cut -d' ' -f1)
+            got=$(sha256sum < "$file" | cut -d' ' -f1)
           else
-            got=$(shasum -a 256 "$file" | cut -d' ' -f1)
+            got=$(shasum -a 256 < "$file" | cut -d' ' -f1)
           fi
           if [ "$got" != "$sha" ]; then
             echo "::error::mise-v$MISE_VERSION-$asset has sha256 $got, pinned $sha"
