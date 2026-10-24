@@ -36,10 +36,45 @@ cargo nextest run --workspace
 cargo run -q --bin ank -- check
 ```
 
-The suite runs under [cargo-nextest](https://nexte.st), which `ci.yml` and the
-`cargo-test` verifier both use, so install it once with `cargo install
-cargo-nextest --locked`. Without it, `ank done` stops at exit 9 and names that
-command rather than reporting a failing test.
+Beside [rustup](https://rustup.rs), the one tool to install is
+[mise](https://mise.jdx.dev). rustup reads `rust-toolchain.toml`, which pins the
+exact Rust; mise reads `mise.toml`, which pins everything else the repository
+runs -- [cargo-nextest](https://nexte.st), under which the suite runs, mdBook
+and node -- each locked by checksum in `mise.lock`. Once mise is installed:
+
+```
+mise install --locked
+```
+
+`mise run test`, `mise run check` and `mise run ank:refresh` are the suite, the
+first and third gates, and a rebuild of the `ank` on your PATH, replaced by a
+rename so that a running copy is never written over.
+
+What only your machine needs goes in `mise.local.toml`, which git ignores. For
+example, when your signing key is passphrase-protected and no agent holds it,
+the suite's signing tests need a git config that keeps your credentials and
+turns signing off:
+
+```toml
+# mise.local.toml
+[env]
+GIT_CONFIG_GLOBAL = "{{config_root}}/target/nosign.gitconfig"
+```
+
+```
+# target/nosign.gitconfig
+[include]
+    path = ~/.gitconfig
+[commit]
+    gpgsign = false
+[tag]
+    gpgsign = false
+[user]
+    signingkey =
+```
+
+The empty `signingkey` is needed: `ank accept` signs whenever one is set,
+whatever `gpgsign` says.
 
 The third is the same line as the `check-repo` verifier in `.ank/config.yml`, on
 purpose: a CI that validated `.ank/` differently from `ank done` would let a
