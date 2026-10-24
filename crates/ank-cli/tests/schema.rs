@@ -40,13 +40,16 @@ use std::process::Command;
 
 const ANK: &str = env!("CARGO_BIN_EXE_ank");
 
-/// The one schema `.ank/config.yml` is written at, and the one this binary
-/// reads.
+/// The newest schema of `.ank/config.yml` this binary reads: 2, the schema a
+/// file carrying `requires_ank` declares (ADR-756e8b0fe416).
 ///
-/// Hard-coded rather than imported because `ank-cli` has no library target. The
-/// repository's own file is asserted against it below, so the two cannot drift
-/// apart in silence.
-const SUPPORTED: u32 = 1;
+/// Hard-coded rather than imported because `ank-cli` has no library target.
+const SUPPORTED: u32 = 2;
+
+/// The oldest schema this binary reads, which a file without `requires_ank`
+/// may go on declaring. The repository's own file is asserted against it below,
+/// so the two cannot drift apart in silence.
+const OLDEST: u32 = 1;
 
 /// A corpus that is nothing but a `config.yml`, which is all a parse needs.
 ///
@@ -106,7 +109,7 @@ fn a_newer_schema_is_refused_by_version_and_never_by_a_field() {
         "the refusal names the schema the file declares: {said}"
     );
     assert!(
-        said.contains(&format!("this binary reads {SUPPORTED}")),
+        said.contains(&format!("this binary reads up to {SUPPORTED}")),
         "the refusal names what this binary supports: {said}"
     );
     assert!(
@@ -226,7 +229,9 @@ fn a_schema_below_the_range_keeps_its_own_refusal() {
 
     assert_eq!(code, 1, "schema 0 is refused: {said}");
     assert!(
-        said.contains(&format!("unknown schema 0 (supported: {SUPPORTED})")),
+        said.contains(&format!(
+            "unknown schema 0 (supported: {OLDEST} to {SUPPORTED})"
+        )),
         "the message below the range is unchanged: {said}"
     );
     assert!(
@@ -246,8 +251,10 @@ fn a_schema_below_the_range_keeps_its_own_refusal() {
 /// schema-1 corpus from loading — the migration-by-refusal `docs/format.md`
 /// forbids.
 ///
-/// What this test pins is that the file and the reader agree. Bumping either
-/// alone turns this red, which is where that conversation should happen.
+/// What this test pins is that the file and the reader agree. Since
+/// ADR-756e8b0fe416 the reader is a range, 1 and 2, and this repository stays at
+/// 1 until it declares `requires_ank`, which it can only do once a release that
+/// reads schema 2 is published.
 #[test]
 fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -257,14 +264,192 @@ fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
 
     assert!(
         text.lines()
-            .any(|l| l.trim() == format!("schema: {SUPPORTED}")),
-        "{} must declare schema {SUPPORTED}",
+            .any(|l| l.trim() == format!("schema: {OLDEST}")),
+        "{} must declare schema {OLDEST}",
         path.display()
     );
     assert!(
         text.contains("default: true"),
         "{} is the file that made this task necessary: it carries default:",
         path.display()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// requires_ank, and the schema it declares (ADR-756e8b0fe416)
+// ---------------------------------------------------------------------------
+//
+// The key only exists here; comparing it with the running binary is the next
+// task's. What is pinned is the read, the refusals and the write, each through
+// the binary with its exit code and its sentence.
+
+/// `ank config <args>` in `dir`, answering the exit code and both streams.
+fn config(dir: &Path, args: &[&str]) -> (i32, String) {
+    let out = Command::new(ANK)
+        .arg("config")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("the binary under test must run");
+    let mut said = String::from_utf8_lossy(&out.stdout).into_owned();
+    said.push_str(&String::from_utf8_lossy(&out.stderr));
+    (
+        out.status.code().expect("the binary must not be signalled"),
+        said,
+    )
+}
+
+fn config_text(dir: &Path) -> String {
+    fs::read_to_string(dir.join(".ank/config.yml")).expect("config.yml must be readable")
+}
+
+/// Schema 1 without the key is the corpus every repository already has, and it
+/// reads exactly as before: no requirement, and nothing said about one.
+#[test]
+fn a_schema_1_config_without_requires_ank_is_read_as_today() {
+    let dir = corpus("requires-absent", "schema: 1\ncontext_budget: 8000\n");
+    let (code, said) = find(&dir);
+    assert_eq!(code, 0, "a schema-1 file still reads: {said}");
+    assert_eq!(said.trim(), "no match", "and says nothing more: {said}");
+
+    let (code, said) = config(&dir, &["requires_ank"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "(unset)", "absent is no requirement: {said}");
+}
+
+#[test]
+fn a_schema_2_config_with_requires_ank_is_read() {
+    let dir = corpus("requires-read", "schema: 2\nrequires_ank: 1.2.3\n");
+    let (code, said) = find(&dir);
+    assert_eq!(code, 0, "schema 2 with the key reads: {said}");
+    assert_eq!(said.trim(), "no match", "{said}");
+
+    let (code, said) = config(&dir, &["requires_ank"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "1.2.3", "{said}");
+}
+
+/// A file carrying the key declares the schema it arrived with; one still at 1
+/// was edited by hand, and is told both ways out.
+#[test]
+fn requires_ank_at_schema_1_is_refused_naming_the_key_and_schema_2() {
+    let dir = corpus("requires-schema-1", "schema: 1\nrequires_ank: 1.2.3\n");
+    let (code, said) = find(&dir);
+    assert_eq!(code, 1, "{said}");
+    assert!(
+        said.contains("requires_ank needs schema 2, and the file declares schema 1"),
+        "the refusal names the key and the schema it needs: {said}"
+    );
+    assert!(
+        said.contains("ank config schema 2, or ank config --unset requires_ank"),
+        "and the two commands that resolve it: {said}"
+    );
+}
+
+/// The exact form, and nothing near it: two components, a tag's `v`, a
+/// pre-release and a word are each refused at read, naming the key and the
+/// form, never as serde's *expected a string*.
+#[test]
+fn a_requires_ank_not_of_the_form_major_minor_patch_is_refused_naming_the_form() {
+    for (n, value) in ["1.2", "v1.2.3", "1.2.3-rc1", "word"].iter().enumerate() {
+        let dir = corpus(
+            &format!("requires-form-{n}"),
+            &format!("schema: 2\nrequires_ank: {value}\n"),
+        );
+        let (code, said) = find(&dir);
+        assert_eq!(code, 1, "{value}: {said}");
+        assert!(
+            said.contains(&format!(
+                "requires_ank: '{value}' is not a version of the form MAJOR.MINOR.PATCH"
+            )),
+            "{value}: the refusal names the key, the value and the form: {said}"
+        );
+        assert!(!said.contains("invalid type"), "{value}: {said}");
+
+        // The writer refuses it in the same sentence, and leaves the file be.
+        let before = config_text(&dir);
+        let (code, said) = config(&dir, &["requires_ank", value]);
+        assert_eq!(code, 1, "{value}: {said}");
+        assert!(
+            said.contains(&format!(
+                "requires_ank: '{value}' is not a version of the form MAJOR.MINOR.PATCH"
+            )),
+            "{value}: {said}"
+        );
+        assert_eq!(config_text(&dir), before, "{value}: nothing is written");
+    }
+}
+
+/// The schema after the one this build reads is refused as newer, by version.
+#[test]
+fn a_schema_3_config_is_refused_as_newer_than_this_ank() {
+    let dir = corpus("requires-schema-3", "schema: 3\nrequires_ank: 1.2.3\n");
+    let (code, said) = find(&dir);
+    assert_eq!(code, 1, "{said}");
+    assert!(
+        said.contains("schema 3, this binary reads up to 2: the file is newer than this ank"),
+        "{said}"
+    );
+}
+
+/// `ank config requires_ank` writes the key beneath `schema:` and raises a file
+/// at 1 to 2 in the same write; reads it back; and `--unset` takes the key and
+/// leaves the schema at 2, because a file at 2 without it is still read.
+#[test]
+fn ank_config_writes_requires_ank_with_schema_2_and_unset_leaves_the_schema() {
+    let dir = corpus("requires-write", "schema: 1\ncontext_budget: 8000\n");
+
+    let (code, said) = config(&dir, &["requires_ank", "1.2.3"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "requires_ank (unset) -> 1.2.3", "{said}");
+    assert_eq!(
+        config_text(&dir),
+        "schema: 2\nrequires_ank: 1.2.3\ncontext_budget: 8000\n",
+        "the key lands beneath schema, which moves to 2"
+    );
+
+    let (code, said) = config(&dir, &["requires_ank"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "1.2.3", "{said}");
+    let (code, said) = find(&dir);
+    assert_eq!(code, 0, "what config wrote, find reads: {said}");
+
+    // Moved, not appended a second time.
+    let (code, said) = config(&dir, &["requires_ank", "1.10.0"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "requires_ank 1.2.3 -> 1.10.0", "{said}");
+    assert_eq!(
+        config_text(&dir),
+        "schema: 2\nrequires_ank: 1.10.0\ncontext_budget: 8000\n"
+    );
+
+    let (code, said) = config(&dir, &["--unset", "requires_ank"]);
+    assert_eq!(code, 0, "{said}");
+    assert_eq!(said.trim(), "requires_ank 1.10.0 -> (unset)", "{said}");
+    assert_eq!(
+        config_text(&dir),
+        "schema: 2\ncontext_budget: 8000\n",
+        "unsetting the key leaves the schema where it is"
+    );
+    let (code, said) = find(&dir);
+    assert_eq!(code, 0, "{said}");
+}
+
+/// The reference page is generated from the reader's table, and lists the key.
+#[test]
+fn the_config_reference_lists_requires_ank() {
+    let page = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/config-keys.md");
+    let text = fs::read_to_string(&page).unwrap_or_else(|e| panic!("{}: {e}", page.display()));
+    assert!(
+        text.lines()
+            .any(|l| l.starts_with("| `requires_ank` | version | none |")),
+        "{} lists requires_ank",
+        page.display()
+    );
+    assert!(
+        text.contains("a file carrying `requires_ank` declares `schema: 2`"),
+        "{}",
+        page.display()
     );
 }
 
@@ -296,7 +481,7 @@ fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
 /// than seeded, so nothing here writes into `.ank/` by hand.
 #[test]
 fn read_pins_the_document_the_binary_prints() {
-    let dir = corpus("golden-read", &format!("schema: {SUPPORTED}\n"));
+    let dir = corpus("golden-read", &format!("schema: {OLDEST}\n"));
     let id = an_adr(&dir);
     let out = Command::new(ANK)
         .args(["read", &id, "--json"])

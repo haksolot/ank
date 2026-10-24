@@ -137,11 +137,15 @@ pub fn config_keys_page() -> String {
          `schema` is newer than this build reads.\n\n",
     );
     page.push_str(&format!(
-        "The file declares `schema: {}`, the only version this build reads. A duration \
+        "This build reads `schema: {}` through `schema: {}`; a file carrying `requires_ank` \
+         declares `schema: {}`, and one without it may stay at `schema: {}`. A duration \
          is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key \
          the file chooses; `ank config <key>` reads and writes the scalar keys, and \
          `roles` and `identities` are edited by hand.\n\n",
-        config::SCHEMA
+        config::MIN_SCHEMA,
+        config::SCHEMA,
+        config::REQUIRES_ANK_SCHEMA,
+        config::MIN_SCHEMA
     ));
     page.push_str("| Key | Type | Default | Notes |\n|---|---|---|---|\n");
     for key in config::KEYS {

@@ -269,6 +269,7 @@ fn every_config_key_is_printed_with_its_type_and_default() {
         key_type_default,
         [
             ("`schema`", "integer", "required"),
+            ("`requires_ank`", "version", "none"),
             ("`context_budget`", "integer", "`8000`"),
             ("`claim_ttl_max`", "duration", "`2h`"),
             ("`claim_ttl_default`", "duration", "`30m`"),
@@ -291,6 +292,7 @@ fn every_config_key_is_printed_with_its_type_and_default() {
         ]
     );
     assert!(page.contains("`schema: 1`"), "{page}");
+    assert!(page.contains("`schema: 2`"), "{page}");
 }
 
 /// The form a row declares is the form the serializer receives for that field,
