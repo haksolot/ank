@@ -1321,6 +1321,42 @@ fn warn_if_schema_ahead(inv: &Invocation, repo: &crate::repo::Repo) {
     eprintln!("  -> {next}");
 }
 
+/// The requirement the corpus declares and the version running, when the
+/// first is above the second (ADR-756e8b0fe416).
+///
+/// Against the running binary and never against a release, by the rule
+/// `ank update` applies to tags, so no verb reaches the network for it. One
+/// answer for the warning every verb prints and the fault `check` reports, so
+/// the two cannot disagree about which binary is too old.
+pub(crate) fn requires_ank_ahead(
+    config: &crate::config::Config,
+) -> Option<(crate::update::Version, crate::update::Version)> {
+    let running = crate::update::Version::running();
+    config
+        .requires_ank
+        .filter(|declared| *declared > running)
+        .map(|declared| (declared, running))
+}
+
+/// Names a corpus that requires a newer ank than this one, in the shape of
+/// [`warn_if_schema_ahead`] and for its reasons: on stderr, outside any
+/// `--json` document, silenced by `--quiet`, and the verb goes on. `check`
+/// reports the same fact as a fault; this is what every other verb says.
+fn warn_if_requires_ank(inv: &Invocation, config: &crate::config::Config) {
+    if inv.quiet() {
+        return;
+    }
+    let Some((declared, running)) = requires_ank_ahead(config) else {
+        return;
+    };
+    let style = inv.style().on_stderr();
+    eprintln!(
+        "{} this corpus requires ank {declared} or newer, and this binary is {running}",
+        style.yellow("warning:")
+    );
+    eprintln!("  -> ank update");
+}
+
 /// The corpus, and whatever resolving it had to say.
 ///
 /// **The note is printed here and never inside the resolution**, on the split
@@ -1357,6 +1393,7 @@ fn startup(inv: &Invocation, cwd: &std::path::Path) -> Result<Startup> {
     warn_if_outside_repository(inv, &repo, cwd);
     warn_if_schema_ahead(inv, &repo);
     let config = crate::config::load(&repo.config_path())?;
+    warn_if_requires_ank(inv, &config);
     let (identity, identity_source) = crate::identity::resolved();
     Ok(Startup {
         repo,
