@@ -150,22 +150,32 @@ jobs:
             ${{ runner.os }}-cargo-test-${{ hashFiles('**/Cargo.lock') }}-
             ${{ runner.os }}-cargo-test-
 
-      # The Rust toolchain preinstalled on the runners is enough, rustfmt
-      # included. A third-party toolchain action would be one more dependency
-      # in the supply chain, for a need the image already covers. Where it is
-      # installed is not fixed by the image name, so it is printed too: the
-      # next step depends on it (TASK-4095e3143f18).
+      # Rust is the exact version rust-toolchain.toml names, never the one the
+      # image happens to ship (ADR-9c69bd47ce23): runs compiled with 1.99.0 on
+      # one image and 1.99.1 on the next while both called it "stable". The
+      # rustup preinstalled on the runners reads that file, so a toolchain
+      # action would be one more dependency in the supply chain for nothing;
+      # `rustup toolchain install` with no argument installs the pinned one,
+      # rustfmt included. The step then refuses a rustc that is not that
+      # version, so the log line is checked and not only printed.
       - name: versions
         if: env.RUN == 'true'
         shell: bash
         run: |
+          rustup toolchain install
+          pinned=$(sed -n 's/^channel *= *"\(.*\)".*/\1/p' rust-toolchain.toml)
           rustc --version
           cargo --version
           git --version
           echo "rustc: $(command -v rustc)"
           echo "cargo: $(command -v cargo)"
-          echo "CARGO_HOME=${CARGO_HOME-<unset>} RUSTUP_HOME=${RUSTUP_HOME-<unset>}"
-          ls -la "$HOME/.cargo" || true
+          case "$(rustc --version)" in
+            "rustc $pinned "*) echo "rustc is $pinned, as rust-toolchain.toml pins it" ;;
+            *)
+              echo "::error::rustc is not the $pinned rust-toolchain.toml pins"
+              exit 1
+              ;;
+          esac
 
       # The checkout applies .gitattributes: on windows-latest, .ank/ must come
       # out in LF. This is the step that would have caught the CRLF bug, and
@@ -193,40 +203,79 @@ jobs:
           fi
           echo "CRLF fixture intact"
 
-      # The suite runs under cargo-nextest, as the `cargo-test` verifier does
-      # (ADR-8c12a38531e3): `cargo test` runs the test binaries one after
+      # The suite runs under cargo-nextest, as the test verifiers do
+      # (ADR-9c69bd47ce23): `cargo test` runs the test binaries one after
       # another, and on windows-latest that sequence was the whole length of a
-      # run. Installed from its published binary at a pinned version, for the
-      # reason the cache and the toolchain above give: no third-party action.
+      # run. nextest comes from mise.lock, which carries its version and its
+      # checksum per platform, so this file pins mise and nothing else.
       #
-      # Into ~/.cargo/bin, which is not there on every image: macos-26-arm64
-      # 20261021.0445.8 ships it absent, and tar cannot extract into a missing
-      # directory (TASK-4095e3143f18). So it is created, and put on PATH for
-      # this step and the ones after it when the image did not already put it
-      # there, since cargo finds `cargo-nextest` on PATH.
-      - name: cargo-nextest
+      # mise itself is its published release binary, pinned by version and by
+      # the sha256 below for each runner, checked before it is run, for the
+      # reason the cache and the toolchain above give: `jdx/mise-action` would
+      # be a third-party action in the supply chain for one download. The
+      # digests are the release's SHASUMS256.txt, which agrees with the
+      # digests GitHub records for each asset. A runner outside the three is an
+      # environment to repair, exit 9, rather than a binary for the wrong
+      # machine.
+      #
+      # Only nextest is installed: mdBook and node are locked beside it for the
+      # other workflows, and `mise x` runs with what is installed rather than
+      # fetching the rest. The token lets mise read the release's attestation
+      # under the authenticated rate limit instead of the runner's shared one.
+      - name: mise
         if: env.RUN == 'true'
         shell: bash
         env:
-          NEXTEST_VERSION: 0.9.148
+          MISE_VERSION: 2026.10.17
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          case "$RUNNER_OS" in
-            Linux) platform=linux ;;
-            macOS) platform=mac ;;
-            Windows) platform=windows-tar ;;
-          esac
-          bin="$HOME/.cargo/bin"
-          mkdir -p "$bin"
-          curl -LsSf "https://get.nexte.st/$NEXTEST_VERSION/$platform" | tar zxf - -C "$bin"
-          case ":$PATH:" in
-            *":$bin:"*) ;;
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)
+              asset=linux-x64
+              sha=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a ;;
+            macOS-ARM64)
+              asset=macos-arm64
+              sha=9e27709db5eb1e900d83149418d3067309f2a5004d4994d94246ab658ba4a3ce ;;
+            Windows-X64)
+              asset=windows-x64.zip
+              sha=32bcfda5f72bf7cb189e18ba93c2798bffcb4a678fd004e3127780363f2d8c8c ;;
             *)
-              echo "$bin was not on PATH"
+              echo "no mise digest pinned for $RUNNER_OS-$RUNNER_ARCH"
+              exit 9 ;;
+          esac
+          dir="$RUNNER_TEMP/mise"
+          file="$dir/mise-v$MISE_VERSION-$asset"
+          mkdir -p "$dir/bin"
+          curl -LsSf -o "$file" \
+            "https://github.com/jdx/mise/releases/download/v$MISE_VERSION/mise-v$MISE_VERSION-$asset"
+          if command -v sha256sum >/dev/null; then
+            got=$(sha256sum "$file" | cut -d' ' -f1)
+          else
+            got=$(shasum -a 256 "$file" | cut -d' ' -f1)
+          fi
+          if [ "$got" != "$sha" ]; then
+            echo "::error::mise-v$MISE_VERSION-$asset has sha256 $got, pinned $sha"
+            exit 1
+          fi
+          echo "mise-v$MISE_VERSION-$asset: sha256 $got, as pinned"
+          case "$asset" in
+            *.zip)
+              unzip -q "$file" -d "$dir"
+              bin="$dir/mise/bin"
+              cygpath -w "$bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              mv "$file" "$dir/bin/mise"
+              chmod +x "$dir/bin/mise"
+              bin="$dir/bin"
               echo "$bin" >> "$GITHUB_PATH"
-              export PATH="$bin:$PATH"
               ;;
           esac
-          cargo nextest --version
+          export PATH="$bin:$PATH"
+          mise --version
+          mise trust
+          mise install --locked github:nextest-rs/nextest
+          mise x -- cargo nextest --version
 
       - run: cargo fmt --check
         if: env.RUN == 'true'
@@ -244,7 +293,7 @@ jobs:
       # find /tmp", and a verifier's output stops being what a page shows. The
       # step's bash is that long-lived process, holding the runner's TEMP, as
       # `sh -c` already is when the `cargo-test` verifier runs this suite.
-      - run: cargo nextest run --workspace --profile ci
+      - run: mise x -- cargo nextest run --workspace --profile ci
         if: env.RUN == 'true'
         shell: bash
 
