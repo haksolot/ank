@@ -106,12 +106,26 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Rust is the exact version rust-toolchain.toml names, as in ci.yml
+      # (ADR-9c69bd47ce23): the rustup preinstalled on the runners reads that
+      # file, so `rustup toolchain install` with no argument installs the pinned
+      # one, and the step refuses a rustc that is not it. A release built on
+      # whatever the image ships would be the one build nobody else compiled.
       - name: versions
         shell: bash
         run: |
+          rustup toolchain install
+          pinned=$(sed -n 's/^channel *= *"\(.*\)".*/\1/p' rust-toolchain.toml)
           rustc --version
           cargo --version
           git --version
+          case "$(rustc --version)" in
+            "rustc $pinned "*) echo "rustc is $pinned, as rust-toolchain.toml pins it" ;;
+            *)
+              echo "::error::rustc is not the $pinned rust-toolchain.toml pins"
+              exit 1
+              ;;
+          esac
 
       # musl needs its own std and its own C compiler, and `bundled` means
       # there is C to compile. Both are absent from the image by default.
@@ -290,10 +304,84 @@ jobs:
       - uses: actions/checkout@v5
       # Pinned rather than inherited: `engines` declares node 18, and a channel
       # that works on one runner's default and not another's is the kind of
-      # thing this job exists to catch before a tag does.
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
+      # thing this job exists to catch before a tag does. The pin is mise.toml's.
+      # node comes from mise.lock, as nextest does in ci.yml
+      # (ADR-9c69bd47ce23), and mise is that file's step: its published release
+      # binary, pinned by version and by sha256 per runner, checked from stdin
+      # before it runs, with no third-party action. macOS-X64 is pinned for the
+      # Intel row of `build`, the one runner here ci.yml never uses; the
+      # digests agree with the release's SHASUMS256.txt and with the digest
+      # GitHub records for each asset. A runner outside the four is an
+      # environment to repair, exit 9.
+      #
+      # Only node is installed, and its directory goes on PATH itself rather
+      # than mise's shims: the later steps run npm from directories with no
+      # mise.toml above them, where a shim has no version to resolve, and
+      # `npm install -g npm@latest` has to replace the npm those steps find.
+      - &mise
+        name: mise
+        shell: bash
+        env:
+          MISE_VERSION: 2026.10.17
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)
+              asset=linux-x64
+              sha=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a ;;
+            macOS-ARM64)
+              asset=macos-arm64
+              sha=9e27709db5eb1e900d83149418d3067309f2a5004d4994d94246ab658ba4a3ce ;;
+            macOS-X64)
+              asset=macos-x64
+              sha=dac5d6db5e315d8e4f096c6ead9279d342e09fdcb5c373d0df5c7dcce8195746 ;;
+            Windows-X64)
+              asset=windows-x64.zip
+              sha=32bcfda5f72bf7cb189e18ba93c2798bffcb4a678fd004e3127780363f2d8c8c ;;
+            *)
+              echo "no mise digest pinned for $RUNNER_OS-$RUNNER_ARCH"
+              exit 9 ;;
+          esac
+          dir="$RUNNER_TEMP/mise"
+          file="$dir/mise-v$MISE_VERSION-$asset"
+          mkdir -p "$dir/bin"
+          curl -LsSf -o "$file" \
+            "https://github.com/jdx/mise/releases/download/v$MISE_VERSION/mise-v$MISE_VERSION-$asset"
+          # Read from stdin: given a name, sha256sum on windows-latest prefixes
+          # its line with a backslash, because $RUNNER_TEMP is D:\a\_temp.
+          if command -v sha256sum >/dev/null; then
+            got=$(sha256sum < "$file" | cut -d' ' -f1)
+          else
+            got=$(shasum -a 256 < "$file" | cut -d' ' -f1)
+          fi
+          if [ "$got" != "$sha" ]; then
+            echo "::error::mise-v$MISE_VERSION-$asset has sha256 $got, pinned $sha"
+            exit 1
+          fi
+          echo "mise-v$MISE_VERSION-$asset: sha256 $got, as pinned"
+          case "$asset" in
+            *.zip)
+              unzip -q "$file" -d "$dir"
+              bin="$dir/mise/bin"
+              ;;
+            *)
+              mv "$file" "$dir/bin/mise"
+              chmod +x "$dir/bin/mise"
+              bin="$dir/bin"
+              ;;
+          esac
+          export PATH="$bin:$PATH"
+          mise --version
+          mise trust
+          mise install --locked node
+          # node.exe sits at the root of the install on Windows, and under bin/
+          # everywhere else.
+          node_dir=$(mise where node)
+          case "$RUNNER_OS" in
+            Windows) cygpath -w "$node_dir" >> "$GITHUB_PATH" ;;
+            *) echo "$node_dir/bin" >> "$GITHUB_PATH" ;;
+          esac
+          mise x -- node --version
       - uses: actions/download-artifact@v8
         with:
           name: ${{ matrix.target }}
@@ -496,10 +584,18 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          registry-url: "https://registry.npmjs.org"
+      - *mise
+      # What the node action's `registry-url` wrote: a user config naming the
+      # registry and reading the token from NODE_AUTH_TOKEN at publish time,
+      # so the secret is in the environment of one step and in no file.
+      - name: registry
+        shell: bash
+        run: |
+          npmrc="$RUNNER_TEMP/.npmrc"
+          printf '%s\n' \
+            'registry=https://registry.npmjs.org/' \
+            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$npmrc"
+          echo "NPM_CONFIG_USERCONFIG=$npmrc" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           path: dist
