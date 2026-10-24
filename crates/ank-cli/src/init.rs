@@ -151,6 +151,26 @@ pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode
     Ok(ExitCode::Ok)
 }
 
+/// What `init` writes into a corpus it creates: the canonical file, raised to
+/// the schema that carries `requires_ank` and declaring the running version
+/// (ADR-756e8b0fe416).
+///
+/// **Beneath `schema:`**, which is where `ank config requires_ank` inserts the
+/// key, so a corpus born here and one raised afterwards read the same. The
+/// running version and not a release: `init` reaches no network, and the
+/// binary that made the corpus is the one known to read it.
+fn born_config() -> String {
+    let canonical = config::default_yaml();
+    let rest = canonical
+        .strip_prefix(&format!("schema: {}\n", config::MIN_SCHEMA))
+        .expect("default_yaml opens on its schema");
+    format!(
+        "schema: {}\nrequires_ank: {}\n{rest}",
+        config::REQUIRES_ANK_SCHEMA,
+        crate::update::Version::running()
+    )
+}
+
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Report {
     /// The directories this run made, in the order they were made. A list and
@@ -330,7 +350,7 @@ pub fn init_at(root: &Path) -> Result<Report> {
 
     let cfg = ank.join("config.yml");
     if !cfg.exists() {
-        fs::write(&cfg, config::default_yaml()).map_err(|e| io(&cfg, e))?;
+        fs::write(&cfg, born_config()).map_err(|e| io(&cfg, e))?;
         report.wrote_config = true;
     }
 
