@@ -36,6 +36,7 @@ mod index_per_schema;
 mod init_at;
 mod init_origin;
 mod init_refspec;
+mod init_requires_ank;
 mod init_wal_ignore;
 mod log_rewritten;
 mod mcp;
