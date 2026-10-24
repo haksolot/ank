@@ -4,9 +4,10 @@ claim_ttl_max: 2h
 default_branch: main
 verifiers:
   cargo-test:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo nextest run --workspace"
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; mise x -- cargo nextest run --workspace"
     timeout: 20m
     default: false
+    inputs: ["**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
   fmt-check:
     run: cargo fmt --check
     timeout: 2m
@@ -16,33 +17,33 @@ verifiers:
     run: cargo run -q --bin ank -- check
     timeout: 5m
   test-ank-core:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo nextest run -p ank-core"
-    inputs: ["crates/ank-core/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "docs/**"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; mise x -- cargo nextest run -p ank-core"
+    inputs: ["crates/ank-core/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "docs/**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 10m
     default: true
   test-ank-contract:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo nextest run -p ank-contract"
-    inputs: ["crates/ank-contract/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "docs/**"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; mise x -- cargo nextest run -p ank-contract"
+    inputs: ["crates/ank-contract/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "docs/**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 10m
     default: true
   test-ank-daemon:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo nextest run -p ank-daemon"
-    inputs: ["crates/ank-daemon/**", "crates/ank-contract/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; mise x -- cargo nextest run -p ank-daemon"
+    inputs: ["crates/ank-daemon/**", "crates/ank-contract/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 10m
     default: true
   test-ank-mcp:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo build -q -p ank-cli --bin ank && cargo nextest run -p ank-mcp"
-    inputs: ["crates/ank-cli/**", "crates/ank-contract/**", "crates/ank-core/**", "crates/ank-daemon/**", "crates/ank-mcp/**", "crates/ank-tui/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "skill/**"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; cargo build -q -p ank-cli --bin ank && mise x -- cargo nextest run -p ank-mcp"
+    inputs: ["crates/ank-cli/**", "crates/ank-contract/**", "crates/ank-core/**", "crates/ank-daemon/**", "crates/ank-mcp/**", "crates/ank-tui/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "skill/**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 10m
     default: true
   test-ank-tui:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo build -q -p ank-cli --bin ank && cargo nextest run -p ank-tui"
-    inputs: ["crates/ank-cli/**", "crates/ank-contract/**", "crates/ank-core/**", "crates/ank-daemon/**", "crates/ank-mcp/**", "crates/ank-tui/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "skill/**"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; cargo build -q -p ank-cli --bin ank && mise x -- cargo nextest run -p ank-tui"
+    inputs: ["crates/ank-cli/**", "crates/ank-contract/**", "crates/ank-core/**", "crates/ank-daemon/**", "crates/ank-mcp/**", "crates/ank-tui/**", "Cargo.toml", "Cargo.lock", ".config/nextest.toml", "skill/**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 10m
     default: true
   test-ank-cli:
-    run: "command -v cargo-nextest >/dev/null 2>&1 || { echo \"cargo-nextest is not installed: cargo install cargo-nextest --locked\" >&2; exit 127; }; cargo nextest run -p ank-cli"
-    inputs: ["**"]
+    run: "command -v mise >/dev/null 2>&1 || { echo \"mise is not installed: https://mise.jdx.dev/installing-mise.html\" >&2; exit 127; }; mise x -- cargo nextest run -p ank-cli"
+    inputs: ["**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 20m
     default: true
 roles:
