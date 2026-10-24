@@ -10,8 +10,14 @@
 //! The defaults are declared here and the CLI reads them from here: one number
 //! per default, or the page and the parser start to disagree.
 
-/// The config schema this build reads, and the only one.
-pub const SCHEMA: u32 = 1;
+/// The newest config schema this build reads (ADR-756e8b0fe416): 2 is the
+/// schema of a file carrying `requires_ank`, and a file without it may stay at
+/// [`MIN_SCHEMA`].
+pub const SCHEMA: u32 = 2;
+/// The oldest config schema this build reads, which no binary ever read below.
+pub const MIN_SCHEMA: u32 = 1;
+/// The schema a file carrying `requires_ank` declares, and is refused below.
+pub const REQUIRES_ANK_SCHEMA: u32 = 2;
 pub const DEFAULT_CONTEXT_BUDGET: usize = 8000;
 pub const DEFAULT_CLAIM_TTL_MAX: &str = "2h";
 /// What `claim` grants without `--ttl` (§3).
@@ -72,6 +78,12 @@ pub static KEYS: &[ConfigKey] = &[
         "integer",
         Absent::Required,
         "the version of this file's format",
+    ),
+    key(
+        "requires_ank",
+        "version",
+        Absent::None,
+        "`MAJOR.MINOR.PATCH`: the oldest ank this corpus needs, compared with the running binary and never with a release; a file carrying it declares `schema: 2`; absent, no requirement; moved by `ank config requires_ank`",
     ),
     key(
         "context_budget",

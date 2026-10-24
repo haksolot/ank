@@ -994,6 +994,7 @@ macro_rules! config_keys {
 
 config_keys!(
     "schema",
+    "requires_ank",
     "context_budget",
     "claim_ttl_max",
     "claim_ttl_default",

@@ -5,11 +5,12 @@
 
 Every key `.ank/config.yml` may carry, with the type of its value and what an absent key means. A key not listed here is refused, and so is a file whose `schema` is newer than this build reads.
 
-The file declares `schema: 1`, the only version this build reads. A duration is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key the file chooses; `ank config <key>` reads and writes the scalar keys, and `roles` and `identities` are edited by hand.
+This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank` declares `schema: 2`, and one without it may stay at `schema: 1`. A duration is `<n><unit>`, the unit one of `s`, `m`, `h` or `d`. `<name>` stands for a key the file chooses; `ank config <key>` reads and writes the scalar keys, and `roles` and `identities` are edited by hand.
 
 | Key | Type | Default | Notes |
 |---|---|---|---|
 | `schema` | integer | required | the version of this file's format |
+| `requires_ank` | version | none | `MAJOR.MINOR.PATCH`: the oldest ank this corpus needs, compared with the running binary and never with a release; a file carrying it declares `schema: 2`; absent, no requirement; moved by `ank config requires_ank` |
 | `context_budget` | integer | `8000` | what `context` hands a reader, in characters |
 | `claim_ttl_max` | duration | `2h` | the longest lease a claim is granted, whatever `--ttl` asks |
 | `claim_ttl_default` | duration | `30m` | the lease `claim` grants without `--ttl`, capped by `claim_ttl_max` |

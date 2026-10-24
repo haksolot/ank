@@ -14007,7 +14007,7 @@ fn config_refuses_a_write_that_would_leave_the_file_unreadable() {
 
     // Each of these parses as YAML and fails the configuration's own reading:
     // a duration in no unit it knows, and a schema it does not support.
-    for (key, value) in [("claim_ttl_max", "30w"), ("schema", "2")] {
+    for (key, value) in [("claim_ttl_max", "30w"), ("schema", "3")] {
         let out = r.ank("claude-code@ank", &["config", key, value]);
         assert_eq!(out.status.code(), Some(1), "{key} was accepted");
         assert!(erred(&out).contains("unreadable"), "{key}: {}", erred(&out));

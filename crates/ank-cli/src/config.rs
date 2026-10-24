@@ -17,6 +17,11 @@ use std::time::Duration;
 // The defaults are declared once, beside the table `docs/config-keys.md` is
 // rendered from, and read here under the names every call site already uses.
 pub const SUPPORTED_SCHEMA: u32 = ank_core::config::SCHEMA;
+pub const MIN_SCHEMA: u32 = ank_core::config::MIN_SCHEMA;
+pub const REQUIRES_ANK_SCHEMA: u32 = ank_core::config::REQUIRES_ANK_SCHEMA;
+/// The one schema of the reader's `corpora.yml`, which moves on its own and
+/// did not move with `config.yml`'s second (ADR-756e8b0fe416).
+pub const CORPORA_SCHEMA: u32 = 1;
 pub const DEFAULT_CONTEXT_BUDGET: usize = ank_core::config::DEFAULT_CONTEXT_BUDGET;
 pub const DEFAULT_CLAIM_TTL_MAX: &str = ank_core::config::DEFAULT_CLAIM_TTL_MAX;
 /// What `claim` grants without `--ttl` (§3). The same thirty minutes
@@ -51,6 +56,12 @@ struct SchemaProbe {
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     schema: u32,
+    /// The oldest ank this corpus needs (ADR-756e8b0fe416). A YAML value rather
+    /// than a string, because `1.2` resolves to a float and `1` to an integer,
+    /// and serde's *expected a string* would name neither the key's form nor
+    /// what the file wrote.
+    #[serde(default)]
+    requires_ank: Option<serde_yaml::Value>,
     #[serde(default = "default_budget")]
     context_budget: usize,
     #[serde(default = "default_ttl_max")]
@@ -327,6 +338,9 @@ pub struct Verifier {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
     pub schema: u32,
+    /// The oldest ank this corpus needs, `None` where the file declares no
+    /// requirement (ADR-756e8b0fe416).
+    pub requires_ank: Option<crate::update::Version>,
     pub context_budget: usize,
     pub claim_ttl_max: Duration,
     /// What a claim is granted when `--ttl` says nothing (§3). Capped by
@@ -434,7 +448,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
             return Err(CliError::new(
                 ExitCode::Generic,
                 format!(
-                    "{}: schema {found}, this binary reads {SUPPORTED_SCHEMA}: \
+                    "{}: schema {found}, this binary reads up to {SUPPORTED_SCHEMA}: \
                      the file is newer than this ank",
                     path.display()
                 ),
@@ -448,16 +462,37 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
 
     // Below the range rather than above it: no binary ever read schema 0, so
     // there is no "older tool" to name and the file is simply wrong.
-    if raw.schema != SUPPORTED_SCHEMA {
+    if !(MIN_SCHEMA..=SUPPORTED_SCHEMA).contains(&raw.schema) {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "{}: unknown schema {} (supported: {SUPPORTED_SCHEMA})",
+                "{}: unknown schema {} (supported: {MIN_SCHEMA} to {SUPPORTED_SCHEMA})",
                 path.display(),
                 raw.schema
             ),
         )
         .with_hint("update ank, or fix the schema field"));
+    }
+
+    let requires_ank = match &raw.requires_ank {
+        None => None,
+        Some(value) => Some(requires_ank(value, path)?),
+    };
+    // The key declares the schema it arrived with, so that a binary predating
+    // it refuses the file on its version rather than on a key it calls a typo.
+    // A file at 1 that carries it was written by hand, and is told both moves.
+    if requires_ank.is_some() && raw.schema < REQUIRES_ANK_SCHEMA {
+        return Err(CliError::new(
+            ExitCode::Generic,
+            format!(
+                "{}: requires_ank needs schema {REQUIRES_ANK_SCHEMA}, and the file declares schema {}",
+                path.display(),
+                raw.schema
+            ),
+        )
+        .with_hint(format!(
+            "ank config schema {REQUIRES_ANK_SCHEMA}, or ank config --unset requires_ank"
+        )));
     }
 
     let dur = |v: &str, field: &str| -> Result<Duration> {
@@ -550,6 +585,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
 
     Ok(Config {
         schema: raw.schema,
+        requires_ank,
         context_budget: raw.context_budget,
         claim_ttl_max,
         claim_ttl_default,
@@ -571,6 +607,33 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         reuse_max_age,
         signers,
     })
+}
+
+/// The refusal a `requires_ank` not of the form `MAJOR.MINOR.PATCH` earns.
+fn not_a_version(written: &str, path: &Path) -> CliError {
+    CliError::new(
+        ExitCode::Generic,
+        format!(
+            "{}: requires_ank: '{written}' is not a version of the form MAJOR.MINOR.PATCH",
+            path.display()
+        ),
+    )
+    .with_hint("ank config requires_ank <MAJOR.MINOR.PATCH>, three numbers and nothing else")
+}
+
+/// `requires_ank` as the file wrote it, read by the rule `ank update` applies
+/// to a release tag without its `v`: three runs of digits and nothing else, so
+/// `1.2`, `v1.2.3` and `1.2.3-rc1` are each refused rather than guessed at.
+fn requires_ank(value: &serde_yaml::Value, path: &Path) -> Result<crate::update::Version> {
+    let written = match value {
+        serde_yaml::Value::String(s) => s.clone(),
+        serde_yaml::Value::Number(n) => n.to_string(),
+        other => serde_yaml::to_string(other)
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+    };
+    crate::update::Version::parse(&written).ok_or_else(|| not_a_version(&written, path))
 }
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -669,14 +732,14 @@ fn newer_than_this_ank(text: &str, path: &Path, code: ExitCode) -> Option<CliErr
     let found = serde_yaml::from_str::<SchemaProbe>(text)
         .ok()
         .map(|p| p.schema)?;
-    if found <= SUPPORTED_SCHEMA {
+    if found <= CORPORA_SCHEMA {
         return None;
     }
     Some(
         CliError::new(
             code,
             format!(
-                "{}: schema {found}, this binary reads {SUPPORTED_SCHEMA}: \
+                "{}: schema {found}, this binary reads {CORPORA_SCHEMA}: \
                  the file is newer than this ank",
                 path.display()
             ),
@@ -803,11 +866,11 @@ fn corpora_file() -> Result<Option<CorporaFile>> {
     })?;
     // Below the range rather than above it, exactly as `parse()` splits them:
     // no binary ever read schema 0, so there is no older tool to name.
-    if file.schema != SUPPORTED_SCHEMA {
+    if file.schema != CORPORA_SCHEMA {
         return Err(CliError::new(
             ExitCode::Environment,
             format!(
-                "{}: schema {} is not {SUPPORTED_SCHEMA}",
+                "{}: schema {} is not {CORPORA_SCHEMA}",
                 path.display(),
                 file.schema
             ),
@@ -981,6 +1044,13 @@ fn resolve_key(path: &str) -> Result<Key> {
         ["schema"] => Ok(Key::Top {
             name: "schema",
             verbatim: true,
+            default: None,
+        }),
+        // No default: absent, the corpus requires no particular ank
+        // (ADR-756e8b0fe416).
+        ["requires_ank"] => Ok(Key::Top {
+            name: "requires_ank",
+            verbatim: false,
             default: None,
         }),
         ["context_budget"] => Ok(Key::Top {
@@ -2530,11 +2600,11 @@ fn parse_corpora(text: &str, path: &Path) -> Result<()> {
     }
     let file: CorporaFile = serde_yaml::from_str(text)
         .map_err(|e| CliError::new(ExitCode::Generic, format!("{}: {e}", path.display())))?;
-    if file.schema != SUPPORTED_SCHEMA {
+    if file.schema != CORPORA_SCHEMA {
         return Err(CliError::new(
             ExitCode::Generic,
             format!(
-                "{}: schema {} is not {SUPPORTED_SCHEMA}",
+                "{}: schema {} is not {CORPORA_SCHEMA}",
                 path.display(),
                 file.schema
             ),
@@ -2570,6 +2640,21 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         }
     }
 
+    let requires = matches!(
+        key,
+        Key::Top {
+            name: "requires_ank",
+            ..
+        }
+    );
+    // Refused on its form before the file is touched, in the sentence the
+    // reader gives, rather than as a write that would leave it unreadable.
+    if let (true, Some(v)) = (requires, value) {
+        if crate::update::Version::parse(v).is_none() {
+            return Err(not_a_version(v, &path));
+        }
+    }
+
     let text = std::fs::read_to_string(&path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             CliError::new(ExitCode::Generic, format!("{} not found", path.display()))
@@ -2600,6 +2685,7 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     let before = observe(&lines, &key)?;
     let mut edited = lines.clone();
     match value {
+        Some(v) if requires => write_requires_ank(&mut edited, &key, v)?,
         Some(v) => write_key(&mut edited, &key, v)?,
         None => unset_key(&mut edited, &key)?,
     }
@@ -2654,6 +2740,44 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
         }
     }
     Ok(ExitCode::Ok)
+}
+
+/// `requires_ank` written, and the schema it declares with it
+/// (ADR-756e8b0fe416): a file at 1 is raised to 2 in the same write, so the key
+/// never lands where a binary predating it would call it a typo. A new key goes
+/// beneath `schema:`, where `init` writes it, rather than at the end of the
+/// file. The schema is never lowered, here or by `--unset`: a file at 2
+/// without the key is a file this binary reads.
+fn write_requires_ank(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
+    let schema = Key::Top {
+        name: "schema",
+        verbatim: true,
+        default: None,
+    };
+    let at = find_key(lines, 0..lines.len(), 0, "schema");
+    let below = matches!(
+        at.map(|i| scalar_at(&lines[i], "schema")),
+        Some(Ok(Value::Set(ref v))) if v.parse::<u32>().is_ok_and(|n| n < REQUIRES_ANK_SCHEMA)
+    );
+    if below {
+        write_key(lines, &schema, &REQUIRES_ANK_SCHEMA.to_string())?;
+    }
+    match (find_key(lines, 0..lines.len(), 0, "requires_ank"), at) {
+        (None, Some(i)) => {
+            let eol = dominant_eol(lines);
+            terminate_last(lines, &eol);
+            let rendered = render_value(value, false, None);
+            lines.insert(
+                i + 1,
+                Line {
+                    text: format!("requires_ank: {rendered}"),
+                    eol,
+                },
+            );
+            Ok(())
+        }
+        _ => write_key(lines, key, value),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3583,11 +3707,11 @@ mod tests {
     /// is newer than this ank" says which of the two to change.
     #[test]
     fn a_newer_schema_is_refused_as_newer_and_not_as_unknown() {
-        let err = parse("schema: 2\n", p()).unwrap_err();
+        let err = parse("schema: 3\n", p()).unwrap_err();
         assert_eq!(err.code, ExitCode::Generic);
-        assert!(err.message.contains("schema 2"), "{}", err.message);
+        assert!(err.message.contains("schema 3"), "{}", err.message);
         assert!(
-            err.message.contains("this binary reads 1"),
+            err.message.contains("this binary reads up to 2"),
             "{}",
             err.message
         );
@@ -3734,7 +3858,7 @@ identities:
     #[test]
     fn the_default_yaml_written_by_init_reads_back() {
         let cfg = parse(&default_yaml(), p()).unwrap();
-        assert_eq!(cfg.schema, SUPPORTED_SCHEMA);
+        assert_eq!(cfg.schema, MIN_SCHEMA);
         assert_eq!(cfg.context_budget, DEFAULT_CONTEXT_BUDGET);
         assert_eq!(cfg.claim_ttl_max, Duration::from_secs(7200));
         assert_eq!(cfg.roles["human"].can, vec!["*".to_string()]);
@@ -4478,7 +4602,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 20, "{accepted:?}");
+        assert_eq!(accepted.len(), 21, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.
