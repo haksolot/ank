@@ -14,19 +14,20 @@
 "github:rust-lang/mdBook" = { version = "0.5.4", version_prefix = "v" }
 node = "22.23.4"
 
-# target/ lies inside the repository, so git would find this checkout above
-# every fixture made there, and a test that needs a directory outside any
-# repository would get one inside it. The ceiling stops that search at target/.
-# It does not stop ank's own walk for .ank/, nor ank update's refusal of a
-# binary under a cargo target directory: 14 tests still fail here, which
-# TASK-ce8dbe52f357 answers by moving this TMPDIR out of the repository.
+# The suite's temporary files go to ${XDG_CACHE_HOME:-$HOME/.cache}/ank-test:
+# outside the repository, outside any cargo target directory, and on disk where
+# /tmp can be a tmpfs that leaked fixtures fill. target/ cannot hold them: it
+# lies inside this checkout, so ank's walk for .ank/ finds this repository's
+# corpus above every fixture made there, and ank update refuses a binary under
+# a cargo target directory, which fails 14 tests (TASK-ce8dbe52f357).
 [tasks.test]
-description = "The workspace suite under nextest, its temporary files under target/"
+description = "The workspace suite under nextest, its temporary files under ~/.cache/ank-test"
 shell = "bash -c"
 run = '''
 set -e
-mkdir -p target/tmp
-TMPDIR="$PWD/target/tmp" GIT_CEILING_DIRECTORIES="$PWD/target" cargo nextest run --workspace
+dir="${XDG_CACHE_HOME:-$HOME/.cache}/ank-test"
+mkdir -p "$dir"
+TMPDIR="$dir" cargo nextest run --workspace
 '''
 
 [tasks.check]
