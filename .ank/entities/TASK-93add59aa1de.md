@@ -5,7 +5,7 @@ slug: a-deleted-scope-on-a-ratified-entity-that-keeps
 title: A deleted scope on a ratified entity that keeps a live scope owes nothing
 created: 2026-10-24T17:40:14Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/dead_scope_ratified.rs
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Applies ADR-cb68e20acbad once it is ratified; do not claim before. The quick win of the two mechanisms: it changes what check says and nothing the corpus holds.

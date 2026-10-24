@@ -2177,6 +2177,19 @@ fn check_scope_alive(
         Some(TaskStatus::Open) | Some(TaskStatus::InProgress)
     );
     let retired = matches!(status, Some(TaskStatus::Closed));
+    // A ratified decision that still governs a file (ADR-cb68e20acbad). One of
+    // its scopes git records as deleted has nowhere to go and leaves the
+    // decision whole: the only repair this file could name is a supersession
+    // restating a rule that did not change, so a finding that never clears
+    // would teach the reader to stop reading signals. Only a local scope a
+    // file matches counts as governing; a peer's is matched by nothing here.
+    let governs = match entity {
+        Entity::Adr(a) => a.status == AdrStatus::Accepted,
+        Entity::Spec(s) => s.status == AdrStatus::Accepted,
+        _ => false,
+    } && globs
+        .iter()
+        .any(|g| crate::repo::peer_ref(g).is_none() && verdicts.get(g) == Some(&true));
     for glob in globs {
         // A scope entry naming a declared peer is about files in another
         // repository (§7, ADR-a1de673043b4), so it matches nothing in this
@@ -2206,7 +2219,7 @@ fn check_scope_alive(
         // rather than above the loop: two git processes per glob, paid only by a
         // glob that already matches nothing. A healthy corpus reaches this line
         // no times.
-        let mut note = match git_root {
+        let (mut note, deleted) = match git_root {
             // Read once for the whole corpus and only where something is
             // already dead: a healthy corpus reaches this line no times and
             // starts no process, which is the cost clause of ADR-3094538d831e
@@ -2216,7 +2229,7 @@ fn check_scope_alive(
                 let history = walked.get_or_init(|| git::history(root, asked).unwrap_or_default());
                 scope_moved(entity, glob, history)
             }
-            None => Vec::new(),
+            None => (Vec::new(), false),
         };
         // The severity rule, and it only ever lowers. A dead scope git can
         // explain is not a broken corpus: the reader can see where the path went
@@ -2291,6 +2304,19 @@ fn check_scope_alive(
                 Kind::ScopeClosed,
                 entity.id(),
                 format!("scope '{glob}' matches no file, and the task is closed: nothing is owed"),
+            )
+        } else if governs && deleted {
+            // Under its kind still, and with the deleting commit in the note:
+            // the scope is dead and that stays visible. What changes is that it
+            // asks for nothing, and it says so in the closed task's words.
+            // A rename is not this case: the perimeter ought to follow the file.
+            Finding::signal(
+                Kind::DeadScope,
+                entity.id(),
+                format!(
+                    "scope '{glob}' matches no file, git records it deleted, \
+                     and another scope still matches: nothing is owed"
+                ),
             )
         } else {
             let message = match ignored {
@@ -2442,7 +2468,11 @@ fn shell_word(path: &str) -> String {
 /// a truncated history and a typo that never named a real file all produce the
 /// same nothing, so no wording below may suggest which — the reader is left
 /// exactly where they stand today, and the finding above says all that is known.
-fn scope_moved(entity: &Entity, glob: &str, history: &git::History) -> Vec<String> {
+///
+/// The flag beside the note is whether the death git recorded is a deletion,
+/// which is the one death a decision still governing other files owes nothing
+/// for (ADR-cb68e20acbad).
+fn scope_moved(entity: &Entity, glob: &str, history: &git::History) -> (Vec<String>, bool) {
     // A git failure is not a corpus fault and must never become one: the scope
     // is dead either way, and that is already reported. What is lost is the
     // explanation, which is exactly what `None` means everywhere else here.
@@ -2472,9 +2502,11 @@ fn scope_moved(entity: &Entity, glob: &str, history: &git::History) -> Vec<Strin
             moved.to, moved.sha
         )];
         note.extend(repair(entity, glob, &to));
-        return note;
+        return (note, false);
     }
-    scope_deleted(glob, &asked, directory, history)
+    let note = scope_deleted(glob, &asked, directory, history);
+    let deleted = !note.is_empty();
+    (note, deleted)
 }
 
 /// The same note for the other death git records: the commit that deleted the

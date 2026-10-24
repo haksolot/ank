@@ -28,6 +28,7 @@ mod claims_remote;
 mod cli;
 mod context_since;
 mod corpora_schema;
+mod dead_scope_ratified;
 mod doc_replay;
 mod done_stdin_pipe;
 mod guide;
