@@ -49,6 +49,7 @@ mod peer_url_refusal;
 mod ratify_ref;
 mod remote_without_claim;
 mod renewal_noop;
+mod requires_ank;
 mod schema;
 mod signers;
 mod skill;

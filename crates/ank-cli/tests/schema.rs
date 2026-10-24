@@ -319,14 +319,16 @@ fn a_schema_1_config_without_requires_ank_is_read_as_today() {
 
 #[test]
 fn a_schema_2_config_with_requires_ank_is_read() {
-    let dir = corpus("requires-read", "schema: 2\nrequires_ank: 1.2.3\n");
+    // Below the running version, so the warning a newer requirement earns
+    // (tests/requires_ank.rs) is not what this asserts about.
+    let dir = corpus("requires-read", "schema: 2\nrequires_ank: 0.1.0\n");
     let (code, said) = find(&dir);
     assert_eq!(code, 0, "schema 2 with the key reads: {said}");
     assert_eq!(said.trim(), "no match", "{said}");
 
     let (code, said) = config(&dir, &["requires_ank"]);
     assert_eq!(code, 0, "{said}");
-    assert_eq!(said.trim(), "1.2.3", "{said}");
+    assert_eq!(said.trim(), "0.1.0", "{said}");
 }
 
 /// A file carrying the key declares the schema it arrived with; one still at 1

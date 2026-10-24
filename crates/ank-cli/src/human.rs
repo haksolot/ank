@@ -169,6 +169,7 @@ kinds! {
     Future => "future",
     OverConstrained => "over-constrained",
     Weight => "weight",
+    RequiresAnk => "requires-ank",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
     Reference => "reference",
@@ -1309,6 +1310,7 @@ pub fn inspect_with(
     }
 
     check_weight(cfg, &mut report);
+    check_requires_ank(cfg, &mut report);
 
     report.findings.sort_by(|a, b| {
         a.level
@@ -3091,6 +3093,26 @@ fn check_task(
             }
         }
     }
+}
+
+/// A binary older than the corpus's `requires_ank` (ADR-756e8b0fe416).
+///
+/// **A fault**, where every other verb only warns and goes on: a pipeline
+/// running an older ank turns red instead of checking a corpus it may misread.
+/// Whatever the perimeter, since the requirement is the corpus's and not a
+/// path's.
+fn check_requires_ank(cfg: &Config, report: &mut Report) {
+    let Some((declared, running)) = crate::cli::requires_ank_ahead(cfg) else {
+        return;
+    };
+    report.findings.push(
+        Finding::fault(
+            Kind::RequiresAnk,
+            "requires_ank",
+            format!("this corpus requires ank {declared} or newer, and this binary is {running}"),
+        )
+        .with_note(vec!["ank update".to_string()]),
+    );
 }
 
 /// A corpus over the weight it declares (ADR-467ce7e9cda1): one signal per
