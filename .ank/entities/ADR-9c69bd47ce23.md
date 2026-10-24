@@ -5,7 +5,7 @@ slug: tool-versions-come-from-mise-and-rust-toolchain
 title: Tool versions come from mise and rust-toolchain.toml, in CI and in every verifier
 created: 2026-10-24T07:36:19Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - .ank/config.yml
   - .github/workflows/ci.yml
@@ -16,8 +16,13 @@ scope:
 constraint: |
   Tool versions are declared in mise.toml and locked with checksums in mise.lock, and Rust is pinned to an exact version by rust-toolchain.toml; the test verifiers run cargo nextest run through mise x --, exit 9 before anything else when mise is absent, and declare mise.toml, mise.lock and rust-toolchain.toml among their inputs; CI installs mise from its published binary pinned by version and sha256 per runner OS, without a third-party action, then mise install --locked, and every other tool reaches a workflow through mise; tasks in mise.toml are generic and a machine's own recipes live in a git-ignored mise.local.toml; the suite runs under cargo nextest run, tests that must not run concurrently are serialised by a nextest test group and never by an in-process lock, and the count of tests listed under nextest equals the count listed under cargo test.
 supersedes: ADR-8c12a38531e3
+ratified: 7fca5c9a8923
+anchor: 2dd5f85bce8fd11d06003c6b80d8bf4ff0aa486b
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-24T11:16:29Z
 schema: 4
-version: 2
+version: 3
 ---
 
 ## Context
