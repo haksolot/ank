@@ -21,6 +21,11 @@ python = "3.14.9"
 # lies inside this checkout, so ank's walk for .ank/ finds this repository's
 # corpus above every fixture made there, and ank update refuses a binary under
 # a cargo target directory, which fails 14 tests (TASK-ce8dbe52f357).
+#
+# cargo-nextest is invoked directly, the argv `cargo nextest run` execs: cargo
+# resolves a subcommand from $CARGO_HOME/bin before PATH, so the cargo form runs
+# whichever cargo-nextest is installed there instead of mise.lock's
+# (TASK-eb766f509008).
 [tasks.test]
 description = "The workspace suite under nextest, its temporary files under ~/.cache/ank-test"
 shell = "bash -c"
@@ -28,7 +33,7 @@ run = '''
 set -e
 dir="${XDG_CACHE_HOME:-$HOME/.cache}/ank-test"
 mkdir -p "$dir"
-TMPDIR="$dir" cargo nextest run --workspace
+TMPDIR="$dir" cargo-nextest nextest run --workspace
 '''
 
 [tasks.check]
