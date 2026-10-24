@@ -21,10 +21,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The generator is pinned by version and by the digest of its release archive:
-  # a new mdBook changes the site only through a pull request that changes both.
-  MDBOOK_VERSION: v0.5.4
-  MDBOOK_SHA256: 3f28de05dafca9d0f2eab99c662116b0e37b89b1d96a08f8f430b9eeae958cd7
   # book.toml sets site-url to the same prefix: a project site is served under
   # /<repository>/, and the 404 page links back to it absolutely.
   SITE_PREFIX: /ank/
@@ -35,19 +31,79 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install mdBook
+      # The generator comes from mise.lock, which pins its version and the
+      # checksum of its release archive per platform (ADR-9c69bd47ce23): a new
+      # mdBook changes the site only through a pull request that changes
+      # mise.toml and the lockfile together.
+      #
+      # mise itself is installed as ci.yml installs it: its published release
+      # binary, pinned by version and by the sha256 below for each runner, read
+      # from stdin and checked before it is run, without a third-party action.
+      # The digests are the release's SHASUMS256.txt. A runner outside the
+      # three is an environment to repair, exit 9. Only mdBook is installed:
+      # nextest and node are locked beside it for the other workflows. The
+      # token lets mise read the release's attestation under the authenticated
+      # rate limit instead of the runner's shared one.
+      - name: mise
+        shell: bash
+        env:
+          MISE_VERSION: 2026.10.17
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
-          archive="mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          curl -fsSLO "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/${archive}"
-          echo "${MDBOOK_SHA256}  ${archive}" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/bin"
-          tar -xzf "$archive" -C "$RUNNER_TEMP/bin"
-          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          case "$RUNNER_OS-$RUNNER_ARCH" in
+            Linux-X64)
+              asset=linux-x64
+              sha=fe6dd17e68e09682b31d2e7bb7bb755d22636ac1af5d94621e300f2ca9e9fe8a ;;
+            macOS-ARM64)
+              asset=macos-arm64
+              sha=9e27709db5eb1e900d83149418d3067309f2a5004d4994d94246ab658ba4a3ce ;;
+            Windows-X64)
+              asset=windows-x64.zip
+              sha=32bcfda5f72bf7cb189e18ba93c2798bffcb4a678fd004e3127780363f2d8c8c ;;
+            *)
+              echo "no mise digest pinned for $RUNNER_OS-$RUNNER_ARCH"
+              exit 9 ;;
+          esac
+          dir="$RUNNER_TEMP/mise"
+          file="$dir/mise-v$MISE_VERSION-$asset"
+          mkdir -p "$dir/bin"
+          curl -LsSf -o "$file" \
+            "https://github.com/jdx/mise/releases/download/v$MISE_VERSION/mise-v$MISE_VERSION-$asset"
+          # Read from stdin: given a name, sha256sum on windows-latest prefixes
+          # its line with a backslash, because $RUNNER_TEMP is D:\a\_temp.
+          if command -v sha256sum >/dev/null; then
+            got=$(sha256sum < "$file" | cut -d' ' -f1)
+          else
+            got=$(shasum -a 256 < "$file" | cut -d' ' -f1)
+          fi
+          if [ "$got" != "$sha" ]; then
+            echo "::error::mise-v$MISE_VERSION-$asset has sha256 $got, pinned $sha"
+            exit 1
+          fi
+          echo "mise-v$MISE_VERSION-$asset: sha256 $got, as pinned"
+          case "$asset" in
+            *.zip)
+              unzip -q "$file" -d "$dir"
+              bin="$dir/mise/bin"
+              cygpath -w "$bin" >> "$GITHUB_PATH"
+              ;;
+            *)
+              mv "$file" "$dir/bin/mise"
+              chmod +x "$dir/bin/mise"
+              bin="$dir/bin"
+              echo "$bin" >> "$GITHUB_PATH"
+              ;;
+          esac
+          export PATH="$bin:$PATH"
+          mise --version
+          mise trust
+          mise install --locked github:rust-lang/mdBook
+          mise x -- mdbook --version
 
       # book.toml sets create-missing = false, so a page SUMMARY.md lists and
       # docs/ lacks fails here instead of being written as an empty chapter.
       - name: Build
-        run: mdbook build
+        run: mise x -- mdbook build
 
       # mdBook rewrites a link to a .md file into one to its .html and checks
       # neither. This walks the built site, where every relative href and src
