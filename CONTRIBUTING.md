@@ -48,7 +48,11 @@ mise install --locked
 
 `mise run test`, `mise run check` and `mise run ank:refresh` are the suite, the
 first and third gates, and a rebuild of the `ank` on your PATH, replaced by a
-rename so that a running copy is never written over.
+rename so that a running copy is never written over. `mise run test` writes its
+temporary files to `${XDG_CACHE_HOME:-$HOME/.cache}/ank-test`, created if
+absent: outside the repository and any cargo target directory, which the suite
+cannot run under, and on disk where `/tmp` may be a tmpfs. It is safe to empty
+whenever no suite is running.
 
 What only your machine needs goes in `mise.local.toml`, which git ignores. For
 example, when your signing key is passphrase-protected and no agent holds it,
