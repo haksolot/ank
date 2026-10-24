@@ -5,14 +5,19 @@ slug: a-ratified-entity-s-scope-git-records-as-deleted
 title: A ratified entity's scope git records as deleted owes nothing while another of its scopes lives
 created: 2026-10-24T17:39:31Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/human.rs
 constraint: |
   For an accepted ADR or spec, a dead scope git records as deleted is reported as owing nothing when the entity keeps at least one scope that matches a file, naming the deleting commit; a dead scope git records as renamed stays a signal and proposes accept --rescope rather than a supersession; an entity all of whose scopes are dead is reported as today; check writes nothing and moves no anchor.
 amends: [ADR-3094538d831e]
+ratified: aa7da8576731
+anchor: c933d3004ac1a0abee26abce551407c5960f43f1
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-24T18:01:10Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
