@@ -1,0 +1,49 @@
+# Every tool this repository runs besides Rust, pinned here and locked with a
+# checksum per platform in mise.lock (ADR-9c69bd47ce23). Rust itself is pinned
+# by rust-toolchain.toml, which rustup reads. A bump changes this file and the
+# lockfile together: `mise lock --platform linux-x64,macos-arm64,macos-x64,windows-x64`.
+#
+# Tasks here are the ones every contributor can run. A recipe that depends on
+# one machine's keys or shell goes in mise.local.toml, which git ignores.
+
+[tools]
+# The version ci.yml pinned by hand before the lockfile carried it.
+"github:nextest-rs/nextest" = { version = "0.9.148", version_prefix = "cargo-nextest-" }
+# The github backend, not the registry's aqua one: aqua hands macos-arm64 the
+# x86_64 archive, which needs Rosetta.
+"github:rust-lang/mdBook" = { version = "0.5.4", version_prefix = "v" }
+node = "22.23.4"
+
+# target/ lies inside the repository, so git would find this checkout above
+# every fixture made there, and a test that needs a directory outside any
+# repository would get one inside it. The ceiling stops that search at target/.
+# It does not stop ank's own walk for .ank/, nor ank update's refusal of a
+# binary under a cargo target directory: 14 tests still fail here, which
+# TASK-ce8dbe52f357 answers by moving this TMPDIR out of the repository.
+[tasks.test]
+description = "The workspace suite under nextest, its temporary files under target/"
+shell = "bash -c"
+run = '''
+set -e
+mkdir -p target/tmp
+TMPDIR="$PWD/target/tmp" GIT_CEILING_DIRECTORIES="$PWD/target" cargo nextest run --workspace
+'''
+
+[tasks.check]
+description = "cargo fmt --check, then ank check through the binary built from this tree"
+shell = "bash -c"
+run = "cargo fmt --check && cargo run -q --bin ank -- check"
+
+[tasks."ank:refresh"]
+description = "Build ank, then replace the one on PATH by a copy beside it and a rename"
+shell = "bash -c"
+run = '''
+set -e
+cargo build --bin ank
+dest="$(command -v ank)" || { echo "no ank on PATH to refresh" >&2; exit 9; }
+src=target/debug/ank
+[ -f "$src.exe" ] && src="$src.exe"
+cp "$src" "$dest.new"
+mv -f "$dest.new" "$dest"
+"$dest" --version
+'''

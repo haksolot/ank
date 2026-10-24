@@ -1,0 +1,8 @@
+# The exact Rust every build of this repository uses, read by rustup, cargo and
+# editors alike (ADR-9c69bd47ce23). A channel name would let the version drift
+# with each runner image, which is the defect this file exists to stop; bumping
+# it is a pull request. The MSRV is `rust-version` in the manifests, not this.
+[toolchain]
+channel = "1.99.1"
+components = ["rustfmt"]
+profile = "minimal"
