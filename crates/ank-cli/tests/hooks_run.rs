@@ -76,7 +76,9 @@ impl Fixture {
             .env("NO_COLOR", "1")
             .env("ANK_AGENT", AGENT)
             .env_remove("GIT_TRACE")
-            .env_remove("ANK_REPO");
+            .env_remove("ANK_REPO")
+            .env_remove("ANK_GUARD_CORPUS")
+            .env_remove("ANK_GUARD_EDIT");
         c
     }
 
