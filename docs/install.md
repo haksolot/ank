@@ -238,8 +238,6 @@ The routes:
     ank skills --install                      from the binary you installed, nothing cloned
     npx skills add haksolot/ank               a machine with node and no ank
     /plugin marketplace add haksolot/ank      Claude Code, as a plugin
-    pi install npm:@haksolot/ank              pi, binary and skill together
-    pi install git:github.com/haksolot/ank    pi, from source
     by hand                                   copy skill/SKILL.md where your harness loads it
 
 ### From the binary
@@ -394,22 +392,6 @@ session pays a little more to know the policies exist. The ceiling on the bodies
 is kept anyway, because the by-hand route below copies whole files into whatever
 a harness loads, and some harnesses load all of it every session, so it bounds
 the worst route rather than the measured one.
-
-### pi
-
-From the registry, or from a clone:
-
-    $ pi install npm:@haksolot/ank
-    $ pi install git:github.com/haksolot/ank
-    Installed git:github.com/haksolot/ank
-
-The git route clones the repository and reads its `pi` manifest; the npm route
-takes the published package, which carries the skill beside the binary.
-
-One thing to expect from the npm route: pi loads resources, it does not put
-executables on your `PATH`. The binary is inside the package it installed, and
-`ank` will still not be a command you can type until you install it by one of
-the routes above.
 
 ### By hand
 
