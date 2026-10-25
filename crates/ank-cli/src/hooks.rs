@@ -187,7 +187,7 @@ fn session_start(cwd: &Path) -> Option<String> {
 const CONTRACT: &str = "\n\
 This repository keeps its tasks and decisions in ank: reach them through the CLI and never by opening .ank/. \
 Run `ank context <path>` before touching a perimeter, for the decisions that bind it and what is claimable. \
-How to work with them is the ank skill; `ank skills install` installs it if it is missing.\n";
+How to work with them is the ank skill; `ank skills --install` installs it if it is missing.\n";
 
 /// The tools that change a file, which `guard.edit` looks at; every file tool
 /// the entry is matched to is one `guard.corpus` looks at.
