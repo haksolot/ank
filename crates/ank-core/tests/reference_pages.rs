@@ -286,6 +286,8 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`identities.<identity>`", "string", "none"),
             ("`weight.hot_files`", "integer", "`3000`"),
             ("`weight.plane_bytes`", "integer", "`4000000`"),
+            ("`guard.corpus`", "`deny` or `off`", "`deny`"),
+            ("`guard.edit`", "`off`, `warn` or `claim`", "`warn`"),
             ("`signers.<principal>.keys[].key`", "string", "required"),
             ("`signers.<principal>.keys[].note`", "string", "none"),
             ("`signers.<principal>.keys[].valid_before`", "date", "none"),

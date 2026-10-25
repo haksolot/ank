@@ -37,6 +37,17 @@ pub const DEFAULT_WEIGHT_HOT_FILES: u64 = 3000;
 /// bytes, nearly all proofs appended once per CI run; 4 MB is the next growth
 /// of that mechanism, not a size a corpus reaches by accumulating facts.
 pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = 4_000_000;
+/// What the hook does with a file tool aimed under the corpus directory
+/// (ADR-43cbb20dcbf1): refuses it unless the corpus says otherwise, which is
+/// ADR-3c8d enforced rather than taught.
+pub const DEFAULT_GUARD_CORPUS: &str = "deny";
+/// The values `guard.corpus` takes, tightest first.
+pub const GUARD_CORPUS_VALUES: &[&str] = &["deny", "off"];
+/// What the hook does with an edit no live claim of the identity covers: says
+/// so and lets it through, because refusing is the corpus's explicit choice.
+pub const DEFAULT_GUARD_EDIT: &str = "warn";
+/// The values `guard.edit` takes, loosest first.
+pub const GUARD_EDIT_VALUES: &[&str] = &["off", "warn", "claim"];
 
 /// What an absent key means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +191,18 @@ pub static KEYS: &[ConfigKey] = &[
         "integer",
         Absent::Number(DEFAULT_WEIGHT_PLANE_BYTES),
         "`check` signals claim and proof records weighing more bytes",
+    ),
+    key(
+        "guard.corpus",
+        "`deny` or `off`",
+        Absent::Text(DEFAULT_GUARD_CORPUS),
+        "what `ank hooks run` does with a file tool aimed under the corpus directory: `deny` refuses it, `off` lets it through; a launch environment may set `ANK_GUARD_CORPUS` tighter, never looser (ADR-43cbb20dcbf1)",
+    ),
+    key(
+        "guard.edit",
+        "`off`, `warn` or `claim`",
+        Absent::Text(DEFAULT_GUARD_EDIT),
+        "what `ank hooks run` does with an edit no live claim of the identity covers: `off` says nothing, `warn` lets it through naming the path, `claim` refuses it; a launch environment may set `ANK_GUARD_EDIT` tighter, never looser (ADR-43cbb20dcbf1)",
     ),
     key(
         "signers.<principal>.keys[].key",

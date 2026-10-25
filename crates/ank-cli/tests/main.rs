@@ -33,6 +33,7 @@ mod dead_scope_awaited;
 mod dead_scope_ratified;
 mod doc_replay;
 mod done_stdin_pipe;
+mod guard_config;
 mod guide;
 mod help_new;
 mod index_per_schema;
