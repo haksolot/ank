@@ -918,6 +918,11 @@ fn the_herdr_sibling_teaches_the_ank_layer_of_a_run() {
     );
     line_teaching(
         &body,
+        "workers are launched at guard.edit claim, so an edit outside the claim is refused",
+        &["ANK_GUARD_EDIT=claim", "worker", "refused"],
+    );
+    line_teaching(
+        &body,
         "a worker told to wait stops, and needs a new prompt",
         &["wait", "stops", "prompt"],
     );

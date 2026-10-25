@@ -496,6 +496,28 @@ fn slashed(p: &Path) -> String {
     p.to_string_lossy().replace('\\', "/")
 }
 
+/// `s` with every path the binary joined under the page's directory `page`
+/// written with `/`: on Windows `settings.json` under an aliased directory
+/// comes back as `<alias>\settings.json`, and the page writes one separator.
+fn slashed_under(s: &str, page: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find(page) {
+        let end = at + page.len();
+        out.push_str(&rest[..end]);
+        rest = &rest[end..];
+        if rest.starts_with('\\') {
+            let tail = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            out.push_str(&rest[..tail].replace('\\', "/"));
+            rest = &rest[tail..];
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 impl Session {
     fn new(page: &str, name: &str) -> Session {
         let stem = Path::new(page)
@@ -586,6 +608,7 @@ impl Session {
             for f in forms {
                 s = s.replace(&f, page);
             }
+            s = slashed_under(&s, page);
         }
         s
     }
@@ -1129,6 +1152,23 @@ fn the_masks_hide_what_a_replay_mints() {
         "2 tasks, 1 adr, 4 signal(s)"
     );
     assert_eq!(masked("at 2026-07-27T09:40:00Z"), "at <TIME>");
+}
+
+/// A path Windows joined under an aliased directory reads as the page writes
+/// it, and a backslash anywhere else is left as the binary printed it.
+#[test]
+fn a_path_joined_under_an_alias_is_written_with_slashes() {
+    assert_eq!(
+        slashed_under(
+            r"installed in /home/me/.claude\settings.json, not C:\x",
+            "/home/me/.claude"
+        ),
+        r"installed in /home/me/.claude/settings.json, not C:\x"
+    );
+    assert_eq!(
+        slashed_under(r#""/srv/a\b\c" and /srv/a"#, "/srv/a"),
+        r#""/srv/a/b/c" and /srv/a"#
+    );
 }
 
 /// One value under two names is the page contradicting itself.

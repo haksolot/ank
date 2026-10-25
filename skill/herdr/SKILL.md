@@ -2,7 +2,7 @@
 name: ank-herdr
 description: Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr pane, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
 metadata:
-  revision: "a0567f7f382a"
+  revision: "915a198f4be6"
 ---
 
 # ank-herdr
@@ -57,12 +57,21 @@ work red.
 
     one worktree, one branch and one ANK_AGENT per worker, cut fresh from the default branch
     export ANK_AGENT and TMPDIR in the pane before the agent starts: an export after never reaches it
+    export ANK_GUARD_EDIT=claim in every worker's pane too: an edit no claim of that worker covers is refused
     hand it one task to claim, by id, and nothing to land
 
 Without an identity of its own every worker falls back to `<user>@<hostname>`,
 and the claims of all of them become one agent's: none is arbitrated, and the
 record cannot say who did what. A `TMPDIR` of its own keeps each worker's
 scratch apart from the others'.
+
+Disjoint scopes are the whole reason two workers may run side by side, and
+under the corpus default of `warn` a worker editing outside its claim is only
+told so, in a message it can scroll past while it rewrites another worker's
+perimeter. At `claim` the edit is refused before it lands. The variable can
+tighten what the corpus declares and never loosen it, so the launch decides
+this whatever the corpus says. It reaches only a harness whose hooks
+`ank hooks install claude` has put in place; `ank help hooks` says what they do.
 
 The worker's prompt names the task, says the contract applies, and asks it to
 close with `ank done` and push its branch. Everything else the worker reads
