@@ -82,6 +82,8 @@ fn the_command_prints_a_row_for_every_variable_the_binary_reads() {
     names.sort_unstable();
     let mut expected = [
         "ANK_AGENT",
+        "ANK_GUARD_CORPUS",
+        "ANK_GUARD_EDIT",
         "ANK_INDEX_BUSY_MS",
         "ANK_INDEX_REFRESHED",
         "ANK_INDEX_STEPS",

@@ -24,6 +24,7 @@
 //! `remove` could not know whether to take the container out with the entry.
 
 use crate::cli::{CliError, Invocation, Result};
+use crate::config::{GuardCorpus, GuardEdit};
 use crate::json::Obj;
 use ank_contract::ExitCode;
 use std::io::{Read, Write};
@@ -145,14 +146,15 @@ fn serve(inv: &Invocation, cwd: &Path) -> Option<String> {
     let [agent, event] = inv.positionals.as_slice() else {
         return None;
     };
-    // `pre-tool-use` is answered by its own task (TASK-582f6758fb0b); until
-    // then it lets every tool call through.
-    if agent != "claude" || event != "session-start" {
+    if agent != "claude" || !matches!(event.as_str(), "session-start" | "pre-tool-use") {
         return None;
     }
     let mut payload = Vec::new();
     std::io::stdin().read_to_end(&mut payload).ok()?;
-    parse(&String::from_utf8(payload).ok()?).ok()?;
+    let payload = parse(&String::from_utf8(payload).ok()?).ok()?;
+    if event == "pre-tool-use" {
+        return pre_tool_use(&payload, cwd);
+    }
     let context = session_start(cwd)?;
     let output = Obj::new()
         .str("hookEventName", "SessionStart")
@@ -186,6 +188,253 @@ const CONTRACT: &str = "\n\
 This repository keeps its tasks and decisions in ank: reach them through the CLI and never by opening .ank/. \
 Run `ank context <path>` before touching a perimeter, for the decisions that bind it and what is claimable. \
 How to work with them is the ank skill; `ank skills install` installs it if it is missing.\n";
+
+/// The tools that change a file, which `guard.edit` looks at; every file tool
+/// the entry is matched to is one `guard.corpus` looks at.
+const EDITORS: &[&str] = &["Edit", "MultiEdit", "Write", "NotebookEdit"];
+
+/// What Claude Code is told before a file tool runs, or `None` to let it run
+/// in silence (ADR-43cbb20dcbf1).
+///
+/// **The path is the one the tool will reach, not the one it was typed as.**
+/// Relative to the session's directory, absolute, or through a symbolic link,
+/// it is resolved to the real place before it is confronted with the corpus
+/// directory, so `link/config.yml` is under `.ank/` when `link` points there.
+/// A file that does not exist yet is resolved through its nearest ancestor
+/// that does.
+///
+/// **What it costs does not depend on the corpus.** The corpus guard reads the
+/// configuration and nothing else; the edit guard adds the one reading of the
+/// claims namespace `claim::on_task` makes and the one entity file it names
+/// (ADR-cc65f1388a71).
+fn pre_tool_use(payload: &Node, cwd: &Path) -> Option<String> {
+    let tool = payload.member("tool_name")?.text()?;
+    let input = payload.member("tool_input")?;
+    let base = payload
+        .member("cwd")
+        .and_then(Node::text)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .unwrap_or_else(|| cwd.to_path_buf());
+    let repo = crate::repo::resolve(None, None, &base, &mut Vec::new()).ok()?;
+    let cfg = crate::config::load(&repo.config_path()).ok()?;
+    let targets = targets(tool, input, &base);
+    if targets.is_empty() {
+        return None;
+    }
+    let corpus = real(&repo.ank);
+    let worktree = real(&repo.worktree);
+
+    let (level, note) = tightened(
+        cfg.guard.corpus,
+        ank_contract::env::ANK_GUARD_CORPUS,
+        "guard.corpus",
+        GuardCorpus::parse,
+    );
+    let under: Vec<&PathBuf> = targets.iter().filter(|t| t.starts_with(&corpus)).collect();
+    if let Some(target) = under.first() {
+        if level == GuardCorpus::Off {
+            return None;
+        }
+        let shown = shown(target, &worktree);
+        let reason = format!(
+            "{shown} is under the corpus directory, which is reached through the ank CLI and \
+             never by opening its files: `ank show <id>` prints an entity whole, `ank find \
+             <query>` lists, `ank context <path>` serves what binds a perimeter.{}",
+            note.map(|n| format!(" {n}")).unwrap_or_default()
+        );
+        return Some(deny(&reason));
+    }
+
+    if !EDITORS.contains(&tool) {
+        return None;
+    }
+    let (level, note) = tightened(
+        cfg.guard.edit,
+        ank_contract::env::ANK_GUARD_EDIT,
+        "guard.edit",
+        GuardEdit::parse,
+    );
+    if level == GuardEdit::Off {
+        return None;
+    }
+    let (identity, _) = crate::identity::resolved();
+    // Outside the work tree a path is no perimeter, and nothing can cover it.
+    let paths: Vec<String> = targets
+        .iter()
+        .filter_map(|t| t.strip_prefix(&worktree).ok())
+        .filter_map(|rel| ank_core::normalize_path(&rel.to_string_lossy()))
+        .filter(|rel| !rel.is_empty())
+        .collect();
+    let path = paths.first()?;
+    if covered(&repo, &identity, path)? {
+        return None;
+    }
+    let note = note.map(|n| format!(" {n}")).unwrap_or_default();
+    if level == GuardEdit::Claim {
+        let reason = format!(
+            "guard.edit is claim, and no live claim of {identity} covers {path}: `ank context \
+             {path}` names the task that does, and `ank claim <id>` takes it.{note}"
+        );
+        return Some(deny(&reason));
+    }
+    let message = format!(
+        "no live claim of {identity} covers {path}: `ank context {path}` names what binds it \
+         and what is claimable, and `ank claim <id>` takes the task.{note}"
+    );
+    let output = Obj::new()
+        .str("hookEventName", "PreToolUse")
+        .str("additionalContext", &message);
+    Some(
+        Obj::new()
+            .str("systemMessage", &message)
+            .obj("hookSpecificOutput", output)
+            .finish(),
+    )
+}
+
+/// The answer that refuses the tool call, with the reason Claude Code shows the
+/// agent.
+fn deny(reason: &str) -> String {
+    let output = Obj::new()
+        .str("hookEventName", "PreToolUse")
+        .str("permissionDecision", "deny")
+        .str("permissionDecisionReason", reason);
+    Obj::new().obj("hookSpecificOutput", output).finish()
+}
+
+/// Whether a live claim of `identity` covers `path`, matched the way `ank
+/// scope` matches it; `None` when the claims or the task cannot be read, which
+/// lets the call through.
+fn covered(repo: &crate::repo::Repo, identity: &str, path: &str) -> Option<bool> {
+    let Some(standing) = crate::claim::on_task(&repo.corpus, identity).ok()? else {
+        return Some(false);
+    };
+    if standing.lapsed {
+        return Some(false);
+    }
+    let loaded = crate::store::Store::new(&repo.ank)
+        .load(&standing.id)
+        .ok()?;
+    let ank_core::Entity::Task(task) = loaded.entity else {
+        return Some(false);
+    };
+    Some(crate::context::in_perimeter(&task.scope, Some(path)))
+}
+
+/// The places a tool call reaches, resolved: the file a file tool names, the
+/// directory a search starts from, and the literal head of a `Glob` pattern
+/// joined to it.
+fn targets(tool: &str, input: &Node, base: &Path) -> Vec<PathBuf> {
+    let at = |raw: &str| -> PathBuf { real(&base.join(raw)) };
+    let mut out = Vec::new();
+    match tool {
+        "Read" | "Edit" | "MultiEdit" | "Write" => {
+            out.extend(input.member("file_path").and_then(Node::text).map(at));
+        }
+        "NotebookEdit" => {
+            out.extend(input.member("notebook_path").and_then(Node::text).map(at));
+        }
+        "Glob" | "Grep" => {
+            let from = input.member("path").and_then(Node::text);
+            let start = from.map_or_else(|| real(base), at);
+            if tool == "Glob" {
+                let head: Vec<&str> = input
+                    .member("pattern")
+                    .and_then(Node::text)
+                    .unwrap_or_default()
+                    .split(['/', '\\'])
+                    .take_while(|c| !c.contains(['*', '?', '[', '{']))
+                    .collect();
+                if !head.is_empty() {
+                    out.push(real(&start.join(head.join("/"))));
+                }
+            }
+            out.push(start);
+        }
+        _ => {}
+    }
+    out
+}
+
+/// `path` with `.` and `..` folded, then resolved through every symbolic link
+/// of its longest existing ancestor; the part that does not exist yet is joined
+/// back as written.
+fn real(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut folded = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                folded.pop();
+            }
+            c => folded.push(c),
+        }
+    }
+    let mut existing = folded.as_path();
+    let mut rest = Vec::new();
+    loop {
+        if let Ok(resolved) = existing.canonicalize() {
+            return rest.iter().rev().fold(resolved, |p, c| p.join(c));
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_os_string());
+                existing = parent;
+            }
+            _ => return folded,
+        }
+    }
+}
+
+/// A target as the agent would recognise it: relative to the work tree when it
+/// is inside it.
+fn shown(target: &Path, worktree: &Path) -> String {
+    match target.strip_prefix(worktree) {
+        Ok(rel) => rel.to_string_lossy().replace('\\', "/"),
+        Err(_) => target.display().to_string(),
+    }
+}
+
+/// The level a guard runs at: the corpus's, or the launch environment's when
+/// that one is tighter. A looser or unreadable value is ignored, and the note
+/// says so, to be carried by whatever the guard answers.
+fn tightened<L: Copy + Ord>(
+    declared: L,
+    var: &str,
+    key: &str,
+    parse: fn(&str) -> Option<L>,
+) -> (L, Option<String>) {
+    let Some(set) = std::env::var(var).ok().filter(|v| !v.trim().is_empty()) else {
+        return (declared, None);
+    };
+    let set = set.trim();
+    match parse(set) {
+        Some(level) if level >= declared => (level, None),
+        Some(_) => {
+            // The name of the declared level, by asking the parse which name
+            // reads as it: the table of names stays the config's.
+            let named = ["deny", "off", "warn", "claim"]
+                .into_iter()
+                .find(|n| parse(n) == Some(declared))
+                .unwrap_or_default();
+            (
+                declared,
+                Some(format!(
+                    "{var}={set} was ignored: .ank/config.yml declares {key} {named}, and the \
+                     launch environment may tighten it, never loosen it."
+                )),
+            )
+        }
+        None => (
+            declared,
+            Some(format!(
+                "{var}={set} was ignored: it is not a level of {key}."
+            )),
+        ),
+    }
+}
 
 fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
     let hint = format!("ank hooks {sub} {}", AGENTS.join("|"));
@@ -608,6 +857,13 @@ impl Node {
     fn member(&self, key: &str) -> Option<&Node> {
         match &self.kind {
             Kind::Object(members) => members.iter().find(|m| m.key == key).map(|m| &m.value),
+            _ => None,
+        }
+    }
+
+    fn text(&self) -> Option<&str> {
+        match &self.kind {
+            Kind::Str(s) => Some(s),
             _ => None,
         }
     }
