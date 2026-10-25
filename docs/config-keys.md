@@ -27,6 +27,8 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `identities.<identity>` | string | none | the role of an identity; one absent from the table is an `agent` |
 | `weight.hot_files` | integer | `3000` | `check` signals a hot corpus holding more entity files |
 | `weight.plane_bytes` | integer | `4000000` | `check` signals claim and proof records weighing more bytes |
+| `guard.corpus` | `deny` or `off` | `deny` | what `ank hooks run` does with a file tool aimed under the corpus directory: `deny` refuses it, `off` lets it through; a launch environment may set `ANK_GUARD_CORPUS` tighter, never looser (ADR-43cbb20dcbf1) |
+| `guard.edit` | `off`, `warn` or `claim` | `warn` | what `ank hooks run` does with an edit no live claim of the identity covers: `off` says nothing, `warn` lets it through naming the path, `claim` refuses it; a launch environment may set `ANK_GUARD_EDIT` tighter, never looser (ADR-43cbb20dcbf1) |
 | `signers.<principal>.keys[].key` | string | required | a key allowed to ratify, `gpg <fingerprint>` or `<ssh key type> <base64>`; the block is written by `ank signers`, never by `ank config` (ADR-5c6db7a161b8) |
 | `signers.<principal>.keys[].note` | string | none | what the key is, for the reader; `ank signers migrate` puts the comments of a former `.ank/allowed_signers` here |
 | `signers.<principal>.keys[].valid_before` | date | none | `YYYY-MM-DD`: the key ratifies nothing committed from that day on, UTC, and what it signed before stays verified; absent, the key has no end |
