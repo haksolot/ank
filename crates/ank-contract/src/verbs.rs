@@ -2000,7 +2000,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         // The command a folded signal names (ADR-df1035934387): a flag on the
-        // verb that folded, and no new surface (ADR-9a0076dd0896). Long form
+        // verb that folded, and no new surface (ADR-24efa7543a16). Long form
         // only: §4 gives `-k` to nothing.
         flags: &[flag("--kind")],
         refuses: &[
