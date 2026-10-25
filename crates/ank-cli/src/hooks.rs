@@ -26,7 +26,7 @@
 use crate::cli::{CliError, Invocation, Result};
 use crate::json::Obj;
 use ank_contract::ExitCode;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 /// The agents this version installs for (ADR-43cbb20dcbf1): another arrives by
@@ -48,7 +48,7 @@ const EVENTS: &[(&str, &str, Option<&str>)] = &[
     ),
 ];
 
-pub fn run(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
+pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     let sub = inv.subcommand.as_deref().unwrap_or_default();
     if sub == "run" {
         if inv.json() {
@@ -58,8 +58,11 @@ pub fn run(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
             )
             .with_hint("ank hooks run claude <event>"));
         }
-        // Silent and 0 whatever it is handed, until an event is served: a hook
-        // that fails is a harness that blocks (ADR-43cbb20dcbf1).
+        // 0 whatever it is handed, and silent wherever it has nothing to serve:
+        // a hook that fails is a harness that blocks (ADR-43cbb20dcbf1).
+        if let Some(served) = serve(inv, cwd) {
+            let _ = writeln!(out, "{served}");
+        }
         return Ok(ExitCode::Ok);
     }
     let agent = agent(inv, sub)?;
@@ -131,6 +134,58 @@ pub fn run(inv: &Invocation, out: &mut dyn Write) -> Result<ExitCode> {
     };
     Ok(ExitCode::Ok)
 }
+
+/// What `hooks run` prints for an event, or `None` for silence.
+///
+/// **Every failure is silence.** An event this version does not serve, a
+/// payload that is not a JSON object, a directory no corpus answers for, a
+/// status that cannot be read: each is `None`, and `None` is a 0 with nothing
+/// on stdout, which Claude Code reads as "go on".
+fn serve(inv: &Invocation, cwd: &Path) -> Option<String> {
+    let [agent, event] = inv.positionals.as_slice() else {
+        return None;
+    };
+    // `pre-tool-use` is answered by its own task (TASK-582f6758fb0b); until
+    // then it lets every tool call through.
+    if agent != "claude" || event != "session-start" {
+        return None;
+    }
+    let mut payload = Vec::new();
+    std::io::stdin().read_to_end(&mut payload).ok()?;
+    parse(&String::from_utf8(payload).ok()?).ok()?;
+    let context = session_start(cwd)?;
+    let output = Obj::new()
+        .str("hookEventName", "SessionStart")
+        .str("additionalContext", &context);
+    Some(Obj::new().obj("hookSpecificOutput", output).finish())
+}
+
+/// What an agent is told as its session opens: `ank status` for its identity,
+/// exactly as the verb prints it, then where the contract is.
+///
+/// **The verb itself, not a summary of it.** The corpus, the config and the
+/// identity are resolved as `startup` resolves them for every verb, and
+/// `status::run` writes into a buffer: so the text is `status`'s, and so is its
+/// cost in git processes, with nothing added on top. Notes the resolution
+/// would print are dropped, because standard error is not the agent's.
+fn session_start(cwd: &Path) -> Option<String> {
+    let repo = crate::repo::resolve(None, None, cwd, &mut Vec::new()).ok()?;
+    let cfg = crate::config::load(&repo.config_path()).ok()?;
+    let (identity, source) = crate::identity::resolved();
+    let status = crate::cli::parse(&["status".to_string()]).ok()?;
+    let mut text = Vec::new();
+    crate::status::run(&status, &repo, &cfg, &identity, source, &mut text).ok()?;
+    let mut text = String::from_utf8(text).ok()?;
+    text.push_str(CONTRACT);
+    Some(text)
+}
+
+/// The pointer served after the status: where the rules of the perimeter come
+/// from, and where the contract for using them is.
+const CONTRACT: &str = "\n\
+This repository keeps its tasks and decisions in ank: reach them through the CLI and never by opening .ank/. \
+Run `ank context <path>` before touching a perimeter, for the decisions that bind it and what is claimable. \
+How to work with them is the ank skill; `ank skills install` installs it if it is missing.\n";
 
 fn agent<'a>(inv: &'a Invocation, sub: &str) -> Result<&'a str> {
     let hint = format!("ank hooks {sub} {}", AGENTS.join("|"));
