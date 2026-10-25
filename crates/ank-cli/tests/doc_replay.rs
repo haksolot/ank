@@ -632,6 +632,11 @@ impl Session {
             .env_remove("ANK_AGENT")
             .env_remove("ANK_UPDATE_REPOSITORY")
             .env_remove("NO_COLOR")
+            // The guards a launching shell exports (a herdr worker starts at
+            // `ANK_GUARD_EDIT=claim`) would answer the page's hook blocks for
+            // it; the page sets its own when it means one.
+            .env_remove("ANK_GUARD_CORPUS")
+            .env_remove("ANK_GUARD_EDIT")
             // Git for Windows' `sh` rewrites an argument opening with `/` into a
             // path under its own root; the page's `/nope/nope` has to reach ank
             // as the page wrote it.
@@ -669,6 +674,8 @@ impl Session {
             .env("GIT_CONFIG_GLOBAL", self.root.join("gitconfig"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env_remove("ANK_AGENT")
+            .env_remove("ANK_GUARD_CORPUS")
+            .env_remove("ANK_GUARD_EDIT")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
