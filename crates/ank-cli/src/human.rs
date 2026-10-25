@@ -2332,12 +2332,15 @@ fn check_scope_alive(
                      and another scope still matches: nothing is owed"
                 ),
             )
-        } else if let Some(task) = (decision && !explained && !unverifiable && ignored.is_none())
-            .then(|| promised_by(glob, tasks))
-            .flatten()
+        } else if let Some(task) =
+            (decision && git_root.is_some() && !explained && !unverifiable && ignored.is_none())
+                .then(|| promised_by(glob, tasks))
+                .flatten()
         {
             // The death git cannot explain, on a decision, and a task promises
-            // the file (ADR-91f486072d68). Asked only here, after every answer
+            // the file (ADR-91f486072d68). Only where there is a repository:
+            // without one nobody can say that no commit ever carried the path,
+            // and the fault stays what it was. Asked only here, after every answer
             // git can give, so a rename, a deletion, a shallow history or an
             // ignored file keeps the judgement it had and this lowers nothing
             // else. While the promise stands the scope is awaited, and once
