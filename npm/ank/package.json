@@ -19,22 +19,14 @@
     "architecture-decision-record",
     "tasks",
     "coordination",
-    "mcp",
-    "pi-package"
+    "mcp"
   ],
   "bin": {
     "ank": "bin/ank"
   },
-  "pi": {
-    "skills": [
-      "./skills"
-    ],
-    "image": "https://raw.githubusercontent.com/haksolot/ank/main/assets/ank-card.png"
-  },
   "files": [
     "bin/ank",
     "bin/wrapper.js",
-    "skills/",
     "README.md",
     "LICENSE"
   ],

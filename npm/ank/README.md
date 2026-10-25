@@ -43,9 +43,7 @@ same table:
 The skills an agent loads come from the binary. `ank skills` lists the six it
 carries, and `ank skills --install` writes them out of the executable and hands
 the directory to `npx skills add` for the agent you run, with nothing cloned. It
-is still a second command: installing the package places no skill for an agent,
-though the package does carry the six `SKILL.md` for an installer that reads
-them.
+is still a second command: installing the package places no skill for an agent.
 
 [The documentation](https://github.com/haksolot/ank) covers every route, along
 with the specification and the source.
