@@ -281,3 +281,103 @@ fn the_hook_starts_no_more_git_processes_than_status() {
         "the hook starts {hook} git processes where status starts {status}"
     );
 }
+
+/// Every `ank ...` command the pointer names between backticks, as written.
+fn backticked_commands(text: &str) -> Vec<String> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|c| c.starts_with("ank "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Why the binary would refuse `command`, measured against what `ank help
+/// <verb>` says the verb takes: its flags, and the positional slots of its
+/// usage line, a slot written `<a|b>` taking only those words. A `<...>` in the
+/// command is a placeholder the agent fills, and fills one slot.
+fn refused(f: &Fixture, dir: &Path, command: &str) -> Option<String> {
+    let words: Vec<&str> = command.split_whitespace().skip(1).collect();
+    let verb = *words.first()?;
+    let help = f.ank(dir, &["help", verb]);
+    if help.status.code() != Some(0) {
+        return Some(format!("`ank help {verb}` refuses: {}", stderr(&help)));
+    }
+    let help = String::from_utf8(help.stdout).unwrap();
+    let usage = help.lines().next().unwrap_or_default();
+    let slots: Vec<&str> = usage
+        .split_whitespace()
+        .skip(2)
+        .map(|s| s.trim_matches(|c| c == '[' || c == ']'))
+        .collect();
+    let variadic = usage.contains("...");
+    let mut takes = std::collections::HashMap::new();
+    for line in help.lines().map(str::trim_start) {
+        let Some(rest) = line
+            .strip_prefix("flags:")
+            .or_else(|| line.strip_prefix("global:"))
+        else {
+            continue;
+        };
+        let tokens: Vec<&str> = rest.split_whitespace().collect();
+        for (i, t) in tokens.iter().enumerate() {
+            if t.starts_with('-') {
+                let value = tokens.get(i + 1).is_some_and(|n| n.starts_with('<'));
+                takes.insert(t.trim_end_matches(',').to_string(), value);
+            }
+        }
+    }
+    let mut positionals = Vec::new();
+    let mut rest = words[1..].iter();
+    while let Some(w) = rest.next() {
+        if w.starts_with('-') {
+            match takes.get(*w) {
+                None => return Some(format!("ank {verb} takes no flag {w}: {usage}")),
+                Some(true) => {
+                    rest.next();
+                }
+                Some(false) => {}
+            }
+        } else {
+            positionals.push(*w);
+        }
+    }
+    if positionals.len() > slots.len() && !variadic {
+        return Some(format!(
+            "ank {verb} takes {} argument(s), the pointer gives {}: {usage}",
+            slots.len(),
+            positionals.len()
+        ));
+    }
+    for (word, slot) in positionals.iter().zip(&slots) {
+        let inner = slot.trim_start_matches('<').trim_end_matches('>');
+        let alternatives: Vec<&str> = inner.split('|').collect();
+        if !word.starts_with('<') && alternatives.len() > 1 && !alternatives.contains(word) {
+            return Some(format!("ank {verb}: '{word}' is not one of {slot}"));
+        }
+    }
+    None
+}
+
+#[test]
+fn every_command_the_pointer_names_is_one_the_binary_accepts() {
+    let f = Fixture::new("hooks-run-commands");
+    let repo = f.corpus();
+    let out = f.hook(&repo, payload(&repo).as_bytes(), None);
+    let stdout = String::from_utf8(out.stdout).unwrap();
+    let context = string_at(&stdout, "additionalContext").expect("no additionalContext");
+    let commands = backticked_commands(&context);
+    assert!(
+        commands.iter().any(|c| c.starts_with("ank context")),
+        "the pointer names no `ank context`: {context}"
+    );
+    let refusals: Vec<String> = commands
+        .iter()
+        .filter_map(|c| refused(&f, &repo, c).map(|why| format!("`{c}`: {why}")))
+        .collect();
+    assert!(
+        refusals.is_empty(),
+        "the pointer names commands the binary refuses:\n{}",
+        refusals.join("\n")
+    );
+}

@@ -47,6 +47,8 @@ pub const HOME: &str = "HOME";
 pub const PATH: &str = "PATH";
 pub const PATHEXT: &str = "PATHEXT";
 pub const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
+pub const ANK_GUARD_CORPUS: &str = "ANK_GUARD_CORPUS";
+pub const ANK_GUARD_EDIT: &str = "ANK_GUARD_EDIT";
 pub const ANK_INDEX_BUSY_MS: &str = "ANK_INDEX_BUSY_MS";
 pub const ANK_INDEX_STEPS: &str = "ANK_INDEX_STEPS";
 pub const ANK_INDEX_REFRESHED: &str = "ANK_INDEX_REFRESHED";
@@ -185,6 +187,24 @@ pub const VARIABLES: &[Variable] = &[
         changes: "the directory holding the `settings.json` the entries are written into and \
                   taken out of, as Claude Code reads it; unset or empty, `.claude` under the \
                   home directory, which is `HOME`, and the profile directory on Windows",
+        interface: true,
+    },
+    Variable {
+        name: ANK_GUARD_CORPUS,
+        read_by: "`ank hooks run claude pre-tool-use`",
+        changes: "the level of `guard.corpus` for this session, `deny` or `off`, set by \
+                  whoever launches the agent; it may tighten the level `.ank/config.yml` \
+                  declares and never loosen it, so a looser or unknown value is ignored and \
+                  the hook says so. Unset or empty, the declared level",
+        interface: true,
+    },
+    Variable {
+        name: ANK_GUARD_EDIT,
+        read_by: "`ank hooks run claude pre-tool-use`",
+        changes: "the level of `guard.edit` for this session, `off`, `warn` or `claim`, set \
+                  by whoever launches the agent; it may tighten the level `.ank/config.yml` \
+                  declares and never loosen it, so a looser or unknown value is ignored and \
+                  the hook says so. Unset or empty, the declared level",
         interface: true,
     },
     Variable {

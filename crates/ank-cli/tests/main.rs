@@ -36,6 +36,7 @@ mod done_stdin_pipe;
 mod guard_config;
 mod guide;
 mod help_new;
+mod hooks_guard;
 mod hooks_install;
 mod hooks_run;
 mod index_per_schema;
