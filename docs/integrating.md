@@ -418,6 +418,113 @@ Both are plain files in a public repository. Copy them into your own suite; a
 shape that changes here without its fixture changing is a failing test on our
 side, which is what makes them worth copying.
 
+## An agent harness calls `ank hooks`
+
+For an agent harness the binary is also the hook handler (ADR-43cbb20dcbf1).
+`ank hooks install <agent>` writes into that agent's user-level settings the
+entries that call `ank hooks run <agent> <event>`, and nothing beside them: no
+script file, so there is nothing to keep in step but the binary. Claude Code is
+the only agent this version installs for, and `ank help hooks` is the whole
+verb.
+
+**Install and remove.** Claude Code's file is `settings.json` in
+`CLAUDE_CONFIG_DIR`, or in `.claude` under the home directory when that is unset
+or empty. Install adds one `SessionStart` entry and one `PreToolUse` entry
+matched to the file tools (`Read`, `Write`, `Edit`, `MultiEdit`,
+`NotebookEdit`, `Glob`, `Grep`), each running the binary that installed it by
+its absolute path. A second install changes nothing:
+
+<!-- replay hooks CLAUDE_CONFIG_DIR=/home/me/.claude dir=/home/me/.claude ANK_AGENT=tool/1.0
+$ printf '{\n  "theme": "dark"\n}\n' > /home/me/.claude/settings.json
+-->
+
+    $ ank hooks install claude
+    installed claude hooks (SessionStart, PreToolUse) in /home/me/.claude/settings.json
+    $ ank hooks install claude
+    claude hooks already installed in /home/me/.claude/settings.json
+    $ grep -o 'hooks run claude [a-z-]*' /home/me/.claude/settings.json
+    hooks run claude session-start
+    hooks run claude pre-tool-use
+
+The file is somebody else's, so it is edited and never rewritten: every byte
+install did not add stays where it was, and `remove` takes out exactly what
+install wrote, giving the file back as install found it:
+
+<!-- replay hooks -->
+
+    $ ank hooks remove claude
+    removed claude hooks (SessionStart, PreToolUse) from /home/me/.claude/settings.json
+    $ cat /home/me/.claude/settings.json
+    {
+      "theme": "dark"
+    }
+
+**What runs.** The harness hands `run` its event as a JSON payload on stdin,
+and what `run` prints is the harness's own format, which is why it refuses
+`--json`. At session start it serves the agent `ank status` and a pointer to
+the contract. Before a file tool it applies two guards, each a key of
+[`.ank/config.yml`](config-keys.md) set with `ank config`:
+
+- **`guard.corpus`, `deny` or `off`, default `deny`.** A file tool aimed under
+  the corpus directory is refused, naming the verbs that read it instead.
+- **`guard.edit`, `off`, `warn` or `claim`, default `warn`.** An edit no live
+  claim of the identity covers is let through with a message naming the path
+  under `warn`, and refused under `claim`. A tool that only reads is not an
+  edit, at any level.
+
+In a corpus where `tool/1.0` holds a task scoped `src/**`, with the payload
+reduced to the fields the guards read (the harness also sends its `cwd`, which
+`run` resolves a relative path against):
+
+<!-- replay hooks
+$ ank init
+$ mkdir src docs && echo 'fn main() {}' > src/main.rs
+$ ank new task --title "The parser" --scope "src/**" --criteria "c" --no-verify
+created TASK-5d1c0e7a9b42 The parser
+$ ank claim TASK-5d1c
+claimed TASK-5d1c0e7a9b42 the-parser -> HEAD
+-->
+
+    $ echo '{"tool_name":"Read","tool_input":{"file_path":".ank/config.yml"}}' | ank hooks run claude pre-tool-use
+    {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":".ank/config.yml is under the corpus directory, which is reached through the ank CLI and never by opening its files: `ank show <id>` prints an entity whole, `ank find <query>` lists, `ank context <path>` serves what binds a perimeter."}}
+    $ echo '{"tool_name":"Edit","tool_input":{"file_path":"src/main.rs"}}' | ank hooks run claude pre-tool-use; echo "exit $?"
+    exit 0
+    $ echo '{"tool_name":"Edit","tool_input":{"file_path":"docs/page.md"}}' | ank hooks run claude pre-tool-use
+    {"systemMessage":"no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names what binds it and what is claimable, and `ank claim <id>` takes the task.","hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names what binds it and what is claimable, and `ank claim <id>` takes the task."}}
+
+The edit inside the claim gets no output at all, only the exit code, which the
+harness reads as nothing to say.
+
+**The launch environment only tightens.** `ANK_GUARD_CORPUS` and
+`ANK_GUARD_EDIT`, set by whoever launches the agent, may raise the level the
+corpus declares and never lower it. A looser value, or one that is not a level,
+is ignored, and `run` says so in its message:
+
+<!-- replay hooks -->
+
+    $ echo '{"tool_name":"Edit","tool_input":{"file_path":"docs/page.md"}}' | ANK_GUARD_EDIT=claim ank hooks run claude pre-tool-use
+    {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"guard.edit is claim, and no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names the task that does, and `ank claim <id>` takes it."}}
+    $ ank config guard.edit claim
+    guard.edit warn (default) -> claim
+    $ echo '{"tool_name":"Edit","tool_input":{"file_path":"docs/page.md"}}' | ANK_GUARD_EDIT=off ank hooks run claude pre-tool-use
+    {"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"guard.edit is claim, and no live claim of tool/1.0 covers docs/page.md: `ank context docs/page.md` names the task that does, and `ank claim <id>` takes it. ANK_GUARD_EDIT=off was ignored: .ank/config.yml declares guard.edit claim, and the launch environment may tighten it, never loosen it."}}
+
+So an orchestrator that launches its workers with `ANK_GUARD_EDIT=claim` holds
+them to their claims whatever the corpus declares, and a corpus that declares
+`claim` cannot be loosened by a launch. Both variables are in [the environment
+reference](environment.md).
+
+**Fail-open.** A hook that blocks the harness on its own error is worse than no
+hook, so `run` never does. Outside a corpus it is silent and exits 0, and a
+payload it cannot read, or an error of its own, lets the tool call through:
+
+<!-- replay hooks dir=/srv/plain -->
+
+    $ echo 'not a payload' | ank hooks run claude pre-tool-use; echo "exit $?"
+    exit 0
+    $ cd /srv/plain && echo '{"tool_name":"Read","tool_input":{"file_path":".ank/config.yml"}}' | ank hooks run claude pre-tool-use; echo "exit $?"
+    exit 0
+
 ## What binds and what does not
 
 - **Bind to `--json`**, never to the human output. One line, stdout only, never
