@@ -293,8 +293,25 @@ pub fn push_ref(
     }
     match ls_remote(cwd, remote, refname) {
         Ok(holds) if holds.as_deref() == expect => {
-            match remote_rejection(&String::from_utf8_lossy(&out.stdout), refname) {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            match remote_rejection(&stdout, refname) {
                 Some(reason) => Ok(Pushed::Rejected { reason }),
+                // **No status line and the ref where the lease said: the push
+                // never reached the remote's update** (ADR-92bb0266b376). A
+                // missing credential or a URL readable and not writable ends
+                // before report-status, and nobody won anything. There is no
+                // reason to carry, and stderr stays unread, so what is carried
+                // is the command that shows git's own diagnosis.
+                None if status_line(&stdout, refname).is_none() => Ok(Pushed::Rejected {
+                    reason: format!(
+                        "the push never reached the remote's update; \
+                         `git push --dry-run {remote} {}` shows why",
+                        match new {
+                            Some(object) => format!("+{object}:{refname}"),
+                            None => format!(":{refname}"),
+                        }
+                    ),
+                }),
                 None => Ok(Pushed::Refused { holds }),
             }
         }
@@ -319,18 +336,25 @@ pub fn push_ref(
 /// already answers, and nothing on stderr -- `remote:` text included -- is ever
 /// consulted.
 fn remote_rejection(porcelain: &str, refname: &str) -> Option<String> {
+    let (flag, summary) = status_line(porcelain, refname)?;
+    if flag != "!" {
+        return None;
+    }
+    let reason = summary.strip_prefix("[remote rejected]")?.trim();
+    let reason = reason
+        .strip_prefix('(')
+        .and_then(|r| r.strip_suffix(')'))
+        .unwrap_or(reason);
+    Some(reason.to_string())
+}
+
+/// The flag and summary of `refname`'s status line in the stdout of
+/// `push --porcelain`, or `None` when that output has no line for the ref.
+fn status_line<'a>(porcelain: &'a str, refname: &str) -> Option<(&'a str, &'a str)> {
     porcelain.lines().find_map(|line| {
         let mut fields = line.split('\t');
         let (flag, refs, summary) = (fields.next()?, fields.next()?, fields.next()?);
-        if flag != "!" || refs.rsplit_once(':')?.1 != refname {
-            return None;
-        }
-        let reason = summary.strip_prefix("[remote rejected]")?.trim();
-        let reason = reason
-            .strip_prefix('(')
-            .and_then(|r| r.strip_suffix(')'))
-            .unwrap_or(reason);
-        Some(reason.to_string())
+        (refs.rsplit_once(':')?.1 == refname).then_some((flag, summary))
     })
 }
 
