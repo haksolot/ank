@@ -37,6 +37,7 @@ mod guard_config;
 mod guide;
 mod help_new;
 mod hooks_install;
+mod hooks_run;
 mod index_per_schema;
 mod init_at;
 mod init_origin;

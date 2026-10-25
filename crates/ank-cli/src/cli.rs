@@ -1531,7 +1531,7 @@ fn dispatch(
     // `.ank/` demanded here would refuse it outside a corpus, where `run` has
     // to be silent instead.
     if inv.command == "hooks" {
-        return crate::hooks::run(&inv, out);
+        return crate::hooks::run(&inv, cwd, out);
     }
     // The eighth, for the seventh's reason (ADR-64f32c74a0f9). What `update`
     // answers about is this binary and the releases published of it, and a
