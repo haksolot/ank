@@ -42,23 +42,18 @@ JSON-RPC on stdin has nothing to say to a wrapper holding the pipe.
 
 ## What is not in git
 
-Four paths are filled by `.github/scripts/npm-assemble.sh` during the release
+Three paths are filled by `.github/scripts/npm-assemble.sh` during the release
 run and ignored in the tree, and between them they are every file in a published
 tarball that is not committed here:
 
     npm/ank-*/bin/ank, ank.exe   the executable, one per platform package
     npm/*/LICENSE                copied from the repository root into all four
-    npm/ank/skills/<name>/       one SKILL.md per skill, from skill/ and
-                                 skill/<dir>/, named by the frontmatter
     npm/*/*.tgz                  what npm pack produced
 
 The binaries come from the same artefacts the GitHub release publishes: one
 build, two channels, no second compilation that could disagree with the first.
-The skills are copied rather than committed because `skill/SKILL.md` and its
-siblings are the only copies that exist (ADR-8b3045cf11db): each is anchored
-where it lives, `build.rs` hashing the contract's revision into `ank --version`
-and `tests/skill.rs` holding every skill to its own, and a second copy beside
-them would carry no such anchor and would drift with nothing turning red.
+No skill is copied into a package: the binary carries them (ADR-e1d750884b82),
+and `ank skills --install` places them (ADR-33f2888f4ac7).
 
 ## Versions
 
