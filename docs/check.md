@@ -133,6 +133,30 @@ criterion as written, `ef485fff585a` as edited. `done` refuses and `check` exits
 --reason`, which ends the freeze and leaves only the signal. Freezing is
 verifiable, not defended.
 
+## A scope ahead of the code
+
+A plan often decides before it codes, so a decision may name a file nobody has
+written yet. Whether that is a signal or a fault depends on whether some task
+still promises the file.
+
+- **A task's scope** that matches no file is a signal while the task is open:
+  the work has not started. It becomes a fault once the task is `done`, because
+  a finished task claimed to touch files that are not there. A `closed` task
+  promised nothing, so its dead scope stays a signal.
+- **An ADR's or a spec's scope** that matches no file, on a path no commit ever
+  carried, is a `scope-not-yet` signal while an open task covers it: the task
+  declares the same entry, or a glob that matches it, as `src/**` matches
+  `src/new.rs`. The signal names that task. Once no open task covers it, it is
+  a `dead-scope` fault, and the message names the last task that covered it and
+  how it ended: `done` means the promise was not kept, `closed` means it was
+  withdrawn. With no task covering it at all, it is the fault it always was.
+  The decision is ADR-91f486072d68.
+
+A covering task lowers nothing else. A scope git records as renamed or deleted,
+or one whose history is too shallow to say, is reported as ADR-3094538d831e
+says, whatever task covers it. Once the file is committed the scope matches,
+and there is no finding at all.
+
 ## What check reads beyond the files
 
 `check` reads `refs/ank/*` and walks git history. It finds the ratification

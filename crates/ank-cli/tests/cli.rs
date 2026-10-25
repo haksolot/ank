@@ -23504,11 +23504,11 @@ fn review_json_answers_every_row_whatever_the_budget() {
     let (r, _tasks, adrs) = past_the_budget();
 
     let out = r.ank("claude-code@ank", &["review", "--json"]);
-    // Findings, because twelve scopes in this fixture match no tracked file.
+    // No fault, though twelve scopes in this fixture match no tracked file:
+    // the open tasks on the same perimeter await them (ADR-91f486072d68).
     // `review` answers the queue whatever it then reports about it (§8), and
-    // the exit code is asserted so that an empty document could not pass here
-    // by way of an early return.
-    assert_eq!(code(&out), 8, "{}", both_streams(&out));
+    // the exit code is asserted so that a refusal could not pass here.
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
     holds_every(&stdout(&out), &adrs, "review --json");
 }
 
@@ -23625,25 +23625,12 @@ const REVIEW_PAGE: &str = concat!(
     "\n",
     "LIVE CONSTRAINTS (0)\n",
     "\n",
-    "DEAD SCOPES (12)\n",
-    "  ADR-00000000aa00\n",
-    "  ADR-00000000aa01\n",
-    "  ADR-00000000aa02\n",
-    "  ADR-00000000aa03\n",
-    "  ADR-00000000aa04\n",
-    "  ADR-00000000aa05\n",
-    "  ADR-00000000aa06\n",
-    "  ADR-00000000aa07\n",
-    "  ADR-00000000aa08\n",
-    "  ADR-00000000aa09\n",
-    "  ADR-00000000aa10\n",
-    "  ADR-00000000aa11\n",
-    "\n",
-    // 14 signals at ed72f51; twelve of them one kind on the twelve decisions,
-    // which `review` counts as the one signal `check` folds them into
-    // (ADR-df1035934387). The dead scopes above stay listed one by one: they
-    // are faults, and a fault is never folded.
-    "12 fault(s), 3 signal(s)\n",
+    // 14 signals at ed72f51 and twelve dead-scope faults, one per decision.
+    // Each decision's scope is now awaited by the open tasks on the same
+    // perimeter (ADR-91f486072d68), so the faults became signals of one kind,
+    // and `review` counts each folded kind as the one signal `check` folds it
+    // into (ADR-df1035934387).
+    "0 fault(s), 3 signal(s)\n",
 );
 
 /// What `scope src/` printed on this fixture before the change, whole.
@@ -23727,7 +23714,7 @@ fn the_human_page_of_all_four_listings_is_unchanged() {
     assert_eq!(stdout(&out), FIND_PAGE, "find moved");
 
     let out = r.ank("claude-code@ank", &["review"]);
-    assert_eq!(code(&out), 8, "{}", both_streams(&out));
+    assert_eq!(code(&out), 0, "{}", both_streams(&out));
     assert_eq!(stdout(&out), REVIEW_PAGE, "review moved");
 
     let out = r.ank("claude-code@ank", &["scope", "src/"]);
