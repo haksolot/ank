@@ -5,7 +5,7 @@ slug: ank-hooks-installs-at-user-level-the-binary-is-t
 title: ank hooks installs at user level, the binary is the handler, and a corpus sets guards an orchestrator may only tighten
 created: 2026-10-25T08:12:00Z
 author: claude-code/plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/config.rs
   - docs/integrating.md
@@ -15,8 +15,13 @@ scope:
   - crates/ank-cli/src/hooks.rs
 constraint: |
   ank hooks install <agent> writes into that agent's user-level configuration the entries that call ank hooks run <agent> <event>, and nothing beside it: no script file is written, the binary is the handler. A second install leaves the file byte-identical, and ank hooks remove <agent> takes out exactly the entries install wrote, leaving every other byte as it found it. Claude Code is the only agent of the first version; another agent is added by an amendment of this decision. ank hooks run is silent and exits 0 outside a corpus, and an error of its own lets the tool call through rather than blocking the harness. At session start it serves the agent ank status and the contract pointer. Before a tool call it applies two guards that .ank/config.yml declares: guard.corpus, deny or off, default deny, refuses a file tool aimed under the corpus directory; guard.edit, off, warn or claim, default warn, lets an edit through with a message naming the path that no live claim of the identity covers under warn, and refuses it under claim. ANK_GUARD_CORPUS and ANK_GUARD_EDIT, set by whoever launches the agent, may tighten the level the corpus declares and never loosen it: a looser value is ignored, and run says so.
+ratified: 7710e1fd20c1
+anchor: dbbec9db7aa7268487e15d57344d8903fc267dc0
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-25T12:09:02Z
 schema: 4
-version: 4
+version: 5
 ---
 
 ## Context
