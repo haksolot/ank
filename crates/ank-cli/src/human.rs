@@ -1104,6 +1104,17 @@ pub fn inspect_with(
         })
         .collect();
 
+    // The tasks, for the one question a dead decision scope asks of them:
+    // whether one of them promises the file (ADR-91f486072d68). Read from the
+    // index this run already holds, so asking it starts no process.
+    let tasks: Vec<&ank_core::Task> = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Task(t) => Some(t),
+            _ => None,
+        })
+        .collect();
+
     for (_, entity) in &entities {
         if !in_scope(entity) {
             continue;
@@ -1124,6 +1135,7 @@ pub fn inspect_with(
                 set_aside.as_ref(),
                 &walked,
                 &asked,
+                &tasks,
                 &mut report,
             );
         }
@@ -2134,6 +2146,7 @@ fn check_scope_alive(
     set_aside: Option<&HashSet<String>>,
     walked: &OnceCell<git::History>,
     asked: &[String],
+    tasks: &[&ank_core::Task],
     report: &mut Report,
 ) {
     let globs = entity.scope();
@@ -2177,6 +2190,7 @@ fn check_scope_alive(
         Some(TaskStatus::Open) | Some(TaskStatus::InProgress)
     );
     let retired = matches!(status, Some(TaskStatus::Closed));
+    let decision = matches!(entity, Entity::Adr(_) | Entity::Spec(_));
     // A ratified decision that still governs a file (ADR-cb68e20acbad). One of
     // its scopes git records as deleted has nowhere to go and leaves the
     // decision whole: the only repair this file could name is a supersession
@@ -2318,6 +2332,45 @@ fn check_scope_alive(
                      and another scope still matches: nothing is owed"
                 ),
             )
+        } else if let Some(task) = (decision && !explained && !unverifiable && ignored.is_none())
+            .then(|| promised_by(glob, tasks))
+            .flatten()
+        {
+            // The death git cannot explain, on a decision, and a task promises
+            // the file (ADR-91f486072d68). Asked only here, after every answer
+            // git can give, so a rename, a deletion, a shallow history or an
+            // ignored file keeps the judgement it had and this lowers nothing
+            // else. While the promise stands the scope is awaited, and once
+            // the last task carrying it ends without the file the fault is
+            // back, naming that task and how it ended.
+            match task.status {
+                TaskStatus::Open | TaskStatus::InProgress => Finding::signal(
+                    Kind::ScopeNotYet,
+                    entity.id(),
+                    format!(
+                        "scope '{glob}' matches no file yet: awaited by {}, which is still open",
+                        task.id
+                    ),
+                ),
+                TaskStatus::Done => Finding::fault(
+                    Kind::DeadScope,
+                    entity.id(),
+                    format!(
+                        "dead scope '{glob}': no file matches it, and {}, which covered it, \
+                         is done: its promise was not kept",
+                        task.id
+                    ),
+                ),
+                TaskStatus::Closed => Finding::fault(
+                    Kind::DeadScope,
+                    entity.id(),
+                    format!(
+                        "dead scope '{glob}': no file matches it, and {}, which covered it, \
+                         is closed: it withdrew the promise",
+                        task.id
+                    ),
+                ),
+            }
         } else {
             let message = match ignored {
                 Some(_) => format!("dead scope '{glob}': only files git ignores match it"),
@@ -2330,6 +2383,29 @@ fn check_scope_alive(
         };
         report.findings.push(finding.with_note(note));
     }
+}
+
+/// The task whose promise a decision scope matching no file rests on, or
+/// `None` when no task covers it (ADR-91f486072d68).
+///
+/// A task covers the scope when one of its own entries is the same string, or
+/// matches the scope read as a path: `src/**` covers `src/new.rs`. An open task
+/// wins over any that ended, since one standing promise is enough; among the
+/// ended ones the last created is the one named, as the latest word on the
+/// path. A peer's entry is about another repository and covers nothing here.
+fn promised_by<'t>(glob: &str, tasks: &[&'t ank_core::Task]) -> Option<&'t ank_core::Task> {
+    let covers = |t: &ank_core::Task| {
+        t.scope.iter().any(|entry| {
+            crate::repo::peer_ref(entry).is_none()
+                && (entry == glob
+                    || ank_core::scope::ScopeSet::new(std::slice::from_ref(entry))
+                        .is_ok_and(|set| set.matches(glob)))
+        })
+    };
+    let open = |t: &ank_core::Task| matches!(t.status, TaskStatus::Open | TaskStatus::InProgress);
+    tasks.iter().copied().filter(|t| covers(t)).max_by(|a, b| {
+        (open(a), &a.created, a.id.to_string()).cmp(&(open(b), &b.created, b.id.to_string()))
+    })
 }
 
 /// The first file on disk that a glob matches and git ignores, named relative
