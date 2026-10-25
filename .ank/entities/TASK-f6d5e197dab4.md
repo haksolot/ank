@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [check-repo]
 schema: 4
-version: 2
+version: 4
 ---
 
 The dogfood of ADR-91f486072d68: the scope removed from ADR-43cbb20dcbf1 at planning time because check faulted on it. ank amend ADR-43cbb20dcbf1 --scope crates/ank-cli/src/hooks.rs. Lands before ADR-43cbb20dcbf1 is ratified, so the signature covers the real perimeter and no accept --rescope follows.
