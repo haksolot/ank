@@ -5,7 +5,7 @@ slug: the-repository-stops-being-a-pi-package-and-the
 title: The repository stops being a pi package, and the npm package ships no copy of the skills
 created: 2026-10-25T08:12:15Z
 author: claude-code/plan
-status: open
+status: in_progress
 scope:
   - package.json
   - npm/**
@@ -21,7 +21,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 3
+version: 4
 ---
 
 Everything removed here exists only for pi; ADR-33f2888f4ac7 has the

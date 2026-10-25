@@ -184,10 +184,10 @@ jobs:
           # loaded when that activity fires, which is something a harness
           # does and not something a human unpacking a tarball does.
           #
-          # npm and pi ship all four (TASK-7cbf5b62be7f) and are right to:
-          # they hand skills to a harness that loads them by name, where
-          # this archive hands files to whoever unpacked it. The routes
-          # differ because what they deliver to differs.
+          # The binary itself carries all of them (ADR-e1d750884b82), and
+          # `ank skills --install` hands them to a harness that loads them
+          # by name, where this archive hands files to whoever unpacked it.
+          # The routes differ because what they deliver to differs.
           #
           # What would overturn this: the contract ceasing to stand alone.
           # The day SKILL.md needs a sibling to execute work, this line
@@ -408,40 +408,6 @@ jobs:
       - name: assemble
         shell: bash
         run: bash .github/scripts/npm-assemble.sh "0.0.0-smoke" "${{ matrix.package }}"
-
-      # The wrapper is also the pi package, and a pi package is its skills: with
-      # skills/ank/SKILL.md missing, `pi install npm:@haksolot/ank` installs a
-      # binary and teaches nothing, while every other assertion in this job
-      # still passes. The copies are made at assembly time and never committed
-      # (npm-assemble.sh), so nothing else in the repository can notice one went
-      # missing. Read out of the tarball rather than off the disk, because the
-      # tarball is what the registry receives -- a `files` entry that stopped
-      # matching would leave the file on disk and out of the package.
-      #
-      # Every skill, not only the contract (ADR-e4a5a8873fe3): an install that
-      # receives `ank` and none of `ank-plan`, `ank-drift`, `ank-loop` teaches
-      # the rules and none of the activities. The list is walked from the tree
-      # rather than written here, so a skill added later is checked by existing,
-      # and the count is asserted so that a walk finding nothing cannot pass as
-      # a walk finding everything.
-      - name: the wrapper carries every skill
-        shell: bash
-        run: |
-          set -e
-          tgz=$(ls npm/ank/*.tgz | head -n 1)
-          checked=0
-          for src in skill/SKILL.md skill/*/SKILL.md; do
-            [ -f "$src" ] || continue
-            name=$(sed -n 's/^name:[[:space:]]*//p' "$src" | head -n 1)
-            packed=$(tar -xzOf "$tgz" "package/skills/${name}/SKILL.md" | sha256sum | cut -d' ' -f1)
-            source=$(sha256sum "$src" | cut -d' ' -f1)
-            echo "  ${name}: packed $packed"
-            echo "  ${name}: source $source"
-            test "$packed" = "$source"
-            checked=$((checked + 1))
-          done
-          echo "$checked skills carried"
-          test "$checked" -ge 4
 
       # The derivation of §9, exercised on both of its branches before anything
       # publishes. This is the half a dry-run cannot reach: the smoke job
