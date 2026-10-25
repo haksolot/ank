@@ -15,7 +15,7 @@ On the web, each link below opens the file as the default branch has it.
 - [SPEC-3252ad5a72e3](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3252ad5a72e3.md) Storage and search
 - [SPEC-43a2bcb939e3](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-43a2bcb939e3.md) Synchronisation
 - [SPEC-ff885356f1f9](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-ff885356f1f9.md) Proof, anchoring and authority
-- [SPEC-66d52943e14c](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-66d52943e14c.md) The CLI surface
+- [SPEC-79012ba18769](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-79012ba18769.md) The CLI surface
 - [SPEC-558c07ebae8e](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-558c07ebae8e.md) Presentation: structure for every reader, colour for a terminal, and an identifier by its kind
 - [SPEC-a1234da5449a](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-a1234da5449a.md) The attention budget and the constraint lifecycle
 - [SPEC-3bccb8aee5b7](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3bccb8aee5b7.md) Bootstrapping, teaching and distribution
