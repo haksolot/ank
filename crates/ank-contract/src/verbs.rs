@@ -586,7 +586,7 @@ const fn refuses(code: ExitCode, when: &'static str) -> Refusal {
 /// The refusal every path-taking verb performs, declared once and named six
 /// times.
 ///
-/// SPEC-66d52943e14c states it for all of them at once — a path naming nothing
+/// SPEC-79012ba18769 states it for all of them at once — a path naming nothing
 /// inside the repository, because it is absolute or because it climbs above the
 /// root, is refused with the command to run next and never answered — and the
 /// six verbs reach it through one helper, `context::normalised`. One sentence
