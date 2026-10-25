@@ -278,10 +278,10 @@ fn help_order() -> Vec<String> {
 /// SPEC-79012ba18769, declared it ahead of its dispatch (ADR-5c6db7a161b8),
 /// and it left in the commit of TASK-3a7a73ccf2b7 that ships it.
 ///
-/// `hooks` is declared here ahead of the ratification of the §4 document that
-/// lists it, SPEC-79012ba18769 (ADR-24efa7543a16, ADR-43cbb20dcbf1), and leaves
+/// `hooks` was declared here ahead of the ratification of the §4 document that
+/// lists it, SPEC-79012ba18769 (ADR-24efa7543a16, ADR-43cbb20dcbf1), and left
 /// in the commit of TASK-f248037e8bab that ships it.
-const NOT_YET_DISPATCHED: [&str; 1] = ["hooks"];
+const NOT_YET_DISPATCHED: [&str; 0] = [];
 
 /// A verb the binary answers to and §4 never mentions. `attest`, `init` and
 /// `help` were exactly that until TASK-5c868c20472f, and a reader comparing the

@@ -89,6 +89,7 @@ fn the_command_prints_a_row_for_every_variable_the_binary_reads() {
         "ANK_UPDATE_REPOSITORY",
         "ANSICON",
         "APPDATA",
+        "CLAUDE_CONFIG_DIR",
         "COMPUTERNAME",
         "ConEmuANSI",
         "EDITOR",

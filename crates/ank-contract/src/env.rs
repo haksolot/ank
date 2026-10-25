@@ -46,6 +46,7 @@ pub const XDG_CONFIG_HOME: &str = "XDG_CONFIG_HOME";
 pub const HOME: &str = "HOME";
 pub const PATH: &str = "PATH";
 pub const PATHEXT: &str = "PATHEXT";
+pub const CLAUDE_CONFIG_DIR: &str = "CLAUDE_CONFIG_DIR";
 pub const ANK_INDEX_BUSY_MS: &str = "ANK_INDEX_BUSY_MS";
 pub const ANK_INDEX_STEPS: &str = "ANK_INDEX_STEPS";
 pub const ANK_INDEX_REFRESHED: &str = "ANK_INDEX_REFRESHED";
@@ -176,6 +177,14 @@ pub const VARIABLES: &[Variable] = &[
         read_by: "`ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui`",
         changes: "with `XDG_CONFIG_HOME` unset, the reader's configuration directory is \
                   `$HOME/.config/ank`; neither set, a verb that needs it refuses at exit 9",
+        interface: true,
+    },
+    Variable {
+        name: CLAUDE_CONFIG_DIR,
+        read_by: "`ank hooks install claude`, `ank hooks remove claude`",
+        changes: "the directory holding the `settings.json` the entries are written into and \
+                  taken out of, as Claude Code reads it; unset or empty, `.claude` under the \
+                  home directory, which is `HOME`, and the profile directory on Windows",
         interface: true,
     },
     Variable {

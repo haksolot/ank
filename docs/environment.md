@@ -31,6 +31,7 @@ below adjust who is acting, where a file is found, and how output looks.
 | `APPDATA` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | on Windows, the reader's configuration directory is `%APPDATA%\ank`; unset, a verb that needs it refuses at exit 9 |
 | `XDG_CONFIG_HOME` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | elsewhere than Windows, the reader's configuration directory is `$XDG_CONFIG_HOME/ank`; empty counts as unset |
 | `HOME` | `ank config --user`, `--repo`, `ank mcp`, `ank watch`, `ank tui` | with `XDG_CONFIG_HOME` unset, the reader's configuration directory is `$HOME/.config/ank`; neither set, a verb that needs it refuses at exit 9 |
+| `CLAUDE_CONFIG_DIR` | `ank hooks install claude`, `ank hooks remove claude` | the directory holding the `settings.json` the entries are written into and taken out of, as Claude Code reads it; unset or empty, `.claude` under the home directory, which is `HOME`, and the profile directory on Windows |
 | `PATH` | `ank done`, `ank skills --install`, `ank update` | where `sh` and `git`, `npx`, and `npm`, `powershell`, `pwsh` and `curl` are looked for; a program found on none of its directories is refused by name |
 | `PATHEXT` | `ank skills --install`, `ank update`, on Windows | the extensions tried on `PATH`, in its order, of `.COM`, `.EXE`, `.BAT`, `.CMD`; unset, those four |
 

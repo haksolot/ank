@@ -21292,8 +21292,11 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // and thirty-two since TASK-53a8f5ca2539, which gave `context --since` one,
     // pinned in `tests/context_since.rs` across two worktrees, and thirty-three
     // since TASK-15b59a393a38, which gave `verify` one, and thirty-four since
-    // TASK-3a7a73ccf2b7, which gave `signers migrate` one.
-    assert_eq!(checked, 34, "one fixture per document the surface returns");
+    // TASK-3a7a73ccf2b7, which gave `signers migrate` one, and thirty-seven
+    // since TASK-f248037e8bab, which gave `hooks` one, pinned three times in
+    // `tests/hooks_install.rs`: an install, the second install that changes
+    // nothing, and the remove.
+    assert_eq!(checked, 37, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the

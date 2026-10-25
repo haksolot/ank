@@ -65,6 +65,12 @@ const READERS: &[(&str, &[&str])] = &[
     ("scope", &["scope", "src/main.rs", "--json"]),
     ("skills", &["skills"]),
     ("skills", &["skills", "--json"]),
+    // What it writes is the agent's settings, under the scratch `HOME` and
+    // `CLAUDE_CONFIG_DIR` [`ank`] sets, and never the corpus it runs in.
+    ("hooks", &["hooks", "install", "claude"]),
+    ("hooks", &["hooks", "install", "claude", "--json"]),
+    ("hooks", &["hooks", "remove", "claude"]),
+    ("hooks", &["hooks", "run", "claude", "session-start"]),
     // No verifier is declared here, so the measurement is of the verb and its
     // selection alone; what it records lives under the git common directory.
     ("verify", &["verify"]),
@@ -119,10 +125,12 @@ fn ank(dir: &Path, agent: &str, args: &[&str]) -> Output {
         .current_dir(dir)
         .env("ANK_AGENT", agent)
         .env("NO_COLOR", "1")
-        // `skills` reads where the skills are installed, and `update --check`
-        // asks a release repository: neither may reach this machine's own.
+        // `skills` reads where the skills are installed, `hooks` writes the
+        // agent's settings, and `update --check` asks a release repository:
+        // none may reach this machine's own.
         .env("HOME", &home)
         .env("USERPROFILE", &home)
+        .env("CLAUDE_CONFIG_DIR", home.join(".claude"))
         .env(
             "ANK_UPDATE_REPOSITORY",
             dir.parent().unwrap().join("no-release.git"),

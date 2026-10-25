@@ -1525,6 +1525,14 @@ fn dispatch(
     if inv.command == "skills" {
         return crate::skills::run(&inv, cwd, out);
     }
+    // The seventh's reason again (ADR-43cbb20dcbf1). What `hooks` installs is
+    // this binary, into the agent's own settings outside every repository, and
+    // what it runs is called by a harness wherever the agent happens to be: a
+    // `.ank/` demanded here would refuse it outside a corpus, where `run` has
+    // to be silent instead.
+    if inv.command == "hooks" {
+        return crate::hooks::run(&inv, out);
+    }
     // The eighth, for the seventh's reason (ADR-64f32c74a0f9). What `update`
     // answers about is this binary and the releases published of it, and a
     // binary that could only learn it is behind from inside a corpus would go
@@ -1707,7 +1715,7 @@ mod tests {
         // counting.
         assert_eq!(
             COMMANDS.len(),
-            31,
+            32,
             "every verb of §4, plus init and help from §9. The surface is \
              complete, so this number moves only when §4 does"
         );
@@ -1785,7 +1793,7 @@ mod tests {
         for routed in [
             "init", "help", "config", "claim", "context", "verify", "done", "log", "release",
             "new", "find", "attest", "amend", "show", "edit", "migrate", "tui", "mcp", "watch",
-            "skills", "update",
+            "skills", "hooks", "update",
         ] {
             assert_eq!(
                 spec_of(routed).unwrap().owner_task,
