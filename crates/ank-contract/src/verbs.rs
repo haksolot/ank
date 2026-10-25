@@ -96,6 +96,17 @@ const UPDATE_CHECK_OUT: &[Field] = &[
     f("newer", Type::Bool),
 ];
 
+/// `hooks install --json` and `hooks remove --json`: the agent, the file the
+/// entries live in, the events whose entry this run added or took out, and
+/// whether it moved a byte (ADR-43cbb20dcbf1). A second install and a remove
+/// with nothing to take out answer `events: []` and `changed: false`.
+const HOOKS_OUT: &[Field] = &[
+    f("agent", Type::Str),
+    f("settings", Type::Str),
+    f("events", Type::Strings),
+    f("changed", Type::Bool),
+];
+
 /// The opening frame of the reader, as data (§4, ADR-8bd76e8d7c4e).
 ///
 /// `tui` draws a screen and, under `--json`, answers what that screen holds:
@@ -2247,6 +2258,60 @@ pub const COMMANDS: &[CommandSpec] = &[
         // directory and npx's own run on the same stdout, so `--json` beside it
         // is refused above.
         output: &[one(SKILLS_OUT)],
+        owner_task: None,
+    },
+    // After `skills` and before `update`, which is §4's order, and in their
+    // group for their reason: what it installs is this binary, into the agent's
+    // own configuration, before any corpus is involved (ADR-24efa7543a16).
+    CommandSpec {
+        name: "hooks",
+        group: "set up a repository",
+        renews: Renews::Never,
+        // `nothing`, because the domain of the field is the corpus: what install
+        // and remove write is the agent's user-level settings file, outside
+        // every repository, the way `skills --install` writes a directory
+        // elsewhere (ADR-43cbb20dcbf1).
+        writes: Writes::Nothing,
+        // It resolves no corpus to install or remove, and asks git nothing.
+        coordinates: false,
+        summary: "installs into an agent harness's user-level settings the entries that call ank hooks run at its events, removes exactly them, and runs them",
+        subcommands: &["install", "remove", "run"],
+        kinds: &[],
+        max_positionals: 2,
+        positional_help: "<agent> [<event>]",
+        flags: &[],
+        refuses: &[
+            refuses(
+                ExitCode::Generic,
+                "an agent other than claude, the only one this version installs for",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "install or remove with an event, which they take none of: they write every event's entry",
+            ),
+            refuses(
+                ExitCode::Generic,
+                "--json with run, which returns no document: what it prints is the harness's",
+            ),
+            refuses(
+                ExitCode::Prerequisite,
+                "a settings file that is not a JSON object, or whose hooks, or an event under it, is not the object and array the harness reads: it is named and left alone",
+            ),
+            refuses(
+                ExitCode::Environment,
+                "the settings file cannot be read or written, or neither CLAUDE_CONFIG_DIR nor a home directory names where it lives",
+            ),
+            UNPARSEABLE_CALL,
+        ],
+        notes: &[
+            "claude's file is settings.json in CLAUDE_CONFIG_DIR, or in .claude under the home directory when it is unset or empty",
+            "install adds one SessionStart entry running <this binary> hooks run claude session-start and one PreToolUse entry running <this binary> hooks run claude pre-tool-use, by the absolute path of the binary that installed them; no script file is written",
+            "install changes no byte it did not add: a second install leaves the file byte-identical, and an entry naming another path to ank is replaced",
+            "remove takes out exactly the entries install wrote, and gives the file back byte-identical to what the first install found",
+            "run is silent and exits 0 outside a corpus, and an error of its own lets the tool call through rather than blocking the harness",
+        ],
+        refuses_globals: &[],
+        output: &[one(HOOKS_OUT)],
         owner_task: None,
     },
     // After `skills` and before `help`, which is §4's order, and in their group

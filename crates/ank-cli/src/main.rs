@@ -44,6 +44,7 @@ mod edit;
 mod editor;
 mod entries;
 mod graph;
+mod hooks;
 mod human;
 mod index;
 mod migrate;
