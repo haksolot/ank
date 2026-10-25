@@ -1008,6 +1008,8 @@ config_keys!(
     "verifier_jobs",
     "weight.hot_files",
     "weight.plane_bytes",
+    "guard.corpus",
+    "guard.edit",
 );
 
 // ---------------------------------------------------------------------------

@@ -33,6 +33,9 @@ pub const DEFAULT_VERIFIER_TIMEOUT: &str = ank_core::config::DEFAULT_VERIFIER_TI
 pub const DEFAULT_WEIGHT_HOT_FILES: u64 = ank_core::config::DEFAULT_WEIGHT_HOT_FILES;
 pub const DEFAULT_WEIGHT_PLANE_BYTES: u64 = ank_core::config::DEFAULT_WEIGHT_PLANE_BYTES;
 pub const DEFAULT_PROOF_REUSE_MAX_AGE: &str = ank_core::config::DEFAULT_PROOF_REUSE_MAX_AGE;
+use ank_core::config::{
+    DEFAULT_GUARD_CORPUS, DEFAULT_GUARD_EDIT, GUARD_CORPUS_VALUES, GUARD_EDIT_VALUES,
+};
 
 pub type Result<T> = std::result::Result<T, CliError>;
 
@@ -99,6 +102,10 @@ struct ConfigFile {
     /// machine, and only somebody who knows there are several can set it.
     #[serde(default)]
     verifier_jobs: Option<usize>,
+    /// `guard:`, what `ank hooks run` applies before a tool call
+    /// (ADR-43cbb20dcbf1).
+    #[serde(default)]
+    guard: GuardFile,
     /// Who may ratify, keyed by principal (ADR-5c6db7a161b8). A mapping rather
     /// than a `BTreeMap` for the reason `verifiers` is one: the order the file
     /// declares them in is the order `review` lists them in.
@@ -263,6 +270,97 @@ impl Default for ProofFile {
     }
 }
 
+/// `guard:` as written. Read as strings and resolved by [`parse`], so a value
+/// outside the closed set is refused in the sentence [`not_a_guard`] gives
+/// rather than in serde's.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GuardFile {
+    #[serde(default = "default_guard_corpus")]
+    corpus: String,
+    #[serde(default = "default_guard_edit")]
+    edit: String,
+}
+
+impl Default for GuardFile {
+    fn default() -> GuardFile {
+        GuardFile {
+            corpus: default_guard_corpus(),
+            edit: default_guard_edit(),
+        }
+    }
+}
+
+fn default_guard_corpus() -> String {
+    DEFAULT_GUARD_CORPUS.to_string()
+}
+
+fn default_guard_edit() -> String {
+    DEFAULT_GUARD_EDIT.to_string()
+}
+
+/// What a file tool aimed under the corpus directory meets (ADR-43cbb20dcbf1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuardCorpus {
+    Off,
+    Deny,
+}
+
+/// What an edit no live claim of the identity covers meets
+/// (ADR-43cbb20dcbf1). Ordered loosest first, so a launch environment can
+/// only tighten it by taking the greater of two levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GuardEdit {
+    Off,
+    Warn,
+    Claim,
+}
+
+impl GuardCorpus {
+    pub fn parse(text: &str) -> Option<GuardCorpus> {
+        match text {
+            "deny" => Some(GuardCorpus::Deny),
+            "off" => Some(GuardCorpus::Off),
+            _ => None,
+        }
+    }
+}
+
+impl GuardEdit {
+    pub fn parse(text: &str) -> Option<GuardEdit> {
+        match text {
+            "off" => Some(GuardEdit::Off),
+            "warn" => Some(GuardEdit::Warn),
+            "claim" => Some(GuardEdit::Claim),
+            _ => None,
+        }
+    }
+}
+
+/// The two guards the corpus declares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Guard {
+    pub corpus: GuardCorpus,
+    pub edit: GuardEdit,
+}
+
+/// The refusal a guard value outside its closed set earns, naming the set.
+fn not_a_guard(key: &str, written: &str) -> CliError {
+    let accepted = if key == "guard.corpus" {
+        GUARD_CORPUS_VALUES
+    } else {
+        GUARD_EDIT_VALUES
+    };
+    CliError::new(
+        ExitCode::Generic,
+        format!(
+            "{key}: '{written}' is not a level; accepted: {}",
+            accepted.join(", ")
+        ),
+    )
+    .with_hint(format!("ank config {key} {}", accepted.join("|")))
+}
+
 fn default_reuse_max_age() -> String {
     DEFAULT_PROOF_REUSE_MAX_AGE.to_string()
 }
@@ -377,6 +475,8 @@ pub struct Config {
     /// [`Config::verifier_jobs`], because what it resolves to is the machine
     /// and not the file.
     pub verifier_jobs: Option<usize>,
+    /// What `ank hooks run` applies before a tool call (ADR-43cbb20dcbf1).
+    pub guard: Guard,
     /// How old a passing run of the local registry may be for `done` to
     /// reuse it, `proof.reuse_max_age` (ADR-a2faf59f6ce0).
     pub reuse_max_age: Duration,
@@ -520,6 +620,18 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
     let claim_ttl_default = dur(&raw.claim_ttl_default, "claim_ttl_default")?;
     let reuse_max_age = dur(&raw.proof.reuse_max_age, "proof.reuse_max_age")?;
     let signers = parse_signers(raw.signers, path)?;
+    let in_file = |e: CliError| {
+        CliError::new(
+            ExitCode::Generic,
+            format!("{}: {}", path.display(), e.message),
+        )
+    };
+    let guard = Guard {
+        corpus: GuardCorpus::parse(&raw.guard.corpus)
+            .ok_or_else(|| in_file(not_a_guard("guard.corpus", &raw.guard.corpus)))?,
+        edit: GuardEdit::parse(&raw.guard.edit)
+            .ok_or_else(|| in_file(not_a_guard("guard.edit", &raw.guard.edit)))?,
+    };
     let mut verifiers = BTreeMap::new();
     let mut default_verifiers = Vec::new();
     for (name, value) in raw.verifiers {
@@ -604,6 +716,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         identities: raw.identities,
         weight: raw.weight,
         verifier_jobs: raw.verifier_jobs,
+        guard,
         reuse_max_age,
         signers,
     })
@@ -1133,6 +1246,24 @@ fn resolve_key(path: &str) -> Result<Key> {
             verbatim: false,
             default: Some(DEFAULT_PROOF_REUSE_MAX_AGE.to_string()),
         }),
+        ["guard", level @ ("corpus" | "edit")] => Ok(Key::Under {
+            map: "guard",
+            name: (*level).to_string(),
+            verbatim: false,
+            default: Some(
+                if *level == "corpus" {
+                    DEFAULT_GUARD_CORPUS
+                } else {
+                    DEFAULT_GUARD_EDIT
+                }
+                .to_string(),
+            ),
+        }),
+        ["guard", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': the guard has two levels"),
+        )
+        .with_hint("ank config guard.corpus   or   guard.edit")),
         ["proof", ..] => Err(CliError::new(
             ExitCode::Generic,
             format!("'{path}': proof has one key"),
@@ -2652,6 +2783,25 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     if let (true, Some(v)) = (requires, value) {
         if crate::update::Version::parse(v).is_none() {
             return Err(not_a_version(v, &path));
+        }
+    }
+
+    // A guard level outside its closed set, refused the same way and for the
+    // same reason, naming the levels the reader may type instead.
+    if let (
+        Key::Under {
+            map: "guard", name, ..
+        },
+        Some(v),
+    ) = (&key, value)
+    {
+        let known = if name == "corpus" {
+            GuardCorpus::parse(v).is_some()
+        } else {
+            GuardEdit::parse(v).is_some()
+        };
+        if !known {
+            return Err(not_a_guard(&format!("guard.{name}"), v));
         }
     }
 
@@ -4588,6 +4738,11 @@ mod reference_table {
                         .into_iter()
                         .map(|f| format!("proof.{f}")),
                 ),
+                "guard" => accepted.extend(
+                    fields_of::<GuardFile>()
+                        .into_iter()
+                        .map(|f| format!("guard.{f}")),
+                ),
                 "signers" => {
                     assert_eq!(fields_of::<PrincipalFile>(), vec!["keys"]);
                     accepted.extend(
@@ -4602,7 +4757,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 21, "{accepted:?}");
+        assert_eq!(accepted.len(), 23, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.
@@ -4675,5 +4830,14 @@ mod reference_table {
         assert_eq!(row("verifier_jobs"), Absent::None);
         assert_eq!(cfg.verifier_jobs, None);
         assert!(cfg.verifier_jobs() >= 1);
+        assert_eq!(row("guard.corpus"), Absent::Text("deny"));
+        assert_eq!(row("guard.edit"), Absent::Text("warn"));
+        assert_eq!(
+            cfg.guard,
+            Guard {
+                corpus: GuardCorpus::Deny,
+                edit: GuardEdit::Warn
+            }
+        );
     }
 }
