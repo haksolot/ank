@@ -1,8 +1,8 @@
 //! `ank init` (§9).
 //!
 //! A narrow, fixed perimeter: create `.ank/`, write `config.yml`, add the
-//! `refs/ank/*` refspec, place a pointer in `AGENTS.md`, and write a
-//! `.gitattributes` and a `.gitignore`.
+//! `refs/ank/*` refspec, place the agent bootstrap in `AGENTS.md` and its
+//! import in `CLAUDE.md`, and write a `.gitattributes` and a `.gitignore`.
 //!
 //! Neither git file is cosmetic. On Windows `core.autocrlf=true` is the
 //! default, and without `.gitattributes` git converts back to CRLF on every
@@ -60,7 +60,29 @@ pub const CLAIMS_REFSPEC: &str = "+refs/ank/claims/*:refs/ank/claims/*";
 /// later, prune included (git's own t5582 carries `fetch --prune with negative
 /// refspec`), below the 2.34 floor.
 pub const NOT_CLAIMS: &str = "^refs/ank/claims/*";
-const AGENTS_POINTER: &str = "This repo uses Ank: tasks and decisions live in `.ank/`.";
+/// What the run that creates `.ank/` appends to `AGENTS.md` (ADR-5eb0f65c75da).
+///
+/// It names Ank as a CLI, sends the reader to `ank context <path>` before an
+/// edit, forbids reading `.ank/` by hand, names `claim`, `done` and `help`, and
+/// links the install page rather than one channel of it. It summarises no
+/// constraint: a summary drifts, and the route to them does not. Measured on
+/// 2026-10-26 with agents that had no skill, no hook and no memory: the single
+/// pointer line it replaces kept 3 runs out of 8 inside an accepted ADR, every
+/// one after reading `.ank/` by hand, and a block of this shape kept 6 out of 6.
+/// The first line is that pointer, kept verbatim.
+const AGENTS_BLOCK: &str = "\
+This repo uses Ank: tasks and decisions live in `.ank/`.
+Ank is a CLI, `ank`, and `.ank/` is opaque like `.git/`: never read or edit its files by hand, reach them through the CLI.
+
+- Run `ank context <path>` before editing a path: it prints the decisions that bind it, in full, and what is claimable there.
+- `ank claim <id>` takes a task and freezes its criterion; `ank done` closes it, running its verifiers itself.
+- `ank help` lists every verb, and `ank help <verb>` gives its flags.
+
+Install: https://haksolot.github.io/ank/install.html
+";
+/// The line that makes Claude Code load `AGENTS.md`, which it does not read
+/// on its own (ADR-5eb0f65c75da).
+const CLAUDE_IMPORT: &str = "@AGENTS.md";
 
 pub fn run(inv: &Invocation, cwd: &Path, out: &mut dyn Write) -> Result<ExitCode> {
     // **Refused, and refused before anything is written** (§4, §9). `--repo`
@@ -191,6 +213,7 @@ pub struct Report {
     pub wrote_gitattributes: bool,
     pub wrote_gitignore: bool,
     pub wrote_agents_pointer: bool,
+    pub wrote_claude_import: bool,
     pub added_refspec: bool,
     /// The refspec is not there and could not be added, because no remote
     /// named `origin` has a URL yet (TASK-623d80886c2f). Said rather than
@@ -233,6 +256,9 @@ impl Report {
         if self.wrote_agents_pointer {
             added.push("AGENTS.md");
         }
+        if self.wrote_claude_import {
+            added.push("CLAUDE.md");
+        }
         if self.added_refspec {
             added.push("remote.origin.fetch");
         }
@@ -256,6 +282,7 @@ impl Report {
             || self.wrote_gitattributes
             || self.wrote_gitignore
             || self.wrote_agents_pointer
+            || self.wrote_claude_import
             || self.added_refspec
             || !self.claims_refspecs.is_empty()
     }
@@ -278,6 +305,9 @@ impl Report {
         }
         if self.wrote_agents_pointer {
             v.push("pointer added to AGENTS.md".to_string());
+        }
+        if self.wrote_claude_import {
+            v.push(format!("{CLAUDE_IMPORT} added to CLAUDE.md"));
         }
         if self.added_refspec {
             v.push(format!("refspec added: {REFSPEC}"));
@@ -364,10 +394,13 @@ pub fn init_at(root: &Path) -> Result<Report> {
     // the repair verb `status` and `check` name for a missing refspec, and a
     // repair that re-appended the pointer undid every team that dropped it on
     // purpose: observed 2026-10-11 in this repository. On an existing corpus
-    // `AGENTS.md` is left as found, created or not.
+    // `AGENTS.md` is left as found, created or not, and `CLAUDE.md` with it
+    // (ADR-5eb0f65c75da).
     if creates_corpus {
         let agents = root.join("AGENTS.md");
-        report.wrote_agents_pointer = ensure_line(&agents, AGENTS_POINTER)?;
+        report.wrote_agents_pointer = ensure_block(&agents, AGENTS_BLOCK)?;
+        let claude = root.join("CLAUDE.md");
+        report.wrote_claude_import = ensure_import(&claude)?;
     }
 
     let found = remotes(root);
@@ -445,24 +478,58 @@ fn detachable(cwd: &Path, target: &Path) -> Result<()> {
 /// Adds a line to a file if it is not already there. Returns `true` if the
 /// file was touched.
 fn ensure_line(path: &Path, line: &str) -> Result<bool> {
-    let existing = match fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(io(path, e)),
-    };
+    let existing = read_or_empty(path)?;
     if existing.lines().any(|l| l.trim() == line) {
         return Ok(false);
     }
-    let mut next = existing;
-    if !next.is_empty() && !next.ends_with('\n') {
-        next.push('\n');
+    append(path, existing, &format!("{line}\n"))
+}
+
+/// Appends `block` to a file unless the file already holds it whole, keeping
+/// every byte already there. Returns `true` if the file was touched.
+fn ensure_block(path: &Path, block: &str) -> Result<bool> {
+    let existing = read_or_empty(path)?;
+    if existing.contains(block) {
+        return Ok(false);
     }
-    if !next.is_empty() {
-        next.push('\n');
+    append(path, existing, block)
+}
+
+/// Appends [`CLAUDE_IMPORT`] to `CLAUDE.md` unless one of its lines already
+/// imports `AGENTS.md`, written as `@AGENTS.md` or `@./AGENTS.md` anywhere on
+/// the line, which is where Claude Code reads an import. Returns `true` if the
+/// file was touched.
+fn ensure_import(path: &Path) -> Result<bool> {
+    let existing = read_or_empty(path)?;
+    let imports = existing.lines().any(|l| {
+        l.split_whitespace()
+            .any(|w| w == CLAUDE_IMPORT || w == "@./AGENTS.md")
+    });
+    if imports {
+        return Ok(false);
     }
-    next.push_str(line);
-    next.push('\n');
-    fs::write(path, next).map_err(|e| io(path, e))?;
+    append(path, existing, &format!("{CLAUDE_IMPORT}\n"))
+}
+
+fn read_or_empty(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(io(path, e)),
+    }
+}
+
+/// `existing` followed by `text`, a blank line between them when there was
+/// anything before.
+fn append(path: &Path, mut existing: String, text: &str) -> Result<bool> {
+    if !existing.is_empty() && !existing.ends_with('\n') {
+        existing.push('\n');
+    }
+    if !existing.is_empty() {
+        existing.push('\n');
+    }
+    existing.push_str(text);
+    fs::write(path, existing).map_err(|e| io(path, e))?;
     Ok(true)
 }
 
@@ -947,11 +1014,12 @@ mod tests {
         let t = Temp::new_repo();
         let f = t.0.join("AGENTS.md");
         fs::write(&f, "# Notes\n\nAlready here.\n").unwrap();
-        assert!(ensure_line(&f, AGENTS_POINTER).unwrap());
+        let line = "One line of ours.";
+        assert!(ensure_line(&f, line).unwrap());
         let s = fs::read_to_string(&f).unwrap();
         assert!(s.starts_with("# Notes\n\nAlready here.\n"), "{s:?}");
-        assert!(s.contains(AGENTS_POINTER));
-        assert!(!ensure_line(&f, AGENTS_POINTER).unwrap(), "second pass");
+        assert!(s.contains(line));
+        assert!(!ensure_line(&f, line).unwrap(), "second pass");
     }
 
     /// A `.gitignore` is a file the user curates, far more often than a
