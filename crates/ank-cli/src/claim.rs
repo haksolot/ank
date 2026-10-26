@@ -807,6 +807,27 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
             None => git::Pushed::Ok,
         };
     }
+    // **Nor is a remote still holding this clone's own earlier record**
+    // (TASK-37b528499ed8). A renewal the remote refused stays local, so the
+    // next write leases on an object the remote never received, while the
+    // remote holds the record this clone pushed before it. Read as a loss, the
+    // second `log` announced a takeover and fetched that record over its own
+    // write, and `done` exited 4. The retry leases on what the remote holds, as
+    // `delete_earlier_record` does for a deletion, and only for the same claim
+    // instance: anything else is a lost race and fetched as one below.
+    if let (
+        Some(_),
+        Some(ours),
+        git::Pushed::Refused {
+            holds: Some(theirs),
+        },
+    ) = (new, witness, &pushed)
+    {
+        if same_claim_instance(cwd, name, ours, theirs) {
+            let theirs = theirs.clone();
+            pushed = git::push_ref(cwd, remote, name, new, Some(&theirs))?;
+        }
+    }
     match pushed {
         git::Pushed::Ok => Ok(Written {
             cas: Cas::Won,
@@ -833,6 +854,19 @@ fn push(cwd: &Path, name: &str, new: Option<&str>, witness: Option<&str>) -> Res
             cas: Cas::Won,
             sync: Sync::Refused(reason),
         }),
+    }
+}
+
+/// Whether the objects `ours` and `theirs` are records of one claim instance:
+/// both claims, with the same task, holder and `claimed`, which a renewal never
+/// moves. Read by object, so the local ref is not touched; an object this clone
+/// does not have is not known to be its own, and reads as somebody else's.
+fn same_claim_instance(cwd: &Path, name: &str, ours: &str, theirs: &str) -> bool {
+    match (record_of(cwd, ours, name), record_of(cwd, theirs, name)) {
+        (Ok(Record::Claim(a)), Ok(Record::Claim(b))) => {
+            a.task == b.task && a.holder == b.holder && a.claimed == b.claimed
+        }
+        _ => false,
     }
 }
 

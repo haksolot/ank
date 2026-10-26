@@ -381,3 +381,130 @@ fn release_and_close_refused_before_the_update_drop_the_local_claim_and_name_the
         );
     }
 }
+
+/// The second write after the push started failing (TASK-37b528499ed8). The
+/// first renewal stays local, so the next one leases on an object the origin
+/// never received while the origin still holds this clone's own earlier record
+/// of the same claim. Measured before the fix: the second `log` warned "taken
+/// over while logging" and fetched the origin's record over the renewal, and
+/// `done` exited 4 "moved while it was being completed".
+#[test]
+fn a_second_renewal_and_done_refused_before_the_update_lease_on_the_callers_own_earlier_record() {
+    let c = Corpus::claimed("push-refused-second-write");
+    let pushed = c.remote_claim().unwrap();
+    c.refuse_pushes();
+
+    for n in 1..=2 {
+        cross_a_second();
+        let before = c.local_claim().unwrap();
+        let out = c.ank(&["log", &format!("renewal {n} the push url refuses")]);
+        let said = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "log {n} wrote its entry:\n{said}"
+        );
+        no_race_reported(&format!("log {n}"), &said);
+        c.diagnosis_reproduces(&said);
+        let local = c.local_claim().unwrap();
+        assert_ne!(
+            local, pushed,
+            "log {n}: the origin's record was fetched over the renewal"
+        );
+        assert_ne!(local, before, "log {n}: the claim was not renewed");
+        assert_eq!(
+            c.remote_claim(),
+            Some(pushed.clone()),
+            "the origin was never written"
+        );
+    }
+
+    let head = git(&c.repo, &["rev-parse", "HEAD"]);
+    let out = c.ank(&["done", "--proof", &format!("commit:{head}")]);
+    let said = format!("{}{}", text(&out.stdout), text(&out.stderr));
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "done completes locally after two local renewals:\n{said}"
+    );
+    no_race_reported("done", &said);
+    c.diagnosis_reproduces(&said);
+    assert_eq!(c.status_field(), "done");
+    let local = c.local_claim().unwrap();
+    let record = git(&c.repo, &["cat-file", "-p", &local]);
+    assert!(
+        record.contains("state: completed"),
+        "the origin's record was fetched over the completion record:\n{record}"
+    );
+    assert_eq!(
+        c.remote_claim(),
+        Some(pushed),
+        "the origin was never written"
+    );
+}
+
+/// The other half of the criterion: only the same claim instance is the
+/// caller's own. A record on the origin differing in task, holder or claimed is
+/// somebody else's write, and it stays a lost race, fetched where the caller
+/// looks next.
+#[test]
+fn a_record_differing_in_task_holder_or_claimed_stays_a_lost_race() {
+    for field in ["task", "holder", "claimed"] {
+        let c = Corpus::claimed(&format!("push-refused-other-{field}"));
+        let pushed = c.remote_claim().unwrap();
+        c.refuse_pushes();
+        cross_a_second();
+        let out = c.ank(&["log", "the first renewal stays local"]);
+        assert_eq!(out.status.code(), Some(0), "log: {}", text(&out.stderr));
+
+        // Another write lands on the origin: the pushed record with one of the
+        // three fields changed.
+        let theirs = git(&c.origin, &["cat-file", "-p", &pushed]);
+        let changed: String = theirs
+            .lines()
+            .map(|l| match l.split_once(": ") {
+                Some((k, _)) if k == field => match field {
+                    "task" => format!("{k}: TASK-000000000002"),
+                    "holder" => format!("{k}: someone-else/1.0"),
+                    _ => format!("{k}: 2026-07-28T00:00:00Z"),
+                },
+                _ => l.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        assert_ne!(
+            changed.trim(),
+            theirs.trim(),
+            "the record has no {field} line:\n{theirs}"
+        );
+        let path = c.origin.with_extension(format!("{field}.record"));
+        fs::write(&path, &changed).unwrap();
+        let object = git(&c.origin, &["hash-object", "-w", path.to_str().unwrap()]);
+        git(&c.origin, &["update-ref", &Corpus::claim_ref(), &object]);
+        // In this clone's object store too, so the record is read and compared
+        // field by field rather than dismissed as an object the clone lacks.
+        assert_eq!(
+            git(&c.repo, &["hash-object", "-w", path.to_str().unwrap()]),
+            object
+        );
+
+        cross_a_second();
+        let out = c.ank(&["log", "the second renewal meets another write"]);
+        let said = format!("{}{}", text(&out.stdout), text(&out.stderr));
+        assert!(
+            said.contains("taken over"),
+            "{field}: a record differing in {field} was read as the caller's own:\n{said}"
+        );
+        assert_eq!(
+            c.local_claim(),
+            Some(object.clone()),
+            "{field}: the other write was not fetched where the caller looks next"
+        );
+        assert_eq!(
+            c.remote_claim(),
+            Some(object),
+            "{field}: the origin was overwritten"
+        );
+    }
+}
