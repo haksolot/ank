@@ -103,6 +103,9 @@ class RunTest(unittest.TestCase):
         self.assertEqual(line["ank"], run.ank_version("ank"))
         self.assertEqual((line["model_seen"], line["works"], line["cap_respected"]),
                          ("claude-haiku-5-5", True, False))
+        r = subprocess.run([sys.executable, "-m", "bench.score", "--check", str(results)],
+                           cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual((r.returncode, r.stdout), (0, ""), r.stderr)
 
 
 if __name__ == "__main__":
