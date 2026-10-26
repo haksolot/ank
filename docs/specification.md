@@ -18,7 +18,7 @@ On the web, each link below opens the file as the default branch has it.
 - [SPEC-79012ba18769](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-79012ba18769.md) The CLI surface
 - [SPEC-558c07ebae8e](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-558c07ebae8e.md) Presentation: structure for every reader, colour for a terminal, and an identifier by its kind
 - [SPEC-a1234da5449a](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-a1234da5449a.md) The attention budget and the constraint lifecycle
-- [SPEC-3bccb8aee5b7](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-3bccb8aee5b7.md) Bootstrapping, teaching and distribution
+- [SPEC-f0eef72fe74d](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-f0eef72fe74d.md) Bootstrapping, teaching and distribution
 - [SPEC-e8518a6aab5c](https://github.com/haksolot/ank/blob/main/.ank/entities/SPEC-e8518a6aab5c.md) Implementation, and the decisions that bound it
 
 The list is every spec the corpus holds as accepted, and a test holds it to
