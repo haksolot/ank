@@ -5,7 +5,7 @@ slug: bootstrapping-teaching-and-distribution
 title: Bootstrapping, teaching and distribution
 created: 2026-09-13T17:35:43Z
 author: claude-code/fdf8
-status: accepted
+status: superseded
 scope:
   - skill/**
   - npm/**
@@ -20,7 +20,7 @@ verified:
   - by: claude-code/opus-5+ratify
     at: 2026-09-13T18:11:09Z
 schema: 4
-version: 2
+version: 3
 ---
 
 One of the ten documents that carry the Ank specification (ADR-5a690829388d).
