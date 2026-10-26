@@ -279,7 +279,7 @@ fn help_order() -> Vec<String> {
 /// and it left in the commit of TASK-3a7a73ccf2b7 that ships it.
 ///
 /// `hooks` was declared here ahead of the ratification of the §4 document that
-/// lists it, SPEC-79012ba18769 (ADR-24efa7543a16, ADR-43cbb20dcbf1), and left
+/// lists it, SPEC-79012ba18769 (ADR-376bed7fa39a, ADR-43cbb20dcbf1), and left
 /// in the commit of TASK-f248037e8bab that ships it.
 const NOT_YET_DISPATCHED: [&str; 0] = [];
 

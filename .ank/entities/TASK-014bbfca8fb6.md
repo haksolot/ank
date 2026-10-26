@@ -5,7 +5,7 @@ slug: re-point-every-citation-of-adr-24efa7543a16-ahea
 title: Re-point every citation of ADR-24efa7543a16 ahead of its supersession
 created: 2026-10-26T13:29:59Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-contract/src/verbs.rs
   - crates/ank-cli/src/hooks.rs
@@ -17,7 +17,7 @@ done_criteria: |
 criteria_by: creator
 verify: [check-repo]
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-3b6b refuses a supersession while the workspace still cites what it retires,
