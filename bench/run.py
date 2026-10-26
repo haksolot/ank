@@ -3,7 +3,7 @@
     python3 -m bench.run --model claude-sonnet-5-5 --condition ank --rep 1 [--dry-run]
 
 A run spends the quota of whoever launches it: it is never part of CI
-(ADR-bafbd28498cc). `--dry-run` prints what would be launched and launches
+(ADR-9e7cf2255bb7). `--dry-run` prints what would be launched and launches
 nothing.
 
 The agent is isolated: CLAUDE_CONFIG_DIR is a directory holding nothing but a
