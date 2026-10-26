@@ -1,0 +1,9 @@
+{"type": "system", "subtype": "init", "cwd": "/work/repo", "session_id": "synthetic", "tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep"], "mcp_servers": [], "model": "claude-haiku-5-5", "permissionMode": "acceptEdits", "claude_code_version": "2.1.310", "plugins": [{"name": "pdf-viewer", "path": "/config/plugins/synced/pdf-viewer"}], "skills": ["deep-research"]}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "ank --help"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "error[1]: unknown flag '--help'"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "cat .ank/entities/*.md | head -100"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "---"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Write", "input": {"file_path": "src/shop/cart.py", "content": "..."}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "ok"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 9, "result": "Done.", "usage": {"output_tokens": 2210}}
