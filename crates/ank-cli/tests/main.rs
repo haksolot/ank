@@ -41,6 +41,7 @@ mod hooks_install;
 mod hooks_run;
 mod index_per_schema;
 mod init_at;
+mod init_bootstrap;
 mod init_origin;
 mod init_refspec;
 mod init_requires_ank;
