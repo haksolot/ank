@@ -5,7 +5,7 @@ slug: bench-harness-seeded-fixtures-an-isolated-agent
 title: "bench/ harness: seeded fixtures, an isolated agent runner and a transcript scorer"
 created: 2026-10-26T13:00:44Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - bench/**
   - .github/workflows/ci.yml
@@ -15,7 +15,7 @@ done_criteria: |
 criteria_by: creator
 verify: [bench-test]
 schema: 4
-version: 1
+version: 2
 ---
 
 Implements ADR-bafbd28498cc. The 2026-10-26 prototype (run.sh, gen.py, score.py) is the starting shape: generator calling the ank CLI, claude -p with CLAUDE_CONFIG_DIR, stream-json transcripts, a hidden behavioural probe of the code left behind.

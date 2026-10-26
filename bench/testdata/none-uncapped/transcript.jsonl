@@ -1,0 +1,11 @@
+{"type": "system", "subtype": "init", "cwd": "/work/repo", "session_id": "synthetic", "tools": ["Bash", "Read", "Edit", "Write", "Glob", "Grep"], "mcp_servers": [], "model": "claude-haiku-5-5", "permissionMode": "acceptEdits", "claude_code_version": "2.1.310", "plugins": [], "skills": []}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t0", "name": "Read", "input": {"file_path": "src/shop/cart.py"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t0", "content": "\"\"\"A minimal shopping cart.\"\"\"\n\n\nclass Cart:\n    def __init__(self):\n        self.lines = []\n\n    def add(self, name, unit_price_cents, quantity=1):\n        if quantity < 1:\n            raise ValueError(\"quantity must be at least 1\")\n        self.lines.append((name, unit_price_cents, quantity))\n\n    def total(self):\n        return sum(price * qty for _, price, qty in self.lines)\n"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": "src/shop/cart.py", "old_string": "x", "new_string": "y"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "python3 -m unittest discover -s tests"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t2", "content": "OK"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t3", "name": "Bash", "input": {"command": "git commit -am 'discount'"}}]}}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t3", "content": "[main 1a2b3c4] discount"}]}}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done."}]}}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 8, "result": "Done.", "usage": {"output_tokens": 2750}}

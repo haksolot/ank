@@ -1,0 +1,18 @@
+"""A minimal shopping cart."""
+
+
+class Cart:
+    def __init__(self):
+        self.lines = []
+
+    def add(self, name, unit_price_cents, quantity=1):
+        if quantity < 1:
+            raise ValueError("quantity must be at least 1")
+        self.lines.append((name, unit_price_cents, quantity))
+
+    def total(self):
+        return sum(price * qty for _, price, qty in self.lines)
+
+    def apply_discount(self, percent, rounding):
+        """The total after a percentage discount."""
+        return self.total() * (100 - percent) // 100

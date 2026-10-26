@@ -1,0 +1,1 @@
+{"model_seen": "claude-haiku-5-5", "claude_code": "2.1.310", "mcp_servers": 0, "plugins": 1, "skills": 1, "turns": 9, "out_tokens": 2210, "help_flag": true, "cat_corpus": true, "read_markdown": false, "ank_context": false, "claimed": false, "task_done": false, "method": ["apply_discount"], "works": false, "cap_respected": false}
