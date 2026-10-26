@@ -2013,7 +2013,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         max_positionals: 1,
         positional_help: "[<path>]",
         // The command a folded signal names (ADR-df1035934387): a flag on the
-        // verb that folded, and no new surface (ADR-24efa7543a16). Long form
+        // verb that folded, and no new surface (ADR-376bed7fa39a). Long form
         // only: §4 gives `-k` to nothing.
         flags: &[flag("--kind")],
         refuses: &[
@@ -2262,7 +2262,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     // After `skills` and before `update`, which is §4's order, and in their
     // group for their reason: what it installs is this binary, into the agent's
-    // own configuration, before any corpus is involved (ADR-24efa7543a16).
+    // own configuration, before any corpus is involved (ADR-376bed7fa39a).
     CommandSpec {
         name: "hooks",
         group: "set up a repository",
