@@ -5,7 +5,7 @@ slug: the-agent-bench-lives-in-bench-in-stdlib-python
 title: The agent bench lives in bench/, in stdlib Python, outside CI, and every claim it makes carries a control
 created: 2026-10-26T12:59:57Z
 author: haksolot@vmi3223161
-status: accepted
+status: superseded
 scope:
   - bench/**
 constraint: |
@@ -16,7 +16,7 @@ verified:
   - by: haksolot@vmi3223161
     at: 2026-10-26T13:03:46Z
 schema: 4
-version: 3
+version: 4
 ---
 
 ## Context

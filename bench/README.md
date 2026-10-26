@@ -1,7 +1,7 @@
 # bench
 
 The agent bench: does a virgin agent, handed a repository, find and keep the
-decisions recorded in it? ADR-bafbd28498cc says what the bench is held to; this
+decisions recorded in it? ADR-9e7cf2255bb7 says what the bench is held to; this
 page says how to drive it.
 
 Python 3, standard library only. Nothing here is a crate or is shipped.
