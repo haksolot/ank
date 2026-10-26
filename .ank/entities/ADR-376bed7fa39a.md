@@ -5,7 +5,7 @@ slug: ank-is-one-executable-with-a-frozen-surface-and
 title: Ank is one executable with a frozen surface, and the surface gains --peers
 created: 2026-10-26T13:28:12Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - Cargo.toml
   - crates/ank-contract/src/verbs.rs
@@ -13,8 +13,13 @@ scope:
 constraint: |
   The surface of ank is one executable, the verbs ank help prints at the commit that ratifies this decision, ank hooks, and the flag --peers on status, find, context and check. A verb, a workspace crate, a protocol, a reader, a background process, or a mechanism that reads or writes across corpora is added by a supersession of this decision and never beside it, and the superseding document names which of the four properties the addition serves: a perimeter that is a path confronted with the tree, a rule that is an entity anchored by hash and served by scope, a close the tool measures by running the declared verifiers, and a corpus that lives whole in the clone with no service, token or network between an agent and it. ank hooks serves the second: it installs, removes and runs the entries an agent harness calls at its own events. --peers serves the second too: status, find and context add each declared peer's answer, read-only at its default branch and addressed <id>@<peer>, claims included; check --peers makes a declared peer that cannot be read a fault rather than a signal. What exists today (tui, mcp, watch, peers, update, hooks) stays as its own decisions state it and gains no verb, subcommand or crate without that supersession.
 supersedes: ADR-24efa7543a16
+ratified: f1f9ac087e15
+anchor: 8c208f861c9c119187fcf1de4c980a92afed7027
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-26T14:15:43Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context

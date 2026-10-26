@@ -5,7 +5,7 @@ slug: re-point-every-citation-of-adr-24efa7543a16-ahea
 title: Re-point every citation of ADR-24efa7543a16 ahead of its supersession
 created: 2026-10-26T13:29:59Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - crates/ank-contract/src/verbs.rs
   - crates/ank-cli/src/hooks.rs
@@ -16,8 +16,15 @@ done_criteria: |
   No file outside .ank/ cites ADR-24efa7543a16 under its full or any abbreviated form (command grep -rnE 'ADR-24ef' over the tree, .ank/ and target/ excluded, prints nothing), each citation names ADR-376bed7fa39a instead and still sources the claim it is cited for, and ank accept ADR-376bed7fa39a reports no citation of the superseded decision. ank check stays green.
 criteria_by: creator
 verify: [check-repo]
+proof:
+  - type: test
+    ref: local/b3d0d766b3a0@d1093b9
+    tree: scope/3beb0a2bbb03
+    criteria: c8900fa77581
+    verifier: check-repo@5734e9cf9d3d
+    via: verifier
 schema: 4
-version: 2
+version: 4
 ---
 
 ADR-3b6b refuses a supersession while the workspace still cites what it retires,
