@@ -5,15 +5,20 @@ slug: init-bootstraps-an-agent-a-teaching-block-in-age
 title: "init bootstraps an agent: a teaching block in AGENTS.md, imported by CLAUDE.md"
 created: 2026-10-26T12:59:41Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/init.rs
   - .ank/entities/SPEC-3bccb8aee5b7.md
 constraint: |
   On the run that creates .ank/, and only then, ank init appends to AGENTS.md a block that names Ank as a CLI, says to run ank context <path> before editing a path, forbids reading .ank/ by hand, names claim, done and help, and links the install page; and appends the line @AGENTS.md to CLAUDE.md, creating it when absent and leaving it untouched when a line of it already imports AGENTS.md.
 amends: [ADR-1f5a45d43f82]
+ratified: 4f7975b4f307
+anchor: 1e164d74fa5d718a062a142ec4e9a99d51e625a1
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-26T13:03:46Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
