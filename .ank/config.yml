@@ -46,6 +46,10 @@ verifiers:
     inputs: ["**", "mise.toml", "mise.lock", "rust-toolchain.toml"]
     timeout: 20m
     default: true
+  bench-test:
+    run: python3 -m unittest discover -s bench -t .
+    timeout: 5m
+    inputs: ["bench/**"]
 roles:
   agent:
     can: [context, find, claim, log, done, new:task, new:adr:proposed]
