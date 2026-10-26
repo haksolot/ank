@@ -1,6 +1,6 @@
 //! `hooks`: the entries an agent harness calls at its own events, installed
 //! into that harness's user-level configuration, taken out again, and answered
-//! (ADR-24efa7543a16, ADR-43cbb20dcbf1).
+//! (ADR-376bed7fa39a, ADR-43cbb20dcbf1).
 //!
 //! **The binary is the handler.** What `install` writes is an entry whose
 //! command runs this executable, by its absolute path, as `hooks run <agent>

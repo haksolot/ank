@@ -1,5 +1,5 @@
 //! `ank hooks install claude` and `ank hooks remove claude`, through the binary
-//! (ADR-24efa7543a16, ADR-43cbb20dcbf1, TASK-f248037e8bab).
+//! (ADR-376bed7fa39a, ADR-43cbb20dcbf1, TASK-f248037e8bab).
 //!
 //! The file is Claude Code's own `settings.json`, which its owner edits by hand
 //! and other tools write into, so what is measured is bytes: every foreign byte
