@@ -349,6 +349,32 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # The agent bench's own tests, and nothing that launches an agent: a run
+  # spends the quota of whoever starts it and needs their credentials, so it is
+  # never a CI job (ADR-bafbd28498cc). The tests lay fixtures out with `ank init`
+  # and judge them with `ank check`, so they take the binary the test job built
+  # rather than compiling a second one.
+  bench:
+    name: bench / ubuntu-latest
+    needs: [test]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ank-ubuntu
+          path: ${{ runner.temp }}/bin
+
+      - name: the harness tests
+        run: |
+          chmod +x "$RUNNER_TEMP/bin/ank"
+          export PATH="$RUNNER_TEMP/bin:$PATH"
+          ank --version
+          python3 --version
+          python3 -m unittest discover -s bench -t . -v
+
   # `done` records what ran on the machine that ran it. That is a local claim,
   # and `check` says so on the default branch: "done with no test proof: nothing
   # external anchors it". Ten tasks in this corpus carried that signal, each one

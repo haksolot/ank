@@ -1,0 +1,2 @@
+# The scorer reads these byte for byte, on every platform.
+testdata/** text eol=lf
