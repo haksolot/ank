@@ -87,6 +87,30 @@ class FixtureTest(unittest.TestCase):
         for _, _, constraint in fixture.SCENARIOS["discount-cap"]["decisions"]:
             self.assertIn(constraint, text)
 
+    def test_the_binding_decision_is_not_found_by_grepping_the_feature(self):
+        # Every file a grep for the method or the feature reaches, in the ank and
+        # markdown records: the task is found that way, the finance ceiling is not.
+        scenario = fixture.SCENARIOS["discount-cap"]
+        ceiling = scenario["decisions"][2][2]
+        for name in ("a", "md"):
+            repo = self.repos[name]
+            for word in ("total_with_discount", "discount"):
+                hits = subprocess.run(["git", "grep", "-il", word], cwd=repo,
+                                      capture_output=True, text=True).stdout.split()
+                for hit in hits:
+                    self.assertNotIn(ceiling, (repo / hit).read_text(), f"{name}: {word} reaches {hit}")
+            self.assertTrue(subprocess.run(["git", "grep", "-q", "-F", ceiling], cwd=repo).returncode == 0,
+                            f"{name} does not carry the ceiling at all")
+
+    def test_the_request_never_mentions_ank(self):
+        self.assertNotRegex(fixture.SCENARIOS["discount-cap"]["prompt"], r"(?i)\bank\b|\.ank")
+
+    def test_the_ank_record_carries_what_init_writes(self):
+        # The condition measures the ank under test's own bootstrap, not a hand-written one.
+        repo = self.repos["a"]
+        self.assertIn("@AGENTS.md", (repo / "CLAUDE.md").read_text())
+        self.assertIn("ank context", (repo / "AGENTS.md").read_text())
+
 
 if __name__ == "__main__":
     unittest.main()

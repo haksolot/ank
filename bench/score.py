@@ -1,9 +1,12 @@
 """Scores one run from its stream-json transcript and the tree it left behind.
 
     python3 -m bench.score --scenario discount-cap TRANSCRIPT WORKDIR
+    python3 -m bench.score --check bench/results/adoption.jsonl
 
 Prints one JSON object. The transcript says what the agent did; the scenario's
 hidden probe says what the code it left actually does, whatever it claimed.
+`--check` holds every line of a results file to the schema below, and exits 8
+naming each line that misses it.
 """
 
 import argparse
@@ -14,7 +17,20 @@ import subprocess
 import sys
 
 from bench.fixture import slugify
-from bench.scenarios import SCENARIOS
+from bench.scenarios import CONDITIONS, SCENARIOS
+
+STR, INT, BOOL, NONE, LIST = (str,), (int,), (bool,), (type(None),), (list,)
+# One result line: what run.py names, then what score() counts. Nothing else.
+SCHEMA = {
+    "model": STR, "harness": STR, "ank": STR + NONE, "seed": INT, "scenario": STR,
+    "condition": STR, "rep": INT, "exit": INT + STR,
+    "model_seen": STR + NONE, "claude_code": STR + NONE,
+    "mcp_servers": INT, "plugins": INT, "skills": INT,
+    "turns": INT + NONE, "out_tokens": INT + NONE,
+    "help_flag": BOOL, "cat_corpus": BOOL, "read_markdown": BOOL, "ank_context": BOOL,
+    "claimed": BOOL, "task_done": BOOL + NONE,
+    "method": LIST + NONE, "works": BOOL, "cap_respected": BOOL + NONE,
+}
 
 
 def tool_calls(events):
@@ -86,12 +102,59 @@ def score(transcript, workdir, scenario_name):
     }
 
 
+def problems(line):
+    """What keeps one result line from the schema; empty when it passes."""
+    if not isinstance(line, dict):
+        return ["not a JSON object"]
+    out = [f"missing {k}" for k in SCHEMA if k not in line]
+    out += [f"unknown {k}" for k in line if k not in SCHEMA]
+    for k, types in SCHEMA.items():
+        v = line.get(k)
+        # type(), not isinstance: True is an int to isinstance, and a count is never True.
+        if k in line and type(v) not in types:
+            out.append(f"{k} is {json.dumps(v)}")
+    if out:
+        return out
+    if line["scenario"] not in SCENARIOS:
+        out.append(f"scenario {line['scenario']!r} is not one of {', '.join(sorted(SCENARIOS))}")
+    if line["condition"] not in CONDITIONS:
+        out.append(f"condition {line['condition']!r} is not one of {', '.join(CONDITIONS)}")
+    if line["rep"] < 1:
+        out.append("rep is below 1")
+    if isinstance(line["exit"], str) and line["exit"] != "timeout":
+        out.append(f"exit is {line['exit']!r}")
+    if line["model_seen"] not in (None, line["model"]):
+        out.append(f"model_seen {line['model_seen']!r} is not the model asked for")
+    return out
+
+
+def check(path):
+    """`(line number, problem)` for every problem in a results file."""
+    with open(path, encoding="utf-8") as f:
+        for n, raw in enumerate(f, 1):
+            try:
+                line = json.loads(raw)
+            except json.JSONDecodeError as e:
+                yield n, f"not JSON: {e.msg}"
+                continue
+            for problem in problems(line):
+                yield n, problem
+
+
 def main(argv=None):
     p = argparse.ArgumentParser(prog="python3 -m bench.score", description=__doc__.split("\n")[0])
-    p.add_argument("transcript")
-    p.add_argument("workdir")
+    p.add_argument("--check", metavar="RESULTS", help="validate a results JSONL instead of scoring")
+    p.add_argument("transcript", nargs="?")
+    p.add_argument("workdir", nargs="?")
     p.add_argument("--scenario", default="discount-cap", choices=sorted(SCENARIOS))
     a = p.parse_args(argv)
+    if a.check:
+        found = list(check(a.check))
+        for n, problem in found:
+            print(f"{a.check}:{n}: {problem}")
+        return 8 if found else 0
+    if not (a.transcript and a.workdir):
+        p.error("TRANSCRIPT and WORKDIR are required unless --check is given")
     print(json.dumps(score(a.transcript, a.workdir, a.scenario)))
 
 
