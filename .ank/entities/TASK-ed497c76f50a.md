@@ -5,7 +5,7 @@ slug: adoption-family-a-campaign-over-three-models-and
 title: "Adoption family: a campaign over three models and three conditions, committed and summarised"
 created: 2026-10-26T13:00:45Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - bench/**
 blocked_by: [TASK-917a8f9a1440, TASK-9ae9b0959c9d]
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [bench-test]
 schema: 4
-version: 2
+version: 3
 ---
 
 The campaign spends quota: run it after TASK-917a8f9a1440 lands, with the ank built from main, so the ank condition measures what init writes rather than a hand-written block.
