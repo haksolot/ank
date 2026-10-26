@@ -274,6 +274,28 @@ pub fn parse(argv: &[String]) -> Result<Invocation> {
         return Err(CliError::new(ExitCode::Generic, "no command").with_hint("ank context"));
     };
 
+    // `--help` and `-h` are a second spelling of `ank help [<verb>]`, and not a
+    // flag of any verb (ADR-35d714834ed3): every agent measured typed one first.
+    // Whatever surrounds them is ignored, so `ank done <id> --help` runs nothing.
+    // After `--` they are a message like any other.
+    let asks_help = argv
+        .iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--help" || a == "-h");
+    if asks_help {
+        let mut positionals = Vec::new();
+        if !first.starts_with('-') {
+            positionals.push(first.clone());
+        }
+        return Ok(Invocation {
+            command: "help",
+            subcommand: None,
+            positionals,
+            flags: BTreeMap::new(),
+            style: crate::style::PLAIN,
+        });
+    }
+
     let spec = spec_of(first).ok_or_else(|| {
         let names: Vec<&str> = COMMANDS.iter().map(|c| c.name).collect();
         CliError::new(ExitCode::Generic, format!("unknown command '{first}'"))
