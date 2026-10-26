@@ -5,15 +5,20 @@ slug: every-worktree-of-a-repository-resolves-its-peer
 title: Every worktree of a repository resolves its peers from the main checkout
 created: 2026-10-26T13:27:44Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/repo.rs
   - docs/**
 constraint: |
   A relative peer path, declared in config.yml or overridden in corpora.yml, is resolved against the root of the repository's main worktree, the parent of its git common directory, and never against the root of the linked worktree a verb runs in. Every worktree of one repository therefore reaches the same peers with no override, wherever the worktree sits.
 amends: [ADR-da2819aef598]
+ratified: dc8ee9ce09b9
+anchor: b5b8e5e53fd290e38f5eba5f27d5cd0071a67deb
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-26T13:36:19Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
