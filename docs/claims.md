@@ -202,9 +202,11 @@ nothing is written, so `git remote add origin` keeps working. An `origin` that
 cannot be reached still gets the refspec, and the next `git fetch` brings the
 refs. Where the refspec itself could not be written, `status` warns and `check`
 reports a signal, both naming `ank init`, which writes it the same way. A
-re-run of `init` leaves `AGENTS.md` as it finds it: the pointer is written by
-the run that creates `.ank/` and by no later one, so a repository that dropped
-it on purpose keeps it dropped through every repair (ADR-1f5a45d43f82).
+re-run of `init` leaves `AGENTS.md` and `CLAUDE.md` as it finds them: the
+agent bootstrap block and its `@AGENTS.md` import are written by the run that
+creates `.ank/` and by no later one, so a repository that dropped them on
+purpose keeps them dropped through every repair (ADR-1f5a45d43f82,
+ADR-5eb0f65c75da).
 
 Without a remote, `git worktree`s of a single clone are still arbitrated,
 because they share `refs/ank/`. **Two clones with no common origin are not

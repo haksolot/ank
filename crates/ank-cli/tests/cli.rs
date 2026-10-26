@@ -27612,3 +27612,105 @@ fn config_writes_verifier_jobs_and_refuses_zero() {
         assert_eq!(after, file, "{bad} touched the file");
     }
 }
+
+/// The verbs the listing opens a line with, in the order it prints them.
+fn listed_verbs(listing: &str) -> Vec<String> {
+    listing_body(listing)
+        .filter_map(|l| l.strip_prefix("ank "))
+        .map(|rest| rest.chars().take_while(char::is_ascii_lowercase).collect())
+        .collect()
+}
+
+/// `--help` and `-h` are a second spelling of `ank help`, alone and after a
+/// verb (ADR-35d714834ed3), byte for byte, through the binary. Three virgin
+/// agents out of three typed `ank --help` first and were handed a refusal.
+#[test]
+fn help_and_h_print_what_ank_help_prints_alone_and_after_every_verb() {
+    let run = |args: &[&str]| {
+        let out = ank_command().args(args).output().unwrap();
+        assert_eq!(code(&out), 0, "ank {args:?}: {}", stderr(&out));
+        stdout(&out)
+    };
+
+    let listing = run(&["help"]);
+    for spelling in ["--help", "-h"] {
+        assert_eq!(
+            run(&[spelling]),
+            listing,
+            "`ank {spelling}` differs from `ank help`"
+        );
+    }
+
+    let verbs = listed_verbs(&listing);
+    assert!(verbs.len() > 15, "the listing was not parsed: {verbs:?}");
+    for verb in &verbs {
+        let page = run(&["help", verb]);
+        for spelling in ["--help", "-h"] {
+            assert_eq!(
+                run(&[verb, spelling]),
+                page,
+                "`ank {verb} {spelling}` differs from `ank help {verb}`"
+            );
+        }
+    }
+}
+
+/// Anything after `--help` is ignored, so it runs nothing: a `done` that would
+/// otherwise run its verifiers and close the task leaves the files and the
+/// refs as they were.
+#[test]
+fn done_with_help_prints_the_page_and_changes_nothing() {
+    let r = Repo::new().with_verifiers("verifiers:\n  ok:\n    run: echo fine\n");
+    r.seed_task_with(ID, Some("A criterion."), &["ok"]);
+    assert_eq!(code(&r.ank("claude-code@ank", &["claim", ID])), 0);
+
+    let state = || {
+        (
+            r.git(&["status", "--porcelain", "--untracked-files=all"]),
+            r.git(&["for-each-ref", "refs/ank"]),
+            r.task_text(ID),
+        )
+    };
+    let before = state();
+
+    for spelling in ["--help", "-h"] {
+        let out = r.ank("claude-code@ank", &["done", ID, spelling]);
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        assert_eq!(
+            stdout(&out),
+            stdout(&r.ank("claude-code@ank", &["help", "done"])),
+            "`ank done <id> {spelling}` is not the page of done"
+        );
+        assert_eq!(
+            state(),
+            before,
+            "`ank done <id> {spelling}` wrote something"
+        );
+    }
+}
+
+/// A spelling, not a verb and not a flag: the listing names the verbs it named
+/// before, and no page offers `--help` or `-h` among the flags it takes.
+#[test]
+fn help_adds_no_verb_and_no_flag() {
+    let listing = stdout(&ank_command().arg("help").output().unwrap());
+    assert_eq!(
+        listed_verbs(&listing).join(" "),
+        "context claim show log verify done release new review accept read close amend \
+         attest find status graph scope tui mcp watch edit check migrate archive config \
+         signers init skills hooks update help",
+    );
+    for verb in listed_verbs(&listing) {
+        let page = stdout(&ank_command().args(["help", &verb]).output().unwrap());
+        for line in page.lines() {
+            let label = line.trim_start();
+            if label.starts_with("flags:") || label.starts_with("global:") {
+                let words: Vec<&str> = label.split([' ', ',']).collect();
+                assert!(
+                    !words.contains(&"--help") && !words.contains(&"-h"),
+                    "`ank help {verb}` offers help as a flag: {line}"
+                );
+            }
+        }
+    }
+}

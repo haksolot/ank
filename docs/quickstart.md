@@ -41,11 +41,20 @@ $ git add -A && git commit -q -m "the service"
     wrote .gitattributes
     wrote .gitignore
     pointer added to AGENTS.md
+    @AGENTS.md added to CLAUDE.md
     refspec added: +refs/ank/*:refs/ank/*
+
+**Two of those files are for the agents who will work here.** `AGENTS.md`
+gains a short block that names `ank` as a CLI, says to run `ank context <path>`
+before editing a path and never to read `.ank/` by hand, names `claim`, `done`
+and `help`, and links the install page. `CLAUDE.md` gains the line
+`@AGENTS.md`, which is what makes Claude Code load that block; it is created
+when absent and left alone when it already imports `AGENTS.md`. Both are
+written by the run that creates `.ank/` and by no later one.
 
 **The last line is the one a repository with no `origin` prints differently**:
 there is no remote to add a refspec to, so `init` says the refspec was not
-added and names itself as the command to run once there is one. The other five
+added and names itself as the command to run once there is one. The other six
 lines are identical, and a repository with an `origin` added later picks the
 refspec up from a second `init`:
 
@@ -59,6 +68,7 @@ $ echo '# auth service' > README.md && git add -A && git commit -q -m "the servi
     wrote .gitattributes
     wrote .gitignore
     pointer added to AGENTS.md
+    @AGENTS.md added to CLAUDE.md
     refspec +refs/ank/*:refs/ank/* not added: no remote named origin yet, run this once it exists (ank init)
     $ git init -q --bare ../origin.git && git remote add origin ../origin.git
     $ ank init
