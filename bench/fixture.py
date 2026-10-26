@@ -10,7 +10,7 @@ form those verbs write them, and `ank check` on the result is what holds this
 module to that form. `ank init` is deterministic and does run: the fixture
 carries what the ank under test teaches.
 
-Conditions (ADR-bafbd28498cc): `none` is the code alone, `markdown` the same
+Conditions (ADR-9e7cf2255bb7): `none` is the code alone, `markdown` the same
 decisions as docs/adr/*.md with a CLAUDE.md pointing at them, `ank` the
 decisions and the tasks as an ank corpus. The code is identical in all three.
 """

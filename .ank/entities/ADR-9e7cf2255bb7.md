@@ -5,15 +5,20 @@ slug: the-agent-bench-lives-in-bench-in-stdlib-python
 title: The agent bench lives in bench/, in stdlib Python; no CI job launches an agent, and every claim it makes carries a control
 created: 2026-10-26T16:29:59Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - bench/**
   - .github/workflows/ci.yml
 constraint: |
   bench/ holds a harness in Python using only the standard library, outside the cargo workspace; no CI job launches an agent, and CI runs only the harness's own tests; a published result names the model, harness, ank and fixture-seed versions, runs at least five repetitions per cell, and compares ank against both no record and the same decisions written as plain Markdown.
 supersedes: ADR-bafbd28498cc
+ratified: 5d7c0c2fb3e3
+anchor: e968f79881c2516bf8cd922996cb8ff7657398ce
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-10-26T17:44:20Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Why this supersedes ADR-bafbd28498cc
