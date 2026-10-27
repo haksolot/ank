@@ -5,7 +5,9 @@ exporter, a linter, a second implementation.
 
 The format is the specification, and the CLI is a reference implementation of
 it rather than a gatekeeper. Nothing here needs `ank` to be installed or asks
-your tool to call it.
+your tool to call it. It is specified by the accepted data-model spec on [the
+specification](specification.md) page and may still change before 1.0, each
+change arriving as a new `schema` value.
 
 **This document is not normative.** Section 3 of the specification is: *The data
 model*, one of the `spec` documents [the specification](specification.md)
