@@ -15,13 +15,15 @@ scope:
   - docs/**
   - README.md
   - skill/**
+  - crates/ank-cli/tests/main.rs
+  - crates/ank-core/src/registry.rs
 blocked_by: [TASK-b53c9c748d24, TASK-e577204143ae]
 done_criteria: |
   mise.toml pins Vale and mise.lock carries it for linux-x64, macos-arm64, macos-x64 and windows-x64. .vale.ini applies a style under .vale/ank/ to docs/**/*.md, README.md and skill/**/SKILL.md with these rules at level error: Dash (U+2014 and U+2013), History (the phrases 'used to', 'previously', 'at the time', 'before .* joined', 'captured (before|with)'), EntityId ((ADR|TASK|SPEC|LOG)-[0-9a-f]{4,12}, scoped by an ini section to docs/install.md and docs/quickstart.md only); and NoLonger ('no longer') at level suggestion. crates/ank-cli/tests/prose.rs holds three tests: one runs 'mise x -- vale --output=JSON' over those paths through the binary's working tree and fails on any error-level alert, naming file, line and rule; one counts matches of \b(not a|never|rather than|is not|are not|instead of|not the)\b per page against a table in the test file with one row per page, failing when a page exceeds its row, when a page has no row, or when a row names no file; one finds every number word or digit standing before 'skill', 'skills' or 'SKILL.md' in those pages and fails unless it equals the count of skill/SKILL.md plus skill/*/SKILL.md, and every one before 'sibling' or 'siblings' unless it equals that count minus one. All three are green at close, which means: the 23 em dashes at f997ea88 are rewritten in context (format.md 13, check.md 3, skill/plan/SKILL.md 2 with its revision bumped as tests/skill.rs requires, ci.md, peers.md 1 each, the rest already gone); alternatives.md and multi-agent.md count seven skills and six siblings, with the token figure in alternatives.md re-measured over the seven files and the command that measured it written beside it; the history phrases in format.md:116, format.md:498 and ci-jobs.md:71 are rewritten; the budget table records each page's count as the tree stands when the test is written, with the two rewritten pages at or under 10 and 11. cargo fmt --check is clean and cargo test --workspace is green.
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 2
+version: 3
 ---
 
 The enforcement half of ADR-0dd192525166. The pages rewritten first

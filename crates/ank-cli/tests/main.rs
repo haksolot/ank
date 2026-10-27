@@ -55,6 +55,7 @@ mod peer_override;
 mod peer_scope;
 mod peer_scope_reverse;
 mod peer_url_refusal;
+mod prose;
 mod push_refused_before_update;
 mod ratify_ref;
 mod remote_without_claim;

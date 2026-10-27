@@ -165,7 +165,7 @@ static TASK_FIELDS: &[FieldSpec] = &[
     opt("done_criteria", Block, "frozen by hash at claim"),
     opt("criteria_by", Bare, "invalid without `done_criteria`").values(Values::OneOf(criteria_by)),
     opt("verify", Flow, "verifier names `config.yml` declares"),
-    opt("method", Scalar, "one sibling skill the binary carries"),
+    opt("method", Scalar, "a sibling skill the binary carries"),
     opt(
         "proof",
         Maps,

@@ -25,7 +25,7 @@ This build writes schema **4**, and reads schema **1** through **4**. A file dec
 | 10 | `done_criteria` | literal block | omitted when absent |  | frozen by hash at claim |
 | 11 | `criteria_by` | bare | omitted when absent | `creator` \| `claimer` | invalid without `done_criteria` |
 | 12 | `verify` | flow list | omitted when absent |  | verifier names `config.yml` declares |
-| 13 | `method` | scalar | omitted when absent |  | one sibling skill the binary carries |
+| 13 | `method` | scalar | omitted when absent |  | a sibling skill the binary carries |
 | 14 | `proof` | block sequence of maps | omitted when absent |  | keys in order: `type`, `ref`, `tree`, `criteria`, `verifier`, `via`, `reused`, `by` |
 | 15 | `verified` | block sequence of maps | omitted when absent |  | readings: `by`, then `at`, both required in an entry |
 | 16 | `schema` | integer | always emitted |  |  |
