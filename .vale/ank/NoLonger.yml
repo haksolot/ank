@@ -1,0 +1,6 @@
+extends: existence
+message: "'%s' may narrate history: check the sentence says what holds now."
+level: suggestion
+ignorecase: true
+tokens:
+  - no longer

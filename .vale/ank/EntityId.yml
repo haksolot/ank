@@ -1,0 +1,5 @@
+extends: existence
+message: "'%s' is an entity identifier, which a reader holding no corpus cannot follow."
+level: error
+tokens:
+  - (?:ADR|TASK|SPEC|LOG)-[0-9a-f]{4,12}

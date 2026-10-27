@@ -2,7 +2,7 @@
 name: ank
 description: Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
 metadata:
-  revision: "1325142ded61"
+  revision: "fd9405b03c89"
 ---
 
 # ank
@@ -30,7 +30,7 @@ resolves it.
 
 ## The skills
 
-This file is the contract. One skill per activity carries the policy:
+This file is the contract. Each activity has a skill of its own that carries the policy:
 
     ank-plan     interview a goal into ADRs, specs and tasks
     ank-drift    audit accepted decisions against the code, report findings

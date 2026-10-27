@@ -13,6 +13,9 @@
 # x86_64 archive, which needs Rosetta.
 "github:rust-lang/mdBook" = { version = "0.5.4", version_prefix = "v" }
 node = "22.23.4"
+# The prose linter crates/ank-cli/tests/prose.rs runs over docs/, README.md
+# and skill/ (ADR-0dd192525166).
+vale = "3.25.1"
 python = "3.14.9"
 
 # The suite's temporary files go to ${XDG_CACHE_HOME:-$HOME/.cache}/ank-test:

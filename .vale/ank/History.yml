@@ -1,0 +1,10 @@
+extends: existence
+message: "'%s' narrates the page's history: say what holds now."
+level: error
+ignorecase: true
+tokens:
+  - used to
+  - previously
+  - at the time
+  - before .* joined
+  - captured (?:before|with)

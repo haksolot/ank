@@ -1,0 +1,7 @@
+extends: existence
+message: "'%s' is a dash: rewrite the sentence with a colon, a comma or a full stop."
+level: error
+nonword: true
+tokens:
+  - "—"
+  - "–"
