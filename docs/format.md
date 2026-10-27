@@ -113,8 +113,8 @@ Markdown with YAML frontmatter, UTF-8 without BOM, LF line endings:
 The delimiters are exact: the file begins with `---\n`, and the frontmatter ends
 at the first `\n---\n`. Everything after that separator is the body, kept
 verbatim, byte for byte. The body is free-form markdown and carries no
-convention at all: the one that used to live there, the log, is an entity of its
-own now.
+convention at all: the log, the one convention that might sit there, is an
+entity of its own.
 
 **Unknown fields are rejected**, not ignored. That is what turns a typo like
 `priorty:` into an error instead of a silent loss, and it is the reason the
@@ -419,7 +419,7 @@ nothing about it is reinterpreted: only where it lives has moved, twice.
 
 **A message longer than a line is split across `title` and the body, and the
 split is lossless.** A message of at most **100 characters** is the whole of the
-`title`, and the body is empty — 100 itself included, so a message of exactly
+`title`, and the body is empty. 100 itself is included, so a message of exactly
 that length does not split. Longer, the title runs to the last space at or
 before character 100 and at or after character 50, the limit itself where there
 is no such space and the first newline where one comes earlier, and the body is
@@ -438,14 +438,14 @@ message
 title: "discrepancy: the criterion assumes merge=union is configured for the log path, and .gitattributes"
 ```
 
-whose value is 97 characters — the cut is the last space at or before character
-100 — with the body
+whose value is 97 characters, because the cut is the last space at or before
+character 100, and with the body
 
 ```
 \n declares none\n
 ```
 
-— a newline, the remainder, a newline. The remainder opens with the space that
+which is a newline, the remainder, a newline. The remainder opens with the space that
 separated the two words, so a reader that concatenates the title with it gets
 the message back byte for byte: 97 + 14 = 111. A body that is not of that shape
 carries no remainder, and the message is the title alone.
@@ -495,8 +495,8 @@ the reason the log left the body, and a tool that records an entry *and* rewrite
 the entity has given it up.
 
 **Two entries are two files, which is why there is no merge rule for the log.**
-The rule that used to union log sections by timestamp is gone, and the reason
-once recorded for dropping it was wrong: git does not union two appends by
+No rule unions log sections by timestamp, and the reason once recorded for
+having none was wrong: git does not union two appends by
 itself, it conflicts on them, unless a repository configures `merge=union` for
 the path (§7). What has been protecting the corpus all along is one file per
 entity, and an entry that is an entity extends that to the trace: there is no
@@ -548,7 +548,7 @@ read time and have no field:
   with the first.
 - **The claim.** Never in the file. See below.
 - **The index.** `index.db.<N>` is a cache rebuilt from the files, and every
-  query it answers is answered again once it has been rebuilt — with one
+  query it answers is answered again once it has been rebuilt, with one
   exception, which is the next paragraph.
 
 **One file per index schema** (ADR-3db9735a7036). `N` is the index schema of
@@ -566,8 +566,8 @@ upgrade does not reset what the next paragraph is about.
 not derived from the files: the digest an archived file arrived with.** An
 archived entity is never edited, and that is enforced by comparing the file's
 bytes against the hash recorded when the index first read it. The corpus has
-nowhere to keep that hash — the archived file cannot carry a digest of itself —
-so it lives in the cache and nowhere else. Measured on a corpus of four archived
+nowhere to keep that hash, since the archived file cannot carry a digest of
+itself, so it lives in the cache and nowhere else. Measured on a corpus of four archived
 entries: appending a line to one of them makes `ank check` exit 8 naming the
 file; `rm .ank/index.db*` and the same `check` exits 0, on that run and on every
 run after it, because the rebuild takes the changed bytes as the digest.
@@ -693,7 +693,7 @@ from each line, trailing blank lines are removed.
 
 - **The criterion freeze**, recorded by `claim`: `hash(normalize(done_criteria))`.
 - **The ratification anchor**, recorded by `accept`: the normalised anchored
-  text, a newline, then each `scope` glob trimmed and followed by a newline —
+  text, a newline, then each `scope` glob trimmed and followed by a newline,
   and then **the whole buffer normalised a second time** before it is hashed,
   which removes the newline the last glob was just given. The anchored text is
   an ADR's `constraint` and a spec's body, which is the one place the two
@@ -728,7 +728,7 @@ and `printf 'Never Y\nsrc/**' | sha256sum` gives `33045e58af8d…`. Keep the
 trailing newline the per-glob rule appears to ask for and the same decision
 hashes to `b88d9f81eb08`, which no ratification anywhere carries: an
 implementation off by that one byte reports every ADR in the corpus as diverged.
-Several globs join the same way — `Rule two.` over `src/**` and `docs/**`
+Several globs join the same way: `Rule two.` over `src/**` and `docs/**`
 recorded `16a85fda1d17`, which is `printf 'Rule two.\nsrc/**\ndocs/**'`.
 
 **The same anchor as a tag, built from the recipe.** That line is the one a
@@ -844,7 +844,7 @@ port in an afternoon:
   a reader told "invalid identifier" goes hunting for a typo in the hex.
   `bad-schema` must name the version it found. `bad-proof-via`,
   `verified-without-at`, `spec-with-constraint`, `log-without-about` and
-  `log-without-seq` must each name the field — `spec-with-constraint` naming
+  `log-without-seq` must each name the field, `spec-with-constraint` naming
   `constraint` rather than the kind, because the field is the one a spec exists
   in order not to carry. `bad-log-line` must name **line 2**: the file's other
   two lines are entries the grammar accepts, so a fixture whose every line were
@@ -853,7 +853,7 @@ port in an afternoon:
   The first two rows are one distinction and not two cases of one error, which
   is why both fixtures exist. `no-frontmatter.md` never opens a frontmatter;
   `unterminated-frontmatter.md` opens one and never closes it, and its refusal
-  names the **closing** delimiter — *unterminated frontmatter: no closing `---`
+  names the **closing** delimiter: *unterminated frontmatter: no closing `---`
   after the opening one*. Telling a reader that a file which plainly starts with
   `---` must start with `---` sends them looking for a delimiter that is right
   there, which is the same hour `---\r\n` already cost. A reader that folds the

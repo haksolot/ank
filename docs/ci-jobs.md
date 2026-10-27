@@ -68,7 +68,7 @@ says which anchors that still protects.
 else.** The corpus is judged by `ank check`, which that leg runs, and by the
 tests that read the live repository, which that leg runs too; the macOS and
 Windows legs, both MSRV jobs and the version check have nothing to learn from a
-corpus diff and used to cost it thirteen minutes. They are skipped by a condition
+corpus diff, and would cost it thirteen minutes. They are skipped by a condition
 on the job, or on every step of a matrix job, never by a `paths:` filter on the
 workflow: a job skipped by its condition reports success to the ruleset, where a
 workflow filtered out leaves its required checks pending and the pull request

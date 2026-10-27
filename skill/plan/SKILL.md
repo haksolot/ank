@@ -2,7 +2,7 @@
 name: ank-plan
 description: Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
 metadata:
-  revision: "e4416b678b18"
+  revision: "34bbc5f04464"
 ---
 
 # ank-plan
@@ -68,8 +68,8 @@ that nobody designated one. The name is the sibling's directory, never ank-tdd.
 
 A done_criteria states what a verifier can check, not what an executor should
 attempt. If the criterion will not write, the decision is not settled: back to
-the frontier. `new` is not where it is enforced — it writes a task with no
-criterion and says nothing — `claim` is, and it refuses at 7. So a criterion
+the frontier. `claim` is where it is enforced, refusing at 7; `new` writes a
+task with no criterion and says nothing. So a criterion
 left for later is a task nobody can start, and the plan is short one decision.
 
 ## Where planning ends

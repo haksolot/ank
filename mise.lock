@@ -107,3 +107,28 @@ provenance = "github-attestations"
 checksum = "sha256:57cc230da61d897e8e593511c9dac781491675a036cb727b7de5cb7a62ceebea"
 url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261021/cpython-3.14.9+20261021-x86_64-pc-windows-msvc-install_only_stripped.tar.gz"
 provenance = "github-attestations"
+
+[[tools.vale]]
+version = "3.25.1"
+backend = "aqua:vale-cli/vale"
+specifiers = ["3.25.1"]
+
+[tools.vale."platforms.linux-x64"]
+checksum = "sha256:4bf5c5176b682b1da0830f471584d3494f1c2e27ee3029e1ad6f6661d4962182"
+url = "https://github.com/vale-cli/vale/releases/download/v3.25.1/vale_3.25.1_Linux_64-bit.tar.gz"
+url_api = "https://api.github.com/repos/vale-cli/vale/releases/assets/667037022"
+
+[tools.vale."platforms.macos-arm64"]
+checksum = "sha256:fbcaa68d9b9e229b9c8dc918f209e93572ce943039700b7e04a423ff12f684cd"
+url = "https://github.com/vale-cli/vale/releases/download/v3.25.1/vale_3.25.1_macOS_arm64.tar.gz"
+url_api = "https://api.github.com/repos/vale-cli/vale/releases/assets/667037030"
+
+[tools.vale."platforms.macos-x64"]
+checksum = "sha256:e27097e84a812d45546de8d6a4ffa75538cab39c96f79b153b601240f8cefaf9"
+url = "https://github.com/vale-cli/vale/releases/download/v3.25.1/vale_3.25.1_macOS_64-bit.tar.gz"
+url_api = "https://api.github.com/repos/vale-cli/vale/releases/assets/667037025"
+
+[tools.vale."platforms.windows-x64"]
+checksum = "sha256:5f4b5cefee5d0f7ee0621d7cc035886515888fd732c4e8add36d3c922f2adc68"
+url = "https://github.com/vale-cli/vale/releases/download/v3.25.1/vale_3.25.1_Windows_64-bit.zip"
+url_api = "https://api.github.com/repos/vale-cli/vale/releases/assets/667037103"

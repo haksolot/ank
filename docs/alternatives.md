@@ -49,10 +49,11 @@ cutting it into tickets, driving the implementation test-first, reviewing before
 merge. The skill is the method, and the agent is held to it while it works.
 
 Ank ships methods too, and holds the other end of them. Seven skills travel
-inside the binary: the contract every agent loads, five siblings teaching one
-activity of the work each, plan, drift, loop, tdd and diagnose, and `ank-herdr`,
-for the agent orchestrating the others from a herdr pane. A task may name any
-sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank context`
+inside the binary: the contract every agent loads and six siblings beside it.
+Five of them teach one activity of the work each, plan, drift, loop, tdd and
+diagnose, and `ank-herdr` teaches the agent orchestrating the others from a
+herdr pane. A task may name any sibling, and planning designates one of the
+five. `ank new --method tdd` writes the designation into it, `ank context`
 names it and the sibling to load beneath the criterion once the task is
 claimed, `ank log --method tdd` records that it fired, and `ank skills` counts
 designations against firings per method. A name no sibling carries is refused
@@ -72,12 +73,18 @@ not ship writes a skill for it, and ank still verifies only the outcome.
 
 ## What it costs to run
 
-Two numbers rather than an adjective. The six skills cost about 280 tokens in
+Two numbers rather than an adjective. The seven skills cost about 330 tokens in
 every session, which is their frontmatter: the `name` and `description` a harness
 keeps loaded whether or not a skill is ever invoked, the body being read only when
-it is. That is 38 tokens for the contract and 41 to 57 for each sibling, counted
-with `cl100k_base` over the six `SKILL.md`. And orientation is bounded at 8000
-characters.
+it is. That is 38 tokens for the contract and 41 to 57 for each sibling, 334 in
+all, counted with `cl100k_base` over the seven `SKILL.md` by this command, run at
+the root of the repository with `tiktoken` installed:
+
+```sh
+python3 -c 'import glob,re,tiktoken; e=tiktoken.get_encoding("cl100k_base"); n=[len(e.encode("".join(re.findall(r"^(?:name|description): .*\n", open(p).read().split("---\n")[1], re.M)))) for p in ["skill/SKILL.md", *sorted(glob.glob("skill/*/SKILL.md"))]]; print(n, sum(n))'
+```
+
+And orientation is bounded at 8000 characters.
 
 [okf]: https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf
 [pocock]: https://github.com/mattpocock/skills
