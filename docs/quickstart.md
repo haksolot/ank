@@ -2,29 +2,26 @@
 
 By the end of this page your repository holds one binding constraint, one
 finished task, and a proof that Ank wrote after running the verification
-itself. It takes about ten minutes, and nothing here asks you to read the
-specification. It assumes `ank` answers `ank --version`; [Install](install.md)
-gets it there.
+itself. It takes about ten minutes. It assumes `ank` answers `ank --version`;
+[Install](install.md) gets it there.
 
-Every command and every output below was run against a fresh repository, and
-the suite replays them against the binary on every change. Where the tool
-refuses, the refusal is shown as it appears. Each step says what it does and
-links to the page that explains it whole.
+Every command and output below was run against a fresh repository, and the
+suite replays them against the binary on every change. Each step says what it
+does and links to the page that explains it whole.
 
 ## Initialise a repository
 
 **Three files are in the tree before anything starts**, because every scope and
-every verifier below is pointed at one of them. These are their exact contents,
-one line each, and they are written out because two of the hashes further down
-are hashes of them:
+every verifier below points at one of them. These are their exact contents, one
+line each, since two hashes further down are hashes of them:
 
     src/auth/session.ts   export function createSession(id) { return store.put(id) }
     tests/auth.sh         exit 0
     README.md             # auth service
 
-What matters is that all three exist. A scope matching no file and a verifier
-whose command is not there are the two ways this walk ends in red, and neither
-says anything until `ank done`, a dozen commands later.
+All three have to exist. A scope matching no file and a verifier whose command
+is missing are the two ways this walk ends in red, and both stay silent until
+`ank done`, a dozen commands later.
 
 From the root of that repository:
 
@@ -45,18 +42,14 @@ $ git add -A && git commit -q -m "the service"
     refspec added: +refs/ank/*:refs/ank/*
 
 **Two of those files are for the agents who will work here.** `AGENTS.md`
-gains a short block that names `ank` as a CLI, says to run `ank context <path>`
-before editing a path and never to read `.ank/` by hand, names `claim`, `done`
-and `help`, and links the install page. `CLAUDE.md` gains the line
-`@AGENTS.md`, which is what makes Claude Code load that block; it is created
-when absent and left alone when it already imports `AGENTS.md`. Both are
-written by the run that creates `.ank/` and by no later one.
+gains a short block telling them to run `ank context <path>` before editing a
+path and to reach `.ank/` through the CLI, and naming `claim`, `done` and
+`help`. `CLAUDE.md` gains the line `@AGENTS.md`, which makes Claude Code load
+that block. Only the run that creates `.ank/` writes them.
 
-**The last line is the one a repository with no `origin` prints differently**:
-there is no remote to add a refspec to, so `init` says the refspec was not
-added and names itself as the command to run once there is one. The other six
-lines are identical, and a repository with an `origin` added later picks the
-refspec up from a second `init`:
+**A repository with no `origin` prints the last line differently**: there is no
+remote to add a refspec to, so `init` names itself as the command to run once
+there is one. A second `init` after adding the remote picks it up:
 
 <!-- replay bare ANK_AGENT=human:marie
 $ echo '# auth service' > README.md && git add -A && git commit -q -m "the service"
@@ -74,37 +67,29 @@ $ echo '# auth service' > README.md && git add -A && git commit -q -m "the servi
     $ ank init
     refspec added: +refs/ank/*:refs/ank/*
 
-Re-running `init` otherwise writes nothing twice: it says `already
-initialised, nothing to do`, followed, while there is still no `origin`, by the
-same line about the refspec. Whether you want an `origin` at all is a question
-about coordination, and [Claims and identity](claims.md#where-claims-travel)
-answers it.
+Otherwise a second `init` writes nothing and says `already initialised,
+nothing to do`. Whether you want an `origin` at all is a question about
+coordination, answered in [Claims and identity](claims.md#where-claims-travel).
 
-One directory is created, not one per kind: entities live flat in
-`.ank/entities` whatever they are (ADR-c9f9d0d6f05d), and a task, an ADR, a
-spec and a log entry are told apart by a field rather than by a folder. The
-`.gitattributes` line keeps `.ank/` in LF on checkout: on Windows git would
-otherwise convert back to CRLF everything the tool has just written, on every
-clone. The `.gitignore` line is `.ank/index.db*`, which covers the derived
-SQLite index, `.ank/index.db.<N>`, one file per index schema `N`: it is rebuilt from the files whenever it is missing, so committing it would only
-track a binary that every command rewrites. The refspec is what makes claims
-travel, since hosts do not fetch non-standard refs on their own. Both git files
-are appended to, never replaced, so an existing `.gitignore` keeps everything
-already in it. [The file format](format.md) describes the whole layout.
+Every entity lives flat in `.ank/entities`, and a field tells a task from an
+ADR. The `.gitattributes` line keeps `.ank/` in LF on a Windows checkout. The
+`.gitignore` line covers the SQLite index, which every command rebuilds from
+the files when it is missing. The refspec makes claims travel, since hosts
+fetch only the standard refs on their own. Both git files are appended to, so
+an existing `.gitignore` keeps what it had. [The file format](format.md)
+describes the whole layout.
 
 **Name your default branch.** It is the one key `init` leaves unset on purpose:
-it runs where the reference branch is not known yet, and writing `main` there
-would be exactly the guess the tool refuses everywhere else. `.ank/config.yml`
-is written through the CLI rather than by hand:
+`init` runs before the reference branch is known, and writing `main` there would
+be a guess. `.ank/config.yml` is written through the CLI:
 
 <!-- replay walk -->
 
     $ ank config default_branch main
     default_branch (unset) -> main
 
-Without it, Ank looks for `refs/remotes/origin/HEAD`, and a repository with no
-remote has none. It does not guess, and `check` says what it stopped judging
-rather than judging against a branch it made up:
+Without it, Ank looks for `refs/remotes/origin/HEAD`, which a repository with
+no remote lacks, and `check` says what it stopped judging:
 
 <!-- replay unset ANK_AGENT=human:marie
 $ ank init
@@ -113,15 +98,14 @@ $ ank init
     $ ank check | grep 'default branch'
     signal: coordination: default branch indeterminable, completion refs neither pruned nor judged and log entries not compared against it (ank config default_branch <name>)
 
-A clone sets `refs/remotes/origin/HEAD` for you, so a repository with an
-`origin` resolves the branch without the key; setting it anyway costs one line
-and removes the difference between the two.
+A clone sets `refs/remotes/origin/HEAD` for you; setting the key anyway costs
+one line and makes both kinds of repository behave alike.
 
 ## The two kinds this page uses
 
-Flat in `.ank/`, markdown with YAML frontmatter. Four kinds exist and this page
-needs two of them; the other two are a **spec**, normative text that describes
-rather than binds, and a **log entry**, written once and never transitioned.
+Each entity is a markdown file with YAML frontmatter. Four kinds exist and this
+page needs two; the others are a **spec**, normative text that describes, and a
+**log entry**, written once.
 
 An **ADR** is a decision that constrains code. Its `constraint` is the one
 field injected into an agent's context, so it is short and imperative; the body
@@ -130,24 +114,23 @@ holds the reasoning and costs nothing at injection time.
 A **task** is a unit of work. Its `done_criteria` says what would prove it
 finished.
 
-Both carry a `scope`: a list of globs, and the only thing that joins the two
-kinds. There is no epic, no parent, no label. "Everything about the auth
-migration" is answered by `ank context src/auth/`. The full field list is in
-[Entity fields](entity-fields.md); you do not need it to work through this page.
+Both carry a `scope`, a list of globs, and the scope is the only thing joining
+the two kinds. "Everything about the auth migration" is answered by
+`ank context src/auth/`. The full field list is in
+[Entity fields](entity-fields.md).
 
 ## Write the first constraint
 
 <!-- replay walk -->
 
-    $ ank new adr --title "Opaque sessions rather than stateless JWT" \
+    $ ank new adr --title "Opaque sessions over stateless JWT" \
         --scope "src/auth/**" \
         --constraint "Do not introduce self-contained JWTs for user auth. Every session goes through the Redis store."
-    created ADR-06d29e727d24 Opaque sessions rather than stateless JWT
+    created ADR-06d29e727d24 Opaque sessions over stateless JWT
 
-It is created `proposed`, which means visible but not binding. Promotion goes
-through one command, and it commits nothing: it writes the ratification as a tag
-object at `refs/ank/ratify/<id>`, signed where the repository signs, and then
-updates the file:
+It is created `proposed`: visible, and binding nobody yet. One command
+promotes it. It writes the ratification as a tag at `refs/ank/ratify/<id>`,
+signed where the repository signs, updates the file, and commits nothing:
 
 <!-- replay walk -->
 
@@ -155,9 +138,9 @@ updates the file:
     $ ank accept 06d2
     accepted ADR-06d29e727d24 -> 3f0a6b2
 
-Short prefixes work everywhere an id is accepted; an ambiguous one is an error
-listing the candidates, never a guess. The message of the tag it wrote carries
-the hash of `constraint` and `scope` at acceptance:
+Short prefixes work everywhere an id is accepted, and an ambiguous one lists
+the candidates. The tag's message carries the hash of `constraint` and `scope`
+at acceptance:
 
 <!-- replay walk
 $ git cat-file tag refs/ank/ratify/ADR-06d29e727d24 | sed '1,/^$/d'
@@ -168,17 +151,15 @@ $ git cat-file tag refs/ank/ratify/ADR-06d29e727d24 | sed '1,/^$/d'
     constraint+scope: c5d4f3478ad5
     by: human:marie
 
-That hash is the anchor. Editing the constraint afterwards does not change it,
-which is how `ank check` notices. `accept` runs on any branch: the ref is a fact
-about the repository and not about a branch, and the file it updates travels
-with your next commit like any other change. How others can verify it is
-[Signing keys](signing.md).
+That hash is the anchor: edit the constraint afterwards and `ank check`
+notices. `accept` runs on any branch, and the file it updates travels with your
+next commit. [Ratifying](ratifying.md) covers the act and
+[Signing keys](signing.md) how others verify it.
 
 ## Declare the verifiers, then the task
 
-A task names verifiers; it never carries a shell command. The definitions live
-in `.ank/config.yml`, and writing a `run` for a name the file does not carry is
-how a verifier is declared:
+A task names verifiers, and their commands live in `.ank/config.yml`. Writing a
+`run` for a new name declares one:
 
 <!-- replay walk -->
 
@@ -197,10 +178,8 @@ Then the task, naming both:
         --verify auth-tests --verify no-jwt
     created TASK-820d259af6a7 Migrate auth to opaque sessions
 
-A composite criterion is mechanised by several verifiers, not by one that
-covers half of it, and all of them must pass. What else a verifier can be told,
-the list a task gets when it names none, and the task that deliberately has no
-verifier at all are [Proof and verifiers](proof.md).
+Every verifier a task names has to pass. The list a task gets when it names
+none, and everything else about verifiers, is in [Proof and verifiers](proof.md).
 
 ## Orientation
 
@@ -212,20 +191,17 @@ argument it covers the whole repository; with a path it covers that perimeter.
     $ ank context src/auth/
 
     CONSTRAINTS (1 active)
-      ADR-06d2  Opaque sessions rather than stateless JWT
+      ADR-06d2  Opaque sessions over stateless JWT
 
     TASKS (1)
       TASK-820d  [open] Migrate auth to opaque sessions
 
     > ank claim TASK-820d to start
 
-**Before a claim a constraint is one line, and that line is its title.** What
-is being answered here is which perimeter to enter, and a survey that spent its
-whole budget on constraint text would answer it worse. The constraint itself
-arrives with the claim, below, where the perimeter is settled and the rule is
-what you are about to be held to; `ank show 06d2` prints it whole at any time.
-Constraints come first in both forms, and once you are working they are never
-truncated. The output ends with the next command, as every output here does.
+**Before a claim, each constraint shows its title.** The question here is which
+perimeter to enter, and titles answer it in the least space. The full
+constraint arrives with the claim, below; `ank show 06d2` prints it at any time.
+The output ends with the next command, as every output here does.
 
 ## Claim
 
@@ -234,14 +210,12 @@ truncated. The output ends with the next command, as every output here does.
     $ ank claim 820d
     claimed TASK-820d259af6a7 migrate-auth-to-opaque-sessions -> HEAD
 
-The task moved to `in_progress`, a claim ref now says who holds it, and its
-`done_criteria` was frozen by hash where the file's editor cannot reach it.
-`claim` also sets HEAD, so the following commands need no id. What a claim is,
-how long it lasts, and why a second session needs an identity of its own are
-[Claims and identity](claims.md).
+The task is `in_progress`, a ref says who holds it, and its `done_criteria` is
+frozen by hash. The next commands need no id. How long a claim lasts and why
+each session needs its own identity are [Claims and identity](claims.md).
 
-Run `ank context` again and the output inverts: no other task, the full
-criterion, and the constraints matching this task's scope.
+Run `ank context` again and it narrows to this task: its criterion, and the
+constraints matching its scope in full.
 
 <!-- replay walk -->
 
@@ -255,8 +229,8 @@ criterion, and the constraints matching this task's scope.
     CONSTRAINTS (1 active)
       ADR-06d2  Do not introduce self-contained JWTs for user auth. Every session goes through the Redis store.
 
-`ank show 820d` gives you the entity whole, frontmatter, body and log, which
-is where the reasoning behind a task lives.
+`ank show 820d` prints the entity whole: frontmatter, body, where the
+reasoning lives, and log.
 
 ## Work, and log what you learn
 
@@ -265,12 +239,10 @@ is where the reasoning behind a task lives.
     $ ank log "jwt.verify removed from session.ts"
     logged LOG-6b0f39d7a4c1 on TASK-820d259af6a7
 
-The log is a work trace, not proof. Write to it when you discover something,
-not when you finish: it renews the claim, so working is what keeps the lock and
-there is no heartbeat command to remember. Each entry is an entity of its own,
-which is why the line names one, and `ank log 820d` with no message reads them
-back, newest first. How entries are stored is [the file
-format](format.md#the-log).
+The log is a work trace. Write to it when you discover something: each entry
+renews the claim, so working is what keeps the lock. `ank log 820d` with no
+message reads the entries back, newest first. How they are stored is
+[the file format](format.md#the-log).
 
 ## Finish
 
@@ -283,16 +255,14 @@ format](format.md#the-log).
     proof recorded: no-jwt@791cc818d0ad -> local/e3b0c44298fc@9c45c50  (scope/18d14da584ab)
     TASK-820d259af6a7 -> done
 
-This is the point of the tool. Ank ran the verifiers itself and wrote what
-actually ran; nobody reported their own result. Never set `status: done` by
-hand: a status written by the party being measured measures nothing. What each
-hash on those lines is, and what `done` asks for when a task has no verifier,
-are [Proof and verifiers](proof.md#what-done-records).
+This is the point of the tool: Ank ran the verifiers itself and recorded what
+ran, so the status is Ank's measurement of the tree. What each hash on those
+lines means is in [Proof and verifiers](proof.md#what-done-records).
 
 ## Commit, and read `check`
 
-**Ank never commits.** It writes files and leaves them in your working tree,
-so the corpus travels through your normal review like any other change. Before you commit, `check` has something to say:
+**Ank leaves committing to you.** Its files wait in your working tree and travel
+through your normal review. Before you commit, `check` reads them:
 
 <!-- replay walk -->
 
@@ -303,7 +273,7 @@ so the corpus travels through your normal review like any other change. Before y
     signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
     check: ok — 1 tasks, 1 adr, 4 signal(s)
 
-Commit, and the two signals about the uncommitted work go:
+Commit, and the two signals about uncommitted work go:
 
 <!-- replay walk -->
 
@@ -316,37 +286,30 @@ Commit, and the two signals about the uncommitted work go:
     pruned refs/ank/claims/TASK-820d259af6a7
     check: ok — 1 tasks, 1 adr, 3 signal(s)
 
-**That is the green this page set out to reach**, with an `origin` and without:
-signals, no fault, exit 0. A signal is something a reader should see and never a
-failure; exit 8 is reserved for findings. What each of those lines means, and
-why `check` just pruned a ref, is [Reading ank check](check.md).
+**That is the green this page set out to reach**: signals, no fault, exit 0.
+Each line, and the pruned ref, is explained in [Reading ank check](check.md).
 
-When a command refuses instead, the exit code carries the meaning so a script
-can route without parsing anything, and the message always ends with the exact
-command to run next. The codes are [the exit-code reference](exit-codes.md).
+When a command refuses, its exit code carries the meaning and its message ends
+with the command to run next. The codes are [the exit-code reference](exit-codes.md).
 
 ## Starting where there is already code
 
-Everything above happened in an empty directory, which is the one repository
-nobody has. `ank init` on two years of history leaves you with a corpus and no
-content, and the question it raises is not how to write an ADR: it is which
-decisions this code has already made, and which of them were worth writing down
-all along. That reading is an agent's work, and these are the three prompts that
-ask for it. Both installers offer to print the same three, character for
-character, and a test holds the three copies together.
+Everything above happened in a new repository. `ank init` on two years of
+history leaves you with an empty corpus, and the question becomes which
+decisions this code has already made. That reading is an agent's work, and
+these three prompts ask for it. Both installers offer to print the same three,
+and a test holds the copies together.
 
 Run this once, at the root of the repository:
 
     ank init
 
 Then paste each prompt into your agent, one at a time, reading what comes back
-before you send the next. They follow the three moments of an adoption: what the
-code already decided, what it still owes, and whether the answer holds.
+before you send the next.
 
 **What the code already decided.** This is the one you judge the tool on. A
-constraint you recognise on sight is a constraint that was true and unwritten,
-and the reason it now has an id is that the next agent reads it without being
-told.
+constraint you recognise on sight was true and unwritten, and now the next agent
+reads it without being told.
 
 <!-- adopt-prompts:begin -->
 
@@ -356,23 +319,21 @@ told.
     the files it binds and a constraint stated as a rule. Leave them
     proposed; I ratify them myself.
 
-They land `proposed`, which binds nobody. `ank review` lists what is waiting, and
-`ank accept <id>` stays yours: a signed act, one at a time. An agent proposes
-and says it is waiting.
+They land `proposed`. `ank review` lists what is waiting, and `ank accept <id>`
+stays yours, one at a time.
 
-**What it still owes.** Intentions scattered across TODOs, an issue tracker and a
-README are not work an agent can take. A scope and a criterion are, which is what
-`ank claim` freezes and `ank done` measures.
+**What it still owes.** An agent can take work that has a scope and a
+criterion, which is what `ank claim` freezes and `ank done` measures. TODOs and
+issues become that here.
 
     Read the TODOs, the open issues and the README of this repository,
     and turn what they promise into ank tasks. Give each one a scope
     glob and a done_criteria a test could settle, and use blocked_by
     only where a task genuinely waits on another.
 
-**Whether the answer holds.** The third is the uncomfortable one, and it is meant
-to be: a constraint the code already breaks is the ordinary result of writing
-down what was implicit, not a sign the first prompt went wrong. What you want out
-of it is the list, before anybody starts repairing.
+**Whether the answer holds.** The third is the uncomfortable one. Writing down
+what was implicit ordinarily turns up constraints the code already breaks, and
+what you want first is the list, before anybody starts repairing.
 
     Run ank check and ank review here, then read every ADR back against
     the code its scope matches. Tell me which constraints the code
@@ -381,36 +342,32 @@ of it is the list, before anybody starts repairing.
 
 <!-- adopt-prompts:end -->
 
-None of the three is a step the tool waits on. A corpus with nothing but the ADRs
-from the first prompt is already worth `ank context`, and the other two can wait
-until you want them.
+The tool waits on none of the three. A corpus holding only the ADRs from the
+first prompt is already worth `ank context`.
 
 ## Why it works this way
 
-You have now done the loop once, which is the right moment for the four claims
-underneath it. Each one is a property of the tool rather than a convention you
-are asked to keep.
+You have now done the loop once, which is the right moment for the four
+properties underneath it.
 
 **Scope, not hierarchy.** Constraints and work are two planes joined only by
-globs. A rule written last year binds work created today, and a glob is
-verifiable against the filesystem where a label is not. There is no epic, no
-parent and no rollup to keep in step.
+globs. A rule written last year binds work created today, and a glob can be
+checked against the filesystem, where a label can only be remembered.
 
 **Nobody declares themselves done.** An agent that reports its own result can
-simply be wrong, so `ank done` runs the verifiers itself and records what
-actually ran, hashed.
+simply be wrong, so `ank done` runs the verifiers itself and records what ran,
+hashed.
 
-**Freezing is verifiable, not defended.** The CLI cannot stop you editing a file
-and does not pretend to. Frozen fields are anchored by a hash the editor does not
-control, and `ank check` compares. Editing a criterion to unblock yourself
-unblocks nothing; it makes the divergence visible.
+**Freezing is verifiable.** You can edit any file. Frozen fields are anchored by
+a hash the editor cannot reach, and `ank check` compares, so editing a
+criterion to unblock yourself only makes the divergence visible.
 
 **Git does the hard parts.** Claims are git refs, so the compare-and-swap that
 arbitrates two agents is the one git already guarantees. Undo, history and
 recovery are git's, and there is no server to run.
 
-One call is bounded at 8000 characters by default, roughly 2000 tokens, which is
-the constraint every one of those choices is paid for by: what `context` serves
-has to fit in a context window beside the code. The normative text behind all of
+One call is bounded at 8000 characters by default, roughly 2000 tokens: what
+`context` serves has to fit in a context window beside the code, and every
+choice above pays for that. The normative text behind all of
 it is [the specification](specification.md); `ank help` lists every verb, and
 `ank help <verb>` answers about one.
