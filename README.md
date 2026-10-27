@@ -29,7 +29,9 @@ npx skills add haksolot/ank      # the skills, for your agent
 
 Linux, macOS and Windows; needs git 2.34 or newer. The shell installers and
 every other route are in [Install][install]. The version is `0.x` on purpose: the loop and
-the exit codes are specified, the storage format is not yet.
+the exit codes are specified, and so is the file format, by the accepted data-model
+spec listed in [the specification][spec]. The format may still change before 1.0,
+and a change arrives as a new `schema` value.
 
 ## The loop
 
@@ -78,3 +80,4 @@ Apache-2.0. See [LICENSE](LICENSE).
 
 [install]: https://haksolot.github.io/ank/install.html
 [start]: https://haksolot.github.io/ank/quickstart.html
+[spec]: https://haksolot.github.io/ank/specification.html

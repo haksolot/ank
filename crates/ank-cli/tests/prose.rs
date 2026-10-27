@@ -28,9 +28,9 @@ fn root() -> PathBuf {
 /// One row per page: the count of [`NEGATIONS`] it held when the row was last
 /// written. Lower a row when you rewrite its page; never raise one.
 const BUDGET: &[(&str, usize)] = &[
-    ("README.md", 3),
+    ("README.md", 2),
     ("docs/SUMMARY.md", 0),
-    ("docs/alternatives.md", 10),
+    ("docs/alternatives.md", 1),
     ("docs/check.md", 8),
     ("docs/ci-jobs.md", 9),
     ("docs/ci.md", 14),
