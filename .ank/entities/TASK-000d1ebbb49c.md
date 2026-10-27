@@ -5,7 +5,7 @@ slug: vale-pinned-by-mise-lints-docs-readme-md-and-ski
 title: Vale, pinned by mise, lints docs/, README.md and skill/ from the suite, under a negation budget per page and a skill count held to skill/
 created: 2026-10-26T18:40:28Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - mise.toml
   - mise.lock
@@ -21,7 +21,7 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
 
 The enforcement half of ADR-0dd192525166. The pages rewritten first
