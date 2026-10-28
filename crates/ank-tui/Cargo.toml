@@ -83,6 +83,24 @@ ratatui = { version = "0.30", default-features = false, features = ["std", "cros
 # two, all three of which this workspace's lockfile already carries.
 serde_json = { version = "1", features = ["preserve_order"] }
 
+# **A hang-up, which crossterm reads past** (TASK-69e774ef9d64). crossterm 0.29
+# reads the terminal in a loop that leaves only on `WouldBlock`, so a terminal
+# whose other side closed -- end of file on one platform, `EIO` on another --
+# is read again at once, for ever: measured on 2026-10-28 at about 1.3 million
+# `read` calls a second per orphaned reader, four of them holding a four-core
+# machine at 100% for days. `term::hangup` watches the same descriptor for the
+# readiness that says its reading side closed, and nothing else. That is a
+# kqueue on macOS and an epoll on Linux, foreign calls ADR-ac6be1ebe9aa lets no
+# source here declare, so it is reached through mio's safe interface: the
+# crate crossterm itself reads the terminal with on Unix, already compiled
+# under it, so what this costs is a declaration and the `os-ext` feature that
+# lets a raw descriptor be registered, not a crate. Not rustix's `poll`, which
+# the first version used: macOS answers `POLLNVAL` for a terminal there
+# (TASK-18ea15500b41). Unix only, because Windows reads the console through
+# crossterm's own records.
+[target.'cfg(unix)'.dependencies]
+mio = { version = "1", features = ["os-poll", "os-ext"] }
+
 [[test]]
 name = "integration"
 path = "tests/main.rs"

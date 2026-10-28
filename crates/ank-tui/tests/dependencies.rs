@@ -184,24 +184,38 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 /// gained when `serde_yaml` left it (TASK-f0c6372d8dc0) -- the argument for
 /// spending it is in the manifest beside the declaration, where
 /// ADR-ac6be1ebe9aa's first clause puts it; `ratatui` and `crossterm` are what
-/// that decision spends and the whole of what it spends; the rest is what those
-/// four bring with them and nothing this crate chose.
+/// that decision spends and the whole of what it spends; `mio`, on Unix, is
+/// the safe interface through which the reader notices a terminal that hung
+/// up, one crossterm already compiles (TASK-69e774ef9d64, TASK-18ea15500b41);
+/// the rest is what those
+/// five bring with them and nothing this crate chose.
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     let (tree, _) = graph();
-    let mut direct: Vec<String> = std::fs::read_to_string(manifest().join("Cargo.toml"))
-        .expect("this crate has a manifest")
-        .lines()
-        .skip_while(|l| l.trim() != "[dependencies]")
-        .skip(1)
-        .take_while(|l| !l.trim_start().starts_with('['))
-        .filter(|l| !l.trim_start().starts_with('#') && !l.trim().is_empty())
-        .filter_map(|l| l.split_once('=').map(|(name, _)| name.trim().to_string()))
-        .collect();
+    // Every section that links into the reader, a platform's own included: a
+    // dependency behind `cfg(unix)` is linked into every Unix build, and a
+    // reading of `[dependencies]` alone would let it arrive unargued.
+    let manifest_text =
+        std::fs::read_to_string(manifest().join("Cargo.toml")).expect("this crate has a manifest");
+    let mut direct: Vec<String> = Vec::new();
+    let mut linked = false;
+    for line in manifest_text.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            linked = line == "[dependencies]"
+                || (line.starts_with("[target.") && line.ends_with(".dependencies]"));
+            continue;
+        }
+        if linked && !line.starts_with('#') && !line.is_empty() {
+            if let Some((name, _)) = line.split_once('=') {
+                direct.push(name.trim().to_string());
+            }
+        }
+    }
     direct.sort();
     assert_eq!(
         direct,
-        ["ank-contract", "crossterm", "ratatui", "serde_json"],
+        ["ank-contract", "crossterm", "mio", "ratatui", "serde_json"],
         "a dependency arrived. It may well be the right call -- and the \
          argument for it belongs in the manifest beside the two that are \
          there, and in this list.\n{tree}"

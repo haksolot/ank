@@ -284,3 +284,93 @@ pub fn typing(wake: Sender<Wake>) {
         }
     });
 }
+
+/// Watches for the terminal going away, on a thread of its own, and says so
+/// as [`Wake::Broken`] (TASK-69e774ef9d64).
+///
+/// **[`typing`] cannot be the one to notice.** crossterm 0.29 reads the
+/// terminal in a loop that leaves only on `WouldBlock`: a hung-up terminal
+/// answers end of file on one platform and `EIO` on another, neither is
+/// `WouldBlock`, and the loop reads again at once without returning to its
+/// `poll`. Once the reading thread is inside `event::read` it never comes out,
+/// so no check placed before the call could help. Measured on 2026-10-28: four
+/// readers orphaned by a pseudo-terminal suite whose master had closed made
+/// about 1.3 million `read` calls a second each, for days, and held a
+/// four-core machine at 100%.
+///
+/// **A hang-up is otherwise a signal, and this reader is not always sent
+/// one.** `SIGHUP` goes to the controlling process of a terminal, and a reader
+/// handed a terminal it does not control -- by a script, a pane manager or
+/// this crate's own suite -- is told nothing when the other side closes.
+///
+/// So this watches the descriptor the reader reads, through mio, which is
+/// what crossterm itself reads it with: kqueue on macOS, epoll on Linux. A
+/// hang-up is the one readiness that says the reading side is closed
+/// (`EV_EOF`, `EPOLLHUP`), and that is the only one acted on. A keystroke wakes
+/// this thread once and is left for [`typing`], since nothing here reads.
+///
+/// **Not `poll(2)`, which the first version used** (TASK-18ea15500b41). macOS
+/// does not support devices in `poll`: it answers `POLLNVAL` for a terminal,
+/// so the watcher stood down on every Mac and the regression test failed on
+/// macos-latest alone (run 40712339509). A descriptor the watcher cannot
+/// register is still left alone rather than taken for a hang-up, because a
+/// reader that quit on it would be a reader that never opened.
+///
+/// On Windows this is nothing: the console is read through crossterm's own
+/// records, not this loop, and closing it ends the process attached to it
+/// (`conpty::a_reader_whose_console_closes_ends_by_itself`).
+#[cfg(unix)]
+pub fn hangup(wake: Sender<Wake>) {
+    use mio::unix::SourceFd;
+    use mio::{Events, Interest, Poll, Token};
+    use std::io::IsTerminal;
+    use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+
+    // The descriptor crossterm reads: standard input where it is a terminal,
+    // and the process's terminal otherwise.
+    let watched: OwnedFd = if std::io::stdin().is_terminal() {
+        match std::io::stdin().as_fd().try_clone_to_owned() {
+            Ok(fd) => fd,
+            Err(_) => return,
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(file) => file.into(),
+            Err(_) => return,
+        }
+    };
+    let Ok(mut poll) = Poll::new() else {
+        return;
+    };
+    if poll
+        .registry()
+        .register(
+            &mut SourceFd(&watched.as_raw_fd()),
+            Token(0),
+            Interest::READABLE,
+        )
+        .is_err()
+    {
+        return;
+    }
+    std::thread::spawn(move || {
+        // Owned by the thread: the registration lasts as long as it does.
+        let _watched = watched;
+        let mut events = Events::with_capacity(4);
+        loop {
+            match poll.poll(&mut events, None) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => return,
+            }
+            if events.iter().any(|e| e.is_read_closed() || e.is_error()) {
+                let _ = wake.send(Wake::Broken("the terminal hung up".to_string()));
+                return;
+            }
+        }
+    });
+}
+
+/// Nothing to watch: see the Unix one.
+#[cfg(not(unix))]
+pub fn hangup(_wake: Sender<Wake>) {}

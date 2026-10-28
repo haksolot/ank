@@ -10,6 +10,11 @@
 #[cfg(unix)]
 mod terminal;
 
+// The Windows half of what `terminal` measures about a terminal that goes
+// away (TASK-69e774ef9d64): ConPTY, where the console is records and not bytes.
+#[cfg(windows)]
+mod conpty;
+
 mod address;
 mod bindings;
 mod chrome;
