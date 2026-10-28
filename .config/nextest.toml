@@ -25,6 +25,14 @@ pty-serial = { max-threads = 1 }
 filter = 'package(ank-tui) & binary(integration) & test(/^(bindings|claims|colour|edit|graph|overlay|search|verbs)::/)'
 test-group = 'pty-serial'
 
+# The two harness tests of TASK-69e774ef9d64 open a session each and take the
+# lock, so they join the group for the same reason, by name: the rest of
+# `terminal::` tests the harness itself and opens its terminals on purpose at
+# once.
+[[profile.default.overrides]]
+filter = 'package(ank-tui) & binary(integration) & (test(=terminal::a_reader_whose_terminal_hangs_up_ends_by_itself) | test(=terminal::a_session_dropped_without_quitting_leaves_no_reader))'
+test-group = 'pty-serial'
+
 # The pseudo-terminal test prints every open it had to retry, with its errno,
 # and its output is shown on success too: a refusal macOS recovered from is a
 # fact read off the job log, not one the passing test swallows

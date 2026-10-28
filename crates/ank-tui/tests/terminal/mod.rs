@@ -162,6 +162,75 @@ fn a_fixture_repository_is_not_maintained_under_the_test() {
 /// `/proc/<pid>/fd` because that is the kernel's own list of what the child
 /// holds, which is why this runs on Linux only; the fix it pins is the same
 /// call on every Unix.
+/// A reader whose terminal is gone ends by itself (TASK-69e774ef9d64).
+///
+/// The terminal is closed from the far side with the reader idle on it, which
+/// is what a suite dying under a session does. Nothing is sent and no signal
+/// arrives: a child of this suite controls no terminal, so no `SIGHUP` is
+/// raised for it. Before the fix the reader read end of file in a loop for as
+/// long as it was let, about 1.3 million times a second.
+///
+/// **The bound is a deadline and not a measurement.** What is asserted is that
+/// the reader ends at all; thirty seconds is there so that a reader that never
+/// does fails here, named, rather than hanging the suite, and it is killed
+/// before the failure is reported so that it does not outlive the run.
+#[test]
+fn a_reader_whose_terminal_hangs_up_ends_by_itself() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
+    let repo = Repo::seeded();
+    let mut child = abandoned(&repo, 120, 30);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().expect("the reader can be waited for") {
+            // How it ended is not the point: a reader whose terminal is gone
+            // has nowhere left to say so, and the teardown it tries may not
+            // finish cleanly. That it ended is.
+            let _ = status;
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the reader was still running 30 s after its terminal hung up");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+}
+
+/// A session dropped without being quit takes its reader with it
+/// (TASK-69e774ef9d64).
+///
+/// The drop is the one a panicking test performs, so a test that fails between
+/// opening a session and quitting it leaves nothing running. The pid is asked
+/// after the drop with `kill -0`, which answers on Linux and macOS alike; and
+/// where it is still there, it is killed before the failure is reported.
+#[test]
+fn a_session_dropped_without_quitting_leaves_no_reader() {
+    let _one = ONE_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|held| held.into_inner());
+    let repo = Repo::seeded();
+    let live = Live::open(&repo, 120, 30);
+    live.until("the session to open", |t| t.contains("2 ENTITIES"));
+    let pid = live.child.id().to_string();
+    drop(live);
+    let alive = Command::new("kill")
+        .args(["-0", &pid])
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("kill runs")
+        .success();
+    if alive {
+        let _ = Command::new("kill").args(["-9", &pid]).status();
+    }
+    assert!(
+        !alive,
+        "the reader {pid} outlived the session it was opened by"
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_reader_holds_no_terminal_but_its_own() {
@@ -1532,7 +1601,10 @@ pub fn same_but_the_pulse(a: &str, b: &str) -> bool {
 /// `ank tui` on a real terminal of a stated size, drivable while it runs.
 pub struct Live {
     child: std::process::Child,
-    writer: std::fs::File,
+    /// The master side, written to by [`Live::send`]. An `Option` so that the
+    /// two endings can close it before they join the drain, which a type with
+    /// a [`Drop`] could not do by moving the field out.
+    writer: Option<std::fs::File>,
     /// The slave side's device, kept so the window can be moved under a
     /// running session ([`Live::resize`], TASK-643611645dea).
     slave_path: PathBuf,
@@ -1688,7 +1760,7 @@ impl Live {
         });
         Live {
             child,
-            writer: master,
+            writer: Some(master),
             slave_path,
             screen,
             seen,
@@ -1844,10 +1916,11 @@ impl Live {
 
     pub fn send(&mut self, bytes: &str) {
         use std::io::Write;
-        self.writer
+        let writer = self.writer.as_mut().expect("the session is still open");
+        writer
             .write_all(bytes.as_bytes())
             .expect("the terminal must accept a keystroke");
-        self.writer.flush().unwrap();
+        writer.flush().unwrap();
     }
 
     /// A press of the left button at a point on the screen, and the release
@@ -1889,7 +1962,7 @@ impl Live {
                 .try_wait()
                 .expect("the session can be waited for")
             {
-                drop(self.writer);
+                drop(self.writer.take());
                 if let Some(drain) = self.drain.take() {
                     drain.join().expect("the drain must not panic");
                 }
@@ -1926,10 +1999,130 @@ impl Live {
         self.send("q");
         let status = self.child.wait().expect("the session must end");
         assert!(status.success(), "a reader that quits answers 0: {status}");
-        drop(self.writer);
+        drop(self.writer.take());
         if let Some(drain) = self.drain.take() {
             drain.join().expect("the drain must not panic");
         }
         self.screen.lock().unwrap().raw.clone()
     }
+}
+
+impl Drop for Live {
+    /// **A session nobody quit is killed, and then reaped** (TASK-69e774ef9d64).
+    ///
+    /// [`Live::quit`], [`Live::ended`] and [`Live::exited`] each end the child,
+    /// and a test that panics before it reaches one of them reaches none:
+    /// `std::process::Child` does not kill on drop. The reader then outlived
+    /// the suite, and with the master gone it read end of file in a loop.
+    /// Measured on 2026-10-28: four of them, orphaned under init from four
+    /// worktrees, held a four-core machine at 100% for days. Whatever made a
+    /// test panic, it leaves no process behind it.
+    ///
+    /// The drain is not joined here. It ends on its own once the child is
+    /// gone, and a join in a `Drop` that runs during a panic is a second place
+    /// for the suite to hang.
+    fn drop(&mut self) {
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+/// `ank tui` on a terminal whose other side is then closed, as it is when
+/// whatever opened the terminal dies (TASK-69e774ef9d64).
+///
+/// **Closed once the reader has gone quiet, and that is the condition being
+/// tested.** A reader still painting when its terminal goes meets the closure
+/// as a failed write and ends there; the one that spun for days was idle,
+/// waiting on a keystroke. So the frame is read until the session is open and
+/// then until nothing has arrived for a second, and only then is the far side
+/// closed. A reader that paints again later only makes this easier to pass,
+/// never harder: the bound is on the direction that keeps the test honest.
+///
+/// Separate from [`Live`] because a `Live` cannot close its master: the drain
+/// holds a copy until the child is gone, which is the very thing this waits
+/// to see. Here the copy is given up by the thread reading it, told to stop by
+/// a flag and woken by a byte written into the slave, which reaches the master
+/// and nobody else. The child is handed back running; the caller waits for it.
+pub fn abandoned(repo: &Repo, columns: u16, rows: u16) -> std::process::Child {
+    use std::io::{Read, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    let (master, slave_path) = pty::open();
+    let (stdin, stdout, stderr) = (
+        pty::slave(&slave_path),
+        pty::slave(&slave_path),
+        pty::slave(&slave_path),
+    );
+    pty::resize(&slave_path, columns, rows);
+    let mut command = Command::new(ank());
+    command
+        .arg("tui")
+        .current_dir(&repo.0)
+        .env("ANK_AGENT", AGENT)
+        .env("TERM", TERM)
+        .env("NO_COLOR", "1");
+    in_this_runs_root(&mut command);
+    let mut child = command
+        .stdin(pty::stdio(stdin))
+        .stdout(pty::stdio(stdout))
+        .stderr(pty::stdio(stderr))
+        .spawn()
+        .expect("the binary must have been built");
+
+    let mut reader = master.try_clone().expect("the master side clones");
+    let stop = std::sync::Arc::new(AtomicBool::new(false));
+    let stopping = std::sync::Arc::clone(&stop);
+    let (chunks, arriving) = std::sync::mpsc::channel::<Vec<u8>>();
+    let drain = std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => return,
+                // `reader` is dropped on the way out: this is the copy of
+                // the master that closes first.
+                Ok(_) if stopping.load(Ordering::SeqCst) => return,
+                Ok(n) => {
+                    if chunks.send(buf[..n].to_vec()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut screen = Screen::new(columns, rows);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut open = false;
+    let quiet = loop {
+        if Instant::now() >= deadline {
+            break false;
+        }
+        match arriving.recv_timeout(Duration::from_secs(1)) {
+            Ok(chunk) => {
+                screen.feed(&chunk);
+                open = open || screen.text().contains("2 ENTITIES");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) if open => break true,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break false,
+        }
+    };
+    if !quiet {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "the session never opened and went quiet:\n{}",
+            screen.text()
+        );
+    }
+    stop.store(true, Ordering::SeqCst);
+    drop(master);
+    pty::slave(&slave_path)
+        .write_all(b"x")
+        .expect("the slave takes a byte for the master");
+    drain.join().expect("the drain must not panic");
+    child
 }

@@ -74,6 +74,7 @@ dependencies = [
  "ank-contract",
  "crossterm",
  "ratatui",
+ "rustix",
  "serde_json",
 ]
 

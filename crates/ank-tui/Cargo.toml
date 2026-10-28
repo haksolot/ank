@@ -83,6 +83,21 @@ ratatui = { version = "0.30", default-features = false, features = ["std", "cros
 # two, all three of which this workspace's lockfile already carries.
 serde_json = { version = "1", features = ["preserve_order"] }
 
+# **A hang-up, which crossterm reads past** (TASK-69e774ef9d64). crossterm 0.29
+# reads the terminal in a loop that leaves only on `WouldBlock`, so a terminal
+# whose other side closed -- end of file on one platform, `EIO` on another --
+# is read again at once, for ever: measured on 2026-10-28 at about 1.3 million
+# `read` calls a second per orphaned reader, four of them holding a four-core
+# machine at 100% for days. `term::hangup` watches the same descriptor with a
+# `poll` that asks for no event, which only a hang-up or an error answers.
+# That call is a foreign symbol, and ADR-ac6be1ebe9aa lets none be declared
+# here, so it is reached through rustix's safe binding: the crate crossterm
+# itself reads the terminal with on Unix, already compiled under it, so what
+# this costs is a declaration and the `event` feature, not a crate. Unix only,
+# because Windows reads the console through crossterm's own records.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", default-features = false, features = ["std", "event"] }
+
 [[test]]
 name = "integration"
 path = "tests/main.rs"

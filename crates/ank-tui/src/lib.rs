@@ -365,6 +365,7 @@ pub fn run(
     // read the stream waits for too, and the frame goes up in front of both.
     let mut screen = term::Screen::open().map_err(no_screen)?;
     term::typing(wake.clone());
+    term::hangup(wake.clone());
     // Blocking, and there is nothing else in it: with nobody typing, nothing
     // changing, the window still and no task in progress on the screen, this
     // reader is a process asleep on a channel. No verb runs, no clock ticks

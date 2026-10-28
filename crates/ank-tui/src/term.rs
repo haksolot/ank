@@ -284,3 +284,71 @@ pub fn typing(wake: Sender<Wake>) {
         }
     });
 }
+
+/// Watches for the terminal going away, on a thread of its own, and says so
+/// as [`Wake::Broken`] (TASK-69e774ef9d64).
+///
+/// **[`typing`] cannot be the one to notice.** crossterm 0.29 reads the
+/// terminal in a loop that leaves only on `WouldBlock`: a hung-up terminal
+/// answers end of file on one platform and `EIO` on another, neither is
+/// `WouldBlock`, and the loop reads again at once without returning to its
+/// `poll`. Once the reading thread is inside `event::read` it never comes out,
+/// so no check placed before the call could help. Measured on 2026-10-28: four
+/// readers orphaned by a pseudo-terminal suite whose master had closed made
+/// about 1.3 million `read` calls a second each, for days, and held a
+/// four-core machine at 100%.
+///
+/// **A hang-up is otherwise a signal, and this reader is not always sent
+/// one.** `SIGHUP` goes to the controlling process of a terminal, and a reader
+/// handed a terminal it does not control -- by a script, a pane manager or
+/// this crate's own suite -- is told nothing when the other side closes.
+///
+/// So this asks the descriptor the reader reads, and asks for nothing: a
+/// `poll` that requests no event still reports a hang-up and an error, and
+/// sleeps through every keystroke, so this thread is woken once, by the one
+/// thing it watches for. A descriptor `poll` cannot watch is left alone rather
+/// than taken for a hang-up, because a reader that quit on it would be a
+/// reader that never opened.
+///
+/// On Windows this is nothing: the console is read through crossterm's own
+/// records, not this loop.
+#[cfg(unix)]
+pub fn hangup(wake: Sender<Wake>) {
+    use rustix::event::{poll, PollFd, PollFlags};
+    use std::io::IsTerminal;
+    use std::os::fd::{AsFd, OwnedFd};
+
+    // The descriptor crossterm reads: standard input where it is a terminal,
+    // and the process's terminal otherwise.
+    let watched: OwnedFd = if std::io::stdin().is_terminal() {
+        match std::io::stdin().as_fd().try_clone_to_owned() {
+            Ok(fd) => fd,
+            Err(_) => return,
+        }
+    } else {
+        match std::fs::File::open("/dev/tty") {
+            Ok(file) => file.into(),
+            Err(_) => return,
+        }
+    };
+    std::thread::spawn(move || loop {
+        let mut fds = [PollFd::new(&watched, PollFlags::empty())];
+        match poll(&mut fds, None) {
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => return,
+        }
+        let said = fds[0].revents();
+        if said.contains(PollFlags::NVAL) {
+            return;
+        }
+        if said.intersects(PollFlags::HUP | PollFlags::ERR) {
+            let _ = wake.send(Wake::Broken("the terminal hung up".to_string()));
+            return;
+        }
+    });
+}
+
+/// Nothing to watch: see the Unix one.
+#[cfg(not(unix))]
+pub fn hangup(_wake: Sender<Wake>) {}
