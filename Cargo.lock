@@ -73,8 +73,8 @@ version = "0.6.0"
 dependencies = [
  "ank-contract",
  "crossterm",
+ "mio",
  "ratatui",
- "rustix",
  "serde_json",
 ]
 

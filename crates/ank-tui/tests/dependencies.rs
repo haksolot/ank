@@ -184,9 +184,10 @@ fn the_graph_carries_neither_ank_core_nor_git() {
 /// gained when `serde_yaml` left it (TASK-f0c6372d8dc0) -- the argument for
 /// spending it is in the manifest beside the declaration, where
 /// ADR-ac6be1ebe9aa's first clause puts it; `ratatui` and `crossterm` are what
-/// that decision spends and the whole of what it spends; `rustix`, on Unix, is
-/// the safe binding through which the reader notices a terminal that hung up,
-/// one crossterm already compiles (TASK-69e774ef9d64); the rest is what those
+/// that decision spends and the whole of what it spends; `mio`, on Unix, is
+/// the safe interface through which the reader notices a terminal that hung
+/// up, one crossterm already compiles (TASK-69e774ef9d64, TASK-18ea15500b41);
+/// the rest is what those
 /// five bring with them and nothing this crate chose.
 #[test]
 fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
@@ -214,13 +215,7 @@ fn the_crate_takes_nothing_the_tree_did_not_already_carry() {
     direct.sort();
     assert_eq!(
         direct,
-        [
-            "ank-contract",
-            "crossterm",
-            "ratatui",
-            "rustix",
-            "serde_json"
-        ],
+        ["ank-contract", "crossterm", "mio", "ratatui", "serde_json"],
         "a dependency arrived. It may well be the right call -- and the \
          argument for it belongs in the manifest beside the two that are \
          there, and in this list.\n{tree}"
