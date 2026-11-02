@@ -196,6 +196,7 @@ kinds! {
     Burst => "burst",
     Drift => "drift",
     DriftUncompared => "drift-uncompared",
+    PeerHalfDeclared => "peer-half-declared",
 }
 
 impl std::fmt::Display for Kind {
@@ -1323,6 +1324,7 @@ pub fn inspect_with(
 
     check_weight(cfg, &mut report);
     check_requires_ank(cfg, &mut report);
+    check_peer_halves(repo, cfg, &entities, &mut report);
 
     report.findings.sort_by(|a, b| {
         a.level
@@ -3267,6 +3269,67 @@ fn check_requires_ank(cfg: &Config, report: &mut Report) {
         )
         .with_note(vec!["ank update".to_string()]),
     );
+}
+
+/// A binding declared at one end only (TASK-971e568f4d7f): a peer this corpus
+/// declares and reads, which declares no peer resolving back to it.
+///
+/// **Silent otherwise.** A scope entry `<peer>:<glob>` written here binds the
+/// peer only once the peer reads this corpus through a declaration of its own,
+/// and a rule the peer scopes onto this corpus reaches it only once the peer
+/// resolves that entry back here (LOG-9a80124cc6ad). With one declaration
+/// missing, `context` at either end answers as though nothing bound it. Each
+/// end that resolves its own declaration reads the other's `config.yml` at its
+/// default branch, so it can name what the other is missing.
+///
+/// **A signal and never a fault**: the repair is a declaration in another
+/// repository, which is named as a command and never written
+/// (ADR-a1de673043b4). A peer that cannot be opened says nothing here: that
+/// is the warning `context` already gives, and a fact about the machine.
+/// One signal per peer, about `peers.<name>`, naming the entities of this
+/// corpus whose scope reaches into the peer, since those are the rules that
+/// bind nobody until the binding is completed.
+fn check_peer_halves(
+    repo: &Repo,
+    cfg: &Config,
+    entities: &[(PathBuf, Entity)],
+    report: &mut Report,
+) {
+    if cfg.peers.is_empty() {
+        return;
+    }
+    let (peers, _) = crate::repo::peers_of(repo, cfg);
+    for peer in peers {
+        if peer.declares_back(repo) {
+            continue;
+        }
+        let mut scoped: Vec<String> = entities
+            .iter()
+            .filter(|(_, e)| matches!(e, Entity::Adr(_) | Entity::Spec(_)))
+            .filter(|(_, e)| {
+                e.scope()
+                    .iter()
+                    .any(|g| crate::repo::peer_ref(g).is_some_and(|(n, _)| n == peer.name))
+            })
+            .map(|(_, e)| e.id().to_string())
+            .collect();
+        // In one order whatever the directory walk returned.
+        scoped.sort();
+        let consequence = if scoped.is_empty() {
+            "so no rule it scopes onto this corpus reaches it".to_string()
+        } else {
+            format!("so {} bind nothing there", scoped.join(", "))
+        };
+        report.findings.push(Finding::signal(
+            Kind::PeerHalfDeclared,
+            format!("peers.{}", peer.name),
+            format!(
+                "peer '{}' declares no peer resolving back to this corpus, {consequence} ({})",
+                peer.name,
+                peer.back_declaration(repo)
+            ),
+        ));
+    }
 }
 
 /// A corpus over the weight it declares (ADR-467ce7e9cda1): one signal per

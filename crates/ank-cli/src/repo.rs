@@ -307,6 +307,9 @@ pub struct Peer {
     /// (ADR-09b985a5627e): what a claim records as the state of the peer it
     /// was taken against (ADR-50952ba5e226).
     pub commit: String,
+    /// The path as the reader spells it, the override or the declaration: what
+    /// a hint names in `ank --repo <path>`, resolved against the declaring root.
+    pub declared: String,
 }
 
 /// The peer's root, as the declaration names it. A relative path is resolved
@@ -608,6 +611,7 @@ fn open(from: &Repo, name: &str, declared: &str) -> std::result::Result<Peer, Un
         repo,
         config,
         commit,
+        declared,
     })
 }
 
@@ -996,6 +1000,67 @@ impl Peer {
             _ => false,
         }
     }
+}
+
+impl Peer {
+    /// Whether this peer declares, under any name, a peer resolving back to
+    /// `reader` (TASK-971e568f4d7f).
+    ///
+    /// A binding needs a declaration at both ends: the reader's to read this
+    /// peer at all, and this peer's to resolve its `<name>:<glob>` entries back
+    /// to the reader. The second is read from this peer's `config.yml` at its
+    /// default branch, the one [`open`] served, through [`Peer::binds`], so a
+    /// declaration naming a third repository or no corpus is not one.
+    pub fn declares_back(&self, reader: &Repo) -> bool {
+        self.config
+            .peers
+            .keys()
+            .any(|name| self.binds(name, reader))
+    }
+
+    /// The command that completes the binding in this peer: a declaration of
+    /// `reader` in this peer's `config.yml`, spelt as the path from the peer's
+    /// main checkout to the reader's (ADR-a14dabe4b259), under the name of the
+    /// reader's directory when that is a peer name.
+    ///
+    /// Only a command: the repair lives in another repository, and nothing is
+    /// written there (ADR-a1de673043b4).
+    pub fn back_declaration(&self, reader: &Repo) -> String {
+        let ours = main_checkout(&reader.corpus);
+        let theirs = main_checkout(&self.repo.corpus);
+        let name = ours
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .filter(|n| ank_core::is_peer_name(n))
+            .unwrap_or_else(|| "<name>".to_string());
+        let path =
+            relative(&theirs, &ours).unwrap_or_else(|| ours.to_string_lossy().replace('\\', "/"));
+        format!("ank --repo {} config peers.{name} {path}", self.declared)
+    }
+}
+
+/// `to` as a path relative to `from`, with forward slashes, or `None` where the
+/// two share no root to walk from (two drives on Windows) or do not exist.
+fn relative(from: &Path, to: &Path) -> Option<String> {
+    let from = std::fs::canonicalize(from).ok()?;
+    let to = std::fs::canonicalize(to).ok()?;
+    let a: Vec<_> = from.components().collect();
+    let b: Vec<_> = to.components().collect();
+    let shared = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    if shared == 0 {
+        return None;
+    }
+    let mut parts: Vec<String> = vec!["..".to_string(); a.len() - shared];
+    parts.extend(
+        b[shared..]
+            .iter()
+            .map(|c| c.as_os_str().to_string_lossy().to_string()),
+    );
+    Some(if parts.is_empty() {
+        ".".to_string()
+    } else {
+        parts.join("/")
+    })
 }
 
 // ---------------------------------------------------------------------------
