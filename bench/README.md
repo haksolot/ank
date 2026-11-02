@@ -104,6 +104,32 @@ first, or pass `--results` to write a new one. `--check` exits 8 and names
 any line that misses the schema. Delete the `--work` directory afterwards: it
 holds a copy of your credentials for every run.
 
+## Family: supersession, discount-superseded
+
+The adoption campaign tied Markdown with ank on a single decision. This family
+asks the question Markdown answers only by discipline: the record changed its
+mind. Finance first refused a reduction above three tenths, then a later
+decision lowered the ceiling to one fifth. Both decisions are in the record,
+and neither is found by grepping the method or the word "discount". The prompt
+is the adoption prompt word for word.
+
+- `none`: neither decision exists.
+- `markdown`: the earlier file reads `Status: superseded by <later file>`, the
+  later one `Supersedes: <earlier file>`. The control keeps its status
+  current, so whatever gap remains belongs to ank.
+- `ank`: the later ADR `supersedes` the earlier one, which reads
+  `status: superseded`, as `accept` leaves the pair.
+
+The probe adds `ceiling` to the result line. `current` means 20 percent is
+accepted and 21 refused. `superseded-followed` means every reduction from 21
+to 30 is accepted and 31 is refused. `null` means neither. `cap_respected`
+here means 21 is refused. Look before you spend:
+
+    python3 -m bench.run --model claude-sonnet-5-5 --scenario discount-superseded \
+      --condition markdown --rep 1 --dry-run
+
+Results append to `results/supersession.jsonl`. No campaign has been run yet.
+
 ## Tests
 
     python3 -m unittest discover -s bench -t .
@@ -112,4 +138,5 @@ They need `ank` on PATH (or `BENCH_ANK`) for `ank init` and `ank check`, and
 launch no agent: `test_run.py` drives the runner against a stub that replays a
 transcript from `testdata/`. Each `testdata/<case>/` is a hand-written
 stream-json transcript, the tree it left, and the `score.json` the scorer must
-reproduce from them.
+reproduce from them, scored under the scenario its `scenario` file names
+(`discount-cap` when there is none).
