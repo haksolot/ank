@@ -20,7 +20,8 @@ from bench.fixture import slugify
 from bench.scenarios import CONDITIONS, SCENARIOS
 
 STR, INT, BOOL, NONE, LIST = (str,), (int,), (bool,), (type(None),), (list,)
-# One result line: what run.py names, then what score() counts. Nothing else.
+# One result line: what run.py names, then what score() counts, then what the
+# scenario's own probe adds (its "scores": key -> allowed values). Nothing else.
 SCHEMA = {
     "model": STR, "harness": STR, "ank": STR + NONE, "seed": INT, "scenario": STR,
     "condition": STR, "rep": INT, "exit": INT + STR,
@@ -106,8 +107,14 @@ def problems(line):
     """What keeps one result line from the schema; empty when it passes."""
     if not isinstance(line, dict):
         return ["not a JSON object"]
-    out = [f"missing {k}" for k in SCHEMA if k not in line]
-    out += [f"unknown {k}" for k in line if k not in SCHEMA]
+    extra = SCENARIOS.get(line.get("scenario"), {}).get("scores", {}) \
+        if isinstance(line.get("scenario"), str) else {}
+    out = [f"missing {k}" for k in [*SCHEMA, *extra] if k not in line]
+    out += [f"unknown {k}" for k in line if k not in SCHEMA and k not in extra]
+    for k, allowed in extra.items():
+        if k in line and line[k] not in allowed:
+            names = ", ".join(v for v in allowed if v is not None)
+            out.append(f"{k} {line[k]!r} is not one of {names}")
     for k, types in SCHEMA.items():
         v = line.get(k)
         # type(), not isinstance: True is an int to isinstance, and a count is never True.
