@@ -772,7 +772,7 @@ fn sibling_skills() -> Vec<(String, String)> {
 
 /// The five activities ADR-e4a5a8873fe3 names, all of them in the tree now that
 /// `tdd` has landed with TASK-135cde611e3f and `diagnose` with
-/// TASK-587a185bef49, and the sixth ADR-55449b7f4f8f adds, `herdr`. A sibling
+/// TASK-587a185bef49, and the sixth ADR-2fc9b88cc0bd adds, `herdr`. A sibling
 /// beyond these is allowed and anchored like the rest; one of these missing is
 /// the skill system shipping a contract without its policies -- the tests below
 /// hold whatever exists, and this one is what makes a sibling's disappearance a
@@ -784,7 +784,7 @@ fn the_named_sibling_skills_exist() {
         assert!(
             names.contains(&expected.to_string()),
             "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 and \
-             ADR-55449b7f4f8f name it as one of the policies beside the contract"
+             ADR-2fc9b88cc0bd name it as one of the policies beside the contract"
         );
     }
 }
@@ -821,9 +821,9 @@ fn the_contract_names_every_sibling_skill() {
     assert!(
         section.lines().any(|line| line.contains("ank-herdr")
             && line.contains("several agents")
-            && line.contains("herdr pane")),
+            && line.contains("herdr-core terminal")),
         "the skills section must say, on the ank-herdr line, that it \
-         orchestrates several agents from a herdr pane"
+         orchestrates several agents from a herdr-core terminal"
     );
 }
 
@@ -850,9 +850,10 @@ fn line_teaching<'a>(body: &'a str, point: &str, tokens: &[&str]) -> &'a str {
 
 /// **The sibling announces itself where it applies and nowhere else.** The
 /// description is the part every session pays for (ADR-e4a5a8873fe3), so it
-/// names the one place the policy is for, a herdr pane, and stays short.
+/// names the one place the policy is for, a herdr-core terminal, and stays
+/// short.
 #[test]
-fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_pane() {
+fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_core_terminal() {
     let (front, _) = herdr_skill();
     assert!(
         front.lines().any(|l| l.trim() == "name: ank-herdr"),
@@ -869,12 +870,12 @@ fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_pane() {
         description.chars().count()
     );
     assert!(
-        description.contains("herdr pane"),
-        "the description does not name the herdr pane as its trigger: {description}"
+        description.contains("herdr-core terminal"),
+        "the description does not name the herdr-core terminal as its trigger: {description}"
     );
 }
 
-/// **Each point ADR-55449b7f4f8f and TASK-b096b2c9d6d3 name is taught on a
+/// **Each point ADR-2fc9b88cc0bd and TASK-b096b2c9d6d3 name is taught on a
 /// line of its own.** These are what running ank agents through herdr has
 /// measured, and the reason the sibling exists: each one, missed, cost a run.
 #[test]
@@ -882,13 +883,13 @@ fn the_herdr_sibling_teaches_the_ank_layer_of_a_run() {
     let (_, body) = herdr_skill();
     line_teaching(
         &body,
-        "it stops outside a herdr pane",
-        &["HERDR_ENV", "1", "stop"],
+        "it stops outside a herdr-core terminal",
+        &["HC_TERMINAL_ID", "unset", "stop"],
     );
     line_teaching(
         &body,
-        "herdr's own syntax comes from herdr's own skill",
-        &["herdr --skill", "syntax"],
+        "herdr-core's syntax comes from herdr-core's own manual",
+        &["hc --skill", "syntax"],
     );
     line_teaching(
         &body,
@@ -913,8 +914,13 @@ fn the_herdr_sibling_teaches_the_ank_layer_of_a_run() {
     );
     line_teaching(
         &body,
-        "ANK_AGENT and TMPDIR are exported before the agent starts",
-        &["ANK_AGENT", "TMPDIR", "before", "starts"],
+        "ANK_AGENT, TMPDIR and PATH are set in the command that starts the worker",
+        &["ANK_AGENT", "TMPDIR", "PATH", "command that starts"],
+    );
+    line_teaching(
+        &body,
+        "a worker inherits the herdr-core server's environment, not the orchestrator's",
+        &["inherits", "herdr-core server", "environment"],
     );
     line_teaching(
         &body,
@@ -940,6 +946,104 @@ fn the_herdr_sibling_teaches_the_ank_layer_of_a_run() {
         &body,
         "accept waits for a human and is never part of a run",
         &["accept", "human"],
+    );
+}
+
+/// Every file `git` knows in the tree, tracked or not yet added, ignored files
+/// aside, as paths relative to the repository root.
+fn tree_files() -> Vec<String> {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let out = Command::new("git")
+        .args([
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ])
+        .current_dir(&root)
+        .output()
+        .expect("git ls-files runs in the repository");
+    assert!(out.status.success(), "git ls-files failed");
+    String::from_utf8_lossy(&out.stdout)
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .filter(|p| root.join(p).is_file())
+        .map(str::to_string)
+        .collect()
+}
+
+fn tree_bytes(rel: &str) -> String {
+    let p = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join(rel);
+    String::from_utf8_lossy(&fs::read(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display())))
+        .into_owned()
+}
+
+/// **The retired runtime is named nowhere an agent or a reader looks.**
+/// ADR-2fc9b88cc0bd moved orchestration to herdr-core: its terminals export no
+/// herdr environment flag, have no panes, and take their syntax from `hc`. The
+/// phrases are assembled here so that this file does not name them itself.
+#[test]
+fn no_page_or_test_names_the_retired_herdr_runtime() {
+    let retired = [
+        concat!("HERDR", "_ENV"),
+        concat!("herdr ", "--skill"),
+        concat!("herdr ", "pane"),
+    ];
+    let mut found = Vec::new();
+    for rel in tree_files() {
+        let covered = ["skill/", "docs/", "crates/ank-cli/tests/"]
+            .iter()
+            .any(|d| rel.starts_with(d))
+            || rel == "CLAUDE.md";
+        if !covered {
+            continue;
+        }
+        let text = tree_bytes(&rel);
+        for phrase in retired {
+            if text.contains(phrase) {
+                found.push(format!("{rel}: {phrase}"));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "the retired herdr runtime is still named; ADR-2fc9b88cc0bd teaches \
+         herdr-core through hc:\n{}",
+        found.join("\n")
+    );
+}
+
+/// **A superseded decision is cited by its successor.** ADR-2fc9b88cc0bd
+/// supersedes the ADR that first made orchestration a sibling; no file outside
+/// `.ank/` names the retired id, in its long form or its short one, and the
+/// places that cited it name the successor.
+#[test]
+fn no_file_outside_the_corpus_cites_the_superseded_orchestration_adr() {
+    let long = concat!("ADR-", "55449b7f4f8f");
+    let short = concat!("ADR-", "5544");
+    let mut found = Vec::new();
+    for rel in tree_files() {
+        if rel.starts_with(".ank/") {
+            continue;
+        }
+        let text = tree_bytes(&rel);
+        if text.contains(long) || text.contains(short) {
+            found.push(rel);
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "these files cite {long} or {short}, which ADR-2fc9b88cc0bd supersedes: \
+         name the successor instead:\n{}",
+        found.join("\n")
+    );
+    assert!(
+        repo_file("docs/multi-agent.md").contains("ADR-2fc9b88cc0bd"),
+        "docs/multi-agent.md no longer names ADR-2fc9b88cc0bd, the decision \
+         its orchestration section rests on"
     );
 }
 

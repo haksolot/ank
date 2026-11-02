@@ -1,8 +1,8 @@
 ---
 name: ank-herdr
-description: Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr pane, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
+description: Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr-core terminal, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
 metadata:
-  revision: "915a198f4be6"
+  revision: "0bce41153716"
 ---
 
 # ank-herdr
@@ -13,16 +13,16 @@ others, the orchestrator. It works no task itself.
 
 The ank skill is the contract and applies here in full: one agent, one working
 tree, one identity, and the default branch is where work arrives. This file
-adds the orchestration policy only. Herdr is the runtime it was measured on.
+adds the orchestration policy only. Herdr-core, driven through `hc`, is the runtime it was measured on.
 
 ## Before anything
 
-    test "$HERDR_ENV" = 1    outside a herdr pane, stop and say so: there is no session to drive
-    herdr --skill            herdr's syntax, from herdr itself, for the version installed
+    test -n "$HC_TERMINAL_ID"    unset outside a herdr-core terminal: stop and say so, there is no session to drive
+    hc --skill                   herdr-core's syntax, from herdr-core itself, for the version installed
 
-This file says what to do and never how herdr spells it. Herdr's own skill and
-`herdr <group>` are the authority on its commands; a copy here would drift at
-its next release.
+This file says what to do and never how `hc` spells it. Its own manual and
+`hc <command> --help` are the authority on its commands; a copy here would
+drift at its next release.
 
 ## Where the orchestrator stands
 
@@ -56,9 +56,16 @@ work red.
 ## Launching a worker
 
     one worktree, one branch and one ANK_AGENT per worker, cut fresh from the default branch
-    export ANK_AGENT and TMPDIR in the pane before the agent starts: an export after never reaches it
-    export ANK_GUARD_EDIT=claim in every worker's pane too: an edit no claim of that worker covers is refused
+    a worker inherits the herdr-core server's environment, and nothing of the orchestrator's
+    set ANK_AGENT, TMPDIR and PATH in the command that starts the worker: an export in your own terminal reaches no worker
+    set ANK_GUARD_EDIT=claim in that command too: an edit no claim of that worker covers is refused
     hand it one task to claim, by id, and nothing to land
+
+A terminal started through `hc` begins from the environment the herdr-core
+server was started with, often older than the shell you work in: its PATH may
+lack the toolchain, and it carries no TMPDIR or ANK_AGENT of yours. Every
+variable a worker needs therefore goes into the command that starts it, which
+the runtime runs as a shell string.
 
 Without an identity of its own every worker falls back to `<user>@<hostname>`,
 and the claims of all of them become one agent's: none is arbitrated, and the
@@ -83,11 +90,11 @@ the task names.
     a worker told to wait for another task stops and reports: send it a new prompt once its blocker lands
 
 A worker does not resume on its own when the work it waits on arrives. Read
-what each pane prints rather than guessing at it, and read a worker's record
+what each terminal prints rather than guessing at it, and read a worker's record
 with `ank log <id>`: a release carries its reason, and that reason belongs to
 planning, not to a second attempt by somebody else.
 
-A worker stuck in a way its own pane cannot clear is reported to the human.
+A worker stuck in a way its own terminal cannot clear is reported to the human.
 Driving it by keystrokes is a decision made on its behalf.
 
 ## Landing
@@ -106,8 +113,8 @@ form one change, the integration task carries the combined verification, and
 its claimant is a worker like any other.
 
 A worktree holds the only copy of whatever has not landed. Removing it once its
-branch is on the default branch is the clean end of that worker, and the pane
-closes with it.
+branch is on the default branch is the clean end of that worker, and its
+terminal can close with it.
 
 ## Ending a run
 

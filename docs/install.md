@@ -204,7 +204,7 @@ so nobody keeps a second copy in step by hand.
     ank-loop      skill/loop/SKILL.md      work the backlog autonomously
     ank-tdd       skill/tdd/SKILL.md       drive an implementation test-first
     ank-diagnose  skill/diagnose/SKILL.md  work a defect back to its cause
-    ank-herdr     skill/herdr/SKILL.md     orchestrate several agents from a herdr pane
+    ank-herdr     skill/herdr/SKILL.md     orchestrate several agents from a herdr-core terminal
 
 [`skill/SKILL.md`](https://github.com/haksolot/ank/blob/main/skill/SKILL.md) is
 the one an agent loads by default, and it stands alone: why ank is shaped as it
@@ -214,7 +214,7 @@ load, and works whether or not they are installed. The five activity policies,
 `ank-plan`, `ank-drift`, `ank-loop`, `ank-tdd` and `ank-diagnose`, carry one
 activity each and load when it calls for them. The sixth sibling, `ank-herdr`,
 is for the agent that runs the others: its description triggers only inside a
-herdr pane. What an agent does with them once installed is [Multi-agent
+herdr-core terminal. What an agent does with them once installed is [Multi-agent
 work](multi-agent.md).
 
 The routes:
@@ -237,7 +237,7 @@ are whatever `ank --version` names:
     ank           0d916cc3d9a5  Read a repository's tasks and binding constraints, claim work, and finish it with proof. Use when working in a repo that has a .ank/ directory.
     ank-diagnose  b5d9c0b96462  Work a defect back to its cause before changing anything, and close it with a regression test. Use when a claimed task's criterion names a defect in a repository with a .ank/ directory.
     ank-drift     36cf5808e95e  Audit the decisions in .ank/ against the current code and report what no longer holds. Use when asked whether ADRs, specs, or tasks are still accurate, after a milestone, or when the corpus and the code seem to disagree.
-    ank-herdr     a0567f7f382a  Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr pane, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
+    ank-herdr     a0567f7f382a  Orchestrate several ank agents in parallel, each on its own task, worktree and branch. Use only inside a herdr-core terminal, when asked to fan ank tasks out across agents in a repository with a .ank/ directory.
     ank-loop      9f00f607cdb8  Work through the open tasks in .ank/ without supervision, one claim at a time. Use when asked to work the backlog, chain tasks, or run autonomously in a repository with a .ank/ directory.
     ank-plan      83130b664c7e  Interview a goal into decisions and tasks recorded in .ank/. Use when someone brings a feature, change, or problem to plan before implementation in a repository with a .ank/ directory.
     ank-tdd       96d151e6812e  Drive an implementation test-first, red before green, against a claimed task's frozen criterion. Use when implementing a task in a repository with a .ank/ directory.
@@ -313,7 +313,7 @@ your harness, copy `skill/SKILL.md` into whatever it loads and you have lost
 nothing. Copy
 `skill/plan/SKILL.md`, `skill/drift/SKILL.md`, `skill/loop/SKILL.md`,
 `skill/tdd/SKILL.md` and `skill/diagnose/SKILL.md` beside it for the activity
-policies, and `skill/herdr/SKILL.md` for orchestrating agents from a herdr pane,
+policies, and `skill/herdr/SKILL.md` for orchestrating agents from a herdr-core terminal,
 or keep the contract alone, which stands on its own.
 
 Next: [the quickstart](quickstart.md), from `ank init` to a first finished task.
