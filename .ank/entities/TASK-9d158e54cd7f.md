@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 3
+version: 4
 ---
 
 Main went red on the merge of #736 (9610a0ec), run 41449785197, macos-latest
