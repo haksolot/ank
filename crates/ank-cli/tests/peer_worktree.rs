@@ -183,3 +183,218 @@ fn a_peer_binds_the_main_checkout_and_a_linked_worktree_alike() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+// ---------------------------------------------------------------------------
+// A linked worktree resolves its peers from the main checkout's root
+// (TASK-42eafe407a05, ADR-a14dabe4b259)
+// ---------------------------------------------------------------------------
+//
+// The worktree is nested at `web/.worktrees/t2`, where an orchestrator puts
+// one: `../api` resolved against the worktree's own root names
+// `web/.worktrees/api`, which does not exist. Resolved against the main
+// checkout's root, the parent of the git common directory, it names the `api`
+// beside `web`, as it does from the main checkout.
+
+/// A task of `api`, as the peer's corpus holds it at its default branch.
+const PEER_TASK: &str = "TASK-aaaabbbbcccc";
+
+fn commit(dir: &Path, message: &str) {
+    git(dir, &["add", "-A"]);
+    git(
+        dir,
+        &[
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            message,
+        ],
+    );
+}
+
+fn peer_task(api: &Path, status: &str) {
+    fs::write(
+        api.join(format!(".ank/entities/{PEER_TASK}.md")),
+        format!(
+            "---\nid: {PEER_TASK}\ntype: task\nslug: s\ntitle: Peer work that comes first\n\
+             created: 2026-08-01T00:00:00Z\nstatus: {status}\nscope:\n  - src/**\n\
+             blocked_by: []\ndone_criteria: |\n  Something holds.\nschema: 4\nversion: 1\n\
+             ---\n"
+        ),
+    )
+    .unwrap();
+    commit(api, &format!("{PEER_TASK} {status}"));
+}
+
+/// `web/.worktrees/t2`, a linked worktree of `web` nested inside it.
+fn nested_worktree(web: &Path) -> PathBuf {
+    git(web, &["worktree", "add", "-q", "-b", "t2", ".worktrees/t2"]);
+    web.join(".worktrees").join("t2")
+}
+
+fn not_a_corpus(all: &str) -> bool {
+    all.contains("is not a corpus")
+}
+
+#[test]
+fn a_nested_worktree_reaches_the_peers_of_its_main_checkout_with_no_override() {
+    let base = scratch::dir("peer-worktree-nested");
+    let reader = Reader {
+        home: base.join("home"),
+    };
+    let api = base.join("api");
+    let web = base.join("web");
+    corpus(
+        &reader,
+        &api,
+        &[("web", "../web")],
+        &[(BOUND, "web:src/**")],
+    );
+    corpus(&reader, &web, &[("api", "../api")], &[]);
+    let t2 = nested_worktree(&web);
+
+    let bound = format!("{BOUND}@api");
+    for (what, dir) in [("main checkout", &web), ("nested worktree", &t2)] {
+        let (out, all) = reader.ok(dir, &["context", "src/"]);
+        assert!(out.contains(&bound), "{what} lists {bound}:\n{all}");
+        assert!(!not_a_corpus(&all), "{what} warns:\n{all}");
+        assert!(warnings(&all).is_empty(), "{what}:\n{all}");
+    }
+    assert!(
+        !reader.home.join("ank").join("corpora.yml").exists(),
+        "an override was written"
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_relative_override_resolves_from_the_main_checkouts_root() {
+    let base = scratch::dir("peer-worktree-override");
+    let reader = Reader {
+        home: base.join("home"),
+    };
+    // `api` is not where `web` declares it: this reader keeps it elsewhere,
+    // and says so in their own corpora.yml.
+    let api = base.join("elsewhere").join("api");
+    let web = base.join("web");
+    corpus(
+        &reader,
+        &api,
+        &[("web", "../../web")],
+        &[(BOUND, "web:src/**")],
+    );
+    corpus(&reader, &web, &[("api", "../api")], &[]);
+    let identity = git(&web, &["rev-list", "--max-parents=0", "HEAD"]);
+    reader.ok(
+        &web,
+        &[
+            "config",
+            "--user",
+            &format!("peers.{identity}.api"),
+            "../elsewhere/api",
+        ],
+    );
+    let t2 = nested_worktree(&web);
+
+    let bound = format!("{BOUND}@api");
+    for (what, dir) in [("main checkout", &web), ("nested worktree", &t2)] {
+        let (out, all) = reader.ok(dir, &["context", "src/"]);
+        assert!(out.contains(&bound), "{what} lists {bound}:\n{all}");
+        assert!(!not_a_corpus(&all), "{what} warns:\n{all}");
+        assert!(warnings(&all).is_empty(), "{what}:\n{all}");
+    }
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn an_absolute_declaration_is_used_as_written_from_a_nested_worktree() {
+    let base = scratch::dir("peer-worktree-absolute");
+    let reader = Reader {
+        home: base.join("home"),
+    };
+    let api = base.join("api");
+    let web = base.join("web");
+    corpus(
+        &reader,
+        &api,
+        &[("web", "../web")],
+        &[(BOUND, "web:src/**")],
+    );
+    let absolute = api.to_string_lossy().to_string();
+    corpus(&reader, &web, &[("api", &absolute)], &[]);
+    let t2 = nested_worktree(&web);
+
+    let bound = format!("{BOUND}@api");
+    for (what, dir) in [("main checkout", &web), ("nested worktree", &t2)] {
+        let (out, all) = reader.ok(dir, &["context", "src/"]);
+        assert!(out.contains(&bound), "{what} lists {bound}:\n{all}");
+        assert!(warnings(&all).is_empty(), "{what}:\n{all}");
+    }
+
+    let _ = fs::remove_dir_all(&base);
+}
+
+#[test]
+fn a_peer_blocker_holds_a_claim_in_a_nested_worktree_as_in_the_main_checkout() {
+    let base = scratch::dir("peer-worktree-blocked");
+    let reader = Reader {
+        home: base.join("home"),
+    };
+    let api = base.join("api");
+    let web = base.join("web");
+    corpus(&reader, &api, &[("web", "../web")], &[]);
+    peer_task(&api, "open");
+    corpus(&reader, &web, &[("api", "../api")], &[]);
+    let at = format!("{PEER_TASK}@api");
+    let (out, _) = reader.ok(
+        &web,
+        &[
+            "new",
+            "task",
+            "--title",
+            "Local work that waits",
+            "--scope",
+            "src/**",
+            "--criteria",
+            "It waits.",
+            "--no-verify",
+            "--blocked-by",
+            &at,
+            "--json",
+        ],
+    );
+    let start = out.find("\"TASK-").expect("the new task is named") + 1;
+    let id = out[start..start + 17].to_string();
+    commit(&web, "the task that waits");
+    let t2 = nested_worktree(&web);
+
+    let refused = |dir: &Path| {
+        let out = reader.run(dir, &["claim", &id]);
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        assert!(!out.status.success(), "claim must refuse in {dir:?}");
+        (out.status.code(), stderr)
+    };
+    let (main_code, main_err) = refused(&web);
+    assert!(main_err.contains(&at), "names the peer blocker: {main_err}");
+    let (wt_code, wt_err) = refused(&t2);
+    assert!(!not_a_corpus(&wt_err), "the peer is read: {wt_err}");
+    assert_eq!(
+        (wt_code, wt_err.as_str()),
+        (main_code, main_err.as_str()),
+        "the nested worktree refuses exactly as the main checkout"
+    );
+
+    // Done on the peer's default branch: the edge is satisfied, and the claim is
+    // taken in the worktree.
+    peer_task(&api, "done");
+    let (claimed, all) = reader.ok(&t2, &["claim", &id]);
+    assert!(claimed.contains(&id), "{all}");
+
+    let _ = fs::remove_dir_all(&base);
+}
