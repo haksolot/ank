@@ -146,6 +146,12 @@ fn pair(name: &str) -> Pair {
         fs::create_dir_all(dir.join("src")).unwrap();
         fs::write(dir.join("src/lib.rs"), "\n").unwrap();
         git(dir, &["init", "-q", "-b", "main"]);
+        // A commit or a merge otherwise starts `git maintenance run --auto
+        // --detach`, which takes `.git/objects/maintenance.lock` in the
+        // background while the next verb runs, and the snapshot of `api` reads
+        // git's own write as one of ank's.
+        git(dir, &["config", "maintenance.auto", "false"]);
+        git(dir, &["config", "gc.auto", "0"]);
         for args in [
             vec!["init"],
             vec!["config", "default_branch", "main"],
