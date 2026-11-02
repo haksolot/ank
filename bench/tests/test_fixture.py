@@ -210,5 +210,112 @@ class SupersessionFixtureTest(unittest.TestCase):
             self.assertEqual(digest(again), digest(self.repos["ank"]))
 
 
+SCALE = "discount-scale"
+CART_PY = "src/shop/cart.py"
+
+
+class ScaleFixtureTest(unittest.TestCase):
+    """The family where reading every decision stops being an option: one binds among 500."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ank = ank_binary()
+        cls.tmp = tempfile.TemporaryDirectory(prefix="ank-bench-test-")
+        root = pathlib.Path(cls.tmp.name)
+        cls.repos = {c: fixture.generate(root / c, SCALE, c, 7, ank=cls.ank)
+                     for c in fixture.CONDITIONS}
+        cls.again = fixture.generate(root / "again", SCALE, "ank", 7, ank=cls.ank)
+        (cls.binding,) = fixture.SCENARIOS[SCALE]["decisions"]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def test_the_scenario_is_the_adoption_request_and_probe_at_scale(self):
+        scale, cap = fixture.SCENARIOS[SCALE], fixture.SCENARIOS["discount-cap"]
+        self.assertEqual(scale["family"], "scale")
+        self.assertEqual(scale["probe"], cap["probe"])
+        self.assertEqual(scale["prompt"], cap["prompt"])
+        self.assertNotIn("scores", scale)
+        self.assertIn("three tenths", self.binding[2])
+        self.assertEqual(self.binding[1], CART_PY)
+
+    def test_under_markdown_500_files_and_exactly_one_applies_to_the_cart(self):
+        adr = self.repos["markdown"] / "docs/adr"
+        files = sorted(adr.glob("*.md"))
+        self.assertEqual(len(files), 500)
+        applying = [p for p in files if f"\nApplies to: `{CART_PY}`\n" in p.read_text()]
+        self.assertEqual(len(applying), 1)
+        self.assertIn(self.binding[2], applying[0].read_text())
+        self.assertEqual(sum(CART_PY in p.read_text() for p in files), 1)
+
+    def test_under_ank_500_adrs_and_exactly_one_scoped_to_the_cart(self):
+        repo = self.repos["ank"]
+        adrs = [p.read_text() for p in sorted((repo / ".ank/entities").glob("ADR-*.md"))]
+        self.assertEqual(len(adrs), 500)
+        scoped = [t for t in adrs if f"\nscope:\n  - {CART_PY}\n" in t]
+        self.assertEqual(len(scoped), 1)
+        self.assertIn(f"\ntitle: {self.binding[0]}\n", scoped[0])
+        self.assertEqual(sum(CART_PY in t for t in adrs), 1)
+
+    def test_ank_check_exits_zero_and_context_lists_the_binding_decision(self):
+        repo = self.repos["ank"]
+        r = subprocess.run([self.ank, "check"], cwd=repo, capture_output=True, text=True,
+                           env=fixture.environment())
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("500 adr", r.stdout + r.stderr)
+        r = subprocess.run([self.ank, "context", CART_PY], cwd=repo, capture_output=True,
+                           text=True, env=fixture.environment())
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(self.binding[0], r.stdout)
+
+    def test_the_binding_decision_is_not_found_by_grepping_the_feature(self):
+        for name in ("ank", "markdown"):
+            repo = self.repos[name]
+            for word in ("total_with_discount", "discount"):
+                hits = subprocess.run(["git", "grep", "-il", word], cwd=repo,
+                                      capture_output=True, text=True).stdout.split()
+                for hit in hits:
+                    self.assertNotIn(self.binding[2], (repo / hit).read_text(),
+                                     f"{name}: {word} reaches {hit}")
+            self.assertEqual(subprocess.run(["git", "grep", "-q", "-F", self.binding[2]],
+                                            cwd=repo).returncode, 0, f"{name} lacks the decision")
+
+    def test_under_none_the_decision_does_not_exist(self):
+        repo = self.repos["none"]
+        self.assertNotEqual(subprocess.run(["git", "grep", "-q", "-F", self.binding[2]],
+                                           cwd=repo).returncode, 0)
+
+    def test_the_request_never_mentions_ank_or_a_ceiling(self):
+        self.assertNotRegex(fixture.SCENARIOS[SCALE]["prompt"], r"(?i)\bank\b|\.ank|tenths|ceiling")
+
+    def test_the_binding_decision_is_neither_first_nor_last(self):
+        # A position is a cue: the highest-numbered file, or the latest created ADR,
+        # would be found by ordering rather than by the path it applies to.
+        names = sorted(p.name for p in (self.repos["markdown"] / "docs/adr").glob("*.md"))
+        (hit,) = [n for n in names if CART_PY in (self.repos["markdown"] / "docs/adr" / n).read_text()]
+        self.assertNotIn(names.index(hit), (0, len(names) - 1))
+        created = sorted((t.split("\ncreated: ")[1].split("\n")[0], "src/shop/cart.py" in t)
+                         for t in (p.read_text() for p in (self.repos["ank"] / ".ank/entities").glob("ADR-*.md")))
+        self.assertNotIn([c[1] for c in created].index(True), (0, len(created) - 1))
+
+    def test_scatter_keeps_a_succession_pointing_at_its_pair(self):
+        import random
+        noise = [{"title": f"n{i}"} for i in range(20)]
+        ours = [{"title": "earlier", "superseded_by": 21}, {"title": "later", "supersedes": 20}]
+        out = fixture.scatter(noise + ours, 20, random.Random(3))
+        self.assertEqual(sorted(d["title"] for d in out), sorted(d["title"] for d in noise + ours))
+        e = next(i for i, d in enumerate(out) if d["title"] == "earlier")
+        l = next(i for i, d in enumerate(out) if d["title"] == "later")
+        self.assertLess(e, l)
+        self.assertEqual((out[e]["superseded_by"], out[l]["supersedes"]), (l, e))
+        self.assertEqual([d["title"] for d in out if d["title"].startswith("n")],
+                         [f"n{i}" for i in range(20)])
+
+    def test_the_same_seed_writes_the_same_bytes_twice(self):
+        self.assertEqual(digest(self.again), digest(self.repos["ank"]))
+        self.assertEqual(tree(self.again, ""), tree(self.repos["ank"], ""))
+
+
 if __name__ == "__main__":
     unittest.main()
