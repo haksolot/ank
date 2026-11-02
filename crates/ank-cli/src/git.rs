@@ -1730,6 +1730,132 @@ fn cat_file_batch_raw(
     Ok(out)
 }
 
+/// The commit a peer's default branch points at, and the ref that answered:
+/// `refs/heads/<branch>` first, `refs/remotes/origin/<branch>` second, the
+/// base [`crate::verify`] already measures against (ADR-09b985a5627e).
+///
+/// **One `for-each-ref` for both candidates**, never a `rev-parse` each. A
+/// pattern also matches the refs below it (`refs/heads/main/x`), so the answer
+/// is filtered on the exact name. `None` when neither exists, which the caller
+/// turns into one warning and the local answer.
+pub fn default_tip(cwd: &Path, branch: &str) -> Result<Option<(String, String)>> {
+    let local = format!("{HEADS_PREFIX}{branch}");
+    let remote = format!("{ORIGIN_PREFIX}{branch}");
+    let args = [
+        "for-each-ref",
+        "--format=%(objectname) %(refname)",
+        local.as_str(),
+        remote.as_str(),
+    ];
+    let out = output(cwd, &args)?;
+    if !out.status.success() {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let found: HashMap<&str, &str> = text
+        .lines()
+        .filter_map(|l| l.split_once(' '))
+        .map(|(object, name)| (name, object))
+        .collect();
+    Ok([local, remote]
+        .into_iter()
+        .find_map(|r| found.get(r.as_str()).map(|o| (o.to_string(), r.clone()))))
+}
+
+/// Every file below `path` in the tree of `rev`, as paths relative to `path`
+/// (`/`-separated) with their bytes, or `None` when `rev` does not carry
+/// `path` as a directory.
+///
+/// **One `cat-file --batch` for the whole walk**, driven a request at a time:
+/// the next object to ask for is only known once the tree naming it has been
+/// read, so the batch is fed interactively rather than all at once. A level
+/// per process would grow with the depth of the layout, and a process per
+/// file is the regression ADR-cc65bd2fbb36 forbids. `path` may be spelt
+/// `./<dir>`, which git resolves against `cwd`: a corpus nested below its
+/// repository's root is then read without asking where that root is.
+///
+/// Symlinks are skipped: a link in a tree is a path, not content, and nothing
+/// in a corpus is one.
+pub fn files_at(cwd: &Path, rev: &str, path: &str) -> Result<Option<Vec<(String, Vec<u8>)>>> {
+    use std::io::{BufRead as _, Read as _, Write as _};
+    let args = ["cat-file", "--batch"];
+    let fail = |e: std::io::Error| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            env_missing()
+        } else {
+            CliError::new(ExitCode::Environment, format!("git cat-file --batch: {e}"))
+        }
+    };
+    let mut child = Command::new("git")
+        .current_dir(cwd)
+        .args(args)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(fail)?;
+    let mut sink = child.stdin.take().expect("stdin is piped");
+    let mut source = std::io::BufReader::new(child.stdout.take().expect("stdout is piped"));
+    // One request, one response: `<name> <type> <size>\n<bytes>\n`, or
+    // `<input> missing\n`.
+    let mut ask = |name: &str| -> std::io::Result<Option<(String, String, Vec<u8>)>> {
+        sink.write_all(name.as_bytes())?;
+        sink.write_all(b"\n")?;
+        sink.flush()?;
+        let mut header = String::new();
+        if source.read_line(&mut header)? == 0 {
+            return Ok(None);
+        }
+        let mut parts = header.split_whitespace();
+        let object = parts.next().unwrap_or_default().to_string();
+        let (Some(kind), Some(size)) = (parts.next(), parts.next()) else {
+            return Ok(None);
+        };
+        let Ok(size) = size.parse::<usize>() else {
+            return Ok(None);
+        };
+        let mut body = vec![0u8; size + 1];
+        source.read_exact(&mut body)?;
+        body.truncate(size);
+        Ok(Some((object, kind.to_string(), body)))
+    };
+    let walked = (|| -> std::io::Result<Option<Vec<(String, Vec<u8>)>>> {
+        let Some((object, kind, body)) = ask(&format!("{rev}:{path}"))? else {
+            return Ok(None);
+        };
+        if kind != "tree" {
+            return Ok(None);
+        }
+        let hash_len = object.len() / 2;
+        let mut files = Vec::new();
+        let mut trees = vec![(String::new(), body)];
+        while let Some((prefix, body)) = trees.pop() {
+            for entry in tree_entries(&body, hash_len) {
+                let name = match prefix.is_empty() {
+                    true => entry.name.clone(),
+                    false => format!("{prefix}/{}", entry.name),
+                };
+                if entry.mode == "120000" || entry.mode == "160000" {
+                    continue;
+                }
+                let Some((_, kind, content)) = ask(&entry.object)? else {
+                    continue;
+                };
+                match kind.as_str() {
+                    "tree" => trees.push((name, content)),
+                    "blob" => files.push((name, content)),
+                    _ => {}
+                }
+            }
+        }
+        Ok(Some(files))
+    })();
+    drop(ask);
+    drop(sink);
+    let _ = child.wait();
+    walked.map_err(fail)
+}
+
 /// Whether `rev` names a commit in this repository, asked once per revision.
 ///
 /// Split out and memoised rather than inlined: the question is about the

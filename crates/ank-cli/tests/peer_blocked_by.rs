@@ -308,8 +308,9 @@ fn claim_holds_until_the_peer_task_is_done_and_holds_when_the_peer_is_gone() {
     assert_eq!(hint(&err), format!("ank show {at}"), "{err}");
     assert_eq!(snapshot(&f.b), before, "nothing under bb's .ank changed");
 
-    // The peer's task, done as the peer's corpus holds it on disk.
+    // The peer's task, done on the peer's default branch (ADR-09b985a5627e).
     f.peer_task("done");
+    commit(&f.b);
     let before = snapshot(&f.b);
 
     // bb moved away: the edge cannot be read, and it holds.

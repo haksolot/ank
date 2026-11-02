@@ -64,6 +64,35 @@ fn corpus(dir: &Path) {
     ok(dir, &["init"]);
 }
 
+/// Everything in `dir`, committed with signing off.
+fn commit(dir: &Path) {
+    for args in [
+        vec!["add", "-A"],
+        vec![
+            "-c",
+            "user.email=t@example.invalid",
+            "-c",
+            "user.name=t",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-qm",
+            "init",
+        ],
+    ] {
+        let out = Command::new("git")
+            .args(&args)
+            .current_dir(dir)
+            .output()
+            .expect("git must be on PATH");
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
 /// An accepted ADR, written by hand: `accept` signs and commits, which is a
 /// different verb's test. What matters here is a binding rule and its scope.
 fn adr(repo: &Path, id: &str, glob: &str) {
@@ -92,6 +121,9 @@ fn scope_inside_the_governed_corpus_lists_what_context_serves() {
     ok(&b, &["config", "peers.aa", "../a"]);
     adr(&a, BOUND, "bb:**");
     adr(&a, ELSEWHERE, "cc:**");
+    // Committed on a's default branch, where a peer is read (ADR-09b985a5627e).
+    ok(&a, &["config", "default_branch", "main"]);
+    commit(&a);
 
     let bound = format!("{BOUND}@aa");
     let elsewhere = format!("{ELSEWHERE}@aa");

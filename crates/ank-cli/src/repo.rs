@@ -303,6 +303,10 @@ pub struct Peer {
     /// The peer's own configuration — needed because a scope entry written
     /// *there* is resolved through the declarations *there* (§7).
     pub config: Config,
+    /// The commit of the peer's default branch the corpus was read at
+    /// (ADR-09b985a5627e): what a claim records as the state of the peer it
+    /// was taken against (ADR-50952ba5e226).
+    pub commit: String,
 }
 
 /// The peer's root, as the declaration names it. A relative path is resolved
@@ -536,6 +540,22 @@ struct Unopened {
 }
 
 /// Opens the peer `name` that `from` declares as `declared`, for reading.
+///
+/// **At its default branch, never at its working tree** (ADR-09b985a5627e).
+/// The peer's checkout is another agent's workspace: the branch it is on and
+/// what it has not committed are that agent's business. So the corpus is read
+/// out of git objects at the tip of the default branch, the local branch first
+/// and `refs/remotes/origin/<branch>` second, and `repo.ank` points at that
+/// reading while `repo.corpus` stays the peer's root, which is what its own
+/// declarations and its refs resolve against.
+///
+/// **Which branch is the default** is the one thing asked of the checkout:
+/// `default_branch` in its `config.yml`, then `refs/remotes/origin/HEAD`, the
+/// order [`crate::git::resolve_default_branch`] gives everywhere else. The
+/// configuration served is the one on that branch.
+///
+/// A peer with neither ref is unreadable, and degrades as an absent one does:
+/// one warning naming it, and the local answer.
 fn open(from: &Repo, name: &str, declared: &str) -> std::result::Result<Peer, Unopened> {
     let Some((root, declared)) = peer_root(from, name, declared) else {
         return Err(Unopened {
@@ -549,15 +569,128 @@ fn open(from: &Repo, name: &str, declared: &str) -> std::result::Result<Peer, Un
         what: format!("peer '{name}' at {declared} is not a corpus"),
         settle: settle(from, name),
     })?;
-    let config = crate::config::load(&repo.config_path()).map_err(|_| Unopened {
+    let unreadable = || Unopened {
         what: format!("peer '{name}' at {declared} could not be read"),
         settle: format!("ank --repo {declared} config schema"),
-    })?;
+    };
+    let checkout = crate::config::load(&repo.config_path()).map_err(|_| unreadable())?;
+    let branch = match checkout.default_branch.as_deref().map(str::trim) {
+        Some(b) if !b.is_empty() => Some(b.to_string()),
+        _ => crate::git::origin_head(&repo.corpus).ok().flatten(),
+    };
+    let Some(branch) = branch else {
+        return Err(Unopened {
+            what: format!("peer '{name}' at {declared} has no default branch to read"),
+            settle: format!("ank --repo {declared} config default_branch <name>"),
+        });
+    };
+    let Some((commit, _)) = crate::git::default_tip(&repo.corpus, &branch)
+        .ok()
+        .flatten()
+    else {
+        return Err(Unopened {
+            what: format!(
+                "peer '{name}' at {declared} has neither {branch} nor origin/{branch} to read"
+            ),
+            settle: format!("git -C {declared} fetch origin {branch}"),
+        });
+    };
+    let Some(ank) = read_at(from, name, &repo, &commit) else {
+        return Err(Unopened {
+            what: format!("peer '{name}' at {declared} carries no corpus on {branch}"),
+            settle: format!("ank --repo {declared} check"),
+        });
+    };
+    let repo = Repo { ank, ..repo };
+    let config = crate::config::load(&repo.config_path()).map_err(|_| unreadable())?;
     Ok(Peer {
         name: name.to_string(),
         repo,
         config,
+        commit,
     })
+}
+
+/// Where the reading of a peer's corpus at `commit` is kept: under the
+/// reader's git directory, where per-worktree state belongs and never under
+/// the peer, which a reader does not write to (ADR-a1de673043b4). Outside a
+/// repository, the temporary directory.
+fn readings(from: &Repo, name: &str) -> PathBuf {
+    crate::git::git_dir(&from.corpus)
+        .map(|d| d.join("ank/peers"))
+        .unwrap_or_else(|| std::env::temp_dir().join("ank-peers"))
+        .join(name)
+}
+
+/// The peer's `.ank/` as its commit `commit` holds it, written out once and
+/// kept: `None` when the commit carries no corpus where the checkout has one.
+///
+/// **Keyed by the commit**, which names its content: a reading that exists is
+/// right by construction, and a verb run against a peer that has not moved
+/// starts no `cat-file` at all. A missing one is read in **one** process
+/// ([`crate::git::files_at`]), written beside its final place and renamed
+/// into it, so a reader never meets half a corpus; two readers racing write
+/// two copies, and the loser keeps the winner's.
+///
+/// The `Store` and the in-memory index then read it as they read any corpus,
+/// which is why nothing downstream of [`open`] had to learn about git objects.
+/// Readings of other commits are swept once they are ten minutes old, so a
+/// verb still reading one when the peer moves is not pulled from under.
+fn read_at(from: &Repo, name: &str, repo: &Repo, commit: &str) -> Option<PathBuf> {
+    let dir = readings(from, name);
+    let reading = dir.join(commit);
+    if reading.is_dir() {
+        return Some(reading);
+    }
+    let within = format!("./{ANK_DIR}");
+    let files = crate::git::files_at(&repo.corpus, commit, &within).ok()??;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let partial = dir.join(format!(".partial-{}-{nanos}", std::process::id()));
+    let written = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&partial)?;
+        for (path, bytes) in &files {
+            let target = partial.join(path);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(target, bytes)?;
+        }
+        Ok(())
+    })();
+    if written.is_err() || std::fs::rename(&partial, &reading).is_err() {
+        let _ = std::fs::remove_dir_all(&partial);
+        if !reading.is_dir() {
+            return None;
+        }
+    }
+    sweep(&dir, commit);
+    Some(reading)
+}
+
+/// Removes the readings of `dir` other than `kept` that nobody touched in the
+/// last ten minutes, partial ones included.
+fn sweep(dir: &Path, kept: &str) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let old = std::time::Duration::from_secs(600);
+    for entry in entries.flatten() {
+        if entry.file_name().to_str() == Some(kept) {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > old);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
 }
 
 /// Every peer this repository declares, with one warning per peer that could
@@ -1158,10 +1291,41 @@ mod tests {
         for (t, peer, path) in [(&a, "bee", &to_b), (&b, "ay", &to_a)] {
             fs::write(
                 t.0.join(ANK_DIR).join("config.yml"),
-                format!("schema: 1\npeers:\n  {peer}: {path}\n"),
+                format!("schema: 1\ndefault_branch: main\npeers:\n  {peer}: {path}\n"),
             )
             .unwrap();
         }
+        // B is read at its default branch (ADR-09b985a5627e), so it is committed.
+        for args in [
+            &["init", "-q", "-b", "main"][..],
+            &["add", "-A"],
+            &[
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "user.name=t",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-qm",
+                "init",
+            ],
+        ] {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&b.0)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{out:?}");
+        }
+
+        // A has a git directory, which is where its readings of B are kept.
+        let out = std::process::Command::new("git")
+            .args(["init", "-q", "-b", "main"])
+            .current_dir(&a.0)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
 
         let ra = Repo::at(a.0.clone());
         let rb = Repo::at(b.0.clone());

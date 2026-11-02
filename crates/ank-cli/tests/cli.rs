@@ -14110,6 +14110,9 @@ fn a_declared_peer_is_read_and_never_written() {
          schema: 1\nversion: 1\n---\n\nWhy.\n",
     )
     .unwrap();
+    // Committed: a peer is read at its default branch (ADR-09b985a5627e).
+    home.git(&["add", "-A"]);
+    home.git(&["commit", "-qm", "seed"]);
 
     // The reader declares the corpus it reads. Reviewed here, in the repository
     // that wants to read.
