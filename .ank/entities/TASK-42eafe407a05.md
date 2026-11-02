@@ -5,7 +5,7 @@ slug: a-linked-worktree-resolves-its-peers-from-the-ma
 title: A linked worktree resolves its peers from the main checkout's root
 created: 2026-10-26T13:28:49Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/tests/peer_worktree.rs
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 Implements ADR-a14dabe4b259. Measured on 2026-10-26 at e04c0dad: in
