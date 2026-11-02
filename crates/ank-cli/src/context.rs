@@ -264,6 +264,10 @@ pub struct TaskLine {
     pub unblocks: usize,
     pub created: String,
     pub ready: bool,
+    /// The declared peer the task lives in, `None` for one of this corpus
+    /// (ADR-376bed7fa39a). Only `context --peers` lists a peer's task, and only
+    /// one that is ready over there.
+    pub peer: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -367,11 +371,19 @@ pub struct View {
     pub in_progress: Vec<String>,
     pub finished_elsewhere: usize,
     pub warnings: Vec<String>,
+    /// Whether the caller asked for `--peers`, which is what gives every task
+    /// of the JSON document its `peer` key (ADR-376bed7fa39a).
+    pub peers: bool,
 }
 
 impl View {
+    /// This corpus's ready tasks: the counters are the perimeter's, and a
+    /// peer's task is not in it.
     pub fn ready_count(&self) -> usize {
-        self.tasks.iter().filter(|t| t.ready).count()
+        self.tasks
+            .iter()
+            .filter(|t| t.ready && t.peer.is_none())
+            .count()
     }
 }
 
@@ -590,6 +602,21 @@ pub fn build(
     path: Option<&str>,
     limit: Option<usize>,
 ) -> Result<View> {
+    build_with(repo, cfg, identity, path, limit, false)
+}
+
+/// [`build`], and with `peers` each declared peer's ready tasks added after
+/// this corpus's in orientation (ADR-376bed7fa39a). Execution mode is about the
+/// task held and is untouched: the flag changes what is offered, and under a
+/// claim nothing is.
+pub fn build_with(
+    repo: &Repo,
+    cfg: &Config,
+    identity: &str,
+    path: Option<&str>,
+    limit: Option<usize>,
+    peers: bool,
+) -> Result<View> {
     let store = Store::new(&repo.ank);
     let index = Index::open(&repo.ank)?;
     let mut warnings = Vec::new();
@@ -607,7 +634,7 @@ pub fn build(
     match head {
         Some(id) => build_execution(&store, repo, &index, &shorts, &coord, id, warnings),
         None => build_orientation(
-            repo, cfg, &store, &rows, &shorts, &coord, path, limit, warnings,
+            repo, cfg, &store, &rows, &shorts, &coord, path, limit, peers, warnings,
         ),
     }
 }
@@ -686,6 +713,7 @@ fn build_orientation(
     coord: &HashMap<EntityId, Coordination>,
     path: Option<&str>,
     limit: Option<usize>,
+    with_peers: bool,
     mut warnings: Vec<String>,
 ) -> Result<View> {
     let statuses = status_of(rows);
@@ -757,6 +785,7 @@ fn build_orientation(
             unblocks: unblocks.get(&r.id).copied().unwrap_or(0),
             created: r.created.clone(),
             ready,
+            peer: None,
         });
     }
 
@@ -786,7 +815,15 @@ fn build_orientation(
     // sections rather than given one of its own: a rule binds or it does not,
     // and a reader deciding what to obey has no use for a second list to
     // remember. Where it lives is on the line (§7).
-    let (peer_active, peer_proposed) = peer_lines(repo, cfg, path, &vocabulary, &mut warnings);
+    // The peers, opened once for the constraints they bind here and, under
+    // `--peers`, for the tasks they offer: one opening, one warning for a peer
+    // that cannot be read.
+    let (opened, peer_warnings) = crate::repo::peers_of(repo, cfg);
+    warnings.extend(peer_warnings);
+    let (peer_active, peer_proposed) = peer_lines(repo, &opened, path, &vocabulary, &mut warnings);
+    if with_peers {
+        lines.extend(peer_ready_tasks(&opened, &mut warnings));
+    }
     constraints.extend(peer_active);
     proposals.extend(peer_proposed);
     constraints.sort_by(constraint_order);
@@ -804,6 +841,7 @@ fn build_orientation(
         in_progress,
         finished_elsewhere,
         warnings,
+        peers: with_peers,
     })
 }
 
@@ -950,14 +988,14 @@ fn constraint_order(a: &ConstraintLine, b: &ConstraintLine) -> std::cmp::Orderin
 /// something no reader here could show.
 fn peer_lines(
     repo: &Repo,
-    cfg: &Config,
+    peers: &[crate::repo::Peer],
     path: Option<&str>,
     vocabulary: &std::collections::HashSet<String>,
     warnings: &mut Vec<String>,
 ) -> (Vec<ConstraintLine>, Vec<ConstraintLine>) {
     let mut active = Vec::new();
     let mut proposed = Vec::new();
-    for bound in peer_adrs(repo, cfg, path, warnings) {
+    for bound in peer_adrs_in(repo, peers, path, warnings) {
         let adr = bound.adr;
         let line = ConstraintLine {
             short: bound.short,
@@ -1003,17 +1041,27 @@ pub(crate) fn peer_adrs(
     path: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Vec<PeerAdr> {
-    let mut out = Vec::new();
-
     let (peers, peer_warnings) = crate::repo::peers_of(repo, cfg);
     warnings.extend(peer_warnings);
+    peer_adrs_in(repo, &peers, path, warnings)
+}
 
+/// [`peer_adrs`] over peers the caller has already opened, so that a verb
+/// reading the peers for a second question opens each one once and warns about
+/// an unreadable one once (ADR-376bed7fa39a).
+pub(crate) fn peer_adrs_in(
+    repo: &Repo,
+    peers: &[crate::repo::Peer],
+    path: Option<&str>,
+    warnings: &mut Vec<String>,
+) -> Vec<PeerAdr> {
+    let mut out = Vec::new();
     for peer in peers {
         let store = Store::new(&peer.repo.ank);
         let ids = match store.list_ids() {
             Ok(ids) => ids,
             Err(_) => {
-                warnings.push(unreadable_peer(&peer));
+                warnings.push(unreadable_peer(peer));
                 continue;
             }
         };
@@ -1058,6 +1106,70 @@ pub(crate) fn peer_adrs(
                 peer.name,
                 peer.repo.corpus.display()
             ));
+        }
+    }
+    out
+}
+
+/// The tasks each declared peer offers, for `context --peers`
+/// (ADR-376bed7fa39a): ready over there, which is open, every local blocker of
+/// the peer done, no edge to a further peer, and no claim or completion on the
+/// peer's own `refs/ank/*`. Read at the peer's default branch and never
+/// written: the index is built in memory, and the claims are one
+/// `for-each-ref` and one batch.
+///
+/// **The perimeter does not narrow them.** A path is a path of this checkout
+/// and names nothing in a peer, the reading `find` already gives `--scope`
+/// over a peer. Each row is addressed `<short>@<peer>` in the peer's own short
+/// form, which `show` and `find` read back; it is never offered as the next
+/// `claim`, since a claim on a peer's task is taken in the peer.
+fn peer_ready_tasks(peers: &[crate::repo::Peer], warnings: &mut Vec<String>) -> Vec<TaskLine> {
+    let mut out = Vec::new();
+    for peer in peers {
+        let read = (|| -> Result<Vec<TaskLine>> {
+            let rows = Index::in_memory(&peer.repo.ank)?.all()?;
+            let coord = coordination(&peer.repo.corpus, &mut Vec::new())?;
+            let shorts = shorts_of(&peer.repo)?;
+            let statuses = status_of(&rows);
+            let mut lines: Vec<TaskLine> = rows
+                .iter()
+                .filter(|r| r.kind == EntityKind::Task && r.status == "open")
+                .filter(|r| r.peer_blocked_by.is_empty())
+                .filter(|r| {
+                    r.blocked_by
+                        .iter()
+                        .all(|b| statuses.get(b).is_some_and(|s| s == "done"))
+                })
+                .filter(|r| !coordination_of(&coord, &r.id).blocks_readiness())
+                .map(|r| TaskLine {
+                    short: format!(
+                        "{}@{}",
+                        shorts
+                            .get(&r.id)
+                            .cloned()
+                            .unwrap_or_else(|| r.id.to_string()),
+                        peer.name
+                    ),
+                    id: r.id.clone(),
+                    title: r.title.clone(),
+                    status: r.status.clone(),
+                    coordination: Coordination::Free,
+                    unblocks: 0,
+                    created: r.created.clone(),
+                    ready: true,
+                    peer: Some(peer.name.clone()),
+                })
+                .collect();
+            lines.sort_by(|a, b| {
+                a.created
+                    .cmp(&b.created)
+                    .then(a.id.to_string().cmp(&b.id.to_string()))
+            });
+            Ok(lines)
+        })();
+        match read {
+            Ok(lines) => out.extend(lines),
+            Err(_) => warnings.push(unreadable_peer(peer)),
         }
     }
     out
@@ -1214,6 +1326,7 @@ fn build_execution(
             .collect(),
         finished_elsewhere: 0,
         warnings,
+        peers: false,
     })
 }
 
@@ -1924,7 +2037,7 @@ fn orientation_lines(
         }
     }
     out.push(String::new());
-    match tasks.iter().find(|t| t.ready) {
+    match tasks.iter().find(|t| t.ready && t.peer.is_none()) {
         Some(t) => out.push(style.next(&format!("> ank claim {} to start", t.short))),
         None if cut_tasks > 0 => out.push(style.next(&format!(
             "> ank find --type task --scope {scope_arg} for the {cut_tasks} tasks not shown"
@@ -2017,15 +2130,19 @@ pub fn render_json(view: &View, budget: usize) -> String {
         .iter()
         .map(|t| {
             let state = marker(t);
-            Obj::new()
+            let row = Obj::new()
                 .str("id", &t.id.to_string())
                 .str("short", &t.short)
                 .str("title", &t.title)
                 .str("status", &t.status)
                 .bool("ready", t.ready)
                 .num("unblocks", t.unblocks)
-                .str("state", state.trim_matches(|c| c == '[' || c == ']'))
-                .finish()
+                .str("state", state.trim_matches(|c| c == '[' || c == ']'));
+            if view.peers {
+                row.opt_str("peer", t.peer.as_deref()).finish()
+            } else {
+                row.finish()
+            }
         })
         .collect();
 
@@ -2332,7 +2449,14 @@ pub fn run(
         }
         return Ok(ExitCode::Ok);
     }
-    let mut view = build(repo, cfg, identity, path.as_deref(), limit)?;
+    let mut view = build_with(
+        repo,
+        cfg,
+        identity,
+        path.as_deref(),
+        limit,
+        inv.has("--peers"),
+    )?;
 
     // A path argument with a claim in hand is ignored, and said so: exploring
     // another perimeter mid-task is what the one-claim-per-agent rule

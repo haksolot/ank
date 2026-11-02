@@ -5,7 +5,7 @@ slug: status-find-and-context-take-peers-and-add-each
 title: status, find and context take --peers and add each declared peer's answer, claims included
 created: 2026-10-26T13:30:20Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-contract/src/verbs.rs
@@ -16,14 +16,64 @@ scope:
   - crates/ank-cli/tests/peer_aggregate.rs
   - crates/ank-cli/tests/cli.rs
   - crates/ank-cli/tests/golden-json/**
+  - crates/ank-cli/tests/main.rs
 blocked_by: [TASK-a8362b510188, TASK-014bbfca8fb6]
 done_criteria: |
   Through the binary, in a scratch trio web (peers.api ../api, peers.db ../db), api and db, each holding one open task and one live claim by a distinct identity: ank find --type task --peers in web lists the tasks of all three, those of a peer addressed <id>@<peer>; ank status --peers in web names the live claims of all three with the repository each lives in, and its constraint count includes the peer ADRs that bind web; ank context --peers src/ in web lists the ready tasks of web and of each peer; with db moved away the three verbs answer for web and api and warn once naming db; without --peers each verb prints exactly what it prints today; no file and no ref under api or db is modified; the --json form of each carries the peer of every row under a key the contract table declares. A test in crates/ank-cli/tests/peer_aggregate.rs asserts each case through the binary.
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/546558753fcb@5063aa2
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-971e-half-declared
+  - type: test
+    ref: local/28ea993c4812@5cb8ca7
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-ae6c-peers-aggregate
+  - type: test
+    ref: local/40992441fdb8@5cb8ca7
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-ae6c-peers-aggregate
+  - type: test
+    ref: local/7ad8a0a678f7@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/1ce807c613bc@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/f2adf9838ea0@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 1
+version: 4
 ---
 
 Implements the read half of ADR-376bed7fa39a, which must be accepted first: the
