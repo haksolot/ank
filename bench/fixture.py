@@ -74,9 +74,15 @@ def plan(scenario, seed, adrs=44, tasks=330, closed=270):
                           f"{rng.choice(NOUNS)}.",
             "body": body(m, 3),
         })
-    for title, scope, constraint in scenario["decisions"]:
+    titles = {}
+    for title, scope, constraint, *earlier in scenario["decisions"]:
+        titles[title] = len(decisions)
         decisions.append({"title": title, "scope": scope, "constraint": constraint,
                           "body": body(pathlib.PurePosixPath(scope).stem, 3)})
+        # A succession: the earlier decision, by its index, and the later one by its.
+        if earlier:
+            decisions[-1]["supersedes"] = titles[earlier[0]]
+            decisions[titles[earlier[0]]]["superseded_by"] = len(decisions) - 1
 
     work = []
     for i in range(tasks):
@@ -160,14 +166,18 @@ def head(id_, kind, title, created):
             f"created: {scalar(created)}\nauthor: {scalar(AUTHOR)}\n")
 
 
-def adr_text(id_, d, created, anchor=None):
-    out = (head(id_, "adr", d["title"], created) + "status: accepted\n" + seq("scope", [d["scope"]])
-           + block("constraint", d["constraint"])
-           + f"ratified: {scalar(ratification_anchor(d['constraint'], [d['scope']]))}\n")
+def adr_text(id_, d, created, anchor=None, supersedes=None, superseded=False):
+    """As `accept` leaves it; `superseded` as the later decision's `accept` rewrites it."""
+    status, version = ("superseded", 3) if superseded else ("accepted", 2)
+    out = (head(id_, "adr", d["title"], created) + f"status: {status}\n" + seq("scope", [d["scope"]])
+           + block("constraint", d["constraint"]))
+    if supersedes:
+        out += f"supersedes: {supersedes}\n"
+    out += f"ratified: {scalar(ratification_anchor(d['constraint'], [d['scope']]))}\n"
     if anchor:
         out += f"anchor: {scalar(anchor)}\n"
     out += (f"verified:\n  - by: {scalar(RATIFIER)}\n    at: {scalar(created)}\n"
-            "schema: 4\nversion: 2\n---\n")
+            f"schema: 4\nversion: {version}\n---\n")
     return out + "\n" + d["body"] + "\n"
 
 
@@ -220,9 +230,17 @@ def lay_code(dest, scenario):
 
 
 def lay_markdown(dest, model):
-    for n, d in enumerate(model["decisions"], 1):
-        write(dest, f"docs/adr/{n:04}-{slugify(d['title'])}.md",
-              f"# {d['title']}\n\nStatus: accepted\nApplies to: `{d['scope']}`\n\n"
+    """A kept record: a replaced decision says by what, and its successor says what it replaces."""
+    decisions = model["decisions"]
+    names = [f"{n:04}-{slugify(d['title'])}.md" for n, d in enumerate(decisions, 1)]
+    for name, d in zip(names, decisions):
+        status = "Status: accepted\n"
+        if "superseded_by" in d:
+            status = f"Status: superseded by {names[d['superseded_by']]}\n"
+        if "supersedes" in d:
+            status += f"Supersedes: {names[d['supersedes']]}\n"
+        write(dest, f"docs/adr/{name}",
+              f"# {d['title']}\n\n{status}Applies to: `{d['scope']}`\n\n"
               f"## Decision\n\n{d['constraint']}\n\n## Context\n\n{d['body']}\n")
     write(dest, "CLAUDE.md",
           "# Architecture decisions\n\nThe decisions this repository is held to live in "
@@ -245,16 +263,23 @@ def lay_ank(dest, model, scenario, ank):
     for n, d in enumerate(model["decisions"]):
         id_, created = entity_id("ADR", seed, n), stamp(clock)
         clock += 1
+        succession = {}
+        if "supersedes" in d:
+            succession["supersedes"] = entity_id("ADR", seed, d["supersedes"])
         # What `accept` does: the blob is the file without the anchor that names
         # the tag, the tag is annotated, and only refs/ank/ratify/<id> keeps it.
-        blob = run(dest, "git", "hash-object", "-w", "--stdin", stdin=adr_text(id_, d, created))
+        # A decision is ratified before its successor exists, so the blob reads
+        # accepted; the successor's `accept` then marks the file it replaces.
+        blob = run(dest, "git", "hash-object", "-w", "--stdin",
+                   stdin=adr_text(id_, d, created, **succession))
         message = (f"ratify {id_}\n\nconstraint+scope: "
                    f"{ratification_anchor(d['constraint'], [d['scope']])}\nby: {RATIFIER}")
         run(dest, "git", "tag", "-a", "-m", message, f"ratify/{id_}", blob)
         tag = run(dest, "git", "rev-parse", f"refs/tags/ratify/{id_}")
         run(dest, "git", "update-ref", f"refs/ank/ratify/{id_}", tag)
         run(dest, "git", "tag", "-d", f"ratify/{id_}")
-        write(dest, f".ank/entities/{id_}.md", adr_text(id_, d, created, anchor=tag))
+        write(dest, f".ank/entities/{id_}.md",
+              adr_text(id_, d, created, anchor=tag, superseded="superseded_by" in d, **succession))
     for n, t in enumerate(model["tasks"]):
         id_, created = entity_id("TASK", seed, n), stamp(clock)
         clock += 1

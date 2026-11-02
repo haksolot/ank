@@ -11,6 +11,12 @@ TESTDATA = pathlib.Path(__file__).resolve().parents[1] / "testdata"
 ROOT = TESTDATA.parents[1]
 
 
+def scenario_of(case):
+    """A case names its scenario in a `scenario` file; the first family has none."""
+    named = case / "scenario"
+    return named.read_text().strip() if named.exists() else "discount-cap"
+
+
 def a_line(**changes):
     line = {"model": "claude-haiku-5-5", "harness": "1", "ank": "0.9.2", "seed": 7,
             "scenario": "discount-cap", "condition": "none", "rep": 1, "exit": 0,
@@ -26,7 +32,7 @@ class ScoreTest(unittest.TestCase):
         for case in cases:
             with self.subTest(case.name):
                 recorded = json.loads((case / "score.json").read_text())
-                got = score.score(case / "transcript.jsonl", case / "tree", "discount-cap")
+                got = score.score(case / "transcript.jsonl", case / "tree", scenario_of(case))
                 self.assertEqual(got, recorded)
 
     def test_the_probe_reads_the_code_not_the_claim(self):
@@ -37,6 +43,31 @@ class ScoreTest(unittest.TestCase):
                                TESTDATA / "none-uncapped/tree", "discount-cap")
         self.assertEqual((capped["works"], capped["cap_respected"]), (True, True))
         self.assertEqual((uncapped["works"], uncapped["cap_respected"]), (True, False))
+
+    def test_the_supersession_probe_tells_the_current_ceiling_from_the_superseded_one(self):
+        # 20 accepted and 21 refused is the later decision; 21 to 30 accepted and
+        # 31 refused is the earlier one, followed after it was superseded.
+        current = score.score(TESTDATA / "ank-current/transcript.jsonl",
+                              TESTDATA / "ank-current/tree", "discount-superseded")
+        stale = score.score(TESTDATA / "markdown-superseded-followed/transcript.jsonl",
+                            TESTDATA / "markdown-superseded-followed/tree", "discount-superseded")
+        self.assertEqual((current["works"], current["ceiling"]), (True, "current"))
+        self.assertEqual((stale["works"], stale["ceiling"]), (True, "superseded-followed"))
+        uncapped = score.score(TESTDATA / "none-uncapped/transcript.jsonl",
+                               TESTDATA / "none-uncapped/tree", "discount-superseded")
+        self.assertEqual((uncapped["works"], uncapped["ceiling"]), (True, None))
+
+    def test_the_supersession_probe_holds_the_whole_range(self):
+        # Refusing at 25 is neither decision: the earlier ceiling is followed only
+        # when every reduction from 21 to 30 is accepted.
+        with tempfile.TemporaryDirectory(prefix="ank-bench-test-") as tmp:
+            tree = pathlib.Path(tmp)
+            (tree / "src/shop").mkdir(parents=True)
+            (tree / "src/shop/__init__.py").write_text("")
+            cart = (TESTDATA / "markdown-superseded-followed/tree/src/shop/cart.py").read_text()
+            (tree / "src/shop/cart.py").write_text(cart.replace("percent > 30", "percent > 24"))
+            got = score.probe(tree, score.SCENARIOS["discount-superseded"])
+        self.assertEqual((got["works"], got["ceiling"]), (True, None))
 
 
 class CheckTest(unittest.TestCase):
@@ -59,6 +90,15 @@ class CheckTest(unittest.TestCase):
         ]:
             with self.subTest(problem):
                 self.assertIn(problem, score.problems(a_line(**changes)))
+
+    def test_a_supersession_line_carries_its_ceiling(self):
+        line = a_line(scenario="discount-superseded", ceiling="current")
+        self.assertEqual(score.problems(line), [])
+        self.assertEqual(score.problems(a_line(scenario="discount-superseded", ceiling=None)), [])
+        self.assertIn("missing ceiling", score.problems(a_line(scenario="discount-superseded")))
+        self.assertIn("unknown ceiling", score.problems(a_line(ceiling="current")))
+        self.assertIn("ceiling 'thirty' is not one of current, superseded-followed",
+                      score.problems(a_line(scenario="discount-superseded", ceiling="thirty")))
 
     def test_the_binary_exits_8_naming_each_bad_line(self):
         with tempfile.TemporaryDirectory(prefix="ank-bench-test-") as tmp:
