@@ -5,7 +5,7 @@ slug: ank-herdr-teaches-orchestration-from-a-herdr-cor
 title: ank-herdr teaches orchestration from a herdr-core terminal through hc, and every citation of ADR-55449b7f4f8f points to ADR-2fc9b88cc0bd
 created: 2026-11-02T10:37:24Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - skill/herdr/SKILL.md
   - skill/SKILL.md
@@ -22,8 +22,53 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/a753c1939819@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+  - type: test
+    ref: local/5679d00acc6e@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+  - type: test
+    ref: local/fd890b9ed4f8@0a0437a
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-d199-peer-worktree
+  - type: test
+    ref: local/43954be85539@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/a9da3ddff0a1@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/d7250ee01319@90e14ed
+    tree: scope/f167c30e534d
+    criteria: cfbe6ef5e1bf
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 2
+version: 3
 ---
 
 ADR-2fc9b88cc0bd supersedes ADR-55449b7f4f8f: the maintainer's sessions run in
