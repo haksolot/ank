@@ -53,7 +53,7 @@ inside the binary, built from `skill/`: the contract every agent loads, in
 `skill/SKILL.md`, and six siblings beside it, in `skill/*/SKILL.md`. Five of
 them teach one activity of the work each, in `skill/plan`, `skill/drift`,
 `skill/loop`, `skill/tdd` and `skill/diagnose`, and `skill/herdr` teaches the
-agent orchestrating the others from a herdr pane. A task may name any
+agent orchestrating the others from a herdr-core terminal. A task may name any
 sibling, and planning designates one of the five. `ank new --method tdd` writes the designation into it, `ank context`
 names it and the sibling to load beneath the criterion once the task is
 claimed, `ank log --method tdd` records that it fired, and `ank skills` counts
