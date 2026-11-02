@@ -77,6 +77,15 @@ class RunTest(unittest.TestCase):
                 self.assertIn(f"discount-superseded-{condition}-", r.stdout)
                 self.assertFalse(self.marker.exists(), "--dry-run launched the agent")
 
+    def test_a_dry_run_of_the_scale_family_exits_0_under_every_condition(self):
+        for condition in ("none", "markdown", "ank"):
+            with self.subTest(condition):
+                r = bench_run(*self.common(), "--scenario", "discount-scale",
+                              "--condition", condition, "--dry-run")
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertIn(f"discount-scale-{condition}-", r.stdout)
+                self.assertFalse(self.marker.exists(), "--dry-run launched the agent")
+
     def test_an_alias_is_refused_before_anything_is_launched(self):
         for alias in ("sonnet", "opus", "claude-sonnet", "claude-sonnet-latest"):
             r = bench_run(*self.common(model=alias), "--dry-run")
