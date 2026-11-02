@@ -14493,7 +14493,7 @@ const GLOB_FLAGS: [(&str, &str); 3] = [
 /// path if it is called `--scope`" — is exactly what would let the next
 /// `--under <glob>` through in silence, which is the failure this whole task is
 /// a correction of.
-const NOT_A_PATH: [&str; 46] = [
+const NOT_A_PATH: [&str; 47] = [
     // Who may ratify, what a reviewer should know of the key, and the date it
     // stops ratifying: an email, prose and a day (ADR-5c6db7a161b8).
     "--principal",
@@ -14587,6 +14587,9 @@ const NOT_A_PATH: [&str; 46] = [
     // A switch: the instant it answers from is the lease on the task held,
     // and nothing about it comes off the command line (ADR-894d4bfbf9bd).
     "--since",
+    // A switch: the peers it reads are the ones `config.yml` declares, and
+    // nothing about them comes off the command line (ADR-376bed7fa39a).
+    "--peers",
     "--body",
     "--type",
     "--status",
