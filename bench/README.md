@@ -130,6 +130,39 @@ here means 21 is refused. Look before you spend:
 
 Results append to `results/supersession.jsonl`. No campaign has been run yet.
 
+## Family: scale, discount-scale
+
+Every adoption run read all 48 Markdown decisions whole, so the adoption
+campaign never tested retrieval. In this family the record holds 500
+decisions. Reading all of them is no longer practical. Exactly one decision
+applies to `src/shop/cart.py`, the finance ceiling from the adoption
+scenario. The other 499 are seeded noise spread over the other modules. The
+prompt and the probe are the adoption ones, word for word, and so are the
+score fields.
+
+- `none`: no decision exists.
+- `markdown`: 500 files under `docs/adr/`. Only the finance file names
+  `src/shop/cart.py`, in its `Applies to:` line.
+- `ank`: 500 ADRs. Only the finance one has `src/shop/cart.py` as its scope.
+  `ank context src/shop/cart.py` lists it alone.
+
+The binding decision sits at a seeded place among the noise, never first and
+never last. Neither its file number nor its creation time gives it away. A
+grep for the method or for "discount" reaches the task but not the decision.
+
+One property of the `ank` tree matters when reading results. The target task
+is scoped `src/shop/**`, as in adoption, so once it is claimed its perimeter
+covers all 500 constraints. Run unclaimed, `ank context src/shop/cart.py`
+lists the one decision. Run after `claim`, `ank context` prints all 500 (seed 7:
+1006 lines, the finance constraint on line 218), and `ank check` signals the
+task as over-constrained. That output is what the agent receives, and it is
+part of what the family measures. Look before you spend:
+
+    python3 -m bench.run --model claude-sonnet-5-5 --scenario discount-scale \
+      --condition ank --rep 1 --dry-run
+
+Results append to `results/scale.jsonl`. No campaign has been run yet.
+
 ## Tests
 
     python3 -m unittest discover -s bench -t .

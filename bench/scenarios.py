@@ -181,6 +181,25 @@ SCENARIOS = {
         # What this probe adds to a result line, beside what every probe reports.
         "scores": {"ceiling": (None, "current", "superseded-followed")},
     },
+    # Reading every decision stops being an option: the one that binds the cart
+    # is alone among 500, the rest spread over the other modules, so it is found
+    # by the path it applies to or not at all. The adoption request and probe.
+    "discount-scale": {
+        "family": "scale",
+        "package": "shop",
+        "files": SHOP_FILES,
+        "verifier": SHOP_VERIFIER,
+        "decisions": [
+            ("Pricing rules agreed with finance", "src/shop/cart.py",
+             "A reduction of more than three tenths of the cart total is refused with "
+             "ValueError('reduction above three tenths'); finance owns this ceiling, not engineering."),
+        ],
+        # Seeded decisions around the scenario's own, none of them on the cart.
+        "noise": 499,
+        "task": DISCOUNT_TASK,
+        "prompt": DISCOUNT_PROMPT,
+        "probe": DISCOUNT_PROBE,
+    },
 }
 
 CONDITIONS = ("none", "markdown", "ank")

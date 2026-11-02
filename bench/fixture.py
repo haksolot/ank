@@ -83,6 +83,8 @@ def plan(scenario, seed, adrs=44, tasks=330, closed=270):
         if earlier:
             decisions[-1]["supersedes"] = titles[earlier[0]]
             decisions[titles[earlier[0]]]["superseded_by"] = len(decisions) - 1
+    if "noise" in scenario:
+        decisions = scatter(decisions, adrs, rng)
 
     work = []
     for i in range(tasks):
@@ -99,6 +101,31 @@ def plan(scenario, seed, adrs=44, tasks=330, closed=270):
     work.append({"title": t["title"], "scope": t["scope"], "criteria": t["criteria"],
                  "body": "", "closed": None, "target": True})
     return {"seed": seed, "decisions": decisions, "tasks": work}
+
+
+def scatter(decisions, noise, rng):
+    """The scenario's decisions, which follow `noise` seeded ones, moved to seeded places.
+
+    Among hundreds, the one that binds must not be the last file written: under
+    Markdown it would be the highest number, under ank the latest created. The
+    scenario's own keep their relative order, and a succession its indices.
+    """
+    ours = range(noise, len(decisions))
+    places = sorted(rng.sample(range(len(decisions)), len(ours)))
+    order = [None] * len(decisions)
+    for old, new in zip(ours, places):
+        order[new] = old
+    rest = iter(range(noise))
+    order = [next(rest) if o is None else o for o in order]
+    where = {old: new for new, old in enumerate(order)}
+    out = []
+    for old in order:
+        d = dict(decisions[old])
+        for key in ("supersedes", "superseded_by"):
+            if key in d:
+                d[key] = where[d[key]]
+        out.append(d)
+    return out
 
 
 # -- the ank format, as crates/ank-core/src/parse.rs emits it --
@@ -306,6 +333,8 @@ def generate(dest, scenario_name, condition, seed, ank="ank", **sizes):
     run(dest, "git", "commit", "-qm", scenario["package"])
     if condition == "none":
         return dest
+    if "noise" in scenario:
+        sizes = {"adrs": scenario["noise"], **sizes}
     model = plan(scenario, seed, **sizes)
     if condition == "markdown":
         lay_markdown(dest, model)
