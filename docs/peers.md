@@ -42,7 +42,12 @@ $ cd /work/api && git add -A && git commit -q -m "adr: trace ids"
     $ cd /work/api && ank accept 3511
     accepted ADR-351131160961 -> 5c88658
 
-That is one end. Inside `web`, nothing binds yet, because `web` has not said it
+<!-- replay peers
+$ cd /work/api && git add -A && git commit -q -m "accept: trace ids"
+-->
+
+That is one end, once committed: another repository reads `api` at its default
+branch, never its working tree (ADR-09b985a5627e). Inside `web`, nothing binds yet, because `web` has not said it
 reads `api`, and a corpus is never discovered from the filesystem:
 
 <!-- replay peers -->
