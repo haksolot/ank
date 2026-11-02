@@ -266,6 +266,8 @@ fn context_claim_and_the_hint_agree_on_a_task_a_peer_edge_blocks() {
     assert_eq!(snapshot(&f.b), before, "nothing under bb's .ank changed");
 
     f.peer_task("done");
+    // Done on the peer's default branch, where it is read (ADR-09b985a5627e).
+    commit(&f.b);
     let before_done = snapshot(&f.b);
 
     let moved = f.base.join("b-moved");
