@@ -772,7 +772,7 @@ fn sibling_skills() -> Vec<(String, String)> {
 
 /// The five activities ADR-e4a5a8873fe3 names, all of them in the tree now that
 /// `tdd` has landed with TASK-135cde611e3f and `diagnose` with
-/// TASK-587a185bef49, and the sixth ADR-55449b7f4f8f adds, `herdr`. A sibling
+/// TASK-587a185bef49, and the sixth ADR-2fc9b88cc0bd adds, `herdr`. A sibling
 /// beyond these is allowed and anchored like the rest; one of these missing is
 /// the skill system shipping a contract without its policies -- the tests below
 /// hold whatever exists, and this one is what makes a sibling's disappearance a
@@ -784,7 +784,7 @@ fn the_named_sibling_skills_exist() {
         assert!(
             names.contains(&expected.to_string()),
             "skill/{expected}/SKILL.md is missing: ADR-e4a5a8873fe3 and \
-             ADR-55449b7f4f8f name it as one of the policies beside the contract"
+             ADR-2fc9b88cc0bd name it as one of the policies beside the contract"
         );
     }
 }
@@ -874,7 +874,7 @@ fn the_herdr_sibling_is_named_and_triggers_in_a_herdr_pane() {
     );
 }
 
-/// **Each point ADR-55449b7f4f8f and TASK-b096b2c9d6d3 name is taught on a
+/// **Each point ADR-2fc9b88cc0bd and TASK-b096b2c9d6d3 name is taught on a
 /// line of its own.** These are what running ank agents through herdr has
 /// measured, and the reason the sibling exists: each one, missed, cost a run.
 #[test]

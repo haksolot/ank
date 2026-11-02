@@ -5,7 +5,7 @@ slug: ank-herdr-teaches-orchestration-from-a-herdr-cor
 title: ank-herdr teaches orchestration from a herdr-core terminal through hc, and every citation of ADR-55449b7f4f8f points to ADR-2fc9b88cc0bd
 created: 2026-11-02T10:37:24Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - skill/herdr/SKILL.md
   - skill/SKILL.md
@@ -23,7 +23,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-2fc9b88cc0bd supersedes ADR-55449b7f4f8f: the maintainer's sessions run in

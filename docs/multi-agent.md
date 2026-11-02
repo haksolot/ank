@@ -135,7 +135,7 @@ one place the planes touch is `accept`, and it touches them by writing a ref,
 
 `skill/herdr` (`ank-herdr`) is the policy for running this page from a single
 orchestrating agent inside a herdr pane
-(ADR-55449b7f4f8f). The orchestrator claims nothing: it reads `ank context`,
+(ADR-2fc9b88cc0bd). The orchestrator claims nothing: it reads `ank context`,
 `ank graph` and `ank status`, names the pairs of ready tasks whose scopes
 collide, gives every other ready task a worker of its own -- one worktree, one
 branch and one `ANK_AGENT`, exported in the pane before the agent starts -- and
