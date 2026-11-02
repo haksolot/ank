@@ -787,14 +787,38 @@ impl Peer {
     /// The name is resolved through **this peer's** declarations, never the
     /// reader's: that is what makes the entry mean the same thing wherever it is
     /// read, and mean nothing at all where the peer is not declared (§7).
+    ///
+    /// **Compared by identity, and never by path alone** (ADR-621a7fd96ce1,
+    /// TASK-d1996aa9851d). The declaration names one directory, and every
+    /// worktree of that repository is the same corpus at another path: compared
+    /// by path, a linked worktree was dropped with no warning, and an override
+    /// pointing at it only moved the hole to the main checkout. The path is
+    /// still asked first, because it answers the common case with no git
+    /// process; only a miss asks both identities, memoised per root, so the
+    /// count does not grow with the entities read (ADR-cc65). The resolved
+    /// root still has to be a corpus, and one naming a third repository has
+    /// another root commit and binds nobody here.
     pub fn binds(&self, name: &str, reader: &Repo) -> bool {
         // Through the reader's override too, or a peer whose layout differs
         // here would be opened and then bind nothing (ADR-da2819aef598).
-        self.config
+        let Some((root, _)) = self
+            .config
             .peers
             .get(name)
             .and_then(|declared| peer_root(&self.repo, name, declared))
-            .is_some_and(|(root, _)| same_corpus(&root, &reader.corpus))
+        else {
+            return false;
+        };
+        if same_corpus(&root, &reader.corpus) {
+            return true;
+        }
+        if !root.join(ANK_DIR).is_dir() {
+            return false;
+        }
+        match (identity(&root), identity(&reader.corpus)) {
+            (Some(theirs), Some(ours)) => theirs == ours,
+            _ => false,
+        }
     }
 }
 
