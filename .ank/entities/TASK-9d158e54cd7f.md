@@ -5,7 +5,7 @@ slug: no-pseudo-terminal-test-fails-on-macos-because-a
 title: No pseudo-terminal test fails on macOS because another test filled the system's table of them
 created: 2026-11-02T13:36:36Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - .config/nextest.toml
   - crates/ank-tui/tests/terminal/**
@@ -15,8 +15,51 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/40c4de2018be@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+  - type: test
+    ref: local/6dd037b7ca3a@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+  - type: test
+    ref: local/7d2a0ce3bd38@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+  - type: test
+    ref: local/03a8c60f4a54@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/8ba4cb3ecddb@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/f697b2c0f741@d51c0fe
+    tree: scope/05b6e0f61ff0
+    criteria: a44b4ae08307
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 4
+version: 6
 ---
 
 Main went red on the merge of #736 (9610a0ec), run 41449785197, macos-latest
