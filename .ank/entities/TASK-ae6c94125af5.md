@@ -5,7 +5,7 @@ slug: status-find-and-context-take-peers-and-add-each
 title: status, find and context take --peers and add each declared peer's answer, claims included
 created: 2026-10-26T13:30:20Z
 author: claude-code/opus-5.5+plan
-status: in_progress
+status: done
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-contract/src/verbs.rs
@@ -23,8 +23,57 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/546558753fcb@5063aa2
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-971e-half-declared
+  - type: test
+    ref: local/28ea993c4812@5cb8ca7
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-ae6c-peers-aggregate
+  - type: test
+    ref: local/40992441fdb8@5cb8ca7
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-ae6c-peers-aggregate
+  - type: test
+    ref: local/7ad8a0a678f7@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/1ce807c613bc@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/f2adf9838ea0@52aa854
+    tree: scope/249fd3af23d5
+    criteria: 9ee319ecb9ca
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 3
+version: 4
 ---
 
 Implements the read half of ADR-376bed7fa39a, which must be accepted first: the
