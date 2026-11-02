@@ -5,7 +5,7 @@ slug: status-find-and-context-take-peers-and-add-each
 title: status, find and context take --peers and add each declared peer's answer, claims included
 created: 2026-10-26T13:30:20Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-contract/src/verbs.rs
@@ -16,6 +16,7 @@ scope:
   - crates/ank-cli/tests/peer_aggregate.rs
   - crates/ank-cli/tests/cli.rs
   - crates/ank-cli/tests/golden-json/**
+  - crates/ank-cli/tests/main.rs
 blocked_by: [TASK-a8362b510188, TASK-014bbfca8fb6]
 done_criteria: |
   Through the binary, in a scratch trio web (peers.api ../api, peers.db ../db), api and db, each holding one open task and one live claim by a distinct identity: ank find --type task --peers in web lists the tasks of all three, those of a peer addressed <id>@<peer>; ank status --peers in web names the live claims of all three with the repository each lives in, and its constraint count includes the peer ADRs that bind web; ank context --peers src/ in web lists the ready tasks of web and of each peer; with db moved away the three verbs answer for web and api and warn once naming db; without --peers each verb prints exactly what it prints today; no file and no ref under api or db is modified; the --json form of each carries the peer of every row under a key the contract table declares. A test in crates/ank-cli/tests/peer_aggregate.rs asserts each case through the binary.
@@ -23,7 +24,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 3
 ---
 
 Implements the read half of ADR-376bed7fa39a, which must be accepted first: the
