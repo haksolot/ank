@@ -5,7 +5,7 @@ slug: ank-herdr-orchestrates-from-a-herdr-core-termina
 title: ank-herdr orchestrates from a herdr-core terminal, through hc
 created: 2026-11-02T10:36:29Z
 author: claude-code/opus-5.5+plan
-status: proposed
+status: accepted
 scope:
   - skill/**
   - crates/ank-cli/tests/skill.rs
@@ -14,8 +14,13 @@ scope:
 constraint: |
   The sixth sibling, skill/herdr (ank-herdr), teaches one activity: orchestrating several ank agents from inside a herdr-core terminal. Its description triggers only there, and it stops when HC_TERMINAL_ID is unset. It teaches the ank layer alone and defers every command's syntax to herdr-core's own manual (hc --skill). A worker starts with the environment of the herdr-core server, not the orchestrator's, so its identity (ANK_AGENT), TMPDIR and PATH are set in the command that starts it. The orchestrator claims nothing and records no load: it fans out ready tasks whose scopes are disjoint, one worktree, branch and ANK_AGENT per worker, and lands the finished branches one at a time. ank-plan never designates it as a task's method.
 supersedes: ADR-55449b7f4f8f
+ratified: f3056240c1ab
+anchor: bd006ae645154c5fe35d12bd05805d8f48173956
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-11-02T12:41:07Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ADR-55449b7f4f8f made orchestration a sibling skill and named herdr, the
