@@ -195,6 +195,7 @@ pub fn run(
                 claimed: Some(claimed.clone()),
                 expires: Some(expires.clone()),
                 seen: None,
+                peer: None,
             }),
             _ => None,
         })
@@ -237,6 +238,7 @@ pub fn run(
             claimed: Some(claimed.clone()),
             expires: Some(expires.clone()),
             seen: None,
+            peer: None,
         });
     }
 
@@ -302,6 +304,7 @@ pub fn run(
                 claimed: None,
                 expires: None,
                 seen: Some(Seen::Origin),
+                peer: None,
             });
         }
     }
@@ -309,7 +312,48 @@ pub fn run(
     // a status whose lines move between two runs that changed nothing is a
     // status nobody diffs. The two planes sort into one list rather than into
     // two sections, so the id stays the thing a reader scans.
-    elsewhere.sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+    //
+    // **Each declared peer's claims, under `--peers`** (ADR-376bed7fa39a), after
+    // this corpus's: one `for-each-ref` and one batch over the peer's own
+    // `refs/ank/*`, read and never written, and a title loaded for each claimed
+    // task alone rather than the peer's corpus parsed to name a few. Shown and
+    // never arbitrated: claims stay per repository (ADR-ed3e14d0f991), so a
+    // claim this identity holds over there is listed like anybody's.
+    let peered = inv.has("--peers").then(|| crate::repo::peers_of(repo, cfg));
+    if let Some((peers, warnings)) = &peered {
+        if !inv.quiet() {
+            for w in warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        for peer in peers {
+            let claims =
+                context::coordination(&peer.repo.corpus, &mut Vec::new()).unwrap_or_default();
+            let store = crate::store::Store::new(&peer.repo.ank);
+            for (id, state) in claims {
+                let context::Coordination::Claimed {
+                    holder,
+                    claimed,
+                    expires,
+                } = state
+                else {
+                    continue;
+                };
+                elsewhere.push(Held {
+                    title: store.load(&id).ok().map(|l| l.entity.title().to_string()),
+                    id,
+                    holder: Some(holder),
+                    claimed: Some(claimed),
+                    expires: Some(expires),
+                    seen: None,
+                    peer: Some(peer.name.clone()),
+                });
+            }
+        }
+    }
+    // This corpus first, then each peer by name: the peer is `None` on every
+    // row without `--peers`, so the order there is the id's as it always was.
+    elsewhere.sort_by(|a, b| (&a.peer, a.id.to_string()).cmp(&(&b.peer, b.id.to_string())));
     let only_on_origin = elsewhere
         .iter()
         .filter(|h| h.seen == Some(Seen::Origin))
@@ -361,6 +405,23 @@ pub fn run(
             None => true,
         })
         .count();
+    // The peer ADRs that bind this perimeter, under `--peers`: the resolution
+    // `context` serves them by, over the peers already opened above, so each is
+    // opened once and an unreadable one warned about once (ADR-376bed7fa39a).
+    let constraints = constraints
+        + peered.as_ref().map_or(0, |(peers, _)| {
+            context::peer_adrs_in(repo, peers, None, &mut Vec::new())
+                .iter()
+                .filter(|p| p.adr.status.as_str() == "accepted")
+                .filter(|p| match &claimed {
+                    Some((task, _, _)) => task
+                        .scope
+                        .iter()
+                        .any(|g| context::in_perimeter(&p.globs, Some(&anchor_of(g)))),
+                    None => true,
+                })
+                .count()
+        });
 
     // Both kinds `accept` promotes, for the reason `review` states at the loop
     // that builds the same queue (TASK-73e81a8a804d): a proposed spec is
@@ -420,14 +481,18 @@ pub fn run(
         let elsewhere_json: Vec<String> = elsewhere
             .iter()
             .map(|h| {
-                Obj::new()
+                let row = Obj::new()
                     .str("id", &h.id.to_string())
                     .opt_str("title", h.title.as_deref())
                     .opt_str("holder", h.holder.as_deref())
                     .opt_str("expires", h.expires.as_deref())
                     .opt_str("seen", h.seen.map(Seen::word))
-                    .opt_str("claimed", h.claimed.as_deref())
-                    .finish()
+                    .opt_str("claimed", h.claimed.as_deref());
+                if peered.is_some() {
+                    row.opt_str("peer", h.peer.as_deref()).finish()
+                } else {
+                    row.finish()
+                }
             })
             .collect();
         // Value and source as separate fields, which is the shape `config`
@@ -698,7 +763,11 @@ pub fn run(
                     Some(title) => format!("{title} ({})", held.state()),
                     None => format!("({}, no such task in the corpus)", held.state()),
                 };
-                let _ = writeln!(out, "  {} {what}", style.id(&held.id.to_string()));
+                let id = match &held.peer {
+                    Some(peer) => format!("{}@{peer}", held.id),
+                    None => held.id.to_string(),
+                };
+                let _ = writeln!(out, "  {} {what}", style.id(&id));
             }
             // Once under the section rather than on every line, exactly as the
             // way out of a shared identity is: what it names is the command
@@ -962,6 +1031,9 @@ struct Held {
     /// `None` when the remote was not consulted, which is not the same answer
     /// as "here only".
     seen: Option<Seen>,
+    /// The declared peer whose refs carry the claim, `None` for one of this
+    /// corpus (ADR-376bed7fa39a).
+    peer: Option<String>,
 }
 
 /// Which plane a claim was seen on, once both have been read.

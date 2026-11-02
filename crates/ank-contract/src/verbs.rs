@@ -311,6 +311,76 @@ const CONTEXT_OUT: &[Field] = &[
     f("warnings", Type::Strings),
 ];
 
+/// `context --peers`: the same document, each task carrying the peer it
+/// lives in (ADR-376bed7fa39a). A second document and not a field that is
+/// always there, as for `claim` below: a caller who did not ask for the peers
+/// sees exactly the bytes it saw before.
+const CONTEXT_PEERS_OUT: &[Field] = &[
+    f("mode", Type::Str),
+    opt("head", Type::Str),
+    opt("criteria", Type::Str),
+    // Gained within contract 1, as `status.corpus` was (ADR-6fd69efb629c): the
+    // sibling a claimed task designates, null in orientation and on a task
+    // designating none (ADR-a8f9c603a0e7).
+    opt("method", Type::Str),
+    f(
+        "constraints",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("constraint", Type::Str),
+            opt("home", Type::Str),
+            // Gained within contract 1: the accepted ADRs that amend this one
+            // in part, empty for a rule nothing amends (ADR-9ee76b578257).
+            f("amended_by", Type::Strings),
+            // Gained within contract 1: what holds the rule, as `<path>#<symbol>`
+            // entries (ADR-25584c56c1a7). Non-empty, the rule is served by its
+            // title and `constraint` is the empty string rather than retyped.
+            f("enforced_by", Type::Strings),
+        ]),
+    ),
+    f(
+        "proposed",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            opt("home", Type::Str),
+        ]),
+    ),
+    f(
+        "specs",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+        ]),
+    ),
+    f(
+        "tasks",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("status", Type::Str),
+            f("ready", Type::Bool),
+            f("unblocks", Type::Num),
+            f("state", Type::Str),
+            // The declared peer the task lives in, null for one of this
+            // corpus (ADR-376bed7fa39a). A peer's task is listed only when it
+            // is ready over there: open, unblocked and held by nobody in that
+            // peer's own claims.
+            opt("peer", Type::Str),
+        ]),
+    ),
+    f("log", Type::Strings),
+    f("ready", Type::Num),
+    f("blocked", Type::Num),
+    f("finished_elsewhere", Type::Num),
+    f("warnings", Type::Strings),
+];
+
 // The claim taken, and nothing about corpora the reader did not declare
 // (ADR-ed3e14d0f991).
 const CLAIM_OUT: &[Field] = &[
@@ -407,6 +477,81 @@ const STATUS_OUT: &[Field] = &[
             opt("expires", Type::Str),
             opt("seen", Type::Str),
             opt("claimed", Type::Str),
+        ]),
+    ),
+    f("constraints", Type::Num),
+    f("queue", Type::Num),
+    f("unmerged", Type::Num),
+    f("faults", Type::Num),
+    f("signals", Type::Num),
+];
+
+/// `status --peers`: the same document, every claim of each declared peer
+/// added to `elsewhere` with the peer it lives in, and `constraints` counting
+/// the peer ADRs that bind this perimeter too (ADR-376bed7fa39a).
+const STATUS_PEERS_OUT: &[Field] = &[
+    // The first field gained under the contract, and the demonstration of what
+    // CONTRACT_VERSION promises: a document may gain a field within a version and
+    // may never lose, rename or retype one, so this arrives at 1 and the version
+    // does not move (ADR-621a7fd96ce1, ADR-6fd69efb629c). A client written against
+    // `status --json` yesterday keeps working, which is the whole of what the
+    // breaking change was spent to buy.
+    opt("corpus", Type::Str),
+    opt("branch", Type::Str),
+    opt("default_branch", Type::Str),
+    f(
+        "identity",
+        Type::Object(&[f("value", Type::Str), f("source", Type::Str)]),
+    ),
+    opt(
+        "claim",
+        Type::Object(&[
+            f("id", Type::Str),
+            f("expires", Type::Str),
+            f("lapsed", Type::Bool),
+            // When the claim was taken, as its record stores it: gained under
+            // the contract, like `corpus` above (TASK-3c1622d65f0d).
+            f("claimed", Type::Str),
+        ]),
+    ),
+    opt(
+        "drift",
+        Type::Object(&[f("branch", Type::Str), f("entities", Type::Num)]),
+    ),
+    f(
+        "also_held",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("expires", Type::Str),
+            f("claimed", Type::Str),
+        ]),
+    ),
+    f("remote", Type::Bool),
+    // The remote claims travel on when it is not origin: `ank` when the
+    // repository has a remote by that name, null otherwise (ADR-b6fe84504ff2).
+    opt("coordination_remote", Type::Str),
+    // Null when `--remote` was not given, which is not zero: zero would say
+    // this checkout's `refs/ank/*` match origin's, and without the flag nothing
+    // was compared (TASK-6596aae0713c). `stale` is a ref both planes carry
+    // pointing at different objects, `absent` a ref origin holds and this
+    // checkout does not.
+    opt(
+        "refs",
+        Type::Object(&[f("stale", Type::Num), f("absent", Type::Num)]),
+    ),
+    f(
+        "elsewhere",
+        Type::Array(&[
+            f("id", Type::Str),
+            opt("title", Type::Str),
+            opt("holder", Type::Str),
+            opt("expires", Type::Str),
+            opt("seen", Type::Str),
+            opt("claimed", Type::Str),
+            // The declared peer whose refs carry the claim, null for one of
+            // this corpus (ADR-376bed7fa39a). A peer's claim is shown and never
+            // arbitrated: claims stay per repository (ADR-ed3e14d0f991).
+            opt("peer", Type::Str),
         ]),
     ),
     f("constraints", Type::Num),
@@ -1106,7 +1251,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         kinds: &[],
         max_positionals: 1,
         positional_help: "[<path>]",
-        flags: &[flag("--limit"), switch("--since")],
+        flags: &[flag("--limit"), switch("--since"), switch("--peers")],
         refuses: &[
             OUTSIDE_THE_REPOSITORY,
             refuses(ExitCode::Generic, "--limit is not a number"),
@@ -1115,11 +1260,13 @@ pub const COMMANDS: &[CommandSpec] = &[
         notes: &[
             "a constraint is never truncated in execution mode; a cut is always announced",
             "--since names the entities whose file changed, and the claims and completions recorded, at or after the held claim's expires minus its ttl, by id and never by content; it renews that claim, so the cursor moves when it is read",
+            "--peers adds, in orientation, the tasks ready in each declared peer, addressed <id>@<peer> and never offered as the next claim; the path narrows this corpus only",
         ],
         refuses_globals: &[],
         output: &[
             when("without --since", CONTEXT_OUT),
             when("with --since", CONTEXT_SINCE_OUT),
+            when("with --peers", CONTEXT_PEERS_OUT),
         ],
         owner_task: None,
     },
@@ -1397,6 +1544,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             flag("--scope"),
             switch("--free"),
             switch("--all"),
+            switch("--peers"),
         ],
         refuses: &[
             refuses(ExitCode::Generic, "--type names a kind the registry does not declare"),
@@ -1407,6 +1555,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a listing counts the open rows a claim would refuse, and names --free",
             "--free keeps the open tasks no live claim's scope overlaps, and says how many it hid",
             "--all includes the entities in .ank/archive/entities/, each row marked archived; without it the archive is neither read nor listed",
+            "--peers adds each declared peer's rows after this corpus's, read at the peer's default branch with its claims, addressed <id>@<peer>; --scope narrows this corpus only, and a peer that cannot be read is one warning",
         ],
         refuses_globals: &[],
         // `corpus` and `results[].created` are the second demonstration of what
@@ -1416,7 +1565,12 @@ pub const COMMANDS: &[CommandSpec] = &[
         // reason it is optional on `status` -- a tree with no history is the one
         // corpus that cannot be named, and `null` says so; `created` is not,
         // because every entity the index holds has one.
-        output: &[one(&[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))])],
+        output: &[
+            when("without --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
+            // Each row carries the declared peer it lives in, null for one of
+            // this corpus (ADR-376bed7fa39a).
+            when("with --peers", &[opt("corpus", Type::Str), f("total", Type::Num), f("shown", Type::Num), f("hidden", Type::Num), f("results", Type::Array(&[f("id", Type::Str), opt("peer", Type::Str), f("kind", Type::Str), f("status", Type::Str), f("state", Type::Str), f("title", Type::Str), f("created", Type::Str), f("archived", Type::Bool), opt("anchored_by", Type::Str)]))]),
+        ],
         owner_task: None,
     },
     // After `find` and before `review`, which is where §4 puts it. Placing it
@@ -1433,7 +1587,7 @@ pub const COMMANDS: &[CommandSpec] = &[
         kinds: &[],
         max_positionals: 0,
         positional_help: "",
-        flags: &[switch("--remote")],
+        flags: &[switch("--remote"), switch("--peers")],
         // **One row, and measured rather than assumed** (TASK-106dccc7f71c,
         // TASK-78431b544d01). This verb takes no path, parses no value of its
         // own, and raises no refusal anywhere in `status.rs`: `--remote` reads
@@ -1449,9 +1603,10 @@ pub const COMMANDS: &[CommandSpec] = &[
         // reader never fails for want of something to say (§2).
         notes: &[
             "--remote reads the claim refs from origin with ls-remote and never fetches; without it status describes the local plane only",
+            "--peers adds every live claim of each declared peer to elsewhere, addressed <id>@<peer>, and counts the peer ADRs binding the perimeter; shown and never arbitrated",
         ],
         refuses_globals: &[],
-        output: &[one(STATUS_OUT)],
+        output: &[when("without --peers", STATUS_OUT), when("with --peers", STATUS_PEERS_OUT)],
         owner_task: None,
     },
     CommandSpec {

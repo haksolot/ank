@@ -48,6 +48,7 @@ mod init_requires_ank;
 mod init_wal_ignore;
 mod log_rewritten;
 mod mcp;
+mod peer_aggregate;
 mod peer_blocked_by;
 mod peer_claimable;
 mod peer_default_branch;

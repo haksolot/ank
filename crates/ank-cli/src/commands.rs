@@ -1451,7 +1451,38 @@ pub fn find(
         (hits, 0)
     };
 
-    let total = hits.len();
+    // **Each declared peer's answer, after this corpus's** (ADR-376bed7fa39a).
+    // Read only, at the peer's default branch, and marked from the peer's own
+    // claims. A peer that cannot be read is one warning and the rest of the
+    // answer.
+    let peered = if inv.has("--peers") {
+        let (listings, warnings) = peer_listings(
+            inv,
+            repo,
+            cfg,
+            &query,
+            &kind_filter,
+            status_filter.as_deref(),
+        )?;
+        if !inv.quiet() {
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+        }
+        Some(listings)
+    } else {
+        None
+    };
+    let peer_hidden: usize = peered.iter().flatten().map(|l| l.hidden).sum();
+    let hidden = hidden + peer_hidden;
+    let peer_rows: Vec<(&PeerListing, &Row)> = peered
+        .iter()
+        .flatten()
+        .flat_map(|l| l.rows.iter().map(move |r| (l, r)))
+        .collect();
+
+    let local_total = hits.len();
+    let total = local_total + peer_rows.len();
     // **The budget is the human reader's** (ADR-3e6ce108edcd). A program has no
     // page to fill, so `--json` is served every row whatever `context_budget`
     // says, and `shown` therefore equals `total`; the only thing that ever
@@ -1487,15 +1518,20 @@ pub fn find(
         // gets, and a caller filtering on this JSON no longer schedules work the
         // completion ref already closed. Additive: `status` stays the stored
         // one, under the key it already has.
-        let items: Vec<String> = hits[..shown]
+        let mut items: Vec<String> = hits[..shown.min(local_total)]
             .iter()
             .map(|r| {
                 let state = crate::context::marker_for(
                     &r.status,
                     crate::context::coordination_of(&coord, &r.id),
                 );
-                let row = Obj::new()
-                    .str("id", &r.id.to_string())
+                let row = Obj::new().str("id", &r.id.to_string());
+                let row = if peered.is_some() {
+                    row.opt_str("peer", None)
+                } else {
+                    row
+                };
+                let row = row
                     .str("kind", r.kind.as_str())
                     .str("status", &r.status.to_string())
                     .str("state", state.trim_matches(|c| c == '[' || c == ']'))
@@ -1519,6 +1555,22 @@ pub fn find(
                     .finish()
             })
             .collect();
+        items.extend(peer_rows.iter().map(|(l, r)| {
+            let state = context::marker_for(&r.status, context::coordination_of(&l.coord, &r.id));
+            Obj::new()
+                .str("id", &r.id.to_string())
+                .str("peer", &l.name)
+                .str("kind", r.kind.as_str())
+                .str("status", &r.status.to_string())
+                .str("state", state.trim_matches(|c| c == '[' || c == ']'))
+                .str("title", &r.title)
+                .str("created", &r.created)
+                .bool("archived", r.archived)
+                // A peer's anchors are the peer's to verify: the listing does
+                // not walk another repository's ratifications.
+                .opt_str("anchored_by", None)
+                .finish()
+        }));
         // The corpus this listing is about, in the spelling and the position
         // `status --json` already uses (ADR-621a7fd96ce1): the identity of the
         // repository, `null` for a tree with no history, which is the one
@@ -1580,7 +1632,7 @@ pub fn find(
     // The plane was read once, above: it answers which row the caller holds and
     // what every row's marker says, and it is what `--free` filtered on.
     let held = crate::context::held_in(&coord, identity);
-    for r in &hits[..shown] {
+    for r in &hits[..shown.min(local_total)] {
         let short = shorts
             .get(&r.id)
             .cloned()
@@ -1599,6 +1651,25 @@ pub fn find(
             )),
             r.title,
             if r.archived { "  (archived)" } else { "" }
+        );
+    }
+    // A peer's rows after this corpus's, each addressed `<id>@<peer>` with the
+    // peer's own short form, the form `show` and `find` read back.
+    for (l, r) in peer_rows.iter().take(shown.saturating_sub(local_total)) {
+        let short = l
+            .shorts
+            .get(&r.id)
+            .cloned()
+            .unwrap_or_else(|| r.id.to_string());
+        let _ = writeln!(
+            out,
+            "  {}  {} {}",
+            style.id(&format!("{short}@{}", l.name)),
+            style.status(&context::marker_for(
+                &r.status,
+                context::coordination_of(&l.coord, &r.id)
+            )),
+            r.title
         );
     }
     if total > shown {
@@ -1652,6 +1723,78 @@ fn kind_filter(inv: &Invocation) -> Result<Vec<EntityKind>> {
             })
         })
         .collect()
+}
+
+/// What `find --peers` adds for one declared peer: its rows that pass the
+/// filters, the claims its own refs carry, and the short forms it prints.
+struct PeerListing {
+    name: String,
+    rows: Vec<Row>,
+    coord: HashMap<EntityId, context::Coordination>,
+    shorts: HashMap<EntityId, String>,
+    hidden: usize,
+}
+
+/// Every declared peer's rows for `find --peers`, and one warning per peer
+/// that could not be read (ADR-376bed7fa39a).
+///
+/// **Read and never written** (ADR-a1de673043b4): the corpus is the peer's
+/// default branch as [`crate::repo::peers_of`] reads it, the index is built in
+/// memory, and the claims are one `for-each-ref` and one batch over the peer's
+/// `refs/ank/*`, which write nothing. `--scope` is a path of this checkout and
+/// names nothing in a peer, so it narrows only this corpus; `--free` filters a
+/// peer on the peer's own live claims; `--all` is not carried over, a peer's
+/// archive is the peer's.
+fn peer_listings(
+    inv: &Invocation,
+    repo: &Repo,
+    cfg: &Config,
+    query: &str,
+    kind_filter: &[EntityKind],
+    status_filter: Option<&str>,
+) -> Result<(Vec<PeerListing>, Vec<String>)> {
+    let (peers, mut warnings) = crate::repo::peers_of(repo, cfg);
+    let mut out = Vec::new();
+    for peer in peers {
+        let read = (|| -> Result<PeerListing> {
+            let index = Index::in_memory(&peer.repo.ank)?;
+            let all = index.all()?;
+            let coord = context::coordination(&peer.repo.corpus, &mut Vec::new())?;
+            let claimed_scopes = live_claim_scopes(&coord, &all);
+            let ranked = if query.is_empty() {
+                all
+            } else {
+                index.search(query)?
+            };
+            let hits: Vec<&Row> = ranked
+                .iter()
+                .filter(|r| kind_filter.is_empty() || kind_filter.contains(&r.kind))
+                .filter(|r| status_filter.map(|w| r.status == w).unwrap_or(true))
+                .collect();
+            let (hits, hidden) = if inv.has("--free") {
+                free_of_live_claims(&coord, &claimed_scopes, hits)
+            } else {
+                (hits, 0)
+            };
+            let rows = hits.into_iter().cloned().collect();
+            Ok(PeerListing {
+                name: peer.name.clone(),
+                rows,
+                coord,
+                shorts: context::shorts_of(&peer.repo)?,
+                hidden,
+            })
+        })();
+        match read {
+            Ok(l) => out.push(l),
+            Err(_) => warnings.push(format!(
+                "peer '{}' could not be listed, answered without it (ank --repo {} check)",
+                peer.name,
+                peer.repo.corpus.display()
+            )),
+        }
+    }
+    Ok((out, warnings))
 }
 
 /// `find` over a declared peer: the entity `prefix` names, or the whole corpus
