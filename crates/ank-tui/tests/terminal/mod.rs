@@ -307,6 +307,7 @@ fn every_terminal_opened_at_once_is_told_its_own_slave() {
     /// Tries per open before a refusal is a failure, waiting 2, 4, 8 and 16 ms
     /// between them.
     const ATTEMPTS: u32 = 5;
+    alone_under_nextest();
     let ceiling = pty::ceiling();
     let each = (ceiling.unwrap_or(256) / 8 / THREADS).clamp(1, 8);
     let rounds = PER_THREAD.div_ceil(each);
@@ -409,6 +410,33 @@ fn every_terminal_opened_at_once_is_told_its_own_slave() {
         crossed.is_empty(),
         "{} of {opened} terminals were told another's slave (told, own): {crossed:?}",
         crossed.len()
+    );
+}
+
+/// The group of `.config/nextest.toml` that runs a test with every test
+/// thread to itself, so no other test of any binary runs beside it.
+pub const ALONE: &str = "pty-alone";
+
+/// **The test that opens terminals by the thousand runs with nothing beside
+/// it** (TASK-9d158e54cd7f). On macos-latest it is refused 46 to 102 opens
+/// per run with at most 56 masters held of a ceiling of 511 -- the table runs
+/// out under its churn, not under its live count -- and every pseudo-terminal
+/// test nextest put beside it opened into that window: 12 to 20 of them per
+/// run over eleven runs of main, one of which, in run 41449785197, was refused
+/// with the same errno and failed. So `.config/nextest.toml` puts it in
+/// [`ALONE`], whose override requires every test thread, and the test reads
+/// the group nextest says it runs in: renamed, refiltered or moved out of that
+/// group, it fails here before it opens anything. Under `cargo test`, which
+/// has no groups, there is nothing to read.
+fn alone_under_nextest() {
+    if std::env::var_os("NEXTEST").is_none() {
+        return;
+    }
+    let group = std::env::var("NEXTEST_TEST_GROUP").unwrap_or_default();
+    assert_eq!(
+        group, ALONE,
+        "this test opens terminals by the thousand and must run in the `{ALONE}` group of \
+         .config/nextest.toml, which takes every test thread, and nextest runs it in `{group}`"
     );
 }
 

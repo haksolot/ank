@@ -5,7 +5,7 @@ slug: no-pseudo-terminal-test-fails-on-macos-because-a
 title: No pseudo-terminal test fails on macOS because another test filled the system's table of them
 created: 2026-11-02T13:36:36Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - .config/nextest.toml
   - crates/ank-tui/tests/terminal/**
@@ -16,7 +16,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 1
+version: 3
 ---
 
 Main went red on the merge of #736 (9610a0ec), run 41449785197, macos-latest
