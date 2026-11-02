@@ -306,15 +306,58 @@ pub struct Peer {
 }
 
 /// The peer's root, as the declaration names it. A relative path is resolved
-/// against the declaring repository's root, which is the form worth reviewing:
-/// an absolute one is a fact about one machine.
+/// against the declaring repository's main checkout, which is the form worth
+/// reviewing: an absolute one is a fact about one machine, and is used as
+/// written.
 fn declared_root(from: &Repo, declared: &str) -> PathBuf {
     let p = Path::new(declared);
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        from.corpus.join(p)
+        main_checkout(&from.corpus).join(p)
     }
+}
+
+/// Where `corpus` sits in the repository's **main** worktree: `corpus` itself
+/// in the main checkout, and the same place under the main checkout's root, the
+/// parent of the git common directory, in a linked worktree
+/// (ADR-a14dabe4b259).
+///
+/// A linked worktree shares its repository's refs, its identity and therefore
+/// its layout; only its path differs, and that path is wherever an orchestrator
+/// happened to create it. Resolving `../api` from it made the answer depend on
+/// that, and a worktree nested at `web/.worktrees/t2` lost every peer.
+///
+/// **No git process in the main checkout.** A `.git` directory at the corpus is
+/// the main checkout, whose root is the anchor already, so the common case asks
+/// the filesystem once and nothing else; a linked worktree has a `.git` file.
+/// Only then is git asked, through the memoised [`crate::git::common_dir`] and
+/// [`crate::git::toplevel`], one process for both. A corpus nested below its
+/// toplevel keeps its place relative to it. Outside a repository, or where the
+/// common directory is the worktree's own (a `--separate-git-dir` checkout), the
+/// corpus is its own anchor, which is what it always was.
+fn main_checkout(corpus: &Path) -> PathBuf {
+    if corpus.join(".git").is_dir() {
+        return corpus.to_path_buf();
+    }
+    let (Some(common), Some(git)) = (crate::git::common_dir(corpus), crate::git::git_dir(corpus))
+    else {
+        return corpus.to_path_buf();
+    };
+    if common == git {
+        return corpus.to_path_buf();
+    }
+    let (Some(main), Ok(top)) = (common.parent(), crate::git::toplevel(corpus)) else {
+        return corpus.to_path_buf();
+    };
+    let within = std::fs::canonicalize(corpus)
+        .ok()
+        .and_then(|c| {
+            let top = std::fs::canonicalize(&top).ok()?;
+            c.strip_prefix(&top).ok().map(Path::to_path_buf)
+        })
+        .unwrap_or_default();
+    main.join(within)
 }
 
 /// Where the peer `name` of the corpus `from` is on this machine, and how to

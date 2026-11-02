@@ -5,7 +5,7 @@ slug: a-linked-worktree-resolves-its-peers-from-the-ma
 title: A linked worktree resolves its peers from the main checkout's root
 created: 2026-10-26T13:28:49Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/repo.rs
   - crates/ank-cli/tests/peer_worktree.rs
@@ -15,8 +15,57 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@e90039f
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/8113816f1be4@0a0437a
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-d199-peer-worktree
+  - type: test
+    ref: local/d77826d726e4@0a0437a
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-d199-peer-worktree
+  - type: test
+    ref: local/fd890b9ed4f8@0a0437a
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-d199-peer-worktree
+  - type: test
+    ref: local/bb4fa8ae1c4c@e90039f
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/2582389207de@e90039f
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/2c9a815c8aff@e90039f
+    tree: scope/bc4ae702d6b0
+    criteria: e1fb4f2326af
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 1
+version: 3
 ---
 
 Implements ADR-a14dabe4b259. Measured on 2026-10-26 at e04c0dad: in
