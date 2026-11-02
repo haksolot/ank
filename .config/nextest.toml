@@ -20,6 +20,9 @@
 # named by test path and not by binary.
 [test-groups]
 pty-serial = { max-threads = 1 }
+# The one test that opens terminals by the thousand, run with nothing beside
+# it: see the override that requires every test thread for it, below.
+pty-alone = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = 'package(ank-tui) & binary(integration) & test(/^(bindings|claims|colour|edit|graph|overlay|search|verbs)::/)'
@@ -37,9 +40,25 @@ test-group = 'pty-serial'
 # and its output is shown on success too: a refusal macOS recovered from is a
 # fact read off the job log, not one the passing test swallows
 # (TASK-adea229723df).
+#
+# **And it runs alone** (TASK-9d158e54cd7f). On macos-latest it is refused 46
+# to 102 opens per run, errno -6, with at most 56 masters held of a ceiling of
+# 511: the table runs out under its churn of 8000 opens, not under the count
+# it holds. Over the eleven runs of main 40507460208 to 41449785197, 12 to 20
+# other pseudo-terminal tests ran inside its window each time, and in
+# 41449785197 one of them,
+# `graph::the_cycle_key_unfolds_the_history_and_folds_it_again_reading_nothing`,
+# was refused with the same errno and failed: `pty-serial` held it away from
+# its own suites and not from this test, which was in no group. Every test
+# thread is required here, so nextest starts it once nothing else runs and
+# starts nothing else until it ends; the group is what the test reads back
+# (`NEXTEST_TEST_GROUP`), so a filter that stops naming it fails the test
+# rather than putting it back beside the others.
 [[profile.default.overrides]]
 filter = 'package(ank-tui) & binary(integration) & test(=terminal::every_terminal_opened_at_once_is_told_its_own_slave)'
 success-output = 'immediate'
+test-group = 'pty-alone'
+threads-required = 'num-test-threads'
 
 # CI runs every test to the end: whether a failure is one platform's or every
 # platform's is the information a run is for, as `fail-fast: false` already says
