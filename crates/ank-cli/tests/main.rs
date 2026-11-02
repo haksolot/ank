@@ -52,6 +52,7 @@ mod peer_aggregate;
 mod peer_blocked_by;
 mod peer_claimable;
 mod peer_default_branch;
+mod peer_half_declared;
 mod peer_ids;
 mod peer_override;
 mod peer_scope;
