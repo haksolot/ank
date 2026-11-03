@@ -5,7 +5,7 @@ slug: under-a-claim-context-and-claim-serve-the-peer-c
 title: Under a claim, context and claim serve the peer constraints, and done names those that moved
 created: 2026-10-26T13:29:33Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/context.rs
   - crates/ank-cli/src/claim.rs
@@ -21,7 +21,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 2
+version: 3
 ---
 
 Implements ADR-50952ba5e226. Measured on 2026-10-26 at e04c0dad: `ank context

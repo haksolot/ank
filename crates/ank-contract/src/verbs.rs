@@ -311,6 +311,89 @@ const CONTEXT_OUT: &[Field] = &[
     f("warnings", Type::Strings),
 ];
 
+/// `context` under a claim a declared peer binds (ADR-50952ba5e226): the same
+/// document, with the peer constraints in a key of their own after the local
+/// ones, each peer named with the commit of its default branch that was read.
+/// A second document and not a key that is always there, as for `--peers`: a
+/// caller under a claim no peer reaches sees exactly the bytes it saw before.
+const CONTEXT_PEER_BOUND_OUT: &[Field] = &[
+    f("mode", Type::Str),
+    opt("head", Type::Str),
+    opt("criteria", Type::Str),
+    // Gained within contract 1, as `status.corpus` was (ADR-6fd69efb629c): the
+    // sibling a claimed task designates, null in orientation and on a task
+    // designating none (ADR-a8f9c603a0e7).
+    opt("method", Type::Str),
+    f(
+        "constraints",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("constraint", Type::Str),
+            opt("home", Type::Str),
+            // Gained within contract 1: the accepted ADRs that amend this one
+            // in part, empty for a rule nothing amends (ADR-9ee76b578257).
+            f("amended_by", Type::Strings),
+            // Gained within contract 1: what holds the rule, as `<path>#<symbol>`
+            // entries (ADR-25584c56c1a7). Non-empty, the rule is served by its
+            // title and `constraint` is the empty string rather than retyped.
+            f("enforced_by", Type::Strings),
+        ]),
+    ),
+    f(
+        "peer_constraints",
+        Type::Array(&[
+            f("peer", Type::Str),
+            f("commit", Type::Str),
+            f(
+                "constraints",
+                Type::Array(&[
+                    f("id", Type::Str),
+                    f("short", Type::Str),
+                    f("title", Type::Str),
+                    f("constraint", Type::Str),
+                    f("enforced_by", Type::Strings),
+                ]),
+            ),
+        ]),
+    ),
+    f(
+        "proposed",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            opt("home", Type::Str),
+        ]),
+    ),
+    f(
+        "specs",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+        ]),
+    ),
+    f(
+        "tasks",
+        Type::Array(&[
+            f("id", Type::Str),
+            f("short", Type::Str),
+            f("title", Type::Str),
+            f("status", Type::Str),
+            f("ready", Type::Bool),
+            f("unblocks", Type::Num),
+            f("state", Type::Str),
+        ]),
+    ),
+    f("log", Type::Strings),
+    f("ready", Type::Num),
+    f("blocked", Type::Num),
+    f("finished_elsewhere", Type::Num),
+    f("warnings", Type::Strings),
+];
+
 /// `context --peers`: the same document, each task carrying the peer it
 /// lives in (ADR-376bed7fa39a). A second document and not a field that is
 /// always there, as for `claim` below: a caller who did not ask for the peers
@@ -1261,12 +1344,14 @@ pub const COMMANDS: &[CommandSpec] = &[
             "a constraint is never truncated in execution mode; a cut is always announced",
             "--since names the entities whose file changed, and the claims and completions recorded, at or after the held claim's expires minus its ttl, by id and never by content; it renews that claim, so the cursor moves when it is read",
             "--peers adds, in orientation, the tasks ready in each declared peer, addressed <id>@<peer> and never offered as the next claim; the path narrows this corpus only",
+            "under a claim, the constraints a declared peer binds onto the task's scope are served in full in a section of their own naming the peer and the default-branch commit read, and never enter the frozen hash",
         ],
         refuses_globals: &[],
         output: &[
             when("without --since", CONTEXT_OUT),
             when("with --since", CONTEXT_SINCE_OUT),
             when("with --peers", CONTEXT_PEERS_OUT),
+            when("under a claim a declared peer binds", CONTEXT_PEER_BOUND_OUT),
         ],
         owner_task: None,
     },
