@@ -66,6 +66,7 @@ mod peer_worktree;
 mod prose;
 mod push_refused_before_update;
 mod ratify_ref;
+mod ref_record_compat;
 mod remote_without_claim;
 mod renewal_noop;
 mod requires_ank;
