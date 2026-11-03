@@ -185,8 +185,16 @@ pub const STATE_PROOF: &str = "proof";
 
 /// A claim in force: who holds the task and until when, plus the two hashes
 /// that anchor what was frozen at pickup (§7).
+///
+/// **No `deny_unknown_fields`** on this record nor on its two siblings: a ref
+/// record travels through the remote to every version of ank a team runs, so a
+/// field a later binary adds must be read past, never called corrupt
+/// (TASK-04a688353ae4). What stays corrupt is what `parse_record` names: no
+/// state, an unknown state, a required field missing. Rewriting a record
+/// drops what this binary does not know, which is what reading it without the
+/// field means. Entity frontmatter and config.yml keep strict parsing: those
+/// are written by hand, ref records only by ank.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ClaimRecord {
     pub task: String,
     pub holder: String,
@@ -252,7 +260,6 @@ pub fn peer_constraint_hash(text: &str) -> String {
 /// A task finished on some branch. No TTL: it stays until durable state has
 /// caught up on the default branch, which is what `prune` decides.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CompletedRecord {
     pub task: String,
     pub commit: String,
@@ -288,7 +295,6 @@ pub struct AttestedProof {
 /// per attestation would need a ref per attestation, and the address is the
 /// task.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct ProofRecord {
     pub task: String,
     pub proofs: Vec<AttestedProof>,
@@ -2770,8 +2776,8 @@ pub fn renewal_ttl(record: &ClaimRecord, cap: Duration) -> Duration {
 /// **Derived, never stored.** Every renewal recomputes `expires` from the lease
 /// it writes back beside it, so the difference is the moment of that renewal,
 /// and at the claim it is the moment of the claim. A field of its own would be
-/// a schema change for every binary reading a shared ref, since the record is
-/// `deny_unknown_fields`; this one costs none. A record from before `ttl` was
+/// a field every binary older than TASK-04a688353ae4 reads as corrupt, since
+/// the record was `deny_unknown_fields` until then; this one costs none. A record from before `ttl` was
 /// written reads it as the default, as [`renewal_ttl`] does.
 pub fn cursor(record: &ClaimRecord) -> Option<i64> {
     let ttl = match record.ttl {
