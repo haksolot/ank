@@ -22,6 +22,7 @@ This build reads `schema: 1` through `schema: 2`; a file carrying `requires_ank`
 | `verifiers.<name>.inputs` | list of globs | none | the files whose content can change the result, relative to the root; absent, the whole tree; written as one flow sequence, never empty |
 | `proof.reuse_max_age` | duration | `24h` | how old a passing run recorded under `<git-common-dir>/ank/runs/` may be for `done` to reuse it rather than run the verifier again; `done --fresh` reuses nothing |
 | `verifier_jobs` | integer | none | how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism |
+| `verifier_lock` | boolean | `true` | whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3) |
 | `roles.<name>.can` | list of strings | `[]` | what the role may do, declared |
 | `roles.<name>.cannot` | list of strings | `[]` | what the role may not do, declared |
 | `identities.<identity>` | string | none | the role of an identity; one absent from the table is an `agent` |

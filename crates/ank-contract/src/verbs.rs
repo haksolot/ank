@@ -1264,6 +1264,7 @@ config_keys!(
     "verifiers.<name>.inputs",
     "proof.reuse_max_age",
     "verifier_jobs",
+    "verifier_lock",
     "weight.hot_files",
     "weight.plane_bytes",
     "guard.corpus",

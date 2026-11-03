@@ -1081,3 +1081,91 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// One task's verifiers at a time per repository (ADR-eab130f731f3)
+// ---------------------------------------------------------------------------
+//
+// **Where.** `<git-common-dir>/ank/verifier.lock`, the one directory every
+// worktree of a repository shares, so two `done` in two worktrees contend and
+// two unrelated repositories never do.
+//
+// **How.** An OS file lock (`File::lock`), which the operating system releases
+// when the process ends however it ends: a killed `done` leaves nothing held
+// and no file to clean up. Who holds it is written beside it, in
+// `verifier.holder`, and not in the locked file itself: on Windows the lock is
+// mandatory, and a waiter could not read a locked file to say who holds it.
+
+/// The lock, held for as long as this value lives.
+pub struct VerifierLock {
+    _file: std::fs::File,
+    holder: PathBuf,
+}
+
+impl Drop for VerifierLock {
+    fn drop(&mut self) {
+        // A clean release says nobody holds it; a killed holder leaves a stale
+        // line that is only read while somebody else holds the lock, and that
+        // somebody has overwritten it by then.
+        let _ = std::fs::remove_file(&self.holder);
+    }
+}
+
+/// Takes the repository's verifier lock for `task` run by `identity`,
+/// waiting while another `done` holds it and saying once, on standard error,
+/// which task and identity that is. `None` when there is no common directory
+/// to hold it in, or the lock cannot be opened: the lock orders runs, it never
+/// refuses one.
+pub fn take_verifier_lock(worktree: &Path, task: &str, identity: &str) -> Option<VerifierLock> {
+    let dir = crate::git::common_dir(worktree)?.join("ank");
+    std::fs::create_dir_all(&dir).ok()?;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dir.join("verifier.lock"))
+        .ok()?;
+    let holder = dir.join("verifier.holder");
+
+    // The holder writes its line just after taking the lock, so a waiter that
+    // arrives in between finds no line yet: it tries again for a moment before
+    // settling for not knowing.
+    let mut tries = 0;
+    loop {
+        match file.try_lock() {
+            Ok(()) => break,
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let line = std::fs::read_to_string(&holder).unwrap_or_default();
+                let line = line.trim();
+                if line.is_empty() && tries < 50 {
+                    tries += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                }
+                let who = line
+                    .split_once(' ')
+                    .map(|(t, i)| format!("{t} (by {i})"))
+                    .unwrap_or_else(|| "another done".to_string());
+                eprintln!(
+                    "waiting: the verifiers of {who} hold the repository's verifier lock; \
+                     {task} runs its own once they finish (verifier_lock: false runs them together)"
+                );
+                file.lock().ok()?;
+                break;
+            }
+            Err(std::fs::TryLockError::Error(_)) => return None,
+        }
+    }
+
+    let tmp = dir.join(format!("verifier.holder.{}", std::process::id()));
+    if std::fs::write(&tmp, format!("{task} {identity}\n")).is_ok()
+        && std::fs::rename(&tmp, &holder).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    Some(VerifierLock {
+        _file: file,
+        holder,
+    })
+}

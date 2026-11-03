@@ -281,6 +281,7 @@ fn every_config_key_is_printed_with_its_type_and_default() {
             ("`verifiers.<name>.inputs`", "list of globs", "none"),
             ("`proof.reuse_max_age`", "duration", "`24h`"),
             ("`verifier_jobs`", "integer", "none"),
+            ("`verifier_lock`", "boolean", "`true`"),
             ("`roles.<name>.can`", "list of strings", "`[]`"),
             ("`roles.<name>.cannot`", "list of strings", "`[]`"),
             ("`identities.<identity>`", "string", "none"),
