@@ -144,3 +144,28 @@ lands the finished branches one at a time. It teaches the ank layer only, and
 leaves herdr-core's own commands to `hc --skill`. Nothing in it is a verb: ank
 still creates no worktree and merges nothing; the orchestrator does, with git
 and `hc`.
+
+## Dispatching across repositories
+
+When the work spans several repositories, a backend and the client that calls
+it, each one keeps its own corpus, its own claims and its own workers, and
+[Several repositories](peers.md) is how one corpus reads another. An
+orchestrator dispatching across them runs the same loop in each repository,
+plus four reads that look over the boundary from the one it stands in:
+
+- `ank status --peers` adds each declared peer's live claims to `elsewhere`,
+  addressed `<id>@<peer>`, so a worker about to start in `web` sees what is
+  held in `api`.
+- `ank find --peers` and `ank context --peers` add each peer's rows and ready
+  tasks, read at the peer's default branch.
+- `ank check --peers` makes an unreadable declared peer a fault, so the
+  orchestrator learns before dispatching that a sibling checkout is missing.
+- `ank claim`, run by the worker, prints the constraints a peer binds onto the
+  task's scope in a section of their own, and `ank done` states which of them
+  moved since.
+
+Claims and writes stay per repository: a worker claims and closes in the
+repository its task lives in. A `blocked_by` naming a peer task releases only
+once that task is done on the peer's default branch, so the orchestrator lands
+the peer's branch first, and the waiting task becomes ready in the order the
+merges arrive.
