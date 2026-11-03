@@ -406,11 +406,13 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
     let ratify = format!("refs/ank/ratify/{A}");
     let seen = c.every_verb();
     // Measured on 5e2d826a. `log` ran 4 there in the claim's own second, and
-    // 8 once a second has passed and its renewal travels.
+    // 8 once a second has passed and its renewal travels. `claim` ran 12 there
+    // and runs 13 since the record names its branch: one `symbolic-ref HEAD`
+    // (ADR-5a3a3f1b89e1, TASK-346bdb3b4378).
     let expected: [(&str, usize, Vec<String>); 7] = [
         (
             "claim",
-            12,
+            13,
             vec![
                 format!("ls-remote origin {claims}"),
                 format!("push origin {claims}"),
@@ -420,7 +422,7 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
         ("release", 8, vec![format!("push origin {claims}")]),
         (
             "claim2",
-            12,
+            13,
             vec![
                 format!("ls-remote origin {claims}"),
                 format!("push origin {claims}"),
