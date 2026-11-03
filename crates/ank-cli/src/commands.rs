@@ -340,11 +340,23 @@ pub fn new(
         identity,
         &created,
     )?;
+    let hint = match &entity {
+        Entity::Task(t) => scope_hint(&Index::open_with_archive(&repo.ank)?, &t.scope)?,
+        _ => ScopeHint::default(),
+    };
     if inv.json() {
+        let beside = hint.beside.iter().map(|(path, count)| {
+            Obj::new()
+                .str("path", path)
+                .num("count", count)
+                .num("of", hint.of)
+                .finish()
+        });
         let doc = Obj::document()
             .str("id", &id.to_string())
             .str("kind", kind.as_str())
             .str("created", &created)
+            .array("scope_hint", beside)
             .finish();
         let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
@@ -354,8 +366,65 @@ pub fn new(
             inv.style().advanced("created"),
             inv.style().id(&id.to_string())
         );
+        if !hint.beside.is_empty() {
+            let _ = writeln!(
+                out,
+                "finished tasks declaring this scope also declared, worth a look before the claim:"
+            );
+            let width = hint.beside.iter().map(|(p, _)| p.len()).max().unwrap_or(0);
+            for (path, count) in &hint.beside {
+                let _ = writeln!(out, "  {path:<width$}  {count} of {}", hint.of);
+            }
+        }
     }
     Ok(ExitCode::Ok)
+}
+
+/// What finished tasks declared beside the scope a new task is given
+/// (TASK-cc8bdc66a2ec).
+#[derive(Debug, Default, PartialEq)]
+struct ScopeHint {
+    /// How many finished tasks declare at least one entry of the scope given.
+    of: usize,
+    /// The entries they declared beside it, with how many of them did.
+    beside: Vec<(String, usize)>,
+}
+
+/// An entry one finished task declared is a coincidence, not a pattern.
+const HINT_FLOOR: usize = 2;
+/// The hint is read before a claim, and a list longer than this is not read.
+const HINT_CAP: usize = 5;
+
+/// Read from the index alone, which `new` already opened to record the
+/// creation: no git process (ADR-cc65f1388a71). Scope entries are compared as
+/// written, and a finished task's scope is the one the index holds, the one it
+/// ended with after every amend -- which is where the gaps an earlier executor
+/// met were recorded. The archive counts: a cold task finished all the same
+/// (ADR-467ce7e9cda1).
+fn scope_hint(index: &Index, given: &[String]) -> Result<ScopeHint> {
+    let mut of = 0;
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let done = index.by_status(EntityKind::Task, "done")?;
+    for row in &done {
+        if !row.scope.iter().any(|s| given.contains(s)) {
+            continue;
+        }
+        of += 1;
+        let mut seen = HashSet::new();
+        for s in &row.scope {
+            if !given.contains(s) && seen.insert(s.as_str()) {
+                *counts.entry(s.as_str()).or_default() += 1;
+            }
+        }
+    }
+    let mut beside: Vec<(String, usize)> = counts
+        .into_iter()
+        .filter(|(_, n)| *n >= HINT_FLOOR)
+        .map(|(p, n)| (p.to_string(), n))
+        .collect();
+    beside.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    beside.truncate(HINT_CAP);
+    Ok(ScopeHint { of, beside })
 }
 
 // ---------------------------------------------------------------------------

@@ -60,7 +60,13 @@ impl Repo {
     fn new(what: &str) -> Repo {
         let dir = scratch::dir(what);
         fs::create_dir_all(dir.join(".ank/entities")).unwrap();
-        for f in ["src/a.rs", "src/b.rs", "src/c.rs", "tests/main.rs", "docs/x.md"] {
+        for f in [
+            "src/a.rs",
+            "src/b.rs",
+            "src/c.rs",
+            "tests/main.rs",
+            "docs/x.md",
+        ] {
             let p = dir.join(f);
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, "\n").unwrap();
@@ -215,9 +221,15 @@ fn new_task_names_what_finished_tasks_declared_beside_its_scope() {
 fn the_hint_names_five_entries_at_most_the_most_frequent_first() {
     let r = corpus("scope-hint-cap");
     let said = r.ok(&["new", "task", "--title", "Next", "--scope", "src/b.rs"]);
-    let named: Vec<&str> = ["tests/z.rs", "tests/y.rs", "tests/x.rs", "tests/w.rs", "tests/v.rs"]
-        .into_iter()
-        .collect();
+    let named: Vec<&str> = [
+        "tests/z.rs",
+        "tests/y.rs",
+        "tests/x.rs",
+        "tests/w.rs",
+        "tests/v.rs",
+    ]
+    .into_iter()
+    .collect();
     let at: Vec<usize> = named
         .iter()
         .map(|p| {
@@ -255,12 +267,16 @@ fn a_scope_no_finished_task_declares_prints_no_hint() {
 #[test]
 fn new_json_carries_the_hint_under_a_declared_key() {
     let r = corpus("scope-hint-json");
-    let said = r.ok(&["new", "task", "--title", "Next", "--scope", "src/a.rs", "--json"]);
+    let said = r.ok(&[
+        "new", "task", "--title", "Next", "--scope", "src/a.rs", "--json",
+    ]);
     assert!(
         said.contains(r#""scope_hint":[{"path":"tests/main.rs","count":3,"of":5}]"#),
         "{said}"
     );
-    let said = r.ok(&["new", "task", "--title", "Next", "--scope", "src/c.rs", "--json"]);
+    let said = r.ok(&[
+        "new", "task", "--title", "Next", "--scope", "src/c.rs", "--json",
+    ]);
     assert!(said.contains(r#""scope_hint":[]"#), "{said}");
 
     // Declared in the contract table, which is what help --json renders.
@@ -293,6 +309,14 @@ fn the_hint_costs_new_no_git_process() {
     );
     assert_eq!(stdout(&out).lines().count(), 1, "{}", stdout(&out));
     let (h, b) = (git_processes(&hinted), git_processes(&bare));
-    eprintln!("git processes: new with a hint {h}, new without one {b}");
+    // The control: the same instrument through the same harness counts the
+    // git processes of a verb that starts some, so a zero above is a count
+    // and not a trace that was never written.
+    let control = r.0.with_extension("status.trace");
+    r.ank_with(&["status"], &[("GIT_TRACE", &control)]);
+    let c = git_processes(&control);
+    eprintln!("git processes: new with a hint {h}, new without one {b}, status {c}");
+    assert!(c > 0, "the instrument counted nothing on status: blind");
     assert_eq!(h, b, "the hint started git processes of its own");
+    assert_eq!(h, 0, "new with a hint started {h} git processes");
 }
