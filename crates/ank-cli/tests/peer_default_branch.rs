@@ -372,3 +372,129 @@ fn the_remote_tracking_branch_answers_when_the_local_one_is_absent_and_neither_w
 
     let _ = fs::remove_dir_all(&p.base);
 }
+
+/// A task of `api` that exists only on its unmerged branch `work`.
+const PLANNED: &str = "TASK-a5a5a5a5a5a5";
+/// An id `api` holds on no branch at all.
+const NOWHERE: &str = "TASK-b6b6b6b6b6b6";
+
+/// The lines of `check` in `web` that name `blocker`, with its exit code and
+/// the whole of what it printed.
+fn edge_findings(p: &Pair, blocker: &str) -> (Option<i32>, Vec<String>, String) {
+    let a = p.web(&["check"]);
+    let all = format!("{}{}", a.stdout, a.stderr);
+    let found = all
+        .lines()
+        .filter(|l| l.contains(blocker))
+        .map(str::to_string)
+        .collect();
+    (a.code, found, all)
+}
+
+#[test]
+fn a_peer_task_only_on_an_unmerged_branch_is_accepted_held_and_a_signal() {
+    let p = pair("peer-default-branch-unmerged");
+    // The pair's local ADR is written by hand in a form `check` faults as
+    // non-canonical; this test reads the exit code of `check`, so the only
+    // finding it can be about is the edge.
+    fs::remove_file(p.web.join(format!(".ank/entities/{LOCAL}.md"))).unwrap();
+    commit(&p.web, "no local rule");
+    p.api_git(&["checkout", "-q", "-b", "work"]);
+    task(&p.api, PLANNED, "open");
+    commit(&p.api, "planned on work");
+
+    // new: accepted, with a warning naming the branch.
+    let blocker = format!("{PLANNED}@api");
+    let created = p.web(&[
+        "new",
+        "task",
+        "--title",
+        "Local work planned before the peer lands",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "It waits.",
+        "--no-verify",
+        "--blocked-by",
+        &blocker,
+        "--json",
+    ]);
+    assert_eq!(
+        created.code,
+        Some(0),
+        "a task on a branch of the peer is accepted: {}{}",
+        created.stdout,
+        created.stderr
+    );
+    let warned: Vec<&str> = created
+        .stderr
+        .lines()
+        .filter(|l| l.starts_with("warning:") && l.contains(&blocker))
+        .collect();
+    assert!(
+        warned.len() == 1 && warned[0].contains("'work'"),
+        "one warning names the edge and the branch: {}",
+        created.stderr
+    );
+    let at = created
+        .stdout
+        .find("\"TASK-")
+        .expect("the new task is named")
+        + 1;
+    let id = created.stdout[at..at + 17].to_string();
+    commit(&p.web, "waits");
+
+    // new: a task the peer holds on no branch keeps its exit 2.
+    let nowhere = format!("{NOWHERE}@api");
+    let refused = p.web(&[
+        "new",
+        "task",
+        "--title",
+        "Mistyped",
+        "--scope",
+        "src/**",
+        "--criteria",
+        "Never.",
+        "--no-verify",
+        "--blocked-by",
+        &nowhere,
+    ]);
+    assert_eq!(
+        refused.code,
+        Some(2),
+        "no branch holds it: {}{}",
+        refused.stdout,
+        refused.stderr
+    );
+
+    // claim: the edge holds, naming the peer task.
+    let held = p.web(&["claim", &id]);
+    assert_eq!(held.code, Some(7), "{}{}", held.stdout, held.stderr);
+    assert!(held.stderr.contains(&blocker), "{}", held.stderr);
+
+    // check: a signal, exit 0, whichever branch api has checked out.
+    for checkout in ["work", "main"] {
+        p.api_git(&["checkout", "-q", checkout]);
+        let (code, found, all) = edge_findings(&p, &blocker);
+        assert_eq!(code, Some(0), "api on {checkout}:\n{all}");
+        assert!(
+            found.len() == 1 && found[0].starts_with("signal:") && found[0].contains("'work'"),
+            "api on {checkout}, one signal naming the branch: {found:?}"
+        );
+    }
+
+    // Merged into main and done there: nothing about the edge, and claim
+    // succeeds.
+    p.api_git(&["checkout", "-q", "work"]);
+    task(&p.api, PLANNED, "done");
+    commit(&p.api, "done on work");
+    p.api_git(&["checkout", "-q", "main"]);
+    p.api_git(&["merge", "-q", "--no-ff", "-m", "merge work", "work"]);
+    let (code, found, all) = edge_findings(&p, &blocker);
+    assert_eq!(code, Some(0), "{all}");
+    assert!(found.is_empty(), "merged and done: {found:?}");
+    let taken = p.web(&["claim", &id]);
+    assert_eq!(taken.code, Some(0), "{}", taken.stderr);
+
+    let _ = fs::remove_dir_all(&p.base);
+}

@@ -5,12 +5,13 @@ slug: a-blocked-by-may-name-a-peer-task-not-yet-on-the
 title: A blocked_by may name a peer task not yet on the peer's default branch, and it holds as a signal
 created: 2026-10-26T13:29:33Z
 author: claude-code/opus-5.5+plan
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/commands.rs
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
   - crates/ank-cli/tests/peer_default_branch.rs
+  - crates/ank-cli/src/repo.rs
 blocked_by: [TASK-a8362b510188]
 done_criteria: |
   Through the binary, in a scratch pair api/web with both declarations: ank new task --blocked-by TASK-<id>@api in web, where that task exists only on a non-default local branch of api, exits 0 and warns naming the branch; the same command naming a task api holds on no branch refuses at exit 2; ank claim of the new task in web refuses at exit 7 naming the peer task; ank check in web reports the edge as a signal and exits 0, with api checked out on that branch and with api checked out on its default branch; once the branch is merged into api's default branch and the task is done there, check reports nothing about the edge and claim succeeds. A test in crates/ank-cli/tests/peer_default_branch.rs asserts each case through the binary.
@@ -18,7 +19,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
 schema: 4
-version: 1
+version: 3
 ---
 
 Implements the unmerged-reference half of ADR-09b985a5627e. Measured on
