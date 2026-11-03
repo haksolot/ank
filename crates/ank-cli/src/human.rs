@@ -1122,6 +1122,14 @@ pub fn inspect_with(
         let _ = git::preload_at(&repo.corpus, branch, &entries);
     }
 
+    // What each claim's own branch carries of its task (ADR-5a3a3f1b89e1), read
+    // only for the claims this checkout cannot judge alone, and in one batch.
+    let on_claim_branch = if has_git {
+        claim_branch_copies(repo, &coord, &entities)
+    } else {
+        HashMap::new()
+    };
+
     // The decisions, parsed once above and handed to every task below, so what
     // bears on a task is chosen among them rather than read off the disk again
     // per task (TASK-8654f0c81393).
@@ -1183,6 +1191,7 @@ pub fn inspect_with(
                 default_branch.as_ref().and_then(|b| b.as_deref().ok()),
                 &detached_commits,
                 &adrs,
+                &on_claim_branch,
                 &mut report,
             ),
             Entity::Adr(a) => check_adr(
@@ -1326,6 +1335,8 @@ pub fn inspect_with(
         ));
     }
 
+    check_claims_held_elsewhere(&coord, &statuses, &on_claim_branch, &mut report);
+
     // Maintenance last, so a corpus fault is still reported when pruning cannot
     // run for want of a default branch.
     match &default_branch {
@@ -1335,7 +1346,15 @@ pub fn inspect_with(
             // reads (ADR-47e2ac102f58).
             corpus_drift(repo, branch, &here, &mut report);
             rewritten_entries(repo, branch, &here, &entities, &mut report);
-            maintain(repo, branch, &coord, &statuses, prune, &mut report)?;
+            maintain(
+                repo,
+                branch,
+                &coord,
+                &statuses,
+                &on_claim_branch,
+                prune,
+                &mut report,
+            )?;
             maintain_proofs(repo, branch, &detached, &statuses, prune, &mut report)?;
         }
         Some(Err(_)) => report.findings.push(Finding::signal(
@@ -2773,6 +2792,7 @@ fn check_task(
     default_branch: Option<&str>,
     detached_commits: &BTreeSet<String>,
     adrs: &[&ank_core::Adr],
+    on_claim_branch: &HashMap<EntityId, Option<String>>,
     report: &mut Report,
 ) {
     // Every proof against this task, from both sources. ADR-493471d64ba0 is
@@ -2948,9 +2968,15 @@ fn check_task(
 
     // The freeze, checked at the point of use. The anchor is the claim record,
     // which the file's editor does not control (ADR-6b3f19e08a24).
+    //
+    // A checkout merely older than the claimer's branch is not a divergence
+    // (ADR-5a3a3f1b89e1): where this copy disagrees, the copy on the branch the
+    // claim was taken on decides, and it faults only if that one disagrees too.
     if let Some(Record::Claim(c)) = coord.get(&t.id) {
         if let Some(criteria) = &t.done_criteria {
-            if !verify_frozen(criteria, &c.criteria) {
+            if !verify_frozen(criteria, &c.criteria)
+                && !branch_copy_agrees(on_claim_branch.get(&t.id), &c.criteria)
+            {
                 report.findings.push(Finding::fault(
                     Kind::CriteriaDiverged,
                     &t.id,
@@ -5799,12 +5825,143 @@ fn has_commit(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// What the branch each claim was taken on carries of its task
+/// (ADR-5a3a3f1b89e1), for the claims this checkout cannot judge alone: those
+/// whose task it holds no copy of, and those whose copy's `done_criteria`
+/// hashes differently from the claim. A claim with no recorded branch, or one
+/// whose copy here agrees, is absent from the answer and judged as before.
+///
+/// `Some(None)` is a branch that carries no such task, a branch that no longer
+/// exists included: `refs/heads/<b>:<path>` resolves to nothing either way, and
+/// both mean the claim has nowhere left to stand.
+///
+/// **One `cat-file --batch` for every claim, whatever the number of branches**
+/// (ADR-cc65f1388a71), plus one `symbolic-ref` when a copy here disagrees, to
+/// learn whether this checkout is itself on the claim's branch. When it is, the
+/// working copy is that branch's file as far as its holder is concerned, an
+/// uncommitted edit included, so it is judged alone and the committed copy is
+/// not asked: it would excuse exactly the edit the freeze exists to catch.
+/// Nothing is read when every claim is judged here.
+fn claim_branch_copies(
+    repo: &Repo,
+    coord: &HashMap<EntityId, Record>,
+    entities: &[(PathBuf, Entity)],
+) -> HashMap<EntityId, Option<String>> {
+    let local: HashMap<&EntityId, Option<&str>> = entities
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Entity::Task(t) => Some((&t.id, t.done_criteria.as_deref())),
+            _ => None,
+        })
+        .collect();
+    let mut absent: Vec<(&EntityId, &str)> = Vec::new();
+    let mut disagreeing: Vec<(&EntityId, &str)> = Vec::new();
+    for (id, record) in coord {
+        let Record::Claim(c) = record else { continue };
+        let Some(branch) = c.branch.as_deref() else {
+            continue;
+        };
+        match local.get(id) {
+            None => absent.push((id, branch)),
+            Some(Some(criteria)) if !verify_frozen(criteria, &c.criteria) => {
+                disagreeing.push((id, branch))
+            }
+            Some(_) => {}
+        }
+    }
+    if !disagreeing.is_empty() {
+        let here = git::current_branch(&repo.corpus).ok().flatten();
+        disagreeing.retain(|(_, branch)| here.as_deref() != Some(*branch));
+    }
+    let asked: Vec<(&EntityId, String)> = absent
+        .into_iter()
+        .chain(disagreeing)
+        .flat_map(|(id, branch)| {
+            entity_rel_paths(repo, id)
+                .into_iter()
+                .map(move |path| (id, format!("refs/heads/{branch}:{path}")))
+        })
+        .collect();
+    let mut copies: HashMap<EntityId, Option<String>> = HashMap::new();
+    if asked.is_empty() {
+        return copies;
+    }
+    let names: Vec<String> = asked.iter().map(|(_, name)| name.clone()).collect();
+    // Unable to read is not a judgement: the answer is left empty and every
+    // claim is judged as one carrying no branch, which is what it was before.
+    let Ok(answers) = git::cat_file_batch_ordered(&repo.corpus, &names) else {
+        return copies;
+    };
+    if answers.len() != asked.len() {
+        return copies;
+    }
+    for ((id, _), answer) in asked.into_iter().zip(answers) {
+        let slot = copies.entry(id.clone()).or_insert(None);
+        if slot.is_none() {
+            *slot = answer;
+        }
+    }
+    copies
+}
+
+/// Whether the copy on the claim's branch carries the criterion the claim
+/// froze. No copy, or a copy with no criterion, agrees with nothing.
+fn branch_copy_agrees(copy: Option<&Option<String>>, anchor: &str) -> bool {
+    let Some(Some(text)) = copy else { return false };
+    matches!(
+        parse_entity(text),
+        Ok(Entity::Task(t)) if t.done_criteria.as_deref().is_some_and(|c| verify_frozen(c, anchor))
+    )
+}
+
+/// The freeze, for a claim on a task this checkout holds no copy of: the copy
+/// on the branch the claim was taken on is the only one there is to judge, and
+/// a criterion edited there after the claim is the same fault seen from here
+/// (ADR-5a3a3f1b89e1).
+fn check_claims_held_elsewhere(
+    coord: &HashMap<EntityId, Record>,
+    statuses: &HashMap<EntityId, TaskStatus>,
+    on_claim_branch: &HashMap<EntityId, Option<String>>,
+    report: &mut Report,
+) {
+    let mut ids: Vec<&EntityId> = on_claim_branch
+        .keys()
+        .filter(|id| !statuses.contains_key(*id))
+        .collect();
+    ids.sort_by_key(|i| i.to_string());
+    for id in ids {
+        let (Some(Record::Claim(c)), Some(Some(text))) = (coord.get(id), on_claim_branch.get(id))
+        else {
+            continue;
+        };
+        let Ok(Entity::Task(t)) = parse_entity(text) else {
+            continue;
+        };
+        let Some(criteria) = t.done_criteria.as_deref() else {
+            continue;
+        };
+        if !verify_frozen(criteria, &c.criteria) {
+            report.findings.push(Finding::fault(
+                Kind::CriteriaDiverged,
+                id,
+                format!(
+                    "done_criteria diverges from the claim on {} (claimed {}, now {})",
+                    c.branch.as_deref().unwrap_or("its branch"),
+                    c.criteria,
+                    freeze::freeze_hash_short(criteria)
+                ),
+            ));
+        }
+    }
+}
+
 /// Maintenance of the coordination plane (§7). The only place that prunes.
 fn maintain(
     repo: &Repo,
     default_branch: &str,
     coord: &HashMap<EntityId, Record>,
     statuses: &HashMap<EntityId, TaskStatus>,
+    on_claim_branch: &HashMap<EntityId, Option<String>>,
     prune: bool,
     report: &mut Report,
 ) -> Result<()> {
@@ -5832,6 +5989,10 @@ fn maintain(
                 // ref belongs to whoever holds it now, and a signal here would
                 // fire on every check run from every branch predating the task.
                 Ok(Some(_)) => {}
+                // Nor when the branch the claim was taken on carries it: a task
+                // created there and not merged yet (ADR-5a3a3f1b89e1). A branch
+                // since deleted carries nothing, and the ref is collected.
+                Ok(None) if matches!(on_claim_branch.get(id), Some(Some(_))) => {}
                 Ok(None) => {
                     if prune {
                         claim::delete(&repo.corpus, id)?;
@@ -11371,6 +11532,7 @@ mod tests {
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
             peers: Vec::new(),
+            branch: None,
         });
         claim::put(&t.0, &ghost, &record, None).unwrap();
 

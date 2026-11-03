@@ -219,6 +219,17 @@ pub struct ClaimRecord {
     /// peer, or a scope none binds, writes the bytes it wrote before.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub peers: Vec<PeerSeen>,
+    /// The branch checked out where the claim was taken (ADR-5a3a3f1b89e1).
+    /// `refs/ank/*` is shared by every worktree and an entity file lives per
+    /// branch, so a task created or amended on the claimer's branch is absent
+    /// from, or older in, every other checkout; this is where `check` looks
+    /// before calling the claim an orphan or its criterion diverged.
+    ///
+    /// Absent on a record written before it existed and on one taken from a
+    /// detached HEAD, and such a record is judged as it was before. A renewal
+    /// carries it over: the task stays where it was claimed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 /// One peer as a claim saw it (ADR-50952ba5e226).
@@ -2205,6 +2216,9 @@ pub fn acquire_seeing(
         criteria: criteria_hash.to_string(),
         constraints: constraints_hash.to_string(),
         peers,
+        // Unable to tell is no reason to refuse a claim: the record then
+        // carries no branch and is judged as one written before the field.
+        branch: git::current_branch(cwd).ok().flatten(),
     });
 
     let written = put(cwd, id, &record, witness)?;
@@ -3277,6 +3291,7 @@ mod tests {
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
             peers: Vec::new(),
+            branch: None,
         });
         assert_eq!(put(&t.0, &id, &record, None).unwrap().cas, Cas::Won);
 
@@ -3331,6 +3346,7 @@ mod tests {
             criteria: "123456789012".into(),
             constraints: "000000000000".into(),
             peers: Vec::new(),
+            branch: None,
         };
         assert_eq!(
             renewal_ttl(&granted, Duration::from_secs(2 * 3600)),
@@ -3357,6 +3373,7 @@ mod tests {
             criteria: "123456789012".into(),
             constraints: "000000000000".into(),
             peers: Vec::new(),
+            branch: None,
         });
         let text = serialize_record(&record);
         assert_eq!(

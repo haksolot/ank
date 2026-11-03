@@ -24,6 +24,7 @@ mod archive_checkout;
 mod archive_digest;
 mod attest_ids;
 mod check_fold;
+mod claim_branch;
 mod claims_refspec;
 mod claims_remote;
 mod cli;

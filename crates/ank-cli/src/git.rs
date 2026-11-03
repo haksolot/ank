@@ -1677,7 +1677,7 @@ fn tree_entries(body: &[u8], hash_len: usize) -> Vec<TreeEntry> {
 /// Split out rather than folded in, because the two callers key differently and
 /// the difference is not cosmetic: a caller naming objects by sha reads the
 /// answer back by name, and a caller naming `<rev>:<path>` cannot.
-fn cat_file_batch_ordered(cwd: &Path, names: &[String]) -> Result<Vec<Option<String>>> {
+pub fn cat_file_batch_ordered(cwd: &Path, names: &[String]) -> Result<Vec<Option<String>>> {
     Ok(cat_file_batch_raw(cwd, names)?
         .into_iter()
         .map(|answer| answer.map(|(_, _, body)| String::from_utf8_lossy(&body).to_string()))
