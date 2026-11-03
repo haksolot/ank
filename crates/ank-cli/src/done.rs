@@ -630,7 +630,14 @@ fn run_verifiers(
     // killed if it already was; one declared before it still can, so it is
     // waited for.
     let task = id.to_string();
+    // One task's verifiers at a time per repository (ADR-eab130f731f3), held
+    // until every one of them has finished. Nothing to run, nothing to hold: a
+    // close whose verifiers are all reused never waits behind another.
+    let lock = (cfg.verifier_lock && !to_run.is_empty())
+        .then(|| verify::take_verifier_lock(&repo.worktree, &task, reuse.identity))
+        .flatten();
     let outcomes = run_concurrently(repo, cfg, &to_run, &task, Some(&task), cfg.verifier_jobs());
+    drop(lock);
 
     // Recorded before the verdict, every run that finished, the failure
     // included: exit 9 never reaches here, since it is an error and not an

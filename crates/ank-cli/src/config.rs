@@ -102,6 +102,10 @@ struct ConfigFile {
     /// machine, and only somebody who knows there are several can set it.
     #[serde(default)]
     verifier_jobs: Option<usize>,
+    /// Whether `done` holds the repository's verifier lock while its
+    /// verifiers run (ADR-eab130f731f3). Absent, it does.
+    #[serde(default)]
+    verifier_lock: Option<bool>,
     /// `guard:`, what `ank hooks run` applies before a tool call
     /// (ADR-43cbb20dcbf1).
     #[serde(default)]
@@ -475,6 +479,9 @@ pub struct Config {
     /// [`Config::verifier_jobs`], because what it resolves to is the machine
     /// and not the file.
     pub verifier_jobs: Option<usize>,
+    /// Whether `done` serialises its verifier runs with every other `done` of
+    /// the repository (ADR-eab130f731f3): `verifier_lock`, `true` when absent.
+    pub verifier_lock: bool,
     /// What `ank hooks run` applies before a tool call (ADR-43cbb20dcbf1).
     pub guard: Guard,
     /// How old a passing run of the local registry may be for `done` to
@@ -716,6 +723,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Config> {
         identities: raw.identities,
         weight: raw.weight,
         verifier_jobs: raw.verifier_jobs,
+        verifier_lock: raw.verifier_lock.unwrap_or(true),
         guard,
         reuse_max_age,
         signers,
@@ -1187,6 +1195,13 @@ fn resolve_key(path: &str) -> Result<Key> {
             name: "verifier_jobs",
             verbatim: true,
             default: None,
+        }),
+        // On unless the file says otherwise (ADR-eab130f731f3): absence is a
+        // value in effect, so reading it answers `true`.
+        ["verifier_lock"] => Ok(Key::Top {
+            name: "verifier_lock",
+            verbatim: true,
+            default: Some("true".to_string()),
         }),
         // No default: absent, the resolution falls back to
         // refs/remotes/origin/HEAD and fails rather than guessing (§7).
@@ -4757,7 +4772,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 23, "{accepted:?}");
+        assert_eq!(accepted.len(), 24, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.
@@ -4830,6 +4845,8 @@ mod reference_table {
         assert_eq!(row("verifier_jobs"), Absent::None);
         assert_eq!(cfg.verifier_jobs, None);
         assert!(cfg.verifier_jobs() >= 1);
+        assert_eq!(row("verifier_lock"), Absent::Text("true"));
+        assert!(cfg.verifier_lock);
         assert_eq!(row("guard.corpus"), Absent::Text("deny"));
         assert_eq!(row("guard.edit"), Absent::Text("warn"));
         assert_eq!(

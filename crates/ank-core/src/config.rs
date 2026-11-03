@@ -163,6 +163,12 @@ pub static KEYS: &[ConfigKey] = &[
         "how many verifiers one `done` runs at once, at least 1; absent, the machine's available parallelism",
     ),
     key(
+        "verifier_lock",
+        "boolean",
+        Absent::Text("true"),
+        "whether `done` waits for the verifiers another `done` of the repository is running, in any of its worktrees, before it starts its own; `false` lets them run at the same time (ADR-eab130f731f3)",
+    ),
+    key(
         "roles.<name>.can",
         "list of strings",
         Absent::Text("[]"),
