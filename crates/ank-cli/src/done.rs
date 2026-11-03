@@ -175,6 +175,27 @@ pub fn run(
     warn_on_peer_drift(repo, cfg, &task, claim_record, inv.style());
 
     let declared: Vec<String> = task.verify.clone();
+
+    // The work tree listed and hashed once, before anything runs: the keys of
+    // the verifiers are taken from it, and so is the line naming what the
+    // branch changed outside the scope, whose files it hashes in the same
+    // process (TASK-64f941335624). Only where verifiers are declared, since
+    // that is where the listing is already paid for: a close on a typed proof
+    // would pay three processes for it, so there the line names what the
+    // branch committed and nothing the work tree holds uncommitted.
+    let outside = OutsideScope::new(repo, &task.scope);
+    let defs: Option<Vec<(&str, &crate::config::Verifier)>> = declared
+        .iter()
+        .map(|n| cfg.verifier(n).map(|v| (n.as_str(), v)))
+        .collect();
+    let snap = (!declared.is_empty())
+        .then(|| {
+            verify::snapshot(&repo.worktree, defs.as_deref().unwrap_or(&[]), |p| {
+                outside.holds(p)
+            })
+        })
+        .flatten();
+
     let proofs = if declared.is_empty() {
         let usage = ProofUsage {
             command: "ank done".to_string(),
@@ -204,6 +225,7 @@ pub fn run(
             &task.scope,
             &criteria,
             &id,
+            snap.as_ref(),
             Reuse {
                 identity,
                 fresh: inv.has("--fresh"),
@@ -260,6 +282,17 @@ pub fn run(
         eprintln!("{} {w}", inv.style().on_stderr().yellow("warning:"));
     }
 
+    // Named and never refused: a scope widened in the work is a fact for the
+    // reader of the close, not a reason to withhold it (TASK-64f941335624).
+    let changed_outside = outside.changed(repo, cfg, snap.as_ref());
+    if !changed_outside.is_empty() {
+        eprintln!(
+            "{} changed outside the scope of {id}: {}",
+            inv.style().on_stderr().yellow("warning:"),
+            changed_outside.join(", ")
+        );
+    }
+
     if inv.json() {
         let doc = crate::json::Obj::document()
             .str("task", &id.to_string())
@@ -269,6 +302,7 @@ pub fn run(
             // completion was made on is a fact a caller may not have.
             .opt_str("branch", completed.branch.as_deref())
             .num("proofs", proofs.len())
+            .strings("outside_scope", &changed_outside)
             .finish();
         let _ = writeln!(out, "{doc}");
     } else if !inv.quiet() {
@@ -294,6 +328,82 @@ pub fn run(
         );
     }
     Ok(ExitCode::Ok)
+}
+
+/// Which files of the work tree a close names as changed outside the task's
+/// scope: those its globs do not match, matched as the scope hash matches
+/// them, and none under the corpus, which `claim` and `done` write themselves.
+struct OutsideScope {
+    scope: Option<ScopeSet>,
+    corpus: Option<String>,
+}
+
+impl OutsideScope {
+    fn new(repo: &Repo, scope: &[String]) -> OutsideScope {
+        let corpus = repo
+            .ank
+            .strip_prefix(&repo.worktree)
+            .ok()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .filter(|r| !r.is_empty());
+        OutsideScope {
+            scope: ScopeSet::new(scope).ok(),
+            corpus,
+        }
+    }
+
+    fn holds(&self, path: &str) -> bool {
+        let Some(scope) = &self.scope else {
+            return false;
+        };
+        let in_corpus = self.corpus.as_deref().is_some_and(|c| {
+            path.strip_prefix(c)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
+        });
+        !in_corpus && !scope.matches(path)
+    }
+
+    /// The files outside the scope the branch changed since it left the
+    /// default branch, committed or not, sorted.
+    ///
+    /// **Two git processes over what `done` already starts**
+    /// (ADR-cc65f1388a71): one `diff-tree --merge-base` for what the branch
+    /// committed, and one `cat-file --batch-check` for what HEAD records of the
+    /// files the snapshot already hashed. A file is changed in the work tree
+    /// when HEAD does not carry it, when its blob differs, or when it is gone.
+    /// Whatever git cannot answer is left out rather than guessed.
+    fn changed(&self, repo: &Repo, cfg: &Config, snap: Option<&verify::Snapshot>) -> Vec<String> {
+        let mut changed = std::collections::BTreeSet::new();
+        // The configured default branch and its remote-tracking twin, or the
+        // remote's HEAD read as a revision, which costs no symbolic-ref of its
+        // own.
+        let revs: Vec<String> = match cfg.default_branch.as_deref().map(str::trim) {
+            Some(d) if !d.is_empty() => vec![d.to_string(), format!("refs/remotes/origin/{d}")],
+            _ => vec!["refs/remotes/origin/HEAD".to_string()],
+        };
+        if let Some(files) = git::committed_since(&repo.worktree, &revs) {
+            changed.extend(files.into_iter().filter(|p| self.holds(p)));
+        }
+        if let Some(snap) = snap {
+            let candidates: Vec<(&str, &str)> = snap
+                .files
+                .iter()
+                .zip(&snap.blob)
+                .filter_map(|(p, b)| Some((p.as_str(), b.as_deref()?)))
+                .filter(|(p, _)| self.holds(p))
+                .collect();
+            let paths: Vec<&str> = candidates.iter().map(|(p, _)| *p).collect();
+            if let Ok(head) = git::head_blobs(&repo.worktree, &paths) {
+                for ((p, now), then) in candidates.iter().zip(head) {
+                    if then.as_deref() != Some(*now) {
+                        changed.insert(p.to_string());
+                    }
+                }
+            }
+            changed.extend(snap.deleted.iter().filter(|p| self.holds(p)).cloned());
+        }
+        changed.into_iter().collect()
+    }
 }
 
 fn done_message(proofs: &[Proof]) -> String {
@@ -584,6 +694,7 @@ fn run_verifiers(
     scope: &[String],
     criteria: &str,
     id: &EntityId,
+    snap: Option<&verify::Snapshot>,
     reuse: Reuse,
     style: crate::style::Style,
 ) -> Result<std::result::Result<Vec<Proof>, Failed>> {
@@ -602,7 +713,7 @@ fn run_verifiers(
     let keys = defs
         .as_deref()
         .zip(registry.as_ref())
-        .and_then(|(defs, _)| verify::keys(&repo.worktree, defs));
+        .and_then(|(defs, _)| verify::keys_of(snap?, defs));
     let now = claim::now_secs();
     let reused: Vec<Option<verify::Run>> = declared
         .iter()

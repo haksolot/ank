@@ -34,6 +34,7 @@ mod dead_scope_awaited;
 mod dead_scope_ratified;
 mod doc_replay;
 mod done_lock;
+mod done_out_of_scope;
 mod done_output;
 mod done_stdin_pipe;
 mod guard_config;

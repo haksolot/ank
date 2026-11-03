@@ -1345,6 +1345,70 @@ pub fn merge_base(cwd: &Path, a: &str, b: &str) -> Result<Option<String>> {
     Ok((!sha.is_empty()).then_some(sha))
 }
 
+/// The files the commits since `HEAD` left the first of `revs` that resolves changed, deletions
+/// included: what `diff-tree --merge-base` names between the merge-base of
+/// the two and `HEAD`, so that what the default branch did afterwards, merged
+/// in or not, is never this branch's change. `None` where no base can be
+/// established.
+///
+/// One process for the first revision; one more for each that does not
+/// resolve, so a clone that never checked the default branch out still has a
+/// base to measure from, its remote-tracking branch.
+pub fn committed_since(cwd: &Path, revs: &[String]) -> Option<Vec<String>> {
+    for rev in revs {
+        let args = [
+            "diff-tree",
+            "--merge-base",
+            "-r",
+            "-z",
+            "--name-only",
+            rev.as_str(),
+            "HEAD",
+        ];
+        let Ok(out) = output(cwd, &args) else {
+            return None;
+        };
+        if out.status.success() {
+            return Some(paths_of(&out.stdout));
+        }
+    }
+    None
+}
+
+/// The blob HEAD records for each of `paths`, in order, `None` for a path it
+/// does not carry. One `cat-file --batch-check`, whatever `paths` holds.
+pub fn head_blobs(cwd: &Path, paths: &[&str]) -> Result<Vec<Option<String>>> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut input = String::new();
+    for p in paths {
+        input.push_str("HEAD:");
+        input.push_str(p);
+        input.push('\n');
+    }
+    let args = ["cat-file", "--batch-check"];
+    let out = output_with_stdin(cwd, &args, input.as_bytes())?;
+    if !out.status.success() {
+        return Err(failed(&args, &out));
+    }
+    let answers = String::from_utf8_lossy(&out.stdout);
+    let recorded: Vec<Option<String>> = answers
+        .lines()
+        .map(|l| {
+            let mut parts = l.split(' ');
+            match (parts.next(), parts.next()) {
+                (Some(oid), Some("blob")) => Some(oid.to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+    if recorded.len() != paths.len() {
+        return Err(failed(&args, &out));
+    }
+    Ok(recorded)
+}
+
 /// A file as it appears on `rev`, not as the working tree holds it. That
 /// distinction is the whole point: the pruning predicate asks what the default
 /// branch carries, and `done` writes only to the tree (§7, §12).

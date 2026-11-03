@@ -179,7 +179,7 @@ $ ank claim TASK-2773
 -->
 
     $ ank done --proof commit:8db4465 --json 2>stderr.txt; echo "exit $?"
-    {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1}
+    {"contract":1,"task":"TASK-277368641a6e","status":"done","commit":"8db44652564828e480ea7e5be3768b14f9c03893","branch":"main","proofs":1,"outside_scope":[]}
     exit 0
 
 and the warning on stderr:
