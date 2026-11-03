@@ -21301,8 +21301,9 @@ fn every_golden_conforms_to_the_shape_its_verb_declares() {
     // TASK-3a7a73ccf2b7, which gave `signers migrate` one, and thirty-seven
     // since TASK-f248037e8bab, which gave `hooks` one, pinned three times in
     // `tests/hooks_install.rs`: an install, the second install that changes
-    // nothing, and the remove.
-    assert_eq!(checked, 37, "one fixture per document the surface returns");
+    // nothing, and the remove; and thirty-eight since TASK-69006ffa955e, which
+    // gave a failing `done` one, pinned in `tests/done_output.rs`.
+    assert_eq!(checked, 38, "one fixture per document the surface returns");
     // **A declaration is unexercised when no instance of it anywhere carries a
     // row**, which is the reading this list is about (TASK-fbdf25e30058). It
     // used to be one instance at a time: a path went on the list every time the
@@ -27406,7 +27407,9 @@ fn proof_block(r: &Repo) -> String {
 fn refusal(out: &Output) -> String {
     stderr(out)
         .lines()
-        .filter(|l| !l.starts_with("running:"))
+        // Progress, and the kept output's path: it lies under each fixture's
+        // own repository, so no two runs share it (TASK-69006ffa955e).
+        .filter(|l| !l.starts_with("running:") && !l.starts_with("output kept:"))
         .map(|l| format!("{l}\n"))
         .collect()
 }
