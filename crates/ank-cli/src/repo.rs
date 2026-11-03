@@ -307,6 +307,8 @@ pub struct Peer {
     /// (ADR-09b985a5627e): what a claim records as the state of the peer it
     /// was taken against (ADR-50952ba5e226).
     pub commit: String,
+    /// The default branch that commit was read from, as the peer names it.
+    pub branch: String,
     /// The path as the reader spells it, the override or the declaration: what
     /// a hint names in `ank --repo <path>`, resolved against the declaring root.
     pub declared: String,
@@ -611,6 +613,7 @@ fn open(from: &Repo, name: &str, declared: &str) -> std::result::Result<Peer, Un
         repo,
         config,
         commit,
+        branch,
         declared,
     })
 }
@@ -891,18 +894,87 @@ pub enum Blocker {
 /// a task the peer does not hold would otherwise surface much later, in
 /// `check`, as a fault nobody can attribute. The peer is read and never
 /// written: [`Store::resolve`] lists its files and opens no index.
-pub fn blocker(from: &Repo, cfg: &Config, verb: &str, raw: &str) -> Result<Blocker> {
+///
+/// **A task found only on another local branch of the peer** is accepted, and
+/// `warnings` gets one line naming the branch (ADR-09b985a5627e): the pair is
+/// planned before either lands, and the edge holds until the task is done on
+/// the peer's default branch. A task no branch holds keeps the refusal, which
+/// is what catches a mistyped id.
+pub fn blocker(
+    from: &Repo,
+    cfg: &Config,
+    verb: &str,
+    raw: &str,
+    warnings: &mut Vec<String>,
+) -> Result<Blocker> {
     match reach(from, cfg, verb, raw.trim())? {
         Reach::Here(prefix) => Ok(Blocker::Here(Store::new(&from.ank).resolve(prefix)?)),
         Reach::Peer(peer, prefix) => {
-            let id = Store::new(&peer.repo.ank)
-                .resolve(prefix)
-                .map_err(|e| peer.refusal(e))?;
+            let id = match Store::new(&peer.repo.ank).resolve(prefix) {
+                Ok(id) => id,
+                Err(e @ crate::store::StoreError::NotFound(_)) => {
+                    let Some((branch, id)) = peer.branch_holding(prefix) else {
+                        return Err(peer.refusal(e));
+                    };
+                    warnings.push(format!(
+                        "{id}@{} is held by peer '{}' only on its branch '{branch}', \
+                         not on {}: the edge holds until it is done there",
+                        peer.name, peer.name, peer.branch
+                    ));
+                    id
+                }
+                Err(e) => return Err(peer.refusal(e)),
+            };
             Ok(Blocker::Peer(ank_core::PeerBlocker {
                 id,
                 peer: peer.name.clone(),
             }))
         }
+    }
+}
+
+impl Peer {
+    /// The first local branch of this peer other than its default one whose
+    /// corpus holds a task `prefix` resolves to, with that task's id.
+    ///
+    /// **The rare path, paid only on a miss at the default branch**: one
+    /// `for-each-ref` over `refs/heads/`, then one tree read per branch
+    /// ([`crate::git::trees_at`]), and nothing is written out. `None` when no branch holds it, or when git
+    /// cannot answer.
+    pub fn branch_holding(&self, prefix: &str) -> Option<(String, EntityId)> {
+        let cwd = &self.repo.corpus;
+        let heads = crate::git::run(
+            cwd,
+            &[
+                "for-each-ref",
+                "--format=%(objectname) %(refname:short)",
+                "refs/heads/",
+            ],
+        )
+        .ok()?;
+        let within = format!("./{ANK_DIR}/{}", Store::ENTITIES_DIR);
+        for (object, name) in heads.lines().filter_map(|l| l.split_once(' ')) {
+            if name == self.branch {
+                continue;
+            }
+            let Ok(mut listed) = crate::git::trees_at(cwd, object, std::slice::from_ref(&within))
+            else {
+                continue;
+            };
+            let ids: Vec<EntityId> = listed
+                .pop()
+                .flatten()
+                .unwrap_or_default()
+                .iter()
+                .filter(|e| e.is_blob())
+                .filter_map(|e| EntityId::parse(e.name.strip_suffix(".md")?).ok())
+                .filter(|id| id.kind() == ank_core::EntityKind::Task)
+                .collect();
+            if let Ok(id) = ank_core::resolve_prefix(prefix, ids.iter()) {
+                return Some((name.to_string(), id.clone()));
+            }
+        }
+        None
     }
 }
 
