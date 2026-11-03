@@ -184,32 +184,40 @@ impl RunKey {
     }
 }
 
-/// The keys of `names`, in order, computed over the work tree as it stands.
+/// The work tree as `done` and `verify` read it: the files git counts, the
+/// tracked ones gone from disk, and the blob each file would be committed as,
+/// for the files somebody asked to have hashed.
+pub struct Snapshot {
+    pub files: Vec<String>,
+    pub deleted: std::collections::HashSet<String>,
+    /// One per file, `None` for a file nobody asked to have hashed.
+    pub blob: Vec<Option<String>>,
+}
+
+/// The work tree listed once and hashed once, over every file a verifier of
+/// `names` reads and every file `also` asks for.
 ///
-/// **Two git processes for the whole list, whatever it holds**
-/// (ADR-cc65f1388a71): one listing of the work tree, and one `hash-object
-/// --stdin-paths` over the union of the files any verifier reads. `None` where
-/// a key cannot be established -- git refusing, a path it cannot hash -- and
-/// then nothing is reused and nothing recorded: a verb that cannot name its key
-/// pays the full cost rather than guessing.
-pub fn keys(worktree: &Path, names: &[(&str, &Verifier)]) -> Option<Vec<RunKey>> {
-    let files = crate::git::worktree_files(worktree)?.counted;
-    let mut selected: Vec<Vec<usize>> = Vec::with_capacity(names.len());
-    let mut wanted = vec![false; files.len()];
+/// **Three git processes, whatever it holds** (ADR-cc65f1388a71): the two of
+/// the listing, and one `hash-object --stdin-paths` over the union. `None`
+/// where git refuses or a path cannot be hashed.
+pub fn snapshot(
+    worktree: &Path,
+    names: &[(&str, &Verifier)],
+    also: impl Fn(&str) -> bool,
+) -> Option<Snapshot> {
+    let listed = crate::git::worktree_files(worktree)?;
+    let files = listed.counted;
+    let mut wanted: Vec<bool> = files.iter().map(|p| also(p)).collect();
     for (_, v) in names {
-        let picked: Vec<usize> = match &v.inputs {
+        match &v.inputs {
             Some(globs) => {
                 let set = ank_core::ScopeSet::new(globs).ok()?;
-                (0..files.len())
-                    .filter(|&i| set.matches(&files[i]))
-                    .collect()
+                for (i, p) in files.iter().enumerate() {
+                    wanted[i] |= set.matches(p);
+                }
             }
-            None => (0..files.len()).collect(),
-        };
-        for &i in &picked {
-            wanted[i] = true;
+            None => wanted.iter_mut().for_each(|w| *w = true),
         }
-        selected.push(picked);
     }
 
     let union: Vec<usize> = (0..files.len()).filter(|&i| wanted[i]).collect();
@@ -233,6 +241,43 @@ pub fn keys(worktree: &Path, names: &[(&str, &Verifier)]) -> Option<Vec<RunKey>>
         for (&i, id) in union.iter().zip(ids) {
             blob[i] = Some(id.to_string());
         }
+    }
+    Some(Snapshot {
+        files,
+        deleted: listed.deleted,
+        blob,
+    })
+}
+
+/// The keys of `names`, in order, computed over the work tree as it stands.
+///
+/// **Two git processes for the whole list, whatever it holds**
+/// (ADR-cc65f1388a71): one listing of the work tree, and one `hash-object
+/// --stdin-paths` over the union of the files any verifier reads. `None` where
+/// a key cannot be established -- git refusing, a path it cannot hash -- and
+/// then nothing is reused and nothing recorded: a verb that cannot name its key
+/// pays the full cost rather than guessing.
+pub fn keys(worktree: &Path, names: &[(&str, &Verifier)]) -> Option<Vec<RunKey>> {
+    keys_of(&snapshot(worktree, names, |_| false)?, names)
+}
+
+/// The keys of `names` over a snapshot already taken, which hashed at least
+/// every file their inputs match.
+pub fn keys_of(snap: &Snapshot, names: &[(&str, &Verifier)]) -> Option<Vec<RunKey>> {
+    let files = &snap.files;
+    let blob = &snap.blob;
+    let mut selected: Vec<Vec<usize>> = Vec::with_capacity(names.len());
+    for (_, v) in names {
+        let picked: Vec<usize> = match &v.inputs {
+            Some(globs) => {
+                let set = ank_core::ScopeSet::new(globs).ok()?;
+                (0..files.len())
+                    .filter(|&i| set.matches(&files[i]))
+                    .collect()
+            }
+            None => (0..files.len()).collect(),
+        };
+        selected.push(picked);
     }
 
     let mut out = Vec::with_capacity(names.len());
