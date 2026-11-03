@@ -1,1 +1,1 @@
-{"contract":1,"id":"TASK-<HEX>","kind":"task","created":"<TIME>"}
+{"contract":1,"id":"TASK-<HEX>","kind":"task","created":"<TIME>","scope_hint":[{"path":"docs/**","count":2,"of":2}]}

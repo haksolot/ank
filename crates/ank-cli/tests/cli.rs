@@ -21019,6 +21019,29 @@ fn json_golden_status() {
 fn json_golden_writing_verbs() {
     // new
     let r = golden_repo();
+    // Two finished tasks declaring a second entry beside `src/**`, so that
+    // `new.scope_hint` pins an element and not only `[]` (TASK-cc8bdc66a2ec).
+    // Here and not in `golden_repo`, which every other fixture reads.
+    for _ in 0..2 {
+        let out = r.ank(
+            AGENT,
+            &[
+                "new",
+                "task",
+                "--title",
+                "Finished",
+                "--scope",
+                "src/**",
+                "--scope",
+                "docs/**",
+                "--no-verify",
+            ],
+        );
+        assert_eq!(code(&out), 0, "{}", stderr(&out));
+        let id = stdout(&out).split_whitespace().nth(1).unwrap().to_string();
+        let done = r.task_text(&id).replace("status: open", "status: done");
+        std::fs::write(r.0.join(".ank/entities").join(format!("{id}.md")), done).unwrap();
+    }
     let out = r.ank(
         AGENT,
         &[
