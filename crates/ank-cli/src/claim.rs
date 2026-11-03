@@ -210,6 +210,32 @@ pub struct ClaimRecord {
     /// Hash of the constraints applicable to the task's scope at pickup. A
     /// constraint accepted mid-work changes it, and `done` warns.
     pub constraints: String,
+    /// What each declared peer bound onto the scope at pickup: the commit of
+    /// its default branch that was read and the hash of each constraint served
+    /// (ADR-50952ba5e226). **Recorded and never frozen**: none of it enters
+    /// `constraints`, and `done` names what moved without refusing on it.
+    ///
+    /// Absent from a record no peer reached, so a repository that declares no
+    /// peer, or a scope none binds, writes the bytes it wrote before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub peers: Vec<PeerSeen>,
+}
+
+/// One peer as a claim saw it (ADR-50952ba5e226).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PeerSeen {
+    pub peer: String,
+    /// The commit of the peer's default branch the constraints were read at.
+    pub commit: String,
+    /// Full id to [`peer_constraint_hash`] of its rule.
+    pub constraints: BTreeMap<String, String>,
+}
+
+/// The hash a claim records of one peer constraint: the rule normalised the
+/// way every freeze normalises, so editing noise does not read as a change.
+pub fn peer_constraint_hash(text: &str) -> String {
+    freeze_hash_short(&freeze::normalize(text))
 }
 
 /// A task finished on some branch. No TTL: it stays until durable state has
@@ -2118,6 +2144,31 @@ pub fn acquire(
     constraints_hash: &str,
     other_ready: Option<&str>,
 ) -> Result<Acquired> {
+    acquire_seeing(
+        cwd,
+        task,
+        identity,
+        ttl,
+        criteria_hash,
+        constraints_hash,
+        Vec::new(),
+        other_ready,
+    )
+}
+
+/// [`acquire`], recording what the declared peers bound onto the scope
+/// (ADR-50952ba5e226) beside the two hashes and outside both.
+#[allow(clippy::too_many_arguments)]
+pub fn acquire_seeing(
+    cwd: &Path,
+    task: &Task,
+    identity: &str,
+    ttl: Duration,
+    criteria_hash: &str,
+    constraints_hash: &str,
+    peers: Vec<PeerSeen>,
+    other_ready: Option<&str>,
+) -> Result<Acquired> {
     let id = &task.id;
     let now = now_secs();
     let held = read(cwd, id)?;
@@ -2153,6 +2204,7 @@ pub fn acquire(
         ttl: ttl.as_secs(),
         criteria: criteria_hash.to_string(),
         constraints: constraints_hash.to_string(),
+        peers,
     });
 
     let written = put(cwd, id, &record, witness)?;
@@ -2508,13 +2560,18 @@ fn run_with(
     already_holding(&repo.corpus, identity, &task.id, now_secs())?;
 
     let constraints = constraints_hash(&applicable_constraints(&store, &index, repo, &task)?);
-    let acquired = acquire(
+    // What the declared peers bind onto the scope: shown below and recorded,
+    // and never part of the hash above (ADR-50952ba5e226).
+    let mut peer_warnings = Vec::new();
+    let peer_sections = crate::context::peer_bearing(repo, cfg, &task.scope, &mut peer_warnings);
+    let acquired = acquire_seeing(
         &repo.corpus,
         &task,
         identity,
         ttl,
         &freeze_hash_short(&criteria),
         &constraints,
+        peer_sections.iter().map(|s| s.seen()).collect(),
         ready.as_deref(),
     )?;
 
@@ -2590,6 +2647,7 @@ fn run_with(
         // set of facts.
         .chain(elsewhere.iter().map(|e| e.line(identity)))
         .chain(unread)
+        .chain(peer_warnings)
         // A claim that did not reach the remote holds in this clone alone, and
         // §7 is explicit that the risk is displayed rather than hidden.
         .chain(acquired.sync.warning())
@@ -2636,6 +2694,13 @@ fn run_with(
                 inv.style().advanced("claimed"),
                 inv.style().id(&acquired.id.to_string())
             );
+        }
+        // The rules a peer binds onto what was just taken, at the moment the
+        // work starts: `context` serves them again, but the claim is the one
+        // output every executor reads (ADR-50952ba5e226). Printed under
+        // `--quiet` too: a rule is not the confirmation the flag silences.
+        for line in crate::context::peer_sections(&peer_sections, inv.style()) {
+            let _ = writeln!(out, "{line}");
         }
     }
     Ok(ExitCode::Ok)
@@ -3211,6 +3276,7 @@ mod tests {
             ttl: DEFAULT_TTL.as_secs(),
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
+            peers: Vec::new(),
         });
         assert_eq!(put(&t.0, &id, &record, None).unwrap().cas, Cas::Won);
 
@@ -3264,6 +3330,7 @@ mod tests {
             ttl: 2 * 3600,
             criteria: "123456789012".into(),
             constraints: "000000000000".into(),
+            peers: Vec::new(),
         };
         assert_eq!(
             renewal_ttl(&granted, Duration::from_secs(2 * 3600)),
@@ -3289,6 +3356,7 @@ mod tests {
             ttl: DEFAULT_TTL.as_secs(),
             criteria: "123456789012".into(),
             constraints: "000000000000".into(),
+            peers: Vec::new(),
         });
         let text = serialize_record(&record);
         assert_eq!(

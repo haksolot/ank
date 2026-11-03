@@ -374,6 +374,108 @@ pub struct View {
     /// Whether the caller asked for `--peers`, which is what gives every task
     /// of the JSON document its `peer` key (ADR-376bed7fa39a).
     pub peers: bool,
+    /// Under a claim, what each declared peer binds onto the task's scope
+    /// (ADR-50952ba5e226): shown in a section of its own and never part of
+    /// `constraints`, which is the set the claim freezes. Empty in orientation,
+    /// where a peer's rule is one of the `constraints` named `<id>@<peer>`.
+    pub peer_constraints: Vec<PeerSection>,
+}
+
+/// The constraints one declared peer binds onto a claimed scope, and the commit
+/// of the peer's default branch they were read at (ADR-50952ba5e226).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerSection {
+    pub peer: String,
+    pub commit: String,
+    /// Sorted by id; `home` is the peer, `short` is `<id>@<peer>`.
+    pub constraints: Vec<ConstraintLine>,
+    /// Each constraint's full id and the hash of the rule as the ADR states it,
+    /// whatever `constraints` serves of it: an enforced rule is shown by its
+    /// title and still moves the record when it changes.
+    pub hashes: std::collections::BTreeMap<String, String>,
+}
+
+impl PeerSection {
+    /// What the claim records of this peer: the commit and the hashes.
+    pub fn seen(&self) -> claim::PeerSeen {
+        claim::PeerSeen {
+            peer: self.peer.clone(),
+            commit: self.commit.clone(),
+            constraints: self.hashes.clone(),
+        }
+    }
+}
+
+/// The constraints every declared peer binds onto `scope`, accepted on the
+/// peer's default branch, one section per peer that binds anything
+/// (ADR-50952ba5e226). The scope's own peer-qualified entries are left out: a
+/// task's perimeter is this checkout's files.
+///
+/// **Shown, never frozen.** The claim hashes `applicable_constraints` and
+/// nothing here: a merge in the peer is no alteration made by this executor,
+/// and a hash that moved with it would report one (the rejected option of the
+/// ADR). What the freeze bought is kept by recording instead, through
+/// [`PeerSection::seen`], and `done` reads that record back.
+pub(crate) fn peer_bearing(
+    repo: &Repo,
+    cfg: &Config,
+    scope: &[String],
+    warnings: &mut Vec<String>,
+) -> Vec<PeerSection> {
+    let local: Vec<String> = scope
+        .iter()
+        .filter(|e| crate::repo::peer_ref(e).is_none())
+        .cloned()
+        .collect();
+    if cfg.peers.is_empty() || local.is_empty() {
+        return Vec::new();
+    }
+    let (peers, peer_warnings) = crate::repo::peers_of(repo, cfg);
+    warnings.extend(peer_warnings);
+    let mut out: Vec<PeerSection> = Vec::new();
+    let keep = |globs: &[String]| claim::scopes_intersect(&local, globs).unwrap_or(false);
+    for bound in peer_adrs_where(repo, &peers, warnings, &keep) {
+        let adr = bound.adr;
+        if adr.status.as_str() != "accepted" {
+            continue;
+        }
+        let commit = peers
+            .iter()
+            .find(|p| p.name == bound.peer)
+            .map(|p| p.commit.clone())
+            .unwrap_or_default();
+        let line = ConstraintLine {
+            short: bound.short,
+            id: adr.id.clone(),
+            title: adr.title.clone(),
+            text: served(&adr),
+            specificity: specificity(&bound.globs),
+            overlap: 0,
+            home: Some(bound.peer.clone()),
+            amended_by: Vec::new(),
+            enforced_by: adr.enforced_by.clone(),
+        };
+        let hash = claim::peer_constraint_hash(&adr.constraint);
+        match out.iter_mut().find(|s| s.peer == bound.peer) {
+            Some(section) => {
+                section.hashes.insert(adr.id.to_string(), hash);
+                section.constraints.push(line);
+            }
+            None => out.push(PeerSection {
+                peer: bound.peer,
+                commit,
+                hashes: [(adr.id.to_string(), hash)].into_iter().collect(),
+                constraints: vec![line],
+            }),
+        }
+    }
+    for section in &mut out {
+        section
+            .constraints
+            .sort_by(|a, b| a.id.to_string().cmp(&b.id.to_string()));
+    }
+    out.sort_by(|a, b| a.peer.cmp(&b.peer));
+    out
 }
 
 impl View {
@@ -632,7 +734,7 @@ pub fn build_with(
     let head = held_in(&coord, identity);
 
     match head {
-        Some(id) => build_execution(&store, repo, &index, &shorts, &coord, id, warnings),
+        Some(id) => build_execution(&store, repo, cfg, &index, &shorts, &coord, id, warnings),
         None => build_orientation(
             repo, cfg, &store, &rows, &shorts, &coord, path, limit, peers, warnings,
         ),
@@ -842,6 +944,7 @@ fn build_orientation(
         finished_elsewhere,
         warnings,
         peers: with_peers,
+        peer_constraints: Vec::new(),
     })
 }
 
@@ -981,11 +1084,12 @@ fn constraint_order(a: &ConstraintLine, b: &ConstraintLine) -> std::cmp::Orderin
 /// and creates none — an [`Index`] would write `index.db` into a corpus this
 /// verb has no right to touch.
 ///
-/// **Execution mode is deliberately untouched.** The constraints it serves are
-/// the set `claim` hashes into the claim record, and a rule from a corpus the
-/// refs cannot reach has no place in a freeze: claims do not cross (§7), and a
-/// hash that moved when a sibling checkout changed would make `done` warn about
-/// something no reader here could show.
+/// **Under a claim the peer's rules are served apart**, by [`peer_bearing`]
+/// and never through this list (ADR-50952ba5e226). The constraints execution
+/// mode serves are the set `claim` hashes into the claim record, and a rule
+/// from a corpus the refs cannot reach has no place in a freeze: a hash that
+/// moved when the peer merged would report an alteration nobody here made. So
+/// it is shown in a section of its own and recorded beside the hash instead.
 fn peer_lines(
     repo: &Repo,
     peers: &[crate::repo::Peer],
@@ -1055,6 +1159,19 @@ pub(crate) fn peer_adrs_in(
     path: Option<&str>,
     warnings: &mut Vec<String>,
 ) -> Vec<PeerAdr> {
+    peer_adrs_where(repo, peers, warnings, &|globs| in_perimeter(globs, path))
+}
+
+/// [`peer_adrs_in`] over any test of the globs pointing back here: a path for
+/// orientation and `scope`, a claimed task's scope for execution
+/// (ADR-50952ba5e226). One walk, so the two cannot disagree about which of a
+/// peer's ADRs point at this repository.
+fn peer_adrs_where(
+    repo: &Repo,
+    peers: &[crate::repo::Peer],
+    warnings: &mut Vec<String>,
+    keep: &dyn Fn(&[String]) -> bool,
+) -> Vec<PeerAdr> {
     let mut out = Vec::new();
     for peer in peers {
         let store = Store::new(&peer.repo.ank);
@@ -1089,7 +1206,7 @@ pub(crate) fn peer_adrs_in(
                 .filter(|(name, _)| peer.binds(name, repo))
                 .map(|(_, glob)| glob.to_string())
                 .collect();
-            if globs.is_empty() || !in_perimeter(&globs, path) {
+            if globs.is_empty() || !keep(&globs) {
                 continue;
             }
             out.push(PeerAdr {
@@ -1183,9 +1300,11 @@ fn unreadable_peer(peer: &crate::repo::Peer) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_execution(
     store: &Store,
     repo: &Repo,
+    cfg: &Config,
     index: &Index,
     shorts: &HashMap<EntityId, String>,
     coord: &HashMap<EntityId, Coordination>,
@@ -1275,6 +1394,10 @@ fn build_execution(
         });
     }
     mark_amendments(&adrs, shorts, &mut constraints);
+    // What the declared peers bind onto the same scope, in a section of its own
+    // and outside `constraints`, which is what the claim froze
+    // (ADR-50952ba5e226).
+    let peer_constraints = peer_bearing(repo, cfg, &task.scope, &mut warnings);
 
     let specs = spec_lines(&rows, shorts, |scope| {
         claim::scopes_intersect(scope, &task.scope).unwrap_or(false)
@@ -1327,6 +1450,7 @@ fn build_execution(
         finished_elsewhere: 0,
         warnings,
         peers: false,
+        peer_constraints,
     })
 }
 
@@ -1656,11 +1780,36 @@ fn execution_head(view: &View, style: Style) -> Vec<String> {
             out.extend(constraint_block(c, style));
         }
     }
+    // After the local rules and in a section of their own, never cut for the
+    // reason those are not (ADR-50952ba5e226).
+    out.extend(peer_sections(&view.peer_constraints, style));
     // Named here as in orientation, and never quoted: there is no mode that
     // serves a spec body, because there is no `constraint` to serve and the
     // body is the document (§3, §5). Charged before the log, which is what
     // yields, so a spec line never costs an entry.
     out.extend(spec_section(&view.specs, 0, ".", style));
+    out
+}
+
+/// The constraints declared peers bind onto a claimed scope, one section per
+/// peer, naming it and the commit of its default branch that was read
+/// (ADR-50952ba5e226). Each rule is served in full, as a local one is under a
+/// claim, and addressed `<id>@<peer>`. Shared by `context` and `claim`, so the
+/// two print one section and not two renderings of it.
+pub(crate) fn peer_sections(sections: &[PeerSection], style: Style) -> Vec<String> {
+    let mut out = Vec::new();
+    for section in sections {
+        out.push(String::new());
+        out.push(style.header(&format!(
+            "PEER CONSTRAINTS ({} at {}, {} active)",
+            section.peer,
+            &section.commit[..section.commit.len().min(12)],
+            section.constraints.len()
+        )));
+        for c in &section.constraints {
+            out.extend(constraint_block(c, style));
+        }
+    }
     out
 }
 
@@ -2175,13 +2324,40 @@ pub fn render_json(view: &View, budget: usize) -> String {
     // terminal see the same page shorten.
     let log: &[String] = &fitted.log;
 
-    Obj::document()
+    let doc = Obj::document()
         .str("mode", mode)
         .opt_str("head", head.as_deref())
         .opt_str("criteria", criteria.as_deref())
         .opt_str("method", method)
-        .array("constraints", constraints)
-        .array("proposed", proposals)
+        .array("constraints", constraints);
+    // **The key arrives with the facts and never without them**, as `claim`'s
+    // `claims_elsewhere` does: a caller under a claim no peer reaches reads the
+    // bytes it read before (ADR-50952ba5e226).
+    let doc = match view.peer_constraints.is_empty() {
+        true => doc,
+        false => doc.array(
+            "peer_constraints",
+            view.peer_constraints.iter().map(|section| {
+                Obj::new()
+                    .str("peer", &section.peer)
+                    .str("commit", &section.commit)
+                    .array(
+                        "constraints",
+                        section.constraints.iter().map(|c| {
+                            Obj::new()
+                                .str("id", &c.id.to_string())
+                                .str("short", &c.short)
+                                .str("title", &c.title)
+                                .str("constraint", &c.text)
+                                .strings("enforced_by", &c.enforced_by)
+                                .finish()
+                        }),
+                    )
+                    .finish()
+            }),
+        ),
+    };
+    doc.array("proposed", proposals)
         .array("specs", specs)
         .array("tasks", tasks)
         .strings("log", log)

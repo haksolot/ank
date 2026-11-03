@@ -11304,6 +11304,7 @@ mod tests {
             ttl: claim::DEFAULT_TTL.as_secs(),
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
+            peers: Vec::new(),
         });
         claim::put(&t.0, &ghost, &record, None).unwrap();
 
