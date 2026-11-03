@@ -48,6 +48,51 @@ pub struct Outcome {
     /// unreadable for the one thing it exists to record.
     pub output_hash: String,
     pub timed_out: bool,
+    /// The last [`TAIL_LINES`] lines of that output, kept for a run that said
+    /// no and empty otherwise: what a red close prints so it says why.
+    pub tail: Vec<String>,
+    /// Where the whole output of a failing run was kept, when its caller asked
+    /// for it to be ([`kept_output`]).
+    pub kept: Option<PathBuf>,
+}
+
+/// How many of a failing verifier's last lines `done` prints.
+pub const TAIL_LINES: usize = 20;
+
+/// Where the output of `task`'s verifier `name` is kept when it fails:
+/// `<git-common-dir>/ank/output/<task>/<name>.out`.
+///
+/// Under the common directory and not the temporary one, so every linked
+/// worktree names the same file and a reader finds it after `done` has exited;
+/// one file per task and verifier, so the latest failure replaces the previous
+/// one and a pass removes it.
+pub fn kept_output(worktree: &Path, task: &str, name: &str) -> Option<PathBuf> {
+    crate::git::common_dir(worktree).map(|d| {
+        d.join("ank")
+            .join("output")
+            .join(task)
+            .join(format!("{}.out", sanitized(name)))
+    })
+}
+
+fn sanitized(name: &str) -> String {
+    name.replace(|c: char| !c.is_alphanumeric() && c != '-' && c != '_', "-")
+}
+
+/// Writes `output` to `path` through a sibling file renamed into place, so a
+/// reader sees the previous failure or this one, never half of either.
+fn keep(path: &Path, output: &[u8]) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join(format!(
+        ".{}.{}.tmp",
+        path.file_name().and_then(|n| n.to_str()).unwrap_or("out"),
+        std::process::id()
+    ));
+    std::fs::write(&tmp, output)?;
+    std::fs::rename(&tmp, path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
 }
 
 impl Outcome {
@@ -519,8 +564,14 @@ pub fn run_verb(
     });
     let head = crate::git::run(&repo.worktree, &["rev-parse", "HEAD"]).unwrap_or_default();
 
-    let outcomes =
-        crate::done::run_concurrently(repo, cfg, &selected, "config.yml", cfg.verifier_jobs());
+    let outcomes = crate::done::run_concurrently(
+        repo,
+        cfg,
+        &selected,
+        "config.yml",
+        None,
+        cfg.verifier_jobs(),
+    );
     match (&registry, &keys) {
         (Some(dir), Some(keys)) => {
             let ran: Vec<&RunKey> = keys.iter().collect();
@@ -652,7 +703,7 @@ fn on_path(name: &str) -> Option<PathBuf> {
 /// that is waiting for it to exit, and a test suite is exactly the kind of
 /// command that prints a lot.
 pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
-    Ok(run_until(cwd, name, v, &|| false)?.expect("a run nothing stops is never cancelled"))
+    Ok(run_until(cwd, name, v, None, &|| false)?.expect("a run nothing stops is never cancelled"))
 }
 
 /// [`run`], polling `stop` while the verifier runs: once it answers true the
@@ -662,10 +713,15 @@ pub fn run(cwd: &Path, name: &str, v: &Verifier) -> Result<Outcome> {
 /// once one fails, the ones declared after it can no longer change the
 /// answer, and letting them run on would leave them running after `done`
 /// has already said no.
+///
+/// `keep` is where a failing run's whole output is written, replacing what a
+/// previous failure left there, and what a passing run removes; `None` keeps
+/// nothing. A cancelled run touches neither: it has no answer.
 pub fn run_until(
     cwd: &Path,
     name: &str,
     v: &Verifier,
+    keep: Option<&Path>,
     stop: &dyn Fn() -> bool,
 ) -> Result<Option<Outcome>> {
     let sh = find_sh()?;
@@ -756,15 +812,40 @@ pub fn run_until(
         }
     }
 
+    let ok = !timed_out && status.success();
+    let (mut tail, mut kept) = (Vec::new(), None);
+    if ok {
+        if let Some(path) = keep {
+            let _ = std::fs::remove_file(path);
+        }
+    } else {
+        let text = String::from_utf8_lossy(&output);
+        let lines: Vec<&str> = text.lines().collect();
+        tail = lines[lines.len().saturating_sub(TAIL_LINES)..]
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        if let Some(path) = keep {
+            match self::keep(path, &output) {
+                Ok(()) => kept = Some(path.to_path_buf()),
+                // The verdict stands without the file: a code 5 is still the
+                // answer, and the tail printed below still says why.
+                Err(e) => eprintln!("warning: cannot keep the output at {}: {e}", path.display()),
+            }
+        }
+    }
+
     let mut h = Sha256::new();
     h.update(&output);
     Ok(Some(Outcome {
         name: name.to_string(),
-        ok: !timed_out && status.success(),
+        ok,
         code,
         elapsed,
         output_hash: hex::encode(h.finalize()),
         timed_out,
+        tail,
+        kept,
     }))
 }
 
@@ -986,6 +1067,8 @@ mod tests {
             elapsed: Duration::from_secs(1),
             output_hash: "0123456789abcdef".repeat(4),
             timed_out: false,
+            tail: Vec::new(),
+            kept: None,
         };
         assert_eq!(
             out.reference("a3f9c21deadbeef", false),

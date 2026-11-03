@@ -33,6 +33,7 @@ mod corpora_schema;
 mod dead_scope_awaited;
 mod dead_scope_ratified;
 mod doc_replay;
+mod done_output;
 mod done_stdin_pipe;
 mod guard_config;
 mod guide;

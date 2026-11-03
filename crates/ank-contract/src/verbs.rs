@@ -1529,12 +1529,16 @@ pub const COMMANDS: &[CommandSpec] = &[
             "config.yml defines the verifiers; the task's verify: list decides which of them run",
             "a verifier whose passing run is recorded under <git-common-dir>/ank/runs/ with the same definition and inputs content, no older than proof.reuse_max_age, is reused rather than run, and its entry says reused: local and by whom",
             "--fresh reuses nothing and runs every verifier",
+            "a failing verifier's last 20 lines are printed and its whole output kept at <git-common-dir>/ank/output/<task>/<verifier>.out, replaced by the next failure and removed by a pass",
             // The task file carries the proof and the new status; the ref is the
             // claim being given up.
             PUSH_DEGRADES,
         ],
         refuses_globals: &[],
-        output: &[one(&[f("task", Type::Str), f("status", Type::Str), f("commit", Type::Str), opt("branch", Type::Str), f("proofs", Type::Num)])],
+        output: &[
+            one(&[f("task", Type::Str), f("status", Type::Str), f("commit", Type::Str), opt("branch", Type::Str), f("proofs", Type::Num)]),
+            when("a verifier failed, exit 5", &[f("task", Type::Str), f("failed", Type::Str), opt("output", Type::Str)]),
+        ],
         owner_task: None,
     },
     CommandSpec {
