@@ -3375,7 +3375,8 @@ fn check_peer_halves(
         let consequence = if scoped.is_empty() {
             "so no rule it scopes onto this corpus reaches it".to_string()
         } else {
-            format!("so {} bind nothing there", scoped.join(", "))
+            let verb = if scoped.len() == 1 { "binds" } else { "bind" };
+            format!("so {} {verb} nothing there", scoped.join(", "))
         };
         report.findings.push(Finding::signal(
             Kind::PeerHalfDeclared,
