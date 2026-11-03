@@ -186,10 +186,12 @@ pub const STATE_PROOF: &str = "proof";
 /// A claim in force: who holds the task and until when, plus the two hashes
 /// that anchor what was frozen at pickup (§7).
 ///
-/// **No `deny_unknown_fields`** on this record nor on its two siblings: a ref
-/// record travels through the remote to every version of ank a team runs, so a
-/// field a later binary adds must be read past, never called corrupt
-/// (TASK-04a688353ae4). What stays corrupt is what `parse_record` names: no
+/// **No `deny_unknown_fields`** on this record, on its two siblings, nor on the
+/// entries they nest ([`PeerSeen`], [`AttestedProof`]): a ref record travels
+/// through the remote to every version of ank a team runs, so a field a later
+/// binary adds must be read past, never called corrupt (TASK-04a688353ae4).
+/// The one exception is [`ank_core::Proof`] inside an attestation, which is
+/// shared with entity frontmatter and parsed as strictly as it is. What stays corrupt is what `parse_record` names: no
 /// state, an unknown state, a required field missing. Rewriting a record
 /// drops what this binary does not know, which is what reading it without the
 /// field means. Entity frontmatter and config.yml keep strict parsing: those
@@ -242,7 +244,6 @@ pub struct ClaimRecord {
 
 /// One peer as a claim saw it (ADR-50952ba5e226).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PeerSeen {
     pub peer: String,
     /// The commit of the peer's default branch the constraints were read at.
@@ -280,7 +281,6 @@ pub struct CompletedRecord {
 /// dated and attributed by the commit that put it there, and a detached one is
 /// authored by an actor with no branch (ADR-493471d64ba0).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct AttestedProof {
     pub identity: String,
     pub attested: String,
@@ -2777,8 +2777,9 @@ pub fn renewal_ttl(record: &ClaimRecord, cap: Duration) -> Duration {
 /// it writes back beside it, so the difference is the moment of that renewal,
 /// and at the claim it is the moment of the claim. A field of its own would be
 /// a field every binary older than TASK-04a688353ae4 reads as corrupt, since
-/// the record was `deny_unknown_fields` until then; this one costs none. A record from before `ttl` was
-/// written reads it as the default, as [`renewal_ttl`] does.
+/// the record was `deny_unknown_fields` until then; this one costs none. A
+/// record from before `ttl` was written reads it as the default, as
+/// [`renewal_ttl`] does.
 pub fn cursor(record: &ClaimRecord) -> Option<i64> {
     let ttl = match record.ttl {
         0 => DEFAULT_TTL.as_secs(),

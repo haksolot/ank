@@ -255,8 +255,22 @@ fn a_completion_and_a_proof_record_with_an_unknown_field_are_the_same_records() 
     let before = f.check();
     f.add_unknown_field(&f.claim_ref());
     check_is_unmoved(&f, &before, "completion");
-    f.add_unknown_field(&f.proof_ref());
+    let proof = f.add_unknown_field(&f.proof_ref());
     check_is_unmoved(&f, &before, "proof");
+
+    // A field a later binary adds inside an attestation entry, not at the top.
+    let entry = proof
+        .lines()
+        .find(|l| l.starts_with("- identity:"))
+        .unwrap_or_else(|| panic!("an attestation entry opens on its identity: {proof}"));
+    let nested = proof.replacen(
+        &format!("{entry}\n"),
+        &format!("{entry}\n  added_by_a_later_ank: nested\n"),
+        1,
+    );
+    assert_ne!(nested, proof, "the field went inside the entry");
+    f.put(&f.proof_ref(), &nested);
+    check_is_unmoved(&f, &before, "proof with a nested field");
 }
 
 #[test]
