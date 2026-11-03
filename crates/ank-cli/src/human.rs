@@ -197,6 +197,7 @@ kinds! {
     Drift => "drift",
     DriftUncompared => "drift-uncompared",
     PeerHalfDeclared => "peer-half-declared",
+    PeerUnreadable => "peer-unreadable",
 }
 
 impl std::fmt::Display for Kind {
@@ -318,6 +319,30 @@ pub struct Drift {
 }
 
 impl Report {
+    /// Faults first, then by subject and message: one order whatever the
+    /// walk returned.
+    fn sort(&mut self) {
+        self.findings.sort_by(|a, b| {
+            a.level
+                .cmp(&b.level)
+                .then(a.subject.cmp(&b.subject))
+                .then(a.message.cmp(&b.message))
+        });
+    }
+
+    /// `check --peers` (ADR-376bed7fa39a): a declared peer that cannot be
+    /// read is a fault rather than a signal. Raised here, on the report, and
+    /// not in the inspection, because `status` and `review` read the same
+    /// inspection and never ask for the peers.
+    fn require_peers(&mut self) {
+        for f in &mut self.findings {
+            if f.kind == Kind::PeerUnreadable {
+                f.level = Level::Fault;
+            }
+        }
+        self.sort();
+    }
+
     pub fn faults(&self) -> usize {
         self.findings
             .iter()
@@ -462,7 +487,10 @@ pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -
         }
         remotes
     });
-    let report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
+    let mut report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
+    if inv.has("--peers") {
+        report.require_peers();
+    }
     // The code is the whole corpus's whatever is shown: narrowing the listing
     // to one kind must not turn a corpus with a fault green.
     let code = report.exit_code();
@@ -1326,12 +1354,7 @@ pub fn inspect_with(
     check_requires_ank(cfg, &mut report);
     check_peer_halves(repo, cfg, &entities, &mut report);
 
-    report.findings.sort_by(|a, b| {
-        a.level
-            .cmp(&b.level)
-            .then(a.subject.cmp(&b.subject))
-            .then(a.message.cmp(&b.message))
-    });
+    report.sort();
     Ok(report)
 }
 
@@ -3302,9 +3325,8 @@ fn check_requires_ank(cfg: &Config, report: &mut Report) {
 ///
 /// **A signal and never a fault**: the repair is a declaration in another
 /// repository, which is named as a command and never written
-/// (ADR-a1de673043b4). A peer that cannot be opened says nothing here: that
-/// is the warning `context` already gives, and a fact about the machine.
-/// One signal per peer, about `peers.<name>`, naming the entities of this
+/// (ADR-a1de673043b4). A peer that cannot be opened is a finding of its own,
+/// `peer-unreadable`, and says nothing about its halves. One signal per peer, about `peers.<name>`, naming the entities of this
 /// corpus whose scope reaches into the peer, since those are the rules that
 /// bind nobody until the binding is completed.
 fn check_peer_halves(
@@ -3316,7 +3338,24 @@ fn check_peer_halves(
     if cfg.peers.is_empty() {
         return;
     }
-    let (peers, _) = crate::repo::peers_of(repo, cfg);
+    let (peers, unopened) = crate::repo::peers_of(repo, cfg);
+    // A declared peer that cannot be read (TASK-35af3b803257): a signal, since
+    // a machine without the sibling checkout is not wrong, and a fault under
+    // `check --peers`, which is how CI says it expects the sibling. The
+    // warnings come in the order of the declarations, as do the names of the
+    // peers that did not open, and each already names the peer, its path and
+    // the command that settles it.
+    let missing = cfg
+        .peers
+        .keys()
+        .filter(|name| !peers.iter().any(|p| &p.name == *name));
+    for (name, why) in missing.zip(unopened) {
+        report.findings.push(Finding::signal(
+            Kind::PeerUnreadable,
+            format!("peers.{name}"),
+            why,
+        ));
+    }
     for peer in peers {
         if peer.declares_back(repo) {
             continue;

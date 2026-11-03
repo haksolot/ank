@@ -2255,7 +2255,8 @@ pub const COMMANDS: &[CommandSpec] = &[
         // The command a folded signal names (ADR-df1035934387): a flag on the
         // verb that folded, and no new surface (ADR-376bed7fa39a). Long form
         // only: §4 gives `-k` to nothing.
-        flags: &[flag("--kind")],
+        // --peers is the fourth verb ADR-376bed7fa39a gives the flag to.
+        flags: &[flag("--kind"), switch("--peers")],
         refuses: &[
             OUTSIDE_THE_REPOSITORY,
             FINDINGS,
@@ -2269,6 +2270,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
             "a signal kind firing on more entities than the smaller of 20 and five percent of the hot corpus, and on more than five, is reported once for the corpus, naming five and the command that lists the rest; a fault never is",
             "--kind <kind> lists the findings of that kind alone, one per entity and never folded; the exit code stays the whole corpus's",
+            "a declared peer that cannot be read is a signal; --peers makes it a fault, for the CI job that checks the sibling out, and changes nothing else: a peer task its default branch does not hold yet stays what check says it is",
         ],
         refuses_globals: &[],
         output: &[one(CHECK_OUT)],
