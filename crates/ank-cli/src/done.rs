@@ -197,7 +197,7 @@ pub fn run(
             )
             .with_hint("ank done"));
         }
-        run_verifiers(
+        let ran = run_verifiers(
             repo,
             cfg,
             &declared,
@@ -209,7 +209,26 @@ pub fn run(
                 fresh: inv.has("--fresh"),
             },
             inv.style(),
-        )?
+        )?;
+        match ran {
+            Ok(proofs) => proofs,
+            Err(failed) => {
+                // A refusal with a document: the error itself goes to
+                // standard error as every refusal does, and a parser reading
+                // stdout learns which verifier said no and where its output
+                // was kept (TASK-69006ffa955e).
+                if inv.json() {
+                    let kept = failed.kept.as_ref().map(|p| p.display().to_string());
+                    let doc = crate::json::Obj::document()
+                        .str("task", &id.to_string())
+                        .str("failed", &failed.verifier)
+                        .opt_str("output", kept.as_deref())
+                        .finish();
+                    let _ = writeln!(out, "{doc}");
+                }
+                return Err(failed.error);
+            }
+        }
     };
 
     // Durable state first, the ref second. A file written and a ref left behind
@@ -567,7 +586,7 @@ fn run_verifiers(
     id: &EntityId,
     reuse: Reuse,
     style: crate::style::Style,
-) -> Result<Vec<Proof>> {
+) -> Result<std::result::Result<Vec<Proof>, Failed>> {
     let head = git::run(&repo.worktree, &["rev-parse", "HEAD"]).unwrap_or_default();
     let tree = scope_hash(&repo.worktree, scope);
     let criteria_hash = freeze_hash_short(criteria);
@@ -610,7 +629,8 @@ fn run_verifiers(
     // failure can no longer change that answer, so it is not started, and
     // killed if it already was; one declared before it still can, so it is
     // waited for.
-    let outcomes = run_concurrently(repo, cfg, &to_run, &id.to_string(), cfg.verifier_jobs());
+    let task = id.to_string();
+    let outcomes = run_concurrently(repo, cfg, &to_run, &task, Some(&task), cfg.verifier_jobs());
 
     // Recorded before the verdict, every run that finished, the failure
     // included: exit 9 never reaches here, since it is an error and not an
@@ -629,6 +649,10 @@ fn run_verifiers(
     let mut proofs = Vec::new();
     for (name, reused) in declared.iter().zip(reused) {
         if let Some(run) = reused {
+            // A pass answers the failure kept before it, reused or not.
+            if let Some(path) = verify::kept_output(&repo.worktree, &task, name) {
+                let _ = std::fs::remove_file(path);
+            }
             eprintln!(
                 "running: {name} ... {} (local, by {})",
                 style.on_stderr().green("reused"),
@@ -677,7 +701,19 @@ fn run_verifiers(
         if !outcome.ok {
             // Every proof already gathered is discarded with the transition: a
             // partial verification anchors nothing.
-            return Err(verify::failure(&outcome, &def.run));
+            // The tail first and the refusal last, so the line naming the
+            // verifier and the command to rerun it is the last a reader sees.
+            for line in &outcome.tail {
+                eprintln!("  {line}");
+            }
+            if let Some(path) = &outcome.kept {
+                eprintln!("output kept: {}", path.display());
+            }
+            return Ok(Err(Failed {
+                error: verify::failure(&outcome, &def.run),
+                verifier: name.clone(),
+                kept: outcome.kept.clone(),
+            }));
         }
         proofs.push(Proof {
             proof_type: ProofType::Test,
@@ -695,7 +731,15 @@ fn run_verifiers(
             by: None,
         });
     }
-    Ok(proofs)
+    Ok(Ok(proofs))
+}
+
+/// A verifier that ran and said no: the code 5 to return, and what `done
+/// --json` says about it first.
+struct Failed {
+    error: CliError,
+    verifier: String,
+    kept: Option<std::path::PathBuf>,
 }
 
 /// Runs `declared` on at most `jobs` threads and hands back one result per
@@ -705,11 +749,15 @@ fn run_verifiers(
 /// `owner` names who declared the list, in the refusal for a name the
 /// configuration does not hold: a task for `done`, never anything for `verify`,
 /// whose list is read off the configuration itself.
+///
+/// `keep_for` is the task whose failing outputs are kept under
+/// [`verify::kept_output`]; `verify` keeps none, since it closes nothing.
 pub(crate) fn run_concurrently(
     repo: &Repo,
     cfg: &Config,
     declared: &[String],
     owner: &str,
+    keep_for: Option<&str>,
     jobs: usize,
 ) -> Vec<Result<Option<verify::Outcome>>> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -728,7 +776,8 @@ pub(crate) fn run_concurrently(
             Ok(None)
         } else if let Some(def) = cfg.verifier(name) {
             let stop = || failed_at.load(Ordering::SeqCst) < i;
-            verify::run_until(&repo.worktree, name, def, &stop)
+            let keep = keep_for.and_then(|task| verify::kept_output(&repo.worktree, task, name));
+            verify::run_until(&repo.worktree, name, def, keep.as_deref(), &stop)
         } else {
             // Not the agent's code failing: the corpus references a verifier
             // the configuration does not declare.
