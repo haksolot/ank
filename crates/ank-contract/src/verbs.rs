@@ -62,6 +62,25 @@ const LOG_ENTRY: &[Field] = &[
     opt("records", Type::Str),
 ];
 
+/// `new --json`: the entity written, and what finished tasks declared beside
+/// the scope it was given (TASK-cc8bdc66a2ec). `scope_hint` is empty rather
+/// than absent on an ADR, a spec, and a scope no finished task declares,
+/// because a document keeps its keys. `of` is how many finished tasks declare
+/// the scope given, `count` how many of them also declare `path`.
+const NEW_OUT: &[Field] = &[
+    f("id", Type::Str),
+    f("kind", Type::Str),
+    f("created", Type::Str),
+    f(
+        "scope_hint",
+        Type::Array(&[
+            f("path", Type::Str),
+            f("count", Type::Num),
+            f("of", Type::Num),
+        ]),
+    ),
+];
+
 /// `skills --json`: the catalogue, and the rate per sibling when a corpus
 /// answered (ADR-a8f9c603a0e7). `counted` is false outside a corpus, where
 /// `methods` is empty rather than absent, because a document keeps its keys.
@@ -1611,9 +1630,10 @@ pub const COMMANDS: &[CommandSpec] = &[
             "--enforced-by <path>#<symbol> names what holds an adr mechanically; context then serves it by its title, and check confronts the entry with the tree",
             "a new task carries the verifiers config.yml marks default: true; --verify names its own instead, and --no-verify declines them",
             "--method names the sibling skill the work calls for, by its short name (tdd, diagnose); context prints it after the claim, and done never reads it",
+            "where finished tasks declared other entries beside a task's --scope, new names them, two of them at least, five at most and the most frequent first, so the scope can widen before --criteria freezes at claim; it adds none itself",
         ],
         refuses_globals: &[],
-        output: &[one(&[f("id", Type::Str), f("kind", Type::Str), f("created", Type::Str)])],
+        output: &[one(NEW_OUT)],
         owner_task: None,
     },
     CommandSpec {
