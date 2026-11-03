@@ -50,6 +50,7 @@ mod init_requires_ank;
 mod init_wal_ignore;
 mod log_rewritten;
 mod mcp;
+mod new_scope_hint;
 mod peer_aggregate;
 mod peer_blocked_by;
 mod peer_check_required;
