@@ -5,7 +5,7 @@ slug: under-a-claim-context-and-claim-serve-the-peer-c
 title: Under a claim, context and claim serve the peer constraints, and done names those that moved
 created: 2026-10-26T13:29:33Z
 author: claude-code/opus-5.5+plan
-status: open
+status: done
 scope:
   - crates/ank-cli/src/context.rs
   - crates/ank-cli/src/claim.rs
@@ -20,8 +20,53 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: tdd
+proof:
+  - type: test
+    ref: local/e3b0c44298fc@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: fmt-check@695ca51e4ab9
+    via: verifier
+  - type: test
+    ref: local/546558753fcb@5063aa2
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-core@835b758e7ce5
+    via: verifier
+    reused: local
+    by: claude-code/opus-5.5+task-971e-half-declared
+  - type: test
+    ref: local/873affdd790d@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-contract@0af4f641583a
+    via: verifier
+  - type: test
+    ref: local/91510afba732@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-daemon@5bd3959f3ef9
+    via: verifier
+  - type: test
+    ref: local/273ff9ea7b04@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-mcp@9352d5d025bc
+    via: verifier
+  - type: test
+    ref: local/e6e7ce4ac366@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-tui@d5ab50cd6075
+    via: verifier
+  - type: test
+    ref: local/55af87fc3a7c@1ed1eb8
+    tree: scope/4d4ad429a63d
+    criteria: 5b19b245bd48
+    verifier: test-ank-cli@f3a5da7d2d74
+    via: verifier
 schema: 4
-version: 2
+version: 4
 ---
 
 Implements ADR-50952ba5e226. Measured on 2026-10-26 at e04c0dad: `ank context

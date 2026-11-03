@@ -2829,7 +2829,7 @@ fn check_task(
     }
 
     // A peer's blocker (ADR-c23bef1cc93e): a peer not declared, or a task the
-    // peer does not hold, is a fault, as a local blocker that does not exist
+    // peer holds on no branch, is a fault, as a local blocker that does not exist
     // is. A peer that cannot be read is a signal: the edge holds, `claim` says
     // so, and whether a sibling checkout sits beside this one is a fact about
     // the machine and not about the corpus.
@@ -2862,14 +2862,32 @@ fn check_task(
                 format!("blocked_by names {b}, which cannot be read, so it holds: {why}"),
             )),
             Ok(statuses) => match statuses.get(&b.id).map(String::as_str) {
-                None => report.findings.push(Finding::fault(
-                    Kind::BlockerMissing,
-                    &t.id,
-                    format!(
-                        "blocked_by names {b}, a task peer '{}' does not hold",
-                        b.peer
-                    ),
-                )),
+                // Held only on another branch of the peer (ADR-09b985a5627e):
+                // a signal, since nobody here can merge another repository.
+                None => match crate::repo::open_peer(repo, cfg, &b.peer)
+                    .ok()
+                    .and_then(|peer| {
+                        let (branch, _) = peer.branch_holding(&b.id.to_string())?;
+                        Some((branch, peer.branch))
+                    }) {
+                    Some((branch, default)) => report.findings.push(Finding::signal(
+                        Kind::BlockerPeer,
+                        &t.id,
+                        format!(
+                            "blocked_by names {b}, which peer '{}' holds only on its branch \
+                             '{branch}', so it holds until it is done on {default}",
+                            b.peer
+                        ),
+                    )),
+                    None => report.findings.push(Finding::fault(
+                        Kind::BlockerMissing,
+                        &t.id,
+                        format!(
+                            "blocked_by names {b}, a task peer '{}' does not hold",
+                            b.peer
+                        ),
+                    )),
+                },
                 Some("closed") if t.status != TaskStatus::Closed => {
                     report.findings.push(Finding::signal(
                         Kind::BlockerClosed,
@@ -8539,12 +8557,20 @@ pub fn amend(
     let drop_blocked = resolve_all(&store, drop_local)?;
     let mut add_peer_blocked: Vec<ank_core::PeerBlocker> = Vec::new();
     for raw in &add_peer {
-        if let crate::repo::Blocker::Peer(b) =
-            crate::repo::blocker(repo, cfg, &format!("amend {prefix} --blocked-by"), raw)?
-        {
+        let mut unmerged = Vec::new();
+        if let crate::repo::Blocker::Peer(b) = crate::repo::blocker(
+            repo,
+            cfg,
+            &format!("amend {prefix} --blocked-by"),
+            raw,
+            &mut unmerged,
+        )? {
             if !add_peer_blocked.contains(&b) {
                 add_peer_blocked.push(b);
             }
+        }
+        for w in &unmerged {
+            eprintln!("{} {w}", inv.style().yellow("warning:"));
         }
     }
     // A dropped reference is **not** resolved against the corpus, and that is
@@ -11343,6 +11369,7 @@ mod tests {
             ttl: claim::DEFAULT_TTL.as_secs(),
             criteria: "aaaabbbbcccc".into(),
             constraints: "ddddeeeeffff".into(),
+            peers: Vec::new(),
         });
         claim::put(&t.0, &ghost, &record, None).unwrap();
 

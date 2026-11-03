@@ -169,15 +169,22 @@ pub fn new(
             let criteria = inv.value("--criteria").map(ensure_newline);
             let mut blocked_by = Vec::new();
             let mut peer_blocked_by = Vec::new();
+            let mut unmerged = Vec::new();
             for raw in inv.values("--blocked-by") {
                 // Resolved at creation rather than recorded raw: an unknown
                 // reference would otherwise surface much later, in `check`, as
                 // a corpus error nobody can attribute. `<id>@<peer>` is
-                // resolved in that peer, read-only (ADR-c23bef1cc93e).
-                match crate::repo::blocker(repo, cfg, "new task --blocked-by", raw)? {
+                // resolved in that peer, read-only (ADR-c23bef1cc93e), and a
+                // task only on another branch of it is taken with a warning
+                // (ADR-09b985a5627e).
+                match crate::repo::blocker(repo, cfg, "new task --blocked-by", raw, &mut unmerged)?
+                {
                     crate::repo::Blocker::Here(id) => blocked_by.push(id),
                     crate::repo::Blocker::Peer(b) => peer_blocked_by.push(b),
                 }
+            }
+            for w in &unmerged {
+                eprintln!("{} {w}", inv.style().yellow("warning:"));
             }
             Entity::Task(Task {
                 id: id.clone(),
@@ -746,8 +753,18 @@ fn create_filled(
             resolve_blockers(store, &t.blocked_by, &hint)?;
             // A peer's blocker typed into the template is resolved where the
             // flag's is, in that peer.
+            let mut unmerged = Vec::new();
             for b in &t.peer_blocked_by {
-                crate::repo::blocker(repo, cfg, "new task --blocked-by", &b.to_string())?;
+                crate::repo::blocker(
+                    repo,
+                    cfg,
+                    "new task --blocked-by",
+                    &b.to_string(),
+                    &mut unmerged,
+                )?;
+            }
+            for w in &unmerged {
+                eprintln!("{} {w}", inv.style().yellow("warning:"));
             }
             check_verifiers(&t.verify, cfg)?;
             // A name typed into the template is checked where the flag is, and

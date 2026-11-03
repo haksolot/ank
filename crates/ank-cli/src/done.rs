@@ -172,6 +172,7 @@ pub fn run(
     // corpus to move (TASK-8654f0c81393).
     let mut index = crate::index::Index::open(&repo.ank)?;
     warn_on_constraint_drift(&store, &index, repo, &task, claim_record, inv.style());
+    warn_on_peer_drift(repo, cfg, &task, claim_record, inv.style());
 
     let declared: Vec<String> = task.verify.clone();
     let proofs = if declared.is_empty() {
@@ -425,6 +426,93 @@ fn warn_on_constraint_drift(
         applicable.len()
     );
     eprintln!("  -> ank context");
+}
+
+/// The peer constraints added, changed or retired since the claim
+/// (ADR-50952ba5e226), one line per peer naming each by `<id>@<peer>` and the
+/// two commits read.
+///
+/// **Stated, never refused.** A merge in another repository is not this
+/// executor's fault, and it is a fact the reviewer of the close should read.
+/// On standard error, beside the local drift warning and for its reasons.
+///
+/// A claim taken before peers were recorded carries none, and every peer
+/// constraint then reads as added: true of what that claim was shown, which
+/// was nothing from a peer.
+fn warn_on_peer_drift(
+    repo: &Repo,
+    cfg: &crate::config::Config,
+    task: &ank_core::Task,
+    claim: &ClaimRecord,
+    style: crate::style::Style,
+) {
+    let mut ignored = Vec::new();
+    let now: Vec<claim::PeerSeen> =
+        crate::context::peer_bearing(repo, cfg, &task.scope, &mut ignored)
+            .iter()
+            .map(|s| s.seen())
+            .collect();
+    let lines = peer_drift(&claim.peers, &now);
+    if lines.is_empty() {
+        return;
+    }
+    let style = style.on_stderr();
+    for line in lines {
+        eprintln!("{} {line}", style.yellow("warning:"));
+    }
+    eprintln!("  -> ank context");
+}
+
+/// What moved between two readings of the peers, one line per peer that moved.
+fn peer_drift(then: &[claim::PeerSeen], now: &[claim::PeerSeen]) -> Vec<String> {
+    let empty = std::collections::BTreeMap::new();
+    let mut names: Vec<&str> = then.iter().chain(now).map(|p| p.peer.as_str()).collect();
+    names.sort();
+    names.dedup();
+    let mut out = Vec::new();
+    for name in names {
+        let before = then.iter().find(|p| p.peer == name);
+        let after = now.iter().find(|p| p.peer == name);
+        let was = before.map_or(&empty, |p| &p.constraints);
+        let is = after.map_or(&empty, |p| &p.constraints);
+        let at = |id: &String| format!("{id}@{name}");
+        let retired: Vec<String> = was
+            .keys()
+            .filter(|id| !is.contains_key(*id))
+            .map(at)
+            .collect();
+        let added: Vec<String> = is
+            .keys()
+            .filter(|id| !was.contains_key(*id))
+            .map(at)
+            .collect();
+        let changed: Vec<String> = was
+            .iter()
+            .filter(|(id, h)| is.get(*id).is_some_and(|n| n != *h))
+            .map(|(id, _)| at(id))
+            .collect();
+        if retired.is_empty() && added.is_empty() && changed.is_empty() {
+            continue;
+        }
+        let commit = |p: Option<&claim::PeerSeen>| {
+            p.map_or("nothing".to_string(), |p| {
+                p.commit[..p.commit.len().min(12)].to_string()
+            })
+        };
+        let mut parts = Vec::new();
+        for (what, ids) in [("retired", retired), ("changed", changed), ("added", added)] {
+            if !ids.is_empty() {
+                parts.push(format!("{what} {}", ids.join(", ")));
+            }
+        }
+        out.push(format!(
+            "peer constraints over this scope moved since the claim ({name} {} -> {}): {}",
+            commit(before),
+            commit(after),
+            parts.join("; ")
+        ));
+    }
+    out
 }
 
 fn check_frozen_criteria(id: &EntityId, criteria: &str, claim: &ClaimRecord) -> Result<()> {
