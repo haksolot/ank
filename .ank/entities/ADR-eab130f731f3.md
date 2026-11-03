@@ -5,14 +5,19 @@ slug: done-runs-one-task-s-verifiers-at-a-time-per-rep
 title: done runs one task's verifiers at a time per repository, and a second done waits
 created: 2026-11-03T11:30:22Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/done.rs
   - crates/ank-cli/src/verify.rs
 constraint: |
   While its verifiers run, done holds an exclusive lock in the repository's git common directory, which the operating system releases when the process ends; a done that finds it held waits, says once which task and identity hold it, and then proceeds. A done whose verifiers are all reused takes no lock, and verifier_lock: false in config.yml turns the lock off.
+ratified: f36a6f4c6bae
+anchor: 94fe781549c5c43ba0aedca4df9c73182345bf37
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-11-03T11:31:15Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context

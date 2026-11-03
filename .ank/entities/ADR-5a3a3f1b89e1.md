@@ -5,14 +5,19 @@ slug: a-claim-records-the-branch-it-was-taken-on-and-c
 title: A claim records the branch it was taken on, and check judges it from that branch
 created: 2026-11-03T11:30:22Z
 author: haksolot@vmi3223161
-status: proposed
+status: accepted
 scope:
   - crates/ank-cli/src/claim.rs
   - crates/ank-cli/src/human.rs
 constraint: |
   The claim record carries the branch checked out when the claim was taken. check prunes a claim ref as an orphan only when the task is absent both from the default branch and from that branch, a branch that no longer exists counting as absent; and when the checkout running check holds no copy of the task, or one whose done_criteria hashes differently from the claim, check compares the claim against the file on that branch, and reports the divergence as a fault only when that file diverges.
+ratified: 24127ddb5cdb
+anchor: 3cfd0bb4668ab9216dcda8b5ad57e1a841b1fdbc
+verified:
+  - by: haksolot@vmi3223161
+    at: 2026-11-03T11:31:13Z
 schema: 4
-version: 1
+version: 2
 ---
 
 ## Context
