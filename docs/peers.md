@@ -70,7 +70,7 @@ It is a signal and exits 0, since the repair lives in the other repository:
 <!-- replay peers -->
 
     $ cd /work/api && ank check --kind peer-half-declared
-    signal: peers.web: peer 'web' declares no peer resolving back to this corpus, so ADR-351131160961 bind nothing there (ank --repo ../web config peers.api ../api)
+    signal: peers.web: peer 'web' declares no peer resolving back to this corpus, so ADR-351131160961 binds nothing there (ank --repo ../web config peers.api ../api)
     check: ok — 0 tasks, 1 adr, 1 signal(s)
 
 `check` in `web` says the same from the other side when only `web` declares.

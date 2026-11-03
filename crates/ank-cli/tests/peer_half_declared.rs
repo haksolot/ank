@@ -239,3 +239,45 @@ fn check_names_a_binding_declared_at_one_end_from_either_end() {
 
     let _ = fs::remove_dir_all(&base);
 }
+
+/// The consequence agrees its verb with the number of decisions it names
+/// (TASK-2dc2d8411e12): one ADR `binds`, several `bind`.
+#[test]
+fn the_signal_says_binds_for_one_decision_and_bind_for_several() {
+    let base = scratch::dir("peer-half-declared-verb");
+    let reader = Reader {
+        home: base.join("home"),
+    };
+    let api = base.join("api");
+    let web = base.join("web");
+
+    corpus(&reader, &web, &[], &[]);
+    let one = corpus(&reader, &api, &[("web", "../web")], &["web:src/**"]).remove(0);
+    let lines = reader.half_declared(&api);
+    assert_eq!(lines.len(), 1, "one signal in api: {lines:?}");
+    assert!(
+        lines[0].contains(&format!("so {one} binds nothing there (")),
+        "one decision binds: {}",
+        lines[0]
+    );
+
+    let _ = fs::remove_dir_all(&api);
+    let _ = fs::remove_dir_all(&web);
+    corpus(&reader, &web, &[], &[]);
+    let mut two = corpus(
+        &reader,
+        &api,
+        &[("web", "../web")],
+        &["web:src/**", "web:src/x.rs"],
+    );
+    two.sort();
+    let lines = reader.half_declared(&api);
+    assert_eq!(lines.len(), 1, "one signal in api: {lines:?}");
+    assert!(
+        lines[0].contains(&format!("so {}, {} bind nothing there (", two[0], two[1])),
+        "several decisions bind: {}",
+        lines[0]
+    );
+
+    let _ = fs::remove_dir_all(&base);
+}
