@@ -57,8 +57,70 @@ itself and lets a failure fail the step:
 One direction and read-only, so it runs on every event: a pull request from a
 fork fetches from `origin`, the repository the pull request targets, and
 verifies its ratifications the same way as one from a branch there. A refspec
-matching nothing is not an error, so a corpus with no refs yet passes through
+matching nothing succeeds, so a corpus with no refs yet passes through
 untouched.
+
+## Check a sibling repository out
+
+A decision can bind two repositories ([Several repositories](peers.md)). On a
+laptop without the sibling checkout, `check` answers without it: the peer that
+cannot be read is a signal, at exit 0. A pipeline expects the sibling, so it
+checks it out beside the repository, at the path `peers.<name>` declares, and
+runs `check --peers`, which makes a declared peer that cannot be read a fault at
+exit 8. ank itself clones nothing (ADR-96fe1f9d619a), so the checkout is the
+pipeline's step:
+
+    - uses: actions/checkout@v5
+      with:
+        fetch-depth: 0
+        path: web
+    - uses: actions/checkout@v5
+      with:
+        repository: example/api
+        fetch-depth: 0
+        path: api
+    - name: ank check --peers
+      working-directory: web
+      run: ank check --peers
+
+<!-- replay sibling dir=/work ANK_AGENT=process:ci
+$ mkdir -p /work/api /work/web
+$ cd /work/api && git init -q -b main && ank init && ank config default_branch main && ank config peers.web ../web && git add -A && git commit -q -m api
+$ cd /work/web && git init -q -b main && ank init && ank config default_branch main && ank config peers.api ../api && git add -A && git commit -q -m web
+$ mv /work/api /work/api.elsewhere
+-->
+
+Without the sibling, plain `check` stays green and `--peers` turns red, naming
+the peer, the path it was looked for at, and the override for a layout that
+differs:
+
+<!-- replay sibling -->
+
+    $ cd /work/web && ank check; echo "exit $?"
+    signal: peers.api: peer 'api' at ../api is not a corpus, answered without it (ank config --user peers.98204934184e14045a2158a2bd0f23586745d560.api <path>)
+    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    check: ok — 0 tasks, 0 adr, 2 signal(s)
+    exit 0
+    $ cd /work/web && ank check --peers; echo "exit $?"
+    error: peers.api: peer 'api' at ../api is not a corpus, answered without it (ank config --user peers.98204934184e14045a2158a2bd0f23586745d560.api <path>)
+    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    check: 1 fault(s) — 0 tasks, 0 adr, 1 signal(s)
+    exit 8
+
+With the sibling checked out beside it, `check --peers` answers as `check`
+does:
+
+<!-- replay sibling -->
+
+    $ git clone -q /work/api.elsewhere /work/api
+    $ cd /work/web && ank check --peers; echo "exit $?"
+    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    check: ok — 0 tasks, 0 adr, 1 signal(s)
+    exit 0
+
+`--peers` asks for the sibling to be readable, and only that: an edge naming a
+task the sibling has yet to merge stays what `check` already says it is
+(ADR-09b985a5627e).
 
 ## The recipes
 
@@ -153,7 +215,7 @@ unproved in a clone that carries them.
 
     git fetch origin '+refs/ank/proof/*:refs/ank/proof/*'
 
-One direction and read-only. A refspec matching nothing is not an error, so a
+One direction and read-only. A refspec matching nothing succeeds, so a
 corpus with no proofs yet passes through untouched.
 
 **Run it on the default branch and on a push, and nowhere else.** The signal is
