@@ -3411,13 +3411,32 @@ fn check_task(
     // command a reader would run and runs nothing itself, and the dead entry
     // stays: removing it would be the rewrite append-only exists to prevent.
     //
+    // **Superseded, and then owed nothing** (TASK-c2ed4811f8c7). Since the
+    // dead entry stays, the remedy this finding prints is an append, and a
+    // signal that kept firing after it would name a command that clears
+    // nothing. So a dead reference followed, anywhere later in the list, by a
+    // commit proof git still reaches is the history of the proof and not a
+    // gap in it. "Reaches" is read the way the question is asked: a reference
+    // in the shape of an object name that the walk did not report detached.
+    //
     // One line per detached reference, deduplicated: a task carrying the same
     // dead sha twice is one fact about one proof, not two findings.
-    let dead: BTreeSet<&str> = proofs
+    let commits: Vec<&str> = proofs
         .iter()
         .filter(|p| p.proof_type == ProofType::Commit)
         .map(|p| p.reference.trim())
-        .filter(|r| detached_commits.contains(&r.to_lowercase()))
+        .collect();
+    let is_dead = |r: &str| detached_commits.contains(&r.to_lowercase());
+    let dead: BTreeSet<&str> = commits
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| is_dead(r))
+        .filter(|(i, _)| {
+            !commits[i + 1..]
+                .iter()
+                .any(|later| is_object_name(later) && !is_dead(later))
+        })
+        .map(|(_, r)| *r)
         .collect();
     for reference in dead {
         report.findings.push(Finding::signal(
