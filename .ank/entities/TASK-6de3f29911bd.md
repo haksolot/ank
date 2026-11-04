@@ -18,7 +18,7 @@ scope:
   - Formula/**
   - bucket/**
   - packaging/**
-  - docs/agents.md
+  - docs/install.md
 blocked_by: [TASK-091023648de0]
 done_criteria: |
   The tree carries no publish-brew, publish-scoop, publish-apt or publish-winget workflow, no Formula/, bucket/ or packaging/ directory, and none of apt-repo.sh, brew-formula.sh, winget-manifests.sh. release.yml creates the release under the workflow's default GITHUB_TOKEN, grants contents: write to the publish job and to no other, and carries no step naming RELEASE_TOKEN or asserting channel runs. PR microsoft/winget-pkgs#418653 is closed unmerged and the haksolot/winget-pkgs fork is deleted. The GitHub Pages site of this repository no longer serves an apt Release file at /deb/dists/stable/Release. gh secret list names none of APT_GPG_PRIVATE_KEY, WINGET_TOKEN, RELEASE_TOKEN. The install section of docs/agents.md names exactly three routes: npm, curl | sh, and the PowerShell one-liner. cargo test and ank check are green.
@@ -29,7 +29,7 @@ proof:
     criteria: a6cc2508070f
     via: submitted
 schema: 3
-version: 3
+version: 4
 ---
 
 Executes ADR-221aa5da440a, ADR-8b3045cf11db and ADR-24e306277bd4. Do not

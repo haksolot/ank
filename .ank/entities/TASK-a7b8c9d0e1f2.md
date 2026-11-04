@@ -10,7 +10,7 @@ scope:
   - crates/ank-cli/src/cli.rs
   - crates/ank-cli/tests/cli.rs
   - .ank/config.yml
-  - .ank/tasks/TASK-aca0cb103980.md
+  - .ank/entities/TASK-aca0cb103980.md
 blocked_by: [TASK-e5f6a7b8c9d0, TASK-f6a7b8c9d0e1]
 done_criteria: |
   check covers every invariant and signal listed in the specification and
@@ -41,7 +41,7 @@ proof:
     criteria: c7e402e70a47
     verifier: check-repo@5734e9cf9d3d
 schema: 3
-version: 10
+version: 11
 ---
 
 check_repo (examples/) is the draft of check and must disappear in favour of the

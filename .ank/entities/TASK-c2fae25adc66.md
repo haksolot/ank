@@ -6,7 +6,7 @@ title: TASK-a1b2c3d4e5f6 rests on a weak proof, and everything since rests on it
 created: 2026-07-31T18:19:49Z
 status: done
 scope:
-  - .ank/tasks/TASK-a1b2c3d4e5f6.md
+  - .ank/log/TASK-a1b2c3d4e5f6.md
 blocked_by: [TASK-70f6a9e98ee6]
 done_criteria: |
   The parser task carries a proof that anchors something: a test proof naming a verifier and a commit, appended rather than substituted, since the proof list is append-only and the assertion entry is the historical record of how the task was actually closed. ank check no longer reports a weak proof for it.
@@ -29,7 +29,7 @@ proof:
     criteria: 935e03ea6105
     verifier: check-repo@5734e9cf9d3d
 schema: 3
-version: 6
+version: 7
 ---
 
 `check` reports it, and it is right to:

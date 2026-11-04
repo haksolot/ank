@@ -8,10 +8,10 @@ author: claude-code@sean-laptop
 status: done
 scope:
   - README.md
-  - docs/agents.md
   - docs/getting-started.md
   - npm/ank/README.md
   - .github/ISSUE_TEMPLATE/config.yml
+  - docs/install.md
 blocked_by: []
 done_criteria: |
   README.md is under 140 lines and carries: the problem, one ank context example,
@@ -42,7 +42,7 @@ proof:
     ref: "31546304087"
     criteria: 9cd12d87f35b
 schema: 3
-version: 4
+version: 5
 ---
 
 The README is 270 lines and is five documents at once: a pitch, an install
