@@ -337,7 +337,7 @@ Claims stay per repository, so a plain `status` in `web` sees only the claims of
       TASK-e799393f5249@api Accept X-Trace-Id on every route (human:omar until 2026-11-03T10:19:30Z)
     perimeter the whole repository, 2 constraint(s)
     queue 0 proposal(s), 0 finished elsewhere
-    corpus 0 fault(s), 1 signal(s)
+    corpus 0 fault(s), 0 signal(s), 1 owing nothing
 
     > ank context
 

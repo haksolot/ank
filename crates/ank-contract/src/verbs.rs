@@ -586,6 +586,8 @@ const STATUS_OUT: &[Field] = &[
     f("unmerged", Type::Num),
     f("faults", Type::Num),
     f("signals", Type::Num),
+    // Of `signals`, the ones owing nothing (ADR-61c273118d97).
+    f("unowed", Type::Num),
 ];
 
 /// `status --peers`: the same document, every claim of each declared peer
@@ -661,11 +663,15 @@ const STATUS_PEERS_OUT: &[Field] = &[
     f("unmerged", Type::Num),
     f("faults", Type::Num),
     f("signals", Type::Num),
+    // Of `signals`, the ones owing nothing (ADR-61c273118d97).
+    f("unowed", Type::Num),
 ];
 
 const CHECK_OUT: &[Field] = &[
     f("faults", Type::Num),
     f("signals", Type::Num),
+    // Of `signals`, the ones owing nothing (ADR-61c273118d97).
+    f("unowed", Type::Num),
     f("tasks", Type::Num),
     f("adr", Type::Num),
     f("hot_files", Type::Num),
@@ -685,6 +691,9 @@ const CHECK_OUT: &[Field] = &[
                 "charge",
                 Type::Array(&[f("id", Type::Str), f("characters", Type::Num)]),
             ),
+            // Whether a reader has something to do about it: always for a
+            // fault, and for a signal what its kind declares (ADR-61c273118d97).
+            f("owed", Type::Bool),
         ]),
     ),
 ];
@@ -1745,7 +1754,7 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the signers are what signers: in .ank/config.yml declares, one row per key",
         ],
         refuses_globals: &[],
-        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num), opt("anchored_by", Type::Str)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num)])],
+        output: &[one(&[f("proposed", Type::Array(&[f("id", Type::Str), f("title", Type::Str)])), f("signers", Type::Array(&[f("principal", Type::Str), f("keytype", Type::Str)])), f("live", Type::Array(&[f("id", Type::Str), f("title", Type::Str), f("files", Type::Num), opt("anchored_by", Type::Str)])), f("dead", Type::Num), f("faults", Type::Num), f("signals", Type::Num), f("unowed", Type::Num)])],
         owner_task: None,
     },
     CommandSpec {
@@ -2282,7 +2291,9 @@ pub const COMMANDS: &[CommandSpec] = &[
         // verb that folded, and no new surface (ADR-376bed7fa39a). Long form
         // only: §4 gives `-k` to nothing.
         // --peers is the fourth verb ADR-376bed7fa39a gives the flag to.
-        flags: &[flag("--kind"), switch("--peers")],
+        // --all is the listing before ADR-61c273118d97, and adds no surface
+        // beyond a switch on the verb that hides (ADR-376bed7fa39a).
+        flags: &[flag("--kind"), switch("--peers"), switch("--all")],
         refuses: &[
             OUTSIDE_THE_REPOSITORY,
             FINDINGS,
@@ -2296,6 +2307,8 @@ pub const COMMANDS: &[CommandSpec] = &[
             "the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch",
             "a signal kind firing on more entities than the smaller of 20 and five percent of the hot corpus, and on more than five, is reported once for the corpus, naming five and the command that lists the rest; a fault never is",
             "--kind <kind> lists the findings of that kind alone, one per entity and never folded; the exit code stays the whole corpus's",
+            "by default check lists every fault and every owed signal, then one line counting the signals that owe nothing; --all lists every finding, --kind every finding of its kind, and --json every finding with owed on each; the exit code is the same in every case",
+            "a signal is owed when its subject is unsettled work -- an open or in_progress task, a proposed ADR or spec, a task a live claim holds -- or when it names the command that clears it; a burst is owed while one entity it counts is unsettled; a fault always is",
             "a declared peer that cannot be read is a signal; --peers makes it a fault, for the CI job that checks the sibling out, and changes nothing else: a peer task its default branch does not hold yet stays what check says it is",
         ],
         refuses_globals: &[],

@@ -267,24 +267,23 @@ through your normal review. Before you commit, `check` reads them:
 <!-- replay walk -->
 
     $ ank check
-    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
-    signal: TASK-820d259af6a7: finished on another branch, main has not caught up
     signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: ok — 1 tasks, 1 adr, 4 signal(s)
+    3 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: ok — 1 tasks, 1 adr, 1 signal(s)
 
-Commit, and the two signals about uncommitted work go:
+One signal asks for something, the uncommitted work, and three more only
+report; `ank check --all` prints those. Commit, and the uncommitted work is
+gone:
 
 <!-- replay walk -->
 
     $ git add -A && git commit -m "the migration is done"
     $ ank check
-    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     pruned refs/ank/claims/TASK-820d259af6a7
-    check: ok — 1 tasks, 1 adr, 3 signal(s)
+    check: ok — 1 tasks, 1 adr, 1 signal(s)
 
 **That is the green this page set out to reach**: signals, no fault, exit 0.
 Each line, and the pruned ref, is explained in [Reading ank check](check.md).

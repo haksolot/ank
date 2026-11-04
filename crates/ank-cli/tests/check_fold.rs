@@ -292,7 +292,7 @@ fn a_verifier_changed_since_thirty_proofs_is_one_corpus_signal() {
             })
             .collect();
         r.commit();
-        let said = r.check(&[]);
+        let said = r.check(&["--all"]);
         let lines = per_entity(&said, "verifier 't' changed since the proof");
         if n == 30 {
             assert_eq!(lines, 0, "{said}");

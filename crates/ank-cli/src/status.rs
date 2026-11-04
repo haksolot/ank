@@ -565,6 +565,8 @@ pub fn run(
             .num("unmerged", unmerged)
             .num("faults", verdict.faults)
             .num("signals", verdict.signals)
+            // Of those, the ones owing nothing (ADR-61c273118d97).
+            .num("unowed", verdict.unowed)
             .finish();
         let _ = writeln!(out, "{doc}");
         return Ok(ExitCode::Ok);
@@ -799,14 +801,15 @@ pub fn run(
     );
     let _ = writeln!(
         out,
-        "{} {} fault(s), {} signal(s)",
+        "{} {} fault(s), {} signal(s), {} owing nothing",
         style.key("corpus"),
         if verdict.faults == 0 {
             verdict.faults.to_string()
         } else {
             style.red(&verdict.faults.to_string())
         },
-        verdict.signals
+        verdict.signals - verdict.unowed,
+        verdict.unowed
     );
 
     // Ends with the command to run next (§4), chosen by the state just printed
@@ -848,10 +851,13 @@ fn corpus_verdict(
     // `prune: false`. A reader does not sanitise the coordination plane
     // underneath everyone else, which is the rule `context` already follows.
     let report = human::inspect_with(repo, cfg, None, false, remotes)?;
+    let halves = report.clone().halves();
     let verdict = Verdict {
         faults: report.faults(),
-        // A folded kind is one signal, as `check` prints it (ADR-df1035934387).
-        signals: report.clone().folded().signals(),
+        // A folded kind is one signal, as `check` prints it (ADR-df1035934387),
+        // folded within its half (ADR-61c273118d97).
+        signals: halves.signals(),
+        unowed: halves.unowed(),
         unmerged: report
             .findings
             .iter()

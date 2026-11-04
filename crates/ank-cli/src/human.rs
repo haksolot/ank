@@ -206,6 +206,156 @@ impl std::fmt::Display for Kind {
     }
 }
 
+/// When a finding of one kind is owed: whether a reader has something to do
+/// about it, as against something merely to know (ADR-61c273118d97).
+///
+/// **A fault is always owed, whatever its kind declares.** The predicate is for
+/// signals, and a kind with two severities declares the one its signal obeys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owes {
+    /// The kind is only ever a fault.
+    Fault,
+    /// Owed when its subject is unsettled work: an open or in_progress task, a
+    /// proposed ADR or spec, a task a live claim holds. A subject that is not
+    /// an entity -- `corpus`, `signers`, a ref -- is settled by this rule.
+    Subject,
+    /// The finding names the command that clears it, so it is owed whatever its
+    /// subject.
+    Remedy,
+    /// Counts entities, and is owed while one of the entities it counts is
+    /// unsettled: a `burst`.
+    Counted,
+    /// As [`Owes::Subject`], and owed besides when a line of its note is the
+    /// `ank` command that repairs it: a dead scope git records renamed names
+    /// the amend that follows the file, and one git records deleted names
+    /// nothing.
+    SubjectOrRepair,
+}
+
+/// Every kind's [`Owes`], in one table beside the kinds (ADR-61c273118d97).
+///
+/// Beside and not inside the `kinds!` table, so a kind added without a
+/// predicate still compiles and is caught by the test that walks
+/// [`Kind::ALL`] against this table, naming it, rather than by a macro error
+/// that names nothing a reader can act on.
+const OWES: &[(Kind, Owes)] = &[
+    (Kind::Unreadable, Owes::Fault),
+    (Kind::ConflictMarkers, Owes::Fault),
+    (Kind::Unparseable, Owes::Fault),
+    // `git config core.autocrlf input`.
+    (Kind::Crlf, Owes::Remedy),
+    (Kind::NonCanonical, Owes::Fault),
+    (Kind::FileName, Owes::Fault),
+    (Kind::Misfiled, Owes::Fault),
+    // `git mv` and `ank migrate`.
+    (Kind::PreviousLayout, Owes::Remedy),
+    (Kind::PreviousLogDir, Owes::Remedy),
+    (Kind::ResolutionIncomplete, Owes::Subject),
+    // `git init to coordinate`.
+    (Kind::CoordinationSkipped, Owes::Remedy),
+    (Kind::ArchiveChanged, Owes::Fault),
+    // `ank archive`.
+    (Kind::Cold, Owes::Remedy),
+    // Import the key declared under `signers:`.
+    (Kind::SignatureUnchecked, Owes::Remedy),
+    (Kind::SignatureUnreadable, Owes::Subject),
+    // `ank config default_branch <name>`.
+    (Kind::DefaultBranchUnknown, Owes::Remedy),
+    (Kind::DefaultBranchEmpty, Owes::Subject),
+    (Kind::OriginRefspec, Owes::Remedy),
+    (Kind::ClaimsRefspec, Owes::Remedy),
+    (Kind::RefName, Owes::Fault),
+    (Kind::RefRecord, Owes::Fault),
+    // `ank attest <id> --compact --detached`.
+    (Kind::ProofRefGrowth, Owes::Remedy),
+    // `git update-ref -d`, one ref at a time.
+    (Kind::UnservedRef, Owes::Remedy),
+    (Kind::OrphanRef, Owes::Subject),
+    (Kind::Unmerged, Owes::Subject),
+    (Kind::NoSigners, Owes::Subject),
+    (Kind::SignersFile, Owes::Fault),
+    (Kind::NoScope, Owes::Fault),
+    (Kind::InvalidGlob, Owes::Fault),
+    (Kind::ScopeNotYet, Owes::Subject),
+    (Kind::ScopeClosed, Owes::Subject),
+    (Kind::DeadScope, Owes::SubjectOrRepair),
+    (Kind::BlockerMissing, Owes::Fault),
+    (Kind::BlockerClosed, Owes::Subject),
+    (Kind::BlockerPeer, Owes::Subject),
+    (Kind::Cycle, Owes::Fault),
+    (Kind::SelfBlocking, Owes::Subject),
+    (Kind::CriteriaByClaimer, Owes::Subject),
+    (Kind::NoCriteria, Owes::Fault),
+    (Kind::CriteriaDiverged, Owes::Fault),
+    // `ank claim <id>`.
+    (Kind::Claimless, Owes::Remedy),
+    (Kind::ClaimExpired, Owes::Subject),
+    (Kind::ConstraintsChanged, Owes::Subject),
+    // Names `ank show`, which reads the discrepancy and clears nothing.
+    (Kind::Discrepancy, Owes::Subject),
+    (Kind::LogUnreadable, Owes::Subject),
+    (Kind::NoProof, Owes::Fault),
+    (Kind::WeakProof, Owes::Subject),
+    // `ank attest`, both.
+    (Kind::UnattestedProof, Owes::Remedy),
+    (Kind::ProofCommitUnreachable, Owes::Remedy),
+    (Kind::VerifierAbsent, Owes::Subject),
+    (Kind::VerifierChanged, Owes::Subject),
+    (Kind::Future, Owes::Subject),
+    // `ank amend --drop-scope` and `--enforced-by`.
+    (Kind::OverConstrained, Owes::Remedy),
+    // `ank archive` and `ank attest --compact`.
+    (Kind::Weight, Owes::Remedy),
+    (Kind::RequiresAnk, Owes::Fault),
+    (Kind::NoConstraint, Owes::Fault),
+    // `ank amend --drop-enforced-by`.
+    (Kind::EnforcedBy, Owes::Remedy),
+    // `ank accept <target>` for a proposed one; a citation of a dead end is
+    // rewritten, which is the remedy `ank show` leads to.
+    (Kind::Reference, Owes::Remedy),
+    (Kind::StaleCitation, Owes::Fault),
+    (Kind::Supersession, Owes::Subject),
+    (Kind::Unratified, Owes::Subject),
+    (Kind::RatificationAltered, Owes::Fault),
+    (Kind::RatificationUnverifiable, Owes::Subject),
+    // `ank accept --rescope`.
+    (Kind::RatificationBehind, Owes::Remedy),
+    // `git update-ref`.
+    (Kind::RatificationRefMissing, Owes::Remedy),
+    (Kind::SupersessionUnratified, Owes::Subject),
+    (Kind::Signature, Owes::Fault),
+    (Kind::SelfRatified, Owes::Subject),
+    (Kind::EditedOutside, Owes::Subject),
+    (Kind::BornOutside, Owes::Fault),
+    (Kind::LogRewritten, Owes::Subject),
+    (Kind::LogUnknownWord, Owes::Subject),
+    (Kind::LogOrphan, Owes::Fault),
+    // `git checkout <sha> -- <path>`.
+    (Kind::LogChanged, Owes::Remedy),
+    (Kind::ProseIdentifiers, Owes::Subject),
+    (Kind::Authorless, Owes::Subject),
+    (Kind::UntypedAuthor, Owes::Subject),
+    (Kind::ReadByNoHuman, Owes::Subject),
+    (Kind::Burst, Owes::Counted),
+    // `git merge <branch>`, `git fetch`, `git status`.
+    (Kind::Drift, Owes::Remedy),
+    (Kind::DriftUncompared, Owes::Remedy),
+    // The declaration the peer lacks, written out.
+    (Kind::PeerHalfDeclared, Owes::Remedy),
+    // Every reason a peer goes unread carries the command that settles it.
+    (Kind::PeerUnreadable, Owes::Remedy),
+];
+
+impl Kind {
+    /// The predicate this kind declares in [`OWES`], `None` for a kind that
+    /// declares none -- which a test refuses, and which is treated as owed
+    /// until then: hiding a finding nobody classified would be the silent
+    /// failure.
+    pub fn owes(self) -> Option<Owes> {
+        OWES.iter().find(|(k, _)| *k == self).map(|(_, o)| *o)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     pub level: Level,
@@ -230,6 +380,14 @@ pub struct Finding {
     /// caller, so neither reader gets the other one's format: the lines are
     /// derived from these numbers, never the other way round.
     pub charge: Vec<Charge>,
+    /// Whether a reader has something to do about it (ADR-61c273118d97):
+    /// always for a fault, and for a signal what its kind's [`Owes`] makes of
+    /// it once the inspection knows which work is unsettled. True until then,
+    /// so a finding nobody judged is shown rather than hidden.
+    pub owed: bool,
+    /// The entities a finding counts without naming them as its subject, for
+    /// [`Owes::Counted`]: the ones inside a burst's window. Never rendered.
+    pub counted: Vec<String>,
 }
 
 impl Finding {
@@ -241,6 +399,8 @@ impl Finding {
             message: message.into(),
             note: Vec::new(),
             charge: Vec::new(),
+            owed: true,
+            counted: Vec::new(),
         }
     }
     fn signal(kind: Kind, subject: impl std::fmt::Display, message: impl Into<String>) -> Finding {
@@ -251,6 +411,8 @@ impl Finding {
             message: message.into(),
             note: Vec::new(),
             charge: Vec::new(),
+            owed: true,
+            counted: Vec::new(),
         }
     }
     fn with_note(mut self, lines: Vec<String>) -> Finding {
@@ -338,6 +500,7 @@ impl Report {
         for f in &mut self.findings {
             if f.kind == Kind::PeerUnreadable {
                 f.level = Level::Fault;
+                f.owed = true;
             }
         }
         self.sort();
@@ -395,31 +558,64 @@ impl Report {
     /// Applied by the readers and never by [`inspect`], so the per-entity
     /// findings stay what `check --kind` lists and what a rule's own test
     /// asserts on, and the fold is the one place a count is turned into prose.
-    pub fn folded(mut self) -> Report {
+    pub fn folded(self) -> Report {
+        self.fold(false)
+    }
+
+    /// [`Report::folded`] within each half (ADR-61c273118d97): the owed
+    /// findings of a kind fold apart from the ones that owe nothing, so a fold
+    /// never carries an owed entity into the half the default listing hides.
+    pub fn halves(self) -> Report {
+        self.fold(true)
+    }
+
+    /// The folds, keyed by kind and, when `split`, by which half the finding
+    /// is in. A fold across both halves is owed when one finding it takes is.
+    fn fold(mut self, split: bool) -> Report {
         let threshold = self.fold_threshold();
-        let mut fired: BTreeMap<Kind, Vec<String>> = BTreeMap::new();
-        let mut seen: HashSet<(Kind, &str)> = HashSet::new();
+        let half = |f: &Finding| !split || f.owed;
+        let mut fired: BTreeMap<(Kind, bool), (Vec<String>, bool)> = BTreeMap::new();
+        let mut seen: HashSet<(Kind, bool, &str)> = HashSet::new();
         for f in self.findings.iter().filter(|f| f.foldable()) {
-            if seen.insert((f.kind, f.subject.as_str())) {
-                fired.entry(f.kind).or_default().push(f.subject.clone());
+            let group = fired.entry((f.kind, half(f))).or_default();
+            group.1 |= f.owed;
+            if seen.insert((f.kind, half(f), f.subject.as_str())) {
+                group.0.push(f.subject.clone());
             }
         }
-        fired.retain(|_, entities| entities.len() > threshold);
+        fired.retain(|_, (entities, _)| entities.len() > threshold);
         if fired.is_empty() {
             return self;
         }
-        let mut placed: HashSet<Kind> = HashSet::new();
+        let mut placed: HashSet<(Kind, bool)> = HashSet::new();
         let findings = std::mem::take(&mut self.findings);
         for f in findings {
-            match fired.get(&f.kind).filter(|_| f.foldable()) {
-                Some(entities) => {
-                    if placed.insert(f.kind) {
-                        self.findings.push(Finding::folded(f.kind, entities));
+            let key = (f.kind, half(&f));
+            match fired.get(&key).filter(|_| f.foldable()) {
+                Some((entities, owed)) => {
+                    if placed.insert(key) {
+                        let mut folded = Finding::folded(f.kind, entities);
+                        folded.owed = *owed;
+                        self.findings.push(folded);
                     }
                 }
                 None => self.findings.push(f),
             }
         }
+        self
+    }
+
+    /// The signals that owe nothing.
+    pub fn unowed(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|f| f.level == Level::Signal && !f.owed)
+            .count()
+    }
+
+    /// The owed findings alone: what `check` lists by default.
+    pub fn owed_only(mut self) -> Report {
+        self.findings.retain(|f| f.owed);
         self
     }
 
@@ -494,11 +690,21 @@ pub fn check(inv: &Invocation, repo: &Repo, cfg: &Config, out: &mut dyn Write) -
     // The code is the whole corpus's whatever is shown: narrowing the listing
     // to one kind must not turn a corpus with a fault green.
     let code = report.exit_code();
-    let shown = match kind {
-        Some(kind) => report.only(kind),
-        None => report.folded(),
+    // What is shown (ADR-61c273118d97): one kind whole with --kind; every
+    // finding with --all, folded as it always was; for --json, every finding
+    // folded within its half, each carrying `owed`; and by default the owed
+    // half alone, with one line counting the rest.
+    let (shown, hidden) = match kind {
+        Some(kind) => (report.only(kind), None),
+        None if inv.has("--all") && !inv.json() => (report.folded(), None),
+        None if inv.json() => (report.halves(), None),
+        None => {
+            let halves = report.halves();
+            let unowed = halves.unowed();
+            (halves.owed_only(), Some(unowed))
+        }
     };
-    render(&shown, inv, out);
+    render(&shown, hidden, inv, out);
     Ok(code)
 }
 
@@ -1373,8 +1579,53 @@ pub fn inspect_with(
     check_requires_ank(cfg, &mut report);
     check_peer_halves(repo, cfg, &entities, &mut report);
 
+    settle_owed(&mut report, &entities, &coord);
     report.sort();
     Ok(report)
+}
+
+/// Judges every finding owed or not, once everything has been found
+/// (ADR-61c273118d97): a fault always, a signal by its kind's [`Owes`].
+///
+/// Unsettled work is read off the parsed corpus and the claim plane this pass
+/// already holds: an open or in_progress task, a proposed ADR or spec, a task a
+/// claim still holds. An archived entity is settled by construction, which is
+/// why it is cold.
+fn settle_owed(
+    report: &mut Report,
+    entities: &[(PathBuf, Entity)],
+    coord: &HashMap<EntityId, Record>,
+) {
+    let mut unsettled: HashSet<String> = entities
+        .iter()
+        .filter(|(_, e)| match e {
+            Entity::Task(t) => matches!(t.status, TaskStatus::Open | TaskStatus::InProgress),
+            Entity::Adr(a) => a.status == AdrStatus::Proposed,
+            Entity::Spec(s) => s.status == SpecStatus::Proposed,
+            _ => false,
+        })
+        .map(|(_, e)| e.id().to_string())
+        .collect();
+    let now = claim::now_secs();
+    for (id, record) in coord {
+        if let Record::Claim(c) = record {
+            if !claim::is_expired(c, now, id).unwrap_or(false) {
+                unsettled.insert(id.to_string());
+            }
+        }
+    }
+    let open = |subject: &str| unsettled.contains(subject.strip_suffix(".md").unwrap_or(subject));
+    for f in &mut report.findings {
+        f.owed = f.level == Level::Fault
+            || match f.kind.owes() {
+                None | Some(Owes::Fault) | Some(Owes::Remedy) => true,
+                Some(Owes::Subject) => open(&f.subject),
+                Some(Owes::Counted) => f.counted.iter().any(|id| open(id)),
+                Some(Owes::SubjectOrRepair) => {
+                    open(&f.subject) || f.note.iter().any(|l| l.starts_with("ank "))
+                }
+            };
+    }
 }
 
 /// An origin that does not fetch `refs/ank/*` (TASK-623d80886c2f, issue #499).
@@ -5128,47 +5379,66 @@ fn check_authorship(
     // without a quota, on the argument that the defence is visibility rather
     // than restriction. This is that visibility, and nothing more: a burst is
     // reported, never refused.
-    let mut by_author: HashMap<&str, Vec<i64>> = HashMap::new();
+    // Each creation with the entity it created, so the burst can name what its
+    // window counts and be owed while one of them is unsettled
+    // (ADR-61c273118d97). An archived one is cold, so settled, and carries no
+    // name here.
+    let mut by_author: HashMap<&str, Vec<(i64, Option<String>)>> = HashMap::new();
     for e in &created_deliberately {
         if let (Some(author), Some(at)) = (author_of(e), claim::parse_utc(created_of(e))) {
-            by_author.entry(author).or_default().push(at);
+            by_author
+                .entry(author)
+                .or_default()
+                .push((at, Some(e.id().to_string())));
         }
     }
     // The documents the archive holds were created too, and a burst of
     // creation is not undone by moving what it produced (TASK-5b11a5f4633b).
     for (author, created) in archived_creations {
         if let Some(at) = claim::parse_utc(created) {
-            by_author.entry(author.as_str()).or_default().push(at);
+            by_author
+                .entry(author.as_str())
+                .or_default()
+                .push((at, None));
         }
     }
-    let mut bursts: Vec<(&str, usize)> = Vec::new();
+    let mut bursts: Vec<(&str, usize, Vec<String>)> = Vec::new();
     for (author, mut times) in by_author {
         times.sort_unstable();
         // A sliding window over the sorted timestamps: for each entity, how
         // many fall within BURST_WINDOW before it. Reporting the widest run
         // rather than one finding per window keeps a long burst to one line.
-        let mut widest = 0usize;
+        let mut widest = (0usize, 0usize);
         let mut start = 0usize;
         for end in 0..times.len() {
-            while times[end] - times[start] > BURST_WINDOW {
+            while times[end].0 - times[start].0 > BURST_WINDOW {
                 start += 1;
             }
-            widest = widest.max(end - start + 1);
+            if end - start + 1 > widest.1 - widest.0 {
+                widest = (start, end + 1);
+            }
         }
-        if widest > BURST_COUNT {
-            bursts.push((author, widest));
+        let count = widest.1 - widest.0;
+        if count > BURST_COUNT {
+            let counted = times[widest.0..widest.1]
+                .iter()
+                .filter_map(|(_, id)| id.clone())
+                .collect();
+            bursts.push((author, count, counted));
         }
     }
     bursts.sort_unstable();
-    for (author, count) in bursts {
-        report.findings.push(Finding::signal(
+    for (author, count, counted) in bursts {
+        let mut finding = Finding::signal(
             Kind::Burst,
             "corpus",
             format!(
                 "burst creation by {author}: {count} entities within an hour \
                  (over {BURST_COUNT})"
             ),
-        ));
+        );
+        finding.counted = counted;
+        report.findings.push(finding);
     }
 
     // A blocker written by the agent that holds the blocked task, after it took
@@ -6257,7 +6527,9 @@ fn file_at_branch(repo: &Repo, branch: &str, id: &EntityId) -> Result<Option<Str
     }
 }
 
-fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
+/// `hidden` is how many signals owing nothing the listing left out, `None`
+/// where it left out none.
+fn render(report: &Report, hidden: Option<usize>, inv: &Invocation, out: &mut dyn Write) {
     if inv.json() {
         let items: Vec<String> = report
             .findings
@@ -6289,12 +6561,17 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
                     .str("message", &f.message)
                     .strings("note", &f.note)
                     .array("charge", charge)
+                    // Last, so a caller that read the keys in order before it
+                    // existed reads them unchanged (ADR-61c273118d97).
+                    .bool("owed", f.owed)
                     .finish()
             })
             .collect();
         let doc = Obj::document()
             .num("faults", report.faults())
             .num("signals", report.signals())
+            // Of those signals, the ones owing nothing (ADR-61c273118d97).
+            .num("unowed", report.unowed())
             .num("tasks", report.tasks)
             .num("adr", report.adrs)
             .num("hot_files", report.hot_files)
@@ -6337,6 +6614,16 @@ fn render(report: &Report, inv: &Invocation, out: &mut dyn Write) {
             };
             let _ = writeln!(out, "{lead}{line}");
         }
+    }
+    // One line, and only when something was left out: the count of what owes
+    // nothing and the command that shows it (ADR-61c273118d97). A zero would
+    // be a line about nothing.
+    if let Some(n) = hidden.filter(|n| *n > 0) {
+        let _ = writeln!(
+            out,
+            "{n} signal(s) owe nothing: settled work, and no command clears them \
+             (ank check --all lists them)"
+        );
     }
     for p in &report.pruned {
         let _ = writeln!(out, "{} {}", style.retracted("pruned"), style.id(p));
@@ -6464,8 +6751,9 @@ pub fn review(
     dead.sort();
     // Counted as `check` prints them, a folded kind as the one signal it is
     // (ADR-df1035934387), and only once the dead scopes above were read one
-    // by one: a fold names five, and this section names every one.
-    let report = report.folded();
+    // by one: a fold names five, and this section names every one. Folded
+    // within each half, as `check` folds them (ADR-61c273118d97).
+    let report = report.halves();
 
     if inv.json() {
         let items: Vec<String> = live
@@ -6509,6 +6797,7 @@ pub fn review(
             .num("dead", dead.len())
             .num("faults", report.faults())
             .num("signals", report.signals())
+            .num("unowed", report.unowed())
             .finish();
         let _ = writeln!(out, "{doc}");
         return Ok(report.exit_code());
@@ -6583,13 +6872,14 @@ pub fn review(
         }
         let _ = writeln!(
             out,
-            "\n{} fault(s), {} signal(s)",
+            "\n{} fault(s), {} signal(s), {} owing nothing",
             if report.faults() == 0 {
                 report.faults().to_string()
             } else {
                 style.red(&report.faults().to_string())
             },
-            report.signals()
+            report.signals() - report.unowed(),
+            report.unowed()
         );
     }
     Ok(report.exit_code())
@@ -10194,6 +10484,49 @@ mod tests {
     use ank_core::{Proof, ProofType};
     use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Every kind declares when it is owed, once (ADR-61c273118d97): a kind
+    /// added without a row in [`OWES`] fails here by name, rather than being
+    /// shown forever as owed because nobody classified it.
+    #[test]
+    fn every_kind_declares_when_it_is_owed_exactly_once() {
+        let missing: Vec<&str> = Kind::ALL
+            .iter()
+            .filter(|k| k.owes().is_none())
+            .map(|k| k.as_str())
+            .collect();
+        assert!(missing.is_empty(), "kinds with no row in OWES: {missing:?}");
+        for kind in Kind::ALL {
+            let rows = OWES.iter().filter(|(k, _)| k == kind).count();
+            assert_eq!(rows, 1, "{kind} has {rows} rows in OWES");
+        }
+        assert_eq!(OWES.len(), Kind::ALL.len());
+    }
+
+    /// A fold never carries an owed entity into the half that owes nothing.
+    #[test]
+    fn halves_fold_each_half_apart_and_count_what_owes_nothing() {
+        let mut r = Report::default();
+        for i in 0..30 {
+            let mut f = Finding::signal(
+                Kind::ReadByNoHuman,
+                format!("TASK-{i:012x}"),
+                "read by no human",
+            );
+            f.owed = i == 0;
+            r.findings.push(f);
+        }
+        let halves = r.clone().halves();
+        assert_eq!(halves.signals(), 2, "{:?}", halves.findings);
+        assert_eq!(halves.unowed(), 1);
+        let shown = halves.owed_only();
+        assert_eq!(shown.findings.len(), 1);
+        assert_eq!(shown.findings[0].subject, "TASK-000000000000");
+        // Folded as before, across both halves, owed because one finding is.
+        let all = r.folded();
+        assert_eq!(all.signals(), 1);
+        assert!(all.findings[0].owed);
+    }
 
     struct Temp(PathBuf);
 

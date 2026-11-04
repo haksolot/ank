@@ -66,7 +66,7 @@ $ ank init
     elsewhere no claim by another agent
     perimeter the whole repository, 0 constraint(s)
     queue 0 proposal(s), 0 finished elsewhere
-    corpus 0 fault(s), 2 signal(s)
+    corpus 0 fault(s), 1 signal(s), 1 owing nothing
 
     > ank context
 

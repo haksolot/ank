@@ -17,6 +17,15 @@ It answers in two levels, and the difference is the whole of how to read it.
   **0**, because reddening a build over an observation teaches a team to stop
   reading `check`.
 
+**A signal is owed, or it is only known** (ADR-61c273118d97). It is owed when
+its subject is unsettled work -- an open or in-progress task, a proposed ADR or
+spec, a task a live claim holds -- or when it names the command that clears it;
+a fault always is. By default `check` prints every fault and every owed signal,
+then one line counting the signals that owe nothing. `ank check --all` prints
+every finding, `ank check --kind <kind>` every finding of one kind, and
+`--json` every finding with `owed` on each. The exit code is the same
+whichever listing you ask for.
+
 Exit **9** is neither: the environment, not the corpus -- git too old, the
 default branch indeterminable. The full table is [the exit-code
 reference](exit-codes.md).
@@ -42,13 +51,22 @@ $ ank claim 820d && ank log "jwt.verify removed from session.ts" && ank done
 -->
 
     $ ank check
+    signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
+    3 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: ok — 1 tasks, 1 adr, 1 signal(s)
+
+No fault, so exit 0. One signal is owed, because it names the command that
+clears it, and three more are only counted. `--all` prints them, each line
+starting with its subject:
+
+<!-- replay check -->
+
+    $ ank check --all
     signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: TASK-820d259af6a7: finished on another branch, main has not caught up
     signal: corpus: 5 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
     check: ok — 1 tasks, 1 adr, 4 signal(s)
-
-Four signals and no fault, so exit 0, and each line starts with its subject.
 
 - **Ratified by its own author.** You wrote the ADR and you ratified it, and
   `check` says so rather than deciding what it means: a solo maintainer does
@@ -70,12 +88,11 @@ Commit, and the completion record is pruned:
 
     $ git add -A && git commit -m "the migration is done"
     $ ank check
-    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
+    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
     pruned refs/ank/claims/TASK-820d259af6a7
-    check: ok — 1 tasks, 1 adr, 3 signal(s)
+    check: ok — 1 tasks, 1 adr, 1 signal(s)
 
 **`check` writes, and that line is why.** It is the only verb that prunes
 `refs/ank/claims`: orphans, and completion records whose task is `done` or
@@ -113,17 +130,16 @@ $ f=.ank/entities/TASK-51c2a0f6d418.md && sed 's/names no JWT/names nothing/' "$
 
     $ ank check; echo "exit $?"
     error: TASK-51c2a0f6d418: done_criteria diverges from the claim (claimed 03c659e46adf, now ef485fff585a)
-    signal: ADR-06d29e727d24: ratified by its own author (human:marie)
     signal: TASK-51c2a0f6d418: content is 3eff92338baa where the last write left 2e29f326854e: it was edited outside the CLI, which is legal and leaves no entry
     signal: corpus: 2 entity file(s) differ from main: this checkout does not carry the corpus the default branch does (git merge main)
     signal: corpus: 3 hot entities are cold and belong in .ank/archive/entities/, with every entry about them (ank archive)
     └── ank archive --dry-run lists them and moves nothing
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: 1 fault(s) — 2 tasks, 1 adr, 5 signal(s)
+    2 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: 1 fault(s) — 2 tasks, 1 adr, 3 signal(s)
     exit 8
 
-A fault prints as `error:`, first, and the summary line counts it. The second
-signal on the task is the same edit seen from the other side: its content no
+A fault prints as `error:`, first, and the summary line counts it. The signal
+on the task is the same edit seen from the other side: its content no
 longer hashes to what the last verb wrote, which alone would be legal. Nothing
 refused the edit, and nothing could: the file is yours. What the edit cannot do
 is make the hash recorded in the claim agree with it. The two criterion hashes

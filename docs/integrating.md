@@ -350,12 +350,14 @@ is `done` or `closed` on the default branch. The binary says so itself:
     $ ank help check
     ank check [<path>]
       the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes
-      flags:    --kind <v> --peers
+      flags:    --kind <v> --peers --all
       global:   -j, --json -q, --quiet -r, --repo <v> --worktree <v>
       note:     exit 8 means findings; a signal alone leaves it 0
                 the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch
                 a signal kind firing on more entities than the smaller of 20 and five percent of the hot corpus, and on more than five, is reported once for the corpus, naming five and the command that lists the rest; a fault never is
                 --kind <kind> lists the findings of that kind alone, one per entity and never folded; the exit code stays the whole corpus's
+                by default check lists every fault and every owed signal, then one line counting the signals that owe nothing; --all lists every finding, --kind every finding of its kind, and --json every finding with owed on each; the exit code is the same in every case
+                a signal is owed when its subject is unsettled work -- an open or in_progress task, a proposed ADR or spec, a task a live claim holds -- or when it names the command that clears it; a burst is owed while one entity it counts is unsettled; a fault always is
                 a declared peer that cannot be read is a signal; --peers makes it a fault, for the CI job that checks the sibling out, and changes nothing else: a peer task its default branch does not hold yet stays what check says it is
       refuses:  the path names nothing inside this repository (1)
                 the corpus carries at least one fault; a signal alone leaves the code at 0 (8)
@@ -391,12 +393,15 @@ timer. Only `check` prunes, so only `check` writes; but neither is a poll.
 
 What a finding means, fault or signal, is [Reading ank check](check.md). Under
 `--json` each one carries its level, its kind, its subject and its message. The
-kind is one stable word per rule, the word `ank check --kind` takes:
+kind is one stable word per rule, the word `ank check --kind` takes. Each one
+also carries `owed`, whether a reader has anything to do about it, and
+`--json` lists every finding, owed or not, where the human listing prints the
+owed ones and counts the rest; `unowed` is that count:
 
 <!-- replay state -->
 
     $ ank check --json
-    {"contract":1,"faults":0,"signals":4,"tasks":1,"adr":1,"hot_files":6,"plane_bytes":186,"pruned":[],"findings":[{"level":"signal","kind":"read-by-no-human","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","kind":"read-by-no-human","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[]},{"level":"signal","kind":"default-branch-unknown","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged and log entries not compared against it (ank config default_branch <name>)","note":[],"charge":[]},{"level":"signal","kind":"no-signers","subject":"signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[]}]}
+    {"contract":1,"faults":0,"signals":4,"unowed":1,"tasks":1,"adr":1,"hot_files":6,"plane_bytes":186,"pruned":[],"findings":[{"level":"signal","kind":"read-by-no-human","subject":"ADR-57715ae64348","message":"written by an agent and read by no human","note":[],"charge":[],"owed":true},{"level":"signal","kind":"read-by-no-human","subject":"TASK-6da126c832be","message":"written by an agent and read by no human","note":[],"charge":[],"owed":true},{"level":"signal","kind":"default-branch-unknown","subject":"coordination","message":"default branch indeterminable, completion refs neither pruned nor judged and log entries not compared against it (ank config default_branch <name>)","note":[],"charge":[],"owed":true},{"level":"signal","kind":"no-signers","subject":"signers","message":"no ratification key declared: permissions are advisory, not enforced (§8)","note":[],"charge":[],"owed":false}]}
 
 ## The conformance suite is offered to you
 
