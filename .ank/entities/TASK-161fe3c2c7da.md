@@ -5,7 +5,7 @@ slug: the-watcher-test-past-a-dead-remote-stays-green
 title: The watcher test past a dead remote stays green on CI since new task opens the archive index
 created: 2026-11-04T07:44:12Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/tests/watch.rs
   - crates/ank-cli/src/commands.rs
@@ -18,7 +18,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured 2026-11-03: the test failed on 3 of 4 ubuntu runs of main since 3ef02ac4 (runs 41652517499, 41666438835 and its rerun), nextest retry included, and in none of the 15 failed CI runs before; it passes locally (0/6 under nextest, 1/30 group runs under CPU load with cargo test). The test drops the index, starts the watcher, waits for the index to be rebuilt, runs ank new task, then waits for the main index file's bytes to change. The index is WAL (crates/ank-cli/src/index.rs:521), and #753 added a second Index::open_with_archive in new (commands.rs:344, scope_hint). Unmeasured lead: the write lands in the WAL, not in the file the test reads.
