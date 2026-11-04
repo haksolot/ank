@@ -410,7 +410,9 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
     // and runs 13 since the record names its branch: one `symbolic-ref HEAD`
     // (ADR-5a3a3f1b89e1, TASK-346bdb3b4378). `done` ran 14 and runs 15 since
     // it names what the branch changed outside the scope: one `diff-tree
-    // --merge-base` on a typed-proof close (TASK-64f941335624).
+    // --merge-base` on a typed-proof close (TASK-64f941335624), and 16 since
+    // that base is the newer of main and origin/main: one `merge-base` before
+    // the `diff-tree` (TASK-30538cb58857).
     let expected: [(&str, usize, Vec<String>); 7] = [
         (
             "claim",
@@ -430,7 +432,7 @@ fn with_origin_only_the_verbs_run_what_they_ran_before() {
                 format!("push origin {claims}"),
             ],
         ),
-        ("done", 15, vec![format!("push origin {claims}")]),
+        ("done", 16, vec![format!("push origin {claims}")]),
         (
             "attest",
             11,

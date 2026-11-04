@@ -1345,16 +1345,32 @@ pub fn merge_base(cwd: &Path, a: &str, b: &str) -> Result<Option<String>> {
     Ok((!sha.is_empty()).then_some(sha))
 }
 
-/// The files the commits since `HEAD` left the first of `revs` that resolves changed, deletions
-/// included: what `diff-tree --merge-base` names between the merge-base of
-/// the two and `HEAD`, so that what the default branch did afterwards, merged
-/// in or not, is never this branch's change. `None` where no base can be
-/// established.
+/// The files the commits since `HEAD` left the newest of `revs` changed,
+/// deletions included: what `diff-tree` names between the base and `HEAD`, so
+/// that what the default branch did afterwards, merged in or not, is never
+/// this branch's change. `None` where no base can be established.
 ///
-/// One process for the first revision; one more for each that does not
-/// resolve, so a clone that never checked the default branch out still has a
-/// base to measure from, its remote-tracking branch.
+/// The base is the best common ancestor of `HEAD` and every one of `revs` at
+/// once, a single `merge-base`. Where one of them is an ancestor of the other,
+/// as a local default branch lagging its remote-tracking twin in a linked
+/// worktree is, that is the newer one's own merge-base with `HEAD`; the older
+/// one could only push the base back and charge this branch with every commit
+/// the default branch gained since (TASK-30538cb58857). Two processes.
+///
+/// Where one of `revs` does not resolve, `merge-base` refuses them all, and
+/// each is tried alone with `diff-tree --merge-base`, one process apiece, so a
+/// clone that never checked the default branch out still has a base to
+/// measure from, its remote-tracking branch.
 pub fn committed_since(cwd: &Path, revs: &[String]) -> Option<Vec<String>> {
+    let mut args = vec!["merge-base", "HEAD"];
+    args.extend(revs.iter().map(String::as_str));
+    let out = output(cwd, &args).ok()?;
+    let base = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if out.status.success() && !base.is_empty() {
+        let args = ["diff-tree", "-r", "-z", "--name-only", &base, "HEAD"];
+        let out = output(cwd, &args).ok()?;
+        return out.status.success().then(|| paths_of(&out.stdout));
+    }
     for rev in revs {
         let args = [
             "diff-tree",
