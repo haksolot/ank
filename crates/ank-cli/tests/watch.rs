@@ -1493,10 +1493,45 @@ fn an_unreachable_remote_is_reported_and_the_watcher_keeps_watching() {
 
     // And it keeps watching: the failure repeats every cycle and the loop
     // survives all of them, which is the property a single pass cannot show.
+    //
+    // **What says the watcher followed is the watcher's own word, never the
+    // index's bytes** (TASK-161fe3c2c7da). The index file is a cache any
+    // process writes: `new` refreshes it itself, so its bytes moving can be
+    // the change rather than the watcher following it, and they can also not
+    // move at all. A connection closes without checkpointing unless it wrote
+    // something, and since `new` indexes everything it wrote, the warming
+    // after it writes nothing; with any other connection open as `new`
+    // closed, its frames stayed in the WAL and the file the old oracle read
+    // never changed. Measured: 3 of 4 ubuntu runs of main, and every run here
+    // with the reader below held open. The change line on stderr and the
+    // event on the stream are written by the watcher and by nothing else, so
+    // nobody touching the index can produce or withhold them.
     corpus.drop_index();
     let log = root.join("watcher.log");
     let daemon = start_logging(&home, &["--interval", "50"], &log);
-    let warmed = settled(&corpus.index());
+    // The first look done, and the remote already failed in this run: the
+    // index is warmed after the fingerprint is taken, and the fetch comes
+    // before both, so a change made from here on is followed past a dead
+    // remote and is never folded into the first sighting.
+    until("the watcher's first look past a dead remote", || {
+        corpus.index().is_file()
+            && std::fs::read_to_string(&log)
+                .unwrap_or_default()
+                .contains("fetch:")
+    });
+    // Another reader of the index, open across the change: the case that
+    // left the old oracle waiting on a checkpoint nobody ran. The file exists
+    // before its schema does, so the reader is in once a read answers.
+    let reader = rusqlite::Connection::open_with_flags(
+        corpus.index(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
+    until("the index to answer a reader", || {
+        reader
+            .query_row("SELECT count(*) FROM files", [], |r| r.get::<_, i64>(0))
+            .is_ok()
+    });
     corpus.ank(
         &home,
         &[
@@ -1508,15 +1543,22 @@ fn an_unreachable_remote_is_reported_and_the_watcher_keeps_watching() {
             "src/**",
         ],
     );
+    let identity = corpus.identity(&home);
+    let expected = events::Event::new(&identity, events::Change::Entities)
+        .line()
+        .trim_end()
+        .to_string();
     until(
         "the watcher to follow the corpus past a dead remote",
-        || std::fs::read(corpus.index()).unwrap_or_default() != warmed,
+        || lines_of(&home.stream_text()).contains(&expected),
     );
     daemon.stop();
+    drop(reader);
     let logged = std::fs::read_to_string(&log).unwrap_or_default();
+    let failed = logged.find("fetch:").expect("the remote failed first");
     assert!(
-        logged.matches("fetch:").count() >= 1,
-        "the watcher went quiet about a remote it never reached: {logged}"
+        logged[failed..].contains(&format!("changed entities {identity}")),
+        "the change is reported after the dead remote, by the watcher: {logged}"
     );
 }
 
