@@ -569,7 +569,7 @@ fn a_ref_with_no_file_is_an_orphan_signal() {
     let c = Corpus::new("ratify-ref-orphan");
     c.accept(A);
     fs::remove_file(c.repo.join(format!(".ank/entities/{A}.md"))).unwrap();
-    let out = ank(&c.repo, &["check"]);
+    let out = ank(&c.repo, &["check", "--all"]);
     let report = both(&out);
     assert!(
         report.lines().any(|l| l.starts_with("signal:")
@@ -586,7 +586,7 @@ fn a_superseded_file_no_ref_names_is_a_signal() {
     let c = Corpus::new("ratify-ref-superseded-unnamed");
     let marked = c.file(B).replace("status: accepted", "status: superseded");
     c.put(B, &marked);
-    let out = ank(&c.repo, &["check"]);
+    let out = ank(&c.repo, &["check", "--all"]);
     let report = both(&out);
     let named = |report: &str| {
         report.lines().any(|l| {
@@ -598,7 +598,7 @@ fn a_superseded_file_no_ref_names_is_a_signal() {
     let c = Corpus::new("ratify-ref-superseded-named");
     c.accept(C);
     assert!(c.file(B).contains("status: superseded"));
-    let out = ank(&c.repo, &["check"]);
+    let out = ank(&c.repo, &["check", "--all"]);
     assert!(!named(&both(&out)), "{}", both(&out));
 }
 
@@ -800,7 +800,11 @@ fn a_shallow_clone_verifies_a_ref_ratification_and_cannot_verify_a_commit_one() 
     assert!(rev(&clone, &ratify_ref(C)).is_none(), "C has no ref");
 
     let trace = scratch::dir("ratify-ref-shallow-trace").join("trace");
-    let out = ank_env(&clone, &["check"], &[("GIT_TRACE", trace.as_path())]);
+    let out = ank_env(
+        &clone,
+        &["check", "--all"],
+        &[("GIT_TRACE", trace.as_path())],
+    );
     let report = both(&out);
     assert_eq!(
         out.status.code(),

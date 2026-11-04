@@ -39,11 +39,12 @@ use std::path::{Path, PathBuf};
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
 /// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
 /// `files`, to 9 by `entities.archived` and to 10 by the three columns an
-/// archived entry is read back from, to 11 by `amends`, and to 12 by `carried`:
+/// archived entry is read back from, to 11 by `amends`, to 12 by `carried`,
+/// and to 13 by `verdict.unowed` (ADR-61c273118d97):
 /// nothing migrated any of those times, and nothing had to. Since 12 the number
 /// is also the file's name (ADR-3db9735a7036), so a bump leaves the previous
 /// build's index where it is instead of fighting it for one file.
-pub const SCHEMA_VERSION: u32 = 12;
+pub const SCHEMA_VERSION: u32 = 13;
 
 /// The index of this build's schema, and the only one it opens
 /// (ADR-3db9735a7036).
@@ -245,6 +246,7 @@ CREATE TABLE verdict (
     key            TEXT PRIMARY KEY,
     faults         INTEGER NOT NULL,
     signals        INTEGER NOT NULL,
+    unowed         INTEGER NOT NULL,
     unmerged       INTEGER NOT NULL,
     drift_branch   TEXT,
     drift_entities INTEGER NOT NULL
@@ -1502,16 +1504,17 @@ impl Index {
     pub fn verdict(&self, key: &str) -> Option<Verdict> {
         self.conn
             .query_row(
-                "SELECT faults, signals, unmerged, drift_branch, drift_entities \
+                "SELECT faults, signals, unowed, unmerged, drift_branch, drift_entities \
                  FROM verdict WHERE key = ?1",
                 params![key],
                 |r| {
                     Ok(Verdict {
                         faults: r.get::<_, i64>(0)?.max(0) as usize,
                         signals: r.get::<_, i64>(1)?.max(0) as usize,
-                        unmerged: r.get::<_, i64>(2)?.max(0) as usize,
-                        drift_branch: r.get::<_, Option<String>>(3)?,
-                        drift_entities: r.get::<_, i64>(4)?.max(0) as usize,
+                        unowed: r.get::<_, i64>(2)?.max(0) as usize,
+                        unmerged: r.get::<_, i64>(3)?.max(0) as usize,
+                        drift_branch: r.get::<_, Option<String>>(4)?,
+                        drift_entities: r.get::<_, i64>(5)?.max(0) as usize,
                     })
                 },
             )
@@ -1531,12 +1534,13 @@ impl Index {
         let _ = self.conn.execute("DELETE FROM verdict", params![]);
         let _ = self.conn.execute(
             "INSERT OR REPLACE INTO verdict \
-             (key, faults, signals, unmerged, drift_branch, drift_entities) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+             (key, faults, signals, unowed, unmerged, drift_branch, drift_entities) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
                 key,
                 v.faults as i64,
                 v.signals as i64,
+                v.unowed as i64,
                 v.unmerged as i64,
                 v.drift_branch,
                 v.drift_entities as i64,
@@ -1822,6 +1826,9 @@ fn fts_query(raw: &str) -> Option<String> {
 pub struct Verdict {
     pub faults: usize,
     pub signals: usize,
+    /// Of `signals`, the ones owing nothing (ADR-61c273118d97): what `status`
+    /// names beside the count it prints.
+    pub unowed: usize,
     /// Tasks finished on a branch the default has not caught up with.
     pub unmerged: usize,
     /// The default branch this corpus was compared against, `None` where the

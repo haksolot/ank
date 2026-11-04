@@ -1534,7 +1534,7 @@ fn ratifying_your_own_decision_is_a_signal_and_never_a_fault() {
     let out = r.ank("human:marie", &["accept", &id]);
     assert_eq!(code(&out), 0, "{}", stderr(&out));
 
-    let out = r.ank("human:marie", &["check"]);
+    let out = r.ank("human:marie", &["check", "--all"]);
     assert_eq!(
         code(&out),
         0,
@@ -2472,7 +2472,7 @@ fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
 
     // Readable and trusted: the silence below has to be broken by the config
     // change and by nothing else.
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
     assert!(
         !stdout(&out).contains("could not be read"),
@@ -2482,7 +2482,7 @@ fn a_signature_git_cannot_read_is_reported_rather_than_passed_over() {
 
     r.git(&["config", "gpg.format", "bogus"]);
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = stdout(&out);
     assert!(
         said.contains("could not be read"),
@@ -3408,7 +3408,7 @@ fn prose_finding(said: &str) -> Vec<String> {
 #[test]
 fn check_names_the_prose_identifiers_that_resolve_to_nothing_once_for_the_corpus() {
     let r = prose_fixture();
-    let out = r.ank("claude-code/1.0", &["check"]);
+    let out = r.ank("claude-code/1.0", &["check", "--all"]);
     let said = stdout(&out);
 
     // One line for the corpus. Four mentions of one identifier across two
@@ -3498,7 +3498,7 @@ fn a_check_that_reports_prose_identifiers_refuses_nothing_and_rewrites_nothing()
         .collect();
     assert!(!before.is_empty(), "the fixture seeded nothing");
 
-    let out = r.ank("claude-code/1.0", &["check"]);
+    let out = r.ank("claude-code/1.0", &["check", "--all"]);
     let said = stdout(&out);
     assert_eq!(prose_finding(&said).len(), 1, "it reported: {said}");
 
@@ -3523,7 +3523,7 @@ fn a_check_that_reports_prose_identifiers_refuses_nothing_and_rewrites_nothing()
 
     // The new mention is not a new identifier: it is the same one the criterion
     // already named, and the count is of identifiers rather than of mentions.
-    let said = stdout(&r.ank("claude-code/1.0", &["check"]));
+    let said = stdout(&r.ank("claude-code/1.0", &["check", "--all"]));
     let found = prose_finding(&said);
     assert_eq!(found.len(), 1, "{said}");
     assert!(found[0].contains("3 identifiers"), "{said}");
@@ -4512,7 +4512,7 @@ fn a_closed_task_whose_scope_names_nothing_leaves_check_green() {
 
     // Open, it is work not started, and green. This is the state the corpus was
     // stuck in: honest, and permanent, because closing it was punished.
-    let out = r.ank(AGENT, &["check"]);
+    let out = r.ank(AGENT, &["check", "--all"]);
     assert_eq!(code(&out), 0, "open: {}{}", stdout(&out), stderr(&out));
     assert!(
         stdout(&out).contains("work not started"),
@@ -4523,7 +4523,7 @@ fn a_closed_task_whose_scope_names_nothing_leaves_check_green() {
     let out = r.ank(AGENT, &["close", GONE, "--reason", "it ships elsewhere"]);
     assert_eq!(code(&out), 0, "close: {}", stderr(&out));
 
-    let out = r.ank(AGENT, &["check"]);
+    let out = r.ank(AGENT, &["check", "--all"]);
     let said = stdout(&out);
     assert_eq!(
         code(&out),
@@ -8949,7 +8949,7 @@ fn a_scope_deleted_by_a_commit_is_a_signal_and_a_scope_git_never_knew_is_a_fault
     r.git(&["commit", "-qm", "remove the file"]);
     let sha: String = r.head().chars().take(12).collect();
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert_eq!(
         code(&out),
@@ -8994,7 +8994,7 @@ fn a_scope_deleted_by_a_commit_is_a_signal_and_a_scope_git_never_knew_is_a_fault
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "a scope naming a path that never existed"]);
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = format!("{}{}", stdout(&out), stderr(&out));
     assert_eq!(
         code(&out),
@@ -13017,7 +13017,7 @@ fn a_spec_carries_the_bootstrap_signal_and_names_the_repair_for_a_dead_scope() {
     r.git(&["mv", "src/auth/session.rs", "src/session/store.rs"]);
     r.git(&["commit", "-qm", "the file moves"]);
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = stdout(&out);
     // Both are signals: a dead scope git can explain is not a broken corpus,
     // and a bootstrap anchor is not a violation.
@@ -16321,7 +16321,7 @@ fn a_finished_tasks_dead_scope_faults_only_when_git_cannot_explain_it() {
         r.git(&["add", "-A"]);
         r.git(&["commit", "-qm", "move it", "--allow-empty"]);
 
-        let out = r.ank("claude-code@ank", &["check"]);
+        let out = r.ank("claude-code@ank", &["check", "--all"]);
         let text = stdout(&out);
         assert_eq!(code(&out), expected, "act={act}: {text}{}", stderr(&out));
         assert!(
@@ -18081,7 +18081,7 @@ fn a_repository_with_no_signing_key_ratifies_and_says_it_was_unsigned() {
     // And the regime is stated rather than implied by silence. The sentence is
     // taken from `check` and matched in `review`, so the two surfaces are
     // compared against each other and never against a string written here.
-    let checked = stdout(&r.ank(AGENT, &["check"]));
+    let checked = stdout(&r.ank(AGENT, &["check", "--all"]));
     let said = checked
         .lines()
         .find(|l| l.contains("no ratification key declared"))
@@ -18184,7 +18184,7 @@ fn no_declared_key_is_said_in_words_and_never_as_an_empty_section() {
     r.git(&["add", "-A"]);
     r.git(&["commit", "-qm", "seed"]);
 
-    let checked = stdout(&r.ank(AGENT, &["check"]));
+    let checked = stdout(&r.ank(AGENT, &["check", "--all"]));
     let said = checked
         .lines()
         .find(|l| l.contains("no ratification key declared"))
@@ -20749,7 +20749,7 @@ fn a_discrepancy_is_recorded_without_touching_the_frozen_criterion() {
     );
     assert_eq!(code(&out), 0, "{}{}", stdout(&out), stderr(&out));
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = stdout(&out);
     assert_eq!(
         code(&out),
@@ -21906,7 +21906,7 @@ fn an_unknown_records_value_is_a_finding_and_never_a_parse_error() {
         Some("rename"),
     );
 
-    let checked = r.ank("claude-code@ank", &["check"]);
+    let checked = r.ank("claude-code@ank", &["check", "--all"]);
     assert_eq!(
         code(&checked),
         0,
@@ -23330,7 +23330,7 @@ fn an_unreadable_entity_is_never_reported_as_one_that_does_not_exist() {
     r.seed_task(ID, Some("A verifiable criterion."));
     r.blocked(ID, &["TASK-00000000aa03"]);
 
-    let out = r.ank("claude-code@ank", &["check"]);
+    let out = r.ank("claude-code@ank", &["check", "--all"]);
     let said = both_streams(&out);
 
     assert!(
@@ -23663,7 +23663,7 @@ const REVIEW_PAGE: &str = concat!(
     // perimeter (ADR-91f486072d68), so the faults became signals of one kind,
     // and `review` counts each folded kind as the one signal `check` folds it
     // into (ADR-df1035934387).
-    "0 fault(s), 3 signal(s)\n",
+    "0 fault(s), 1 signal(s), 2 owing nothing\n",
 );
 
 /// What `scope src/` printed on this fixture before the change, whole.
@@ -25197,7 +25197,7 @@ fn a_ref_in_a_namespace_no_reader_serves_is_one_signal_naming_it_and_its_deletio
     let keys: Vec<&str> = map.keys().filter_map(|k| k.as_str()).collect();
     assert_eq!(
         keys,
-        ["level", "kind", "subject", "message", "note", "charge"]
+        ["level", "kind", "subject", "message", "note", "charge", "owed"]
     );
     assert!(
         f["subject"].is_string() && f["message"].is_string(),
@@ -26920,12 +26920,12 @@ fn a_burst_of_creation_survives_archiving_what_it_produced() {
         })
         .collect();
     let burst = "burst creation by claude-code/burst: 11 entities within an hour";
-    let before = both_streams(&r.ank("claude-code@ank", &["check"]));
+    let before = both_streams(&r.ank("claude-code@ank", &["check", "--all"]));
     assert!(before.contains(burst), "{before}");
     for id in &ids[..6] {
         archive_by_hand(&r, id);
     }
-    let after = both_streams(&r.ank("claude-code@ank", &["check"]));
+    let after = both_streams(&r.ank("claude-code@ank", &["check", "--all"]));
     assert!(
         after.contains(burst),
         "archiving silenced the burst: {after}"

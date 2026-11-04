@@ -213,7 +213,7 @@ fn the_definition_hash_covers_run_timeout_and_inputs_and_matches_dc04() {
 
     let changed =
         format!("verifier 'cargo-test' changed since the proof ({DC04_CARGO_TEST_HASH} -> ");
-    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check"]).stdout).to_string();
+    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check", "--all"]).stdout).to_string();
     assert!(
         !report.contains(&changed),
         "run and timeout alone must keep the hash TASK-dc04757dfecb recorded:\n{report}"
@@ -224,7 +224,7 @@ fn the_definition_hash_covers_run_timeout_and_inputs_and_matches_dc04() {
         &dir,
         &["config", "verifiers.cargo-test.inputs", r#"["f"]"#],
     );
-    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check"]).stdout).to_string();
+    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check", "--all"]).stdout).to_string();
     assert!(
         report.contains(&changed),
         "inputs no longer moves the hash:\n{report}"
@@ -234,7 +234,7 @@ fn the_definition_hash_covers_run_timeout_and_inputs_and_matches_dc04() {
         &dir,
         &["config", "--unset", "verifiers.cargo-test.inputs"],
     );
-    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check"]).stdout).to_string();
+    let report = String::from_utf8_lossy(&spawn(ANK, &dir, &["check", "--all"]).stdout).to_string();
     assert!(
         !report.contains(&changed),
         "after --unset inputs:\n{report}"

@@ -98,13 +98,13 @@ differs:
 
     $ cd /work/web && ank check; echo "exit $?"
     signal: peers.api: peer 'api' at ../api is not a corpus, answered without it (ank config --user peers.98204934184e14045a2158a2bd0f23586745d560.api <path>)
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: ok — 0 tasks, 0 adr, 2 signal(s)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: ok — 0 tasks, 0 adr, 1 signal(s)
     exit 0
     $ cd /work/web && ank check --peers; echo "exit $?"
     error: peers.api: peer 'api' at ../api is not a corpus, answered without it (ank config --user peers.98204934184e14045a2158a2bd0f23586745d560.api <path>)
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: 1 fault(s) — 0 tasks, 0 adr, 1 signal(s)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: 1 fault(s) — 0 tasks, 0 adr, 0 signal(s)
     exit 8
 
 With the sibling checked out beside it, `check --peers` answers as `check`
@@ -114,8 +114,8 @@ does:
 
     $ git clone -q /work/api.elsewhere /work/api
     $ cd /work/web && ank check --peers; echo "exit $?"
-    signal: signers: no ratification key declared: permissions are advisory, not enforced (§8)
-    check: ok — 0 tasks, 0 adr, 1 signal(s)
+    1 signal(s) owe nothing: settled work, and no command clears them (ank check --all lists them)
+    check: ok — 0 tasks, 0 adr, 0 signal(s)
     exit 0
 
 `--peers` asks for the sibling to be readable, and only that: an edge naming a
