@@ -6114,15 +6114,24 @@ fn has_commit(root: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Where a clone holds a branch it never checked out (TASK-62903921874e).
+const REMOTE_BRANCHES: &str = "refs/remotes/origin";
+
 /// What the branch each claim was taken on carries of its task
 /// (ADR-5a3a3f1b89e1), for the claims this checkout cannot judge alone: those
 /// whose task it holds no copy of, and those whose copy's `done_criteria`
 /// hashes differently from the claim. A claim with no recorded branch, or one
 /// whose copy here agrees, is absent from the answer and judged as before.
 ///
+/// The branch is read from `refs/heads/<b>` first and from
+/// `refs/remotes/origin/<b>` second, as ADR-09b985a5627e reads a peer's: a CI
+/// checkout and any other clone hold the claiming branch only as the
+/// remote-tracking ref, never having checked it out (TASK-62903921874e). Both
+/// are names in the one batch below, so the second costs no process.
+///
 /// `Some(None)` is a branch that carries no such task, a branch that no longer
-/// exists included: `refs/heads/<b>:<path>` resolves to nothing either way, and
-/// both mean the claim has nowhere left to stand.
+/// exists under either name included: each name resolves to nothing either
+/// way, and both mean the claim has nowhere left to stand.
 ///
 /// **One `cat-file --batch` for every claim, whatever the number of branches**
 /// (ADR-cc65f1388a71), plus one `symbolic-ref` when a copy here disagrees, to
@@ -6166,9 +6175,15 @@ fn claim_branch_copies(
         .into_iter()
         .chain(disagreeing)
         .flat_map(|(id, branch)| {
-            entity_rel_paths(repo, id)
+            let paths = entity_rel_paths(repo, id);
+            ["refs/heads", REMOTE_BRANCHES]
                 .into_iter()
-                .map(move |path| (id, format!("refs/heads/{branch}:{path}")))
+                .flat_map(move |prefix| {
+                    paths
+                        .clone()
+                        .into_iter()
+                        .map(move |path| (id, format!("{prefix}/{branch}:{path}")))
+                })
         })
         .collect();
     let mut copies: HashMap<EntityId, Option<String>> = HashMap::new();
