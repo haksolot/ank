@@ -5,7 +5,7 @@ slug: the-cold-half-of-the-corpus-is-archived-again
 title: The cold half of the corpus is archived again
 created: 2026-11-04T09:06:59Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - .ank/**
 blocked_by: [TASK-a646a88c1c67]
@@ -14,7 +14,7 @@ done_criteria: |
 criteria_by: creator
 verify: [check-repo]
 schema: 4
-version: 2
+version: 3
 ---
 
 Same shape as TASK-a86bf4856425. 325 cold at daaf6c21 (ank archive --dry-run).
