@@ -3083,7 +3083,9 @@ pub fn tag_signature_of(
     let out = output(cwd, &args)?;
     let said =
         String::from_utf8_lossy(&out.stderr).to_string() + &String::from_utf8_lossy(&out.stdout);
-    Ok(read_verify_tag(&said))
+    Ok(unasked(read_verify_tag(&said), || {
+        ratify_tags(cwd).values().any(|t| t.tag == tag && t.signed)
+    }))
 }
 
 /// git's answer to `verify-tag --raw`, as `%G?` and `%GF` would have said it.
@@ -3166,6 +3168,55 @@ pub struct SignatureFacts {
 /// `gpg.ssh.allowedSignersFile` at `.ank/` would change how every commit in it
 /// verifies, for every tool, to serve one check of ours.
 pub fn signature_of(
+    cwd: &Path,
+    sha: &str,
+    allowed_signers: Option<&Path>,
+) -> Result<SignatureFacts> {
+    let facts = asked_signature_of(cwd, sha, allowed_signers)?;
+    Ok(unasked(facts, || {
+        ratification_object(cwd, sha).is_some_and(|o| carries_gpgsig(&o))
+    }))
+}
+
+/// `N` on an object that carries a signature, said as what it is: `E`, a
+/// signature this machine could not check (TASK-432f93acc03f).
+///
+/// **`N` is two states wearing one letter.** git answers it for a commit
+/// nobody signed, and also for a signed one whenever gpg could not be run at
+/// all -- measured: `gpg.program` naming nothing gives `N` where a keyring
+/// without the key gives `E`. The first is a fact about the object, final for
+/// as long as the object exists; the second is a fact about this machine, and
+/// it stops being true the moment gpg is installed. The cache keeps verdicts
+/// under the object and never stores `E` ([`crate::index::Index::remember_signature`]),
+/// so saying `E` here is what lets installing gpg change the next answer
+/// rather than leaving 293 ratifications reading unchecked until somebody
+/// deletes the index, as it did on 2026-11-04. The classifier reads both the
+/// same way, as unchecked, so no verdict moves.
+///
+/// `carries` is asked only for `N`: every other letter already says a
+/// signature was there.
+fn unasked(facts: SignatureFacts, carries: impl FnOnce() -> bool) -> SignatureFacts {
+    if facts.status == 'N' && carries() {
+        SignatureFacts {
+            status: 'E',
+            ..facts
+        }
+    } else {
+        facts
+    }
+}
+
+/// Whether a commit object carries a `gpgsig` header. Headers stop at the
+/// first blank line, so a message quoting `gpgsig` is not a signature.
+fn carries_gpgsig(object: &str) -> bool {
+    object
+        .lines()
+        .take_while(|l| !l.is_empty())
+        .any(|l| l.starts_with("gpgsig"))
+}
+
+/// What git said, before [`unasked`] reads its `N`.
+fn asked_signature_of(
     cwd: &Path,
     sha: &str,
     allowed_signers: Option<&Path>,
