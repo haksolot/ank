@@ -13,12 +13,12 @@ scope:
   - crates/ank-cli/tests/main.rs
 blocked_by: []
 done_criteria: |
-  Through the binary, in a scratch repository whose ratification is a commit signed with a GPG key declared under signers: and whose public key the keyring running the test does not hold: ank check reports the signature as unchecked; after the key is imported into that keyring and with the index left in place, the next ank check reports it verified and no signature-unchecked signal; a verdict git gives as good, bad, expired or revoked is still read from the cache on the second run without a new git verify process, counted with GIT_TRACE and logged. A test in crates/ank-cli/tests/signature_cache.rs asserts each case through the binary.
+  Through the binary, in a scratch repository whose ratification is a commit signed with a GPG key declared under signers: and whose gpg.program cannot run (gpg missing, git answers N): ank check reports the signature as unchecked; after gpg is available and the key imported, with the index left in place, the next ank check reports it verified and no signature-unchecked signal; the same holds when gpg runs but the keyring lacks the public key (git answers E); a verdict git gives as good, bad, expired or revoked is still read from the cache on the second run without a new git verify process, counted with GIT_TRACE and logged. A test in crates/ank-cli/tests/signature_cache.rs asserts each case through the binary.
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 1
+version: 2
 ---
 
 Measured 2026-11-04 on this machine: gpg was not installed, so 293 ratification commits were cached in the index's signatures table (keyed by commit_sha and signers) as N, which check reads as unchecked (47 signatures, one signal). After installing gpg and importing 739A603F...1482554A, git log %G? reported U (good) for them, but ank check kept the signal until the index file was removed; a fresh worktree reported none. The cached verdict depends on the machine's keyring and gpg, which the cache key does not name. The old index is kept at /tmp/claude-1000/-home-haksolot-Projects-ank/ef40602f-bd92-478a-ba61-5ec238a20a21/scratchpad/index.db.12.bak.
