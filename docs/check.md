@@ -23,8 +23,8 @@ spec, a task a live claim holds -- or when it names the command that clears it;
 a fault always is. By default `check` prints every fault and every owed signal,
 then one line counting the signals that owe nothing. `ank check --all` prints
 every finding, `ank check --kind <kind>` every finding of one kind, and
-`--json` every finding with `owed` on each. Which listing you ask for never
-moves the exit code.
+`--json` every finding with `owed` on each. The exit code is the same
+whichever listing you ask for.
 
 Exit **9** is neither: the environment, not the corpus -- git too old, the
 default branch indeterminable. The full table is [the exit-code
@@ -56,8 +56,8 @@ $ ank claim 820d && ank log "jwt.verify removed from session.ts" && ank done
     check: ok — 1 tasks, 1 adr, 1 signal(s)
 
 No fault, so exit 0. One signal is owed, because it names the command that
-clears it, and three more are counted rather than printed. `--all` prints
-them, each line starting with its subject:
+clears it, and three more are only counted. `--all` prints them, each line
+starting with its subject:
 
 <!-- replay check -->
 
