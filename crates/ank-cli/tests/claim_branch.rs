@@ -341,3 +341,163 @@ fn a_record_without_a_branch_is_judged_as_before() {
         "and the old orphan is pruned: {said}"
     );
 }
+
+/// The writer's repository given a bare remote carrying `main` and A's branch,
+/// and a clone of that remote, checked out on `main`, holding A's branch only
+/// as `refs/remotes/origin/a` and the claims fetched into `refs/ank/*`: what a
+/// CI checkout or a second machine sees (TASK-62903921874e).
+struct Clone {
+    origin: PathBuf,
+    path: PathBuf,
+}
+
+impl Clone {
+    fn of(f: &Fixture) -> Clone {
+        let base = f.main.parent().unwrap().to_path_buf();
+        let origin = base.join("origin.git");
+        git(
+            &base,
+            &[
+                "init",
+                "-q",
+                "--bare",
+                "-b",
+                "main",
+                origin.to_str().unwrap(),
+            ],
+        );
+        git(
+            &f.main,
+            &["remote", "add", "origin", origin.to_str().unwrap()],
+        );
+        git(&f.main, &["push", "-q", "origin", "main", "a"]);
+        let path = base.join("clone");
+        git(
+            &base,
+            &[
+                "clone",
+                "-q",
+                origin.to_str().unwrap(),
+                path.to_str().unwrap(),
+            ],
+        );
+        Clone { origin, path }
+    }
+
+    /// The claims and the branches as the remote holds them now.
+    fn fetch(&self, f: &Fixture) {
+        git(
+            &f.main,
+            &["push", "-q", "-f", "origin", "+refs/ank/*:refs/ank/*"],
+        );
+        git(
+            &self.path,
+            &[
+                "fetch",
+                "-q",
+                "--prune",
+                "origin",
+                "+refs/heads/*:refs/remotes/origin/*",
+                "+refs/ank/*:refs/ank/*",
+            ],
+        );
+    }
+
+    fn holds(&self, refname: &str) -> bool {
+        spawn("git")
+            .args(["rev-parse", "--verify", "--quiet", refname])
+            .current_dir(&self.path)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+}
+
+#[test]
+fn a_criterion_amended_claimed_and_pushed_draws_no_fault_in_a_clone() {
+    let f = Fixture::new("claim-branch-clone-amended");
+    f.ok(
+        IN_A,
+        &f.a,
+        &["amend", &f.shared, "--criteria", "The amended criterion."],
+    );
+    let only_a = f.new_task(&f.a, "Born on A", "A criterion born on A.");
+    git(&f.a, &["add", "-A"]);
+    git(&f.a, &["commit", "-qm", "amend and add on A"]);
+    f.ok(IN_A, &f.a, &["claim", &f.shared]);
+    f.ok(ALSO_IN_A, &f.a, &["claim", &only_a]);
+    let clone = Clone::of(&f);
+    clone.fetch(&f);
+    assert!(clone.holds("refs/remotes/origin/a"));
+    assert!(
+        !clone.holds("refs/heads/a"),
+        "the clone never checked A out"
+    );
+
+    let (code, said) = f.check(&clone.path);
+    assert!(
+        !diverged(&said, &f.shared),
+        "the clone draws no fault: {said}"
+    );
+    assert!(!orphaned(&said, &only_a), "nor an orphan: {said}");
+    assert_ne!(code, 8, "{said}");
+    assert!(
+        clone.holds(&f.claim_ref(&only_a)),
+        "the claim survives: {said}"
+    );
+    let _ = &clone.origin;
+}
+
+#[test]
+fn a_criterion_edited_by_hand_and_pushed_is_a_fault_in_a_clone() {
+    let f = Fixture::new("claim-branch-clone-hand-edit");
+    f.ok(
+        IN_A,
+        &f.a,
+        &["amend", &f.shared, "--criteria", "The amended criterion."],
+    );
+    let only_a = f.new_task(&f.a, "Born on A", "A criterion born on A.");
+    git(&f.a, &["add", "-A"]);
+    git(&f.a, &["commit", "-qm", "amend and add on A"]);
+    f.ok(IN_A, &f.a, &["claim", &f.shared]);
+    f.ok(ALSO_IN_A, &f.a, &["claim", &only_a]);
+    f.edit_criterion_by_hand(&f.a, &f.shared, "The amended criterion.", "Softened.");
+    f.edit_criterion_by_hand(&f.a, &only_a, "A criterion born on A.", "Softened too.");
+    let clone = Clone::of(&f);
+    clone.fetch(&f);
+
+    let (code, said) = f.check(&clone.path);
+    assert_eq!(code, 8, "{said}");
+    assert!(diverged(&said, &f.shared), "{said}");
+    assert!(diverged(&said, &only_a), "{said}");
+}
+
+#[test]
+fn a_clone_holding_the_branch_nowhere_judges_the_claim_as_before() {
+    let f = Fixture::new("claim-branch-clone-gone");
+    f.ok(
+        IN_A,
+        &f.a,
+        &["amend", &f.shared, "--criteria", "The amended criterion."],
+    );
+    let only_a = f.new_task(&f.a, "Born on A", "A criterion born on A.");
+    git(&f.a, &["add", "-A"]);
+    git(&f.a, &["commit", "-qm", "amend and add on A"]);
+    f.ok(IN_A, &f.a, &["claim", &f.shared]);
+    f.ok(ALSO_IN_A, &f.a, &["claim", &only_a]);
+    let clone = Clone::of(&f);
+    // A's branch leaves the remote, and the clone prunes it.
+    git(&f.main, &["push", "-q", "origin", ":a"]);
+    clone.fetch(&f);
+    assert!(!clone.holds("refs/remotes/origin/a"));
+    assert!(!clone.holds("refs/heads/a"));
+
+    let (code, said) = f.check(&clone.path);
+    assert_eq!(code, 8, "{said}");
+    assert!(diverged(&said, &f.shared), "the old fault stands: {said}");
+    assert!(
+        !clone.holds(&f.claim_ref(&only_a)),
+        "and the old orphan is pruned: {said}"
+    );
+}
