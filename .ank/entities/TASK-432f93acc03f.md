@@ -5,7 +5,7 @@ slug: a-signature-verdict-this-machine-could-not-check
 title: A signature verdict this machine could not check is never cached as final
 created: 2026-11-04T09:17:55Z
 author: haksolot@vmi3223161
-status: open
+status: in_progress
 scope:
   - crates/ank-cli/src/index.rs
   - crates/ank-cli/src/git.rs
@@ -18,7 +18,7 @@ criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 method: diagnose
 schema: 4
-version: 2
+version: 3
 ---
 
 Measured 2026-11-04 on this machine: gpg was not installed, so 293 ratification commits were cached in the index's signatures table (keyed by commit_sha and signers) as N, which check reads as unchecked (47 signatures, one signal). After installing gpg and importing 739A603F...1482554A, git log %G? reported U (good) for them, but ank check kept the signal until the index file was removed; a fresh worktree reported none. The cached verdict depends on the machine's keyring and gpg, which the cache key does not name. The old index is kept at /tmp/claude-1000/-home-haksolot-Projects-ank/ef40602f-bd92-478a-ba61-5ec238a20a21/scratchpad/index.db.12.bak.
