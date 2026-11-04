@@ -82,6 +82,12 @@ fn commit(dir: &Path, message: &str) {
 /// one verifier that always passes, and a task scoped `src/a/**` committed
 /// there; then a branch `work` cut from `main`, with the task claimed on it.
 fn fixture(what: &str) -> PathBuf {
+    fixture_from(what, |_| "main".to_string())
+}
+
+/// [`fixture`], with `prepare` run on `main` before the branch is cut; it
+/// returns the revision `work` starts from.
+fn fixture_from(what: &str, prepare: impl FnOnce(&Path) -> String) -> PathBuf {
     let repo = scratch::dir(what).join("repo");
     write(&repo, "src/a/x.rs", "x\n");
     write(&repo, "src/b/y.rs", "y\n");
@@ -116,7 +122,8 @@ fn fixture(what: &str) -> PathBuf {
     let at = new.find("TASK-").expect("new task --json names the id");
     let id = new[at..at + "TASK-".len() + 12].to_string();
     commit(&repo, "task");
-    run("git", &repo, &["checkout", "-q", "-b", "work"]);
+    let start = prepare(&repo);
+    run("git", &repo, &["checkout", "-q", "-b", "work", &start]);
     run(ANK, &repo, &["claim", &id]);
     repo
 }
@@ -242,4 +249,111 @@ fn the_line_starts_as_many_git_processes_for_one_file_as_for_thirty() {
     let one = git_processes("done-out-of-scope-trace-1", 1);
     let thirty = git_processes("done-out-of-scope-trace-30", 30);
     assert_eq!(one, thirty, "the count does not grow with the files named");
+}
+
+/// A bare `origin` holding the fixture's `main`, with `repo` tracking it, and
+/// a second clone, `other`, through which `origin/main` gains commits `repo`
+/// never made.
+fn remote(repo: &Path) -> PathBuf {
+    let root = repo.parent().unwrap();
+    let origin = root.join("origin.git");
+    run(
+        "git",
+        root,
+        &["init", "-q", "--bare", "-b", "main", "origin.git"],
+    );
+    run(
+        "git",
+        repo,
+        &["remote", "add", "origin", origin.to_str().unwrap()],
+    );
+    run("git", repo, &["push", "-q", "-u", "origin", "main"]);
+    run(
+        "git",
+        root,
+        &["clone", "-q", origin.to_str().unwrap(), "other"],
+    );
+    root.join("other")
+}
+
+/// `origin/main` gains one commit touching `paths`, made in `other`, and
+/// `repo` fetches it without moving its local `main`.
+fn land_elsewhere(repo: &Path, paths: &[&str]) {
+    let other = repo.parent().unwrap().join("other");
+    run("git", &other, &["pull", "-q", "--ff-only"]);
+    for p in paths {
+        write(&other, p, &format!("{p} landed elsewhere\n"));
+    }
+    commit(&other, "elsewhere");
+    run("git", &other, &["push", "-q", "origin", "main"]);
+    run("git", repo, &["fetch", "-q", "origin"]);
+}
+
+/// The files `done` named outside the scope, read from `--json`.
+fn named(repo: &Path) -> String {
+    let (code, stdout, stderr) = done(repo, &["--json"]);
+    assert_eq!(code, Some(0), "{stderr}");
+    let at = stdout
+        .find(r#""outside_scope":"#)
+        .unwrap_or_else(|| panic!("done --json carries outside_scope: {stdout}"));
+    let rest = &stdout[at..];
+    rest[..=rest.find(']').unwrap()].to_string()
+}
+
+#[test]
+fn a_branch_cut_from_origin_main_ahead_of_a_lagging_main_names_none_of_what_a_merge_brought() {
+    let repo = fixture_from("done-out-of-scope-lagging-main", |repo| {
+        remote(repo);
+        // The primary checkout has not pulled: local main lags origin/main.
+        land_elsewhere(repo, &["lib/early.rs"]);
+        "origin/main".to_string()
+    });
+    write(&repo, "src/a/x.rs", "x changed\n");
+    write(&repo, "src/b/y.rs", "y changed\n");
+    commit(&repo, "work");
+    land_elsewhere(&repo, &["lib/m.rs", "docs/z.md"]);
+    run("git", &repo, &["merge", "-q", "--no-edit", "origin/main"]);
+
+    assert_eq!(
+        named(&repo),
+        r#""outside_scope":["src/b/y.rs"]"#,
+        "nothing origin/main gained, before or after the cut, is this branch's change"
+    );
+}
+
+#[test]
+fn with_main_ahead_of_origin_main_the_base_is_the_local_main() {
+    let repo = fixture_from("done-out-of-scope-main-ahead", |repo| {
+        remote(repo);
+        // A commit on main that was never pushed.
+        write(repo, "lib/local.rs", "not pushed\n");
+        commit(repo, "unpushed");
+        "main".to_string()
+    });
+    write(&repo, "src/a/x.rs", "x changed\n");
+    write(&repo, "src/b/y.rs", "y changed\n");
+    commit(&repo, "work");
+
+    assert_eq!(
+        named(&repo),
+        r#""outside_scope":["src/b/y.rs"]"#,
+        "the unpushed commit on main is not this branch's change"
+    );
+}
+
+#[test]
+fn with_no_local_main_the_base_is_origin_main() {
+    let repo = fixture_from("done-out-of-scope-no-main", |repo| {
+        remote(repo);
+        land_elsewhere(repo, &["lib/early.rs"]);
+        "origin/main".to_string()
+    });
+    run("git", &repo, &["branch", "-q", "-D", "main"]);
+    write(&repo, "src/a/x.rs", "x changed\n");
+    write(&repo, "src/b/y.rs", "y changed\n");
+    commit(&repo, "work");
+    land_elsewhere(&repo, &["lib/m.rs"]);
+    run("git", &repo, &["merge", "-q", "--no-edit", "origin/main"]);
+
+    assert_eq!(named(&repo), r#""outside_scope":["src/b/y.rs"]"#);
 }

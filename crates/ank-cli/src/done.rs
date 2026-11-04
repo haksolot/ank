@@ -366,17 +366,18 @@ impl OutsideScope {
     /// The files outside the scope the branch changed since it left the
     /// default branch, committed or not, sorted.
     ///
-    /// **Two git processes over what `done` already starts**
-    /// (ADR-cc65f1388a71): one `diff-tree --merge-base` for what the branch
-    /// committed, and one `cat-file --batch-check` for what HEAD records of the
+    /// **Three git processes over what `done` already starts**
+    /// (ADR-cc65f1388a71): one `merge-base` against the newer of the default
+    /// branch and its remote-tracking twin and one `diff-tree` for what the
+    /// branch committed since (TASK-30538cb58857), and one `cat-file --batch-check` for what HEAD records of the
     /// files the snapshot already hashed. A file is changed in the work tree
     /// when HEAD does not carry it, when its blob differs, or when it is gone.
     /// Whatever git cannot answer is left out rather than guessed.
     fn changed(&self, repo: &Repo, cfg: &Config, snap: Option<&verify::Snapshot>) -> Vec<String> {
         let mut changed = std::collections::BTreeSet::new();
-        // The configured default branch and its remote-tracking twin, or the
-        // remote's HEAD read as a revision, which costs no symbolic-ref of its
-        // own.
+        // The configured default branch and its remote-tracking twin, the
+        // newer of which is the base, or the remote's HEAD read as a revision,
+        // which costs no symbolic-ref of its own.
         let revs: Vec<String> = match cfg.default_branch.as_deref().map(str::trim) {
             Some(d) if !d.is_empty() => vec![d.to_string(), format!("refs/remotes/origin/{d}")],
             _ => vec!["refs/remotes/origin/HEAD".to_string()],
