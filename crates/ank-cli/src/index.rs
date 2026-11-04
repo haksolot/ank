@@ -39,12 +39,20 @@ use std::path::{Path, PathBuf};
 /// Moved to 2 by the FTS5 table, to 3 by `about` and to 4 by `seq`, to 5 by
 /// `signatures`, to 6 by `verdict`, to 7 by `entities.rid`, to 8 by the stat of
 /// `files`, to 9 by `entities.archived` and to 10 by the three columns an
-/// archived entry is read back from, to 11 by `amends`, to 12 by `carried`,
-/// and to 13 by `verdict.unowed` (ADR-61c273118d97):
+/// archived entry is read back from, to 11 by `amends`, and to 12 by `carried`:
 /// nothing migrated any of those times, and nothing had to. Since 12 the number
 /// is also the file's name (ADR-3db9735a7036), so a bump leaves the previous
 /// build's index where it is instead of fighting it for one file.
-pub const SCHEMA_VERSION: u32 = 13;
+///
+/// Moved to 13 with no table changed, by what a `signatures` row may mean: a
+/// 12 holds `N` for signed ratifications gpg was never run on, which read as
+/// unchecked until the file was deleted, and nothing in the row tells them from
+/// an unsigned commit. A row written since is `N` only for an object with no
+/// signature (TASK-432f93acc03f).
+///
+/// Moved to 14 by `verdict.unowed`, the count `status` names beside the owed
+/// signals (ADR-61c273118d97).
+pub const SCHEMA_VERSION: u32 = 14;
 
 /// The index of this build's schema, and the only one it opens
 /// (ADR-3db9735a7036).
@@ -1448,6 +1456,12 @@ impl Index {
     /// not in the key. Refusing to store it means importing the key changes the
     /// answer on the very next run, instead of leaving a reader to wonder why a
     /// signature they can now verify still reads as unchecked.
+    ///
+    /// **gpg missing altogether is the same fact, and arrives as `E` too.** git
+    /// answers `N` for a signed commit it could not start gpg for, which is the
+    /// letter of an unsigned one; [`crate::git::signature_of`] says `E` for it
+    /// instead, so the rule above covers it (TASK-432f93acc03f). `N` stored here
+    /// is the object carrying no signature, which is final.
     ///
     /// A write that fails is not an error: the cache is an accelerator, and the
     /// next run recomputes.

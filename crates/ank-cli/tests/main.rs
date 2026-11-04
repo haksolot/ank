@@ -75,6 +75,7 @@ mod remote_without_claim;
 mod renewal_noop;
 mod requires_ank;
 mod schema;
+mod signature_cache;
 mod signers;
 mod skill;
 mod spec_page;
