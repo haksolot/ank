@@ -1,6 +1,6 @@
 {
   "name": "@haksolot/ank-darwin-arm64",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "description": "The ank binary for macOS on Apple silicon.",
   "license": "Apache-2.0",
   "author": "Sean Lamet",
