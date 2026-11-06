@@ -64,9 +64,10 @@ copy committed here is only ever the last released one.
 
 ## Publishing
 
-`release.yml` does it on a `v*` tag, with `NPM_TOKEN` from the repository
-secrets and `--access public`, which a scoped package needs on its first
-publish. The workflow has two triggers, `push` on `v*` and `workflow_dispatch`,
+`release.yml` does it on a `v*` tag, by Trusted Publishing, with no npm token
+stored anywhere ([Releasing](../docs/releasing.md#trusted-publishing) names the
+setting each package carries on npmjs.com), and with `--access public`, which a
+scoped package needs on its first publish. The workflow has two triggers, `push` on `v*` and `workflow_dispatch`,
 and only `publish-npm` and `publish` are gated on the tag. The `npm-smoke` job
 carries no such gate, so it runs on both: the pipeline is rehearsed on a
 dispatch before a tag depends on it, and a tag is the one thing here that is
