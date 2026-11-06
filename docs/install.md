@@ -316,4 +316,29 @@ nothing. Copy
 policies, and `skill/herdr/SKILL.md` for orchestrating agents from a herdr-core terminal,
 or keep the contract alone, which stands on its own.
 
+## The Claude Code hook
+
+The binary also serves as a hook handler for Claude Code. One command writes
+its entries into your user-level settings:
+
+    ank hooks install claude
+
+It edits `settings.json` in `CLAUDE_CONFIG_DIR`, or `~/.claude/settings.json`
+when that variable is unset or empty, and adds two entries. The `SessionStart`
+one hands the agent `ank status` and a pointer to the contract at the start of
+every session. The `PreToolUse` one runs before the file tools: it keeps the
+agent out of `.ank/`, and warns when an edit lands on a file that none of the
+agent's claims covers.
+
+Both entries call the binary that installed them by its absolute path, so run
+the command again after you move or replace that binary. A second install
+leaves the file as it was, every byte it did not add stays where it was, and
+this takes out exactly what install wrote:
+
+    ank hooks remove claude
+
+Outside a corpus the hook stays silent and lets every tool call through. Its
+two guards, the levels they take and how a launch environment tightens them are
+in [Integrating](integrating.md#an-agent-harness-calls-ank-hooks).
+
 Next: [the quickstart](quickstart.md), from `ank init` to a first finished task.
