@@ -547,21 +547,18 @@ jobs:
     needs: npm-smoke
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    # Trusted Publishing: npm exchanges this job's OIDC token for a short-lived
+    # publish credential, so no npm token is stored anywhere. npmjs.com trusts
+    # this repository and this file by name, per package, and the registry
+    # attaches provenance to what it receives. `id-token: write` lets the job
+    # mint that token and nothing more; `contents` stays read.
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - uses: actions/checkout@v5
       - *mise
-      # What the node action's `registry-url` wrote: a user config naming the
-      # registry and reading the token from NODE_AUTH_TOKEN at publish time,
-      # so the secret is in the environment of one step and in no file.
-      - name: registry
-        shell: bash
-        run: |
-          npmrc="$RUNNER_TEMP/.npmrc"
-          printf '%s\n' \
-            'registry=https://registry.npmjs.org/' \
-            '//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}' > "$npmrc"
-          echo "NPM_CONFIG_USERCONFIG=$npmrc" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -569,7 +566,8 @@ jobs:
 
       # The same npm the smoke job rehearsed on. A rehearsal against one npm and
       # a publish against another rehearses nothing, and the publish is the step
-      # that cannot be taken back.
+      # that cannot be taken back. Trusted Publishing also needs npm 11.5.1 or
+      # newer, which `latest` is.
       - name: npm
         shell: bash
         run: |
@@ -596,8 +594,6 @@ jobs:
       # script, which is what keeps the rehearsal rehearsing: a flag chosen here
       # and not there would be a publish nobody had tried.
       - name: publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -e
           version="${GITHUB_REF_NAME#v}"

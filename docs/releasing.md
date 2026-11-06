@@ -87,16 +87,27 @@ dist-tag `next` and as a GitHub prerelease, so it is installable by whoever asks
 for it by name and never becomes what a bare `npm install -g @haksolot/ank`
 resolves to. Anything else publishes as `latest`.
 
-## NPM_TOKEN
+## Trusted Publishing
 
-`publish-npm` authenticates with the repository secret `NPM_TOKEN`, and it is
-the only credential outside the run that the pipeline uses: the GitHub release
-is created under the workflow's own token. It has to be an npm token allowed to
-publish every package under the `@haksolot` scope, and a missing or expired one
-fails `publish-npm` alone -- the GitHub release still publishes, because the
-release page is the primary channel and npm a convenience on top of it. Rotate
-it under the repository's *Settings → Secrets and variables → Actions*, and
-re-run the failed job rather than the tag.
+`publish-npm` holds no npm credential. It runs with `id-token: write`, and npm
+exchanges the job's OIDC token for a short-lived publish credential, so
+the pipeline uses no secret at all: the GitHub release is
+created under the workflow's own token, and the registry attaches provenance to
+every package it receives.
+
+npmjs.com decides whom to trust, per package. Each of the four packages,
+`@haksolot/ank`, `@haksolot/ank-linux-x64-musl`, `@haksolot/ank-darwin-arm64`
+and `@haksolot/ank-win32-x64`, names GitHub Actions as its trusted publisher
+under *Settings → Trusted Publisher*, with the owner `haksolot`, the repository
+`ank` and the workflow file `release.yml`. Renaming that file, or adding a
+fifth package, means adding the new name there before the next tag, or that
+package's publish is refused.
+
+A refused publish fails `publish-npm` alone. The GitHub release still
+publishes, because the release page is the primary channel and npm a
+convenience on top of it. Re-run the failed job once npmjs.com is corrected:
+the rerun replays the workflow of the tagged commit, so a fix to `release.yml`
+itself reaches npm only with the next tag.
 
 ## After the release
 

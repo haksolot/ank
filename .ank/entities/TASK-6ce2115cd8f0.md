@@ -5,7 +5,7 @@ slug: publish-npm-authenticates-by-trusted-publishing
 title: publish-npm authenticates by Trusted Publishing, and no npm token is stored
 created: 2026-11-06T12:41:38Z
 author: claude-trusted-publishing
-status: open
+status: in_progress
 scope:
   - .github/workflows/release.yml
   - docs/releasing.md
@@ -16,5 +16,5 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
