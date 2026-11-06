@@ -252,9 +252,9 @@ fn a_schema_below_the_range_keeps_its_own_refusal() {
 /// forbids.
 ///
 /// What this test pins is that the file and the reader agree. Since
-/// ADR-756e8b0fe416 the reader is a range, 1 and 2, and this repository stays at
-/// 1 until it declares `requires_ank`, which it can only do once a release that
-/// reads schema 2 is published.
+/// ADR-756e8b0fe416 the reader is a range, 1 and 2. This repository stayed at 1
+/// until a release reading schema 2 was published, 0.9.3, and now declares
+/// `requires_ank: 0.9.3`, which moves it to schema 2.
 #[test]
 fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -264,8 +264,13 @@ fn the_repositorys_own_config_declares_the_schema_this_binary_reads() {
 
     assert!(
         text.lines()
-            .any(|l| l.trim() == format!("schema: {OLDEST}")),
-        "{} must declare schema {OLDEST}",
+            .any(|l| l.trim() == format!("schema: {SUPPORTED}")),
+        "{} must declare schema {SUPPORTED}",
+        path.display()
+    );
+    assert!(
+        text.lines().any(|l| l.trim() == "requires_ank: 0.9.3"),
+        "{} must declare requires_ank 0.9.3, the first release reading schema 2",
         path.display()
     );
     assert!(

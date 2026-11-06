@@ -5,7 +5,7 @@ slug: this-repository-declares-requires-ank-0-9-3-once
 title: This repository declares requires_ank 0.9.3 once 0.9.3 is published
 created: 2026-11-06T10:55:01Z
 author: claude-requires-ank
-status: open
+status: in_progress
 scope:
   - .ank/config.yml
   - crates/ank-cli/tests/schema.rs
@@ -15,5 +15,5 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
