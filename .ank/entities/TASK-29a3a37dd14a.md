@@ -5,7 +5,7 @@ slug: releasing-md-names-the-trusted-publisher-s-publi
 title: releasing.md names the trusted publisher's publish-directly action
 created: 2026-11-07T11:04:59Z
 author: claude-releasing-doc
-status: open
+status: in_progress
 scope:
   - docs/releasing.md
 blocked_by: []
@@ -14,5 +14,5 @@ done_criteria: |
 criteria_by: creator
 verify: [fmt-check, test-ank-core, test-ank-contract, test-ank-daemon, test-ank-mcp, test-ank-tui, test-ank-cli]
 schema: 4
-version: 1
+version: 2
 ---
