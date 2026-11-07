@@ -103,6 +103,14 @@ under *Settings → Trusted Publisher*, with the owner `haksolot`, the repositor
 fifth package, means adding the new name there before the next tag, or that
 package's publish is refused.
 
+The same page carries **Allowed actions**, and it has to allow publishing
+directly. npm always allows a staged publish, which waits for somebody to
+approve it on the website, and adds a direct publish only when that box is
+ticked. A trust left at its default answers this job with `403 Forbidden ...
+OIDC permission denied for this action`, after the job has already signed its
+provenance, so the error reads as an authentication that succeeded. Managing
+dist-tags can stay off: `--tag` is applied by the publish itself.
+
 A refused publish fails `publish-npm` alone. The GitHub release still
 publishes, because the release page is the primary channel and npm a
 convenience on top of it. Re-run the failed job once npmjs.com is corrected:
