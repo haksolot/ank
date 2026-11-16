@@ -119,6 +119,19 @@ struct ConfigFile {
     /// declares them in is the order `review` lists them in.
     #[serde(default)]
     signers: serde_yaml::Mapping,
+    /// `check:`, the repository's policy over `check` (ADR-55460a57353a).
+    #[serde(default)]
+    check: CheckFile,
+}
+
+/// `check:` as written. Each severity is read as whatever YAML resolved it to
+/// and judged by `check`, which faults `config.yml` on one it cannot apply:
+/// no other verb reads it, so none is stopped by it.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CheckFile {
+    #[serde(default)]
+    severity: BTreeMap<String, serde_yaml::Value>,
 }
 
 /// One principal under `signers:`.
@@ -551,6 +564,9 @@ pub struct Config {
     pub reuse_max_age: Duration,
     /// Who may ratify, one row per key (ADR-5c6db7a161b8).
     pub signers: Vec<Signer>,
+    /// `check.severity`, kind word to value as written (ADR-55460a57353a);
+    /// `check` applies the ones it can and faults the rest.
+    pub severity: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -851,6 +867,20 @@ pub fn read(text: &str, path: &Path) -> Result<(Config, Vec<String>)> {
         enforce,
         reuse_max_age,
         signers,
+        severity: raw
+            .check
+            .severity
+            .into_iter()
+            .map(|(kind, value)| {
+                let text = match value {
+                    serde_yaml::Value::String(t) => t,
+                    other => serde_yaml::to_string(&other)
+                        .map(|t| t.trim().to_string())
+                        .unwrap_or_default(),
+                };
+                (kind, text)
+            })
+            .collect(),
     };
     Ok((config, bounds))
 }
@@ -1237,7 +1267,14 @@ enum Key {
         verbatim: bool,
         default: Option<String>,
     },
+    /// `check.severity.<kind>` (ADR-55460a57353a): one scalar two mappings
+    /// deep, with no default, since a kind nobody raised is reported at the
+    /// level `check` gives it.
+    Severity { kind: String },
 }
+
+/// The mappings a [`Key::Severity`] sits under, outermost first.
+const SEVERITY_PARENTS: [&str; 2] = ["check", "severity"];
 
 fn unknown_key(path: &str) -> CliError {
     CliError::new(ExitCode::Generic, format!("unknown key '{path}'"))
@@ -1445,6 +1482,14 @@ fn resolve_key(path: &str) -> Result<Key> {
             format!("'{path}': who may ratify is written by ank signers, not by ank config"),
         )
         .with_hint("ank help signers")),
+        ["check", "severity", kind] => Ok(Key::Severity {
+            kind: (*kind).to_string(),
+        }),
+        ["check", ..] => Err(CliError::new(
+            ExitCode::Generic,
+            format!("'{path}': check holds one mapping, a severity per kind"),
+        )
+        .with_hint("ank config check.severity.<kind> fault")),
         ["roles", ..] => Err(structured("roles")),
         ["identities", ..] => Err(structured("identities")),
         ["verifiers"] => Err(CliError::new(
@@ -1960,6 +2005,7 @@ fn json_type(key: &Key) -> &'static str {
         Key::Under { map, name, .. } => format!("{map}.{name}"),
         Key::Field { field, .. } => format!("verifiers.<name>.{field}"),
         Key::Inputs { .. } => "verifiers.<name>.inputs".to_string(),
+        Key::Severity { .. } => "check.severity.<kind>".to_string(),
         Key::Block { .. } => return "string",
     };
     let declared = ank_core::config::KEYS
@@ -2000,7 +2046,13 @@ fn listed_keys(lines: &[Line]) -> Vec<String> {
         .collect();
     let mut keys = Vec::new();
     for template in KEYS {
-        if *template == "peers.<name>" {
+        if *template == "check.severity.<kind>" {
+            keys.extend(
+                declared_at(lines, &SEVERITY_PARENTS)
+                    .into_iter()
+                    .map(|k| format!("check.severity.{k}")),
+            );
+        } else if *template == "peers.<name>" {
             keys.extend(
                 declared_under(lines, "peers")
                     .into_iter()
@@ -2094,6 +2146,10 @@ fn read_key(lines: &[Line], key: &Key) -> Result<Value> {
             Some(i) => scalar_at(&lines[i], &format!("{map}.{name}")),
             None => Ok(from_default(default)),
         },
+        Key::Severity { kind } => match locate_path(lines, &SEVERITY_PARENTS, kind) {
+            Some(i) => scalar_at(&lines[i], &format!("check.severity.{kind}")),
+            None => Ok(Value::Unset),
+        },
         Key::Field {
             verifier,
             field,
@@ -2169,6 +2225,147 @@ fn write_key(lines: &mut Vec<Line>, key: &Key, value: &str) -> Result<()> {
             verbatim,
             ..
         } => write_under(lines, map, name, *verbatim, value),
+        Key::Severity { kind } => write_path(lines, &SEVERITY_PARENTS, kind, value),
+    }
+}
+
+/// The line declaring `name` under the mappings `parents` names, outermost
+/// first, each a block mapping at the indentation its file chose.
+fn locate_path(lines: &[Line], parents: &[&str], name: &str) -> Option<usize> {
+    let mut range = 0..lines.len();
+    let mut indent = 0;
+    for parent in parents {
+        let i = find_key(lines, range.clone(), indent, parent)?;
+        let block = block_under(lines, i, indent);
+        indent = block.indent?;
+        range = block.range;
+    }
+    find_key(lines, range, indent, name)
+}
+
+/// The keys declared directly under the mappings `parents` names.
+fn declared_at(lines: &[Line], parents: &[&str]) -> Vec<String> {
+    let mut range = 0..lines.len();
+    let mut indent = 0;
+    for parent in parents {
+        let Some(i) = find_key(lines, range.clone(), indent, parent) else {
+            return Vec::new();
+        };
+        let block = block_under(lines, i, indent);
+        let Some(child) = block.indent else {
+            return Vec::new();
+        };
+        indent = child;
+        range = block.range;
+    }
+    lines[range]
+        .iter()
+        .filter(|l| content_indent(&l.text) == Some(indent))
+        .filter_map(|l| key_of(&l.text).map(|(k, _)| k))
+        .collect()
+}
+
+/// One scalar under a chain of mappings, written the way [`write_under`]
+/// writes one under a single mapping: a mapping that is missing is created
+/// where its parent's block ends, `{}` is promoted to a block, and every other
+/// byte stays where it was (§4).
+fn write_path(lines: &mut Vec<Line>, parents: &[&str], name: &str, value: &str) -> Result<()> {
+    let eol = dominant_eol(lines);
+    let rendered = render_value(value, false, None);
+    let full = |upto: usize| parents[..upto].join(".");
+    // The lines a missing chain needs, from `depth` on, at `indent`.
+    let chain = |depth: usize, indent: usize| -> Vec<Line> {
+        let mut out = Vec::new();
+        let mut at = indent;
+        for parent in &parents[depth..] {
+            out.push(Line {
+                text: format!("{}{parent}:", " ".repeat(at)),
+                eol: eol.clone(),
+            });
+            at += 2;
+        }
+        out.push(Line {
+            text: format!("{}{name}: {rendered}", " ".repeat(at)),
+            eol: eol.clone(),
+        });
+        out
+    };
+    let insert = |lines: &mut Vec<Line>, at: usize, new: Vec<Line>| {
+        if at == lines.len() {
+            terminate_last(lines, &eol);
+        }
+        for (k, line) in new.into_iter().enumerate() {
+            lines.insert(at + k, line);
+        }
+    };
+
+    let mut range = 0..lines.len();
+    let mut indent = 0;
+    for (depth, parent) in parents.iter().enumerate() {
+        let Some(i) = find_key(lines, range.clone(), indent, parent) else {
+            insert(lines, range.end, chain(depth, indent));
+            return Ok(());
+        };
+        let (_, after) = key_of(&lines[i].text).expect("found by its key");
+        let span = value_span(&lines[i].text, after);
+        if span.blocky {
+            return Err(blocky(&full(depth + 1)));
+        }
+        if !span.value.is_empty() && span.value != "{}" {
+            return Err(flow_mapping(&full(depth + 1)));
+        }
+        let block = block_under(lines, i, indent);
+        match block.indent {
+            Some(child) if span.value.is_empty() => {
+                indent = child;
+                range = block.range;
+            }
+            // `{}`, or a key with nothing under it: the mapping is empty, and
+            // its children are the first it receives.
+            _ => {
+                if span.value == "{}" {
+                    let head = lines[i].text[..span.start].trim_end().to_string();
+                    let tail = lines[i].text[span.end..].to_string();
+                    lines[i].text = format!("{head}{tail}");
+                }
+                insert(lines, i + 1, chain(depth + 1, indent + 2));
+                return Ok(());
+            }
+        }
+    }
+    match find_key(lines, range.clone(), indent, name) {
+        Some(i) => {
+            let (_, after) = key_of(&lines[i].text).expect("found by its key");
+            let span = value_span(&lines[i].text, after);
+            if span.blocky {
+                return Err(blocky(&format!("{}.{name}", full(parents.len()))));
+            }
+            let rendered = render_value(value, false, span.quote);
+            splice(&mut lines[i], &span, &rendered);
+        }
+        None => insert(lines, range.end, chain(parents.len(), indent)),
+    }
+    Ok(())
+}
+
+/// The counterpart of [`write_path`]: the scalar removed, and each mapping it
+/// leaves empty removed after it, innermost first, so the last severity unset
+/// leaves the file as it was before the first.
+fn unset_path(lines: &mut Vec<Line>, parents: &[&str], name: &str) {
+    let Some(i) = locate_path(lines, parents, name) else {
+        return;
+    };
+    remove_lines(lines, i..i + 1);
+    for depth in (1..=parents.len()).rev() {
+        let (outer, inner) = (&parents[..depth - 1], parents[depth - 1]);
+        let Some(p) = locate_path(lines, outer, inner) else {
+            return;
+        };
+        let indent = content_indent(&lines[p].text).unwrap_or(0);
+        if block_under(lines, p, indent).indent.is_some() {
+            return;
+        }
+        remove_lines(lines, p..p + 1);
     }
 }
 
@@ -2561,6 +2758,10 @@ fn unset_key(lines: &mut Vec<Line>, key: &Key) -> Result<()> {
     match key {
         Key::Inputs { verifier } => {
             unset_nested(lines, verifier, &["inputs".to_string()]);
+            Ok(())
+        }
+        Key::Severity { kind } => {
+            unset_path(lines, &SEVERITY_PARENTS, kind);
             Ok(())
         }
         Key::Top { name, .. } => {
@@ -3124,6 +3325,22 @@ pub fn run(inv: &Invocation, repo: &crate::repo::Repo, out: &mut dyn Write) -> R
     {
         if Enforce::parse(v).is_none() {
             return Err(not_an_enforce_level(v));
+        }
+    }
+
+    // Raise only (ADR-55460a57353a): a kind check does not know, one that is
+    // already a fault, or a value that is not `fault`, refused before the
+    // file is touched and naming the kinds that may be raised.
+    if let (Key::Severity { kind }, Some(v)) = (&key, value) {
+        if let Some(why) = crate::human::severity_refusal(kind, v) {
+            return Err(CliError::new(
+                ExitCode::Generic,
+                format!(
+                    "{why}; the kinds that may be raised: {}",
+                    crate::human::raisable_kinds()
+                ),
+            )
+            .with_hint("ank config check.severity.<kind> fault"));
         }
     }
 
@@ -5073,6 +5290,10 @@ mod reference_table {
                         .into_iter()
                         .map(|f| format!("guard.{f}")),
                 ),
+                "check" => {
+                    assert_eq!(fields_of::<CheckFile>(), vec!["severity"]);
+                    accepted.insert("check.severity.<kind>".to_string());
+                }
                 "signers" => {
                     assert_eq!(fields_of::<PrincipalFile>(), vec!["keys"]);
                     accepted.extend(
@@ -5087,7 +5308,7 @@ mod reference_table {
             }
         }
         let table: BTreeSet<String> = KEYS.iter().map(|k| k.path.to_string()).collect();
-        assert_eq!(accepted.len(), 25, "{accepted:?}");
+        assert_eq!(accepted.len(), 26, "{accepted:?}");
         assert_eq!(table, accepted);
         // What `ank config` addresses is a subset of the table, never a key
         // of its own.

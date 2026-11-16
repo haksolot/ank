@@ -172,6 +172,7 @@ kinds! {
     RequiresAnk => "requires-ank",
     ConfigBound => "config-bound",
     RoleWord => "role-word",
+    Severity => "severity",
     NoConstraint => "no-constraint",
     EnforcedBy => "enforced-by",
     Reference => "reference",
@@ -352,6 +353,9 @@ const OWES: &[(Kind, Owes)] = &[
     // A word outside the role vocabulary: the role means something other than
     // what it reads as, and only its author knows which word was meant.
     (Kind::RoleWord, Owes::Fault),
+    // A severity the file declares and check cannot apply: only its author
+    // knows which kind, or which raise, was meant.
+    (Kind::Severity, Owes::Fault),
 ];
 
 impl Kind {
@@ -361,6 +365,44 @@ impl Kind {
     /// failure.
     pub fn owes(self) -> Option<Owes> {
         OWES.iter().find(|(k, _)| *k == self).map(|(_, o)| *o)
+    }
+
+    /// Whether `check.severity.<kind>: fault` may name this kind
+    /// (ADR-55460a57353a): every kind `check` reports as a signal by default,
+    /// and none that is only ever a fault, since raising one would declare
+    /// nothing and read as a policy.
+    pub fn raisable(self) -> bool {
+        self.owes() != Some(Owes::Fault)
+    }
+}
+
+/// The kinds `check.severity` may raise, in the order of [`Kind::ALL`],
+/// comma-separated: what a refusal names and what docs/check.md shows.
+pub fn raisable_kinds() -> String {
+    Kind::ALL
+        .iter()
+        .filter(|k| k.raisable())
+        .map(|k| k.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Why `check.severity.<word>: <value>` cannot be applied, or `None` when it
+/// raises a kind (ADR-55460a57353a). One sentence for `ank config`, which
+/// refuses it, and for `check`, which faults `config.yml` on it.
+pub fn severity_refusal(word: &str, value: &str) -> Option<String> {
+    let key = format!("check.severity.{word}");
+    match Kind::parse(word) {
+        None => Some(format!(
+            "{key}: no rule of check answers to the kind '{word}'"
+        )),
+        Some(kind) if !kind.raisable() => Some(format!(
+            "{key}: {word} is already a fault, and a severity only raises"
+        )),
+        Some(_) if value != "fault" => Some(format!(
+            "{key}: '{value}' is not a severity: only fault may be written, and no value lowers a kind"
+        )),
+        Some(_) => None,
     }
 }
 
@@ -510,6 +552,33 @@ impl Report {
                 f.level = Level::Fault;
                 f.owed = true;
             }
+        }
+        self.sort();
+    }
+
+    /// `check.severity` and `check --strict` (ADR-55460a57353a): a signal of a
+    /// kind the repository raised, or every signal under `--strict`, reported
+    /// as a fault, owed, and saying what raised it. On the report and not in
+    /// the inspection, for the reason [`Report::require_peers`] is: `status`
+    /// and `review` read the same inspection, and the policy is `check`'s.
+    fn raise(&mut self, raised: &BTreeSet<Kind>, strict: bool) {
+        for f in &mut self.findings {
+            if f.level != Level::Signal {
+                continue;
+            }
+            let why = if raised.contains(&f.kind) {
+                format!(
+                    "raised to a fault by this repository: check.severity.{} in .ank/config.yml",
+                    f.kind
+                )
+            } else if strict {
+                "raised to a fault by check --strict".to_string()
+            } else {
+                continue;
+            };
+            f.level = Level::Fault;
+            f.owed = true;
+            f.note.push(why);
         }
         self.sort();
     }
@@ -687,21 +756,27 @@ pub fn check(
 ) -> Result<ExitCode> {
     let kind = kind_flag(inv)?;
     let path = crate::context::perimeter(inv, repo)?;
+    // `--strict` writes nothing (ADR-55460a57353a): no remote repaired, no ref
+    // pruned. The run is a gate, and a gate that moves what it judges answers
+    // a different question the second time it is asked.
+    let strict = inv.has("--strict");
     // Repaired before the inspection reads a single ref, so the proofs the
     // fetch brings are the ones it counts (ADR-1b030fe70442). Only where git
     // runs here: a check outside a repository starts no process for it.
-    let origin = git::usable_here(&repo.corpus).then(|| {
+    let origin = (git::usable_here(&repo.corpus) && !strict).then(|| {
         let (remotes, repaired) = crate::init::repair_remotes(&repo.corpus);
         if let Some(line) = repaired.filter(|_| !inv.quiet()) {
             eprintln!("{line}");
         }
         remotes
     });
-    let mut report = inspect_with(repo, cfg, path.as_deref(), true, origin)?;
+    let mut report = inspect_with(repo, cfg, path.as_deref(), !strict, origin)?;
     check_config_bounds(repo, bounds, &mut report);
     if inv.has("--peers") {
         report.require_peers();
     }
+    let raised = check_severity(repo, cfg, &mut report);
+    report.raise(&raised, strict);
     // The code is the whole corpus's whatever is shown: narrowing the listing
     // to one kind must not turn a corpus with a fault green.
     let code = report.exit_code();
@@ -3626,6 +3701,40 @@ fn check_config_bounds(repo: &Repo, bounds: &[String], report: &mut Report) {
                 .with_note(vec![format!("ank config {key} <value>")]),
         );
     }
+}
+
+/// Every `check.severity.<kind>` entry `check` cannot apply, one fault each on
+/// `config.yml`, and the kinds the others raise (ADR-55460a57353a).
+///
+/// **A fault in `check` and not a refusal at load**, for the reason
+/// [`check_role_words`] gives: no verb but this one reads the severities, and a
+/// typo in one must not stop an agent from running `context`. An entry that
+/// cannot be applied raises nothing.
+fn check_severity(repo: &Repo, cfg: &Config, report: &mut Report) -> BTreeSet<Kind> {
+    let file = repo.config_path();
+    let subject = file
+        .strip_prefix(&repo.corpus)
+        .unwrap_or(&file)
+        .to_string_lossy()
+        .replace('\\', "/");
+    let mut raised = BTreeSet::new();
+    for (word, value) in &cfg.severity {
+        match severity_refusal(word, value) {
+            None => {
+                raised.extend(Kind::parse(word));
+            }
+            Some(message) => {
+                report
+                    .findings
+                    .push(
+                        Finding::fault(Kind::Severity, &subject, message).with_note(vec![format!(
+                            "ank config --unset check.severity.{word}, or a kind of docs/check.md"
+                        )]),
+                    )
+            }
+        }
+    }
+    raised
 }
 
 /// Every `roles.<name>.can` and `.cannot` entry outside the vocabulary

@@ -350,7 +350,7 @@ is `done` or `closed` on the default branch. The binary says so itself:
     $ ank help check
     ank check [<path>]
       the mechanical invariants: parse, round-trip, references, frozen fields, orphaned claims; prunes the claim refs it finds stale, so it writes
-      flags:    --kind <v> --peers --all
+      flags:    --kind <v> --peers --all --strict
       global:   -j, --json -q, --quiet -r, --repo <v> --worktree <v>
       note:     exit 8 means findings; a signal alone leaves it 0
                 the only verb that prunes refs/ank/claims: orphans, and completion refs whose task is done or closed on the default branch
@@ -359,6 +359,8 @@ is `done` or `closed` on the default branch. The binary says so itself:
                 by default check lists every fault and every owed signal, then one line counting the signals that owe nothing; --all lists every finding, --kind every finding of its kind, and --json every finding with owed on each; the exit code is the same in every case
                 a signal is owed when its subject is unsettled work -- an open or in_progress task, a proposed ADR or spec, a task a live claim holds -- or when it names the command that clears it; a burst is owed while one entity it counts is unsettled; a fault always is
                 a declared peer that cannot be read is a signal; --peers makes it a fault, for the CI job that checks the sibling out, and changes nothing else: a peer task its default branch does not hold yet stays what check says it is
+                check.severity.<kind>: fault in config.yml reports every finding of that kind as a fault raised by the repository; only a kind check reports as a signal may be raised, and nothing lowers a fault
+                --strict reports every signal as a fault for that run, and writes nothing: no claim ref is pruned and no remote repaired
       refuses:  the path names nothing inside this repository (1)
                 the corpus carries at least one fault; a signal alone leaves the code at 0 (8)
                 --kind names a word no rule of check answers to; the refusal lists the ones it does (7)
